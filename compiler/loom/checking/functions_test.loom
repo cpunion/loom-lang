@@ -1,0 +1,93 @@
+import frontend.binding.SourceFile
+import frontend.binding.Failure
+import frontend.binding.bind
+import frontend.parser.parse
+import frontend.checking.check
+import frontend.typed.Program
+import frontend.typed.ExprKind
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.result.Result
+
+fn source_file(package Text, text Text, trusted Bool) SourceFile {
+    let tree = match parse(text) {
+        Result.Ok(tree) => tree
+        Result.Err(_) => { assert false
+            source_file(package, "", trusted).tree }
+    }
+    SourceFile { package = package path = package text = text tree = tree test_only = false trusted_std = trusted }
+}
+fn source_files(text Text) List[SourceFile] {
+    let files = new[SourceFile]()
+    push(files, source_file("app", text, false))
+    files
+}
+fn checked(files List[SourceFile]) Result[frontend.typed.Program, Failure] { check(bind(files, "app", false)?) }
+fn accepted(text Text) frontend.typed.Program {
+    match checked(source_files(text)) {
+        Result.Ok(program) => program
+        Result.Err(_) => { assert false
+            accepted("") }
+    }
+}
+fn rejects(text Text) {
+    match checked(source_files(text)) {
+        Result.Err(_) => {}
+        Result.Ok(_) => { assert false }
+    }
+}
+
+test fn generic_specializations_are_shared_and_overloads_remain_distinct() {
+    let program = accepted("fn identity[T](x T) T { x }\nfn pick(x Int) Int { x }\nfn pick(x Bool) Bool { x }\nfn main() {\nassert identity(2) == identity[Int](2)\nassert identity(true)\nassert pick(2) == 2\nassert pick(true)\n}")
+    assert length(program.functions) == 5
+    assert program.entry == 0
+    assert length(get(program.functions, 0).arguments) == 0
+    assert get(program.functions, 1).symbol == get(program.functions, 2).symbol
+    assert get(get(program.functions, 1).arguments, 0) != get(get(program.functions, 2).arguments, 0)
+    assert get(program.functions, 3).symbol != get(program.functions, 4).symbol
+    rejects("pub fn hidden[T](x T) T { x + 1 }")
+    rejects("fn same(x Int) Int { x }\nfn same(x Int) Bool { true }")
+    rejects("fn recurse[T](x T) { recurse(ListBox { value = x }) }\nrecord ListBox[T] { value T }\nfn main() { recurse(1) }")
+}
+
+test fn intrinsic_abi_is_checked_before_generic_substitution() {
+    let files = source_files("import std.text.length\nfn main() { discard length(\"abc\") }")
+    push(files, source_file("std.text", "intrinsic fn text_len(value Text) Int\npub fn length(value Text) Int { text_len(value) }", true))
+    match checked(files) {
+        Result.Ok(program) => {
+            assert length(program.functions) == 3
+            let primitive = get(program.functions, 2)
+            assert primitive.runtime_name == "text_len"
+            assert get(primitive.body.children, 0).kind == ExprKind.Intrinsic
+        }
+        Result.Err(_) => { assert false }
+    }
+    let invalid = new[SourceFile]()
+    push(invalid, source_file("std.list", "intrinsic fn list_get[T](values List[T], index Int) Int\n", true))
+    match checked(invalid) {
+        Result.Err(failure) => { assert failure.diagnostic.message == "intrinsic declaration does not match its runtime signature" }
+        Result.Ok(_) => { assert false }
+    }
+    let unknown = new[SourceFile]()
+    push(unknown, source_file("std.list", "intrinsic fn unknown() Int\n", true))
+    match checked(unknown) {
+        Result.Err(failure) => { assert failure.diagnostic.message == "unknown private runtime intrinsic" }
+        Result.Ok(_) => { assert false }
+    }
+}
+
+test fn required_postconditions_have_no_runtime_fallback() {
+    let program = accepted("pub fn identity(x Int) Int ensures result == x { x }\npub fn next(x Int) Int ensures result > x { x + 1 }\npub fn abs(x Int) Int ensures result >= 0 { if x >= 0 { x } else { -x } }")
+    assert length(program.functions) == 3
+    let identity = get(program.functions, 0)
+    assert identity.result_local >= 0
+    assert get(identity.locals, identity.result_local).name == "result"
+    assert length(identity.postconditions) == 1
+    rejects("fn wrong(x Int) Int ensures result > x { x }")
+    rejects("fn unknown(x Int) Int ensures result >= 0 { x * x }")
+    rejects("fn hidden(x Int) Int { x }\nfn unverifiable(x Int) Int ensures result == x { hidden(x) }")
+    rejects("fn effect() Bool { true }\nfn invalid() requires effect() {}")
+    rejects("fn f(result Int) Int { result }")
+}

@@ -1,0 +1,116 @@
+import frontend.loading.load
+import frontend.binding.bind
+import frontend.binding.Failure
+import frontend.binding.SourceFile
+import frontend.checking.check
+import frontend.artifact.encode
+import frontend.typed.Program
+import frontend.source.render
+import std.int.to_text
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.process.run
+import std.process.run_input
+import std.result.Result
+import std.text.concat
+import std.text.byte
+import std.text.length
+
+record Options {
+    command Text path Text std_root Text output Text ir Text native_tool Text
+}
+
+fn options(args List[Text]) Result[Options, Text] {
+    let command = get(args, 1)
+    var path = "."
+    var selected = false
+    var standard = "compiler/std"
+    var output = ""
+    var ir = ""
+    var tool = "target/debug/loom-native"
+    var index = 2
+    while index < length(args) {
+        let arg = get(args, index)
+        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" {
+            index = index + 1
+            if index == length(args) { return Result.Err(concat(arg, " needs a value")) }
+            let value = get(args, index)
+            if arg == "--std" { standard = value }
+            if arg == "--native-tool" { tool = value }
+            if arg == "--output" || arg == "-o" {
+                if output != "" { return Result.Err("duplicate --output") }
+                output = value
+            }
+            if arg == "--emit-ir" {
+                if ir != "" { return Result.Err("duplicate --emit-ir") }
+                ir = value
+            }
+        } else {
+            if length(arg) > 0 && byte(arg, 0) == 45 { return Result.Err(concat("unknown option ", arg)) }
+            if selected { return Result.Err("select one package directory") }
+            selected = true
+            path = arg
+        }
+        index = index + 1
+    }
+    if command != "build" && output != "" { return Result.Err("--output is only available with build") }
+    if command == "check" && ir != "" { return Result.Err("check does not emit LLVM IR") }
+    Result.Ok(Options { command = command path = path std_root = standard output = output ir = ir native_tool = tool })
+}
+fn diagnostic(files List[SourceFile], failure Failure) Text {
+    let source = get(files, failure.source)
+    render(source.path, source.text, failure.diagnostic)
+}
+fn prepared(options Options) Result[Program, Text] {
+    let loaded = load(options.path, options.std_root, options.command == "test")?
+    let bound = match bind(loaded.files, loaded.root, options.command == "test") {
+        Result.Ok(value) => value
+        Result.Err(failure) => { return Result.Err(diagnostic(loaded.files, failure)) }
+    }
+    match check(bound) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(failure) => Result.Err(diagnostic(loaded.files, failure))
+    }
+}
+fn child_status(arguments List[Text]) Result[Int, Text] {
+    match run(arguments) {
+        Result.Ok(code) => Result.Ok(code)
+        Result.Err(_) => Result.Err("cannot run native program")
+    }
+}
+fn compile(options Options, program Program, output Text) Result[Bool, Text] {
+    let arguments = new[Text]()
+    push(arguments, options.native_tool)
+    push(arguments, "-")
+    push(arguments, "--output")
+    push(arguments, output)
+    if options.command == "test" { push(arguments, "--test") }
+    if options.ir != "" { push(arguments, "--emit-ir")
+        push(arguments, options.ir) }
+    let status = match run_input(arguments, encode(program)) {
+        Result.Ok(code) => code
+        Result.Err(_) => { return Result.Err("cannot invoke the native LLVM tool") }
+    }
+    if status != 0 { return Result.Err("native LLVM compilation failed") }
+    Result.Ok(true)
+}
+fn execute(args List[Text]) Result[Text, Text] {
+    let selected = options(args)?
+    let program = prepared(selected)?
+    if selected.command == "check" { return Result.Ok("checked package\n") }
+    if selected.command == "run" && program.entry < 0 { return Result.Err("run requires fn main() in the selected package") }
+    if selected.command == "test" && length(program.tests) == 0 { return Result.Ok("0 tests\n") }
+    let filename = if selected.command == "test" { "tests" } else {
+        if program.entry < 0 { "package.o" } else { "main" }
+    }
+    let output = if selected.output != "" { selected.output } else { concat(selected.path, concat("/target/", filename)) }
+    discard compile(selected, program, output)?
+    if selected.command == "build" { return Result.Ok(concat("built ", concat(output, "\n"))) }
+    let arguments = new[Text]()
+    push(arguments, output)
+    if child_status(arguments)? != 0 { return Result.Err("native program failed") }
+    if selected.command == "test" { return Result.Ok(concat(to_text(length(program.tests)), " tests passed\n")) }
+    Result.Ok("")
+}

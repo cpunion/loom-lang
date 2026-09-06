@@ -1,6 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
+use loom_seed::native_tool::{
+    link, output_identity, prepare_parent, publish, reject_source_output,
+};
 use loom_seed::{check, native, package};
 
 fn main() -> ExitCode {
@@ -86,10 +89,15 @@ fn execute() -> Result<ExitCode, String> {
     } else {
         temporary.path().join("program")
     };
-    reject_source_output(&artifact, &loaded.sources)?;
+    let inputs = loaded
+        .sources
+        .iter()
+        .map(|source| source.path.clone())
+        .collect::<Vec<_>>();
+    reject_source_output(&artifact, &inputs)?;
     prepare_parent(&artifact)?;
     if let Some(ir) = &ir {
-        reject_source_output(ir, &loaded.sources)?;
+        reject_source_output(ir, &inputs)?;
         prepare_parent(ir)?;
         if output_identity(ir)? == output_identity(&artifact)? {
             return Err("LLVM IR and native output paths must differ".into());
@@ -105,11 +113,11 @@ fn execute() -> Result<ExitCode, String> {
     let executable = temporary.path().join("program");
     if command == "build" {
         if !library {
-            link(&object, &executable, uses_runtime)?;
+            link(&object, &executable, uses_runtime, None, None)?;
         }
         publish(if library { &object } else { &executable }, &artifact)?;
     } else {
-        link(&object, &artifact, uses_runtime)?;
+        link(&object, &artifact, uses_runtime, None, None)?;
     }
     if let (Some(from), Some(to)) = (&temporary_ir, &ir) {
         publish(from, to)?;
@@ -134,97 +142,4 @@ fn help() {
     println!(
         "Loom native compiler\n\n  loom check [directory]\n  loom build [directory] [--output path] [--emit-ir path]\n  loom test  [directory] [--emit-ir path]\n  loom run   [directory] [--emit-ir path]\n\nSee compiler/README.md for the supported subset. build emits a library object\nwhen the selected package has no main. LOOM_CC selects the host Clang linker."
     );
-}
-
-fn link(object: &Path, output: &Path, uses_runtime: bool) -> Result<(), String> {
-    let linker = std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into());
-    let mut command = Command::new(&linker);
-    command.arg(object);
-    if uses_runtime {
-        let runtime = std::env::var_os("LOOM_RUNTIME_LIBRARY")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::current_exe()
-                    .unwrap_or_default()
-                    .with_file_name("libloom_seed_runtime.a")
-            });
-        if !runtime.is_file() {
-            return Err(format!(
-                "missing native runtime {}: run cargo build --workspace or set LOOM_RUNTIME_LIBRARY",
-                runtime.display()
-            ));
-        }
-        command.arg(runtime);
-        if cfg!(target_os = "linux") {
-            command.args(["-ldl", "-lpthread", "-lm"]);
-        }
-    }
-    let result = command
-        .arg("-o")
-        .arg(output)
-        .output()
-        .map_err(|error| format!("cannot start host linker: {error}"))?;
-    if result.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "host linker failed: {}",
-            String::from_utf8_lossy(&result.stderr).trim()
-        ))
-    }
-}
-
-fn prepare_parent(path: &Path) -> Result<(), String> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("{}: {error}", parent.display()))?;
-    }
-    Ok(())
-}
-
-fn output_identity(path: &Path) -> Result<PathBuf, String> {
-    let absolute = std::path::absolute(path).map_err(|error| error.to_string())?;
-    let parent = absolute.parent().ok_or("output needs a parent directory")?;
-    Ok(parent
-        .canonicalize()
-        .map_err(|error| error.to_string())?
-        .join(absolute.file_name().ok_or("output needs a file name")?))
-}
-
-fn publish(from: &Path, to: &Path) -> Result<(), String> {
-    // Replace a directory entry only after successful emission/linking. Copying
-    // directly into a user-selected path would also modify hard-linked inputs.
-    let destination = output_identity(to)?;
-    let staging = tempfile::NamedTempFile::new_in(destination.parent().unwrap())
-        .map_err(|error| error.to_string())?;
-    std::fs::copy(from, staging.path()).map_err(|error| error.to_string())?;
-    staging
-        .persist(destination)
-        .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn reject_source_output(path: &Path, sources: &[loom_seed::model::Source]) -> Result<(), String> {
-    // Catch source/manifest overwrites and existing aliases before invoking LLVM/linker.
-    if path.is_symlink() {
-        return Err("native output paths cannot be symbolic links".into());
-    }
-    if path
-        .extension()
-        .is_some_and(|extension| extension == "loom" || extension == "toml" || extension == "lock")
-    {
-        return Err("native outputs cannot overwrite source, manifests, or lockfiles".into());
-    }
-    if let Ok(canonical) = path.canonicalize() {
-        if sources
-            .iter()
-            .any(|source| source.path.canonicalize().ok().as_ref() == Some(&canonical))
-        {
-            return Err("native output aliases a source file".into());
-        }
-    }
-    Ok(())
 }

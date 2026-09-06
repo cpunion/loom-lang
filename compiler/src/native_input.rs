@@ -1,0 +1,725 @@
+//! Decode the source compiler's private checked-IR stream for LLVM lowering.
+//! This boundary checks encoding, references and finite layouts, never source
+//! names, overloads, contracts or proof. Schema: loom/artifact/artifact.loom.
+
+use crate::model::{Binary, Primitive, Span, Type, Unary, checked as c};
+
+type Result<T> = std::result::Result<T, String>;
+
+struct Reader<'a> {
+    text: &'a str,
+    offset: usize,
+}
+
+impl Reader<'_> {
+    fn integer(&mut self) -> Result<i64> {
+        let end = self.text[self.offset..]
+            .find('\n')
+            .map(|end| self.offset + end)
+            .ok_or("truncated checked-IR integer")?;
+        let value = self.text[self.offset..end]
+            .parse()
+            .map_err(|_| "invalid checked-IR integer")?;
+        self.offset = end + 1;
+        Ok(value)
+    }
+
+    fn index(&mut self) -> Result<usize> {
+        index(self.integer()?)
+    }
+
+    fn string(&mut self) -> Result<String> {
+        let len = self.index()?;
+        let end = self.offset.checked_add(len).ok_or("text length overflow")?;
+        let value = self
+            .text
+            .get(self.offset..end)
+            .ok_or("truncated or invalid UTF-8 field")?
+            .to_owned();
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn sequence<T>(&mut self, mut item: impl FnMut(&mut Self) -> Result<T>) -> Result<Vec<T>> {
+        let count = self.index()?;
+        if count > self.text.len() - self.offset {
+            return Err("truncated checked-IR sequence".into());
+        }
+        (0..count).map(|_| item(self)).collect()
+    }
+
+    fn span(&mut self) -> Result<Span> {
+        let start = self.index()?;
+        let end = self.index()?;
+        if start > end {
+            return Err("reversed checked-IR span".into());
+        }
+        Ok(Span {
+            source: 0,
+            start,
+            end,
+        })
+    }
+
+    fn expression(&mut self, depth: usize) -> Result<Expr> {
+        if depth > 512 {
+            return Err("checked-IR nesting exceeds the native bridge limit".into());
+        }
+        let tag = self.index()?;
+        let ty = self.index()?;
+        let span = self.span()?;
+        let text = self.string()?;
+        let index = self.integer()?;
+        let falls = match self.integer()? {
+            0 => false,
+            1 => true,
+            _ => return Err("invalid checked-IR fallthrough flag".into()),
+        };
+        let children = self.sequence(|reader| reader.expression(depth + 1))?;
+        let arms = self.sequence(|reader| {
+            Ok(Arm {
+                variant: optional(reader.integer()?)?,
+                bindings: reader.sequence(|reader| optional(reader.integer()?))?,
+                whole: optional(reader.integer()?)?,
+                body: reader.sequence(|reader| reader.expression(depth + 1))?,
+            })
+        })?;
+        Ok(Expr {
+            tag,
+            ty,
+            span,
+            text,
+            index,
+            falls,
+            children,
+            arms,
+        })
+    }
+}
+
+fn index(value: i64) -> Result<usize> {
+    usize::try_from(value).map_err(|_| "negative checked-IR index".into())
+}
+
+fn optional(value: i64) -> Result<Option<usize>> {
+    if value == -1 {
+        Ok(None)
+    } else {
+        index(value).map(Some)
+    }
+}
+
+fn at<T>(values: &[T], index: usize) -> Result<&T> {
+    values
+        .get(index)
+        .ok_or_else(|| "checked-IR reference is out of bounds".into())
+}
+
+struct Data {
+    tag: usize,
+    symbol: i64,
+    element: usize,
+    fields: Vec<(String, usize)>,
+    variants: Vec<(String, Vec<usize>)>,
+}
+
+struct Function {
+    symbol: i64,
+    span: Span,
+    params: Vec<usize>,
+    result: usize,
+    locals: Vec<usize>,
+    preconditions: Vec<Expr>,
+    body: Expr,
+}
+
+struct Expr {
+    tag: usize,
+    ty: usize,
+    span: Span,
+    text: String,
+    index: i64,
+    falls: bool,
+    children: Vec<Expr>,
+    arms: Vec<Arm>,
+}
+
+struct Arm {
+    variant: Option<usize>,
+    bindings: Vec<Option<usize>>,
+    whole: Option<usize>,
+    body: Vec<Expr>,
+}
+
+/// Consume exactly one checked program, rejecting trailing or malformed input.
+pub fn decode(text: &str) -> Result<c::Program> {
+    let text = text
+        .strip_prefix("loom-checked-1\n")
+        .ok_or("expected loom-checked-1 header")?;
+    let mut reader = Reader { text, offset: 0 };
+    let data = reader.sequence(|reader| {
+        let tag = reader.index()?;
+        let symbol = reader.integer()?;
+        let element = if tag == 6 || tag == 9 {
+            reader.index()?
+        } else {
+            0
+        };
+        let fields = if tag == 7 {
+            reader.sequence(|reader| Ok((reader.string()?, reader.index()?)))?
+        } else {
+            vec![]
+        };
+        let variants = if tag == 8 {
+            reader.sequence(|reader| Ok((reader.string()?, reader.sequence(Reader::index)?)))?
+        } else {
+            vec![]
+        };
+        Ok(Data {
+            tag,
+            symbol,
+            element,
+            fields,
+            variants,
+        })
+    })?;
+    let functions = reader.sequence(|reader| {
+        Ok(Function {
+            symbol: reader.integer()?,
+            span: reader.span()?,
+            params: reader.sequence(Reader::index)?,
+            result: reader.index()?,
+            locals: reader.sequence(Reader::index)?,
+            preconditions: reader.sequence(|reader| reader.expression(0))?,
+            body: reader.expression(0)?,
+        })
+    })?;
+    let entry = optional(reader.integer()?)?;
+    let tests = reader.sequence(Reader::index)?;
+    let exports = reader.sequence(Reader::index)?;
+    if reader.offset != text.len() {
+        return Err("trailing checked-IR input".into());
+    }
+    let mut program = c::Program {
+        types: vec![],
+        lists: vec![],
+        functions: vec![],
+        entry,
+        tests,
+        exports,
+    };
+    let mut types = Vec::new();
+    for (id, data) in data.iter().enumerate() {
+        types.push(match data.tag {
+            0 => Type::Unit,
+            1 => Type::Int,
+            2 => Type::Bool,
+            3 => Type::Text,
+            4 => Type::Bytes,
+            5 => Type::Parameter(index(data.symbol)?),
+            6 => {
+                let id = program.lists.len();
+                program.lists.push(Type::Unit);
+                Type::List(id)
+            }
+            7..=9 => {
+                let target = program.types.len();
+                program.types.push(c::Data {
+                    name: format!("source.type.{}.{id}", data.symbol),
+                    kind: c::DataKind::Record(vec![]),
+                });
+                Type::Data(target)
+            }
+            _ => return Err("unknown checked-IR type tag".into()),
+        });
+    }
+    let map = |id| at(&types, id).copied();
+    for (data, mapped) in data.iter().zip(&types) {
+        match *mapped {
+            Type::List(id) => program.lists[id] = map(data.element)?,
+            Type::Data(id) => {
+                program.types[id].kind = match data.tag {
+                    7 => c::DataKind::Record(
+                        data.fields
+                            .iter()
+                            .map(|(name, ty)| Ok((name.clone(), map(*ty)?)))
+                            .collect::<Result<_>>()?,
+                    ),
+                    8 => c::DataKind::Enum(
+                        data.variants
+                            .iter()
+                            .map(|(name, fields)| {
+                                Ok((
+                                    name.clone(),
+                                    fields.iter().map(|ty| map(*ty)).collect::<Result<_>>()?,
+                                ))
+                            })
+                            .collect::<Result<_>>()?,
+                    ),
+                    9 => c::DataKind::Refined(map(data.element)?),
+                    _ => unreachable!(),
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut state = vec![0; program.types.len()];
+    for id in 0..program.types.len() {
+        layout(&program, Type::Data(id), &mut state)?;
+    }
+    for (id, source) in functions.iter().enumerate() {
+        let converter = Converter {
+            program: &program,
+            types: &types,
+            functions: &functions,
+            source,
+        };
+        let params = source
+            .params
+            .iter()
+            .map(|ty| map(*ty))
+            .collect::<Result<Vec<_>>>()?;
+        let locals = source
+            .locals
+            .iter()
+            .map(|ty| map(*ty))
+            .collect::<Result<Vec<_>>>()?;
+        if !locals.starts_with(&params) {
+            return Err("checked parameters must occupy leading local slots".into());
+        }
+        let requires = source
+            .preconditions
+            .iter()
+            .map(|expr| {
+                if map(expr.ty)? != Type::Bool {
+                    return Err("precondition must be a Bool value".into());
+                }
+                converter.expr(expr)
+            })
+            .collect::<Result<_>>()?;
+        let body = converter.block(&source.body)?;
+        program.functions.push(c::Function {
+            name: format!("source.fn.{}.{id}", source.symbol),
+            params,
+            result: map(source.result)?,
+            locals,
+            requires,
+            body,
+            span: source.span,
+        });
+    }
+    for root in program
+        .entry
+        .iter()
+        .chain(&program.tests)
+        .chain(&program.exports)
+    {
+        at(&program.functions, *root)?;
+    }
+    Ok(program)
+}
+
+fn layout(program: &c::Program, ty: Type, state: &mut [u8]) -> Result<()> {
+    let Type::Data(id) = ty else { return Ok(()) };
+    if state[id] == 2 {
+        return Ok(());
+    }
+    if state[id] == 1 {
+        return Err("recursive by-value checked-IR layout".into());
+    }
+    state[id] = 1;
+    match &program.types[id].kind {
+        c::DataKind::Record(fields) => {
+            for (_, ty) in fields {
+                layout(program, *ty, state)?;
+            }
+        }
+        c::DataKind::Enum(variants) => {
+            for (_, fields) in variants {
+                for ty in fields {
+                    layout(program, *ty, state)?;
+                }
+            }
+        }
+        c::DataKind::Refined(base) => {
+            if *base != Type::Int {
+                return Err("native refined layout must have an Int base".into());
+            }
+        }
+    }
+    state[id] = 2;
+    Ok(())
+}
+
+struct Converter<'a> {
+    program: &'a c::Program,
+    types: &'a [Type],
+    functions: &'a [Function],
+    source: &'a Function,
+}
+
+impl Converter<'_> {
+    fn ty(&self, id: usize) -> Result<Type> {
+        at(self.types, id).copied()
+    }
+
+    fn local(&self, id: i64) -> Result<usize> {
+        let id = index(id)?;
+        at(&self.source.locals, id)?;
+        Ok(id)
+    }
+
+    fn child<'a>(&self, node: &'a Expr, id: usize, count: usize) -> Result<&'a Expr> {
+        if node.children.len() != count {
+            return Err("wrong checked-IR node arity".into());
+        }
+        at(&node.children, id)
+    }
+
+    fn record(&self, ty: Type) -> Result<&[(String, Type)]> {
+        if let Type::Data(id) = ty
+            && let c::DataKind::Record(fields) = &self.program.types[id].kind
+        {
+            return Ok(fields);
+        }
+        Err("checked field requires a record layout".into())
+    }
+
+    fn variant(&self, ty: Type, variant: usize) -> Result<&[Type]> {
+        if let Type::Data(id) = ty
+            && let c::DataKind::Enum(variants) = &self.program.types[id].kind
+        {
+            return Ok(&at(variants, variant)?.1);
+        }
+        Err("checked variant requires an enum layout".into())
+    }
+
+    fn block(&self, node: &Expr) -> Result<c::Block> {
+        if node.tag != 11 {
+            return Err("expected a checked block".into());
+        }
+        let mut statements = Vec::new();
+        let mut tail = None;
+        for (index, child) in node.children.iter().enumerate() {
+            if index + 1 == node.children.len() && !(12..=17).contains(&child.tag) {
+                tail = Some(Box::new(self.expr(child)?));
+            } else {
+                statements.push(self.statement(child)?);
+            }
+        }
+        Ok(c::Block {
+            statements,
+            tail,
+            falls_through: node.falls,
+        })
+    }
+
+    fn statement(&self, node: &Expr) -> Result<c::Stmt> {
+        use c::StmtKind as S;
+        let kind = match node.tag {
+            12 | 13 => {
+                let local = self.local(node.index)?;
+                let value = self.expr(self.child(node, 0, 1)?)?;
+                if value.ty != self.ty(self.source.locals[local])? {
+                    return Err("checked local storage type mismatch".into());
+                }
+                if node.tag == 12 {
+                    S::Let { local, value }
+                } else {
+                    S::Assign { local, value }
+                }
+            }
+            14 => {
+                if node.children.len() > 1 {
+                    return Err("return accepts at most one checked value".into());
+                }
+                S::Return(
+                    node.children
+                        .first()
+                        .map(|value| self.expr(value))
+                        .transpose()?,
+                )
+            }
+            15 => S::Assert(self.expr(self.child(node, 0, 1)?)?),
+            16 => S::Discard(self.expr(self.child(node, 0, 1)?)?),
+            17 => S::While {
+                condition: self.expr(self.child(node, 0, 2)?)?,
+                body: self.block(self.child(node, 1, 2)?)?,
+            },
+            _ => S::Expr(self.expr(node)?),
+        };
+        Ok(c::Stmt {
+            kind,
+            span: node.span,
+        })
+    }
+
+    fn expr(&self, node: &Expr) -> Result<c::Expr> {
+        use c::ExprKind as E;
+        let ty = self.ty(node.ty)?;
+        if node.tag != 19 && !node.arms.is_empty() {
+            return Err("only match nodes have checked arms".into());
+        }
+        let kind = match node.tag {
+            0 => E::Int(
+                node.text
+                    .parse()
+                    .map_err(|_| "invalid checked Int literal")?,
+            ),
+            1 => E::Bool(match node.text.as_str() {
+                "true" => true,
+                "false" => false,
+                _ => return Err("invalid checked Bool literal".into()),
+            }),
+            2 => E::Text(node.text.clone()),
+            3 => E::Local(self.local(node.index)?),
+            4 => E::Unary(
+                match node.text.as_str() {
+                    "-" => Unary::Neg,
+                    "!" => Unary::Not,
+                    _ => return Err("unknown checked unary operation".into()),
+                },
+                Box::new(self.expr(self.child(node, 0, 1)?)?),
+            ),
+            5 => E::Binary(
+                binary(&node.text)?,
+                Box::new(self.expr(self.child(node, 0, 2)?)?),
+                Box::new(self.expr(self.child(node, 1, 2)?)?),
+            ),
+            6 => {
+                let id = index(node.index)?;
+                let function = at(self.functions, id)?;
+                if function.params.len() != node.children.len() {
+                    return Err("checked call arity mismatch".into());
+                }
+                E::Call(
+                    id,
+                    node.children
+                        .iter()
+                        .map(|child| self.expr(child))
+                        .collect::<Result<_>>()?,
+                )
+            }
+            7 => {
+                let operation = primitive(&node.text)?;
+                if node.children.len() != primitive_arity(operation) {
+                    return Err("checked runtime operation arity mismatch".into());
+                }
+                E::Primitive(
+                    operation,
+                    node.children
+                        .iter()
+                        .map(|child| self.expr(child))
+                        .collect::<Result<_>>()?,
+                )
+            }
+            8 => {
+                let fields = self.record(ty)?;
+                if fields.len() != node.children.len() {
+                    return Err("checked record initializer count mismatch".into());
+                }
+                let mut seen = vec![false; fields.len()];
+                let mut values = Vec::new();
+                for field in &node.children {
+                    if field.tag != 9 {
+                        return Err("record children must be indexed field wrappers".into());
+                    }
+                    let id = index(field.index)?;
+                    at(fields, id)?;
+                    if seen[id] {
+                        return Err("duplicate checked record field".into());
+                    }
+                    seen[id] = true;
+                    values.push((id, self.expr(self.child(field, 0, 1)?)?));
+                }
+                E::Record(values)
+            }
+            9 => {
+                let value = self.expr(self.child(node, 0, 1)?)?;
+                let id = index(node.index)?;
+                at(self.record(value.ty)?, id)?;
+                E::Field(Box::new(value), id)
+            }
+            10 => {
+                let variant = index(node.index)?;
+                if self.variant(ty, variant)?.len() != node.children.len() {
+                    return Err("checked variant payload count mismatch".into());
+                }
+                E::Variant {
+                    variant,
+                    fields: node
+                        .children
+                        .iter()
+                        .map(|child| self.expr(child))
+                        .collect::<Result<_>>()?,
+                }
+            }
+            11 => E::Block(self.block(node)?),
+            18 => {
+                if !(2..=3).contains(&node.children.len()) {
+                    return Err("checked if needs two or three children".into());
+                }
+                E::If {
+                    condition: Box::new(self.expr(&node.children[0])?),
+                    then_body: self.block(&node.children[1])?,
+                    else_body: node
+                        .children
+                        .get(2)
+                        .map(|body| self.block(body))
+                        .transpose()?,
+                }
+            }
+            19 => {
+                let value = self.expr(self.child(node, 0, 1)?)?;
+                let mut arms = Vec::new();
+                for arm in &node.arms {
+                    if let Some(variant) = arm.variant
+                        && self.variant(value.ty, variant)?.len() != arm.bindings.len()
+                    {
+                        return Err("checked match binding count mismatch".into());
+                    }
+                    for local in arm.bindings.iter().chain([&arm.whole]).flatten() {
+                        at(&self.source.locals, *local)?;
+                    }
+                    if arm.body.len() != 1 {
+                        return Err("checked match arm needs one block".into());
+                    }
+                    arms.push(c::MatchArm {
+                        variant: arm.variant,
+                        bindings: arm.bindings.clone(),
+                        whole: arm.whole,
+                        body: self.block(&arm.body[0])?,
+                    });
+                }
+                E::Match {
+                    value: Box::new(value),
+                    arms,
+                }
+            }
+            20 => E::Coerce(Box::new(self.expr(self.child(node, 0, 1)?)?)),
+            _ => return Err("unknown or misplaced checked expression tag".into()),
+        };
+        Ok(c::Expr {
+            kind,
+            ty,
+            span: node.span,
+        })
+    }
+}
+
+fn binary(value: &str) -> Result<Binary> {
+    use Binary as B;
+    Ok(match value {
+        "+" => B::Add,
+        "-" => B::Sub,
+        "*" => B::Mul,
+        "/" => B::Div,
+        "%" => B::Rem,
+        "==" => B::Eq,
+        "!=" => B::Ne,
+        "<" => B::Lt,
+        "<=" => B::Le,
+        ">" => B::Gt,
+        ">=" => B::Ge,
+        "&&" => B::And,
+        "||" => B::Or,
+        _ => return Err("unknown checked binary operation".into()),
+    })
+}
+
+fn primitive(value: &str) -> Result<Primitive> {
+    use Primitive as P;
+    Ok(match value {
+        "text_len" => P::TextLen,
+        "text_byte" => P::TextByte,
+        "text_concat" => P::TextConcat,
+        "text_equal" => P::TextEqual,
+        "text_slice" => P::TextSlice,
+        "unicode_alphabetic" => P::UnicodeAlphabetic,
+        "unicode_alphanumeric" => P::UnicodeAlphanumeric,
+        "unicode_whitespace" => P::UnicodeWhitespace,
+        "arg_count" => P::ArgCount,
+        "arg_text" => P::ArgText,
+        "exit" => P::Exit,
+        "process_run" => P::ProcessRun,
+        "process_run_input" => P::ProcessRunInput,
+        "bytes_new" => P::BytesNew,
+        "bytes_len" => P::BytesLen,
+        "bytes_push" => P::BytesPush,
+        "bytes_utf8" => P::BytesUtf8,
+        "bytes_text_copy" => P::BytesTextCopy,
+        "list_new" => P::ListNew,
+        "list_len" => P::ListLen,
+        "list_get" => P::ListGet,
+        "list_push" => P::ListPush,
+        "list_set" => P::ListSet,
+        "open" => P::Open,
+        "create" => P::Create,
+        "read" => P::Read,
+        "write" => P::Write,
+        "close" => P::Close,
+        "directory_read" => P::DirectoryRead,
+        "path_kind" => P::PathKind,
+        "path_canonical" => P::PathCanonical,
+        _ => return Err("unknown private checked runtime operation".into()),
+    })
+}
+
+fn primitive_arity(operation: Primitive) -> usize {
+    use Primitive as P;
+    match operation {
+        P::ArgCount | P::BytesNew | P::ListNew => 0,
+        P::TextLen
+        | P::UnicodeAlphabetic
+        | P::UnicodeAlphanumeric
+        | P::UnicodeWhitespace
+        | P::ArgText
+        | P::Exit
+        | P::ProcessRun
+        | P::BytesLen
+        | P::BytesUtf8
+        | P::BytesTextCopy
+        | P::ListLen
+        | P::Open
+        | P::Create
+        | P::Close
+        | P::PathKind => 1,
+        P::TextByte
+        | P::TextConcat
+        | P::TextEqual
+        | P::ProcessRunInput
+        | P::BytesPush
+        | P::ListGet
+        | P::ListPush
+        | P::DirectoryRead
+        | P::PathCanonical => 2,
+        P::TextSlice | P::ListSet | P::Read | P::Write => 3,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_stream_is_counted_and_exact() {
+        let empty = "loom-checked-1\n0\n0\n-1\n0\n0\n";
+        assert!(decode(empty).unwrap().functions.is_empty());
+        assert!(decode(&format!("{empty}extra")).is_err());
+        assert!(decode("loom source is not a checked artifact").is_err());
+        assert!(decode("loom-checked-1\n100\n").is_err());
+        let mut reader = Reader {
+            text: "4\né\n\0",
+            offset: 0,
+        };
+        assert_eq!(reader.string().unwrap(), "é\n\0");
+    }
+
+    #[test]
+    fn invalid_references_and_by_value_cycles_reject_before_llvm() {
+        let cycle = "loom-checked-1\n1\n7\n1\n1\n4\nnext0\n0\n-1\n0\n0\n";
+        assert!(decode(cycle).unwrap_err().contains("recursive by-value"));
+        let invalid = "loom-checked-1\n1\n9\n0\n8\n0\n-1\n0\n0\n";
+        assert!(decode(invalid).unwrap_err().contains("out of bounds"));
+    }
+}

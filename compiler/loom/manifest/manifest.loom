@@ -1,0 +1,189 @@
+import std.result.Result
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+import std.text.byte
+import std.text.length
+import std.text.slice
+import std.text.concat
+import std.text.from_codepoint
+
+pub record Module { name Text version Text }
+
+pub fn segment(value Text) Bool {
+    if length(value) == 0 || byte(value, 0) < 97 || byte(value, 0) > 122 { return false }
+    var index = 0
+    while index < length(value) {
+        let current = byte(value, index)
+        if !((current >= 97 && current <= 122) || (current >= 48 && current <= 57) || current == 95) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+fn space(value Int) Bool { value == 32 || value == 9 || value == 13 }
+fn trim(value Text) Text {
+    var start = 0
+    var end = length(value)
+    while start < end && space(byte(value, start)) { start = start + 1 }
+    while end > start && space(byte(value, end - 1)) { end = end - 1 }
+    slice(value, start, end)
+}
+fn uncomment(value Text) Text {
+    var index = 0
+    var quote = 0
+    var escaped = false
+    while index < length(value) {
+        let current = byte(value, index)
+        if escaped { escaped = false } else {
+            if quote == 34 && current == 92 { escaped = true } else {
+                if current == quote { quote = 0 } else {
+                    if quote == 0 {
+                        if current == 35 { return trim(slice(value, 0, index)) }
+                        if current == 34 || current == 39 { quote = current }
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    trim(value)
+}
+fn contains(values List[Text], value Text) Bool {
+    var index = 0
+    while index < length(values) {
+        if get(values, index) == value { return true }
+        index = index + 1
+    }
+    false
+}
+fn hex(value Int) Int {
+    if value >= 48 && value <= 57 { return value - 48 }
+    if value >= 65 && value <= 70 { return value - 55 }
+    if value >= 97 && value <= 102 { return value - 87 }
+    -1
+}
+fn quoted(value Text) Result[Text, Text] {
+    let end = length(value) - 1
+    if end < 1 { return Result.Err("expected a quoted manifest string") }
+    let quote = byte(value, 0)
+    if (quote != 34 && quote != 39) || byte(value, end) != quote {
+        return Result.Err("expected a quoted manifest string")
+    }
+    let buffer = std.bytes.new()
+    var index = 1
+    while index < end {
+        var current = byte(value, index)
+        index = index + 1
+        if current == quote || (current < 32 && current != 9) {
+            return Result.Err("unsupported multiline or malformed manifest string")
+        }
+        if current == 92 && quote == 34 {
+            if index == end { return Result.Err("unterminated manifest escape") }
+            current = byte(value, index)
+            index = index + 1
+            if current == 117 || current == 85 {
+                let count = if current == 117 { 4 } else { 8 }
+                if index + count > end { return Result.Err("invalid manifest Unicode escape") }
+                var scalar = 0
+                var digit = 0
+                while digit < count {
+                    let number = hex(byte(value, index + digit))
+                    if number < 0 { return Result.Err("invalid manifest Unicode escape") }
+                    scalar = scalar * 16 + number
+                    digit = digit + 1
+                }
+                if scalar > 1114111 || (scalar >= 55296 && scalar <= 57343) {
+                    return Result.Err("invalid manifest Unicode escape")
+                }
+                let decoded = from_codepoint(scalar)
+                var offset = 0
+                while offset < length(decoded) {
+                    std.bytes.push(buffer, byte(decoded, offset))
+                    offset = offset + 1
+                }
+                index = index + count
+            } else {
+                if current == 98 { current = 8 } else {
+                    if current == 102 { current = 12 } else {
+                        if current == 110 { current = 10 } else {
+                            if current == 114 { current = 13 } else {
+                                if current == 116 { current = 9 } else {
+                                    if current != 34 && current != 92 { return Result.Err("invalid manifest escape") }
+                                }
+                            }
+                        }
+                    }
+                }
+                std.bytes.push(buffer, current)
+            }
+        } else { std.bytes.push(buffer, current) }
+    }
+    Result.Ok(to_text(buffer))
+}
+
+// This bootstrap subset is explicit: simple tables, bare keys, integers and
+// single-line quoted strings. Arrays, dotted keys and inline modules reject.
+pub fn parse(text Text) Result[Module, Text] {
+    var offset = 0
+    var section = ""
+    var name = ""
+    var version = ""
+    let seen = std.list.new[Text]()
+    while offset < length(text) {
+        let start = offset
+        while offset < length(text) && byte(text, offset) != 10 { offset = offset + 1 }
+        let line = uncomment(slice(text, start, offset))
+        if offset < length(text) { offset = offset + 1 }
+        if length(line) > 0 {
+            if byte(line, 0) == 91 {
+                if line != "[module]" && line != "[dependencies]" {
+                    return Result.Err("unsupported manifest table or TOML syntax")
+                }
+                if contains(seen, line) { return Result.Err("duplicate manifest table") }
+                push(seen, line)
+                section = if line == "[module]" { "module" } else { "dependencies" }
+            } else {
+                var equal = 0
+                while equal < length(line) && byte(line, equal) != 61 { equal = equal + 1 }
+                if equal == length(line) { return Result.Err("expected a manifest key = value") }
+                let key = trim(slice(line, 0, equal))
+                let value = trim(slice(line, equal + 1, length(line)))
+                let full = concat(section, concat(".", key))
+                if contains(seen, full) { return Result.Err("duplicate manifest key") }
+                push(seen, full)
+                if section == "" {
+                    if key == "schema" {
+                        if value != "2" { return Result.Err("expected manifest schema 2") }
+                    } else {
+                        if key == "language" {
+                            if quoted(value)? != "0.4" { return Result.Err("expected manifest language 0.4") }
+                        } else {
+                            if key == "dependencies" && value == "{}" {
+                                if contains(seen, "[dependencies]") { return Result.Err("duplicate manifest table") }
+                                push(seen, "[dependencies]")
+                            } else { return Result.Err("unsupported manifest field or TOML syntax") }
+                        }
+                    }
+                } else {
+                    if section == "dependencies" { return Result.Err("dependency resolution is not implemented") }
+                    if key == "name" { name = quoted(value)? } else {
+                        if key == "version" { version = quoted(value)? } else {
+                            return Result.Err("unsupported module manifest field")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !contains(seen, "[module]") { return Result.Err("missing [module]") }
+    if !segment(name) || name == "std" {
+        return Result.Err("module.name must be a lowercase package identifier other than std")
+    }
+    Result.Ok(Module { name = name version = version })
+}

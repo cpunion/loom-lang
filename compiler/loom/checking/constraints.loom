@@ -1,0 +1,185 @@
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import frontend.typed.Expr
+import frontend.typed.ExprKind
+import frontend.typed.Local
+import frontend.typed.TypeKind
+import frontend.typed.Arm
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+import std.text.byte
+import std.text.length
+
+enum Constant { Number(Int) Flag(Bool) Unknown Fault }
+
+fn scalar_predicate(node Node, self_only Bool) Bool {
+    if node.kind == NodeKind.Integer || node.kind == NodeKind.Bool { return true }
+    if node.kind == NodeKind.Name { return package(node.value) == "" && (!self_only || node.value == "self") }
+    if node.kind != NodeKind.Unary && node.kind != NodeKind.Binary { return false }
+    var index = 0
+    while index < length(node.children) {
+        if !scalar_predicate(child(node, index), self_only) { return false }
+        index = index + 1
+    }
+    true
+}
+fn refinement(env Environment, owner Int, predicate Node) Result[Expr, Failure] {
+    if !scalar_predicate(predicate, true) { return Result.Err(failure(env, owner, predicate, "constraints require scalar expressions over self, without calls or external state")) }
+    let locals = new[Local]()
+    push(locals, Local { name = "self" ty = 1 mutable = false })
+    let bindings = new[Binding]()
+    push(bindings, Binding { local = 0 previous = -1 })
+    let context = Context { env = env signature = Signature { symbol = owner parameters = 0 params = ints(1) result = 1 }
+        arguments = new[Int]() locals = locals bindings = bindings head = 0 emit = false }
+    expr(context, predicate, 2)
+}
+fn integer(text Text) Int {
+    let negative = byte(text, 0) == 45
+    var index = if negative { 1 } else { 0 }
+    var value = 0
+    // Parser-validated spelling; negative accumulation includes Int's minimum.
+    while index < length(text) {
+        let digit = byte(text, index) - 48
+        value = value * 10 - digit
+        index = index + 1
+    }
+    if negative { value } else { -value }
+}
+fn arithmetic(operator Text, a Int, b Int) Constant {
+    if operator == "==" { return Constant.Flag(a == b) }
+    if operator == "!=" { return Constant.Flag(a != b) }
+    if operator == "<" { return Constant.Flag(a < b) }
+    if operator == "<=" { return Constant.Flag(a <= b) }
+    if operator == ">" { return Constant.Flag(a > b) }
+    if operator == ">=" { return Constant.Flag(a >= b) }
+    let low = -9223372036854775808
+    let high = 9223372036854775807
+    if operator == "+" {
+        if (b > 0 && a > high - b) || (b < 0 && a < low - b) { return Constant.Fault }
+        return Constant.Number(a + b)
+    }
+    if operator == "-" {
+        if (b < 0 && a > high + b) || (b > 0 && a < low + b) { return Constant.Fault }
+        return Constant.Number(a - b)
+    }
+    if operator == "*" {
+        if a > 0 {
+            if (b > 0 && a > high / b) || (b < 0 && b < low / a) { return Constant.Fault }
+        }
+        if a < 0 {
+            if (b > 0 && a < low / b) || (b < 0 && a < high / b) { return Constant.Fault }
+        }
+        return Constant.Number(a * b)
+    }
+    if operator == "/" || operator == "%" {
+        if b == 0 || (a == low && b == -1) { return Constant.Fault }
+        return Constant.Number(if operator == "/" { a / b } else { a % b })
+    }
+    Constant.Unknown
+}
+fn evaluate(value Expr, self_value Constant) Constant {
+    if value.kind == ExprKind.Integer { return Constant.Number(integer(value.text)) }
+    if value.kind == ExprKind.Bool { return Constant.Flag(value.text == "true") }
+    if value.kind == ExprKind.Local { return self_value }
+    if value.kind == ExprKind.Coerce { return evaluate(get(value.children, 0), self_value) }
+    if value.kind == ExprKind.Unary {
+        return match evaluate(get(value.children, 0), self_value) {
+            Constant.Number(number) => {
+                if number == -9223372036854775808 { Constant.Fault } else { Constant.Number(-number) }
+            }
+            Constant.Flag(flag) => Constant.Flag(!flag)
+            other => other
+        }
+    }
+    if value.kind != ExprKind.Binary { return Constant.Unknown }
+    let left = evaluate(get(value.children, 0), self_value)
+    match left {
+        Constant.Fault => { return Constant.Fault }
+        Constant.Flag(flag) => {
+            if value.text == "&&" && !flag { return Constant.Flag(false) }
+            if value.text == "||" && flag { return Constant.Flag(true) }
+        }
+        _ => {}
+    }
+    let right = evaluate(get(value.children, 1), self_value)
+    match left {
+        Constant.Number(a) => match right {
+            Constant.Number(b) => arithmetic(value.text, a, b)
+            _ => Constant.Unknown
+        }
+        Constant.Flag(a) => match right {
+            Constant.Flag(b) => {
+                if value.text == "==" { Constant.Flag(a == b) } else {
+                    if value.text == "!=" { Constant.Flag(a != b) } else { Constant.Flag(b) }
+                }
+            }
+            other => other
+        }
+        _ => Constant.Unknown
+    }
+}
+fn relocate_self(value Expr, local Int) Expr {
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, relocate_self(get(value.children, index), local))
+        index = index + 1
+    }
+    Expr { kind = value.kind ty = value.ty span = value.span text = value.text index = if value.kind == ExprKind.Local { local } else { value.index }
+        children = children arms = value.arms falls = value.falls }
+}
+fn constraint_error(context Context, node Node) Result[Int, Failure] {
+    var declaration = -1
+    var index = 0
+    while index < length(context.env.source.symbols) {
+        let item = symbol(context.env, index)
+        let file = get(context.env.source.files, item.file)
+        if file.package == "std.result" && file.trusted_std && item.public && !item.test_only && item.name == "ConstraintError" { declaration = index }
+        index = index + 1
+    }
+    if declaration < 0 { return Result.Err(error(context, node, "checked construction requires std.result.ConstraintError")) }
+    let ty = data_type(context.env, declaration, new[Int](), 0)?
+    let shape = get(context.env.types, ty)
+    if shape.kind != TypeKind.Enum || length(shape.variants) != 1 { return Result.Err(error(context, node, "ConstraintError must contain Rejected only")) }
+    let variant = get(shape.variants, 0)
+    if variant.name != "Rejected" || length(variant.fields) != 0 { return Result.Err(error(context, node, "ConstraintError must contain an empty Rejected variant")) }
+    Result.Ok(ty)
+}
+fn constrained(context Context, node Node, declaration Int, types List[Node], inputs List[Node]) Result[Expr, Failure] {
+    if length(types) != 0 || length(inputs) != 1 { return Result.Err(error(context, node, "a constrained constructor takes one value and no type arguments")) }
+    let target = data_type(context.env, declaration, new[Int](), 0)?
+    let input = expr(context, get(inputs, 0), -1)?
+    if input.ty == target { return Result.Ok(input) }
+    let value = typed(context, node, input, 1)?
+    let predicate = get(get(context.env.types, target).constraint, 0)
+    let known = evaluate(value, Constant.Unknown)
+    match known {
+        Constant.Number(_) => match evaluate(predicate, known) {
+            Constant.Flag(valid) => {
+                if !valid { return Result.Err(error(context, node, "this constant does not satisfy the type constraint")) }
+                return Result.Ok(expression(ExprKind.Coerce, target, node, "", -1, expressions(value), value.falls))
+            }
+            _ => {}
+        }
+        _ => {}
+    }
+    let shape = result_shape(context, node)?
+    let error_type = constraint_error(context, node)?
+    let output = result_type(context, node, shape, target, error_type)?
+    let local = length(context.locals)
+    push(context.locals, Local { name = "" ty = 1 mutable = false })
+    let saved = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls)
+    let reference = atom(ExprKind.Local, 1, node, local)
+    let refined = expression(ExprKind.Coerce, target, node, "", -1, expressions(reference), true)
+    let accepted = expression(ExprKind.Variant, output, node, "", shape.ok, expressions(refined), true)
+    let reason = expression(ExprKind.Variant, error_type, node, "", 0, new[Expr](), true)
+    let rejected = expression(ExprKind.Variant, output, node, "", shape.err, expressions(reason), true)
+    let branches = expressions(relocate_self(predicate, local))
+    push(branches, expression(ExprKind.Block, output, node, "", -1, expressions(accepted), true))
+    push(branches, expression(ExprKind.Block, output, node, "", -1, expressions(rejected), true))
+    let condition = expression(ExprKind.If, output, node, "", -1, branches, true)
+    Result.Ok(expression(ExprKind.Block, output, node, "", -1, pair(saved, condition), value.falls))
+}

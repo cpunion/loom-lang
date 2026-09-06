@@ -1,0 +1,120 @@
+import frontend.source.Span
+import frontend.typed.Function
+import frontend.typed.Local
+import frontend.typed.Expr
+import frontend.typed.ExprKind
+import frontend.typed.Arm
+import std.list.new
+import std.list.push
+import std.list.length
+import std.result.Result
+
+fn nodes(a Expr) List[Expr] { let values = new[Expr]()
+    push(values, a)
+    values
+}
+fn nodes(a Expr, b Expr) List[Expr] { let values = nodes(a)
+    push(values, b)
+    values
+}
+fn expression(kind ExprKind, ty Int, text Text, index Int, children List[Expr]) Expr {
+    Expr { kind = kind ty = ty text = text index = index children = children
+        arms = new[Arm]() falls = true span = Span { start = 0 end = 0 } }
+}
+fn literal(value Text) Expr { expression(ExprKind.Integer, 1, value, -1, new[Expr]()) }
+fn local(index Int) Expr { expression(ExprKind.Local, 1, "", index, new[Expr]()) }
+fn operation(operator Text, a Expr, b Expr) Expr {
+    let ty = if operator == "+" || operator == "-" || operator == "*" || operator == "/" || operator == "%" { 1 } else { 2 }
+    expression(ExprKind.Binary, ty, operator, -1, nodes(a, b))
+}
+fn fixture(body Expr, preconditions List[Expr], postcondition Expr) Function {
+    let params = new[Int]()
+    push(params, 1)
+    let locals = new[Local]()
+    push(locals, Local { name = "x" ty = 1 mutable = false })
+    push(locals, Local { name = "result" ty = 1 mutable = false })
+    Function { symbol = 0 arguments = new[Int]() params = params result = 1 locals = locals
+        preconditions = preconditions postconditions = nodes(postcondition) result_local = 1
+        body = body runtime_name = "" span = body.span }
+}
+fn verified(function Function) Bool {
+    match verify(function) { Result.Ok(_) => true, Result.Err(_) => false }
+}
+
+test fn mathematical_numbers_preserve_extremes() {
+    let maximum = integer(9223372036854775807)
+    let minimum = integer(-9223372036854775808)
+    assert compare(sum(maximum, minimum), integer(-1)) == 0
+    assert compare(negate(minimum), decimal("9223372036854775808")) == 0
+    assert compare(product(maximum, maximum), decimal("85070591730234615847396907784232501249")) == 0
+    assert compare(subtract(integer(0), integer(0)), integer(0)) == 0
+    assert compare(decimal("-000"), integer(0)) == 0
+    assert match machine(minimum) { Result.Ok(value) => value == -9223372036854775808, _ => false }
+    assert match machine(negate(minimum)) { Result.Err(_) => true, _ => false }
+}
+
+test fn scalar_proofs_do_not_rescue_false_or_undefined_contracts() {
+    let x = local(0)
+    let returned = local(1)
+    let increment = operation("+", x, literal("1"))
+    assert verified(fixture(increment, new[Expr](), operation(">", returned, x)))
+    assert !verified(fixture(x, new[Expr](), operation(">", returned, x)))
+    assert verified(fixture(increment, new[Expr](), operation("==", returned, increment)))
+    assert !verified(fixture(x, new[Expr](), operation("==", returned, increment)))
+    // This postcondition's increment has not executed and may overflow.
+    assert !verified(fixture(literal("0"), new[Expr](), operation(">", increment, x)))
+    assert verified(fixture(literal("0"), nodes(operation("<", x, literal("9223372036854775807"))), operation(">", increment, x)))
+}
+
+test fn branches_and_contradictions_keep_separate_facts() {
+    let x = local(0)
+    let negative = expression(ExprKind.Unary, 1, "-", -1, nodes(x))
+    let branches = nodes(operation(">=", x, literal("0")), x)
+    push(branches, negative)
+    let absolute = expression(ExprKind.If, 1, "", -1, branches)
+    assert verified(fixture(absolute, new[Expr](), operation(">=", local(1), literal("0"))))
+    assert !verified(fixture(x, new[Expr](), operation(">=", local(1), literal("0"))))
+    let facts = predicates(Predicate.Compare(">=", variable(0)), Predicate.Compare("<", variable(0)))
+    assert holds(Predicate.Constant(false), facts)
+    let consistent = predicates(Predicate.Compare(">=", variable(0)))
+    assert !holds(Predicate.Constant(false), consistent)
+}
+
+test fn short_circuit_contracts_skip_only_proved_unreachable_operands() {
+    let yes = expression(ExprKind.Bool, 2, "true", -1, new[Expr]())
+    let no = expression(ExprKind.Bool, 2, "false", -1, new[Expr]())
+    let undefined = operation("==", operation("/", literal("1"), literal("0")), literal("0"))
+    assert verified(fixture(literal("0"), new[Expr](), operation("||", yes, undefined)))
+    let skipped_and = operation("&&", no, undefined)
+    assert verified(fixture(literal("0"), new[Expr](), operation("==", skipped_and, no)))
+    assert !verified(fixture(literal("0"), new[Expr](), operation("||", no, undefined)))
+    assert !verified(fixture(literal("0"), new[Expr](), operation("&&", yes, undefined)))
+    let positive = operation(">", local(0), literal("0"))
+    assert verified(fixture(literal("0"), nodes(positive), operation("||", positive, undefined)))
+    assert !verified(fixture(literal("0"), new[Expr](), operation("||", positive, undefined)))
+    let nonpositive = operation("<=", local(0), literal("0"))
+    assert verified(fixture(literal("0"), nodes(nonpositive), operation("==", operation("&&", positive, undefined), no)))
+    // Precondition evaluation obeys the same short-circuit rules.
+    assert verified(fixture(literal("0"), nodes(operation("||", yes, undefined)), yes))
+}
+
+test fn proof_outcomes_never_exceed_the_path_budget() {
+    let state = State { locals = new[Value]() facts = new[Predicate]() }
+    let output = new[Outcome]()
+    let value = Outcome { state = state value = Value.Empty }
+    var index = 0
+    while index < 4095 { push(output, value)
+        index = index + 1 }
+    let more = outcomes(state, Value.Empty)
+    push(more, value)
+    match append(output, more) {
+        Result.Err(message) => { assert message == "proof path budget exhausted" }
+        Result.Ok(_) => { assert false }
+    }
+    assert length(output) == 4096
+    match add_outcome(output, value) {
+        Result.Err(_) => {}
+        Result.Ok(_) => { assert false }
+    }
+    assert length(output) == 4096
+}

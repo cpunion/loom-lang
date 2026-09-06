@@ -1,0 +1,108 @@
+import frontend.binding.name
+import frontend.binding.package
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import frontend.typed.Expr
+import frontend.typed.ExprKind
+import frontend.typed.TypeKind
+import std.list.get
+import std.list.new
+import std.list.push
+import std.list.length
+import std.result.Result
+import std.text.byte
+import std.text.slice
+import std.text.length
+
+fn first_dot(value Text) Int {
+    var index = 0
+    while index < length(value) {
+        if byte(value, index) == 46 { return index }
+        index = index + 1
+    }
+    length(value)
+}
+fn member(context Context, node Node, value Expr, field Text) Result[Expr, Failure] {
+    let ty = get(context.env.types, value.ty)
+    if ty.kind != TypeKind.Record { return Result.Err(error(context, node, "field access requires a known record type")) }
+    let declaration = symbol(context.env, ty.symbol)
+    let here = symbol(context.env, context.signature.symbol)
+    if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
+        return Result.Err(error(context, node, "cannot inspect a private type from another package"))
+    }
+    var index = 0
+    while index < length(ty.fields) {
+        let found = get(ty.fields, index)
+        if found.name == field {
+            return Result.Ok(expression(ExprKind.Field, found.ty, node, "", index, expressions(value), value.falls))
+        }
+        index = index + 1
+    }
+    Result.Err(error(context, node, "unknown record field"))
+}
+fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let end = first_dot(node.value)
+    let first = slice(node.value, 0, end)
+    let local = lookup(context, first)
+    if local < 0 {
+        if end < length(node.value) { return variant(context, node, new[Node](), new[Node](), expected) }
+        return Result.Err(error(context, node, "unknown local value"))
+    }
+    var value = atom(ExprKind.Local, get(context.locals, local).ty, node, local)
+    var index = end
+    while index < length(node.value) {
+        let rest = slice(node.value, index + 1, length(node.value))
+        let end = first_dot(rest)
+        value = member(context, node, value, slice(rest, 0, end))?
+        index = index + 1 + end
+    }
+    Result.Ok(value)
+}
+fn enum_equality(context Context, ty Int) Bool {
+    let value = get(context.env.types, ty)
+    if value.kind != TypeKind.Enum { return false }
+    var index = 0
+    while index < length(value.variants) {
+        if length(get(value.variants, index).fields) != 0 { return false }
+        index = index + 1
+    }
+    true
+}
+fn expr(context Context, node Node, expected Int) Result[Expr, Failure] {
+    expr_mode(context, node, expected, true)
+}
+fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
+    let kind = node.kind
+    let value = if kind == NodeKind.Integer { atom(ExprKind.Integer, 1, node, -1) } else {
+    if kind == NodeKind.Bool { atom(ExprKind.Bool, 2, node, -1) } else {
+    if kind == NodeKind.Text { atom(ExprKind.Text, 3, node, -1) } else {
+    if kind == NodeKind.Name { named(context, node, expected)? } else {
+    if kind == NodeKind.Call { call(context, node, expected)? } else {
+    if kind == NodeKind.Construct { construct(context, node, expected)? } else {
+    if kind == NodeKind.Select { member(context, node, expr(context, child(node, 0), -1)?, node.value)? } else {
+    if kind == NodeKind.Unary {
+        let ty = if node.value == "!" { 2 } else { 1 }
+        let value = expr(context, child(node, 0), ty)?
+        expression(ExprKind.Unary, ty, node, node.value, -1, expressions(value), value.falls)
+    } else {
+    if kind == NodeKind.Binary {
+        var left = expr(context, child(node, 0), -1)?
+        if get(context.env.types, left.ty).kind == TypeKind.Refined { left = typed(context, node, left, 1)? }
+        let logical = node.value == "&&" || node.value == "||"
+        let equality = node.value == "==" || node.value == "!="
+        let argument = if logical { 2 } else { if equality { left.ty } else { 1 } }
+        if left.ty != argument || (left.ty != 1 && left.ty != 2 && !(equality && (left.ty == 3 || enum_equality(context, left.ty)))) {
+            return Result.Err(error(context, node, "invalid operator operand; generic operations need an explicit capability"))
+        }
+        let right = expr(context, child(node, 1), argument)?
+        let arithmetic = node.value == "+" || node.value == "-" || node.value == "*" || node.value == "/" || node.value == "%"
+        expression(ExprKind.Binary, if arithmetic { 1 } else { 2 }, node, node.value, -1, pair(left, right), left.falls && (logical || right.falls))
+    } else {
+    if kind == NodeKind.Block { block(context, node, expected, enforce)? } else {
+    if kind == NodeKind.If { conditional(context, node, expected, enforce)? } else {
+    if kind == NodeKind.Match { matched(context, node, expected, enforce)? } else {
+    if kind == NodeKind.Try { propagated(context, node, expected)? } else {
+        return Result.Err(error(context, node, "unsupported expression in source checker"))
+    } } } } } } } } } } } } }
+    if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+}

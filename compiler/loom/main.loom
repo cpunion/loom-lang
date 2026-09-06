@@ -29,14 +29,33 @@ fn inspect(text Text, parse_mode Bool) Result[Text, Diagnostic] {
 
 fn main() {
     let args = arguments()
-    if length(args) < 3 {
-        report("usage: loom-front <lex|parse> <source files...>")
+    if length(args) < 2 {
+        report("usage: loom <check|build|test|run> [package] [--std path] [--output path]")
         exit_code(2)
         return
     }
     let mode = get(args, 1)
+    if mode == "--help" || mode == "-h" {
+        discard write_text("Loom source compiler\n  loom <check|build|test|run> [package] [--std path] [--output path] [--emit-ir path]\n  loom <lex|parse> <source files...>\n  --native-tool selects the development LLVM/platform tool.\n")
+        return
+    }
+    if mode == "--version" { discard write_text("loom source compiler (development)\n")
+        return }
+    if mode == "check" || mode == "build" || mode == "test" || mode == "run" {
+        match execute(args) {
+            Result.Ok(message) => { discard write_text(message) }
+            Result.Err(message) => { report(message)
+                exit_code(1) }
+        }
+        return
+    }
     if mode != "lex" && mode != "parse" {
-        report("expected lex or parse; this frontend does not yet compile")
+        report("unknown command; use --help")
+        exit_code(2)
+        return
+    }
+    if length(args) < 3 {
+        report("lex and parse require source file paths")
         exit_code(2)
         return
     }

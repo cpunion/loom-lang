@@ -1,0 +1,216 @@
+import frontend.binding.Program
+import frontend.binding.Failure
+import frontend.binding.Symbol
+import frontend.binding.candidates
+import frontend.binding.has
+import frontend.binding.name
+import frontend.binding.package
+import frontend.source.Diagnostic
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import frontend.typed.Type
+import frontend.typed.TypeKind
+import frontend.typed.Field
+import frontend.typed.Variant
+import frontend.typed.Local
+import frontend.typed.Expr
+import frontend.typed.ExprKind
+import frontend.typed.Arm
+import frontend.typed.Function
+import frontend.typed.Program
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+import std.list.length
+import std.result.Result
+
+record Signature { symbol Int parameters Int params List[Int] result Int }
+record Instance { signature Int arguments List[Int] }
+record Environment {
+    source frontend.binding.Program
+    types List[Type]
+    signatures List[Signature]
+    pending List[Instance]
+}
+record Binding { local Int previous Int }
+record Context {
+    env Environment
+    signature Signature
+    arguments List[Int]
+    locals List[Local]
+    bindings List[Binding]
+    head Int
+    emit Bool
+}
+record Step { context Context expression Expr }
+
+fn child(node Node, index Int) Node { get(node.children, index) }
+fn part(node Node, kind NodeKind) Int {
+    var index = 0
+    while index < length(node.children) {
+        if child(node, index).kind == kind { return index }
+        index = index + 1
+    }
+    -1
+}
+fn group(node Node, kind NodeKind) List[Node] {
+    let index = part(node, kind)
+    if index < 0 { new[Node]() } else { child(node, index).children }
+}
+fn symbol(env Environment, index Int) Symbol { get(env.source.symbols, index) }
+fn failure(env Environment, source Int, node Node, message Text) Failure {
+    Failure { source = symbol(env, source).file diagnostic = Diagnostic { span = node.span message = message } }
+}
+fn error(context Context, node Node, message Text) Failure {
+    failure(context.env, context.signature.symbol, node, message)
+}
+fn same(a List[Int], b List[Int]) Bool {
+    if length(a) != length(b) { return false }
+    var index = 0
+    while index < length(a) {
+        if get(a, index) != get(b, index) { return false }
+        index = index + 1
+    }
+    true
+}
+fn ints(value Int) List[Int] { let values = new[Int]()
+    push(values, value)
+    values
+}
+fn expressions(value Expr) List[Expr] { let values = new[Expr]()
+    push(values, value)
+    values
+}
+fn pair(a Expr, b Expr) List[Expr] { let values = expressions(a)
+    push(values, b)
+    values
+}
+fn expression(kind ExprKind, ty Int, node Node, text Text, index Int, children List[Expr], falls Bool) Expr {
+    Expr { kind = kind ty = ty span = node.span text = text index = index children = children arms = new[Arm]() falls = falls }
+}
+fn atom(kind ExprKind, ty Int, node Node, index Int) Expr {
+    expression(kind, ty, node, node.value, index, new[Expr](), true)
+}
+fn all_fall(values List[Expr]) Bool {
+    var index = 0
+    while index < length(values) {
+        if !get(values, index).falls { return false }
+        index = index + 1
+    }
+    true
+}
+fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Failure] {
+    if expected == 1 && get(context.env.types, value.ty).kind == TypeKind.Refined {
+        return Result.Ok(expression(ExprKind.Coerce, 1, node, "", -1, expressions(value), value.falls))
+    }
+    if expected >= 0 && value.ty != expected && value.falls {
+        return Result.Err(error(context, node, "expression type does not match; use discard to ignore a value"))
+    }
+    Result.Ok(value)
+}
+fn context_at(context Context, head Int) Context {
+    Context { env = context.env signature = context.signature arguments = context.arguments
+        locals = context.locals bindings = context.bindings head = head emit = context.emit }
+}
+fn lookup(context Context, value Text) Int {
+    var head = context.head
+    while head >= 0 {
+        let binding = get(context.bindings, head)
+        if get(context.locals, binding.local).name == value { return binding.local }
+        head = binding.previous
+    }
+    -1
+}
+fn bind_local(context Context, node Node, value Text, ty Int, mutable Bool, boundary Int) Result[Context, Failure] {
+    if value == "result" || ty == 0 { return Result.Err(error(context, node, "invalid local binding")) }
+    var head = context.head
+    while head != boundary && head >= 0 {
+        let binding = get(context.bindings, head)
+        if get(context.locals, binding.local).name == value {
+            return Result.Err(error(context, node, "duplicate local binding"))
+        }
+        head = binding.previous
+    }
+    let local = length(context.locals)
+    push(context.locals, Local { name = value ty = ty mutable = mutable })
+    let next = length(context.bindings)
+    push(context.bindings, Binding { local = local previous = context.head })
+    Result.Ok(context_at(context, next))
+}
+
+pub fn check(source frontend.binding.Program) Result[frontend.typed.Program, Failure] {
+    let env = Environment { source = source types = new[Type]() signatures = new[Signature]() pending = new[Instance]() }
+    initialize_types(env)
+    var index = 0
+    while index < length(source.symbols) {
+        let item = symbol(env, index)
+        if item.node.kind != NodeKind.Function {
+            discard data_type(env, index, abstract_arguments(env, length(group(item.node, NodeKind.TypeParameters))), 0)?
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(source.symbols) {
+        let item = symbol(env, index)
+        if item.node.kind == NodeKind.Function {
+            let count = length(group(item.node, NodeKind.TypeParameters))
+            let arguments = abstract_arguments(env, count)
+            let params = new[Int]()
+            let declarations = group(item.node, NodeKind.Parameters)
+            var parameter = 0
+            while parameter < length(declarations) {
+                push(params, resolve(env, index, child(get(declarations, parameter), 0), arguments, 0)?)
+                parameter = parameter + 1
+            }
+            let returns = group(item.node, NodeKind.ReturnType)
+            let output = if length(returns) == 0 { 0 } else { resolve(env, index, get(returns, 0), arguments, 0)? }
+            let entry = get(source.files, item.file).package == source.root && item.name == "main" && !item.test_only
+            if (entry || has(item.node, NodeKind.Test)) && (length(params) != 0 || output != 0 || count != 0) {
+                return Result.Err(failure(env, index, item.node, "main and tests take no parameters and omit the return type"))
+            }
+            var previous = 0
+            while previous < length(env.signatures) {
+                let other = get(env.signatures, previous)
+                let other_symbol = symbol(env, other.symbol)
+                if item.name == other_symbol.name && get(source.files, item.file).package == get(source.files, other_symbol.file).package && count == other.parameters && same(params, other.params) {
+                    return Result.Err(failure(env, index, item.node, "duplicate overload signature"))
+                }
+                previous = previous + 1
+            }
+            push(env.signatures, Signature { symbol = index parameters = count params = params result = output })
+        }
+        index = index + 1
+    }
+    discard layouts(env)?
+    index = 0
+    while index < length(env.signatures) {
+        let signature = get(env.signatures, index)
+        discard function(env, index, abstract_arguments(env, signature.parameters), false)?
+        index = index + 1
+    }
+    var entry = -1
+    let tests = new[Int]()
+    let exports = new[Int]()
+    index = 0
+    while index < length(env.signatures) {
+        let signature = get(env.signatures, index)
+        let item = symbol(env, signature.symbol)
+        let root = get(source.files, item.file).package == source.root
+        if signature.parameters == 0 && root {
+            if item.name == "main" && !item.test_only { entry = schedule(env, index, new[Int](), item.node)? }
+            if item.public && !item.test_only { push(exports, schedule(env, index, new[Int](), item.node)?) }
+            if has(item.node, NodeKind.Test) { push(tests, schedule(env, index, new[Int](), item.node)?) }
+        }
+        index = index + 1
+    }
+    let functions = new[Function]()
+    index = 0
+    while index < length(env.pending) {
+        let instance = get(env.pending, index)
+        push(functions, function(env, instance.signature, instance.arguments, true)?)
+        index = index + 1
+    }
+    discard layouts(env)?
+    Result.Ok(frontend.typed.Program { types = env.types functions = functions entry = entry tests = tests exports = exports })
+}

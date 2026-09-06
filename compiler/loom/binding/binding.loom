@@ -1,0 +1,222 @@
+import frontend.source.Diagnostic
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.result.Result
+import std.text.byte
+import std.text.length
+import std.text.slice
+import std.text.concat
+
+pub record SourceFile {
+    package Text
+    path Text
+    text Text
+    tree Node
+    test_only Bool
+    trusted_std Bool
+}
+pub record Failure { source Int diagnostic Diagnostic }
+pub record Symbol { file Int node Node name Text public Bool test_only Bool }
+pub record Program { files List[SourceFile] symbols List[Symbol] root Text tests Bool }
+
+pub fn has(node Node, kind NodeKind) Bool {
+    var index = 0
+    while index < length(node.children) {
+        if get(node.children, index).kind == kind { return true }
+        index = index + 1
+    }
+    false
+}
+fn last_dot(path Text) Int {
+    var index = length(path)
+    while index > 0 {
+        index = index - 1
+        if byte(path, index) == 46 { return index }
+    }
+    -1
+}
+pub fn name(path Text) Text { slice(path, last_dot(path) + 1, length(path)) }
+pub fn package(path Text) Text {
+    let index = last_dot(path)
+    if index < 0 { "" } else { slice(path, 0, index) }
+}
+pub fn qualify(package Text, name Text) Text {
+    if package == "" { name } else { concat(package, concat(".", name)) }
+}
+fn failure(file Int, node Node, message Text) Failure {
+    Failure { source = file diagnostic = Diagnostic { span = node.span message = message } }
+}
+fn builtin(name Text) Bool {
+    name == "Int" || name == "Bool" || name == "Text" || name == "Bytes" || name == "List" || name == "Unit"
+}
+fn contains(values List[Text], value Text) Bool {
+    var index = 0
+    while index < length(values) {
+        if get(values, index) == value { return true }
+        index = index + 1
+    }
+    false
+}
+fn data(kind NodeKind) Bool {
+    kind == NodeKind.Record || kind == NodeKind.Enum || kind == NodeKind.Refined
+}
+fn selected(source SourceFile, root Text, tests Bool) Bool {
+    !source.test_only || (tests && source.package == root)
+}
+
+// Name lookup returns every candidate; overload selection belongs to typing.
+// Imports are package-wide, but a test file cannot extend production's scope.
+pub fn candidates(program Program, file Int, test_only Bool, path Text) List[Int] {
+    let current = get(program.files, file)
+    let testing = test_only && program.tests && current.package == program.root
+    let short = name(path)
+    let prefix = package(path)
+    let packages = new[Text]()
+    if prefix == "" || prefix == current.package { push(packages, current.package) }
+    var index = 0
+    while index < length(program.files) {
+        let source = get(program.files, index)
+        if source.package == current.package && (!source.test_only || testing) {
+            var item = 0
+            while item < length(source.tree.children) {
+                let node = get(source.tree.children, item)
+                if node.kind == NodeKind.Import && name(node.value) == short {
+                    let target = package(node.value)
+                    if prefix == "" || prefix == target { push(packages, target) }
+                }
+                item = item + 1
+            }
+        }
+        index = index + 1
+    }
+    let matches = new[Int]()
+    index = 0
+    while index < length(program.symbols) {
+        let symbol = get(program.symbols, index)
+        let target = get(program.files, symbol.file).package
+        if symbol.name == short && contains(packages, target) &&
+            (target == current.package || symbol.public) &&
+            (!symbol.test_only || (testing && target == current.package)) {
+            push(matches, index)
+        }
+        index = index + 1
+    }
+    matches
+}
+
+fn names(file Int, nodes List[Node], reserved_types Bool) Result[Bool, Failure] {
+    let seen = new[Text]()
+    var index = 0
+    while index < length(nodes) {
+        let node = get(nodes, index)
+        if contains(seen, node.value) || (reserved_types && builtin(node.value)) {
+            return Result.Err(failure(file, node, if reserved_types {
+                "duplicate or reserved type parameter"
+            } else { "duplicate declaration member" }))
+        }
+        push(seen, node.value)
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn declaration_names(file Int, node Node) Result[Bool, Failure] {
+    let members = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.kind == NodeKind.TypeParameters { discard names(file, child.children, true)? }
+        if child.kind == NodeKind.Parameters { discard names(file, child.children, false)? }
+        if child.kind == NodeKind.Field || child.kind == NodeKind.Variant { push(members, child) }
+        index = index + 1
+    }
+    discard names(file, members, false)?
+    if node.kind == NodeKind.Enum && length(members) == 0 {
+        return Result.Err(failure(file, node, "an enum needs at least one variant"))
+    }
+    Result.Ok(true)
+}
+fn accessible_import(program Program, file Int, path Text) Bool {
+    let source = get(program.files, file)
+    let target = package(path)
+    let short = name(path)
+    var index = 0
+    while index < length(program.symbols) {
+        let symbol = get(program.symbols, index)
+        if symbol.name == short && get(program.files, symbol.file).package == target &&
+            (symbol.public || source.package == target) &&
+            (!symbol.test_only || (source.test_only && source.package == target)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+fn imports(program Program) Result[Bool, Failure] {
+    var file = 0
+    while file < length(program.files) {
+        let source = get(program.files, file)
+        if selected(source, program.root, program.tests) {
+            var index = 0
+            while index < length(source.tree.children) {
+                let node = get(source.tree.children, index)
+                if node.kind == NodeKind.Import {
+                    if last_dot(node.value) < 0 {
+                        return Result.Err(failure(file, node, "imports name a module/package and declaration"))
+                    }
+                    if !accessible_import(program, file, node.value) {
+                        return Result.Err(failure(file, node, "import does not name an accessible declaration"))
+                    }
+                }
+                index = index + 1
+            }
+        }
+        file = file + 1
+    }
+    Result.Ok(true)
+}
+
+pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failure] {
+    let symbols = new[Symbol]()
+    var file = 0
+    while file < length(files) {
+        let source = get(files, file)
+        if selected(source, root, tests) {
+            var index = 0
+            while index < length(source.tree.children) {
+                let node = get(source.tree.children, index)
+                let test_only = source.test_only || has(node, NodeKind.Test)
+                if node.kind != NodeKind.Import && (!test_only || (tests && source.package == root)) {
+                    discard declaration_names(file, node)?
+                    if data(node.kind) {
+                        if builtin(node.value) {
+                            return Result.Err(failure(file, node, "duplicate or reserved data declaration"))
+                        }
+                        var other = 0
+                        while other < length(symbols) {
+                            let existing = get(symbols, other)
+                            if data(existing.node.kind) && existing.name == node.value &&
+                                get(files, existing.file).package == source.package {
+                                return Result.Err(failure(file, node, "duplicate or reserved data declaration"))
+                            }
+                            other = other + 1
+                        }
+                    }
+                    if has(node, NodeKind.Intrinsic) && (!source.trusted_std || test_only || has(node, NodeKind.Public)) {
+                        return Result.Err(failure(file, node, "intrinsics are private declarations of the trusted standard library"))
+                    }
+                    push(symbols, Symbol { file = file node = node name = node.value
+                        public = has(node, NodeKind.Public) test_only = test_only })
+                }
+                index = index + 1
+            }
+        }
+        file = file + 1
+    }
+    let program = Program { files = files symbols = symbols root = root tests = tests }
+    discard imports(program)?
+    Result.Ok(program)
+}

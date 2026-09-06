@@ -1,0 +1,31 @@
+fn parsed(text Text) Module {
+    match parse(text) {
+        Result.Ok(module) => module
+        Result.Err(_) => { assert false
+            Module { name = "" version = "" } }
+    }
+}
+
+test fn supported_manifest_subset() {
+    let module = parsed("schema = 2 # version\nlanguage = '0.4'\n[module]\nname = \"front\\u0065nd\"\nversion = \"0.1#dev\" # comment\n[dependencies]\n")
+    assert module.name == "frontend" && module.version == "0.1#dev"
+    assert parsed("dependencies = {}\n[module]\nname = 'demo'\n").name == "demo"
+}
+
+fn rejects(text Text) {
+    assert match parse(text) { Result.Ok(_) => false, Result.Err(_) => true }
+}
+
+test fn unsupported_and_ambiguous_manifests_reject() {
+    rejects("[module]\nname='std'")
+    rejects("[module]\nname='Upper'")
+    rejects("[module]\nname='a'\nname='b'")
+    rejects("[module]\nname='a'\n[module]")
+    rejects("schema=1\n[module]\nname='a'")
+    rejects("language='0.3'\n[module]\nname='a'")
+    rejects("[module]\nname='a'\n[dependencies]\nother='1'")
+    rejects("[module]\nname='a'\nunknown=true")
+    rejects("module = { name = 'a' }")
+    rejects("[module]\nname=\"a\" trailing")
+    rejects("[module]\nname=\"\\uD800\"")
+}

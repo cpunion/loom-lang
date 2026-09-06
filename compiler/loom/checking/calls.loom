@@ -1,0 +1,220 @@
+import frontend.binding.candidates
+import frontend.binding.name
+import frontend.binding.package
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import frontend.typed.Expr
+import frontend.typed.ExprKind
+import frontend.typed.TypeKind
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+fn supplied(context Context, node Node, values List[Node], count Int) Result[List[Int], Failure] {
+    if length(values) != 0 && length(values) != count { return Result.Err(error(context, node, "wrong number of type arguments")) }
+    let output = new[Int]()
+    var index = 0
+    while index < count {
+        push(output, if length(values) == 0 { -1 } else { resolve(context.env, context.signature.symbol, get(values, index), context.arguments, 0)? })
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+fn complete(arguments List[Int]) Bool {
+    var index = 0
+    while index < length(arguments) {
+        if get(arguments, index) < 0 { return false }
+        index = index + 1
+    }
+    true
+}
+fn hint(context Context, pattern Int, arguments List[Int], node Node) Result[Int, Failure] {
+    if complete(arguments) { return substitute(context.env, context.signature.symbol, pattern, arguments, node) }
+    if concrete(context.env, pattern) { Result.Ok(pattern) } else { Result.Ok(-1) }
+}
+fn data_arguments(context Context, node Node, declaration Int, types List[Node], expected Int) Result[List[Int], Failure] {
+    let count = length(group(symbol(context.env, declaration).node, NodeKind.TypeParameters))
+    let arguments = supplied(context, node, types, count)?
+    if length(types) == 0 && expected >= 0 {
+        let ty = get(context.env.types, expected)
+        if ty.symbol == declaration && (ty.kind == TypeKind.Record || ty.kind == TypeKind.Enum || ty.kind == TypeKind.Refined) {
+            var index = 0
+            while index < count { set(arguments, index, get(ty.arguments, index))
+                index = index + 1
+            }
+        }
+    }
+    Result.Ok(arguments)
+}
+fn template(context Context, declaration Int) Result[Int, Failure] {
+    let count = length(group(symbol(context.env, declaration).node, NodeKind.TypeParameters))
+    data_type(context.env, declaration, abstract_arguments(context.env, count), 0)
+}
+fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let declaration = find_data(context.env, context.signature.symbol, node, node.value)?
+    if declaration < 0 { return Result.Err(error(context, node, "unknown record type")) }
+    let shape = get(context.env.types, template(context, declaration)?)
+    if shape.kind != TypeKind.Record { return Result.Err(error(context, node, "construction requires a record type")) }
+    let arguments = data_arguments(context, node, declaration, child(node, 0).children, expected)?
+    let seen = new[Bool]()
+    var index = 0
+    while index < length(shape.fields) { push(seen, false)
+        index = index + 1
+    }
+    let fields = new[Expr]()
+    index = 1
+    while index < length(node.children) {
+        let member = child(node, index)
+        var field = -1
+        var search = 0
+        while search < length(shape.fields) {
+            if get(shape.fields, search).name == member.value { field = search }
+            search = search + 1
+        }
+        if field < 0 { return Result.Err(error(context, member, "unknown record field")) }
+        if get(seen, field) { return Result.Err(error(context, member, "duplicate record initializer")) }
+        set(seen, field, true)
+        let pattern = get(shape.fields, field).ty
+        let value = expr(context, child(member, 0), hint(context, pattern, arguments, member)?)?
+        if !infer(context.env, pattern, value.ty, arguments) { return Result.Err(error(context, member, "record field type does not match")) }
+        push(fields, expression(ExprKind.Field, value.ty, member, "", field, expressions(value), value.falls))
+        index = index + 1
+    }
+    if length(fields) != length(shape.fields) { return Result.Err(error(context, node, "initialize every record field")) }
+    if !complete(arguments) { return Result.Err(error(context, node, "cannot infer record type arguments")) }
+    Result.Ok(expression(ExprKind.Record, data_type(context.env, declaration, arguments, 0)?, node, "", -1, fields, all_fall(fields)))
+}
+fn variant(context Context, node Node, types List[Node], inputs List[Node], expected Int) Result[Expr, Failure] {
+    let declaration = find_data(context.env, context.signature.symbol, node, package(node.value))?
+    if declaration < 0 { return Result.Err(error(context, node, "unknown enum type")) }
+    let shape = get(context.env.types, template(context, declaration)?)
+    if shape.kind != TypeKind.Enum { return Result.Err(error(context, node, "variant construction requires an enum")) }
+    var selected = -1
+    var index = 0
+    while index < length(shape.variants) {
+        if get(shape.variants, index).name == name(node.value) { selected = index }
+        index = index + 1
+    }
+    if selected < 0 { return Result.Err(error(context, node, "unknown enum variant")) }
+    let patterns = get(shape.variants, selected).fields
+    if length(patterns) != length(inputs) { return Result.Err(error(context, node, "enum payload count does not match")) }
+    let arguments = data_arguments(context, node, declaration, types, expected)?
+    let values = new[Expr]()
+    index = 0
+    while index < length(inputs) {
+        let pattern = get(patterns, index)
+        let input = get(inputs, index)
+        let value = expr(context, input, hint(context, pattern, arguments, input)?)?
+        if !infer(context.env, pattern, value.ty, arguments) { return Result.Err(error(context, input, "enum payload type does not match")) }
+        push(values, value)
+        index = index + 1
+    }
+    if !complete(arguments) { return Result.Err(error(context, node, "cannot infer enum type arguments")) }
+    Result.Ok(expression(ExprKind.Variant, data_type(context.env, declaration, arguments, 0)?, node, "", selected, values, all_fall(values)))
+}
+fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let first = slice(node.value, 0, first_dot(node.value))
+    if lookup(context, first) >= 0 { return Result.Err(error(context, node, "a local value is not callable")) }
+    let types = child(node, 0).children
+    let inputs = child(node, 1).children
+    let current = symbol(context.env, context.signature.symbol)
+    let available = candidates(context.env.source, current.file, current.test_only, node.value)
+    let declaration = find_data(context.env, context.signature.symbol, node, node.value)?
+    if declaration >= 0 && symbol(context.env, declaration).node.kind == NodeKind.Refined {
+        var index = 0
+        while index < length(available) {
+            if symbol(context.env, get(available, index)).node.kind == NodeKind.Function {
+                return Result.Err(error(context, node, "a constrained constructor and function share this name; resolve the collision"))
+            }
+            index = index + 1
+        }
+        return constrained(context, node, declaration, types, inputs)
+    }
+    if package(node.value) != "" && find_data(context.env, context.signature.symbol, node, package(node.value))? >= 0 {
+        return variant(context, node, types, inputs, expected)
+    }
+    let options = new[Int]()
+    var index = 0
+    while index < length(context.env.signatures) {
+        let signature = get(context.env.signatures, index)
+        var candidate = 0
+        while candidate < length(available) {
+            if get(available, candidate) == signature.symbol && length(signature.params) == length(inputs) && (length(types) == 0 || length(types) == signature.parameters) { push(options, index) }
+            candidate = candidate + 1
+        }
+        index = index + 1
+    }
+    let hints = new[Int]()
+    index = 0
+    while index < length(inputs) { push(hints, -1)
+        index = index + 1
+    }
+    if length(options) == 1 {
+        let signature = get(context.env.signatures, get(options, 0))
+        let args = supplied(context, node, types, signature.parameters)?
+        if complete(args) {
+            index = 0
+            while index < length(inputs) {
+                set(hints, index, substitute(context.env, context.signature.symbol, get(signature.params, index), args, node)?)
+                index = index + 1
+            }
+        }
+    }
+    let values = new[Expr]()
+    index = 0
+    while index < length(inputs) { push(values, expr(context, get(inputs, index), get(hints, index))?)
+        index = index + 1
+    }
+    let matches = new[Instance]()
+    let widening = new[Bool]()
+    var exact = false
+    index = 0
+    while index < length(options) {
+        let id = get(options, index)
+        let signature = get(context.env.signatures, id)
+        let args = supplied(context, node, types, signature.parameters)?
+        var matched = true
+        var widened = false
+        var argument = 0
+        while argument < length(values) {
+            let pattern = get(signature.params, argument)
+            let value = get(values, argument)
+            if !infer(context.env, pattern, value.ty, args) {
+                let target = hint(context, pattern, args, node)?
+                if target == 1 && get(context.env.types, value.ty).kind == TypeKind.Refined { widened = true } else { matched = false }
+            }
+            argument = argument + 1
+        }
+        if matched && !complete(args) && expected >= 0 { discard infer(context.env, signature.result, expected, args) }
+        if matched && complete(args) {
+            push(matches, Instance { signature = id arguments = args })
+            push(widening, widened)
+            exact = exact || !widened
+        }
+        index = index + 1
+    }
+    var selected = -1
+    index = 0
+    while index < length(matches) {
+        if !exact || !get(widening, index) {
+            if selected >= 0 { return Result.Err(error(context, node, "ambiguous overload; qualify the call or supply type arguments")) }
+            selected = index
+        }
+        index = index + 1
+    }
+    if selected < 0 { return Result.Err(error(context, node, "no accessible overload matches these arguments")) }
+    let instance = get(matches, selected)
+    let signature = get(context.env.signatures, instance.signature)
+    index = 0
+    while index < length(values) {
+        let target = substitute(context.env, context.signature.symbol, get(signature.params, index), instance.arguments, node)?
+        set(values, index, typed(context, get(inputs, index), get(values, index), target)?)
+        index = index + 1
+    }
+    let output = substitute(context.env, context.signature.symbol, signature.result, instance.arguments, node)?
+    let target = if context.emit { schedule(context.env, instance.signature, instance.arguments, node)? } else { -1 }
+    Result.Ok(expression(ExprKind.Call, output, node, "", target, values, all_fall(values)))
+}

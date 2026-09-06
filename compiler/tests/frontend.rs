@@ -36,8 +36,19 @@ fn source_files(directory: &Path, paths: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+fn source_compiler(compiler: &Path, args: &[&str]) -> Output {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    Command::new(compiler)
+        .args(args)
+        .args(["--std", root.join("compiler/std").to_str().unwrap()])
+        .args(["--native-tool", env!("CARGO_BIN_EXE_loom-native")])
+        .current_dir(root)
+        .output()
+        .unwrap()
+}
+
 #[test]
-fn loom_frontend_parses_its_sources_and_reports_real_diagnostics() {
+fn loom_compiler_bootstraps_and_reports_real_diagnostics() {
     let compiler = Path::new(env!("CARGO_MANIFEST_DIR"));
     let frontend = compiler.join("loom");
     let temp = tempfile::tempdir().unwrap();
@@ -70,14 +81,67 @@ fn loom_frontend_parses_its_sources_and_reports_real_diagnostics() {
         assert!(output.stderr.is_empty());
     }
 
-    for package in ["loom/lexer", "loom/source", "loom/parser"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_loom"))
-            .arg("test")
-            .arg(compiler.join(package))
-            .env("LOOM_GC_STRESS", "1")
-            .output()
-            .unwrap();
-        success(&output);
+    // Only LLVM/platform lowering stays in Rust. Both following compilers are
+    // built from checked programs produced entirely by the previous Loom stage.
+    let stage2 = temp.path().join("stage2");
+    let stage3 = temp.path().join("stage3");
+    for (previous, next) in [(&artifact, &stage2), (&stage2, &stage3)] {
+        success(&source_compiler(
+            previous,
+            &[
+                "build",
+                frontend.to_str().unwrap(),
+                "--output",
+                next.to_str().unwrap(),
+            ],
+        ));
+    }
+    assert_eq!(fs::read(&stage2).unwrap(), fs::read(&stage3).unwrap());
+    for package in [
+        "loom/source",
+        "loom/lexer",
+        "loom/parser",
+        "loom/binding",
+        "loom/manifest",
+        "loom/loading",
+        "loom/proof",
+        "loom/checking",
+        "std/int",
+        "std/text",
+        "std/bytes",
+        "std/list",
+        "std/result",
+        "std/unicode",
+        "std/fs",
+        "std/process",
+        "examples/scalar",
+        "examples/data",
+    ] {
+        success(&source_compiler(
+            &stage3,
+            &["test", compiler.join(package).to_str().unwrap()],
+        ));
+    }
+    success(&source_compiler(
+        &stage3,
+        &["run", compiler.join("examples/data").to_str().unwrap()],
+    ));
+
+    // Source checks do not need a native tool. Compare selected type/proof
+    // failures across stages, without maintaining a dual-backend test matrix.
+    let rejected = temp.path().join("rejected");
+    fs::create_dir(&rejected).unwrap();
+    for source in [
+        "fn f() Int { true }",
+        "fn f(x Int) Int ensures result > x { x }",
+    ] {
+        fs::write(rejected.join("main.loom"), source).unwrap();
+        let first = source_compiler(&stage2, &["check", rejected.to_str().unwrap()]);
+        let second = source_compiler(&stage3, &["check", rejected.to_str().unwrap()]);
+        assert_eq!(first.status.code(), Some(1));
+        assert_eq!(first.status.code(), second.status.code());
+        assert!(!first.stderr.is_empty());
+        assert_eq!(first.stderr, second.stderr);
     }
 
     let good = temp.path().join("订单.loom");

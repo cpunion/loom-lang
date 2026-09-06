@@ -1,0 +1,125 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+import std.text.byte
+import std.text.length
+
+// Proof arithmetic is mathematical, not machine arithmetic. Little-endian
+// base-1e9 digits keep every intermediate digit operation inside checked Int.
+record Number { negative Bool digits List[Int] }
+
+fn number(negative Bool, digits List[Int]) Number {
+    var size = length(digits)
+    while size > 0 && get(digits, size - 1) == 0 { size = size - 1 }
+    let trimmed = new[Int]()
+    var index = 0
+    while index < size { push(trimmed, get(digits, index))
+        index = index + 1 }
+    Number { negative = negative && size != 0 digits = trimmed }
+}
+fn integer(value Int) Number {
+    var remaining = if value > 0 { -value } else { value }
+    let digits = new[Int]()
+    while remaining < 0 {
+        push(digits, -(remaining % 1000000000))
+        remaining = remaining / 1000000000
+    }
+    Number { negative = value < 0 digits = digits }
+}
+fn negate(value Number) Number {
+    Number { negative = !value.negative && length(value.digits) != 0 digits = value.digits }
+}
+fn magnitude(a Number, b Number) Int {
+    if length(a.digits) < length(b.digits) { return -1 }
+    if length(a.digits) > length(b.digits) { return 1 }
+    var index = length(a.digits)
+    while index > 0 {
+        index = index - 1
+        if get(a.digits, index) < get(b.digits, index) { return -1 }
+        if get(a.digits, index) > get(b.digits, index) { return 1 }
+    }
+    0
+}
+fn compare(a Number, b Number) Int {
+    if a.negative != b.negative { return if a.negative { -1 } else { 1 } }
+    let order = magnitude(a, b)
+    if a.negative { -order } else { order }
+}
+fn digit(value Number, index Int) Int {
+    if index < length(value.digits) { get(value.digits, index) } else { 0 }
+}
+fn sum(a Number, b Number) Number {
+    if a.negative != b.negative {
+        if magnitude(a, b) < 0 { return difference(b, a) }
+        return difference(a, b)
+    }
+    let digits = new[Int]()
+    var carry = 0
+    var index = 0
+    while index < length(a.digits) || index < length(b.digits) || carry != 0 {
+        let value = digit(a, index) + digit(b, index) + carry
+        push(digits, value % 1000000000)
+        carry = value / 1000000000
+        index = index + 1
+    }
+    number(a.negative, digits)
+}
+// Absolute subtraction, with |a| >= |b|; keep the sign of a.
+fn difference(a Number, b Number) Number {
+    let digits = new[Int]()
+    var borrow = 0
+    var index = 0
+    while index < length(a.digits) {
+        var value = digit(a, index) - digit(b, index) - borrow
+        borrow = if value < 0 { 1 } else { 0 }
+        if value < 0 { value = value + 1000000000 }
+        push(digits, value)
+        index = index + 1
+    }
+    number(a.negative, digits)
+}
+fn subtract(a Number, b Number) Number { sum(a, negate(b)) }
+fn product(a Number, b Number) Number {
+    let digits = new[Int]()
+    var index = 0
+    while index < length(a.digits) + length(b.digits) { push(digits, 0)
+        index = index + 1 }
+    index = 0
+    while index < length(a.digits) {
+        var other = 0
+        var carry = 0
+        while other < length(b.digits) {
+            let value = get(digits, index + other) + digit(a, index) * digit(b, other) + carry
+            set(digits, index + other, value % 1000000000)
+            carry = value / 1000000000
+            other = other + 1
+        }
+        if carry != 0 { set(digits, index + other, carry) }
+        index = index + 1
+    }
+    number(a.negative != b.negative, digits)
+}
+fn decimal(text Text) Number {
+    var value = integer(0)
+    var index = 0
+    let negative = length(text) > 0 && byte(text, 0) == 45
+    if negative { index = 1 }
+    while index < length(text) {
+        value = sum(product(value, integer(10)), integer(byte(text, index) - 48))
+        index = index + 1
+    }
+    if negative { negate(value) } else { value }
+}
+fn machine(value Number) Result[Int, Text] {
+    if compare(value, integer(-9223372036854775808)) < 0 || compare(value, integer(9223372036854775807)) > 0 {
+        return Result.Err("proof integer is outside Int")
+    }
+    var remaining = 0
+    var index = length(value.digits)
+    while index > 0 { index = index - 1
+        remaining = remaining * 1000000000 - digit(value, index) }
+    Result.Ok(if value.negative { remaining } else { -remaining })
+}

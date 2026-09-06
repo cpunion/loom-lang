@@ -1,0 +1,245 @@
+import frontend.binding.candidates
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import frontend.typed.Type
+import frontend.typed.TypeKind
+import frontend.typed.Field
+import frontend.typed.Variant
+import frontend.typed.Expr
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+fn simple_type(kind TypeKind, symbol Int, arguments List[Int]) Type {
+    Type { kind = kind symbol = symbol arguments = arguments fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() }
+}
+fn initialize_types(env Environment) {
+    push(env.types, simple_type(TypeKind.Unit, -1, new[Int]()))
+    push(env.types, simple_type(TypeKind.Int, -1, new[Int]()))
+    push(env.types, simple_type(TypeKind.Bool, -1, new[Int]()))
+    push(env.types, simple_type(TypeKind.Text, -1, new[Int]()))
+    push(env.types, simple_type(TypeKind.Bytes, -1, new[Int]()))
+}
+fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
+    var index = 0
+    while index < length(env.types) {
+        let existing = get(env.types, index)
+        if existing.kind == kind && existing.symbol == symbol && same(existing.arguments, arguments) { return index }
+        index = index + 1
+    }
+    push(env.types, simple_type(kind, symbol, arguments))
+    length(env.types) - 1
+}
+fn abstract_arguments(env Environment, count Int) List[Int] {
+    let arguments = new[Int]()
+    var index = 0
+    while index < count {
+        push(arguments, intern(env, TypeKind.Parameter, index, new[Int]()))
+        index = index + 1
+    }
+    arguments
+}
+fn find_data(env Environment, owner Int, node Node, path Text) Result[Int, Failure] {
+    let current = symbol(env, owner)
+    let options = candidates(env.source, current.file, current.test_only, path)
+    var found = -1
+    var index = 0
+    while index < length(options) {
+        let candidate = get(options, index)
+        if symbol(env, candidate).node.kind != NodeKind.Function {
+            if found >= 0 { return Result.Err(failure(env, owner, node, "ambiguous type; qualify its name")) }
+            found = candidate
+        }
+        index = index + 1
+    }
+    Result.Ok(found)
+}
+fn resolve(env Environment, owner Int, node Node, arguments List[Int], depth Int) Result[Int, Failure] {
+    if depth > 64 { return Result.Err(failure(env, owner, node, "type specialization depth exceeded")) }
+    var builtin = -1
+    if node.value == "Int" { builtin = 1 }
+    if node.value == "Bool" { builtin = 2 }
+    if node.value == "Text" { builtin = 3 }
+    if node.value == "Bytes" { builtin = 4 }
+    if node.value == "Unit" { return Result.Err(failure(env, owner, node, "omit Unit; it is not a source type")) }
+    let parameters = group(symbol(env, owner).node, NodeKind.TypeParameters)
+    var index = 0
+    while index < length(parameters) {
+        if node.value == get(parameters, index).value { builtin = get(arguments, index) }
+        index = index + 1
+    }
+    if builtin >= 0 {
+        if length(node.children) != 0 { return Result.Err(failure(env, owner, node, "this type takes no arguments")) }
+        return Result.Ok(builtin)
+    }
+    let args = new[Int]()
+    index = 0
+    while index < length(node.children) {
+        push(args, resolve(env, owner, child(node, index), arguments, depth + 1)?)
+        index = index + 1
+    }
+    if node.value == "List" {
+        if length(args) != 1 { return Result.Err(failure(env, owner, node, "List requires one element type")) }
+        return Result.Ok(intern(env, TypeKind.List, -1, args))
+    }
+    let declaration = find_data(env, owner, node, node.value)?
+    if declaration < 0 { return Result.Err(failure(env, owner, node, "unknown or inaccessible type")) }
+    data_type(env, declaration, args, depth + 1)
+}
+fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) Result[Int, Failure] {
+    let item = symbol(env, declaration)
+    if length(arguments) != length(group(item.node, NodeKind.TypeParameters)) {
+        return Result.Err(failure(env, declaration, item.node, "wrong number of type arguments"))
+    }
+    var index = 0
+    while index < length(arguments) {
+        if type_depth(env, get(arguments, index)) >= 64 {
+            return Result.Err(failure(env, declaration, item.node, "type specialization depth exceeded; expansion must be finite"))
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(env.types) {
+        let existing = get(env.types, index)
+        if existing.symbol == declaration && (existing.kind == TypeKind.Record || existing.kind == TypeKind.Enum || existing.kind == TypeKind.Refined) && same(existing.arguments, arguments) {
+            return Result.Ok(index)
+        }
+        index = index + 1
+    }
+    if depth > 64 || length(env.types) >= 4096 {
+        return Result.Err(failure(env, declaration, item.node, "type specialization budget exceeded; expansion must be finite"))
+    }
+    let kind = if item.node.kind == NodeKind.Record { TypeKind.Record } else {
+        if item.node.kind == NodeKind.Enum { TypeKind.Enum } else { TypeKind.Refined }
+    }
+    let id = length(env.types)
+    let placeholder = simple_type(kind, declaration, arguments)
+    push(env.types, placeholder)
+    let fields = new[Field]()
+    let variants = new[Variant]()
+    let constraints = new[Expr]()
+    index = 0
+    while index < length(item.node.children) {
+        let member = child(item.node, index)
+        if member.kind == NodeKind.Field {
+            push(fields, Field { name = member.value ty = resolve(env, declaration, child(member, 0), arguments, depth + 1)? })
+        }
+        if member.kind == NodeKind.Variant {
+            let payload = new[Int]()
+            var field = 0
+            while field < length(member.children) {
+                push(payload, resolve(env, declaration, child(member, field), arguments, depth + 1)?)
+                field = field + 1
+            }
+            push(variants, Variant { name = member.value fields = payload })
+        }
+        index = index + 1
+    }
+    if kind == TypeKind.Refined {
+        let base = part(item.node, NodeKind.Type)
+        if length(arguments) != 0 || resolve(env, declaration, child(item.node, base), arguments, depth + 1)? != 1 {
+            return Result.Err(failure(env, declaration, item.node, "this checker constrains Int directly"))
+        }
+        push(fields, Field { name = "self" ty = 1 })
+        push(constraints, refinement(env, declaration, child(item.node, base + 1))?)
+    }
+    set(env.types, id, Type { kind = kind symbol = declaration arguments = arguments fields = fields variants = variants constraint = constraints })
+    Result.Ok(id)
+}
+fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node) Result[Int, Failure] {
+    let source = get(env.types, ty)
+    if source.kind == TypeKind.Parameter { return Result.Ok(get(arguments, source.symbol)) }
+    let args = new[Int]()
+    var index = 0
+    while index < length(source.arguments) {
+        push(args, substitute(env, owner, get(source.arguments, index), arguments, node)?)
+        index = index + 1
+    }
+    if source.kind == TypeKind.List { return Result.Ok(intern(env, TypeKind.List, -1, args)) }
+    if source.kind == TypeKind.Record || source.kind == TypeKind.Enum || source.kind == TypeKind.Refined {
+        return data_type(env, source.symbol, args, 0)
+    }
+    Result.Ok(ty)
+}
+fn infer(env Environment, pattern Int, actual Int, arguments List[Int]) Bool {
+    let source = get(env.types, pattern)
+    if source.kind == TypeKind.Parameter {
+        let previous = get(arguments, source.symbol)
+        if previous >= 0 { return previous == actual }
+        set(arguments, source.symbol, actual)
+        return true
+    }
+    let value = get(env.types, actual)
+    if source.kind != value.kind || source.symbol != value.symbol || length(source.arguments) != length(value.arguments) { return false }
+    var index = 0
+    var matched = true
+    while index < length(source.arguments) {
+        let matches = infer(env, get(source.arguments, index), get(value.arguments, index), arguments)
+        matched = matched && matches
+        index = index + 1
+    }
+    matched
+}
+fn concrete(env Environment, ty Int) Bool {
+    let source = get(env.types, ty)
+    if source.kind == TypeKind.Parameter { return false }
+    var index = 0
+    while index < length(source.arguments) {
+        if !concrete(env, get(source.arguments, index)) { return false }
+        index = index + 1
+    }
+    true
+}
+fn type_depth(env Environment, ty Int) Int {
+    let source = get(env.types, ty)
+    if source.kind == TypeKind.Parameter || ty <= 4 { return 0 }
+    var deepest = 0
+    var index = 0
+    while index < length(source.arguments) {
+        let depth = type_depth(env, get(source.arguments, index))
+        if depth > deepest { deepest = depth }
+        index = index + 1
+    }
+    deepest + 1
+}
+fn layout(env Environment, id Int, states List[Int]) Result[Bool, Failure] {
+    let ty = get(env.types, id)
+    if ty.kind != TypeKind.Record && ty.kind != TypeKind.Enum { return Result.Ok(true) }
+    if get(states, id) == 2 { return Result.Ok(true) }
+    if get(states, id) == 1 {
+        return Result.Err(failure(env, ty.symbol, symbol(env, ty.symbol).node, "recursive by-value data layout needs a List boundary"))
+    }
+    set(states, id, 1)
+    var index = 0
+    while index < length(ty.fields) {
+        discard layout(env, get(ty.fields, index).ty, states)?
+        index = index + 1
+    }
+    index = 0
+    while index < length(ty.variants) {
+        let fields = get(ty.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            discard layout(env, get(fields, field), states)?
+            field = field + 1
+        }
+        index = index + 1
+    }
+    set(states, id, 2)
+    Result.Ok(true)
+}
+fn layouts(env Environment) Result[Bool, Failure] {
+    let states = new[Int]()
+    var index = 0
+    while index < length(env.types) { push(states, 0)
+        index = index + 1
+    }
+    index = 0
+    while index < length(env.types) { discard layout(env, index, states)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}

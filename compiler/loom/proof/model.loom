@@ -1,0 +1,94 @@
+import frontend.typed.Function
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+
+record Term { id Int factor Number }
+record Linear { constant Number terms List[Term] }
+enum Predicate {
+    Constant(Bool)
+    Variable(Int)
+    Compare(Text, Linear)
+    Equal(List[Predicate])
+    Not(List[Predicate])
+    And(List[Predicate])
+    Or(List[Predicate])
+}
+enum Value { Number(Linear) Boolean(Predicate) Empty }
+record State { locals List[Value] facts List[Predicate] }
+record Outcome { state State value Value }
+record Bounds { low Number high Number }
+
+fn constant(value Number) Linear { Linear { constant = value terms = new[Term]() } }
+fn variable(index Int) Linear {
+    let terms = new[Term]()
+    push(terms, Term { id = index factor = integer(1) })
+    Linear { constant = integer(0) terms = terms }
+}
+fn predicates(a Predicate) List[Predicate] {
+    let values = new[Predicate]()
+    push(values, a)
+    values
+}
+fn predicates(a Predicate, b Predicate) List[Predicate] {
+    let values = predicates(a)
+    push(values, b)
+    values
+}
+fn outcomes(state State, value Value) List[Outcome] {
+    let values = new[Outcome]()
+    push(values, Outcome { state = state value = value })
+    values
+}
+fn inverse(relation Text) Text {
+    if relation == "==" { return "!=" }
+    if relation == "!=" { return "==" }
+    if relation == "<" { return ">=" }
+    if relation == "<=" { return ">" }
+    if relation == ">" { return "<=" }
+    "<"
+}
+fn flip(relation Text) Text {
+    if relation == "<" { return ">" }
+    if relation == "<=" { return ">=" }
+    if relation == ">" { return "<" }
+    if relation == ">=" { return "<=" }
+    relation
+}
+fn not(value Predicate) Predicate {
+    match value {
+        Predicate.Constant(value) => Predicate.Constant(!value)
+        Predicate.Compare(relation, value) => Predicate.Compare(inverse(relation), value)
+        Predicate.Not(values) => get(values, 0)
+        Predicate.And(values) => Predicate.Or(predicates(not(get(values, 0)), not(get(values, 1))))
+        Predicate.Or(values) => Predicate.And(predicates(not(get(values, 0)), not(get(values, 1))))
+        _ => Predicate.Not(predicates(value))
+    }
+}
+fn append_facts(output List[Predicate], fact Predicate) {
+    match fact {
+        Predicate.And(values) => {
+            append_facts(output, get(values, 0))
+            append_facts(output, get(values, 1))
+        }
+        _ => { push(output, fact) }
+    }
+}
+fn assume(state State, fact Predicate) State {
+    let facts = new[Predicate]()
+    var index = 0
+    while index < length(state.facts) { push(facts, get(state.facts, index))
+        index = index + 1 }
+    append_facts(facts, fact)
+    State { locals = state.locals facts = facts }
+}
+fn assigned(state State, id Int, value Value) State {
+    let locals = new[Value]()
+    var index = 0
+    while index < length(state.locals) {
+        push(locals, if index == id { value } else { get(state.locals, index) })
+        index = index + 1
+    }
+    State { locals = locals facts = state.facts }
+}
