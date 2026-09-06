@@ -1,0 +1,92 @@
+import std.process.arguments
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.int.parse
+import std.int.to_text
+import std.text.concat
+import std.io.write_text
+import std.result.Result
+
+fn advance(value Int) Int { (value * 17 + 23) % 1000003 }
+fn alternate(value Int) Int { (value * 7 + 11) % 1000003 }
+fn int_lcg(count Int, seed Int) Int {
+    var state = seed % 1000003
+    var index = 0
+    while index < count {
+        state = advance(state)
+        index = index + 1
+    }
+    state
+}
+fn fib_recursive(value Int) Int {
+    if value < 2 { value } else { fib_recursive(value - 1) + fib_recursive(value - 2) }
+}
+record Point { x Int y Int z Int }
+fn step(value Point, delta Int) Point {
+    Point { x = (value.y + delta) % 1000003
+        y = (value.z + value.x) % 1000003
+        z = (value.x + value.y + value.z) % 1000003 }
+}
+fn record_value(count Int, seed Int) Int {
+    var point = Point { x = seed % 97 y = seed % 193 z = seed % 389 }
+    var index = 0
+    while index < count {
+        point = step(point, index % 31)
+        index = index + 1
+    }
+    point.x + point.y + point.z
+}
+fn list_build_scan(count Int, seed Int) Int {
+    let values = new[Int]()
+    var state = seed % 1000003
+    var index = 0
+    while index < count {
+        state = advance(state)
+        push(values, state)
+        index = index + 1
+    }
+    var total = 0
+    let size = length(values)
+    index = 0
+    while index < size {
+        total = total + get(values, index)
+        index = index + 1
+    }
+    total
+}
+fn function_value(count Int, seed Int) Int {
+    let action = if seed % 2 == 0 { advance } else { alternate }
+    var state = seed % 1000003
+    var index = 0
+    while index < count {
+        state = action(state)
+        index = index + 1
+    }
+    state
+}
+fn number(value Text) Int {
+    match parse(value) {
+        Result.Ok(value) => value
+        Result.Err(_) => { assert false
+            0 }
+    }
+}
+fn main() {
+    let args = arguments()
+    assert length(args) == 4
+    let selected = get(args, 1)
+    let count = number(get(args, 2))
+    let seed = number(get(args, 3))
+    assert count >= 0 && seed >= 0
+    let checksum = if selected == "int_lcg" { int_lcg(count, seed) } else {
+        if selected == "fib_recursive" { fib_recursive(count) } else {
+        if selected == "record_value" { record_value(count, seed) } else {
+        if selected == "list_build_scan" { list_build_scan(count, seed) } else {
+            assert selected == "function_value"
+            function_value(count, seed)
+        } } }
+    }
+    discard write_text(concat(to_text(checksum), "\n"))
+}
