@@ -1,0 +1,84 @@
+import std.int.to_text
+import std.text.concat
+
+fn odd(value Int) Bool { value % 2 != 0 }
+fn label(value Int) Text { to_text(value) }
+fn rendered_transforms() Text {
+    let values = new[Int]()
+    push(values, 1)
+    push(values, 2)
+    push(values, 3)
+    let words = map[Int, Text](filter(values, odd), label)
+    fold[Text, Text](words, "", concat)
+}
+
+test fn transformations_work_at_runtime_and_compile_time() {
+    assert rendered_transforms() == "13"
+    assert comptime { rendered_transforms() } == "13"
+}
+
+fn unexpected_transform(value Int) Text { assert false
+    to_text(value)
+}
+fn unexpected_predicate(value Int) Bool { assert false
+    value == 0
+}
+fn unexpected_combine(accumulator Text, value Int) Text { assert false
+    concat(accumulator, to_text(value))
+}
+test fn empty_transformations_do_not_call_callbacks() {
+    let empty = new[Int]()
+    assert length(map[Int, Text](empty, unexpected_transform)) == 0
+    assert length(filter(empty, unexpected_predicate)) == 0
+    assert fold[Int, Text](empty, "initial", unexpected_combine) == "initial"
+}
+
+record Mutation {
+    value Int
+    source List[Mutation]
+    trace List[Int]
+}
+fn mutations() List[Mutation] {
+    let source = new[Mutation]()
+    let trace = new[Int]()
+    push(source, Mutation { value = 1 source = source trace = trace })
+    push(source, Mutation { value = 2 source = source trace = trace })
+    source
+}
+fn observe(value Mutation) Int {
+    push(value.trace, value.value)
+    push(value.source, Mutation { value = 9 source = value.source trace = value.trace })
+    if value.value == 1 {
+        set(value.source, 0, Mutation { value = 8 source = value.source trace = value.trace })
+        set(value.source, 1, Mutation { value = 7 source = value.source trace = value.trace })
+    }
+    value.value
+}
+fn observe_and_keep(value Mutation) Bool { observe(value) > 0 }
+fn observe_and_fold(accumulator Int, value Mutation) Int { accumulator * 10 + observe(value) }
+fn assert_visits(values List[Mutation]) {
+    let trace = get(values, 0).trace
+    assert length(values) == 4 && length(trace) == 2
+    assert get(trace, 0) == 1 && get(trace, 1) == 7
+}
+
+test fn mutations_keep_initial_range_and_shared_element_snapshots() {
+    let mapped_source = mutations()
+    let mapped = map[Mutation, Int](mapped_source, observe)
+    assert length(mapped) == 2 && get(mapped, 0) == 1 && get(mapped, 1) == 7
+    assert_visits(mapped_source)
+
+    let filtered_source = mutations()
+    let filtered = filter(filtered_source, observe_and_keep)
+    assert length(filtered) == 2
+    assert get(filtered, 0).value == 1 && get(filtered, 1).value == 7
+    assert_visits(filtered_source)
+    push(filtered, get(filtered_source, 0))
+    assert length(filtered_source) == 4
+    push(get(filtered, 0).trace, 99)
+    assert get(get(filtered_source, 0).trace, 2) == 99
+
+    let folded_source = mutations()
+    assert fold[Mutation, Int](folded_source, 0, observe_and_fold) == 17
+    assert_visits(folded_source)
+}

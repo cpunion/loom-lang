@@ -58,7 +58,8 @@ and publishes `target/loom`. On macOS/Linux, a cold build starts with the frozen
 Rust seed in `compiler/bootstrap/seed`, then builds the ordered Loom source
 commits in `compiler/bootstrap/checkpoints`. Each checkpoint implements a
 capability before the next compiler uses it: the first enables native Float
-before the current evaluator stores Float values. These immutable inputs are
+before the current evaluator stores Float values; the second enables function
+values before source `std.list` adopts higher-order functions. These immutable inputs are
 cached in `target/bootstrap/<commit>/`; no preinstalled Loom compiler is required.
 Pinned commits must be available in Git history; the script reports an exact
 fetch command when one is missing. The cache is disposable, not another
@@ -260,6 +261,11 @@ timings; local variables remain conservatively rooted for the function.
   `append`. Self-append copies the initial source prefix; clone detaches the outer
   list while preserving sharing of contained data. These are ordinary Loom functions
   and work at compile time, without additional intrinsics.
+- Source `std.list.map`, `filter`, and `fold` accept typed callbacks. Traversal
+  reads the initial index range once, in ascending order: callback appends are
+  not visited, while changes to unread elements are observed. Map/filter return
+  a new outer List and retain element sharing. Fold accepts a distinct accumulator
+  type and returns its initial value for an empty List.
 - Source `std.text`, `std.list`, `std.result`, `std.file`, `std.fs`, and `std.io`. Private
   intrinsic signatures are checked against the runtime ABI and accepted only
   from the configured standard-library source root. Reading loops, UTF-8
@@ -438,8 +444,8 @@ protection; scalar callbacks need no Loom runtime.
 Pure compile-time calls and returned named function values use the same checked
 signatures and contracts. Reification schedules the source declaration and its
 type arguments in the destination program, not an evaluation-local function ID.
-The [callback example](examples/callbacks/main.loom) includes a source-written
-generic map, overloaded callbacks, returned functions, and GC-stressed argument
+The [callback example](examples/callbacks/main.loom) uses source `std.list.map`,
+overloaded callbacks, returned functions, and GC-stressed argument
 ordering. Capturing closures, bound method values and compile-time function
 parameters remain later work.
 
