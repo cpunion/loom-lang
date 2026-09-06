@@ -34,6 +34,7 @@ fn parameter_name(context Context, name Text) Bool {
 }
 fn depends_on_type(context Context, node Node) Bool {
     if node.kind == NodeKind.Type && parameter_name(context, node.value) { return true }
+    if node.kind == NodeKind.Implements && type_parameter_operand(context, child(node, 0)) { return true }
     if node.kind == NodeKind.Binary && (node.value == "==" || node.value == "!=") &&
         type_operand(context, child(node, 0)) && type_operand(context, child(node, 1)) &&
         (type_parameter_operand(context, child(node, 0)) || type_parameter_operand(context, child(node, 1))) { return true }
@@ -58,7 +59,8 @@ fn staging(context Context, node Node) Result[Context, Failure] {
     }
     // Compile-time call targets never enter the runtime reachability queue.
     let env = Environment { source = context.env.source types = context.env.types signatures = context.env.signatures
-        pending = new[Instance]() stage_depth = context.env.stage_depth + 1 computations = context.env.computations }
+        pending = new[Instance]() stage_depth = context.env.stage_depth + 1 computations = context.env.computations
+        concepts = context.env.concepts implementations = context.env.implementations }
     let locals = new[Local]()
     var index = 0
     while index < length(context.locals) { push(locals, get(context.locals, index))
@@ -147,7 +149,17 @@ fn type_parameter_operand(context Context, node Node) Bool {
 fn selected(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let condition = child(source, 0)
     var yes = false
-    if condition.kind == NodeKind.Binary && (condition.value == "==" || condition.value == "!=") &&
+    var chosen = context
+    if condition.kind == NodeKind.Implements {
+        if !type_operand(context, child(condition, 0)) {
+            return Result.Err(error(context, condition, "implements requires an unshadowed type operand"))
+        }
+        let ty = resolve(context.env, context.signature.symbol, child(condition, 0), context.arguments, 0)?
+        let capability = required_concept(context.env, context.signature.symbol, child(condition, 1))?
+        yes = satisfies(context, ty, capability)
+        if !yes && !concrete(context.env, ty) { return deferred(context, node, expected) }
+        if yes { chosen = with_evidence(context, ty, capability) }
+    } else { if condition.kind == NodeKind.Binary && (condition.value == "==" || condition.value == "!=") &&
         (type_operand(context, child(condition, 0)) || type_operand(context, child(condition, 1)) ||
             child(condition, 0).kind == NodeKind.Type || child(condition, 1).kind == NodeKind.Type ||
             child(condition, 0).kind == NodeKind.TupleType || child(condition, 1).kind == NodeKind.TupleType) {
@@ -170,8 +182,8 @@ fn selected(context Context, node Node, source Node, expected Int, enforce Bool)
             return deferred(context, node, expected)
         }
         yes = computed(context, node, condition, 2)?.number != 0
-    }
-    if yes { return block(context, child(source, 1), expected, enforce) }
+    } }
+    if yes { return block(chosen, child(source, 1), expected, enforce) }
     if length(source.children) == 3 { return block(context, child(source, 2), expected, enforce) }
     typed(context, node, expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true), expected)
 }

@@ -41,6 +41,28 @@ fn one_source(text Text) List[SourceFile] {
     files
 }
 
+test fn concept_members_keep_source_ownership_without_becoming_package_functions() {
+    let files = one_source("pub concept Display { fn display(self Self) Text }\nrecord Item { text Text }\nimpl Display for Item { fn display(self Item) Text { self.text } }\nfn helper() {}")
+    let program = bound(files, false)
+    assert length(program.symbols) == 6
+    assert get(program.symbols, 0).owner == -1
+    assert get(program.symbols, 1).owner == 0
+    assert get(program.symbols, 1).file == 0
+    assert get(program.symbols, 1).node.kind == NodeKind.Function
+    assert get(program.symbols, 4).owner == 3
+    assert length(candidates(program, 0, false, "Display")) == 1
+    assert length(candidates(program, 0, false, "display")) == 0
+    assert length(candidates(program, 0, false, "app.display")) == 0
+    assert length(candidates(program, 0, false, "helper")) == 1
+    push(files, source("app", "app/item_test.loom", "impl Display for Int { fn display(self Int) Text { \"test\" } }", true, false))
+    assert length(bound(files, false).symbols) == 6
+    let testing = bound(files, true)
+    assert length(testing.symbols) == 8
+    assert get(testing.symbols, 7).test_only && get(testing.symbols, 7).owner == 6
+    assert length(candidates(testing, 0, true, "display")) == 0
+    assert rejected(one_source("concept A {}\nrecord A {}" )).diagnostic.message == "duplicate or reserved data declaration"
+}
+
 test fn package_lookup_survives_file_moves_and_preserves_overloads() {
     let files = one_source("fn main() {}")
     push(files, source("app", "app/imports.loom", "import util.pick\n", false, false))

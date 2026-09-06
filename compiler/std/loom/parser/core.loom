@@ -64,7 +64,8 @@ fn reserved(value Text) Bool {
     value == "test" || value == "import" || value == "let" || value == "var" ||
     value == "return" || value == "assert" || value == "discard" || value == "while" ||
     value == "if" || value == "else" || value == "requires" || value == "ensures" ||
-    value == "true" || value == "false" || value == "comptime"
+    value == "true" || value == "false" || value == "comptime" ||
+    value == "concept" || value == "impl" || value == "for" || value == "implements"
 }
 fn name(cursor Cursor) Result[Step, Diagnostic] {
     if !at(cursor, Kind.Name) || reserved(token(cursor).value) {
@@ -94,10 +95,26 @@ fn parameter(cursor Cursor) Result[Step, Diagnostic] {
     let ty = type_ref(named.rest)?
     Result.Ok(done(cursor, ty.rest, NodeKind.Parameter, named.node.value, one(ty.node)))
 }
+fn type_parameter(cursor Cursor) Result[Step, Diagnostic] {
+    let named = name(cursor)?
+    var rest = named.rest
+    let bounds = new[Node]()
+    if at(rest, Kind.Name) && !reserved(token(rest).value) {
+        var more = true
+        while more {
+            let bound = type_ref(rest)?
+            push(bounds, bound.node)
+            rest = bound.rest
+            more = at(rest, Kind.Plus)
+            if more { rest = newlines(next(rest)) }
+        }
+    }
+    Result.Ok(done(cursor, rest, NodeKind.Name, named.node.value, bounds))
+}
 fn item(cursor Cursor, mode Items) Result[Step, Diagnostic] {
     match mode {
         Items.Types => type_ref(cursor)
-        Items.Names => name(cursor)
+        Items.Names => type_parameter(cursor)
         Items.Arguments => expr(cursor, 0, true, true)
         Items.Parameters => parameter(cursor)
     }

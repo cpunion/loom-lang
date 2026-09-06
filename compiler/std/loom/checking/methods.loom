@@ -1,0 +1,76 @@
+import std.loom.ast.Node
+import std.loom.binding.candidates
+import std.loom.project.qualify
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+fn visible_concept(context Context, capability Int) Bool {
+    let target = symbol(context.env, capability)
+    let here = symbol(context.env, context.signature.symbol)
+    let path = qualify(get(context.env.source.files, target.file).package, target.name)
+    let options = candidates(context.env.source, here.file, here.test_only, path)
+    var index = 0
+    while index < length(options) {
+        if get(options, index) == capability { return true }
+        index = index + 1
+    }
+    false
+}
+fn bound_method(context Context, ty Int, member Text, arity Int) Bool {
+    var index = 0
+    while index < length(context.signature.requirements) {
+        let requirement = get(context.signature.requirements, index)
+        if requirement.ty == ty {
+            let methods = get(context.env.concepts, concept_index(context.env, requirement.capability)).methods
+            var method = 0
+            while method < length(methods) {
+                let current = get(context.env.signatures, get(methods, method))
+                if symbol(context.env, current.symbol).name == member && length(current.params) == arity { return true }
+                method = method + 1
+            }
+        }
+        index = index + 1
+    }
+    false
+}
+fn method_call(context Context, node Node, source Node, member Text, types List[Node], inputs List[Node], selected Int, expected Int) Result[Expr, Failure] {
+    if length(types) != 0 { return Result.Err(error(context, node, "concept methods do not yet take type arguments")) }
+    let receiver = expr(context, source, -1)?
+    let bound = bound_method(context, receiver.ty, member, length(inputs) + 1)
+    let options = new[Int]()
+    var index = 0
+    while index < length(context.env.concepts) {
+        let capability = get(context.env.concepts, index)
+        if (selected < 0 && visible_concept(context, capability.symbol) &&
+            (!bound || evidence(context, receiver.ty, capability.symbol))) || selected == capability.symbol {
+            let provided = implementation(context, receiver.ty, capability.symbol)
+            let methods = if provided >= 0 { get(context.env.implementations, provided).methods } else {
+                if !concrete(context.env, receiver.ty) && evidence(context, receiver.ty, capability.symbol) {
+                    capability.methods
+                } else { new[Int]() }
+            }
+            var method = 0
+            while method < length(methods) {
+                let id = get(methods, method)
+                let current = get(context.env.signatures, id)
+                if symbol(context.env, current.symbol).name == member && length(current.params) == length(inputs) + 1 {
+                    push(options, id)
+                }
+                method = method + 1
+            }
+        }
+        index = index + 1
+    }
+    if length(options) == 0 {
+        return Result.Err(error(context, node, "method needs an accessible concept and explicit conformance; generic requirements must be declared"))
+    }
+    let arguments = new[Node]()
+    push(arguments, source)
+    index = 0
+    while index < length(inputs) { push(arguments, get(inputs, index))
+        index = index + 1 }
+    invoke(context, node, options, new[Node](), arguments, expressions(receiver), expected)
+}

@@ -1,0 +1,58 @@
+use std::{fs, process::Command};
+mod common;
+use common::success;
+
+#[test]
+fn static_concepts_emit_only_selected_calls_and_keep_native_value_layouts() {
+    let source = tempfile::tempdir().unwrap();
+    fs::write(
+        source.path().join("main.loom"),
+        "concept Value { fn value(self Self) Int }\nrecord Used { n Int }\nrecord Unused { n Int }\nimpl Value for Used { fn value(self Used) Int { self.n } }\nimpl Value for Unused { fn value(self Unused) Int { self.n + 9000 } }\nfn forward[T Value](value T) Int { value.value() }\nfn main() { assert forward(Used { n = 42 }) == 42 }",
+    )
+    .unwrap();
+    let executable = common::executable(source.path(), "static");
+    let ir = source.path().join("static.ll");
+    success(
+        &common::command(&[
+            "build",
+            source.path().to_str().unwrap(),
+            "--output",
+            executable.to_str().unwrap(),
+            "--emit-ir",
+            ir.to_str().unwrap(),
+        ])
+        .env("LOOM_OPT_LEVEL", "0")
+        .output()
+        .unwrap(),
+    );
+    success(&Command::new(executable).output().unwrap());
+    let ir = fs::read_to_string(ir).unwrap();
+    // The uncalled implementation never reaches LLVM, even with optimization off.
+    assert_eq!(
+        ir.lines()
+            .filter(|line| line.starts_with("define ") && line.contains("@loom.fn."))
+            .count(),
+        3
+    );
+    assert!(!ir.contains("loom_rt_"));
+
+    let example = common::root().join("compiler/examples/concepts");
+    let executable = common::executable(source.path(), "managed");
+    success(
+        &common::command(&[
+            "build",
+            example.to_str().unwrap(),
+            "--output",
+            executable.to_str().unwrap(),
+        ])
+        .env("LOOM_OPT_LEVEL", "0")
+        .output()
+        .unwrap(),
+    );
+    success(
+        &Command::new(executable)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+}

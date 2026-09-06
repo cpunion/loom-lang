@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add static nominal concepts, explicit implementations, generic bounds and
+  conditional conformance queries. Lower selected methods as direct calls,
+  preserve test isolation, and provide source `std.display` without a runtime registry.
+
 - Add source Text search, prefix/suffix matching, Unicode trimming, split and
   byte-builder-backed join, including compile-time execution and GC stress tests.
 

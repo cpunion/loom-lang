@@ -1,0 +1,25 @@
+import std.int.to_text
+import std.float.to_text
+
+pub concept Display {
+    fn display(self Self) Text
+}
+
+impl Display for Int {
+    fn display(self Int) Text { std.int.to_text(self) }
+}
+
+impl Display for Float {
+    fn display(self Float) Text { std.float.to_text(self) }
+}
+
+impl Display for Bool {
+    fn display(self Bool) Text { if self { "true" } else { "false" } }
+}
+
+impl Display for Text {
+    fn display(self Text) Text { self }
+}
+
+// The bound is explicit; each concrete call uses its declared implementation.
+pub fn to_text[T Display](value T) Text { value.display() }

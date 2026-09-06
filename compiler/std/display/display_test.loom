@@ -1,0 +1,15 @@
+test fn primitive_values_have_explicit_display_implementations() {
+    assert std.display.to_text(-42) == "-42"
+    assert std.display.to_text(1.25) == "1.25"
+    assert std.display.to_text(true) == "true" && std.display.to_text(false) == "false"
+    assert std.display.to_text("hé😀") == "hé😀"
+}
+
+test fn display_calls_agree_at_compile_time_and_runtime() {
+    let integer, decimal, boolean, text = comptime {
+        (std.display.to_text(-42), std.display.to_text(-0.0), std.display.to_text(true), std.display.to_text("é"))
+    }
+    assert integer == std.display.to_text(-42)
+    assert decimal == "-0" && decimal == std.display.to_text(-0.0)
+    assert boolean == std.display.to_text(true) && text == std.display.to_text("é")
+}

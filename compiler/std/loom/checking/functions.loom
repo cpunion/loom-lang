@@ -28,11 +28,19 @@ fn signature(env Environment, id Int, arguments List[Int], node Node) Result[Sig
         push(params, substitute(env, original.symbol, get(original.params, index), arguments, node)?)
         index = index + 1
     }
+    let obligations = new[Requirement]()
+    index = 0
+    while index < length(original.requirements) {
+        let obligation = get(original.requirements, index)
+        push(obligations, Requirement { ty = substitute(env, original.symbol, obligation.ty, arguments, node)? capability = obligation.capability })
+        index = index + 1
+    }
     Result.Ok(Signature { symbol = original.symbol parameters = original.parameters params = params
-        result = substitute(env, original.symbol, original.result, arguments, node)? })
+        result = substitute(env, original.symbol, original.result, arguments, node)? requirements = obligations })
 }
 fn schedule(env Environment, id Int, arguments List[Int], node Node) Result[Int, Failure] {
     let current = get(env.signatures, id)
+    if prototype(env, current.symbol) { return Result.Err(failure(env, current.symbol, node, "concept evidence has no concrete implementation")) }
     var index = 0
     while index < length(env.pending) {
         let previous = get(env.pending, index)

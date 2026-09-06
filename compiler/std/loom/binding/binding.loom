@@ -13,7 +13,8 @@ import std.list.length
 import std.result.Result
 
 pub record Failure { source Int diagnostic Diagnostic }
-pub record Symbol { file Int node Node name Text public Bool test_only Bool }
+// owner is the enclosing concept/impl symbol, or -1 for a top-level declaration.
+pub record Symbol { file Int node Node name Text public Bool test_only Bool owner Int }
 record Lookup { path Text symbols List[Int] }
 record Scope { package Text production List[Lookup] testing List[Lookup] }
 // Source-file and symbol indices are local to this binding result. Rebind after
@@ -41,8 +42,8 @@ fn contains(values List[Text], value Text) Bool {
     }
     false
 }
-fn data(kind NodeKind) Bool {
-    kind == NodeKind.Record || kind == NodeKind.Enum || kind == NodeKind.Refined
+fn named_type(kind NodeKind) Bool {
+    kind == NodeKind.Record || kind == NodeKind.Enum || kind == NodeKind.Refined || kind == NodeKind.Concept
 }
 fn selected(source SourceFile, root Text, tests Bool) Bool {
     !source.test_only || (tests && source.package == root)
@@ -94,7 +95,7 @@ fn scope(files List[SourceFile], symbols List[Symbol], paths List[Text], package
     while index < length(symbols) {
         let symbol = get(symbols, index)
         let target = get(files, symbol.file).package
-        if target == package || symbol.public {
+        if symbol.owner < 0 && symbol.node.kind != NodeKind.Impl && (target == package || symbol.public) {
             let path = get(paths, index)
             let visible = target == package || contains(production_imports, path)
             if visible && !symbol.test_only { add_names(production, symbol.name, path, index) }
@@ -153,6 +154,7 @@ fn declaration_names(file Int, node Node) Result[Bool, Failure] {
         let child = get(node.children, index)
         if child.kind == NodeKind.TypeParameters { discard names(file, child.children, true)? }
         if child.kind == NodeKind.Parameters { discard names(file, child.children, false)? }
+        if child.kind == NodeKind.Function { discard declaration_names(file, child)? }
         if child.kind == NodeKind.Field || child.kind == NodeKind.Variant { push(members, child) }
         index = index + 1
     }
@@ -169,7 +171,8 @@ fn accessible_import(program Program, file Int, path Text) Bool {
     var index = 0
     while index < length(program.symbols) {
         let symbol = get(program.symbols, index)
-        if symbol.name == short && get(program.files, symbol.file).package == target &&
+        if symbol.owner < 0 && symbol.node.kind != NodeKind.Impl &&
+            symbol.name == short && get(program.files, symbol.file).package == target &&
             (symbol.public || source.package == target) &&
             (!symbol.test_only || (source.test_only && source.package == target)) {
             return true
@@ -216,14 +219,14 @@ pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failu
                 let test_only = source.test_only || has(node, NodeKind.Test)
                 if node.kind != NodeKind.Import && (!test_only || (tests && source.package == root)) {
                     discard declaration_names(file, node)?
-                    if data(node.kind) {
+                    if named_type(node.kind) {
                         if builtin(node.value) {
                             return Result.Err(failure(file, node, "duplicate or reserved data declaration"))
                         }
                         var other = 0
                         while other < length(symbols) {
                             let existing = get(symbols, other)
-                            if data(existing.node.kind) && existing.name == node.value &&
+                            if named_type(existing.node.kind) && existing.name == node.value &&
                                 get(files, existing.file).package == source.package {
                                 return Result.Err(failure(file, node, "duplicate or reserved data declaration"))
                             }
@@ -233,9 +236,25 @@ pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failu
                     if has(node, NodeKind.Intrinsic) && (!source.trusted_std || test_only || has(node, NodeKind.Public)) {
                         return Result.Err(failure(file, node, "intrinsics are private declarations of the trusted standard library"))
                     }
+                    let owner = length(symbols)
                     push(symbols, Symbol { file = file node = node name = node.value
-                        public = has(node, NodeKind.Public) test_only = test_only })
+                        public = has(node, NodeKind.Public) test_only = test_only owner = -1 })
                     push(paths, qualify(source.package, node.value))
+                    if node.kind == NodeKind.Concept || node.kind == NodeKind.Impl {
+                        var member = 0
+                        while member < length(node.children) {
+                            let method = get(node.children, member)
+                            if method.kind == NodeKind.Function {
+                                if has(method, NodeKind.Intrinsic) || has(method, NodeKind.Test) || has(method, NodeKind.Public) {
+                                    return Result.Err(failure(file, method, "concept and impl methods inherit their owner's visibility and cannot be tests or intrinsics"))
+                                }
+                                push(symbols, Symbol { file = file node = method name = method.value
+                                    public = false test_only = test_only owner = owner })
+                                push(paths, "")
+                            }
+                            member = member + 1
+                        }
+                    }
                 }
                 index = index + 1
             }

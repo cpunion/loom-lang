@@ -1,0 +1,78 @@
+import std.loom.ast.NodeKind
+import std.list.length
+
+test fn concepts_implementations_and_bounds_have_explicit_structure() {
+    let tree = parsed("pub concept Display {\nfn display(self Self) Text\nfn reset(self Self)\n}\nimpl Display for Person { fn display(self Person) Text { self.name }\nfn reset(self Person) {} }\nfn render[T Display + Debug, U](value T, extra U) Text { value.display() }")
+    let capability = child(tree, 0)
+    assert capability.kind == NodeKind.Concept && capability.value == "Display"
+    assert child(capability, 0).kind == NodeKind.Public
+    let prototype = child(capability, 1)
+    assert prototype.kind == NodeKind.Function && prototype.value == "display"
+    assert length(prototype.children) == 3
+    assert child(prototype, 0).kind == NodeKind.TypeParameters
+    assert child(child(child(prototype, 1), 0), 0).value == "Self"
+    assert child(prototype, 2).kind == NodeKind.ReturnType
+    assert length(child(capability, 2).children) == 2
+    let implementation = child(tree, 1)
+    assert implementation.kind == NodeKind.Impl
+    assert child(implementation, 0).kind == NodeKind.Type && child(implementation, 0).value == "Display"
+    assert child(implementation, 1).kind == NodeKind.Type && child(implementation, 1).value == "Person"
+    assert body(child(implementation, 2)).kind == NodeKind.Block
+    let parameters = child(child(tree, 2), 0)
+    assert child(parameters, 0).kind == NodeKind.Name && child(parameters, 0).value == "T"
+    assert child(child(parameters, 0), 0).kind == NodeKind.Type
+    assert child(child(parameters, 0), 0).value == "Display"
+    assert child(child(parameters, 0), 1).value == "Debug"
+    assert length(child(parameters, 1).children) == 0
+    assert child(body(child(tree, 2)), 0).kind == NodeKind.Call
+}
+
+test fn implements_conditions_and_expression_receivers_preserve_chaining() {
+    let tree = parsed("fn select[T](value T) Text { comptime if List[T] implements app.Display { value.display() } else { unavailable() } }\nfn f() { make().display[Int](1)?.0\n(make().child).display()\n}")
+    let condition = child(child(child(body(child(tree, 0)), 0), 0), 0)
+    assert condition.kind == NodeKind.Implements
+    assert child(condition, 0).kind == NodeKind.Type && child(condition, 0).value == "List"
+    assert child(child(condition, 0), 0).value == "T"
+    assert child(condition, 1).kind == NodeKind.Type && child(condition, 1).value == "app.Display"
+    let selected = child(body(child(tree, 1)), 0)
+    assert selected.kind == NodeKind.Select && selected.value == "0"
+    assert child(selected, 0).kind == NodeKind.Try
+    let method = child(child(selected, 0), 0)
+    assert method.kind == NodeKind.MethodCall && method.value == "display"
+    assert child(method, 0).kind == NodeKind.Call && child(method, 0).value == "make"
+    assert child(method, 1).kind == NodeKind.TypeArguments && child(child(method, 1), 0).value == "Int"
+    assert child(method, 2).kind == NodeKind.Arguments && child(child(method, 2), 0).value == "1"
+    let nested = child(body(child(tree, 1)), 1)
+    assert nested.kind == NodeKind.MethodCall && child(nested, 0).kind == NodeKind.Select
+    let simple = child(body(child(parsed("fn f() { make().display(1) }"), 0)), 0)
+    assert simple.span.start == 9 && simple.span.end == 26
+    let numeric = body(child(parsed("fn f() { 3.choose(true)\n1.25.display() }"), 0))
+    assert child(numeric, 0).kind == NodeKind.MethodCall && child(numeric, 0).value == "choose"
+    assert child(child(numeric, 0), 0).kind == NodeKind.Integer
+    assert child(numeric, 1).kind == NodeKind.MethodCall && child(numeric, 1).value == "display"
+    assert child(child(numeric, 1), 0).kind == NodeKind.Float && child(child(numeric, 1), 0).value == "1.25"
+    let negatives = body(child(parsed("fn f() { -3.display()\n-1.25.display()\n(-3).display()\n(-1.25).display()\n(-9223372036854775808).display() }"), 0))
+    assert child(negatives, 0).kind == NodeKind.Unary && child(child(negatives, 0), 0).kind == NodeKind.MethodCall
+    assert child(child(child(negatives, 0), 0), 0).value == "3"
+    assert child(negatives, 1).kind == NodeKind.Unary && child(child(negatives, 1), 0).kind == NodeKind.MethodCall
+    assert child(child(child(negatives, 1), 0), 0).value == "1.25"
+    assert child(negatives, 2).kind == NodeKind.MethodCall && child(child(negatives, 2), 0).value == "-3"
+    assert child(negatives, 3).kind == NodeKind.MethodCall && child(child(negatives, 3), 0).kind == NodeKind.Unary
+    assert child(negatives, 4).kind == NodeKind.MethodCall && child(child(negatives, 4), 0).value == "-9223372036854775808"
+    assert rejected("fn f() { -9223372036854775808.display() }").message == "integer literal is outside the Int range"
+}
+
+test fn concept_syntax_reports_incomplete_and_reserved_forms() {
+    assert rejected("concept Display[T] {}").message == "concepts do not take type parameters"
+    assert rejected("concept Display { fn display(self Self) Text {} }").message == "concept method prototypes have no body or contracts"
+    assert rejected("concept Display { fn display(self Self) Text requires true }").message == "concept method prototypes have no body or contracts"
+    assert rejected("impl Display Person {}").message == "expected 'for' after the implemented concept"
+    assert rejected("pub impl Display for Person {}").message == "impl blocks cannot be public"
+    assert rejected("fn f[impl]() {}").message == "expected a name"
+    assert rejected("fn f[T Display +]() {}").message == "expected a name"
+    assert rejected("fn f() { let implements = 1 }").message == "expected a name"
+    assert rejected("fn f() { make().display[Int] }").message == "expected '(' after method type arguments"
+    assert rejected("fn f[T]() Int { comptime if T implements Display { 1 } else { let = 2 } }").message == "expected a name"
+    let malformed = rejected("concept C { fn f() {} }")
+    assert malformed.span.start == 19 && malformed.span.end == 20
+}

@@ -112,11 +112,18 @@ test fn float_spelling_and_tuple_selectors_are_distinct() {
     assert get(lexed("pair. 0.1"), 2).kind == Kind.Number
     assert get(lexed("1e99999"), 0).kind == Kind.Float
     assert get(lexed("1e-99999"), 0).kind == Kind.Float
+    let integer_method = lexed("3.choose(true)")
+    token_is(integer_method, 0, Kind.Number, "3", 0, 1)
+    token_is(integer_method, 1, Kind.Dot, "", 1, 2)
+    token_is(integer_method, 2, Kind.Name, "choose", 2, 8)
+    assert get(lexed("1.25.display()"), 0).kind == Kind.Float
+    assert get(lexed("3.e2()"), 0).kind == Kind.Number
+    assert get(lexed("3.choose [Int](2)"), 0).kind == Kind.Number
+    token_is(lexed("1.e2"), 2, Kind.Name, "e2", 2, 4)
 }
 
 test fn malformed_floats_and_numeric_suffixes_report_source_spans() {
     error_is("1.", "expected digits after the decimal point", 0, 2)
-    error_is("1.e2", "expected digits after the decimal point", 0, 2)
     error_is("1e", "expected digits in the exponent", 0, 2)
     error_is("1.0e-", "expected digits in the exponent", 0, 5)
     error_is("1e+word", "expected digits in the exponent", 0, 3)

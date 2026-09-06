@@ -120,6 +120,12 @@ proofs remain mandatory even while the supported prover fragment grows. Exact
 overload ranking, macro spelling, solver choice, artifact encoding, and runtime
 layout belong to focused implementation designs, not new feature checklists.
 
+Static nominal concepts now lower explicit implementations and bounded generic
+method calls into the existing direct-call path. Conditional conformance queries,
+method qualification and source `std.display` use the same model. Dynamic
+dispatch, associated types, generic implementations and bounded generic data
+remain open; there is no runtime conformance registry.
+
 Native binary64 `Float`, source numeric parsing/conversion, compile-time execution
 and Float-based constrained types now share the checked/native path. The compiler
 adopts Float through a pinned source checkpoint without extending the frozen Rust
