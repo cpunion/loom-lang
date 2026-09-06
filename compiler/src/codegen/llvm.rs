@@ -106,13 +106,20 @@ fn emit_checked(
     let allocating = gc::allocating_functions(program, &reachable);
     trace_phase("target");
     Target::initialize_native(&InitializationConfig::default())?;
+    trace_phase("triple");
     let triple = TargetMachine::get_default_triple();
-    let machine = Target::from_triple(&triple)
-        .map_err(|error| error.to_string())?
+    trace_phase("target lookup");
+    let target = Target::from_triple(&triple).map_err(|error| error.to_string())?;
+    trace_phase("host cpu");
+    let cpu = TargetMachine::get_host_cpu_name().to_string();
+    trace_phase("host features");
+    let features = TargetMachine::get_host_cpu_features().to_string();
+    trace_phase("target machine");
+    let machine = target
         .create_target_machine(
             &triple,
-            &TargetMachine::get_host_cpu_name().to_string(),
-            &TargetMachine::get_host_cpu_features().to_string(),
+            &cpu,
+            &features,
             optimization,
             if cfg!(windows) {
                 RelocMode::Default
@@ -122,9 +129,11 @@ fn emit_checked(
             CodeModel::Default,
         )
         .ok_or("LLVM could not create a native target machine")?;
+    trace_phase("context");
     let context = Context::create();
     let module = context.create_module("loom");
     module.set_triple(&triple);
+    trace_phase("layout");
     module.set_data_layout(&machine.get_target_data().get_data_layout());
     let builder = context.create_builder();
     let mut tracers = HashMap::new();
