@@ -1,0 +1,58 @@
+import std.display.Display
+import std.display.to_text
+import std.text.concat
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+
+record Person { name Text score Int }
+record Hidden { value Int }
+
+impl Display for Person {
+    fn display(self Person) Text { self.name }
+}
+
+concept Rank { fn rank(self Self, offset Int) Int }
+impl Rank for Person {
+    fn rank(self Person, offset Int) Int { self.score + offset }
+}
+
+fn forward[T Display](value T) Text { to_text(value) }
+
+// No Display bound is required: only the selected branch is instantiated.
+fn render_any[T](value T) Text {
+    comptime if T implements Display { value.display() } else { "<value>" }
+}
+
+fn ranked[T Display + Rank](value T) Text {
+    concat(to_text(value), concat(":", to_text(value.rank(0))))
+}
+
+fn make_person(trace List[Int]) Person {
+    set(trace, 0, get(trace, 0) * 10 + 1)
+    Person { name = "Ada" score = 10 }
+}
+fn next_offset(trace List[Int]) Int {
+    set(trace, 0, get(trace, 0) * 10 + 2)
+    3
+}
+
+fn exercise() {
+    let person = Person { name = "Ada" score = 10 }
+    assert forward(person) == "Ada" && forward(42) == "42"
+    assert forward(1.25) == "1.25" && forward(true) == "true"
+    assert render_any(person) == "Ada" && render_any(Hidden { value = 7 }) == "<value>"
+    assert ranked(person) == "Ada:10"
+    let fixed = comptime { forward(Person { name = "Loom" score = 1 }) }
+    assert fixed == "Loom"
+
+    // The receiver runs once, before explicit arguments, even when both mutate
+    // the same shared data. The trace is 12, not 21 or 112.
+    let trace = new[Int]()
+    push(trace, 0)
+    assert make_person(trace).rank(next_offset(trace)) == 13
+    assert get(trace, 0) == 12
+}
+
+fn main() { exercise() }

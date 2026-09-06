@@ -25,7 +25,8 @@ import std.list.set
 import std.list.length
 import std.result.Result
 
-record Signature { symbol Int parameters Int params List[Int] result Int }
+record Requirement { ty Int capability Int }
+record Signature { symbol Int parameters Int params List[Int] result Int requirements List[Requirement] }
 record Instance { signature Int arguments List[Int] }
 record Environment {
     source std.loom.binding.Program
@@ -34,6 +35,8 @@ record Environment {
     pending List[Instance]
     stage_depth Int
     computations List[Computation]
+    concepts List[Concept]
+    implementations List[Implementation]
 }
 record Binding { local Int previous Int }
 record Context {
@@ -152,12 +155,12 @@ fn bind_local(context Context, node Node, value Text, ty Int, mutable Bool, boun
 
 pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
     let env = Environment { source = source types = new[Type]() signatures = new[Signature]() pending = new[Instance]()
-        stage_depth = 0 computations = new[Computation]() }
+        stage_depth = 0 computations = new[Computation]() concepts = new[Concept]() implementations = new[Implementation]() }
     initialize_types(env)
     var index = 0
     while index < length(source.symbols) {
         let item = symbol(env, index)
-        if item.node.kind != NodeKind.Function {
+        if nominal_data(item.node.kind) {
             discard data_type(env, index, abstract_arguments(env, length(group(item.node, NodeKind.TypeParameters))), 0)?
         }
         index = index + 1
@@ -166,7 +169,13 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
     while index < length(source.symbols) {
         let item = symbol(env, index)
         if item.node.kind == NodeKind.Function {
-            let count = length(group(item.node, NodeKind.TypeParameters))
+            let count = if prototype(env, index) { 1 } else { length(group(item.node, NodeKind.TypeParameters)) }
+            if item.owner >= 0 && length(group(item.node, NodeKind.TypeParameters)) != 0 {
+                return Result.Err(failure(env, index, item.node, "concept and implementation methods do not yet take type parameters"))
+            }
+            if item.owner >= 0 && !prototype(env, index) && has(item.node, NodeKind.Requires) {
+                return Result.Err(failure(env, index, item.node, "an implementation cannot add an undeclared precondition"))
+            }
             let arguments = abstract_arguments(env, count)
             let params = new[Int]()
             let declarations = group(item.node, NodeKind.Parameters)
@@ -177,7 +186,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
             }
             let returns = group(item.node, NodeKind.ReturnType)
             let output = if length(returns) == 0 { 0 } else { resolve(env, index, get(returns, 0), arguments, 0)? }
-            let entry = get(source.files, item.file).package == source.root && item.name == "main" && !item.test_only
+            let entry = item.owner < 0 && get(source.files, item.file).package == source.root && item.name == "main" && !item.test_only
             if (entry || has(item.node, NodeKind.Test)) && (length(params) != 0 || output != 0 || count != 0) {
                 return Result.Err(failure(env, index, item.node, "main and tests take no parameters and omit the return type"))
             }
@@ -185,21 +194,23 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
             while previous < length(env.signatures) {
                 let other = get(env.signatures, previous)
                 let other_symbol = symbol(env, other.symbol)
-                if item.name == other_symbol.name && get(source.files, item.file).package == get(source.files, other_symbol.file).package && count == other.parameters && same(params, other.params) {
+                if item.owner == other_symbol.owner && item.name == other_symbol.name && get(source.files, item.file).package == get(source.files, other_symbol.file).package && count == other.parameters && same(params, other.params) {
                     return Result.Err(failure(env, index, item.node, "duplicate overload signature"))
                 }
                 previous = previous + 1
             }
-            push(env.signatures, Signature { symbol = index parameters = count params = params result = output })
+            push(env.signatures, Signature { symbol = index parameters = count params = params result = output
+                requirements = requirements(env, index, arguments)? })
         }
         index = index + 1
     }
+    discard conformances(env)?
     discard refinements(env)?
     discard layouts(env)?
     index = 0
     while index < length(env.signatures) {
         let signature = get(env.signatures, index)
-        discard function(env, index, abstract_arguments(env, signature.parameters), false)?
+        if !prototype(env, signature.symbol) { discard function(env, index, abstract_arguments(env, signature.parameters), false)? }
         index = index + 1
     }
     var entry = -1
@@ -210,7 +221,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
         let signature = get(env.signatures, index)
         let item = symbol(env, signature.symbol)
         let root = get(source.files, item.file).package == source.root
-        if signature.parameters == 0 && root {
+        if signature.parameters == 0 && root && item.owner < 0 {
             if item.name == "main" && !item.test_only { entry = schedule(env, index, new[Int](), item.node)? }
             if item.public && !item.test_only { push(exports, schedule(env, index, new[Int](), item.node)?) }
             if has(item.node, NodeKind.Test) { push(tests, schedule(env, index, new[Int](), item.node)?) }

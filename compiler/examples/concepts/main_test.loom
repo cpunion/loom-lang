@@ -1,0 +1,1 @@
+test fn explicit_static_concepts_compose() { exercise() }

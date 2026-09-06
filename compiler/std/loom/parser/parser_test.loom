@@ -66,7 +66,8 @@ test fn expressions_preserve_precedence_and_spans() {
     let propagated = child(body(child(parsed("fn f() { (-1)? }"), 0)), 0)
     assert propagated.kind == NodeKind.Try
     assert child(propagated, 0).span.start == 9 && child(propagated, 0).span.end == 13
-    assert child(body(child(parsed("fn f() { -1? }"), 0)), 0).kind == NodeKind.Try
+    let negative = child(body(child(parsed("fn f() { -1? }"), 0)), 0)
+    assert negative.kind == NodeKind.Unary && child(negative, 0).kind == NodeKind.Try
 }
 
 test fn control_flow_generics_records_and_propagation() {

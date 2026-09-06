@@ -59,6 +59,7 @@ fn float_mixing_and_unproved_contracts_reject_in_source() {
         "fn main() { let value Float = 1 }",
         "fn main() { let value Int = 1.0 }",
         "fn main() { discard 1.0 && 2.0 }",
+        "fn main() { discard 1.e2 }",
         "fn bad(value Float) Float ensures result == value { value }",
         "fn bad() Bool ensures result { 0.0 / 0.0 == 0.0 / 0.0 }",
     ] {

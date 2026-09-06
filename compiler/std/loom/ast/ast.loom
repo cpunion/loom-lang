@@ -12,11 +12,16 @@ pub enum NodeKind {
     Integer Text Bool Name Call Construct Unary Binary Select Try
     Match Arm Pattern Bindings Wildcard If Comptime
     TupleType Tuple Destructure Float
+    Concept Impl Implements MethodCall
 }
 
 // TupleType/Tuple children are ordered elements. Destructure stores "let" or
 // "var", with children [Bindings(Name...), initializer]. Numeric Select values
 // identify tuple positions; a parenthesized single item without a comma groups.
+// Concept children are flags and Function prototypes; Impl starts with concept
+// and target Types, followed by Function bodies. TypeParameters retain Name
+// children whose Type children are explicit bounds. Implements has [type,
+// concept Type]; MethodCall has [receiver, TypeArguments, Arguments].
 
 pub record Node {
     kind NodeKind

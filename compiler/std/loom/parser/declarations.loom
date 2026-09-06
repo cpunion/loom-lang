@@ -18,10 +18,45 @@ fn declaration(cursor Cursor) Result[Step, Diagnostic] {
     let rest = if public { next(cursor) } else { cursor }
     let flags = new[Node]()
     if public { push(flags, done(cursor, rest, NodeKind.Public, "", new[Node]()).node) }
+    if word(rest, "concept") { return concept_decl(cursor, rest, flags) }
+    if word(rest, "impl") {
+        if public { return Result.Err(error(cursor, "impl blocks cannot be public")) }
+        return impl_decl(rest)
+    }
     if word(rest, "record") || word(rest, "enum") || word(rest, "type") {
         return data_decl(cursor, rest, flags)
     }
-    function(cursor, rest, flags, public)
+    function(cursor, rest, flags, public, false)
+}
+fn concept_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, Diagnostic] {
+    let named = name(next(cursor))?
+    if at(named.rest, Kind.LBracket) { return Result.Err(error(named.rest, "concepts do not take type parameters")) }
+    var rest = newlines(expect(newlines(named.rest), Kind.LBrace, "'{' after the concept name")?)
+    while !at(rest, Kind.RBrace) {
+        if !word(rest, "fn") { return Result.Err(error(rest, "expected a concept method prototype or '}'")) }
+        let method = function(rest, rest, new[Node](), false, true)?
+        push(children, method.node)
+        rest = newlines(method.rest)
+    }
+    Result.Ok(done(start, next(rest), NodeKind.Concept, named.node.value, children))
+}
+fn impl_decl(cursor Cursor) Result[Step, Diagnostic] {
+    let concept_type = type_ref(next(cursor))?
+    let separator = newlines(concept_type.rest)
+    if !word(separator, "for") { return Result.Err(error(separator, "expected 'for' after the implemented concept")) }
+    let target = type_ref(newlines(next(separator)))?
+    let children = two(concept_type.node, target.node)
+    var rest = newlines(expect(newlines(target.rest), Kind.LBrace, "'{' after the implementation target")?)
+    while !at(rest, Kind.RBrace) {
+        let public = word(rest, "pub")
+        let begin = if public { next(rest) } else { rest }
+        let flags = new[Node]()
+        if public { push(flags, done(rest, begin, NodeKind.Public, "", new[Node]()).node) }
+        let method = function(rest, begin, flags, public, false)?
+        push(children, method.node)
+        rest = newlines(method.rest)
+    }
+    Result.Ok(done(cursor, next(rest), NodeKind.Impl, "", children))
 }
 fn data_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, Diagnostic] {
     let named = name(next(cursor))?
@@ -65,7 +100,7 @@ fn data_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, Diag
     }
     Result.Ok(done(start, next(rest), if is_record { NodeKind.Record } else { NodeKind.Enum }, named.node.value, children))
 }
-fn function(start Cursor, cursor Cursor, children List[Node], public Bool) Result[Step, Diagnostic] {
+fn function(start Cursor, cursor Cursor, children List[Node], public Bool, prototype Bool) Result[Step, Diagnostic] {
     var rest = cursor
     let is_test = word(rest, "test")
     if is_test {
@@ -82,7 +117,7 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool) Resul
         return Result.Err(error(rest, "intrinsic declarations must be private and cannot be tests"))
     }
     if !word(rest, "fn") {
-        return Result.Err(error(rest, "expected a function, record, enum, type, or import declaration"))
+        return Result.Err(error(rest, "expected a function, record, enum, type, concept, impl, or import declaration"))
     }
     let named = name(next(rest))?
     let parameters = type_parameters(named.rest)?
@@ -90,12 +125,18 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool) Resul
     let params = sequence(parameters.rest, Kind.LParen, Kind.RParen, NodeKind.Parameters, Items.Parameters, false)?
     push(children, params.node)
     rest = params.rest
-    if !is_intrinsic { rest = newlines(rest) }
+    if !is_intrinsic && !prototype { rest = newlines(rest) }
     if at(rest, Kind.LParen) || (at(rest, Kind.Name) && !word(rest, "requires") && !word(rest, "ensures")) {
         let ty = type_ref(rest)?
         if ty.node.value == "Unit" { return Result.Err(error(rest, "omit the Unit return annotation")) }
         push(children, done(rest, ty.rest, NodeKind.ReturnType, "", one(ty.node)).node)
         rest = ty.rest
+    }
+    if prototype {
+        if !at(rest, Kind.Newline) && !at(rest, Kind.RBrace) {
+            return Result.Err(error(rest, "concept method prototypes have no body or contracts"))
+        }
+        return Result.Ok(done(start, rest, NodeKind.Function, named.node.value, children))
     }
     if is_intrinsic {
         if !at(rest, Kind.Newline) && !at(rest, Kind.Eof) {

@@ -46,7 +46,7 @@ fn predicate_node(env Environment, owner Int) Node {
 fn predicate_context(env Environment, owner Int, locals List[Local], self_local Int, emit Bool) Context {
     let bindings = new[Binding]()
     push(bindings, Binding { local = self_local previous = -1 })
-    Context { env = env signature = Signature { symbol = owner parameters = 0 params = ints(get(locals, self_local).ty) result = 2 }
+    Context { env = env signature = Signature { symbol = owner parameters = 0 params = ints(get(locals, self_local).ty) result = 2 requirements = new[Requirement]() }
         arguments = new[Int]() locals = locals bindings = bindings head = 0 emit = emit }
 }
 fn predicate_scope(env Environment, owner Int, base Int) Context {
@@ -174,7 +174,8 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     }
     // Guard expansion shares this function queue, unlike compile-time staging.
     let env = Environment { source = context.env.source types = context.env.types signatures = context.env.signatures
-        pending = context.env.pending stage_depth = context.env.stage_depth + 1 computations = context.env.computations }
+        pending = context.env.pending stage_depth = context.env.stage_depth + 1 computations = context.env.computations
+        concepts = context.env.concepts implementations = context.env.implementations }
     let predicate = expr(predicate_context(env, declaration, context.locals, local, context.emit),
         predicate_node(context.env, declaration), 2)?
     let branches = expressions(predicate_at(predicate, node))

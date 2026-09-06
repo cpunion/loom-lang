@@ -1,0 +1,91 @@
+test fn nominal_concepts_specialize_into_reachable_ordinary_calls() {
+    let program = accepted("concept Display { fn display(self Self) Text }\nrecord Person { name Text }\nrecord Unused { name Text }\nimpl Display for Person { fn display(self Person) Text { self.name } }\nimpl Display for Unused { fn display(self Unused) Text { self.name } }\nfn render[T Display](value T) Text { value.display() }\nfn forward[T Display](value T) Text { render(value) }\nfn main() { let person = Person { name = \"Loom\" }\nassert forward(person) == \"Loom\" }")
+    assert length(program.functions) == 4
+    let forward = get(program.functions, 1)
+    let render = get(program.functions, 2)
+    let method = get(program.functions, 3)
+    assert get(forward.body.children, 0).kind == ExprKind.Call
+    assert get(render.body.children, 0).kind == ExprKind.Call
+    assert get(render.body.children, 0).index == 3
+    assert get(method.body.children, 0).kind == ExprKind.Field
+    rejects("concept Display { fn display(self Self) Text }\nrecord Person { name Text }\nfn display(value Person) Text { value.name }\nfn render[T Display](value T) Text { value.display() }\nfn main() { discard render(Person { name = \"x\" }) }")
+    rejects("concept Display { fn display(self Self) Text }\nfn allowed[T Display](value T) Text { value.display() }\nfn unrelated[T](value T) Text { value.display() }")
+    rejects("concept Display { fn display(self Self) Text }\nfn render[T Display](value T) Text { value.display() }\nfn undeclared[T](value T) Text { render(value) }")
+}
+
+test fn concept_overloads_and_multiple_bounds_require_unambiguous_selection() {
+    discard accepted("concept Choose { fn choose(self Self, value Int) Int\nfn choose(self Self, value Bool) Bool }\nimpl Choose for Int { fn choose(self Int, value Bool) Bool { value }\nfn choose(self Int, value Int) Int { self + value } }\nfn selected[T Choose](value T) Int { value.choose(2) }\nfn main() { assert selected(3) == 5\nassert 3.choose(true) }")
+    let definition = "concept Display { fn display(self Self) Text }\nconcept Debug { fn display(self Self) Text }\nimpl Display for Int { fn display(self Int) Text { \"display\" } }\nimpl Debug for Int { fn display(self Int) Text { \"debug\" } }\n"
+    discard accepted(concat(definition, "fn both[T Display + Debug](value T) Text { Display.display(value) }\nfn main() { assert both(3) == \"display\"\nassert Debug.display(3) == \"debug\" }"))
+    discard accepted(concat(definition, "fn render[T Display](value T) Text { value.display() }\nfn optional[T](value T) Text { comptime if T implements Display { value.display() } else { \"none\" } }\nfn main() { assert render(3) == \"display\"\nassert optional(3) == \"display\" }"))
+    rejects(concat(definition, "fn main() { discard 3.display() }"))
+    rejects(concat(definition, "fn ambiguous[T Display + Debug](value T) Text { value.display() }"))
+    rejects("concept Display { fn display(self Self) Text }\nconcept Debug {}\nimpl Display for Int { fn display(self Int) Text { \"x\" } }\nfn both[T Display + Debug](value T) Text { value.display() }\nfn main() { discard both(1) }")
+    rejects("concept C {}\nfn duplicate[T C + C](value T) {}")
+    rejects("concept C {}\nconcept D {}\nfn duplicate[T C](value T) {}\nfn duplicate[T D](value T) {}")
+}
+
+test fn implements_guards_keep_requirements_local_to_selected_branches() {
+    let definition = "concept Display { fn display(self Self) Text }\nimpl Display for Int { fn display(self Int) Text { \"int\" } }\n"
+    discard accepted(concat(definition, "fn label[T](value T) Text { comptime if T implements Display { value.display() } else { \"value\" } }\nfn known[T Display](value T) Text { comptime if T implements Display { value.display() } else { value.missing() } }\nfn main() { assert label(1) == \"int\"\nassert label(true) == \"value\"\nassert known(1) == \"int\"\nassert comptime { label(1) } == \"int\" }"))
+    rejects(concat(definition, "fn outside[T](value T) Text { comptime if T implements Display { discard value.display() }\nvalue.display() }"))
+    rejects(concat(definition, "fn ordinary[T](value T) { if T implements Display { discard value } }"))
+    rejects(concat(definition, "fn value_guard(value Int) { comptime if value implements Display {} }"))
+    rejects("concept C {}\nrecord Bounded[T C] { value T }")
+    rejects("concept C {}\nfn invalid(value C) {}")
+}
+
+test fn implementations_validate_unused_bodies_and_exact_signatures() {
+    rejects("concept C { fn value(self Self) Int }\nimpl C for Int {}")
+    rejects("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Bool) Int { 1 } }")
+    rejects("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Bool { true } }")
+    rejects("concept C {}\nimpl C for Int {}\nimpl C for Int {}")
+    rejects("concept C {}\nimpl C for Int { fn extra(self Int) {} }")
+    rejects("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int requires self > 0 { self } }")
+    rejects("concept C { fn value(self Self) Bool }\nimpl C for Int { fn value(self Int) Bool ensures false { true } }")
+    rejects("concept C { fn value(self Int) Int }")
+    rejects("concept C { fn value[T](self Self, value T) T }")
+    rejects("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { missing(self) } }")
+    let program = accepted("concept Copy { fn copy(self Self) Self }\nimpl Copy for Int { fn copy(self Int) Int { self } }\nfn main() { assert (1 + 2).copy() == 3 }")
+    let call = get(get(get(program.functions, program.entry).body.children, 0).children, 0)
+    assert get(call.children, 0).kind == ExprKind.Call
+    assert get(get(call.children, 0).children, 0).kind == ExprKind.Binary
+}
+
+test fn test_conformance_is_admitted_by_bounds_but_not_production_discovery() {
+    let files = source_files("concept C { fn value(self Self) Int }\nrecord Item {}\nfn optional[T](value T) Int { comptime if T implements C { 1 } else { 0 } }\nfn bounded[T C](value T) Int { value.value() }\npub fn production() Int { optional(Item {}) }")
+    let testing = source_file("app", "impl C for Item { fn value(self Item) Int { 7 } }\ntest fn check_bound() { assert bounded(Item {}) == 7 }", false)
+    push(files, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    let program = match bind(files, "app", true) {
+        Result.Ok(bound) => match check(bound) {
+            Result.Ok(program) => program
+            Result.Err(_) => { assert false
+                accepted("") }
+        }
+        Result.Err(_) => { assert false
+            accepted("") }
+    }
+    var production_fallback = false
+    var bound_dispatch = false
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        if length(function.arguments) == 1 {
+            let body = get(function.body.children, 0)
+            if body.kind == ExprKind.Block {
+                let selected = get(body.children, 0)
+                production_fallback = selected.kind == ExprKind.Integer && selected.text == "0"
+            }
+            if body.kind == ExprKind.Call { bound_dispatch = true }
+        }
+        index = index + 1
+    }
+    assert production_fallback && bound_dispatch
+    let direct = source_files("concept C { fn value(self Self) Int }\nrecord Item {}\npub fn production() Int { (Item {}).value() }")
+    push(direct, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(direct, "app", true) {
+        Result.Ok(bound) => match check(bound) { Result.Err(_) => {}
+            Result.Ok(_) => { assert false } }
+        Result.Err(_) => { assert false }
+    }
+}

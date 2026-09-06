@@ -1,5 +1,6 @@
 import std.loom.parser.parse
 import std.loom.source.Span
+import std.loom.ast.NodeKind
 import std.loom.typed.ExprKind
 import std.list.new
 import std.list.get
@@ -125,6 +126,19 @@ test fn semantic_failures_keep_source_diagnostics() {
             assert failure.diagnostic.span.start == 19 }
         Result.Ok(_) => { assert false }
     }
+}
+
+test fn method_calls_resolve_to_owned_implementation_symbols() {
+    let text = "concept C { fn value(self Self) Int }\nrecord Item { number Int }\nimpl C for Item { fn value(self Item) Int { self.number } }\nfn main() { let item = Item { number = 7 }\nassert item.value() == 7 }"
+    let analysis = accepted(input(text))
+    let call = get(expressions_at(analysis, 0, offset(text, "item.value()") + 5), 0).expression
+    assert call.kind == ExprKind.Call && type_name(analysis, call.ty) == "Int"
+    let target = get(analysis.program.functions, call.index)
+    let method = get(analysis.bindings.symbols, target.symbol)
+    assert method.name == "value" && method.owner >= 0
+    let implementation = get(analysis.bindings.symbols, method.owner)
+    assert implementation.node.kind == NodeKind.Impl
+    assert get(implementation.node.children, 1).value == "Item"
 }
 
 test fn structural_tuple_types_and_projections() {

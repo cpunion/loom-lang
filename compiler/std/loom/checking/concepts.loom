@@ -1,0 +1,192 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.binding.candidates
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+record Concept { symbol Int methods List[Int] }
+record Implementation { symbol Int capability Int ty Int methods List[Int] }
+
+fn prototype(env Environment, owner Int) Bool {
+    let parent = symbol(env, owner).owner
+    parent >= 0 && symbol(env, parent).node.kind == NodeKind.Concept
+}
+fn concept_named(env Environment, owner Int, node Node, path Text) Result[Int, Failure] {
+    let here = symbol(env, owner)
+    let options = candidates(env.source, here.file, here.test_only, path)
+    var selected = -1
+    var index = 0
+    while index < length(options) {
+        let candidate = get(options, index)
+        if symbol(env, candidate).node.kind == NodeKind.Concept {
+            if selected >= 0 { return Result.Err(failure(env, owner, node, "ambiguous concept; qualify its name")) }
+            selected = candidate
+        }
+        index = index + 1
+    }
+    Result.Ok(selected)
+}
+fn required_concept(env Environment, owner Int, node Node) Result[Int, Failure] {
+    if length(node.children) != 0 {
+        return Result.Err(failure(env, owner, node, "concepts do not yet take type arguments"))
+    }
+    let selected = concept_named(env, owner, node, node.value)?
+    if selected < 0 { return Result.Err(failure(env, owner, node, "expected an accessible concept")) }
+    Result.Ok(selected)
+}
+fn requirements(env Environment, owner Int, arguments List[Int]) Result[List[Requirement], Failure] {
+    let obligations = new[Requirement]()
+    if prototype(env, owner) {
+        push(obligations, Requirement { ty = get(arguments, 0) capability = symbol(env, owner).owner })
+        return Result.Ok(obligations)
+    }
+    let parameters = group(symbol(env, owner).node, NodeKind.TypeParameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        var bound = 0
+        while bound < length(parameter.children) {
+            let node = child(parameter, bound)
+            let capability = required_concept(env, owner, node)?
+            var previous = 0
+            while previous < length(obligations) {
+                let existing = get(obligations, previous)
+                if existing.ty == get(arguments, index) && existing.capability == capability {
+                    return Result.Err(failure(env, owner, node, "duplicate concept requirement"))
+                }
+                previous = previous + 1
+            }
+            push(obligations, Requirement { ty = get(arguments, index) capability = capability })
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(obligations)
+}
+fn owned_signatures(env Environment, owner Int) List[Int] {
+    let methods = new[Int]()
+    var index = 0
+    while index < length(env.signatures) {
+        if symbol(env, get(env.signatures, index).symbol).owner == owner { push(methods, index) }
+        index = index + 1
+    }
+    methods
+}
+fn concept_index(env Environment, capability Int) Int {
+    var index = 0
+    while index < length(env.concepts) {
+        if get(env.concepts, index).symbol == capability { return index }
+        index = index + 1
+    }
+    -1
+}
+fn conformances(env Environment) Result[Bool, Failure] {
+    var owner = 0
+    while owner < length(env.source.symbols) {
+        let item = symbol(env, owner)
+        if item.node.kind == NodeKind.Concept {
+            let methods = owned_signatures(env, owner)
+            var index = 0
+            while index < length(methods) {
+                let method = get(env.signatures, get(methods, index))
+                if length(method.params) == 0 || get(method.params, 0) != get(abstract_arguments(env, 1), 0) {
+                    return Result.Err(failure(env, method.symbol, symbol(env, method.symbol).node, "a concept method's first parameter must have type Self"))
+                }
+                index = index + 1
+            }
+            push(env.concepts, Concept { symbol = owner methods = methods })
+        }
+        owner = owner + 1
+    }
+    owner = 0
+    while owner < length(env.source.symbols) {
+        let item = symbol(env, owner)
+        if item.node.kind == NodeKind.Impl {
+            let capability = required_concept(env, owner, child(item.node, 0))?
+            let ty = resolve(env, owner, child(item.node, 1), new[Int](), 0)?
+            if !concrete(env, ty) { return Result.Err(failure(env, owner, item.node, "an implementation needs a concrete target type")) }
+            var index = 0
+            while index < length(env.implementations) {
+                let previous = get(env.implementations, index)
+                if previous.capability == capability && previous.ty == ty {
+                    return Result.Err(failure(env, owner, item.node, "duplicate explicit implementation for this concept and type"))
+                }
+                index = index + 1
+            }
+            let expected = get(env.concepts, concept_index(env, capability)).methods
+            let actual = owned_signatures(env, owner)
+            if length(actual) != length(expected) {
+                return Result.Err(failure(env, owner, item.node, "an implementation must define each concept method exactly once"))
+            }
+            let methods = new[Int]()
+            index = 0
+            while index < length(expected) {
+                let requirement = signature(env, get(expected, index), ints(ty), item.node)?
+                var found = -1
+                var candidate = 0
+                while candidate < length(actual) {
+                    let method = get(env.signatures, get(actual, candidate))
+                    if symbol(env, method.symbol).name == symbol(env, requirement.symbol).name &&
+                        same(method.params, requirement.params) && method.result == requirement.result {
+                        found = get(actual, candidate)
+                    }
+                    candidate = candidate + 1
+                }
+                if found < 0 { return Result.Err(failure(env, owner, item.node, "implementation method signature does not match its concept")) }
+                push(methods, found)
+                index = index + 1
+            }
+            push(env.implementations, Implementation { symbol = owner capability = capability ty = ty methods = methods })
+        }
+        owner = owner + 1
+    }
+    Result.Ok(true)
+}
+fn evidence(context Context, ty Int, capability Int) Bool {
+    var index = 0
+    while index < length(context.signature.requirements) {
+        let requirement = get(context.signature.requirements, index)
+        if requirement.ty == ty && requirement.capability == capability { return true }
+        index = index + 1
+    }
+    false
+}
+fn with_evidence(context Context, ty Int, capability Int) Context {
+    let current = context.signature
+    let obligations = new[Requirement]()
+    var index = 0
+    while index < length(current.requirements) { push(obligations, get(current.requirements, index))
+        index = index + 1 }
+    if !evidence(context, ty, capability) { push(obligations, Requirement { ty = ty capability = capability }) }
+    let updated = Signature { symbol = current.symbol parameters = current.parameters params = current.params result = current.result requirements = obligations }
+    Context { env = context.env signature = updated arguments = context.arguments locals = context.locals
+        bindings = context.bindings head = context.head emit = context.emit }
+}
+fn implementation(context Context, ty Int, capability Int) Int {
+    var index = 0
+    while index < length(context.env.implementations) {
+        let item = get(context.env.implementations, index)
+        if item.ty == ty && item.capability == capability &&
+            (!symbol(context.env, item.symbol).test_only || symbol(context.env, context.signature.symbol).test_only || evidence(context, ty, capability)) {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+fn satisfies(context Context, ty Int, capability Int) Bool {
+    evidence(context, ty, capability) || implementation(context, ty, capability) >= 0
+}
+fn satisfies_arguments(context Context, current Signature, arguments List[Int], node Node) Result[Bool, Failure] {
+    var index = 0
+    while index < length(current.requirements) {
+        let requirement = get(current.requirements, index)
+        let ty = substitute(context.env, current.symbol, requirement.ty, arguments, node)?
+        if !satisfies(context, ty, requirement.capability) { return Result.Ok(false) }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

@@ -116,10 +116,25 @@ fn variant(context Context, node Node, types List[Node], inputs List[Node], expe
     Result.Ok(expression(ExprKind.Variant, data_type(context.env, declaration, arguments, 0)?, node, "", selected, values, all_fall(values)))
 }
 fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
-    let first = slice(node.value, 0, first_dot(node.value))
-    if lookup(context, first) >= 0 { return Result.Err(error(context, node, "a local value is not callable")) }
     let types = child(node, 0).children
     let inputs = child(node, 1).children
+    let first = slice(node.value, 0, first_dot(node.value))
+    if lookup(context, first) >= 0 {
+        if package(node.value) == "" { return Result.Err(error(context, node, "a local value is not callable")) }
+        let receiver = Node { kind = NodeKind.Name value = package(node.value) span = node.span children = new[Node]() }
+        return method_call(context, node, receiver, name(node.value), types, inputs, -1, expected)
+    }
+    if length(context.env.concepts) != 0 && package(node.value) != "" {
+        let capability = concept_named(context.env, context.signature.symbol, node, package(node.value))?
+        if capability >= 0 {
+            if length(inputs) == 0 { return Result.Err(error(context, node, "a concept method call needs a receiver")) }
+            let arguments = new[Node]()
+            var index = 1
+            while index < length(inputs) { push(arguments, get(inputs, index))
+                index = index + 1 }
+            return method_call(context, node, get(inputs, 0), name(node.value), types, arguments, capability, expected)
+        }
+    }
     let current = symbol(context.env, context.signature.symbol)
     let available = candidates(context.env.source, current.file, current.test_only, node.value)
     let declaration = find_data(context.env, context.signature.symbol, node, node.value)?
@@ -147,8 +162,11 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         }
         index = index + 1
     }
+    invoke(context, node, options, types, inputs, new[Expr](), expected)
+}
+fn invoke(context Context, node Node, options List[Int], types List[Node], inputs List[Node], prefix List[Expr], expected Int) Result[Expr, Failure] {
     let hints = new[Int]()
-    index = 0
+    var index = 0
     while index < length(inputs) { push(hints, -1)
         index = index + 1
     }
@@ -165,22 +183,25 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     let values = new[Expr]()
     index = 0
+    while index < length(prefix) { push(values, get(prefix, index))
+        index = index + 1 }
     while index < length(inputs) { push(values, expr(context, get(inputs, index), get(hints, index))?)
         index = index + 1
     }
     let matches = new[Instance]()
     let widening = new[Bool]()
     var exact = false
+    var missing_requirement = false
     index = 0
     while index < length(options) {
         let id = get(options, index)
-        let signature = get(context.env.signatures, id)
-        let args = supplied(context, node, types, signature.parameters)?
+        let candidate_signature = get(context.env.signatures, id)
+        let args = supplied(context, node, types, candidate_signature.parameters)?
         var matched = true
         var widened = false
         var argument = 0
         while argument < length(values) {
-            let pattern = get(signature.params, argument)
+            let pattern = get(candidate_signature.params, argument)
             let value = get(values, argument)
             if !infer(context.env, pattern, value.ty, args) {
                 let target = hint(context, pattern, args, node)?
@@ -190,11 +211,13 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
             }
             argument = argument + 1
         }
-        if matched && !complete(args) && expected >= 0 { discard infer(context.env, signature.result, expected, args) }
+        if matched && !complete(args) && expected >= 0 { discard infer(context.env, candidate_signature.result, expected, args) }
         if matched && complete(args) {
-            push(matches, Instance { signature = id arguments = args })
-            push(widening, widened)
-            exact = exact || !widened
+            if satisfies_arguments(context, candidate_signature, args, node)? {
+                push(matches, Instance { signature = id arguments = args })
+                push(widening, widened)
+                exact = exact || !widened
+            } else { missing_requirement = true }
         }
         index = index + 1
     }
@@ -207,7 +230,11 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         }
         index = index + 1
     }
-    if selected < 0 { return Result.Err(error(context, node, "no accessible overload matches these arguments")) }
+    if selected < 0 {
+        return Result.Err(error(context, node, if missing_requirement {
+            "type argument needs an explicit implementation of the required concept"
+        } else { "no accessible overload matches these arguments" }))
+    }
     let instance = get(matches, selected)
     let signature = get(context.env.signatures, instance.signature)
     index = 0

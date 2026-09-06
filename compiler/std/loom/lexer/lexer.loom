@@ -68,6 +68,7 @@ fn error(start Int, end Int, message Text) Diagnostic {
 }
 
 fn digit(value Int) Bool { value >= 48 && value <= 57 }
+fn name_start(value Int) Bool { value == 95 || is_alphabetic(value) }
 
 fn hex(value Int) Int {
     if digit(value) { return value - 48 }
@@ -226,7 +227,8 @@ fn numeric_literal(text Text, start Int, selector Bool) Result[Token, Diagnostic
     while offset < length(text) && digit(byte(text, offset)) { offset = offset + 1 }
     var kind = Kind.Number
     // A numeric field after '.' is an integer position, even in pair.0.1.
-    if !selector && starts(text, offset, 46) {
+    // A name after the dot starts a selector; digits continue a decimal.
+    if !selector && starts(text, offset, 46) && !(offset + 1 < length(text) && name_start(codepoint(text, offset + 1))) {
         offset = offset + 1
         if offset == length(text) || !digit(byte(text, offset)) {
             return Result.Err(error(start, offset, "expected digits after the decimal point"))
@@ -278,7 +280,7 @@ fn next_token(text Text, start Int, selector Bool) Result[Token, Diagnostic] {
     if digit(current) {
         return numeric_literal(text, start, selector)
     }
-    if current == 95 || is_alphabetic(current) {
+    if name_start(current) {
         while offset < length(text) && (codepoint(text, offset) == 95 || is_alphanumeric(codepoint(text, offset))) {
             offset = offset + width(text, offset)
         }

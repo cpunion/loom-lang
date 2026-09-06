@@ -58,13 +58,19 @@ fn expr(cursor Cursor, minimum Int, multiline Bool, records Bool) Result[Step, D
     var more = true
     while more {
         let rest = if multiline { newlines(parsed.rest) } else { parsed.rest }
-        let rank = precedence(token(rest).kind)
+        let membership = word(rest, "implements")
+        let rank = if membership { 3 } else { precedence(token(rest).kind) }
         if rank < minimum {
             parsed = Step { rest = rest node = parsed.node }
             more = false
         } else {
-            let right = expr(next(rest), rank + 1, multiline, records)?
-            parsed = expression_end(done(start, right.rest, NodeKind.Binary, operator(token(rest).kind), two(parsed.node, right.node)), right.node.span.end)
+            if membership {
+                let concept_type = type_ref(newlines(next(rest)))?
+                parsed = done(start, concept_type.rest, NodeKind.Implements, "", two(parsed.node, concept_type.node))
+            } else {
+                let right = expr(next(rest), rank + 1, multiline, records)?
+                parsed = expression_end(done(start, right.rest, NodeKind.Binary, operator(token(rest).kind), two(parsed.node, right.node)), right.node.span.end)
+            }
         }
     }
     Result.Ok(parsed)
@@ -95,7 +101,9 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
     }
     if at(cursor, Kind.Minus) || at(cursor, Kind.Not) {
         let rest = newlines(next(cursor))
-        if at(cursor, Kind.Minus) && at(rest, Kind.Number) {
+        // Fold a bare negative literal so Int's minimum remains representable.
+        // Postfix operations bind first, just as they do for Float and names.
+        if at(cursor, Kind.Minus) && at(rest, Kind.Number) && !at(next(rest), Kind.Dot) && !at(next(rest), Kind.Question) {
             if !in_int_range(token(rest).value, true) {
                 return Result.Err(error(rest, "integer literal is outside the Int range"))
             }
@@ -151,10 +159,22 @@ fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
         let rest = parsed.rest
         if at(rest, Kind.Dot) {
             let after = next(rest)
-            let field = if at(after, Kind.Number) {
+            let numeric = at(after, Kind.Number)
+            let field = if numeric {
                 done(after, next(after), NodeKind.Name, token(after).value, new[Node]())
             } else { name(after)? }
-            parsed = done(start, field.rest, NodeKind.Select, field.node.value, one(parsed.node))
+            let types = if numeric { done(field.rest, field.rest, NodeKind.TypeArguments, "", new[Node]()) } else { type_args(field.rest)? }
+            if !numeric && at(types.rest, Kind.LParen) {
+                let args = sequence(types.rest, Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
+                let children = two(parsed.node, types.node)
+                push(children, args.node)
+                parsed = done(start, args.rest, NodeKind.MethodCall, field.node.value, children)
+            } else {
+                if length(types.node.children) != 0 {
+                    return Result.Err(error(types.rest, "expected '(' after method type arguments"))
+                }
+                parsed = done(start, field.rest, NodeKind.Select, field.node.value, one(parsed.node))
+            }
         } else {
             if at(rest, Kind.Question) {
                 parsed = done(start, next(rest), NodeKind.Try, "", one(parsed.node))

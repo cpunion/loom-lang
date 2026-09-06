@@ -286,6 +286,44 @@ parallel reassignment are not implemented. Copying a tuple shares its managed
 fields just as copying a record does; compile-time results construct fresh graphs
 while preserving internal sharing.
 
+## Static concepts
+
+Concept conformance is nominal and explicit. `std.display` supplies `Display`,
+implementations for Int, Float, Bool and Text, and generic `to_text`:
+
+```loom
+import std.display.Display
+
+record Item { label Text }
+impl Display for Item {
+    fn display(self Item) Text { self.label }
+}
+fn render[T Display](value T) Text { value.display() }
+fn optional[T](value T) Text {
+    comptime if T implements Display { value.display() } else { "<value>" }
+}
+```
+
+Bounds such as `[T Display + Rank]` are explicit requirements, including when
+forwarding to another generic function. `optional` has no unconditional Display
+requirement. Method ambiguity requires qualification, e.g. `Display.display(item)`;
+import order does not select an implementation. Receivers evaluate once before
+arguments, including in chained calls. The [concept example](examples/concepts/main.loom)
+exercises these rules through the native CLI.
+
+Each concept/type pair has one explicit implementation in the selected build
+closure. Method signatures and bodies are checked even if unused, but only called
+implementations are emitted. Static dispatch needs no boxes, method tables or
+runtime registry. Methods retain source ownership in `std.loom.binding.Symbol`.
+Test-only implementations cannot change unbounded production code; tests may pass
+their explicit evidence to bounded generic functions.
+
+This slice supports nongeneric concepts and concrete implementation targets.
+Associated types, generic/default implementations, concept-typed parameter
+shorthand, bounded generic data declarations and `dyn C` remain later work.
+Concept method contracts and extra implementation preconditions currently reject;
+implementation postconditions still require proof.
+
 ## Contract boundary
 
 Scalar constrained types use `type Positive = Int where self > 0` or
@@ -360,7 +398,7 @@ fn main() {
 
 The [comptime example](examples/comptime/main.loom) also exercises ordinary pure
 function calls, recursion, local mutation, records/enums, and fresh list aliases.
-Results support `Bool`, `Int`, `Text`, records/enums, shared lists, and byte
+Results support `Bool`, `Int`, `Float`, `Text`, tuples, records/enums, shared lists, and byte
 buffers. Scalar values become constants; containers are allocated and populated
 whenever the expression runs. Each runtime evaluation gets a fresh graph, while
 aliases and cycles inside that graph are preserved. Mutating one invocation's

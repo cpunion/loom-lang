@@ -22,6 +22,14 @@ compile-time evaluation, reification, and public typed analysis use the same
 aggregate semantics. The [tuple example](../../compiler/examples/tuples/main.loom)
 checks evaluation order and shared-container results under GC stress.
 
+Static concepts use explicit nominal `impl` declarations, generic bounds and
+ordinary direct-call specialization. Conditional `T implements C` tests select
+only that instance's branch; they do not add a public generic requirement.
+Method overloads require determined selection, with concept qualification for
+ambiguity. Source `std.display` provides the first shared capability. Unused
+implementations stay outside native reachability. Dynamic dispatch, associated
+types and generic conformances are not yet implemented.
+
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The
 [arguments example](../../compiler/examples/arguments/main.loom) combines it
