@@ -26,7 +26,7 @@ compile-time evaluator uses the same checked rules; it is not a second public
 runtime backend. Remove replaced paths instead of adding compatibility adapters.
 
 The [native compiler](compiler/README.md) now passes the N0 vertical-slice gate on
-macOS and Linux: real check/build/test/run, typed data, shared lists, source file I/O,
+macOS, Linux, and Windows: real check/build/test/run, typed data, shared lists, source file I/O,
 constrained construction, and bounded required proofs. N1 now has a
 [Loom-written compiler](compiler/loom/README.md) producing successive native
 compiler stages through the retained LLVM tool; later
@@ -57,7 +57,7 @@ or a host-language implementation masquerading as source `std`.
 
 Source handling, package loading, binding, typing, bounded required proofs,
 and checked program construction now run as native Loom code. Stage 1 builds
-stage 2, and stage 2 builds a byte-identical stage 3 on macOS and Linux, using the same
+stage 2, and stage 2 builds a byte-identical stage 3 on all three CI hosts, using the same
 retained Rust LLVM/platform bridge. Stage 3 passes compiler, `std`, and example
 tests; stages agree on selected type/proof failure diagnostics. The first
 bootstrap gate below is met for this subset, not all of N2.
@@ -76,8 +76,7 @@ The Windows bootstrap path builds its initial native compiler from a trusted
 checked export of the same source checkout, then follows stages 1/2/3 on Windows.
 CI transfers that temporary input from the validated macOS job in the same
 workflow; no checked-IR snapshot or second frontend is maintained. Native MSVC
-linking, Unicode/binary I/O, and Windows package paths are implemented; successful
-Windows CI evidence remains the platform gate, not an assumption.
+linking, Unicode/binary I/O, and Windows package paths pass the full native gate.
 
 The minimum bootstrap language subset constrains the compiler's own source,
 not which features it can implement for user programs. Implement a new feature
@@ -104,6 +103,8 @@ compiler correctness.
 
 Extend the self-hosted path with the remaining accepted capabilities:
 
+- tuples and destructuring, `Float` and explicit numeric conversion, and
+  application-grade source collections, text, error, and I/O libraries;
 - concept/dynamic dispatch, associated types, and precise reachability;
 - compile-time value/type/function parameters, variadics, selected-branch
   instantiation, typed macro generation, and structured reflection;
@@ -177,9 +178,9 @@ not a replacement execution model for every function or Task.
 
 ## Delivery discipline
 
-Use focused PRs and tests proportional to the changed boundary. Start with the
-native macOS gate and retain the now-passing Linux bootstrap/test gate. Establish
-Windows runtime and release evidence before broader support claims. Do not
+Use focused PRs and tests proportional to the changed boundary. Retain the
+passing macOS, Linux, and Windows bootstrap/test gates. Establish release and
+additional-target evidence before broader support claims. Do not
 recreate a large dual-backend differential suite.
 
 Fast compiler feedback is a core user-experience goal. Measure startup, check,

@@ -135,6 +135,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/project",
         "examples/semantic",
         "examples/comptime",
+        "examples/arguments",
     ] {
         success(&source_compiler(
             stage3,
@@ -176,6 +177,28 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         ] {
             assert!(!ir.contains(absent), "{example} API leaked {absent}");
         }
+    }
+
+    let arguments = common::executable(temp.path(), "arguments");
+    success(&source_compiler(
+        stage3,
+        &[
+            "build",
+            compiler.join("examples/arguments").to_str().unwrap(),
+            "--output",
+            arguments.to_str().unwrap(),
+        ],
+    ));
+    let output = Command::new(&arguments).arg("+0010").output().unwrap();
+    success(&output);
+    assert_eq!(output.stdout, b"55\n");
+    for (input, error) in [
+        ("bad", "expected a decimal integer\n"),
+        ("10001", "count must be between 0 and 10000\n"),
+    ] {
+        let output = Command::new(&arguments).arg(input).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.stderr, error.as_bytes());
     }
 
     // Source checks do not need a native tool. Compare selected type/proof

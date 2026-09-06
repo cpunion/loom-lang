@@ -1,4 +1,36 @@
 import std.text.concat
+import std.text.byte
+import std.text.length
+import std.result.Result
+
+pub enum ParseError { Invalid OutOfRange }
+
+// ASCII decimal with an optional sign; no whitespace or radix prefixes.
+pub fn parse(value Text) Result[Int, ParseError] {
+    let size = length(value)
+    if size == 0 { return Result.Err(ParseError.Invalid) }
+    let first = byte(value, 0)
+    let negative = first == 45
+    var index = if negative || first == 43 { 1 } else { 0 }
+    if index == size { return Result.Err(ParseError.Invalid) }
+
+    // Accumulate negatively so Int's minimum is representable. Check before
+    // multiplying or subtracting: out-of-range input is an error, not a fault.
+    let limit = if negative { -9223372036854775808 } else { -9223372036854775807 }
+    let multiple = limit / 10
+    var number = 0
+    while index < size {
+        let current = byte(value, index)
+        if current < 48 || current > 57 { return Result.Err(ParseError.Invalid) }
+        let digit_value = current - 48
+        if number < multiple { return Result.Err(ParseError.OutOfRange) }
+        let shifted = number * 10
+        if shifted < limit + digit_value { return Result.Err(ParseError.OutOfRange) }
+        number = shifted - digit_value
+        index = index + 1
+    }
+    Result.Ok(if negative { number } else { -number })
+}
 
 pub fn minimum(a Int, b Int) Int {
     if a < b { a } else { b }

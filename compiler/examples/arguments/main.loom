@@ -1,0 +1,58 @@
+import std.int.parse
+import std.int.ParseError
+import std.int.to_text
+import std.io.write_text
+import std.io.write_error
+import std.list.get
+import std.list.length
+import std.process.arguments
+import std.process.exit_code
+import std.result.Result
+import std.text.concat
+
+type Count = Int where self >= 0 && self <= 10000
+
+// Parsing establishes an Int; construction enforces the application's bound.
+fn total(raw Text) Result[Int, Text] {
+    let value = match parse(raw) {
+        Result.Ok(value) => value
+        Result.Err(error) => {
+            return Result.Err(match error {
+                ParseError.Invalid => "expected a decimal integer"
+                ParseError.OutOfRange => "integer is out of range"
+            })
+        }
+    }
+    let count = match Count(value) {
+        Result.Ok(count) => count
+        Result.Err(_) => { return Result.Err("count must be between 0 and 10000") }
+    }
+    var sum = 0
+    var index = 1
+    while index <= count {
+        sum = sum + index
+        index = index + 1
+    }
+    Result.Ok(sum)
+}
+
+fn main() {
+    let args = arguments()
+    if length(args) != 2 {
+        discard write_error("usage: arguments COUNT\n")
+        exit_code(2)
+        return
+    }
+    match total(get(args, 1)) {
+        Result.Ok(value) => {
+            match write_text(concat(to_text(value), "\n")) {
+                Result.Ok(_) => {}
+                Result.Err(_) => { exit_code(1) }
+            }
+        }
+        Result.Err(error) => {
+            discard write_error(concat(error, "\n"))
+            exit_code(1)
+        }
+    }
+}

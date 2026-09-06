@@ -3,7 +3,7 @@
 The [Loom-written compiler](loom/README.md) implements package loading, parsing,
 binding, type checking, bounded required proofs, and checked program emission.
 It builds further compiler stages using one retained Rust LLVM/platform tool.
-The [roadmap](../ROADMAP.md) distinguishes the macOS/Linux bootstrap from completion
+The [roadmap](../ROADMAP.md) distinguishes the native bootstrap from completion
 of the accepted language. A previous Loom compiler is the bootstrap input;
 the frozen historical Rust seed is only a fallback for producing that input.
 
@@ -23,8 +23,8 @@ without an alternate language implementation or a dispatch/plugin framework.
 
 ## Build and try it
 
-Use Rust 1.88, LLVM 22 development libraries, and Clang. macOS and Linux pass the
-LLVM 22 bootstrap and native gate. On Ubuntu 24.04 use the signed
+Use Rust 1.88, LLVM 22 development libraries, and Clang. macOS, Linux, and Windows
+pass the LLVM 22 bootstrap and native gate. On Ubuntu 24.04 use the signed
 [LLVM apt repository](https://apt.llvm.org/) and install `llvm-22-dev`, `clang-22`,
 and `libpolly-22-dev`; set `LLVM_SYS_221_PREFIX=/usr/lib/llvm-22` and
 `LOOM_CC=/usr/bin/clang-22`. The [CI recipe](../.github/workflows/ci.yml) shows
@@ -47,6 +47,8 @@ target/loom test compiler/std/loom/checking
 target/loom test compiler/std/result
 target/loom test compiler/std/list
 LOOM_GC_STRESS=1 compiler/std/list/target/tests
+target/loom build compiler/examples/arguments --output target/arguments
+target/arguments +0010
 ```
 
 The [bootstrap script](../scripts/bootstrap.sh) builds the current Rust tool
@@ -93,8 +95,8 @@ each tool's command surface.
 
 ## Windows bootstrap
 
-The Windows implementation targets 64-bit MSVC; its CI gate is added but not yet
-verified. Use Rust 1.88, a Visual Studio developer environment, Git Bash, and an
+The Windows x64/MSVC path passes the full bootstrap and native CI gate.
+Use Rust 1.88, a Visual Studio developer environment, Git Bash, and an
 LLVM 22 development package with `llvm-config.exe`, LLVM libraries, and
 `clang-cl.exe`. The [CI recipe](../.github/workflows/ci.yml) provisions the 22.1.8
 archive and supplies its missing `xml2s.lib` from a real static libxml2 build
@@ -206,8 +208,11 @@ the budget on future LLVM upgrades; these tuning options are not a stable API.
 - Both colocated `*_test.loom` and embedded `test fn`. Only tests can access
   test-only helpers. Production builds exclude test files and declarations.
   Identical test/production overload signatures are currently rejected.
-- A source `std.int` package with `minimum` and `maximum`, resolved through
-  ordinary imports and calls, not compiler tables of library function names.
+- Source `std.int` provides `minimum`, `maximum`, decimal `to_text`, and
+  `parse(Text) Result[Int, ParseError]` through ordinary imports and calls.
+  Parsing accepts ASCII decimal digits with an optional sign and leading zeros;
+  invalid syntax and out-of-range input return errors, not arithmetic faults.
+  It works in `comptime` without an additional intrinsic.
 - Source `std.text`, `std.list`, `std.result`, `std.file`, `std.fs`, and `std.io`. Private
   intrinsic signatures are checked against the runtime ABI and accepted only
   from the configured standard-library source root. Reading loops, UTF-8
@@ -227,6 +232,10 @@ The scalar example covers recursion, loops, a pre/postcondition pair, an importe
 package, `std`, and both test forms. Native tests exercise overflow, division by
 zero, short-circuiting, entry reachability, and test exclusion. Faults report a
 brief reason and exit unsuccessfully. File errors use source-defined `Result`.
+The [arguments example](examples/arguments/main.loom) parses external input,
+validates it through a constrained `Count`, and sums the integers from one to
+that count. `+0010` prints `55`; malformed or out-of-bound input reports an error
+and exits unsuccessfully. Its colocated tests also exercise both boundaries.
 
 ## Contract boundary
 
