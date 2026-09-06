@@ -193,6 +193,10 @@ timings; local variables remain conservatively rooted for the function.
 ## Implemented subset
 
 - Signed, checked 64-bit `Int`, `Bool`, scalar parameters, calls and recursion.
+- IEEE binary64 `Float`, decimal/exponent literals, arithmetic and comparisons.
+  Float division/remainder follow IEEE rules rather than integer faults; NaN,
+  infinities and signed zero are retained. No implicit Int/Float conversion or
+  fast-math reassociation is permitted. Scalar Float programs need no Loom runtime.
 - `let`, `var`, assignment, final-expression returns, early return, `if`/`else`,
   `while`, `assert`, and explicit `discard`. Boolean operators short-circuit.
 - Parameter-type/arity overloads with explicit ambiguity errors.
@@ -223,6 +227,13 @@ timings; local variables remain conservatively rooted for the function.
   Parsing accepts ASCII decimal digits with an optional sign and leading zeros;
   invalid syntax and out-of-range input return errors, not arithmetic faults.
   It works in `comptime` without an additional intrinsic.
+- Source `std.float` supplies explicit integer conversion, finite/NaN queries,
+  decimal parsing, and round-tripping formatting. `to_int` truncates toward zero
+  and returns `NonFinite` or `OutOfRange`; `from_int` rounds ties to even.
+  Parsing accepts complete signed ASCII decimals/exponents and exact `NaN`,
+  `inf`, `+inf`, `-inf`, without whitespace or separators. Decimal overflow and
+  underflow follow binary64 rounding. Grammar and errors live in Loom; narrow
+  runtime codecs reuse Rust's numeric conversion, not a second source parser.
 - Source `std.text`, `std.list`, `std.result`, `std.file`, `std.fs`, and `std.io`. Private
   intrinsic signatures are checked against the runtime ABI and accepted only
   from the configured standard-library source root. Reading loops, UTF-8
@@ -369,6 +380,9 @@ constraint folding and pure-predicate validation use this engine too.
 Evaluation is not proof: function `requires`/`ensures` remain call-free and
 declared postconditions still require the existing prover. Variadics, typed
 macros, and broader compile-time reflection remain later work.
+This Float-capable bootstrap checkpoint still rejects Float compile-time values
+and Float proofs; its evaluator must first be rebuilt using the new capability.
+Constrained base types currently remain Int-only.
 
 ## Next boundary
 

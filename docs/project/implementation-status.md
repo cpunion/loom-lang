@@ -33,6 +33,15 @@ declarations. Known true/false predicates remove the check or reject; unknown
 inputs or unsuccessful optional evaluation retain normal runtime construction
 and fault behavior. Function contracts remain call-free and proofs mandatory.
 
+Ordinary `Float` values use IEEE binary64 arithmetic and native aggregate
+layouts, without implicit Int conversion. Source `std.float` owns decimal
+grammar, parsing errors and checked integer conversion; tiny runtime codecs
+provide correctly rounded decimal conversion. The
+[Float example](../../compiler/examples/floats/main.loom) covers generic and
+managed aggregates. This bootstrap checkpoint still rejects Float compile-time
+values, Float refinements and unsupported required Float proofs; the next
+evaluator stage must use the newly available native Float capability.
+
 The native toolchain uses Rust 1.88 and LLVM 22. macOS, Linux, and Windows pass
 the [full bootstrap and native gate](https://github.com/cpunion/loom-lang/actions/runs/34022948294).
 Compiler, native integration,

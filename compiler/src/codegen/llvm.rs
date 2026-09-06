@@ -454,6 +454,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .try_as_basic_value()
                     .basic());
             }
+            Primitive::FloatParse => ("float_parse", Some(self.context.f64_type().into())),
+            Primitive::FloatFormat => ("float_format", Some(pointer.into())),
             Primitive::TextLen => ("text_len", Some(i64_type.into())),
             Primitive::TextByte => ("text_byte", Some(i64_type.into())),
             Primitive::TextConcat => ("text_concat", Some(pointer.into())),

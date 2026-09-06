@@ -634,6 +634,8 @@ fn primitive(value: &str) -> Result<Primitive> {
     Ok(match value {
         "float_from_int" => P::FloatFromInt,
         "float_to_int" => P::FloatToInt,
+        "float_parse" => P::FloatParse,
+        "float_format" => P::FloatFormat,
         "text_len" => P::TextLen,
         "text_byte" => P::TextByte,
         "text_concat" => P::TextConcat,
@@ -675,6 +677,8 @@ fn primitive_arity(operation: Primitive) -> usize {
         P::ArgCount | P::BytesNew | P::ListNew => 0,
         P::FloatFromInt
         | P::FloatToInt
+        | P::FloatParse
+        | P::FloatFormat
         | P::TextLen
         | P::UnicodeAlphabetic
         | P::UnicodeAlphanumeric
@@ -754,7 +758,12 @@ mod tests {
             assert_eq!(value.to_bits(), expected.to_bits());
             assert!(decode(&stream.replace(literal, &"x".repeat(literal.len()))).is_err());
         }
-        for name in ["float_from_int", "float_to_int"] {
+        for name in [
+            "float_from_int",
+            "float_to_int",
+            "float_parse",
+            "float_format",
+        ] {
             assert_eq!(primitive_arity(primitive(name).unwrap()), 1);
         }
     }

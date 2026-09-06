@@ -70,6 +70,8 @@ fn three_types(a Int, b Int, c Int) List[Int] { let values = two_types(a, b)
 fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "float_from_int" { return runtime(0, ints(1), 5) }
     if name == "float_to_int" { return runtime(0, ints(5), 1) }
+    if name == "float_parse" { return runtime(0, ints(3), 5) }
+    if name == "float_format" { return runtime(0, ints(5), 3) }
     if name == "text_len" || name == "open" || name == "create" || name == "path_kind" { return runtime(0, ints(3), 1) }
     if name == "text_byte" { return runtime(0, two_types(3, 1), 1) }
     if name == "text_concat" { return runtime(0, two_types(3, 3), 3) }

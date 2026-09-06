@@ -49,6 +49,8 @@ pub enum Binary {
 pub enum Primitive {
     FloatFromInt,
     FloatToInt,
+    FloatParse,
+    FloatFormat,
     TextLen,
     TextByte,
     TextConcat,

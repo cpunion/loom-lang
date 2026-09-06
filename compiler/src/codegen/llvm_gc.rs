@@ -60,7 +60,8 @@ pub(super) fn allocating_functions(
 
 fn allocates(operation: Primitive) -> bool {
     match operation {
-        Primitive::TextConcat
+        Primitive::FloatFormat
+        | Primitive::TextConcat
         | Primitive::TextSlice
         | Primitive::ArgText
         | Primitive::BytesNew
@@ -73,6 +74,7 @@ fn allocates(operation: Primitive) -> bool {
         | Primitive::PathCanonical => true,
         Primitive::FloatFromInt
         | Primitive::FloatToInt
+        | Primitive::FloatParse
         | Primitive::TextLen
         | Primitive::UnicodeAlphabetic
         | Primitive::UnicodeAlphanumeric

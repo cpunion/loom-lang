@@ -103,8 +103,7 @@ compiler correctness.
 
 Extend the self-hosted path with the remaining accepted capabilities:
 
-- `Float` and explicit numeric conversion, and
-  application-grade source collections, text, error, and I/O libraries;
+- application-grade source collections, text, error, and I/O libraries;
 - concept/dynamic dispatch, associated types, and precise reachability;
 - compile-time value/type/function parameters, variadics, selected-branch
   instantiation, typed macro generation, and structured reflection;
@@ -119,6 +118,11 @@ Each addition must work through the native CLI and its `std` tests. Required
 proofs remain mandatory even while the supported prover fragment grows. Exact
 overload ranking, macro spelling, solver choice, artifact encoding, and runtime
 layout belong to focused implementation designs, not new feature checklists.
+
+Native binary64 `Float` and source numeric parsing/conversion now have a
+bootstrap-capable implementation. Float compile-time execution and constrained
+bases remain the immediate next boundary; integer algebra must not stand in for
+IEEE floating-point proofs.
 
 Structural tuples, numeric projection, and plain-name destructuring now use the
 native aggregate path, including generics, shared containers, and compile-time
