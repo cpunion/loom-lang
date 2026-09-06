@@ -15,6 +15,7 @@ enum Kind {
     RBracket,
     Comma,
     Dot,
+    Question,
     Assign,
     Arrow,
     Plus,
@@ -92,6 +93,7 @@ fn lex(source: usize, text: &str) -> Result<Vec<Token>, Diagnostic> {
             ']' => Kind::RBracket,
             ',' => Kind::Comma,
             '.' => Kind::Dot,
+            '?' => Kind::Question,
             '+' => Kind::Plus,
             '-' => Kind::Minus,
             '*' => Kind::Star,
@@ -762,7 +764,7 @@ impl Parser {
                                     )
                                 })?;
                             span.end = self.bump().span.end;
-                            return Ok(ast::Expr {
+                            return self.fields(ast::Expr {
                                 kind: ast::ExprKind::Int(if value == (i64::MAX as u64) + 1 {
                                     i64::MIN
                                 } else {
@@ -794,16 +796,24 @@ impl Parser {
     }
 
     fn fields(&mut self, mut value: ast::Expr) -> Result<ast::Expr, Diagnostic> {
-        while self.eat(&Kind::Dot) {
-            let (field, end) = self.name()?;
+        loop {
+            let start = value.span;
+            let (kind, end) = if self.eat(&Kind::Question) {
+                (
+                    ast::ExprKind::Try(Box::new(value)),
+                    self.tokens[self.pos - 1].span,
+                )
+            } else if self.eat(&Kind::Dot) {
+                let (field, end) = self.name()?;
+                (ast::ExprKind::Field(Box::new(value), field), end)
+            } else {
+                break;
+            };
             let span = Span {
                 end: end.end,
-                ..value.span
+                ..start
             };
-            value = ast::Expr {
-                kind: ast::ExprKind::Field(Box::new(value), field),
-                span,
-            };
+            value = ast::Expr { kind, span };
         }
         Ok(value)
     }

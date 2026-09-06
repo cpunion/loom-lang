@@ -227,6 +227,7 @@ pub mod ast {
             fields: Vec<(String, Expr)>,
         },
         Field(Box<Expr>, String),
+        Try(Box<Expr>),
         Match {
             value: Box<Expr>,
             arms: Vec<MatchArm>,
