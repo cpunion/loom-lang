@@ -2,6 +2,7 @@ import std.result.Result
 import std.list.new
 import std.list.get
 import std.list.push
+import std.list.set
 import std.list.length
 import std.bytes.new
 import std.bytes.push
@@ -12,8 +13,10 @@ import std.text.slice
 import std.text.concat
 import std.text.from_codepoint
 
-// Parsed module identity; dependency resolution is not part of this API yet.
-pub record Module { name Text version Text }
+// Dependency paths remain relative to the declaring manifest; project loading
+// resolves them and verifies the target module identity.
+pub record Dependency { name Text path Text }
+pub record Module { name Text version Text dependencies List[Dependency] }
 
 pub fn segment(value Text) Bool {
     if length(value) == 0 || byte(value, 0) < 97 || byte(value, 0) > 122 { return false }
@@ -128,13 +131,16 @@ fn quoted(value Text) Result[Text, Text] {
     Result.Ok(to_text(buffer))
 }
 
-// This bootstrap subset is explicit: simple tables, bare keys, integers and
-// single-line quoted strings. Arrays, dotted keys and inline modules reject.
+// This subset is explicit: module/dependency tables, bare keys, integers and
+// single-line quoted strings. Other TOML forms and dependency sources reject.
 pub fn parse(text Text) Result[Module, Text] {
     var offset = 0
     var section = ""
     var name = ""
     var version = ""
+    var dependency = -1
+    var inline_dependencies = false
+    let dependencies = std.list.new[Dependency]()
     let seen = std.list.new[Text]()
     while offset < length(text) {
         let start = offset
@@ -143,12 +149,26 @@ pub fn parse(text Text) Result[Module, Text] {
         if offset < length(text) { offset = offset + 1 }
         if length(line) > 0 {
             if byte(line, 0) == 91 {
-                if line != "[module]" && line != "[dependencies]" {
-                    return Result.Err("unsupported manifest table or TOML syntax")
-                }
                 if contains(seen, line) { return Result.Err("duplicate manifest table") }
                 push(seen, line)
-                section = if line == "[module]" { "module" } else { "dependencies" }
+                dependency = -1
+                if line == "[module]" { section = "module" } else {
+                    if line == "[dependencies]" { section = "dependencies" } else {
+                        let prefix = "[dependencies."
+                        if length(line) <= length(prefix) + 1 || slice(line, 0, length(prefix)) != prefix ||
+                            byte(line, length(line) - 1) != 93 {
+                            return Result.Err("unsupported manifest table or TOML syntax")
+                        }
+                        if inline_dependencies { return Result.Err("inline dependencies cannot be extended by tables") }
+                        let key = slice(line, length(prefix), length(line) - 1)
+                        if !segment(key) || key == "std" {
+                            return Result.Err("dependency name must be a lowercase package identifier other than std")
+                        }
+                        section = concat("dependencies.", key)
+                        dependency = length(dependencies)
+                        push(dependencies, Dependency { name = key path = "" })
+                    }
+                }
             } else {
                 var equal = 0
                 while equal < length(line) && byte(line, equal) != 61 { equal = equal + 1 }
@@ -168,14 +188,23 @@ pub fn parse(text Text) Result[Module, Text] {
                             if key == "dependencies" && value == "{}" {
                                 if contains(seen, "[dependencies]") { return Result.Err("duplicate manifest table") }
                                 push(seen, "[dependencies]")
+                                inline_dependencies = true
                             } else { return Result.Err(concat("unsupported manifest field or TOML syntax: ", full)) }
                         }
                     }
                 } else {
-                    if section == "dependencies" { return Result.Err("dependency resolution is not implemented") }
-                    if key == "name" { name = quoted(value)? } else {
-                        if key == "version" { version = quoted(value)? } else {
-                            return Result.Err(concat("unsupported module manifest field: ", full))
+                    if section == "dependencies" {
+                        return Result.Err("path dependencies require [dependencies.<name>] with a path field")
+                    }
+                    if dependency >= 0 {
+                        if key != "path" { return Result.Err(concat("unsupported dependency field; only path is supported: ", full)) }
+                        let current = get(dependencies, dependency)
+                        set(dependencies, dependency, Dependency { name = current.name path = quoted(value)? })
+                    } else {
+                        if key == "name" { name = quoted(value)? } else {
+                            if key == "version" { version = quoted(value)? } else {
+                                return Result.Err(concat("unsupported module manifest field: ", full))
+                            }
                         }
                     }
                 }
@@ -186,5 +215,12 @@ pub fn parse(text Text) Result[Module, Text] {
     if !segment(name) || name == "std" {
         return Result.Err("module.name must be a lowercase package identifier other than std")
     }
-    Result.Ok(Module { name = name version = version })
+    var index = 0
+    while index < length(dependencies) {
+        let current = get(dependencies, index)
+        if current.name == name { return Result.Err("a dependency cannot shadow its own module name") }
+        if length(current.path) == 0 { return Result.Err(concat("dependency requires a nonempty path: ", current.name)) }
+        index = index + 1
+    }
+    Result.Ok(Module { name = name version = version dependencies = dependencies })
 }

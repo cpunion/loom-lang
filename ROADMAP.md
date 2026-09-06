@@ -120,6 +120,11 @@ proofs remain mandatory even while the supported prover fragment grows. Exact
 overload ranking, macro spelling, solver choice, artifact encoding, and runtime
 layout belong to focused implementation designs, not new feature checklists.
 
+Offline path dependencies now traverse importer-local manifest edges and reuse
+canonical source roots, with normal package/test isolation. Distinct roots with
+the same module name explicitly reject; instance-qualified identities must come
+before Git/fork resolution, version normalization and lockfiles can be complete.
+
 Static nominal concepts now lower explicit implementations and bounded generic
 method calls into the existing direct-call path. Conditional conformance queries,
 method qualification and source `std.display` use the same model. Native `dyn C`

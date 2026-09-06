@@ -1,0 +1,3 @@
+import codec.parser.answer
+
+fn main() { assert answer() == 42 }

@@ -93,12 +93,15 @@ editing remain later library boundaries in the [roadmap](../../ROADMAP.md).
 Project analysis is opt-in; in-memory syntax users do not import these layers:
 
 - `std.loom.manifest.parse(text)` returns `Result[Module, Text]`, with module
-  name/version metadata. It parses the supported manifest subset, not general
-  TOML or registry/dependency resolution.
+  name/version metadata and `dependencies List[Dependency]` (`name`, `path`). It
+  parses the supported manifest subset, not general TOML or source resolution.
 - `std.loom.project.load(path, std_root, tests)` returns `Result[Project, Text]`.
   `Project` contains `files List[SourceFile]` and a root package name. It reads
   the selected directory package and its import closure, not the whole
   repository. Only the selected root contributes tests when requested.
+  Manifest-relative path dependencies resolve from each importing module's
+  direct entries. Canonical roots are reused; distinct roots with the same name
+  reject until module-instance identities support multiversion builds.
 - `std.loom.binding.bind(files, root, tests)` returns `Result[Program, Failure]`
   after declaration/import validation. Inspect `Program.symbols` for
   declarations; `Failure.source` identifies the input file for its diagnostic.

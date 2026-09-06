@@ -1,0 +1,4 @@
+import seed.number.value
+
+fn adjustment() Int { 2 }
+pub fn answer() Int { value() + adjustment() }

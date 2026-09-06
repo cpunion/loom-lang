@@ -1,5 +1,5 @@
 import std.loom.ast.has
-import std.loom.manifest.Module
+import std.loom.manifest.Dependency
 import std.loom.manifest.segment
 import std.loom.manifest.parse
 import std.loom.parser.parse
@@ -24,10 +24,10 @@ pub record SourceFile {
 // A deterministic selected-package/import closure, not the entire repository.
 // File indices belong to this result and may change after a new load.
 pub record Project { files List[SourceFile] root Text }
-record ModuleRoot { name Text base Text }
+record ModuleRoot { name Text base Text dependencies List[Dependency] }
 record Loader {
     files List[SourceFile]
-    module ModuleRoot
+    modules List[ModuleRoot]
     std_root Text
     active List[Text]
     complete List[Text]
@@ -56,14 +56,10 @@ fn module_root(directory Text) Result[ModuleRoot, Text] {
     while true {
         let path = join_path(current, "loom.toml")
         if is_file(path) {
-            let module = match std.loom.manifest.parse(read(path)?) {
-                Result.Ok(value) => value
-                Result.Err(error) => { return Result.Err(concat(path, concat(": ", error))) }
-            }
-            return Result.Ok(ModuleRoot { name = module.name base = current })
+            return read_module(current)
         }
         let next = parent(current)
-        if next == current { return Result.Ok(ModuleRoot { name = "" base = "" }) }
+        if next == current { return Result.Ok(ModuleRoot { name = "" base = directory dependencies = new[Dependency]() }) }
         current = next
     }
     Result.Err("unreachable module root")
@@ -82,16 +78,13 @@ fn package_name(directory Text, base Text, name Text) Result[Text, Text] {
     }
     Result.Ok(qualified)
 }
-fn import_directory(loader Loader, package Text) Result[Text, Text] {
+fn import_directory(loader Loader, owner Int, package Text) Result[Text, Text] {
     let segments = parts(package, 46)
-    let module = get(segments, 0)
-    var directory = loader.std_root
-    if module != "std" {
-        if module != loader.module.name || module == "" {
-            return Result.Err(concat("unknown module or missing loom.toml for import ", package))
-        }
-        directory = loader.module.base
+    let module = get(loader.modules, owner)
+    if get(segments, 0) != module.name || module.name == "" {
+        return Result.Err(concat("unknown module or missing loom.toml for import ", package))
     }
+    var directory = module.base
     var index = 1
     while index < length(segments) {
         let part = get(segments, index)
@@ -120,7 +113,7 @@ fn production(tree Node, tests Bool) Node {
     }
     Node { kind = tree.kind value = tree.value span = tree.span children = children }
 }
-fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Result[Bool, Text] {
+fn visit(loader Loader, owner Int, package Text, directory Text, tests Bool, depth Int) Result[Bool, Text] {
     if contains(loader.active, package, depth) {
         return Result.Err(concat("package import cycle through ", package))
     }
@@ -171,7 +164,8 @@ fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Res
     index = 0
     while index < length(imports) {
         let target = get(imports, index)
-        discard visit(loader, target, import_directory(loader, target)?, false, depth + 1)?
+        let module = imported_module(loader, owner, get(parts(target, 46), 0))?
+        discard visit(loader, module, target, import_directory(loader, module, target)?, false, depth + 1)?
         index = index + 1
     }
     push(loader.complete, package)
@@ -180,7 +174,8 @@ fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Res
     index = 0
     while index < length(test_imports) {
         let target = get(test_imports, index)
-        discard visit(loader, target, import_directory(loader, target)?, false, 0)?
+        let module = imported_module(loader, owner, get(parts(target, 46), 0))?
+        discard visit(loader, module, target, import_directory(loader, module, target)?, false, 0)?
         index = index + 1
     }
     Result.Ok(true)
@@ -196,16 +191,18 @@ pub fn load(path Text, std_root Text, tests Bool) Result[Project, Text] {
     }
     if !is_directory { return Result.Err("expected a package directory, not an individual source file") }
     let standard = canonical(std_root)?
-    let module = module_root(directory)?
-    var root = ""
-    if module.name != "" { root = package_name(directory, module.base, module.name)? } else {
-        if inside(directory, standard) { root = package_name(directory, standard, "std")? }
-    }
+    let discovered = module_root(directory)?
+    let module = if discovered.name == "" && inside(directory, standard) {
+        ModuleRoot { name = "std" base = standard dependencies = new[Dependency]() }
+    } else { discovered }
+    let root = if module.name != "" { package_name(directory, module.base, module.name)? } else { "" }
     let files = new[SourceFile]()
     let loader = Loader {
-        files = files module = module std_root = standard
+        files = files modules = new[ModuleRoot]() std_root = standard
         active = new[Text]() complete = new[Text]()
     }
-    discard visit(loader, root, directory, tests, 0)?
+    discard register_module(loader, ModuleRoot { name = "std" base = standard dependencies = new[Dependency]() })?
+    let owner = register_module(loader, module)?
+    discard visit(loader, owner, root, directory, tests, 0)?
     Result.Ok(Project { files = files root = root })
 }

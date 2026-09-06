@@ -1,0 +1,2 @@
+fn test_only() Int { 9001 }
+test fn dependency_test_is_separate() { assert test_only() == 9001 }

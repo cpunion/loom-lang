@@ -16,6 +16,14 @@ Postfix `?` propagates errors with ordinary enum control flow. Recursive data
 through `List` is supported; infinite inline layouts and growing generic
 specializations reject.
 
+Offline path dependencies now resolve through each module's direct manifest
+entries, including transitive package loading and isolated root tests. The
+[module example](../../compiler/examples/modules/app/main.loom) uses three
+modules without compiler or runtime special cases. Canonical source roots are
+reused; same-name/different-root modules reject until instance-qualified
+multiversion identities are implemented. Git/fork resolution and lockfiles are
+still open, not implicitly supplied by local path loading.
+
 Explicit Int refinement conversions also remove a destination check when the
 source predicate proves its truth and arithmetic definedness. The bounded,
 call-free implication proof preserves one evaluation of the input; unknown
