@@ -1,0 +1,55 @@
+fn cli_arguments(command Text) List[Text] {
+    let values = std.list.new[Text]()
+    std.list.push(values, "loom")
+    std.list.push(values, command)
+    values
+}
+
+test fn compile_tests_without_running_preserves_test_mode() {
+    let args = cli_arguments("test")
+    std.list.push(args, "--output")
+    std.list.push(args, "target/custom-tests")
+    std.list.push(args, "--no-run")
+    match options(args) {
+        Result.Ok(value) => {
+            assert value.command == "test" && value.no_run
+            assert value.output == "target/custom-tests"
+        }
+        Result.Err(_) => { assert false }
+    }
+    match options(cli_arguments("test")) {
+        Result.Ok(value) => { assert !value.no_run && value.output == "" }
+        Result.Err(_) => { assert false }
+    }
+}
+
+test fn compile_only_flags_have_an_explicit_command_boundary() {
+    let commands = std.list.new[Text]()
+    std.list.push(commands, "build")
+    std.list.push(commands, "check")
+    std.list.push(commands, "run")
+    std.list.push(commands, "emit-checked")
+    var index = 0
+    while index < std.list.length(commands) {
+        let args = cli_arguments(std.list.get(commands, index))
+        std.list.push(args, "--no-run")
+        match options(args) {
+            Result.Err(message) => { assert message == "--no-run is only available with test" }
+            Result.Ok(_) => { assert false }
+        }
+        index = index + 1
+    }
+    let args = cli_arguments("test")
+    std.list.push(args, "--output")
+    std.list.push(args, "target/tests")
+    match options(args) {
+        Result.Err(message) => { assert message == "--output requires build or test --no-run" }
+        Result.Ok(_) => { assert false }
+    }
+    std.list.push(args, "--no-run")
+    std.list.push(args, "--no-run")
+    match options(args) {
+        Result.Err(message) => { assert message == "duplicate --no-run" }
+        Result.Ok(_) => { assert false }
+    }
+}
