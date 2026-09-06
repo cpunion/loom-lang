@@ -16,6 +16,7 @@ use inkwell::{
 use std::{
     collections::{BTreeSet, HashMap},
     path::Path,
+    sync::Once,
 };
 
 #[path = "native_gc.rs"]
@@ -30,8 +31,30 @@ pub fn emit(
     llvm_ir: Option<&Path>,
     optimization: OptimizationLevel,
 ) -> Result<bool, String> {
+    configure_codegen();
     emit_checked(program, test_mode, object, llvm_ir, optimization)
         .map_err(|error| error.to_string())
+}
+
+fn configure_codegen() {
+    static CONFIGURE: Once = Once::new();
+    CONFIGURE.call_once(|| {
+        // Bound candidate pressure analysis in large blocks. LLVM 22's default
+        // of 256 regresses self-build latency; 32 retains scheduling dependencies.
+        let arguments = [c"loom-native".as_ptr(), c"--misched-limit=32".as_ptr()];
+        // SAFETY: fixed NUL-terminated literals live for the process; argv has
+        // exactly two entries and lives through this synchronous call. Once
+        // configures LLVM before any caller enters native emission. Inkwell
+        // exposes this binding but has no safe wrapper for the process options.
+        #[allow(unsafe_code)]
+        unsafe {
+            inkwell::llvm_sys::support::LLVMParseCommandLineOptions(
+                2,
+                arguments.as_ptr(),
+                c"".as_ptr(),
+            );
+        }
+    });
 }
 
 fn emit_checked(
