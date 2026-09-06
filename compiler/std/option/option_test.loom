@@ -1,0 +1,8 @@
+test fn optional_payloads_work_at_compile_time_and_runtime() {
+    let absent Option[Text] = Option.None
+    assert match absent { Option.None => true, Option.Some(_) => false }
+    let prepared = comptime { Option.Some(("é", 3)) }
+    let runtime = Option.Some(("é", 3))
+    assert match prepared { Option.Some(value) => value.0 == "é" && value.1 == 3, _ => false }
+    assert match runtime { Option.Some(value) => value.0 == "é" && value.1 == 3, _ => false }
+}
