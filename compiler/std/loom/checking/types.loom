@@ -215,6 +215,11 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
 fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node) Result[Int, Failure] {
     let source = get(env.types, ty)
     if source.kind == TypeKind.Parameter { return Result.Ok(get(arguments, source.symbol)) }
+    if length(source.arguments) == 0 {
+        // Header discovery may have interned nominal data without its fields.
+        if env.expand_data && get(env.type_states, ty) == 0 { discard expand_type(env, ty, 0)? }
+        return Result.Ok(ty)
+    }
     let args = new[Int]()
     var index = 0
     while index < length(source.arguments) {

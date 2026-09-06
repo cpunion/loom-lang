@@ -44,6 +44,7 @@ fn constructed_type(context Context, declaration Int, arguments List[Int], node 
     Result.Ok(ty)
 }
 fn declaration_types(env Environment) Result[Bool, Failure] {
+    if length(env.concepts) == 0 { return Result.Ok(true) }
     var pending = 0
     while pending < length(env.types) {
         if get(env.type_states, pending) == 0 { discard expand_type(env, pending, 0)? }
