@@ -45,8 +45,8 @@ selection; unresolved ambiguity requires explicit selection by the programmer.
 Overloading does not replace generics or variadic parameters.
 
 Public generic requirements are explicit: an unconditional `value.display()`
-requires a declared `Display` requirement. The exact bound spelling remains
-unsettled. Compile-time conditional branches introduce only their own local
+requires a declared `Display` requirement. Compile-time conditional branches
+introduce only their own local
 requirements; an unselected branch imposes none on that instance. The following
 function does not require its argument type to implement `Display`.
 **Design synopsis:**

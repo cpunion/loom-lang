@@ -54,9 +54,9 @@ or a host-language implementation masquerading as source `std`.
 
 ## N1 — Move the compiler into Loom
 
-Source positions, diagnostics, and lexing now run as native Loom code. The
-frontend reads its own sources but does not yet parse or compile them. Syntax
-parsing is the next component; none of the full bootstrap gates below is met.
+Source positions, diagnostics, lexing, and syntax parsing now run as native
+Loom code. The frontend parses its own sources but does not yet bind, type-check,
+or compile them. None of the full bootstrap gates below is met.
 
 Use the N0 subset to implement compiler components in Loom, starting with source
 handling, lexer/parser, and diagnostics, then binding, typing, and checked

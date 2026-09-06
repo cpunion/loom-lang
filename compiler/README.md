@@ -31,6 +31,7 @@ target/debug/loom test compiler/std/int
 LOOM_GC_STRESS=1 target/debug/loom test compiler/std/list
 target/debug/loom build compiler/loom --output target/loom-front
 target/loom-front lex compiler/loom/main.loom
+target/loom-front parse compiler/loom/main.loom
 ```
 
 The root Cargo workspace and lockfile build the maintained compiler. Its binary
@@ -49,6 +50,11 @@ package. `--help` lists the small command surface.
   function parameters with inference or explicit arguments. Generic bodies are
   checked without hidden requirements; reachable instances use concrete layouts.
   Payload-free enums support equality within the same nominal type.
+  Recursive data through `List` has a finite native layout; direct or mutual
+  inline layout cycles reject.
+- Postfix `?` unwraps source `std.result.Result`, or returns its error from the
+  current function. Error types must match; the success value can then widen
+  normally. Chained `??` and field selection work without a runtime protocol.
 - Immutable UTF-8 `Text` and shared mutable `List[T]`. Copying a list binding
   shares its header: aliases observe growth and element replacement. Scalar
   records remain native values; managed fields retain their sharing semantics.
@@ -118,8 +124,9 @@ and both test forms through the same CLI. Scalar-only records stay native values
 enum storage uses its largest variant payload, not the sum of all variants.
 
 The [Loom-written frontend](loom/README.md) replaces the ASCII scanner example.
-It tokenizes its own source files and emits positioned diagnostics through real
-file I/O and command-line arguments. It is not yet a complete compiler.
+It parses its own source files into recursive syntax trees and emits positioned
+diagnostics through real file I/O and command-line arguments. It is not yet a
+complete compiler.
 
 The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;
@@ -130,9 +137,9 @@ No handles escape the file helpers; every recoverable branch closes the
 file explicitly. This is not general scoped cleanup or finalization.
 
 The N0 source-to-native gate is exercised by the examples and integration tests.
-N1 has started with Loom source handling, lexing, and diagnostics; syntax
-parsing, binding, typing, and staged self-hosting remain next.
-Recursive declarations, mutable record fields, broader proofs, moving GC,
+N1 now has Loom source handling, lexing, syntax parsing, and diagnostics;
+binding, typing, and staged self-hosting remain next.
+Mutable record fields, broader proofs, moving GC,
 lexical resources, Tasks, metaprogramming,
 dependency resolution, lockfile/cache behavior, deployment and semantic-change
 tools remain outside this slice. No complete std or self-hosting claim is made.

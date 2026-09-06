@@ -1,0 +1,224 @@
+import frontend.lexer.Kind
+import frontend.source.Diagnostic
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import std.list.new
+import std.list.push
+import std.list.length
+import std.result.Result
+import std.text.concat
+import std.text.byte
+import std.text.length
+
+fn precedence(kind Kind) Int {
+    if kind == Kind.Or { return 1 }
+    if kind == Kind.And { return 2 }
+    if kind == Kind.Eq || kind == Kind.Ne { return 3 }
+    if kind == Kind.Lt || kind == Kind.Le || kind == Kind.Gt || kind == Kind.Ge { return 4 }
+    if kind == Kind.Plus || kind == Kind.Minus { return 5 }
+    if kind == Kind.Star || kind == Kind.Slash || kind == Kind.Percent { return 6 }
+    -1
+}
+fn operator(kind Kind) Text {
+    if kind == Kind.Or { return "||" }
+    if kind == Kind.And { return "&&" }
+    if kind == Kind.Eq { return "==" }
+    if kind == Kind.Ne { return "!=" }
+    if kind == Kind.Lt { return "<" }
+    if kind == Kind.Le { return "<=" }
+    if kind == Kind.Gt { return ">" }
+    if kind == Kind.Ge { return ">=" }
+    if kind == Kind.Plus { return "+" }
+    if kind == Kind.Minus { return "-" }
+    if kind == Kind.Star { return "*" }
+    if kind == Kind.Slash { return "/" }
+    if kind == Kind.Percent { return "%" }
+    "!"
+}
+fn in_int_range(value Text, negative Bool) Bool {
+    var start = 0
+    while start < length(value) && byte(value, start) == 48 { start = start + 1 }
+    let size = length(value) - start
+    if size < 19 { return true }
+    if size > 19 { return false }
+    let limit = if negative { "9223372036854775808" } else { "9223372036854775807" }
+    var offset = 0
+    while offset < 19 {
+        let digit = byte(value, start + offset)
+        let maximum = byte(limit, offset)
+        if digit < maximum { return true }
+        if digit > maximum { return false }
+        offset = offset + 1
+    }
+    true
+}
+fn expr(cursor Cursor, minimum Int, multiline Bool, records Bool) Result[Step, Diagnostic] {
+    let start = newlines(cursor)
+    var parsed = prefix(start, multiline, records)?
+    var more = true
+    while more {
+        let rest = if multiline { newlines(parsed.rest) } else { parsed.rest }
+        let rank = precedence(token(rest).kind)
+        if rank < minimum {
+            parsed = Step { rest = rest node = parsed.node }
+            more = false
+        } else {
+            let right = expr(next(rest), rank + 1, multiline, records)?
+            parsed = expression_end(done(start, right.rest, NodeKind.Binary, operator(token(rest).kind), two(parsed.node, right.node)), right.node.span.end)
+        }
+    }
+    Result.Ok(parsed)
+}
+fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] {
+    if word(cursor, "if") { return fields(cursor, if_expr(cursor)?) }
+    if word(cursor, "match") { return fields(cursor, match_expr(cursor)?) }
+    let current = token(cursor)
+    if at(cursor, Kind.Number) {
+        if !in_int_range(current.value, false) {
+            return Result.Err(error(cursor, "integer literal is outside the Int range"))
+        }
+        return fields(cursor, done(cursor, next(cursor), NodeKind.Integer, current.value, new[Node]()))
+    }
+    if at(cursor, Kind.Text) {
+        return fields(cursor, done(cursor, next(cursor), NodeKind.Text, current.value, new[Node]()))
+    }
+    if word(cursor, "true") || word(cursor, "false") {
+        return fields(cursor, done(cursor, next(cursor), NodeKind.Bool, current.value, new[Node]()))
+    }
+    if word(cursor, "Unit") { return Result.Err(error(cursor, "omit explicit Unit expressions")) }
+    if at(cursor, Kind.Name) && !reserved(current.value) {
+        return fields(cursor, named_expr(cursor, records)?)
+    }
+    if at(cursor, Kind.Minus) || at(cursor, Kind.Not) {
+        let rest = newlines(next(cursor))
+        if at(cursor, Kind.Minus) && at(rest, Kind.Number) {
+            if !in_int_range(token(rest).value, true) {
+                return Result.Err(error(rest, "integer literal is outside the Int range"))
+            }
+            return fields(cursor, done(cursor, next(rest), NodeKind.Integer, concat("-", token(rest).value), new[Node]()))
+        }
+        let value = expr(rest, 7, multiline, records)?
+        return fields(cursor, expression_end(done(cursor, value.rest, NodeKind.Unary, operator(current.kind), one(value.node)), value.node.span.end))
+    }
+    if at(cursor, Kind.LParen) {
+        let value = expr(next(cursor), 0, true, true)?
+        let rest = expect(newlines(value.rest), Kind.RParen, "')'")?
+        return fields(cursor, done(cursor, rest, value.node.kind, value.node.value, value.node.children))
+    }
+    if at(cursor, Kind.LBrace) { return fields(cursor, block(cursor)?) }
+    Result.Err(error(cursor, "expected an expression"))
+}
+fn named_expr(cursor Cursor, records Bool) Result[Step, Diagnostic] {
+    let named = path(cursor)?
+    let types = type_args(named.rest)?
+    var rest = types.rest
+    if at(rest, Kind.LParen) {
+        let args = sequence(rest, Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
+        return Result.Ok(done(cursor, args.rest, NodeKind.Call, named.node.value, two(types.node, args.node)))
+    }
+    if records && at(rest, Kind.LBrace) {
+        rest = newlines(next(rest))
+        let children = one(types.node)
+        while !at(rest, Kind.RBrace) {
+            let field = name(rest)?
+            let value = expr(expect(field.rest, Kind.Assign, "'=' after the field name")?, 0, false, true)?
+            push(children, done(rest, value.rest, NodeKind.Field, field.node.value, one(value.node)).node)
+            rest = value.rest
+            if at(rest, Kind.Comma) { rest = next(rest) }
+            rest = newlines(rest)
+        }
+        return Result.Ok(done(cursor, next(rest), NodeKind.Construct, named.node.value, children))
+    }
+    if length(types.node.children) != 0 {
+        return Result.Err(error(rest, "expected a call or record literal after type arguments"))
+    }
+    Result.Ok(named)
+}
+fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
+    var parsed = value
+    var more = true
+    while more {
+        let rest = parsed.rest
+        if at(rest, Kind.Dot) {
+            let field = name(next(rest))?
+            parsed = done(start, field.rest, NodeKind.Select, field.node.value, one(parsed.node))
+        } else {
+            if at(rest, Kind.Question) {
+                parsed = done(start, next(rest), NodeKind.Try, "", one(parsed.node))
+            } else { more = false }
+        }
+    }
+    Result.Ok(parsed)
+}
+fn pattern(cursor Cursor) Result[Step, Diagnostic] {
+    if word(cursor, "_") {
+        return Result.Ok(done(cursor, next(cursor), NodeKind.Wildcard, "", new[Node]()))
+    }
+    let named = path(cursor)?
+    if !at(named.rest, Kind.LParen) {
+        return Result.Ok(done(cursor, named.rest, NodeKind.Pattern, named.node.value, new[Node]()))
+    }
+    var rest = newlines(next(named.rest))
+    let bindings = new[Node]()
+    var more = !at(rest, Kind.RParen)
+    while more {
+        let binding = if word(rest, "_") {
+            done(rest, next(rest), NodeKind.Wildcard, "", new[Node]())
+        } else { name(rest)? }
+        push(bindings, binding.node)
+        rest = binding.rest
+        if at(rest, Kind.LParen) || at(rest, Kind.Dot) || at(rest, Kind.LBrace) {
+            return Result.Err(error(rest, "nested patterns are not supported; bind the value and match it separately"))
+        }
+        rest = newlines(rest)
+        more = at(rest, Kind.Comma)
+        if more {
+            rest = newlines(next(rest))
+            more = !at(rest, Kind.RParen)
+        }
+    }
+    rest = expect(rest, Kind.RParen, "')' after pattern bindings")?
+    let args = done(named.rest, rest, NodeKind.Bindings, "", bindings)
+    Result.Ok(done(cursor, rest, NodeKind.Pattern, named.node.value, one(args.node)))
+}
+fn match_expr(cursor Cursor) Result[Step, Diagnostic] {
+    let value = expr(next(cursor), 0, false, false)?
+    var rest = newlines(expect(newlines(value.rest), Kind.LBrace, "'{' after the matched value")?)
+    let children = one(value.node)
+    while !at(rest, Kind.RBrace) {
+        let start = rest
+        let matched = pattern(rest)?
+        rest = newlines(expect(matched.rest, Kind.Arrow, "'=>' after the pattern")?)
+        let braced = at(rest, Kind.LBrace)
+        let body = if braced { block(rest)? } else {
+            let expression = expr(rest, 0, false, true)?
+            done(rest, expression.rest, NodeKind.Block, "", one(expression.node))
+        }
+        push(children, done(start, body.rest, NodeKind.Arm, "", two(matched.node, body.node)).node)
+        rest = body.rest
+        if at(rest, Kind.Comma) { rest = next(rest) } else {
+            if !braced && !at(rest, Kind.Newline) && !at(rest, Kind.RBrace) {
+                return Result.Err(error(rest, "expected a comma, newline, or '}' after the match arm"))
+            }
+        }
+        rest = newlines(rest)
+    }
+    Result.Ok(done(cursor, next(rest), NodeKind.Match, "", children))
+}
+fn if_expr(cursor Cursor) Result[Step, Diagnostic] {
+    let condition = expr(next(cursor), 0, false, false)?
+    let then_body = block(condition.rest)?
+    let children = two(condition.node, then_body.node)
+    var rest = then_body.rest
+    let after = newlines(rest)
+    if word(after, "else") {
+        rest = newlines(next(after))
+        let alternative = if word(rest, "if") {
+            let nested = if_expr(rest)?
+            done(rest, nested.rest, NodeKind.Block, "", one(nested.node))
+        } else { block(rest)? }
+        push(children, alternative.node)
+        rest = alternative.rest
+    }
+    Result.Ok(done(cursor, rest, NodeKind.If, "", children))
+}
