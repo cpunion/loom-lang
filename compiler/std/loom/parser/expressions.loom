@@ -70,6 +70,7 @@ fn expr(cursor Cursor, minimum Int, multiline Bool, records Bool) Result[Step, D
     Result.Ok(parsed)
 }
 fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] {
+    if word(cursor, "comptime") { return fields(cursor, comptime_expr(cursor)?) }
     if word(cursor, "if") { return fields(cursor, if_expr(cursor)?) }
     if word(cursor, "match") { return fields(cursor, match_expr(cursor)?) }
     let current = token(cursor)
@@ -107,6 +108,14 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
     }
     if at(cursor, Kind.LBrace) { return fields(cursor, block(cursor)?) }
     Result.Err(error(cursor, "expected an expression"))
+}
+fn comptime_expr(cursor Cursor) Result[Step, Diagnostic] {
+    let rest = newlines(next(cursor))
+    if !word(rest, "if") && !at(rest, Kind.LBrace) {
+        return Result.Err(error(rest, "expected '{' or 'if' after 'comptime'"))
+    }
+    let value = if word(rest, "if") { if_expr(rest)? } else { block(rest)? }
+    Result.Ok(done(cursor, value.rest, NodeKind.Comptime, "", one(value.node)))
 }
 fn named_expr(cursor Cursor, records Bool) Result[Step, Diagnostic] {
     let named = path(cursor)?

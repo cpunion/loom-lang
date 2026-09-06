@@ -5,10 +5,14 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Share checked types, concrete call targets, and source-snapshot checks through
+  `std.loom.analysis`, exercised by an independent in-memory semantic consumer.
+  Add bounded pure `comptime` evaluation and selected type-guard branches over
+  the same checked model as native compilation; required proofs remain separate.
 - Share manifest parsing, project loading, and declaration binding through
   `std.loom` libraries. An ordinary project inspector reports symbols, source
   positions, and visible name candidates without invoking the compiler;
-  typed queries and persistent identities remain separate work.
+  declaration binding remains distinct from typed analysis and persistent identities.
 - Index package name lookup once, optimize the runtime without removing dev
   checks, and add single-stage O1 compiler rebuilding. Measure compiler latency,
   memory, and native phases with a small macOS benchmark harness; retain full

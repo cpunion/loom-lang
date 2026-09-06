@@ -2,9 +2,9 @@ import std.loom.project.SourceFile
 import std.loom.binding.Failure
 import std.loom.binding.bind
 import std.loom.parser.parse
-import frontend.checking.check
-import frontend.typed.Program
-import frontend.typed.ExprKind
+import std.loom.checking.check
+import std.loom.typed.Program
+import std.loom.typed.ExprKind
 import std.list.new
 import std.list.push
 import std.list.get
@@ -24,8 +24,8 @@ fn source_files(text Text) List[SourceFile] {
     push(files, source_file("app", text, false))
     files
 }
-fn checked(files List[SourceFile]) Result[frontend.typed.Program, Failure] { check(bind(files, "app", false)?) }
-fn accepted(text Text) frontend.typed.Program {
+fn checked(files List[SourceFile]) Result[std.loom.typed.Program, Failure] { check(bind(files, "app", false)?) }
+fn accepted(text Text) std.loom.typed.Program {
     match checked(source_files(text)) {
         Result.Ok(program) => program
         Result.Err(_) => { assert false

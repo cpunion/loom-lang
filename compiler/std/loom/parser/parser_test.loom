@@ -88,6 +88,34 @@ test fn control_flow_generics_records_and_propagation() {
     assert child(child(matched, 4), 0).kind == NodeKind.Wildcard
 }
 
+test fn comptime_preserves_branches_and_postfix_syntax() {
+    let tree = parsed("fn fixed() Int { comptime { let n = 2\nn + 3 } }\nfn choose[T](value T) Int { comptime if T == Int { value } else { unresolved() } }\nfn other[T]() Int { comptime if T != Text { 1 } else { 2 } }")
+    let fixed = child(body(child(tree, 0)), 0)
+    assert fixed.kind == NodeKind.Comptime && length(fixed.children) == 1
+    assert child(fixed, 0).kind == NodeKind.Block
+    assert child(child(fixed, 0), 0).kind == NodeKind.Let
+    let choice = child(body(child(tree, 1)), 0)
+    assert choice.kind == NodeKind.Comptime && length(choice.children) == 1
+    let conditional = child(choice, 0)
+    assert conditional.kind == NodeKind.If && length(conditional.children) == 3
+    let condition = child(conditional, 0)
+    assert condition.kind == NodeKind.Binary && condition.value == "=="
+    assert child(condition, 0).kind == NodeKind.Name && child(condition, 0).value == "T"
+    assert child(condition, 1).kind == NodeKind.Name && child(condition, 1).value == "Int"
+    assert child(child(conditional, 2), 0).value == "unresolved"
+    assert child(child(child(body(child(tree, 2)), 0), 0), 0).value == "!="
+    let chained = child(body(child(parsed("fn f() { comptime { 1 }.field? }"), 0)), 0)
+    assert chained.kind == NodeKind.Try && chained.span.end == 30
+    let selected = child(chained, 0)
+    assert selected.kind == NodeKind.Select && selected.value == "field"
+    let constant = child(selected, 0)
+    assert constant.kind == NodeKind.Comptime && constant.span.start == 9 && constant.span.end == 23
+    assert length(body(child(parsed("fn f() { comptime {} assert true }"), 0)).children) == 2
+    assert rejected("fn f() { comptime work() }").message == "expected '{' or 'if' after 'comptime'"
+    assert rejected("fn comptime() {}").message == "expected a name"
+    assert rejected("fn f[T]() Int { comptime if T == Int { 1 } else { let = 2 } }").message == "expected a name"
+}
+
 test fn malformed_syntax_has_exact_location() {
     assert rejected("fn f() Unit {}").message == "omit the Unit return annotation"
     assert rejected("fn f() { Unit }").message == "omit explicit Unit expressions"

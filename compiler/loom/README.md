@@ -14,7 +14,7 @@ From the repository root, after [bootstrapping the compiler](../README.md):
 bash scripts/bootstrap.sh --dev
 target/loom check compiler/examples/scalar
 target/loom run compiler/examples/data
-target/loom test compiler/loom/checking
+target/loom test compiler/std/loom/checking
 target/loom test compiler/std/text
 ```
 
@@ -36,8 +36,8 @@ counts or positioned diagnostics. For example:
 
 ```sh
 target/loom parse compiler/loom/main.loom
-target/loom test compiler/loom/proof
-LOOM_GC_STRESS=1 compiler/loom/proof/target/tests
+target/loom test compiler/std/loom/proof
+LOOM_GC_STRESS=1 compiler/std/loom/proof/target/tests
 ```
 
 The bootstrap integration gate compares stage 2 and 3 binaries, selected
@@ -78,8 +78,8 @@ successful parsing does not establish type or contract validity.
 This is an evolving public API, not a stable node schema or lossless editor
 tree: comments and formatting trivia are discarded, and string token values are
 decoded. Preserve original source when tooling needs its spelling and layout.
-Typed semantic queries, metaprogramming, and identity-aware editing remain
-later library boundaries in the [roadmap](../../ROADMAP.md).
+Typed analysis is an opt-in layer below. Typed metaprogramming and identity-aware
+editing remain later library boundaries in the [roadmap](../../ROADMAP.md).
 
 ## Public project and binding libraries
 
@@ -123,19 +123,54 @@ definition identities. Reload/rebind after editing input files or trees: the
 lookup tables are not an editing model or incremental compilation cache. The
 compiler uses these same libraries, with no private copies or wrapper APIs.
 
+## Public typed analysis
+
+`std.loom.analysis` uses the compiler's binder, checker, and required prover
+without the CLI, LLVM backend, or filesystem loading:
+
+| Function | Result |
+| --- | --- |
+| `analyze(project, tests)` | `Result[Analysis, Failure]`, with bindings and a checked program |
+| `type_name(analysis, ty)` | Display name for a type in that analysis |
+| `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
+| `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
+
+The [semantic example](../examples/semantic/main.loom) creates an in-memory
+project, queries inferred local types and selected overload/generic call targets,
+and detects a changed source snapshot:
+
+```sh
+target/loom test compiler/examples/semantic
+target/loom run compiler/examples/semantic
+```
+
+`Analysis` owns a detached source/AST snapshot; treat its returned lists as
+read-only. `is_current` compares the supplied project's metadata, text, and AST,
+not the disk: reload first to detect filesystem changes. These are result-local
+indices, not persistent identities or an incremental cache.
+
+Query offsets are half-open UTF-8 byte offsets. Equal spans prefer the outer
+resolved expression, including field selections and coercions. A call's index
+addresses `analysis.program.functions`; local indices address that function's
+locals. Uninstantiated generic templates and signature-only positions have no
+typed result. The evolving checked model is not a stable public schema or a
+typed macro API.
+
 ## Compiler packages
 
-The remaining directories are internal packages in the `frontend` module:
+Shared `std.loom.typed`, `checking`, and `proof` packages implement the checked
+model, concrete specialization, and bounded required proofs. `std.loom.eval`
+evaluates pure checked expressions for
+[compile-time execution](../README.md#compile-time-execution), not as a second
+runtime backend. Unsupported required proofs still reject the build.
 
-- `typed`, `checking`: checked types, expressions, concrete function instances,
-  private runtime signatures and required-proof obligations.
-- `proof`: bounded scalar reasoning with mathematical integers. Unsupported
-  required proofs reject; there is no runtime postcondition fallback.
+The remaining `frontend` packages are:
+
 - `artifact`: a private counted UTF-8 stream to the LLVM tool, not a stable
   package, cache or public AST format. Proof-only locals are not emitted.
 - Root: CLI orchestration using source `std.fs`, `std.file`, `std.io` and
   `std.process`. Process arguments are literal; no shell is implicitly invoked.
 
 This is the self-hosting subset, not the complete accepted language. Broader
-contracts, concepts, compile-time programming, resources, Tasks and module
+contracts, concepts, variadics/typed macros, resources, Tasks and module
 resolution remain in [implementation status](../../docs/project/implementation-status.md).

@@ -1,0 +1,86 @@
+import std.loom.source.Span
+import std.loom.typed.Program
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Type
+import std.loom.typed.Function
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+pub record Value { ty Int number Int text Text items List[Value] }
+pub record Failure { span Span message Text }
+record Step { value Value returned Bool }
+record Frame { locals List[Value] calls Int }
+// Shared work/allocation counters cover the entire evaluation, including calls.
+record State { program Program budget List[Int] partial Bool }
+
+pub fn unknown() Value { Value { ty = -1 number = 0 text = "" items = new[Value]() } }
+pub fn number(value Int) Value { Value { ty = 1 number = value text = "" items = new[Value]() } }
+pub fn flag(value Bool) Value { Value { ty = 2 number = if value { 1 } else { 0 } text = "" items = new[Value]() } }
+fn unit() Value { Value { ty = 0 number = 0 text = "" items = new[Value]() } }
+fn string(value Text) Value { Value { ty = 3 number = 0 text = value items = new[Value]() } }
+fn aggregate(ty Int, tag Int, items List[Value]) Value { Value { ty = ty number = tag text = "" items = items } }
+fn step(value Value) Step { Step { value = value returned = false } }
+fn failure(expr Expr, message Text) Failure { Failure { span = expr.span message = message } }
+fn state(program Program, partial Bool) State {
+    let budget = new[Int]()
+    push(budget, 100000)
+    push(budget, 16777216)
+    State { program = program budget = budget partial = partial }
+}
+fn spend(state State, expr Expr, index Int, amount Int) Result[Bool, Failure] {
+    let remaining = get(state.budget, index)
+    if amount < 0 || amount > remaining {
+        return Result.Err(failure(expr, if index == 0 { "compile-time work budget exhausted" }
+            else { "compile-time allocation budget exhausted" }))
+    }
+    set(state.budget, index, remaining - amount)
+    Result.Ok(true)
+}
+fn slots(state State, expr Expr, count Int) Result[List[Value], Failure] {
+    if count < 0 || count > get(state.budget, 1) / 64 {
+        return Result.Err(failure(expr, "compile-time allocation budget exhausted"))
+    }
+    discard spend(state, expr, 0, count)?
+    discard spend(state, expr, 1, count * 64)?
+    let values = new[Value]()
+    var index = 0
+    while index < count { push(values, unknown())
+        index = index + 1 }
+    Result.Ok(values)
+}
+fn child(expr Expr, index Int) Result[Expr, Failure] {
+    if index < 0 || index >= length(expr.children) { return Result.Err(failure(expr, "invalid checked expression children")) }
+    Result.Ok(get(expr.children, index))
+}
+fn stored(frame Frame, expr Expr, index Int, value Value) Result[Bool, Failure] {
+    if index < 0 || index >= length(frame.locals) { return Result.Err(failure(expr, "invalid compile-time local index")) }
+    set(frame.locals, index, value)
+    Result.Ok(true)
+}
+fn boolean(expr Expr, value Value) Result[Bool, Failure] {
+    if value.ty != 2 { return Result.Err(failure(expr, "compile-time condition needs a known Bool")) }
+    Result.Ok(value.number != 0)
+}
+
+pub fn evaluate(program Program, expression Expr, locals Int) Result[Value, Failure] {
+    let state = state(program, false)
+    discard scan(state, expression, new[Int](), 0)?
+    let frame = Frame { locals = slots(state, expression, locals)? calls = 0 }
+    Result.Ok(execute(state, expression, frame, 0)?.value)
+}
+
+// Optional constraint folding shares execution/arithmetic but cannot invoke a
+// function or manufacture mutable state. Unknown self stays nonconstant.
+pub fn scalar(expression Expr, self_value Value) Result[Value, Failure] {
+    let program = Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() exports = new[Int]() }
+    let state = state(program, true)
+    discard scan(state, expression, new[Int](), 0)?
+    let locals = new[Value]()
+    push(locals, self_value)
+    Result.Ok(execute(state, expression, Frame { locals = locals calls = 0 }, 0)?.value)
+}

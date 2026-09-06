@@ -2,9 +2,9 @@ import std.loom.project.name
 import std.loom.project.package
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
-import frontend.typed.Expr
-import frontend.typed.ExprKind
-import frontend.typed.TypeKind
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.TypeKind
 import std.list.get
 import std.list.new
 import std.list.push
@@ -102,7 +102,8 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.If { conditional(context, node, expected, enforce)? } else {
     if kind == NodeKind.Match { matched(context, node, expected, enforce)? } else {
     if kind == NodeKind.Try { propagated(context, node, expected)? } else {
+    if kind == NodeKind.Comptime { compile_time(context, node, expected, enforce)? } else {
         return Result.Err(error(context, node, "unsupported expression in source checker"))
-    } } } } } } } } } } } } }
+    } } } } } } } } } } } } } }
     if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
 }

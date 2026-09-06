@@ -1,11 +1,11 @@
 import std.loom.binding.candidates
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
-import frontend.typed.Type
-import frontend.typed.TypeKind
-import frontend.typed.Field
-import frontend.typed.Variant
-import frontend.typed.Expr
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Field
+import std.loom.typed.Variant
+import std.loom.typed.Expr
 import std.list.new
 import std.list.get
 import std.list.push

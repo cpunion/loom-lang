@@ -8,16 +8,16 @@ import std.loom.project.package
 import std.loom.source.Diagnostic
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
-import frontend.typed.Type
-import frontend.typed.TypeKind
-import frontend.typed.Field
-import frontend.typed.Variant
-import frontend.typed.Local
-import frontend.typed.Expr
-import frontend.typed.ExprKind
-import frontend.typed.Arm
-import frontend.typed.Function
-import frontend.typed.Program
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Field
+import std.loom.typed.Variant
+import std.loom.typed.Local
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Arm
+import std.loom.typed.Function
+import std.loom.typed.Program
 import std.list.new
 import std.list.push
 import std.list.get
@@ -32,6 +32,7 @@ record Environment {
     types List[Type]
     signatures List[Signature]
     pending List[Instance]
+    stage_depth Int
 }
 record Binding { local Int previous Int }
 record Context {
@@ -139,8 +140,8 @@ fn bind_local(context Context, node Node, value Text, ty Int, mutable Bool, boun
     Result.Ok(context_at(context, next))
 }
 
-pub fn check(source std.loom.binding.Program) Result[frontend.typed.Program, Failure] {
-    let env = Environment { source = source types = new[Type]() signatures = new[Signature]() pending = new[Instance]() }
+pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
+    let env = Environment { source = source types = new[Type]() signatures = new[Signature]() pending = new[Instance]() stage_depth = 0 }
     initialize_types(env)
     var index = 0
     while index < length(source.symbols) {
@@ -212,5 +213,5 @@ pub fn check(source std.loom.binding.Program) Result[frontend.typed.Program, Fai
         index = index + 1
     }
     discard layouts(env)?
-    Result.Ok(frontend.typed.Program { types = env.types functions = functions entry = entry tests = tests exports = exports })
+    Result.Ok(std.loom.typed.Program { types = env.types functions = functions entry = entry tests = tests exports = exports })
 }

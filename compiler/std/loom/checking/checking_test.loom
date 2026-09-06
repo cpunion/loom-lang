@@ -1,18 +1,18 @@
 import std.loom.binding.Failure
-import frontend.typed.TypeKind
-import frontend.typed.ExprKind
+import std.loom.typed.TypeKind
+import std.loom.typed.ExprKind
 import std.list.new
 import std.list.push
 import std.list.get
 import std.list.length
 import std.result.Result
 
-fn with_result(text Text) Result[frontend.typed.Program, Failure] {
+fn with_result(text Text) Result[std.loom.typed.Program, Failure] {
     let files = source_files(text)
     push(files, source_file("std.result", "pub enum Result[T, E] { Ok(T) Err(E) }\npub enum ConstraintError { Rejected }", true))
     checked(files)
 }
-fn accepted_result(text Text) frontend.typed.Program {
+fn accepted_result(text Text) std.loom.typed.Program {
     match with_result(text) {
         Result.Ok(program) => program
         Result.Err(_) => { assert false

@@ -1,9 +1,9 @@
 import std.loom.source.Span
-import frontend.typed.Function
-import frontend.typed.Local
-import frontend.typed.Expr
-import frontend.typed.ExprKind
-import frontend.typed.Arm
+import std.loom.typed.Function
+import std.loom.typed.Local
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Arm
 import std.list.new
 import std.list.push
 import std.list.length

@@ -1,0 +1,214 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.TypeKind
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.text.length
+import std.result.Result
+
+fn sequence(state State, expressions List[Expr], frame Frame, depth Int) Result[Step, Failure] {
+    var value = step(unit())
+    var index = 0
+    while index < length(expressions) {
+        value = execute(state, get(expressions, index), frame, depth + 1)?
+        if value.returned { return Result.Ok(value) }
+        index = index + 1
+    }
+    Result.Ok(value)
+}
+fn arguments(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
+    let values = new[Value]()
+    var index = 0
+    while index < length(expr.children) {
+        let value = execute(state, get(expr.children, index), frame, depth + 1)?
+        if value.returned { return Result.Ok(value) }
+        push(values, value.value)
+        index = index + 1
+    }
+    Result.Ok(step(aggregate(-1, 0, values)))
+}
+fn equal(state State, expr Expr, left Value, right Value, depth Int) Result[Bool, Failure] {
+    if depth >= 256 { return Result.Err(failure(expr, "compile-time value depth exhausted")) }
+    discard spend(state, expr, 0, 1)?
+    if left.ty != right.ty || left.number != right.number { return Result.Ok(false) }
+    if left.ty == 3 {
+        discard spend(state, expr, 0, length(left.text) / 32 + length(right.text) / 32 + 1)?
+        return Result.Ok(left.text == right.text)
+    }
+    if length(left.items) != length(right.items) { return Result.Ok(false) }
+    var index = 0
+    while index < length(left.items) {
+        if !equal(state, expr, get(left.items, index), get(right.items, index), depth + 1)? { return Result.Ok(false) }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn operation(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
+    let left = execute(state, child(expr, 0)?, frame, depth + 1)?
+    if left.returned { return Result.Ok(left) }
+    let a = left.value
+    if expr.kind == ExprKind.Unary {
+        if a.ty < 0 { return Result.Ok(step(unknown())) }
+        if expr.text == "!" { return Result.Ok(step(flag(!boolean(expr, a)?))) }
+        if a.ty != 1 || expr.text != "-" { return Result.Err(failure(expr, "invalid compile-time unary operator")) }
+        if a.number == -9223372036854775808 { return Result.Err(failure(expr, "compile-time integer overflow")) }
+        return Result.Ok(step(number(-a.number)))
+    }
+    let logical = expr.text == "&&" || expr.text == "||"
+    if logical {
+        if a.ty < 0 { return Result.Ok(step(unknown())) }
+        let truth = boolean(expr, a)?
+        if (expr.text == "&&" && !truth) || (expr.text == "||" && truth) { return Result.Ok(left) }
+    }
+    let right = execute(state, child(expr, 1)?, frame, depth + 1)?
+    if right.returned { return Result.Ok(right) }
+    let b = right.value
+    if a.ty < 0 || b.ty < 0 { return Result.Ok(step(unknown())) }
+    if logical { return Result.Ok(step(flag(boolean(expr, b)?))) }
+    if a.ty == 1 && b.ty == 1 { return Result.Ok(step(arithmetic(expr, a.number, b.number)?)) }
+    if expr.text == "==" || expr.text == "!=" {
+        let same = equal(state, expr, a, b, 0)?
+        return Result.Ok(step(flag(if expr.text == "==" { same } else { !same })))
+    }
+    Result.Err(failure(expr, "invalid compile-time binary operator"))
+}
+fn call(state State, expr Expr, values List[Value], parent Frame, depth Int) Result[Step, Failure] {
+    if parent.calls >= 128 { return Result.Err(failure(expr, "compile-time call depth exhausted")) }
+    if expr.index < 0 || expr.index >= length(state.program.functions) { return Result.Err(failure(expr, "compile-time call has no checked function body")) }
+    let function = get(state.program.functions, expr.index)
+    if length(values) != length(function.params) || length(values) > length(function.locals) {
+        return Result.Err(failure(expr, "invalid checked call arguments"))
+    }
+    let frame = Frame { locals = slots(state, expr, length(function.locals))? calls = parent.calls + 1 }
+    var index = 0
+    while index < length(values) { set(frame.locals, index, get(values, index))
+        index = index + 1 }
+    index = 0
+    while index < length(function.preconditions) {
+        let condition = get(function.preconditions, index)
+        if !boolean(condition, execute(state, condition, frame, depth + 1)?.value)? {
+            return Result.Err(failure(condition, "compile-time precondition failed"))
+        }
+        index = index + 1
+    }
+    let computed = execute(state, function.body, frame, depth + 1)?.value
+    if function.result_local >= 0 { discard stored(frame, expr, function.result_local, computed)? }
+    index = 0
+    while index < length(function.postconditions) {
+        let condition = get(function.postconditions, index)
+        if !boolean(condition, execute(state, condition, frame, depth + 1)?.value)? {
+            return Result.Err(failure(condition, "compile-time postcondition failed"))
+        }
+        index = index + 1
+    }
+    Result.Ok(step(computed))
+}
+fn record_value(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
+    if expr.ty < 0 || expr.ty >= length(state.program.types) { return Result.Err(failure(expr, "invalid checked record type")) }
+    let shape = get(state.program.types, expr.ty)
+    if shape.kind != TypeKind.Record { return Result.Err(failure(expr, "invalid checked record construction")) }
+    let fields = slots(state, expr, length(shape.fields))?
+    var index = 0
+    while index < length(expr.children) {
+        let field = get(expr.children, index)
+        if field.kind != ExprKind.Field || field.index < 0 || field.index >= length(fields) { return Result.Err(failure(field, "invalid checked record field")) }
+        let value = execute(state, child(field, 0)?, frame, depth + 1)?
+        if value.returned { return Result.Ok(value) }
+        set(fields, field.index, value.value)
+        index = index + 1
+    }
+    Result.Ok(step(aggregate(expr.ty, 0, fields)))
+}
+fn matched(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
+    let value = execute(state, child(expr, 0)?, frame, depth + 1)?
+    if value.returned { return Result.Ok(value) }
+    var index = 0
+    while index < length(expr.arms) {
+        let arm = get(expr.arms, index)
+        if arm.variant < 0 || arm.variant == value.value.number {
+            if arm.whole >= 0 { discard stored(frame, expr, arm.whole, value.value)? }
+            var field = 0
+            while field < length(arm.bindings) {
+                let local = get(arm.bindings, field)
+                if local >= 0 {
+                    if field >= length(value.value.items) { return Result.Err(failure(expr, "invalid checked match payload")) }
+                    discard stored(frame, expr, local, get(value.value.items, field))?
+                }
+                field = field + 1
+            }
+            return sequence(state, arm.body, frame, depth + 1)
+        }
+        index = index + 1
+    }
+    Result.Err(failure(expr, "compile-time match has no matching arm"))
+}
+fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
+    if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
+    discard spend(state, expr, 0, 1)?
+    discard spend(state, expr, 1, 128)?
+    if expr.kind == ExprKind.Integer {
+        discard spend(state, expr, 0, length(expr.text))?
+        return Result.Ok(step(number(integer(expr)?)))
+    }
+    if expr.kind == ExprKind.Bool { return Result.Ok(step(flag(expr.text == "true"))) }
+    if expr.kind == ExprKind.Text {
+        discard spend(state, expr, 1, length(expr.text))?
+        return Result.Ok(step(string(expr.text)))
+    }
+    if expr.kind == ExprKind.Local {
+        let value = if expr.index >= 0 && expr.index < length(frame.locals) { get(frame.locals, expr.index) } else { unknown() }
+        if value.ty < 0 && !state.partial { return Result.Err(failure(expr, "compile-time evaluation cannot capture runtime locals")) }
+        return Result.Ok(step(value))
+    }
+    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary { return operation(state, expr, frame, depth) }
+    if expr.kind == ExprKind.Block { return sequence(state, expr.children, frame, depth) }
+    if expr.kind == ExprKind.Coerce {
+        let value = execute(state, child(expr, 0)?, frame, depth + 1)?
+        if value.returned || value.value.ty < 0 { return Result.Ok(value) }
+        return Result.Ok(step(Value { ty = expr.ty number = value.value.number text = value.value.text items = value.value.items }))
+    }
+    if expr.kind == ExprKind.Let || expr.kind == ExprKind.Assign || expr.kind == ExprKind.Return || expr.kind == ExprKind.Assert || expr.kind == ExprKind.Discard {
+        if expr.kind == ExprKind.Return && length(expr.children) == 0 { return Result.Ok(Step { value = unit() returned = true }) }
+        let value = execute(state, child(expr, 0)?, frame, depth + 1)?
+        if value.returned { return Result.Ok(value) }
+        if expr.kind == ExprKind.Return { return Result.Ok(Step { value = value.value returned = true }) }
+        if expr.kind == ExprKind.Let || expr.kind == ExprKind.Assign { discard stored(frame, expr, expr.index, value.value)? }
+        if expr.kind == ExprKind.Assert && !boolean(expr, value.value)? { return Result.Err(failure(expr, "compile-time assertion failed")) }
+        return Result.Ok(step(unit()))
+    }
+    if expr.kind == ExprKind.If {
+        let condition = execute(state, child(expr, 0)?, frame, depth + 1)?
+        if condition.returned { return Result.Ok(condition) }
+        if boolean(expr, condition.value)? { return execute(state, child(expr, 1)?, frame, depth + 1) }
+        if length(expr.children) == 3 { return execute(state, child(expr, 2)?, frame, depth + 1) }
+        return Result.Ok(step(unit()))
+    }
+    if expr.kind == ExprKind.While {
+        while true {
+            let condition = execute(state, child(expr, 0)?, frame, depth + 1)?
+            if condition.returned { return Result.Ok(condition) }
+            if !boolean(expr, condition.value)? { return Result.Ok(step(unit())) }
+            let value = execute(state, child(expr, 1)?, frame, depth + 1)?
+            if value.returned { return Result.Ok(value) }
+        }
+    }
+    if expr.kind == ExprKind.Match { return matched(state, expr, frame, depth) }
+    if expr.kind == ExprKind.Record { return record_value(state, expr, frame, depth) }
+    if expr.kind == ExprKind.Field {
+        let value = execute(state, child(expr, 0)?, frame, depth + 1)?
+        if value.returned { return Result.Ok(value) }
+        if expr.index < 0 || expr.index >= length(value.value.items) { return Result.Err(failure(expr, "compile-time field index out of bounds")) }
+        return Result.Ok(step(get(value.value.items, expr.index)))
+    }
+    if expr.kind == ExprKind.Call || expr.kind == ExprKind.Intrinsic || expr.kind == ExprKind.Variant {
+        let values = arguments(state, expr, frame, depth)?
+        if values.returned { return Result.Ok(values) }
+        if expr.kind == ExprKind.Call { return call(state, expr, values.value.items, frame, depth) }
+        if expr.kind == ExprKind.Intrinsic { return Result.Ok(step(primitive(state, expr, values.value.items)?)) }
+        return Result.Ok(step(aggregate(expr.ty, expr.index, values.value.items)))
+    }
+    Result.Err(failure(expr, "unsupported checked expression in compile-time evaluation"))
+}

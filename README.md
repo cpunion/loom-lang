@@ -16,7 +16,7 @@ in Git history.
 ## Start here
 
 - [Build and run the compiler](compiler/README.md)
-- [Use Loom syntax and project libraries](compiler/loom/README.md#public-syntax-libraries)
+- [Use Loom syntax and analysis libraries](compiler/loom/README.md#public-syntax-libraries)
 - [Project goals](docs/project/charter.md)
 - [Language decisions](docs/rfcs/language-foundation.md)
 - [Changes and deployment decisions](docs/rfcs/change-and-deployment.md)
@@ -30,8 +30,8 @@ the complete language, standard library, or tooling design is implemented.
 ## Repository
 
 - `compiler/src`: Rust LLVM lowering, checked-artifact input, and host linking.
-- `compiler/loom`: Loom-written compiler and reusable frontend packages.
-- `compiler/std`: standard-library source, compiled like application code.
+- `compiler/loom`: Loom-written compiler CLI and checked-artifact emission.
+- `compiler/std`: source libraries, including the shared compiler analysis layers.
 - `compiler/runtime`: managed-memory and private platform primitives in Rust.
 - `compiler/examples` and `compiler/tests`: runnable examples and focused tests.
 - `docs`: goals, decisions, and current status.

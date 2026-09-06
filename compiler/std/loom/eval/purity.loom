@@ -1,0 +1,67 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+import std.text.concat
+
+fn pure_intrinsic(name Text) Bool {
+    name == "text_len" || name == "text_byte" || name == "text_concat" || name == "text_equal" || name == "text_slice" ||
+    name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" ||
+    name == "list_new" || name == "list_len" || name == "list_get" || name == "list_push" || name == "list_set" ||
+    name == "bytes_new" || name == "bytes_len" || name == "bytes_push" || name == "bytes_utf8" || name == "bytes_text_copy"
+}
+fn scan(state State, expr Expr, seen List[Int], depth Int) Result[Bool, Failure] {
+    if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
+    discard spend(state, expr, 0, 1)?
+    if expr.kind == ExprKind.Deferred { return Result.Err(failure(expr, "compile-time expression still has unresolved types")) }
+    if state.partial && expr.kind != ExprKind.Integer && expr.kind != ExprKind.Bool && expr.kind != ExprKind.Text &&
+        expr.kind != ExprKind.Local && expr.kind != ExprKind.Unary && expr.kind != ExprKind.Binary && expr.kind != ExprKind.Coerce {
+        return Result.Err(failure(expr, "expression is not a call-free scalar constant"))
+    }
+    if expr.kind == ExprKind.Intrinsic && !pure_intrinsic(expr.text) {
+        return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", expr.text)))
+    }
+    if expr.kind == ExprKind.Call {
+        if expr.index < 0 || expr.index >= length(state.program.functions) {
+            return Result.Err(failure(expr, "compile-time call has no checked function body"))
+        }
+        var index = 0
+        while index < length(seen) && get(seen, index) != expr.index { index = index + 1 }
+        if index == length(seen) {
+            push(seen, expr.index)
+            let function = get(state.program.functions, expr.index)
+            if function.runtime_name != "" && !pure_intrinsic(function.runtime_name) {
+                return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", function.runtime_name)))
+            }
+            discard scan(state, function.body, seen, depth + 1)?
+            index = 0
+            while index < length(function.preconditions) {
+                discard scan(state, get(function.preconditions, index), seen, depth + 1)?
+                index = index + 1
+            }
+            index = 0
+            while index < length(function.postconditions) {
+                discard scan(state, get(function.postconditions, index), seen, depth + 1)?
+                index = index + 1
+            }
+        }
+    }
+    var index = 0
+    while index < length(expr.children) {
+        discard scan(state, get(expr.children, index), seen, depth + 1)?
+        index = index + 1
+    }
+    index = 0
+    while index < length(expr.arms) {
+        let arm = get(expr.arms, index)
+        var item = 0
+        while item < length(arm.body) {
+            discard scan(state, get(arm.body, item), seen, depth + 1)?
+            item = item + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

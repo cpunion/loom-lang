@@ -1,0 +1,70 @@
+import std.loom.analysis.Analysis
+import std.loom.analysis.analyze
+import std.loom.analysis.is_current
+import std.loom.analysis.type_name
+import std.loom.analysis.expressions_at
+import std.loom.parser.parse
+import std.loom.project.Project
+import std.loom.project.SourceFile
+import std.loom.typed.Expr
+import std.loom.source.render
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+import std.text.length
+import std.text.slice
+import std.text.concat
+import std.io.write_text
+import std.io.write_error
+import std.process.exit_code
+import std.result.Result
+
+fn expression(analysis Analysis, text Text, fragment Text) Expr {
+    var offset = 0
+    while offset + length(fragment) <= length(text) {
+        if slice(text, offset, offset + length(fragment)) == fragment {
+            return get(expressions_at(analysis, 0, offset), 0).expression
+        }
+        offset = offset + 1
+    }
+    assert false
+    expression(analysis, text, fragment)
+}
+
+// Analyze supplied source directly: no compiler process, files or LLVM backend.
+fn inspect() Result[Text, Text] {
+    let text = "fn pick(x Int) Int { x }\nfn pick(x Bool) Bool { x }\nfn identity[T](x T) T { x }\nfn main() {\nlet value = identity(7)\nassert pick(true)\nassert value == 7\n}"
+    let tree = match parse(text) {
+        Result.Ok(tree) => tree
+        Result.Err(error) => { return Result.Err(render("memory.loom", text, error)) }
+    }
+    let files = new[SourceFile]()
+    push(files, SourceFile { package = "app" path = "memory.loom" text = text tree = tree
+        test_only = false trusted_std = false })
+    let project = Project { files = files root = "app" }
+    let analysis = match analyze(project, false) {
+        Result.Ok(analysis) => analysis
+        Result.Err(failure) => { return Result.Err(render("memory.loom", text, failure.diagnostic)) }
+    }
+    assert is_current(analysis, project, false)
+    let local = expression(analysis, text, "value ==")
+    let call = expression(analysis, text, "pick(true)")
+    let overload = get(analysis.program.functions, call.index)
+    let generic = get(analysis.program.functions, expression(analysis, text, "identity(7)").index)
+    let selected = concat("pick(", concat(type_name(analysis, get(overload.params, 0)), ")"))
+    let instance = concat("identity[", concat(type_name(analysis, get(generic.arguments, 0)), "]"))
+    set(files, 0, SourceFile { package = "app" path = "memory.loom" text = concat(text, "\n") tree = tree
+        test_only = false trusted_std = false })
+    let stale = if is_current(analysis, project, false) { "false" } else { "true" }
+    Result.Ok(concat("local ", concat(type_name(analysis, local.ty), concat("\noverload ", concat(selected,
+        concat("\ngeneric ", concat(instance, concat("\nstale after edit ", concat(stale, "\n")))))))))
+}
+
+fn main() {
+    match inspect() {
+        Result.Ok(summary) => { discard write_text(summary) }
+        Result.Err(error) => { discard write_error(concat(error, "\n"))
+            exit_code(1) }
+    }
+}

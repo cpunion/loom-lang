@@ -1,0 +1,5 @@
+test fn selected_type_branches_accept_only_the_needed_operations() {
+    assert adjusted(41) == 42
+    assert adjusted("not an integer") == 0
+    assert only_integer(7) == 7
+}

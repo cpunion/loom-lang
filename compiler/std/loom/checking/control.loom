@@ -2,11 +2,11 @@ import std.loom.project.name
 import std.loom.project.package
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
-import frontend.typed.Expr
-import frontend.typed.ExprKind
-import frontend.typed.TypeKind
-import frontend.typed.Arm
-import frontend.typed.Local
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.TypeKind
+import std.loom.typed.Arm
+import std.loom.typed.Local
 import std.list.new
 import std.list.get
 import std.list.push
