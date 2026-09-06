@@ -113,6 +113,12 @@ jobs:
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
+      - name: Select the MSVC linker for Rust
+        shell: pwsh
+        run: |
+          # Git Bash also provides link.exe; Cargo must use the native linker.
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$env:VCToolsInstallDir/bin/Hostx64/x64/link.exe" >> $env:GITHUB_ENV
+
       - name: Install the LLVM development archive
         shell: pwsh
         timeout-minutes: 10
