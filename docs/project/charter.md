@@ -1,73 +1,66 @@
 # Project charter
 
-Loom is an experimental, statically typed compiled language for ordinary
-programs. The project is building one coherent path from source text to checked
-portable IR and native executables, with contracts, concepts, automatic memory
-management, lexical cleanup, and structured asynchronous tasks.
+Loom aims to make programs easier to write, understand, verify, and evolve.
+Developers keep ordinary source files and familiar editors; types, contracts,
+dependencies, and declaration identities let tools reason about changes beyond
+textual lines.
 
-The project favors a small explicit language over a collection of overlapping
-mechanisms.
+The compiler is the foundation of this experience, not the whole product. A
+small language, a source-written standard library, and tools for change and
+deployment have separate responsibilities.
 
-## Current language direction
+## Goals
 
-The implemented core includes:
+1. **Readable programs.** Keep related logic together in the organization the
+   developer chooses. Declarative meaning must not require fragmented handlers,
+   an AST editor, or an execution graph in every runtime call.
+2. **Trustworthy guarantees.** Establish constrained values at boundaries,
+   preserve invariants through permitted mutation, and prove declared function
+   postconditions. Distinguish proof, runtime checks, tests, and assumptions.
+3. **Useful feedback and collaboration.** Explain affected definitions, stale
+   results, and changed bindings. Merge moves and edits semantically without
+   guessing declaration identity or replaying external effects.
+4. **Safe evolution of deployed systems.** Check the actual deployed basis
+   against the candidate artifact. Require complete migration and recovery
+   plans when persisted state is incompatible; retain data across downgrade
+   and account for it on a later upgrade.
+5. **A small implementation that can self-host early.** Produce straightforward
+   typed native code, implement policy in Loom libraries, and move compiler
+   components into Loom as soon as the native subset can support them.
 
-- directory packages, records, enums, generics, expressions, methods, and tests;
-- checked integer arithmetic and explicit typed failure values;
-- refined values, record invariants, preconditions, postconditions, and
-  proof-based check elimination;
-- named concepts, explicit conformances, associated types, static
-  polymorphism, and `dyn C` dynamic values;
-- automatic moving GC without ownership, borrow, or lifetime syntax;
-- block-level `scoped` resources and block-level `defer` cleanup;
-- stackless async functions, postfix `.await`, structured `Task` ownership,
-  terminal task outcomes, and standard-library task composition;
-- manifest modules, lockfiles, registries, portable artifacts, a persistent
-  cache, an interpreter backend, and an LLVM native backend.
+## Responsibility boundaries
 
-The Go-like `name Type` spelling is a surface choice. It does not imply
-structural interface satisfaction, runtime interface discovery, function-level
-`defer` semantics, or Go's runtime representation.
+| Layer | Responsibility |
+| --- | --- |
+| Language and compiler | Source syntax, static types, concepts, contracts, effect reasoning, compile-time programming, and typed native compilation. |
+| Minimal runtime | Irreducible allocation/GC, coroutine scheduling, wait registration, and platform boundaries. |
+| Loom libraries | Collections, text processing, formats such as JSON, I/O APIs, testing helpers, task composition, and application policy. |
+| Development and deployment tools | Semantic change management, affected feedback, deployment records, compatibility analysis, and migration/recovery orchestration. |
 
-## Deliberate exclusions
+Reconciliation belongs in libraries and systems built on these mechanisms, not
+in a mandatory language-level operator runtime. The project retains the goal
+of continuous, readable desired-state workflows. Cross-cutting composition and
+AOP remain in the backlog until their benefit and integration model are clear.
 
-The current scope does not include:
+No ownership/borrow/lifetime syntax, GC finalizers, runtime conformance search
+from `any`, or compulsory source database is part of this direction. Physical
+addresses and runtime layouts are not source contracts. FFI and additional
+backends require their own narrow boundaries, not a universal-value fallback.
 
-- Rust-style ownership, borrow, lifetime, or move-carrier syntax;
-- runtime conversion from an untyped value to a concept by searching
-  conformances;
-- live programming or source/AST editing as a runtime model;
-- AOP, implicit advice, operator runtimes, or desired-state reconciliation;
-- runtime reflection, dynamic loading, plugins, or a stable native FFI ABI;
-- inheritance hierarchies as a parallel abstraction mechanism;
-- finalizers as resource management;
-- a multithreaded shared-memory executor.
+## Goals are not implementation status
 
-These exclusions are architecture boundaries, not hidden placeholders.
-Introducing one requires a separate design proposal that explains observable
-semantics, static checking, MIR, reachability/DCE, artifacts, runtime impact,
-and test evidence.
+The accepted [language foundation](../rfcs/language-foundation.md) and
+[change and deployment design](../rfcs/change-and-deployment.md) record the
+target decisions. They supersede narrower project-scope statements, not the
+observable behavior of the existing compiler.
 
-## Engineering principles
+The [implementation status](implementation-status.md), compiler guide,
+and executable fixtures describe what currently works. Earlier prototypes are
+available in Git history, not a requirement to preserve their architecture.
+There is no compatibility obligation to an
+unpublished prototype; actual deployed state still creates explicit obligations.
 
-1. Static meaning is decided before execution. Backends do not guess missing
-   type, contract, or conformance facts.
-2. One feature has one primary spelling and one semantic model.
-3. Safety checks may be removed only by a proof whose failure falls back to the
-   checked path.
-4. Automatic memory management must preserve value semantics and lexical
-   resource cleanup.
-5. Native layout and optimization are private implementation choices.
-6. Platform and performance claims name the exact evidence that supports them.
-7. Corrupt external inputs fail closed; caches never become authorities.
-8. New capability arrives as a vertical slice: syntax, semantics, MIR,
-   validation, both applicable backends, tooling, and tests.
-
-## Documentation authority
-
-User-facing reference documents describe implemented, supported behavior.
-Internals describe the current implementation. Contributing guides describe
-repository process. RFCs describe active proposals and are not user reference.
-Abandoned pre-release designs are removed after any current constraint is moved
-to its authoritative document; the repository does not retain an alternate
-historical specification.
+The [roadmap](../../ROADMAP.md) defines the replacement compiler's vertical
+slices and self-hosting gates. Do not turn a temporary subset into a reduced
+goal, maintain a second runtime interpreter as a product requirement, or label
+a proposed capability as implemented.

@@ -1,6 +1,0 @@
-import utility.math.increment
-
-test fn dependencyWorks() {
-    let answer = increment(1)
-    assert answer == 2
-}

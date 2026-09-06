@@ -1,0 +1,29 @@
+import scalar.math.fib
+import std.int.maximum
+
+fn nonnegative(value Int) Int
+requires value >= 0
+ensures result >= 0
+{
+    value
+}
+
+fn sum_to(n Int) Int {
+    var total = 0
+    var index = 0
+    while index < n {
+        total = total + index
+        index = index + 1
+    }
+    total
+}
+
+pub fn main() {
+    assert fib(10) == 55
+    assert nonnegative(sum_to(10)) == 45
+    assert maximum(7, 11) == 11
+}
+
+test fn embedded_private_helper() {
+    assert sum_to(6) == 15
+}

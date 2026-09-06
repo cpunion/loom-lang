@@ -1,1 +1,0 @@
-test fn typedTextMap() Result[Unit, Problem] { verify() }

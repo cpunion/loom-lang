@@ -1,0 +1,6 @@
+fn expected_sum() Int { 45 }
+
+test fn package_private_helper() {
+    assert sum_to(10) == expected_sum()
+    assert nonnegative(0) == 0
+}

@@ -1,0 +1,25 @@
+intrinsic fn list_new[T]() List[T]
+intrinsic fn list_len[T](values List[T]) Int
+intrinsic fn list_get[T](values List[T], index Int) T
+intrinsic fn list_push[T](values List[T], value T)
+intrinsic fn list_set[T](values List[T], index Int, value T)
+
+pub fn new[T]() List[T] {
+    list_new[T]()
+}
+
+pub fn length[T](values List[T]) Int {
+    list_len[T](values)
+}
+
+pub fn get[T](values List[T], index Int) T {
+    list_get[T](values, index)
+}
+
+pub fn push[T](values List[T], value T) {
+    list_push[T](values, value)
+}
+
+pub fn set[T](values List[T], index Int, value T) {
+    list_set[T](values, index, value)
+}
