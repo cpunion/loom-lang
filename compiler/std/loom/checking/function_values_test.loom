@@ -1,0 +1,61 @@
+test fn function_references_use_exact_contextual_signatures_and_declared_bounds() {
+    let definitions = "fn identity[T](value T) T { value }\nfn pick(value Int) Int { value }\nfn pick(value Bool) Bool { value }\nfn apply[T](value T, callback fn(T) T) T { callback(value) }\n"
+    let program = accepted(concat(definitions, "fn choose() fn(Int) Int { pick }\nfn main() { let selected fn(Int) Int = pick\nlet generic = identity[Int]\nlet inferred fn(Bool) Bool = identity\nassert selected(3) == 3 && generic(4) == 4 && inferred(true)\nassert apply(5, identity) == 5\nassert choose()(6) == 6 }") )
+    var references = 0
+    var indirect = 0
+    var index = 0
+    while index < length(program.functions) {
+        let body = get(program.functions, index).body
+        references = references + dynamic_count(body, ExprKind.FunctionRef)
+        indirect = indirect + dynamic_count(body, ExprKind.IndirectCall)
+        index = index + 1
+    }
+    assert references >= 4 && indirect >= 4
+    rejects(concat(definitions, "fn main() { let ambiguous = pick\ndiscard ambiguous }"))
+    rejects(concat(definitions, "fn main() { let incompatible fn(Text) Int = pick\ndiscard incompatible }"))
+    rejects(concat(definitions, "fn main() { let uninferrable = identity\ndiscard uninferrable }"))
+    rejects(concat(definitions, "fn main() { let identity = 1\nlet callback = identity[Int]\ndiscard callback }"))
+    let bounded = "concept C {}\nimpl C for Int {}\nfn bounded[T C](value T) T { value }\n"
+    discard accepted(concat(bounded, "fn forward[T C](value T) T { let callback fn(T) T = bounded\ncallback(value) }\nfn main() { assert forward(1) == 1 }"))
+    rejects(concat(bounded, "fn hidden[T](value T) T { let callback fn(T) T = bounded\ncallback(value) }"))
+    rejects(concat(bounded, "fn main() { let callback fn(Bool) Bool = bounded\ndiscard callback }"))
+    rejects("type Positive = Int where self > 0\nfn value(input Positive) Positive { input }\nfn main() { let callback fn(Int) Int = value\ndiscard callback }")
+}
+
+test fn function_fields_and_methods_share_viability_without_implicit_capture() {
+    discard accepted("record Node { visit fn(Node) Int }\nfn visit(node Node) Int { 1 }\nfn main() { let node = Node { visit = visit }\nassert node.visit(node) == 1 }")
+    let definitions = "record Hook { callback fn(Int) Int }\nfn increment(value Int) Int { value + 1 }\nconcept C { fn callback(self Self, value Bool) Bool }\nimpl C for Hook { fn callback(self Hook, value Bool) Bool { value } }\n"
+    discard accepted(concat(definitions, "fn main() { let hook = Hook { callback = increment }\nassert hook.callback(2) == 3\nassert hook.callback(true)\nassert (hook.callback)(3) == 4\nassert C.callback(hook, true) }") )
+    let ambiguous = "record Hook { callback fn(Int) Int }\nfn increment(value Int) Int { value + 1 }\nconcept C { fn callback(self Self, value Int) Int }\nimpl C for Hook { fn callback(self Hook, value Int) Int { value + 2 } }\n"
+    rejects(concat(ambiguous, "fn main() { let hook = Hook { callback = increment }\ndiscard hook.callback(1) }"))
+    discard accepted(concat(ambiguous, "fn main() { let hook = Hook { callback = increment }\nassert (hook.callback)(1) == 2\nassert C.callback(hook, 1) == 3 }") )
+    rejects("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\nfn main() { let value = 1\nlet captured = value.value\ndiscard captured }")
+    rejects("fn value(input Int) Int { input }\nfn main() { let callback = value\nassert callback == callback }")
+    rejects("fn value(input Int) Int { input }\nfn main() { let callback = value\ndiscard callback[Int](1) }")
+}
+
+test fn compile_time_callback_results_rebind_source_symbols_and_type_arguments() {
+    let program = accepted("fn identity[T](value T) T { value }\nfn unused(value Int) Int { value + 9001 }\nfn choose() fn(Int) Int { identity[Int] }\nrecord Callback { value fn(Int) Int }\nfn apply(callback fn(Int) Int, value Int) Int { callback(value) }\nfn main() { let plain = comptime { choose() }\nlet wrapped = comptime { Callback { value = identity[Int] } }\nlet text = comptime { identity[Text] }\nassert plain(3) == 3 && wrapped.value(4) == 4 && text(\"yes\") == \"yes\"\nassert comptime { apply(identity[Int], 5) } == 5 }")
+    assert length(program.functions) == 3
+    assert get(program.functions, 1).symbol == 0 && get(program.functions, 2).symbol == 0
+    assert get(get(program.functions, 1).arguments, 0) != get(get(program.functions, 2).arguments, 0)
+    discard accepted("fn identity[T](value T) T { value }\nfn selected[T](value T) Bool { comptime if T == fn(Int) Int { true } else { false } }\nfn main() { assert selected(identity[Int]) }")
+    rejects("fn positive(value Int) Int requires value > 0 { value }\nfn call(callback fn(Int) Int) Int { callback(0) }\nfn main() { discard comptime { call(positive) } }")
+    rejects("fn identity(value Int) Int { value }\nfn unproved(callback fn(Int) Int, value Int) Int ensures result == value { callback(value) }")
+}
+
+test fn compile_time_callback_purity_scans_references_even_without_invocation() {
+    let declarations = "import std.io.effect\nfn pure(value Int) Int { value }\nfn impure(value Int) Int { effect()\nvalue }\nfn invoke(callback fn(Int) Int) Int { callback(1) }\n"
+    let outputs = new[Text]()
+    push(outputs, "fn main() { discard comptime { invoke(impure) } }")
+    push(outputs, "fn main() { discard comptime { let callback fn(Int) Int = if false { impure } else { pure }\ncallback(1) } }")
+    push(outputs, "fn main() { discard comptime { impure } }")
+    var index = 0
+    while index < length(outputs) {
+        let files = source_files(concat(declarations, get(outputs, index)))
+        push(files, source_file("std.io", "intrinsic fn write(fd Int, value Text) Int\npub fn effect() { discard write(1, \"effect\") }", true))
+        match checked(files) { Result.Err(_) => {}
+            Result.Ok(_) => { assert false } }
+        index = index + 1
+    }
+}

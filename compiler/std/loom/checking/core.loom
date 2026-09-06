@@ -75,7 +75,7 @@ fn type_part(node Node) Int {
     var index = 0
     while index < length(node.children) {
         let kind = child(node, index).kind
-        if kind == NodeKind.Type || kind == NodeKind.TupleType || kind == NodeKind.DynType { return index }
+        if kind == NodeKind.Type || kind == NodeKind.TupleType || kind == NodeKind.DynType || kind == NodeKind.FunctionType { return index }
         index = index + 1
     }
     -1

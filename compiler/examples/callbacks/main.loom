@@ -1,0 +1,84 @@
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+import std.list.length
+import std.text.concat
+import std.int.to_text
+import std.result.Result
+
+fn increment(value Int) Int { value + 1 }
+fn double(value Int) Int { value * 2 }
+fn label(value Int) Text { to_text(value) }
+fn label(value Text) Text { concat("text:", value) }
+fn identity[T](value T) T { value }
+
+fn apply[T, U](action fn(T) U, value T) U { action(value) }
+fn map[T, U](values List[T], transform fn(T) U) List[U] {
+    let output = new[U]()
+    var index = 0
+    while index < length(values) {
+        push(output, transform(get(values, index)))
+        index = index + 1
+    }
+    output
+}
+fn choose(first Bool) fn(Int) Int {
+    if first { increment } else { double }
+}
+fn available() Result[fn(Int) Int, Text] { Result.Ok(increment) }
+fn propagated() Result[Int, Text] { Result.Ok(available()?(4)) }
+
+record Hook { action fn(Int) Int }
+enum MaybeHook { Some(fn(Int) Int) None }
+
+fn join(left Text, right Text) Text { concat(left, right) }
+fn replacement(left Text, right Text) Text { concat(right, left) }
+fn replace(actions List[fn(Text, Text) Text]) Text {
+    set(actions, 0, replacement)
+    concat("right", "!")
+}
+fn write_trace(trace List[Int], value Int) { set(trace, 0, value) }
+
+fn exercise() {
+    let action fn(Int) Int = increment
+    assert action(4) == 5 && apply(double, 3) == 6
+    let generic = identity[Int]
+    assert generic(7) == 7
+    let inferred fn(Text) Text = identity
+    assert inferred("inferred") == "inferred"
+    assert choose(false)(4) == 8
+    let hook = Hook { action = increment }
+    assert hook.action(8) == 9 && (hook.action)(9) == 10
+    let maybe = MaybeHook.Some(double)
+    assert match maybe { MaybeHook.Some(value) => value(4) == 8, MaybeHook.None => false }
+    let functions = (increment, double)
+    assert functions.0(2) == 3 && functions.1(2) == 4
+    let values = new[Int]()
+    push(values, 3)
+    push(values, 7)
+    let texts = map[Int, Text](values, label)
+    assert get(texts, 0) == "3" && get(texts, 1) == "7"
+    let rendered fn(Text) Text = label
+    assert rendered("value") == "text:value"
+
+    let prepared = comptime { choose(false) }
+    assert prepared(5) == 10
+    let prepared_generic = comptime { identity[Text] }
+    assert prepared_generic("staged") == "staged"
+    let evaluated = comptime { apply(increment, 4) }
+    assert evaluated == 5
+    assert match propagated() { Result.Ok(value) => value == 5, Result.Err(_) => false }
+
+    let actions = new[fn(Text, Text) Text]()
+    push(actions, join)
+    assert get(actions, 0)(concat("left", "!"), replace(actions)) == "left!right!"
+    assert get(actions, 0)("left", "right") == "rightleft"
+    let trace = new[Int]()
+    push(trace, 0)
+    let notify fn(List[Int], Int) = write_trace
+    notify(trace, 42)
+    assert get(trace, 0) == 42
+}
+
+fn main() { exercise() }

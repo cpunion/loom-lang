@@ -28,6 +28,15 @@ compile-time evaluation, reification, and public typed analysis use the same
 aggregate semantics. The [tuple example](../../compiler/examples/tuples/main.loom)
 checks evaluation order and shared-container results under GC stress.
 
+Named function values have structural signatures, contextual overload/generic
+selection, and native calls through one code pointer. Parameters, returned
+callees and aggregate storage share the ordinary ABI and GC rules. Pure
+compile-time invocation and returned-reference reification use the same checked
+model. The [callback example](../../compiler/examples/callbacks/main.loom) runs
+under forced collection; O0 scalar callbacks have no Loom runtime dependency
+and retain only referenced targets. Capturing closures and compile-time function
+parameters are not yet implemented.
+
 Static concepts use explicit nominal `impl` declarations, generic bounds and
 ordinary direct-call specialization. Conditional `T implements C` tests select
 only that instance's branch; they do not add a public generic requirement.

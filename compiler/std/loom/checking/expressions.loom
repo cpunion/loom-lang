@@ -46,6 +46,8 @@ fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
     let first = slice(node.value, 0, end)
     let local = lookup(context, first)
     if local < 0 {
+        let options = referenced_functions(context, node.value)
+        if length(options) != 0 { return function_value(context, node, options, new[Node](), expected) }
         if end < length(node.value) { return variant(context, node, new[Node](), new[Node](), expected) }
         return Result.Err(error(context, node, "unknown local value"))
     }
@@ -79,6 +81,8 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Bool { atom(ExprKind.Bool, 2, node, -1) } else {
     if kind == NodeKind.Text { atom(ExprKind.Text, 3, node, -1) } else {
     if kind == NodeKind.Name { named(context, node, expected)? } else {
+    if kind == NodeKind.Type { function_value(context, node, referenced_functions(context, node.value), node.children, expected)? } else {
+    if kind == NodeKind.Invoke { call_value(context, node, expr(context, child(node, 0), -1)?, new[Node](), child(node, 1).children)? } else {
     if kind == NodeKind.Call { call(context, node, expected)? } else {
     if kind == NodeKind.MethodCall { method_call(context, node, child(node, 0), node.value,
         child(node, 1).children, child(node, 2).children, -1, expected)? } else {
@@ -113,6 +117,6 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Try { propagated(context, node, expected)? } else {
     if kind == NodeKind.Comptime { compile_time(context, node, expected, enforce)? } else {
         return Result.Err(error(context, node, "unsupported expression in source checker"))
-    } } } } } } } } } } } } } } } } }
+    } } } } } } } } } } } } } } } } } } }
     if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
 }

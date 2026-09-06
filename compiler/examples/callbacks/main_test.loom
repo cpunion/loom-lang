@@ -1,0 +1,1 @@
+test fn named_callbacks_share_native_and_compile_time_behavior() { exercise() }

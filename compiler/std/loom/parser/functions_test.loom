@@ -1,0 +1,28 @@
+test fn function_types_preserve_omitted_results_and_higher_order_shape() {
+    let tree = parsed("fn apply(action fn(Int) Int, value Int) Int { action(value) }\nfn choose() fn(Int) fn(Text) { callback }\nrecord Hooks { callback fn(Int) Int\nnotify fn(Text) }\n")
+    let action = child(child(child(child(tree, 0), 1), 0), 0)
+    assert action.kind == NodeKind.FunctionType
+    assert child(child(action, 0), 0).value == "Int"
+    assert child(child(action, 1), 0).value == "Int"
+    let returned = child(child(child(tree, 1), 2), 0)
+    assert returned.kind == NodeKind.FunctionType
+    let nested = child(child(returned, 1), 0)
+    assert nested.kind == NodeKind.FunctionType && length(child(nested, 1).children) == 0
+    let hooks = child(tree, 2)
+    assert length(child(child(child(hooks, 2), 0), 1).children) == 0
+    discard rejected("fn explicit(action fn(Int) Unit) {}")
+    discard rejected("fn named(action fn(value Int) Int) {}")
+}
+
+test fn arbitrary_callees_chain_without_changing_named_calls() {
+    let tree = parsed("fn main() { let action = identity[Int]\nlet first = (action)(1)\nlet second = choose()(2)\nlet third = holder.action(3) }")
+    let body = child(child(tree, 0), 2)
+    let reference = child(child(body, 0), 0)
+    assert reference.kind == NodeKind.Type && reference.value == "identity"
+    assert child(reference, 0).value == "Int"
+    let first = child(child(body, 1), 0)
+    assert first.kind == NodeKind.Invoke && child(first, 0).value == "action"
+    let second = child(child(body, 2), 0)
+    assert second.kind == NodeKind.Invoke && child(second, 0).kind == NodeKind.Call
+    assert child(child(body, 3), 0).kind == NodeKind.Call
+}

@@ -15,6 +15,8 @@ import std.result.Result
 
 // Mutable containers use a positive evaluation-local allocation ID in number;
 // records use zero and enums keep their variant tag. These are not addresses.
+// Named functions use their source symbol in number and Int-wrapped type IDs
+// in items; these survive reification into a different function queue.
 pub record Value { ty Int number Int floating Float text Text items List[Value] }
 pub record Failure { span Span message Text }
 record Step { value Value returned Bool }

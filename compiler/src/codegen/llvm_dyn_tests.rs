@@ -114,6 +114,7 @@ fn explicit_witnesses_dispatch_and_keep_sparse_reachability() {
         types: vec![],
         lists: vec![],
         functions: vec![integer, concatenate, dead, main],
+        function_types: vec![],
         entry: Some(3),
         tests: vec![],
         // Public functions can make the source metadata retain full tables,
@@ -122,18 +123,18 @@ fn explicit_witnesses_dispatch_and_keep_sparse_reachability() {
         interfaces: vec![
             checked::Interface {
                 methods: vec![
-                    checked::Method {
+                    checked::Signature {
                         params: vec![Type::Int],
                         result: Type::Int,
                     },
-                    checked::Method {
+                    checked::Signature {
                         params: vec![],
                         result: Type::Int,
                     },
                 ],
             },
             checked::Interface {
-                methods: vec![checked::Method {
+                methods: vec![checked::Signature {
                     params: vec![Type::Text],
                     result: Type::Text,
                 }],

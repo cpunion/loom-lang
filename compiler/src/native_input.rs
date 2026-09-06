@@ -115,6 +115,7 @@ struct Data {
     tag: usize,
     symbol: i64,
     element: usize,
+    params: Vec<usize>,
     fields: Vec<(String, usize)>,
     variants: Vec<(String, Vec<usize>)>,
 }
@@ -156,7 +157,12 @@ pub fn decode(text: &str) -> Result<c::Program> {
     let data = reader.sequence(|reader| {
         let tag = reader.index()?;
         let symbol = reader.integer()?;
-        let element = if tag == 6 || tag == 9 {
+        let params = if tag == 12 {
+            reader.sequence(Reader::index)?
+        } else {
+            vec![]
+        };
+        let element = if tag == 6 || tag == 9 || tag == 12 {
             reader.index()?
         } else {
             0
@@ -175,6 +181,7 @@ pub fn decode(text: &str) -> Result<c::Program> {
             tag,
             symbol,
             element,
+            params,
             fields,
             variants,
         })
@@ -218,6 +225,7 @@ pub fn decode(text: &str) -> Result<c::Program> {
         types: vec![],
         lists: vec![],
         functions: vec![],
+        function_types: vec![],
         interfaces: vec![],
         witnesses: vec![],
         entry,
@@ -237,6 +245,17 @@ pub fn decode(text: &str) -> Result<c::Program> {
                 let interface = index(data.symbol)?;
                 at(&interfaces, interface)?;
                 Type::Dyn(interface)
+            }
+            12 => {
+                if data.symbol != -1 {
+                    return Err("checked function types have no declaration symbol".into());
+                }
+                let id = program.function_types.len();
+                program.function_types.push(c::Signature {
+                    params: vec![],
+                    result: Type::Unit,
+                });
+                Type::Function(id)
             }
             5 => Type::Parameter(index(data.symbol)?),
             6 => {
@@ -261,7 +280,7 @@ pub fn decode(text: &str) -> Result<c::Program> {
             methods: methods
                 .into_iter()
                 .map(|(params, result)| {
-                    Ok(c::Method {
+                    Ok(c::Signature {
                         params: params.into_iter().map(map).collect::<Result<_>>()?,
                         result: map(result)?,
                     })
@@ -303,6 +322,16 @@ pub fn decode(text: &str) -> Result<c::Program> {
     for (data, mapped) in data.iter().zip(&types) {
         match *mapped {
             Type::List(id) => program.lists[id] = map(data.element)?,
+            Type::Function(id) => {
+                program.function_types[id] = c::Signature {
+                    params: data
+                        .params
+                        .iter()
+                        .map(|ty| map(*ty))
+                        .collect::<Result<_>>()?,
+                    result: map(data.element)?,
+                };
+            }
             Type::Data(id) => {
                 program.types[id].kind = match data.tag {
                     7 => c::DataKind::Record(
@@ -707,6 +736,52 @@ impl Converter<'_> {
                     arguments,
                 }
             }
+            24 => {
+                let Type::Function(signature) = ty else {
+                    return Err("checked function reference requires a function type".into());
+                };
+                if !node.children.is_empty() {
+                    return Err("checked named function references cannot capture values".into());
+                }
+                let target = index(node.index)?;
+                let function = at(self.functions, target)?;
+                let signature = at(&self.program.function_types, signature)?;
+                let params = function
+                    .params
+                    .iter()
+                    .map(|ty| self.ty(*ty))
+                    .collect::<Result<Vec<_>>>()?;
+                if params != signature.params || self.ty(function.result)? != signature.result {
+                    return Err("checked function reference signature mismatch".into());
+                }
+                E::FunctionRef(target)
+            }
+            25 => {
+                if node.index != -1 {
+                    return Err("checked indirect call has no direct function ID".into());
+                }
+                let callee = self.expr(at(&node.children, 0)?)?;
+                let Type::Function(signature) = callee.ty else {
+                    return Err("checked indirect call requires a function value".into());
+                };
+                let signature = at(&self.program.function_types, signature)?;
+                let arguments = node.children[1..]
+                    .iter()
+                    .map(|value| self.expr(value))
+                    .collect::<Result<Vec<_>>>()?;
+                if ty != signature.result
+                    || arguments
+                        .iter()
+                        .map(|value| value.ty)
+                        .ne(signature.params.iter().copied())
+                {
+                    return Err("checked indirect call signature mismatch".into());
+                }
+                E::IndirectCall {
+                    callee: Box::new(callee),
+                    arguments,
+                }
+            }
             _ => return Err("unknown or misplaced checked expression tag".into()),
         };
         Ok(c::Expr {
@@ -819,6 +894,64 @@ fn primitive_arity(operation: Primitive) -> usize {
 mod tests {
     use super::*;
 
+    fn node(tag: usize, ty: usize, text: &str, index: i64, children: &[String]) -> String {
+        format!(
+            "{tag}\n{ty}\n0\n0\n{}\n{text}{index}\n1\n{}\n{}0\n",
+            text.len(),
+            children.len(),
+            children.concat()
+        )
+    }
+
+    #[test]
+    fn function_references_and_indirect_calls_validate_exact_signatures() {
+        let identity = node(11, 1, "", -1, &[node(3, 1, "", 0, &[])]);
+        let reference = node(24, 2, "", 0, &[]);
+        let argument = node(0, 1, "7", -1, &[]);
+        let stream = |reference: String, argument: String, result| {
+            let call = node(25, result, "", -1, &[reference, argument]);
+            let main = node(11, 0, "", -1, &[node(16, 0, "", -1, &[call])]);
+            format!(
+                "loom-checked-1\n3\n0\n-1\n1\n-1\n12\n-1\n1\n1\n1\n2\n0\n0\n0\n1\n1\n1\n1\n1\n0\n{identity}1\n0\n0\n0\n0\n0\n0\n{main}1\n0\n0\n"
+            )
+        };
+        let program = decode(&stream(reference.clone(), argument.clone(), 1)).unwrap();
+        assert_eq!(program.function_types[0].params, [Type::Int]);
+        assert_eq!(program.function_types[0].result, Type::Int);
+        let c::StmtKind::Discard(value) = &program.functions[1].body.statements[0].kind else {
+            panic!()
+        };
+        let c::ExprKind::IndirectCall { callee, .. } = &value.kind else {
+            panic!()
+        };
+        assert_eq!(callee.ty, Type::Function(0));
+        assert!(matches!(callee.kind, c::ExprKind::FunctionRef(0)));
+        assert!(
+            decode(&stream(node(24, 2, "", 1, &[]), argument.clone(), 1))
+                .unwrap_err()
+                .contains("reference signature")
+        );
+        assert!(
+            decode(&stream(reference.clone(), node(24, 2, "", 0, &[]), 1))
+                .unwrap_err()
+                .contains("call signature")
+        );
+        assert!(
+            decode(&stream(reference, argument.clone(), 0))
+                .unwrap_err()
+                .contains("call signature")
+        );
+        assert!(
+            decode(&stream(
+                node(24, 2, "", 0, &[argument.clone()]),
+                argument,
+                1
+            ))
+            .unwrap_err()
+            .contains("cannot capture")
+        );
+    }
+
     #[test]
     fn private_stream_is_counted_and_exact() {
         let empty = "loom-checked-1\n0\n0\n-1\n0\n0\n";
@@ -878,14 +1011,6 @@ mod tests {
 
     #[test]
     fn dynamic_tail_decodes_nominal_tables_and_checks_signatures() {
-        fn node(tag: usize, ty: usize, text: &str, index: i64, children: &[String]) -> String {
-            format!(
-                "{tag}\n{ty}\n0\n0\n{}\n{text}{index}\n1\n{}\n{}0\n",
-                text.len(),
-                children.len(),
-                children.concat()
-            )
-        }
         let identity = node(11, 1, "", -1, &[node(3, 1, "", 0, &[])]);
         let boxed = node(22, 2, "", 0, &[node(0, 1, "7", -1, &[])]);
         let call = node(23, 1, "", 0, &[boxed]);

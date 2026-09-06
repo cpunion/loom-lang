@@ -33,7 +33,9 @@ pub(super) fn allocating_functions(
         block_expressions(&source.body, &mut values);
         for value in values {
             match value.kind {
-                checked::ExprKind::DynBox { .. } | checked::ExprKind::DynCall { .. } => {
+                checked::ExprKind::DynBox { .. }
+                | checked::ExprKind::DynCall { .. }
+                | checked::ExprKind::IndirectCall { .. } => {
                     allocating.insert(*id);
                 }
                 checked::ExprKind::Primitive(operation, _) => {
@@ -111,7 +113,12 @@ pub(super) fn managed(program: &checked::Program, ty: Type) -> bool {
                 .iter()
                 .any(|(_, fields)| fields.iter().any(|ty| managed(program, *ty))),
         },
-        Type::Int | Type::Float | Type::Bool | Type::Unit | Type::Parameter(_) => false,
+        Type::Int
+        | Type::Float
+        | Type::Bool
+        | Type::Unit
+        | Type::Parameter(_)
+        | Type::Function(_) => false,
     }
 }
 
@@ -165,6 +172,10 @@ impl TemporarySlots {
                 receiver,
                 arguments,
                 ..
+            }
+            | checked::ExprKind::IndirectCall {
+                callee: receiver,
+                arguments,
             } => {
                 self.expression(program, receiver);
                 for argument in arguments {
@@ -352,6 +363,10 @@ fn expressions<'a>(value: &'a checked::Expr, values: &mut Vec<&'a checked::Expr>
             receiver,
             arguments,
             ..
+        }
+        | checked::ExprKind::IndirectCall {
+            callee: receiver,
+            arguments,
         } => {
             expressions(receiver, values);
             for argument in arguments {
@@ -616,6 +631,7 @@ mod tests {
 
     fn program() -> checked::Program {
         checked::Program {
+            function_types: vec![],
             interfaces: vec![],
             witnesses: vec![],
             types: vec![checked::Data {

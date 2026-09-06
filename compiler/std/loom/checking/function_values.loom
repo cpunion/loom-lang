@@ -1,0 +1,135 @@
+import std.loom.ast.Node
+import std.loom.binding.candidates
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.TypeKind
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+fn referenced_functions(context Context, path Text) List[Int] {
+    let options = new[Int]()
+    if lookup(context, slice(path, 0, first_dot(path))) >= 0 { return options }
+    let here = symbol(context.env, context.signature.symbol)
+    let available = candidates(context.env.source, here.file, here.test_only, path)
+    var index = 0
+    while index < length(available) {
+        let declaration = get(available, index)
+        if symbol(context.env, declaration).node.kind == NodeKind.Function {
+            var signature = 0
+            while signature < length(context.env.signatures) {
+                if get(context.env.signatures, signature).symbol == declaration { push(options, signature) }
+                signature = signature + 1
+            }
+        }
+        index = index + 1
+    }
+    options
+}
+fn function_shape(env Environment, current Signature) Int {
+    let arguments = new[Int]()
+    var index = 0
+    while index < length(current.params) { push(arguments, get(current.params, index))
+        index = index + 1 }
+    push(arguments, current.result)
+    intern(env, TypeKind.Function, -1, arguments)
+}
+fn function_value(context Context, node Node, options List[Int], supplied_types List[Node], expected Int) Result[Expr, Failure] {
+    let desired = if expected >= 0 && get(context.env.types, expected).kind == TypeKind.Function { expected } else { -1 }
+    var selected = -1
+    var output = -1
+    var arguments = new[Int]()
+    var index = 0
+    while index < length(options) {
+        let id = get(options, index)
+        let candidate = get(context.env.signatures, id)
+        if length(supplied_types) == 0 || length(supplied_types) == candidate.parameters {
+            let inferred = supplied(context, node, supplied_types, candidate.parameters)?
+            if desired >= 0 {
+                let shape = get(context.env.types, desired).arguments
+                if length(shape) == length(candidate.params) + 1 {
+                    var parameter = 0
+                    while parameter < length(candidate.params) {
+                        discard infer(context.env, get(candidate.params, parameter), get(shape, parameter), inferred)
+                        parameter = parameter + 1
+                    }
+                    discard infer(context.env, candidate.result, get(shape, length(shape) - 1), inferred)
+                }
+            }
+            if complete(inferred) && satisfies_arguments(context, candidate, inferred, node)? {
+                let current = signature(context.env, id, inferred, node)?
+                let ty = function_shape(context.env, current)
+                if desired < 0 || desired == ty {
+                    if selected >= 0 { return Result.Err(error(context, node, "ambiguous function reference; provide a function type or explicit type arguments")) }
+                    selected = id
+                    arguments = inferred
+                    output = ty
+                }
+            }
+        }
+        index = index + 1
+    }
+    if selected < 0 {
+        return Result.Err(error(context, node, "no accessible function reference matches; provide an exact function type and required concept evidence"))
+    }
+    let target = if context.emit { schedule(context.env, selected, arguments, node)? } else { -1 }
+    Result.Ok(expression(ExprKind.FunctionRef, output, node, "", target, new[Expr](), true))
+}
+fn call_value(context Context, node Node, callee Expr, types List[Node], inputs List[Node]) Result[Expr, Failure] {
+    if length(types) != 0 { return Result.Err(error(context, node, "function values have fixed signatures and do not take type arguments")) }
+    let shape = get(context.env.types, callee.ty)
+    if shape.kind != TypeKind.Function { return Result.Err(error(context, node, "this value is not callable")) }
+    let count = length(shape.arguments) - 1
+    if length(inputs) != count { return Result.Err(error(context, node, "function value argument count does not match")) }
+    let values = expressions(callee)
+    var index = 0
+    while index < count {
+        push(values, expr(context, get(inputs, index), get(shape.arguments, index))?)
+        index = index + 1
+    }
+    Result.Ok(expression(ExprKind.IndirectCall, get(shape.arguments, count), node, "", -1, values, all_fall(values)))
+}
+fn field_call(context Context, node Node, source Node, receiver Expr, callee Expr, inputs List[Node], options List[Int], expected Int) Result[Expr, Failure] {
+    if length(options) == 0 { return call_value(context, node, callee, new[Node](), inputs) }
+    let shape = get(context.env.types, callee.ty).arguments
+    let count = length(shape) - 1
+    var field_matches = count == length(inputs)
+    let declarations = new[Node]()
+    push(declarations, source)
+    let values = expressions(receiver)
+    var index = 0
+    while index < length(inputs) {
+        let input = get(inputs, index)
+        var expected_argument = -1
+        if length(options) == 1 {
+            let method = get(context.env.signatures, get(options, 0))
+            let arguments = supplied(context, node, new[Node](), method.parameters)?
+            discard infer(context.env, get(method.params, 0), receiver.ty, arguments)
+            let method_type = hint(context, get(method.params, index + 1), arguments, node)?
+            if count != length(inputs) || method_type == get(shape, index) { expected_argument = method_type }
+        }
+        let value = expr(context, input, expected_argument)?
+        push(declarations, input)
+        push(values, value)
+        if field_matches {
+            if value.ty != get(shape, index) && !can_widen(context, value.ty, get(shape, index)) { field_matches = false }
+        }
+        index = index + 1
+    }
+    let methods = matching_overloads(context, node, options, new[Node](), values, expected)?
+    if field_matches && length(methods.candidates) != 0 {
+        return Result.Err(error(context, node, "ambiguous function field and concept method; use (value.field)(...) or Concept.method(value, ...)"))
+    }
+    if field_matches {
+        let arguments = expressions(callee)
+        index = 0
+        while index < count {
+            push(arguments, typed(context, get(inputs, index), get(values, index + 1), get(shape, index))?)
+            index = index + 1
+        }
+        return Result.Ok(expression(ExprKind.IndirectCall, get(shape, count), node, "", -1, arguments, all_fall(arguments)))
+    }
+    invoke_selected(context, node, choose_overload(context, node, methods)?, declarations, values)
+}

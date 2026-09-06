@@ -215,6 +215,9 @@ timings; local variables remain conservatively rooted for the function.
 - `let`, `var`, assignment, final-expression returns, early return, `if`/`else`,
   `while`, `assert`, and explicit `discard`. Boolean operators short-circuit.
 - Parameter-type/arity overloads with explicit ambiguity errors.
+- Named function values with structural `fn(Int) Int` types, contextual overload
+  selection, generic specialization, and native indirect calls. Functions can
+  be passed, returned and stored in aggregates without a wrapper allocation.
 - Immutable records and tagged enums, flat exhaustive `match`, generic type and
   function parameters with inference or explicit arguments. Generic bodies are
   checked without hidden requirements; reachable instances use concrete layouts.
@@ -402,6 +405,43 @@ conversion supplies evidence. Cross-dyn conversion, concrete recovery, and
 compile-time dynamic execution currently reject. A dyn-compatible method can use
 `Self` only as its first receiver parameter; static-only concepts may also use it
 elsewhere. Dynamic associated bindings remain future work.
+
+## Function values
+
+Use anonymous parameter types and omit the result for a no-result callback:
+
+```loom
+fn increment(value Int) Int { value + 1 }
+fn apply(action fn(Int) Int, value Int) Int { action(value) }
+fn choose() fn(Int) Int { increment }
+fn main() {
+    let action fn(Int) Int = increment
+    assert apply(action, 4) == 5 && choose()(4) == 5
+}
+```
+
+An expected function type selects an exact signature from overloads and can
+infer generic arguments; `identity[Int]` explicitly specializes a named generic
+function. Unresolved references require an annotation or type arguments. Calls
+through values use their fixed signatures; function types are not covariant.
+Original callee preconditions still execute at entry. `fn(Int)` has no result;
+`fn(Int) Unit` is rejected just like an explicit Unit return on a declaration.
+
+Function values work in records, enums, tuples and shared Lists. Arbitrary
+callee expressions evaluate before their arguments, once each from left to
+right, including `available()?(value)`. If a callable field and concept method
+both match, use `(holder.action)(value)` or `Concept.action(holder, value)`.
+Native references use one code pointer and retain only their actual targets,
+not every function with the same signature. Managed arguments keep normal GC
+protection; scalar callbacks need no Loom runtime.
+
+Pure compile-time calls and returned named function values use the same checked
+signatures and contracts. Reification schedules the source declaration and its
+type arguments in the destination program, not an evaluation-local function ID.
+The [callback example](examples/callbacks/main.loom) includes a source-written
+generic map, overloaded callbacks, returned functions, and GC-stressed argument
+ordering. Capturing closures, bound method values and compile-time function
+parameters remain later work.
 
 ## Contract boundary
 

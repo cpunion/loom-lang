@@ -85,6 +85,19 @@ pub fn type_name(analysis Analysis, ty Int) Text {
         return concat("dyn ", qualify(get(analysis.bindings.files, symbol.file).package, symbol.name))
     }
     if value.kind == TypeKind.Parameter { return concat("T", to_text(value.symbol)) }
+    if value.kind == TypeKind.Function {
+        var label = "fn("
+        var index = 0
+        while index + 1 < length(value.arguments) {
+            if index > 0 { label = concat(label, ", ") }
+            label = concat(label, type_name(analysis, get(value.arguments, index)))
+            index = index + 1
+        }
+        label = concat(label, ")")
+        let output = get(value.arguments, index)
+        if output != 0 { label = concat(label, concat(" ", type_name(analysis, output))) }
+        return label
+    }
     if value.kind == TypeKind.Associated {
         let member = get(analysis.bindings.symbols, value.symbol)
         let capability = get(analysis.bindings.symbols, member.owner)

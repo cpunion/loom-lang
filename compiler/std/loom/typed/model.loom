@@ -1,13 +1,14 @@
 import std.loom.source.Span
 
 // IDs address immutable entries in the checked program, never source names.
-pub enum TypeKind { Unit Int Bool Text Bytes Parameter List Record Enum Refined Tuple Float Dyn Associated }
+pub enum TypeKind { Unit Int Bool Text Bytes Parameter List Record Enum Refined Tuple Float Dyn Associated Function }
 pub record Field { name Text ty Int }
 pub record Variant { name Text fields List[Int] }
 pub record Type {
     kind TypeKind
     // Associated uses the concept member's source symbol and [receiver] arguments.
     // Concrete projections normalize before executable IR reaches the backend.
+    // Function has symbol -1 and arguments [parameter types..., result type].
     symbol Int
     arguments List[Int]
     fields List[Field]
@@ -20,7 +21,10 @@ pub record Local { name Text ty Int mutable Bool }
 pub enum ExprKind {
     Integer Bool Text Local Unary Binary Call Intrinsic Record Field Variant
     Block Let Assign Return Assert Discard While If Match Coerce Deferred Float DynBox DynCall
+    FunctionRef IndirectCall
 }
+// FunctionRef.index is a concrete scheduled function ID. IndirectCall children
+// are [callee, arguments...], evaluated once in source order.
 pub record Expr {
     kind ExprKind
     ty Int

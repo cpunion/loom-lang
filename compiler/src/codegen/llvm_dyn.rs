@@ -6,7 +6,7 @@ use inkwell::types::{FunctionType, StructType};
 fn method_type<'ctx>(
     context: &'ctx Context,
     program: &checked::Program,
-    method: &checked::Method,
+    method: &checked::Signature,
 ) -> NativeResult<FunctionType<'ctx>> {
     let mut params = vec![context.ptr_type(AddressSpace::default()).into()];
     for ty in &method.params {
