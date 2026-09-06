@@ -2,7 +2,7 @@ import frontend.loading.load
 import frontend.loading.Loaded
 import frontend.binding.bind
 import frontend.binding.Failure
-import frontend.source.render
+import std.loom.source.render
 import std.io.write_error
 import std.list.new
 import std.list.get

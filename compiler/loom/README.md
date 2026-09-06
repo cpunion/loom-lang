@@ -11,6 +11,7 @@ LLVM lowering and host linking; it accepts checked IR, not Loom source.
 From the repository root, after [bootstrapping the compiler](../README.md):
 
 ```sh
+bash scripts/bootstrap.sh --dev
 target/loom check compiler/examples/scalar
 target/loom run compiler/examples/data
 target/loom test compiler/loom/checking
@@ -45,12 +46,45 @@ Agreement is evidence, not a proof of compiler correctness. macOS is the current
 validation host; the source path and manifest helpers intentionally implement
 only the documented subset, not all platforms or general TOML.
 
-## Package boundaries
+## Public syntax libraries
 
-Each directory is an ordinary package in the `frontend` module:
+The compiler and ordinary Loom programs use the same source implementation:
 
-- `source`, `lexer`, `syntax`, `parser`: UTF-8 source, byte spans, positioned
-  diagnostics, tokens and recursive syntax. No filesystem or LLVM dependency.
+| Package | Public entry points and data |
+| --- | --- |
+| `std.loom.source` | `Span`, `Diagnostic`, `Position`, `position`, `render` |
+| `std.loom.lexer` | `lex`, `Token`, `Kind` |
+| `std.loom.ast` | `Node`, `NodeKind` |
+| `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]` |
+
+Import, for example, `std.loom.parser.parse` and `std.loom.ast.NodeKind` in
+any package. Parsing supplied text returns a file node or the first diagnostic;
+it does not read files, load a project, bind names, check types, or invoke the
+compiler CLI/backend. The standalone
+[syntax example](../examples/syntax/main.loom) inspects declarations, spans,
+and errors using only ordinary `std` imports:
+
+```sh
+target/loom test compiler/examples/syntax
+target/loom run compiler/examples/syntax
+```
+
+Spans are half-open UTF-8 byte ranges in the supplied text. `position` requires
+a valid UTF-8 boundary and returns 1-based lines and Unicode scalar columns,
+not terminal-cell columns. Positions are revision-relative, not persistent
+definition identities. The parser implements the current syntax subset;
+successful parsing does not establish type or contract validity.
+
+This is an evolving public API, not a stable node schema or lossless editor
+tree: comments and formatting trivia are discarded, and string token values are
+decoded. Preserve original source when tooling needs its spelling and layout.
+Public project loading, semantic queries, typed metaprogramming, and identity-aware
+editing remain later library boundaries in the [roadmap](../../ROADMAP.md).
+
+## Compiler packages
+
+The remaining directories are internal packages in the `frontend` module:
+
 - `manifest`, `loading`: module metadata and the selected directory/import
   closure; only the root contributes tests.
 - `binding`: package visibility, imports and overload candidates.
@@ -62,11 +96,6 @@ Each directory is an ordinary package in the `frontend` module:
   package, cache or public AST format. Proof-only locals are not emitted.
 - Root: CLI orchestration using source `std.fs`, `std.file`, `std.io` and
   `std.process`. Process arguments are literal; no shell is implicitly invoked.
-
-These boundaries will also serve user-callable parser/AST and project-analysis
-libraries, then typed metaprogramming. The current internal node schema is not
-yet that public API: comment-preserving editing, semantic queries and durable
-definition identities remain planned. See the [roadmap](../../ROADMAP.md).
 
 This is the self-hosting subset, not the complete accepted language. Broader
 contracts, concepts, compile-time programming, resources, Tasks and module

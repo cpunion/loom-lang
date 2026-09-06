@@ -16,6 +16,7 @@ in Git history.
 ## Start here
 
 - [Build and run the compiler](compiler/README.md)
+- [Use the parser and AST from Loom](compiler/loom/README.md#public-syntax-libraries)
 - [Project goals](docs/project/charter.md)
 - [Language decisions](docs/rfcs/language-foundation.md)
 - [Changes and deployment decisions](docs/rfcs/change-and-deployment.md)

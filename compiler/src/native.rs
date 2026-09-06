@@ -28,8 +28,10 @@ pub fn emit(
     test_mode: bool,
     object: &Path,
     llvm_ir: Option<&Path>,
+    optimization: OptimizationLevel,
 ) -> Result<bool, String> {
-    emit_checked(program, test_mode, object, llvm_ir).map_err(|error| error.to_string())
+    emit_checked(program, test_mode, object, llvm_ir, optimization)
+        .map_err(|error| error.to_string())
 }
 
 fn emit_checked(
@@ -37,6 +39,7 @@ fn emit_checked(
     test_mode: bool,
     object: &Path,
     llvm_ir: Option<&Path>,
+    optimization: OptimizationLevel,
 ) -> NativeResult<bool> {
     if !cfg!(unix) {
         return Err("native emission currently requires a Unix host".into());
@@ -59,7 +62,7 @@ fn emit_checked(
             &triple,
             &TargetMachine::get_host_cpu_name().to_string(),
             &TargetMachine::get_host_cpu_features().to_string(),
-            OptimizationLevel::Default,
+            optimization,
             RelocMode::PIC,
             CodeModel::Default,
         )
@@ -196,8 +199,14 @@ fn emit_checked(
         builder.build_return(Some(&context.i32_type().const_zero()))?;
     }
     module.verify().map_err(|error| error.to_string())?;
+    let pipeline = match optimization {
+        OptimizationLevel::None => "default<O0>",
+        OptimizationLevel::Less => "default<O1>",
+        OptimizationLevel::Default => "default<O2>",
+        OptimizationLevel::Aggressive => "default<O3>",
+    };
     module
-        .run_passes("default<O2>", &machine, PassBuilderOptions::create())
+        .run_passes(pipeline, &machine, PassBuilderOptions::create())
         .map_err(|error| error.to_string())?;
     module.verify().map_err(|error| error.to_string())?;
     if let Some(path) = llvm_ir {

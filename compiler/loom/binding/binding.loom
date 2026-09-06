@@ -1,6 +1,6 @@
-import frontend.source.Diagnostic
-import frontend.syntax.Node
-import frontend.syntax.NodeKind
+import std.loom.source.Diagnostic
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
 import std.list.new
 import std.list.push
 import std.list.get
@@ -21,7 +21,16 @@ pub record SourceFile {
 }
 pub record Failure { source Int diagnostic Diagnostic }
 pub record Symbol { file Int node Node name Text public Bool test_only Bool }
-pub record Program { files List[SourceFile] symbols List[Symbol] root Text tests Bool }
+record Lookup { path Text symbols List[Int] }
+record Scope { package Text production List[Lookup] testing List[Lookup] }
+pub record Program {
+    files List[SourceFile]
+    symbols List[Symbol]
+    root Text
+    tests Bool
+    scopes List[Scope]
+    file_scopes List[Int]
+}
 
 pub fn has(node Node, kind NodeKind) Bool {
     var index = 0
@@ -39,7 +48,10 @@ fn last_dot(path Text) Int {
     }
     -1
 }
-pub fn name(path Text) Text { slice(path, last_dot(path) + 1, length(path)) }
+pub fn name(path Text) Text {
+    let index = last_dot(path)
+    if index < 0 { path } else { slice(path, index + 1, length(path)) }
+}
 pub fn package(path Text) Text {
     let index = last_dot(path)
     if index < 0 { "" } else { slice(path, 0, index) }
@@ -68,40 +80,83 @@ fn selected(source SourceFile, root Text, tests Bool) Bool {
     !source.test_only || (tests && source.package == root)
 }
 
-// Name lookup returns every candidate; overload selection belongs to typing.
-// Imports are package-wide, but a test file cannot extend production's scope.
-pub fn candidates(program Program, file Int, test_only Bool, path Text) List[Int] {
-    let current = get(program.files, file)
-    let testing = test_only && program.tests && current.package == program.root
-    let short = name(path)
-    let prefix = package(path)
-    let packages = new[Text]()
-    if prefix == "" || prefix == current.package { push(packages, current.package) }
+fn add_lookup(lookups List[Lookup], path Text, symbol Int) {
     var index = 0
-    while index < length(program.files) {
-        let source = get(program.files, index)
-        if source.package == current.package && (!source.test_only || testing) {
+    while index < length(lookups) {
+        let lookup = get(lookups, index)
+        if lookup.path == path {
+            push(lookup.symbols, symbol)
+            return
+        }
+        index = index + 1
+    }
+    let symbols = new[Int]()
+    push(symbols, symbol)
+    push(lookups, Lookup { path = path symbols = symbols })
+}
+fn add_names(lookups List[Lookup], short Text, path Text, symbol Int) {
+    add_lookup(lookups, short, symbol)
+    if path != short { add_lookup(lookups, path, symbol) }
+}
+
+// Resolve package-wide imports once. Iterating the symbol table here preserves
+// declaration order, including overloads interleaved across local/imported files.
+fn scope(files List[SourceFile], symbols List[Symbol], paths List[Text], package Text, testing Bool) Scope {
+    let production_imports = new[Text]()
+    let test_imports = new[Text]()
+    var index = 0
+    while index < length(files) {
+        let source = get(files, index)
+        if source.package == package && (!source.test_only || testing) {
             var item = 0
             while item < length(source.tree.children) {
                 let node = get(source.tree.children, item)
-                if node.kind == NodeKind.Import && name(node.value) == short {
-                    let target = package(node.value)
-                    if prefix == "" || prefix == target { push(packages, target) }
+                if node.kind == NodeKind.Import {
+                    if source.test_only { push(test_imports, node.value) }
+                    else { push(production_imports, node.value) }
                 }
                 item = item + 1
             }
         }
         index = index + 1
     }
-    let matches = new[Int]()
+    let production = new[Lookup]()
+    let tests = if testing { new[Lookup]() } else { production }
     index = 0
-    while index < length(program.symbols) {
-        let symbol = get(program.symbols, index)
-        let target = get(program.files, symbol.file).package
-        if symbol.name == short && contains(packages, target) &&
-            (target == current.package || symbol.public) &&
-            (!symbol.test_only || (testing && target == current.package)) {
-            push(matches, index)
+    while index < length(symbols) {
+        let symbol = get(symbols, index)
+        let target = get(files, symbol.file).package
+        if target == package || symbol.public {
+            let path = get(paths, index)
+            let visible = target == package || contains(production_imports, path)
+            if visible && !symbol.test_only { add_names(production, symbol.name, path, index) }
+            if testing && (visible || contains(test_imports, path)) &&
+                (!symbol.test_only || target == package) {
+                add_names(tests, symbol.name, path, index)
+            }
+        }
+        index = index + 1
+    }
+    Scope { package = package production = production testing = tests }
+}
+
+// Lookups return fresh candidate lists; overload selection belongs to typing.
+// A test file's imports and declarations never extend production's scope.
+pub fn candidates(program Program, file Int, test_only Bool, path Text) List[Int] {
+    let scope = get(program.scopes, get(program.file_scopes, file))
+    let testing = test_only && program.tests && scope.package == program.root
+    let lookups = if testing { scope.testing } else { scope.production }
+    let matches = new[Int]()
+    var index = 0
+    while index < length(lookups) {
+        let lookup = get(lookups, index)
+        if lookup.path == path {
+            var item = 0
+            while item < length(lookup.symbols) {
+                push(matches, get(lookup.symbols, item))
+                item = item + 1
+            }
+            return matches
         }
         index = index + 1
     }
@@ -181,6 +236,7 @@ fn imports(program Program) Result[Bool, Failure] {
 
 pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failure] {
     let symbols = new[Symbol]()
+    let paths = new[Text]()
     var file = 0
     while file < length(files) {
         let source = get(files, file)
@@ -210,13 +266,26 @@ pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failu
                     }
                     push(symbols, Symbol { file = file node = node name = node.value
                         public = has(node, NodeKind.Public) test_only = test_only })
+                    push(paths, qualify(source.package, node.value))
                 }
                 index = index + 1
             }
         }
         file = file + 1
     }
-    let program = Program { files = files symbols = symbols root = root tests = tests }
+    let scopes = new[Scope]()
+    let file_scopes = new[Int]()
+    file = 0
+    while file < length(files) {
+        let package = get(files, file).package
+        var index = 0
+        while index < length(scopes) && get(scopes, index).package != package { index = index + 1 }
+        if index == length(scopes) { push(scopes, scope(files, symbols, paths, package, tests && package == root)) }
+        push(file_scopes, index)
+        file = file + 1
+    }
+    let program = Program { files = files symbols = symbols root = root tests = tests
+        scopes = scopes file_scopes = file_scopes }
     discard imports(program)?
     Result.Ok(program)
 }

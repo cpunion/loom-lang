@@ -5,6 +5,13 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Index package name lookup once, optimize the runtime without removing dev
+  checks, and add single-stage O1 compiler rebuilding. Measure compiler latency,
+  memory, and native phases with a small macOS benchmark harness; retain full
+  O2 bootstrap verification.
+- Expose the compiler's syntax implementation as ordinary `std.loom` source,
+  lexer, AST, and parser packages. An independent Loom package uses them to
+  inspect in-memory code and diagnostics without compiler or backend imports.
 - Bootstrap the Loom-written package loader, binder, type checker, and bounded
   prover through successive native stages, with stage agreement and source
   compiler/`std` tests. Retire the active Rust source frontend; retain the

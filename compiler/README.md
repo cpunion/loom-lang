@@ -32,7 +32,8 @@ target/loom test compiler/examples/scalar
 target/loom run compiler/examples/data
 target/loom test compiler/loom/checking
 target/loom test compiler/std/result
-LOOM_GC_STRESS=1 target/loom test compiler/std/list
+target/loom test compiler/std/list
+LOOM_GC_STRESS=1 compiler/std/list/target/tests
 ```
 
 The [bootstrap script](../scripts/bootstrap.sh) builds the current Rust tool
@@ -49,12 +50,65 @@ An existing compatible Loom compiler bypasses historical seed recovery:
 LOOM_BOOTSTRAP_COMPILER=/path/to/loom bash scripts/bootstrap.sh
 ```
 
+For normal compiler edits, rebuild once with the installed `target/loom`:
+
+```sh
+bash scripts/bootstrap.sh --dev
+```
+
+This builds the native tool/runtime, compiles one new Loom compiler, and
+publishes `target/loom`, using LLVM O1 for this development rebuild.
+`LOOM_BOOTSTRAP_COMPILER` overrides the preceding
+compiler; a missing installed compiler uses the historical fallback. This
+short path does not compare stages. The no-argument command retains the full
+stage 1/2/3 verification at default O2 for CI and bootstrap-boundary changes.
+`LOOM_OPT_LEVEL=0..3` explicitly selects the native optimization level; this
+never disables source integer checks or contract obligations. The runtime is
+optimized even in Cargo dev builds, with dev assertions and overflow checks
+retained, so managed Loom code does not call an unoptimized allocation layer.
+
 The root Cargo workspace alone builds `loom-native` and the runtime, not the
 public `loom` compiler. The source compiler defaults to `compiler/std` and
 `target/debug/loom-native` relative to the working directory; `--std` and
 `--native-tool` select explicit paths. These are development commands, not a
 relocatable release package or a stable compiler-artifact ABI. `--help` lists
 each tool's command surface.
+
+## Compiler latency
+
+After rebuilding, measure the current macOS check/build path:
+
+```sh
+node scripts/benchmark-compiler.mjs
+```
+
+The [harness](../scripts/benchmark-compiler.mjs) reports median wall time and
+macOS peak RSS for scalar, data, and compiler packages, with raw samples in
+`target/performance/compiler.json`. `--compiler`, `--output`, and `--runs`
+select the binary, report, and sample count.
+
+Every sample starts a fresh process after one warmup; OS caches are warm.
+There is no incremental compiler cache yet. Native decode, LLVM, and linker
+timings separate backend costs; remaining build wall time also includes
+serialization and process/pipe overhead, not just frontend analysis. Peak RSS
+is the operating system's reported maximum, not summed concurrent process
+memory. Startup and isolated test-compilation measurements remain follow-up
+coverage, as does tracking growth on larger packages.
+
+Development snapshot on Apple M4 Max/macOS 25.2, medians of three warmed runs
+on the same compiler source (not a portable performance guarantee):
+
+| Operation | Before lookup/runtime changes | After |
+| --- | ---: | ---: |
+| Check the compiler | 1,974.58 ms | 159.12 ms |
+| Check peak RSS | 77.25 MiB | 48.66 MiB |
+| Build the compiler, O2 | 7,486.13 ms | 5,259.91 ms |
+
+A separate same-source/runtime O1/O2 comparison reduced self-build time from
+5,381.00 to 4,302.46 ms while the resulting compiler's check time stayed around
+159 ms. This motivates O1 for the single-stage developer rebuild. LLVM remains
+the largest self-build cost; these improvements do not substitute for future
+incremental compilation or larger-project measurements.
 
 ## Implemented subset
 
@@ -143,10 +197,12 @@ enum storage uses its largest variant payload, not the sum of all variants.
 
 The [Loom-written compiler](loom/README.md) uses ordinary source packages for
 syntax, project loading, binding, checking, proof, and typed artifact emission.
-It checks its own sources and builds subsequent native stages. Public parser/AST
-and optional semantic-query APIs are a separate
-[library acceptance gate](../ROADMAP.md#n2--complete-the-language-and-source-library),
-not a promise that the current internal structures are stable public schemas.
+It checks its own sources and builds subsequent native stages. The compiler and
+independent user packages share the public
+[`std.loom` syntax libraries](loom/README.md#public-syntax-libraries).
+Project/semantic APIs remain a separate
+[library acceptance gate](../ROADMAP.md#n2--complete-the-language-and-source-library);
+the syntax API does not promise a stable node schema or lossless editing.
 
 The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;
@@ -178,6 +234,6 @@ For this compiler's local gate:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
-bash scripts/bootstrap.sh
+bash scripts/bootstrap.sh --dev
 cargo test --locked --workspace
 ```

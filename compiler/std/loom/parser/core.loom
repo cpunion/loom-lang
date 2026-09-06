@@ -1,10 +1,10 @@
-import frontend.lexer.Kind
-import frontend.lexer.Token
-import frontend.lexer.lex
-import frontend.source.Span
-import frontend.source.Diagnostic
-import frontend.syntax.Node
-import frontend.syntax.NodeKind
+import std.loom.lexer.Kind
+import std.loom.lexer.Token
+import std.loom.lexer.lex
+import std.loom.source.Span
+import std.loom.source.Diagnostic
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
 import std.list.new
 import std.list.get
 import std.list.push

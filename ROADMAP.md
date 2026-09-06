@@ -110,14 +110,18 @@ proofs remain mandatory even while the supported prover fragment grows. Exact
 overload ranking, macro spelling, solver choice, artifact encoding, and runtime
 layout belong to focused implementation designs, not new feature checklists.
 
-Deliver the [compiler-library boundaries](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)
-as an early N2 gate: a user Loom package imports the parser and AST, parses an
-in-memory source string, inspects declarations and spans, and reports a syntax
-diagnostic without importing the compiler CLI, LLVM bridge, project loader, or
-compiler-specific runtime hooks. Project loading and bound/typed queries are
-opt-in layers over the same implementation; typed metaprogramming later reuses
-them. This gate does not require freezing the current internal AST as a stable
-public schema or completing semantic version-control tooling.
+The early syntax portion of the
+[compiler-library gate](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)
+now has native evidence: an independent [user package](compiler/examples/syntax/main.loom)
+imports `std.loom.parser` and `std.loom.ast`, parses in-memory source, inspects
+declarations and spans, and reports a syntax diagnostic. It does not import
+the compiler CLI, LLVM bridge, project loader, or compiler-specific runtime
+hooks; the compiler uses the same source libraries.
+
+Next expose project loading and bound/typed queries as opt-in public layers;
+typed metaprogramming later reuses them. Public syntax access does not freeze
+the node schema or complete trivia-preserving editing, semantic identities,
+or semantic version-control tooling.
 
 ## N3 — Deliver semantic change and deployment workflows
 
@@ -140,9 +144,16 @@ Use focused PRs and tests proportional to the changed boundary. Start with the
 native macOS gate; expand Linux/Windows runtime and release evidence before
 claiming support. Do not recreate a large dual-backend differential suite.
 
-Measure compiler time/memory and representative native scalar, record, and
-collection workloads. Investigate generated code before introducing another
-optimization layer; no performance target permits weaker contracts or cleanup.
+Fast compiler feedback is a core user-experience goal. Measure startup, check,
+build, and test-compilation latency plus peak memory on representative growing
+packages. Separate frontend, LLVM, and host-linker costs. Report process and OS
+cache conditions; a warm rerun is not evidence of incremental compilation.
+Use a single rebuild with an installed Loom compiler for normal iteration;
+retain the full stage 1/2/3 comparison and test gate for bootstrap validation.
+
+Also measure native scalar, record, and collection workloads. Investigate
+generated code before introducing another optimization layer; no performance
+target permits weaker contracts or cleanup.
 
 Alternate backends, a stable FFI/plugin ABI, and cross-cutting/AOP composition
 are separate future work. They do not block self-hosting. The superseded

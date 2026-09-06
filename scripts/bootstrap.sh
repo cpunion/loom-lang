@@ -4,8 +4,11 @@ set -euo pipefail
 # A preceding Loom compiler builds current Loom. The frozen Rust compiler is
 # recovered only when no installed Loom seed is supplied. Advance the pin only
 # after a verified bootstrap; current source must remain accepted by its seed.
-if [[ $# != 0 ]]; then
-    printf 'Usage: bash scripts/bootstrap.sh\nSet LOOM_BOOTSTRAP_COMPILER to use an installed Loom seed.\n' >&2
+development=false
+if [[ $# == 1 && "$1" == --dev ]]; then
+    development=true
+elif [[ $# != 0 ]]; then
+    printf 'Usage: bash scripts/bootstrap.sh [--dev]\nSet LOOM_BOOTSTRAP_COMPILER to use an installed Loom seed.\n' >&2
     exit 2
 fi
 
@@ -27,6 +30,10 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo_root"
 target_root="$repo_root/target"
+if $development && [[ -z "$seed_compiler" && -x "$target_root/loom" ]]; then
+    seed_compiler="$target_root/loom"
+fi
+if $development; then export LOOM_OPT_LEVEL="${LOOM_OPT_LEVEL:-1}"; fi
 
 printf 'Building the native LLVM bridge and runtime...\n'
 cargo build --locked --workspace --target-dir "$target_root"
@@ -61,7 +68,9 @@ fi
 printf 'Using Loom seed: %s\n' "$seed_compiler"
 export LOOM_RUNTIME_LIBRARY="$target_root/debug/libloom_runtime.a"
 previous="$seed_compiler"
-for stage in 1 2 3; do
+stages=(1 2 3)
+if $development; then stages=(1); fi
+for stage in "${stages[@]}"; do
     candidate="$target_root/loom-stage$stage"
     printf 'Building Loom stage %s...\n' "$stage"
     "$previous" build "$repo_root/compiler/loom" \
@@ -71,7 +80,7 @@ for stage in 1 2 3; do
     previous="$candidate"
 done
 
-if ! cmp -s "$target_root/loom-stage2" "$target_root/loom-stage3"; then
+if ! $development && ! cmp -s "$target_root/loom-stage2" "$target_root/loom-stage3"; then
     printf 'Bootstrap failed: Loom stages 2 and 3 differ.\n' >&2
     exit 1
 fi
@@ -81,8 +90,12 @@ if [[ -d "$target_root/loom" ]]; then
 fi
 publication="$(mktemp "$target_root/loom.XXXXXX")"
 trap 'if [[ -n "${publication:-}" ]]; then rm -f "$publication"; fi' EXIT
-cp "$target_root/loom-stage3" "$publication"
+cp "$previous" "$publication"
 chmod 755 "$publication"
 mv -f "$publication" "$target_root/loom"
 publication=""
-printf 'Bootstrap verified: %s\n' "$target_root/loom"
+if $development; then
+    printf 'Development compiler built (one stage; not bootstrap-verified): %s\n' "$target_root/loom"
+else
+    printf 'Bootstrap verified: %s\n' "$target_root/loom"
+fi

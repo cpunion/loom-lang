@@ -1,0 +1,42 @@
+import std.loom.parser.parse
+import std.loom.ast.NodeKind
+import std.loom.source.Diagnostic
+import std.loom.source.render
+import std.list.get
+import std.list.length
+import std.int.to_text
+import std.text.concat
+import std.io.write_text
+import std.io.write_error
+import std.process.exit_code
+import std.result.Result
+
+// An ordinary package can inspect in-memory Loom source without importing the
+// compiler project, reading files, or invoking a native backend.
+fn describe(source Text) Result[Text, Diagnostic] {
+    let file = parse(source)?
+    var summary = ""
+    var index = 0
+    while index < length(file.children) {
+        let declaration = get(file.children, index)
+        let kind = if declaration.kind == NodeKind.Record { "record" } else {
+            if declaration.kind == NodeKind.Function { "fn" } else { "declaration" }
+        }
+        let span = concat(to_text(declaration.span.start), concat("..", to_text(declaration.span.end)))
+        let name = concat(kind, concat(" ", declaration.value))
+        summary = concat(summary, concat(name, concat(" @ ", concat(span, "\n"))))
+        index = index + 1
+    }
+    Result.Ok(summary)
+}
+
+fn main() {
+    let source = "pub record Point { x Int }\nfn answer() Int { 42 }\n"
+    match describe(source) {
+        Result.Ok(summary) => { discard write_text(summary) }
+        Result.Err(error) => {
+            discard write_error(concat(render("memory.loom", source, error), "\n"))
+            exit_code(1)
+        }
+    }
+}

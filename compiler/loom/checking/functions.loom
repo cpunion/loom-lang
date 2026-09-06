@@ -1,8 +1,8 @@
 import frontend.binding.Failure
 import frontend.binding.has
 import frontend.binding.package
-import frontend.syntax.Node
-import frontend.syntax.NodeKind
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
 import frontend.typed.TypeKind
 import frontend.typed.Local
 import frontend.typed.Expr

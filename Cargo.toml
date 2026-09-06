@@ -1,3 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["compiler", "compiler/runtime"]
+
+# Native Loom code is optimized; its allocation/GC boundary must not run as
+# unoptimized host code during ordinary development. Debug checks stay enabled.
+[profile.dev.package.loom-runtime]
+opt-level = 3

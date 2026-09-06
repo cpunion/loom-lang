@@ -1,7 +1,7 @@
-import frontend.lexer.Kind
-import frontend.syntax.Node
-import frontend.syntax.NodeKind
-import frontend.source.Diagnostic
+import std.loom.lexer.Kind
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.source.Diagnostic
 import std.list.new
 import std.list.push
 import std.result.Result

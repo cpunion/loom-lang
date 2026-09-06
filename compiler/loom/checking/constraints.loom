@@ -1,5 +1,5 @@
-import frontend.syntax.Node
-import frontend.syntax.NodeKind
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
 import frontend.typed.Expr
 import frontend.typed.ExprKind
 import frontend.typed.Local

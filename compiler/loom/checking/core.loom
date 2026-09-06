@@ -5,9 +5,9 @@ import frontend.binding.candidates
 import frontend.binding.has
 import frontend.binding.name
 import frontend.binding.package
-import frontend.source.Diagnostic
-import frontend.syntax.Node
-import frontend.syntax.NodeKind
+import std.loom.source.Diagnostic
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
 import frontend.typed.Type
 import frontend.typed.TypeKind
 import frontend.typed.Field

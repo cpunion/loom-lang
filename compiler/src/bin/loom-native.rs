@@ -1,9 +1,12 @@
 //! Private LLVM/platform bridge: accepts checked IR, never Loom source.
 
+use std::ffi::OsStr;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Instant;
 
+use inkwell::OptimizationLevel;
 use loom_native::native_tool::{
     link, output_identity, prepare_parent, publish, reject_source_output,
 };
@@ -20,6 +23,7 @@ fn main() -> ExitCode {
 }
 
 fn execute() -> Result<(), String> {
+    let optimization = optimization_level(std::env::var_os("LOOM_OPT_LEVEL").as_deref())?;
     let mut arguments = std::env::args_os().skip(1);
     let input = arguments.next().ok_or("usage: loom-native <checked-input|-> --output <artifact> [--test] [--emit-ir <path>] [--runtime <archive>] [--linker <clang>]")?;
     let mut output = None;
@@ -69,7 +73,9 @@ fn execute() -> Result<(), String> {
             .map_err(|error| format!("{}: {error}", input.display()))?;
         vec![input]
     };
+    let decode_started = Instant::now();
     let program = native_input::decode(&text)?;
+    let decode_time = decode_started.elapsed();
     reject_source_output(&output, &inputs)?;
     prepare_parent(&output)?;
     if let Some(ir) = &ir {
@@ -82,9 +88,18 @@ fn execute() -> Result<(), String> {
     let temporary = tempfile::tempdir().map_err(|error| error.to_string())?;
     let object = temporary.path().join("program.o");
     let emitted_ir = ir.as_ref().map(|_| temporary.path().join("program.ll"));
-    let uses_runtime = native::emit(&program, test_mode, &object, emitted_ir.as_deref())?;
+    let llvm_started = Instant::now();
+    let uses_runtime = native::emit(
+        &program,
+        test_mode,
+        &object,
+        emitted_ir.as_deref(),
+        optimization,
+    )?;
+    let llvm_time = llvm_started.elapsed();
     let executable = temporary.path().join("program");
     let library = !test_mode && program.entry.is_none();
+    let link_started = Instant::now();
     if !library {
         link(
             &object,
@@ -94,9 +109,59 @@ fn execute() -> Result<(), String> {
             linker.as_deref().map(|path| path.as_os_str()),
         )?;
     }
+    let link_time = link_started.elapsed();
     publish(if library { &object } else { &executable }, &output)?;
     if let (Some(from), Some(to)) = (&emitted_ir, &ir) {
         publish(from, to)?;
     }
+    if std::env::var_os("LOOM_NATIVE_TIMINGS").is_some() {
+        eprintln!(
+            "loom-native timings: decode_ms={:.3} llvm_ms={:.3} link_ms={:.3}",
+            decode_time.as_secs_f64() * 1000.0,
+            llvm_time.as_secs_f64() * 1000.0,
+            if library {
+                0.0
+            } else {
+                link_time.as_secs_f64() * 1000.0
+            }
+        );
+    }
     Ok(())
+}
+
+fn optimization_level(value: Option<&OsStr>) -> Result<OptimizationLevel, String> {
+    match value.unwrap_or(OsStr::new("2")).to_str() {
+        Some("0") => Ok(OptimizationLevel::None),
+        Some("1") => Ok(OptimizationLevel::Less),
+        Some("2") => Ok(OptimizationLevel::Default),
+        Some("3") => Ok(OptimizationLevel::Aggressive),
+        _ => Err("LOOM_OPT_LEVEL must be 0, 1, 2 or 3".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optimization_levels_are_explicit_and_default_to_two() {
+        assert_eq!(
+            optimization_level(None).unwrap(),
+            OptimizationLevel::Default
+        );
+        for (value, expected) in [
+            ("0", OptimizationLevel::None),
+            ("1", OptimizationLevel::Less),
+            ("2", OptimizationLevel::Default),
+            ("3", OptimizationLevel::Aggressive),
+        ] {
+            assert_eq!(
+                optimization_level(Some(OsStr::new(value))).unwrap(),
+                expected
+            );
+        }
+        for value in ["", "4", "-1", "fast", "02"] {
+            assert!(optimization_level(Some(OsStr::new(value))).is_err());
+        }
+    }
 }

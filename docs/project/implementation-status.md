@@ -37,9 +37,19 @@ frontend is no longer active source. A pinned historical commit can build a
 cached stage 0 when no existing Loom compiler is supplied; this fallback is
 not a compatibility commitment or a second frontend to extend. Rust remains
 for the LLVM/platform boundary and runtime, not a permanent basic language.
-Public parser/AST imports and optional
-project/semantic APIs have a separate [roadmap gate](../../ROADMAP.md#n2--complete-the-language-and-source-library);
-the current internal packages are not a stable public API.
+The compiler and independent user packages now share the public
+[`std.loom.source`, `lexer`, `ast`, and `parser` libraries](../../compiler/loom/README.md#public-syntax-libraries).
+The standalone syntax example passes native check/build/test/run and inspects
+in-memory declarations, byte spans, and diagnostics without compiler imports.
+This is an evolving syntax API, not a stable AST schema or a lossless editor
+tree. Public project/semantic APIs and typed metaprogramming remain in the
+[roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
+
+Normal compiler iteration can use a [single development rebuild](../../compiler/README.md#build-and-try-it);
+CI retains full bootstrap generation checks. The initial
+[latency harness](../../compiler/README.md#compiler-latency) measures fresh-process
+check/build runs with warm OS caches and backend phase timings. It does not
+implement incremental reuse or establish a performance target as achieved.
 
 Accepted language and deployment decisions remain targets, not claims that the
 whole design is implemented. Bootstrap agreement is not a correctness proof.

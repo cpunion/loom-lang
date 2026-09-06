@@ -5,7 +5,7 @@ import frontend.binding.SourceFile
 import frontend.checking.check
 import frontend.artifact.encode
 import frontend.typed.Program
-import frontend.source.render
+import std.loom.source.render
 import std.int.to_text
 import std.list.new
 import std.list.push
