@@ -1,0 +1,68 @@
+import std.text.concat
+
+record Entry {
+    name Text
+    count Int
+    enabled Bool
+}
+
+test fn aliases_observe_growth_and_element_changes() {
+    let values = new[Int]()
+    let alias = values
+    push(values, 1)
+    push(alias, 2)
+    set(alias, 0, 9)
+    assert length(values) == 2
+    assert get(values, 0) == 9
+    assert get(alias, 1) == 2
+}
+
+test fn bool_and_managed_record_elements() {
+    let flags = new[Bool]()
+    push(flags, true)
+    push(flags, false)
+    set(flags, 1, true)
+    assert get(flags, 0) && get(flags, 1)
+
+    let entries = new[Entry]()
+    push(entries, Entry { name = concat("lo", "om") count = 7 enabled = true })
+    let alias = entries
+    set(alias, 0, Entry { name = concat("re", "vised") count = 11 enabled = false })
+    assert get(entries, 0).name == "revised"
+    assert get(entries, 0).count == 11
+    assert !get(entries, 0).enabled
+}
+
+enum Event {
+    Idle
+    Ready(Entry, Text)
+}
+
+fn event(enabled Bool) Event {
+    if !enabled { return Event.Idle }
+    Event.Ready(
+        Entry { name = concat("lo", "om") count = 7 enabled = true },
+        concat("re", "ady")
+    )
+}
+
+test fn enum_payloads_survive_collection_and_shared_growth() {
+    let events = new[Event]()
+    let alias = events
+    var index = 0
+    while index < 80 {
+        push(alias, event(true))
+        index = index + 1
+    }
+    push(alias, event(false))
+    assert length(events) == 81
+    assert match get(events, 0) {
+        Event.Idle => false
+        Event.Ready(entry, state) => concat(entry.name, state) == "loomready"
+    }
+    assert match get(events, 80) {
+        Event.Idle => true
+        Event.Ready(_, _) => false
+    }
+    assert concat(concat("a", "b"), concat("c", "d")) == "abcd"
+}

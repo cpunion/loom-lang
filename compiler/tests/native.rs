@@ -9,6 +9,15 @@ fn loom(args: &[&str]) -> Output {
         .unwrap()
 }
 
+fn managed(args: &[&str], directory: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_loom"))
+        .args(args)
+        .env("LOOM_GC_STRESS", "1")
+        .current_dir(directory)
+        .output()
+        .unwrap()
+}
+
 fn success(output: &Output) {
     assert!(
         output.status.success(),
@@ -66,6 +75,189 @@ fn native_cli_closure_and_source_library() {
         "test",
         path(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std/int")),
     ]));
+}
+
+#[test]
+fn native_generic_data() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/data");
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = directory.path().join("data");
+    let ir = directory.path().join("data.ll");
+    success(&loom(&["check", path(&fixture)]));
+    success(&loom(&[
+        "build",
+        path(&fixture),
+        "--output",
+        path(&artifact),
+        "--emit-ir",
+        path(&ir),
+    ]));
+    success(&Command::new(artifact).output().unwrap());
+    success(&loom(&["run", path(&fixture)]));
+    success(&loom(&["test", path(&fixture)]));
+    let llvm = fs::read_to_string(ir).unwrap();
+    for forbidden in ["executor", "loom_rt_", "malloc", "universal"] {
+        assert!(
+            !llvm.contains(forbidden),
+            "unexpected data IR dependency: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn source_scanner_and_std_under_forced_collection() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo = root.parent().unwrap();
+    let fixture = root.join("examples/source");
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = directory.path().join("scanner");
+    success(&managed(&["check", path(&fixture)], repo));
+    success(&managed(
+        &["build", path(&fixture), "--output", path(&artifact)],
+        repo,
+    ));
+    success(
+        &Command::new(artifact)
+            .current_dir(repo)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+    success(&managed(&["run", path(&fixture)], repo));
+    success(&managed(&["test", path(&fixture)], repo));
+    for package in ["text", "list", "result"] {
+        success(&managed(
+            &["test", path(&root.join("std").join(package))],
+            repo,
+        ));
+    }
+    let library = source(
+        "import std.text.byte\npub fn byte_at(value Text, index Int) Int { byte(value, index) }",
+    );
+    let ir = library.path().join("library.ll");
+    success(&loom(&[
+        "build",
+        path(library.path()),
+        "--emit-ir",
+        path(&ir),
+    ]));
+    let llvm = fs::read_to_string(ir).unwrap();
+    assert!(llvm.contains("loom_rt_text_byte"));
+    assert!(
+        !llvm.contains("loom_rt_roots_enter"),
+        "nonallocating functions need no GC root frame"
+    );
+}
+
+#[test]
+fn source_file_library_reads_chunks_and_reports_boundaries() {
+    let dir = source(
+        r#"
+import std.file.read_text
+import std.file.write_text
+import std.io.write_text
+import std.file.FileError
+import std.text.length
+import std.result.Result
+
+fn main() {
+    assert match std.file.write_text("written.txt", "hello") {
+        Result.Ok(count) => count == 5
+        Result.Err(_) => false
+    }
+    assert match std.file.write_text("absent/child.txt", "hello") {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    assert match std.io.write_text("native I/O\n") {
+        Result.Ok(count) => count == 11
+        Result.Err(_) => false
+    }
+    assert match read_text("large.txt") {
+        Result.Ok(text) => length(text) == 20000
+        Result.Err(_) => false
+    }
+    assert match read_text("invalid.txt") {
+        Result.Ok(_) => false
+        Result.Err(error) => match error { FileError.Utf8 => true, _ => false }
+    }
+    assert match read_text("absent.txt") {
+        Result.Ok(_) => false
+        Result.Err(error) => match error { FileError.Open => true, _ => false }
+    }
+}
+"#,
+    );
+    fs::write(dir.path().join("large.txt"), "x".repeat(20000)).unwrap();
+    fs::write(dir.path().join("invalid.txt"), [0xff]).unwrap();
+    let output = managed(&["run", path(dir.path())], dir.path());
+    success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "native I/O\n");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("written.txt")).unwrap(),
+        "hello"
+    );
+    let forged = source("intrinsic fn open(path Text) Int\nfn main() { discard open(\"file\") }");
+    assert!(!loom(&["check", path(forged.path())]).status.success());
+}
+
+#[test]
+fn constrained_values_keep_native_scalar_boundaries() {
+    let library =
+        source("type Positive = Int where self > 0\npub fn fixed() Int { Positive(21 * 2) }");
+    let ir = library.path().join("fixed.ll");
+    success(&loom(&[
+        "build",
+        path(library.path()),
+        "--emit-ir",
+        path(&ir),
+    ]));
+    let llvm = fs::read_to_string(ir).unwrap();
+    assert!(llvm.contains("ret i64 42"));
+    assert!(!llvm.contains("loom_rt_"));
+    assert!(!llvm.contains("with.overflow"));
+
+    let application = source(
+        r#"
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.result.Result
+import std.result.ConstraintError
+type Positive = Int where self > 0
+fn next(counter List[Int]) Int {
+    set(counter, 0, get(counter, 0) + 1)
+    get(counter, 0)
+}
+fn checked(value Int) Result[Positive, ConstraintError] { Positive(value) }
+fn main() {
+    let counter = new[Int]()
+    push(counter, 0)
+    assert match Positive(next(counter)) {
+        Result.Ok(value) => value == 1
+        Result.Err(_) => false
+    }
+    assert get(counter, 0) == 1
+    assert match checked(0) {
+        Result.Ok(_) => false
+        Result.Err(error) => match error { ConstraintError.Rejected => true }
+    }
+}
+"#,
+    );
+    success(&managed(
+        &["run", path(application.path())],
+        application.path(),
+    ));
+    let invalid = source("type Positive = Int where self > 0\nfn main() { discard Positive(0) }");
+    assert!(!loom(&["check", path(invalid.path())]).status.success());
+    let overflow = source(
+        "type Guard = Int where self + 1 > self\nfn main() { discard Guard(9223372036854775807) }",
+    );
+    let output = loom(&["run", path(overflow.path())]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("overflow"));
 }
 
 #[test]

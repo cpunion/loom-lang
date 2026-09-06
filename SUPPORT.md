@@ -10,8 +10,8 @@ Use the repository's issue templates for:
 - language proposals with observable semantics and alternatives.
 
 Before opening an issue, search existing issues and reproduce the problem on the
-latest `main` revision or latest published release. Include the Loom compiler
-version, host and target triples, LLVM version, the smallest complete project,
+latest development revision. Include the commit, host and target triples,
+LLVM version, the smallest complete project,
 the exact command, and unedited diagnostics. Remove credentials and private data
 from all reports.
 

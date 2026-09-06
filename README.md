@@ -1,174 +1,37 @@
 # Loom
 
-[![Compiler CI](https://github.com/cpunion/loom-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/cpunion/loom-lang/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+Loom is an experimental compiled language for readable, checked programs and
+safe evolution of deployed systems. Developers use ordinary source files;
+the long-term tools reason about types, contracts, dependencies, and semantic
+changes.
 
-Loom is an experimental, statically typed programming language with constrained
-values, executable contracts, explicit concepts, automatic memory management,
-structured asynchronous tasks, and an LLVM ahead-of-time compiler.
+The active implementation is a small Rust compiler using LLVM 19 through
+Inkwell. The previous compiler, interpreter, runtime, and their dedicated
+tooling have been removed from the active tree. Git history retains that work;
+there is no second implementation to maintain.
 
-The project explores whether these features can work together in a familiar
-text-and-Git workflow without adding ownership, borrowing, or lifetime syntax.
+## Start here
 
-> [!WARNING]
-> Loom is a research implementation, not a production-ready language. The
-> source language, standard library, diagnostics, artifacts, and runtime ABI
-> may change without compatibility guarantees.
+- [Build and run the compiler](compiler/README.md)
+- [Project goals](docs/project/charter.md)
+- [Language decisions](docs/rfcs/language-foundation.md)
+- [Changes and deployment decisions](docs/rfcs/change-and-deployment.md)
+- [Roadmap and self-hosting gates](ROADMAP.md)
+- [Current implementation status](docs/project/implementation-status.md)
+- [Documentation index](docs/README.md)
 
-## Language at a glance
+Accepted goals are not implementation claims. The native seed is not yet a
+complete language implementation or a self-hosted compiler.
 
-This excerpt is adapted from the checked and executed
-[`examples/constraints-contracts`](examples/constraints-contracts/shop.loom) fixture:
+## Repository
 
-```loom
-import std.float.is_finite
+- `compiler/src`: syntax, type/proof checking, and native code generation.
+- `compiler/std`: standard-library source, compiled like application code.
+- `compiler/runtime`: managed-memory and private platform primitives in Rust.
+- `compiler/examples` and `compiler/tests`: runnable examples and focused tests.
+- `docs`: goals, decisions, and current status.
 
-pub type Price = Float where is_finite(self) && self >= 0.0
-
-pub record Order {
-    subtotal Price
-    discount Price
-
-    invariant self.discount <= self.subtotal
-}
-
-impl Order {
-    pub method total(self) Float
-    ensures result >= 0.0
-    {
-        self.subtotal - self.discount
-    }
-}
-
-pub fn main() {
-    let subtotal = Price(100.0)
-    let discount = Price(20.0)
-    let order = Order {
-        subtotal = subtotal
-        discount = discount
-    }
-    let total = order.total()
-    assert total == 80.0
-}
-```
-
-Some important properties are visible in the example:
-
-- parameters and fields use `name Type`, without a separating colon;
-- `Price` is a nominal constrained type, not an alias for `Float`;
-- record invariants and function contracts are checked in every build profile;
-- methods are read-only unless their receiver is written as `mut self`;
-- Unit-returning callables omit both the return annotation and a direct bare
-  `Unit` body tail;
-- a block's final expression is its result, and semicolons are not used.
-
-Loom also implements closed enums and exhaustive matching, rank-1 generics,
-static and erased concept dispatch, moving garbage collection, block-scoped
-resource cleanup, stackless coroutines, structured task joins, directory
-packages inside versioned modules, an LSP server, and native debug information.
-
-## Quick start
-
-Building the toolchain currently requires Rust 1.88.0 and LLVM 19. See the
-[installation guide](docs/getting-started/installation.md) for platform-specific
-setup.
-
-```sh
-git clone https://github.com/cpunion/loom-lang.git
-cd loom-lang
-CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
-  cargo +1.88.0 build --locked --release -p loom-runtime
-cargo +1.88.0 build --locked --release -p loom-cli -p loom-lsp
-target/release/loom runtime pack \
-  --archive target/release/libloom_runtime.a \
-  --output target/release/runtime
-
-target/release/loom check examples/constraints-contracts
-target/release/loom test examples/constraints-contracts
-target/release/loom run examples/constraints-contracts
-```
-
-The default backend produces a native executable through LLVM. The interpreter
-is an explicitly selected semantic oracle:
-
-```sh
-target/release/loom --backend interpreter test examples/constraints-contracts
-```
-
-Continue with the [quick-start tutorial](docs/getting-started/quick-start.md) or
-the [language tour](docs/guide/language-tour.md).
-
-## Toolchain
-
-The workspace provides:
-
-- `loom` for `check`, `build`, `test`, `run`, `debug`, `fmt`, dependency
-  resolution, publishing, runtime-bundle packing, and cache inspection;
-- `loom-lsp` for diagnostics, navigation, rename, completion, hover, and
-  document/workspace symbols;
-- an LLVM 19 native backend and an explicit interpreter backend;
-- ordinary `.loom` source, `loom.toml` manifests, and `loom.lock` lockfiles;
-- portable, versioned `.loomlib` source-and-interface packages. Consumers
-  recompile their embedded Loom source; these are not stable native or FFI
-  libraries.
-
-## Platform evidence
-
-The table describes automated evidence, not a stability promise:
-
-| Host | CI coverage | Native release archive |
-| --- | --- | --- |
-| Ubuntu 24.04, x86-64 | Release workflow only | Yes |
-| macOS 15, arm64 | Default development gate plus release workflow | Yes |
-| Windows Server 2025, x86-64 | Release workflow only | `.zip` workflow entry configured; not yet verified or published |
-
-The release workflow exercises Windows LLVM code generation, native linking,
-runtime I/O, CodeView/PDB artifacts, and an adjacent-runtime zip. Loom does not
-claim Windows support or a published Windows archive until that release entry
-has produced successful runner and archive evidence.
-Cross-target object emission exists for supported 64-bit triples; producing a
-cross-target executable still requires a matching Loom runtime bundle and
-linker.
-
-## Documentation
-
-The [project charter](docs/project/charter.md) and
-[roadmap](ROADMAP.md) distinguish the accepted long-term design and early
-self-hosting route from the existing implementation described above. The
-[language foundation](docs/rfcs/language-foundation.md) and
-[change/deployment design](docs/rfcs/change-and-deployment.md) are target
-decisions, not current feature claims.
-
-The [native compiler seed](compiler/README.md) now exercises the first scalar
-slice of that route in an independent, small Rust/LLVM package. It does not yet
-replace the workspace compiler described above.
-
-The [documentation index](docs/README.md) separates getting-started material
-from language guides. Useful entry points include:
-
-- [Installation](docs/getting-started/installation.md)
-- [Project layout](docs/getting-started/project-layout.md)
-- [Constraints and contracts](docs/guide/constraints-and-contracts.md)
-- [Concepts and polymorphism](docs/guide/concepts-and-polymorphism.md)
-- [Resources and cleanup](docs/guide/resources-and-cleanup.md)
-- [Asynchronous programming](docs/guide/asynchronous-programming.md)
-- [Packages and dependencies](docs/guide/packages-and-dependencies.md)
-- [Roadmap](ROADMAP.md)
-
-## Contributing and security
-
-All changes, including maintainer changes, are made through pull requests. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the development and review workflow.
-
-Please report suspected vulnerabilities privately as described in
-[SECURITY.md](SECURITY.md). Do not open a public security issue.
-
-Participation in the project is governed by the
-[Code of Conduct](CODE_OF_CONDUCT.md).
-
-See [Support](SUPPORT.md) for help and bug-report routing, and
-[Governance](GOVERNANCE.md) for project roles and decisions.
-
-## License
-
-Loom is available under the [MIT License](LICENSE).
+All changes use pull requests. See [Contributing](CONTRIBUTING.md),
+[Governance](GOVERNANCE.md), [Support](SUPPORT.md), and
+[Security](SECURITY.md). Participation follows the
+[Code of Conduct](CODE_OF_CONDUCT.md). Loom is [MIT licensed](LICENSE).

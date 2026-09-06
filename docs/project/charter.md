@@ -54,10 +54,10 @@ The accepted [language foundation](../rfcs/language-foundation.md) and
 target decisions. They supersede narrower project-scope statements, not the
 observable behavior of the existing compiler.
 
-The [implementation status](implementation-status.md), versioned reference,
-and executable fixtures describe what currently works. The existing compiler
-and the earlier prototypes are evidence and reusable material, not a requirement
-to preserve their architecture. There is no compatibility obligation to an
+The [implementation status](implementation-status.md), compiler guide,
+and executable fixtures describe what currently works. Earlier prototypes are
+available in Git history, not a requirement to preserve their architecture.
+There is no compatibility obligation to an
 unpublished prototype; actual deployed state still creates explicit obligations.
 
 The [roadmap](../../ROADMAP.md) defines the replacement compiler's vertical

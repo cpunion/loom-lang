@@ -96,7 +96,7 @@ fn execute() -> Result<ExitCode, String> {
         }
     }
     let temporary_ir = ir.as_ref().map(|_| temporary.path().join("program.ll"));
-    native::emit(
+    let uses_runtime = native::emit(
         &program,
         command == "test",
         &object,
@@ -105,11 +105,11 @@ fn execute() -> Result<ExitCode, String> {
     let executable = temporary.path().join("program");
     if command == "build" {
         if !library {
-            link(&object, &executable)?;
+            link(&object, &executable, uses_runtime)?;
         }
         publish(if library { &object } else { &executable }, &artifact)?;
     } else {
-        link(&object, &artifact)?;
+        link(&object, &artifact, uses_runtime)?;
     }
     if let (Some(from), Some(to)) = (&temporary_ir, &ir) {
         publish(from, to)?;
@@ -132,14 +132,34 @@ fn execute() -> Result<ExitCode, String> {
 
 fn help() {
     println!(
-        "Loom native seed\n\n  loom check [directory]\n  loom build [directory] [--output path] [--emit-ir path]\n  loom test  [directory] [--emit-ir path]\n  loom run   [directory] [--emit-ir path]\n\nThe seed implements a documented scalar subset. build emits a library object\nwhen the selected package has no main. LOOM_CC selects the host Clang linker."
+        "Loom native compiler\n\n  loom check [directory]\n  loom build [directory] [--output path] [--emit-ir path]\n  loom test  [directory] [--emit-ir path]\n  loom run   [directory] [--emit-ir path]\n\nSee compiler/README.md for the supported subset. build emits a library object\nwhen the selected package has no main. LOOM_CC selects the host Clang linker."
     );
 }
 
-fn link(object: &Path, output: &Path) -> Result<(), String> {
+fn link(object: &Path, output: &Path, uses_runtime: bool) -> Result<(), String> {
     let linker = std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into());
-    let result = Command::new(&linker)
-        .arg(object)
+    let mut command = Command::new(&linker);
+    command.arg(object);
+    if uses_runtime {
+        let runtime = std::env::var_os("LOOM_RUNTIME_LIBRARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::current_exe()
+                    .unwrap_or_default()
+                    .with_file_name("libloom_seed_runtime.a")
+            });
+        if !runtime.is_file() {
+            return Err(format!(
+                "missing native runtime {}: run cargo build --workspace or set LOOM_RUNTIME_LIBRARY",
+                runtime.display()
+            ));
+        }
+        command.arg(runtime);
+        if cfg!(target_os = "linux") {
+            command.args(["-ldl", "-lpthread", "-lm"]);
+        }
+    }
+    let result = command
         .arg("-o")
         .arg(output)
         .output()

@@ -1,0 +1,20 @@
+import std.result.Result
+import std.text.length
+
+pub enum WriteError {
+    Failed
+}
+
+intrinsic fn write(handle Int, value Text, offset Int) Int
+
+// Write UTF-8 to standard output without taking ownership of the stream.
+pub fn write_text(value Text) Result[Int, WriteError] {
+    let size = length(value)
+    var offset = 0
+    while offset < size {
+        let count = write(1, value, offset)
+        if count <= 0 { return Result.Err(WriteError.Failed) }
+        offset = offset + count
+    }
+    Result.Ok(offset)
+}

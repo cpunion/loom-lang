@@ -6,9 +6,6 @@ rust-version = "1.88"
 license = "MIT"
 publish = false
 
-# A replacement compiler, not another layer in the existing compiler workspace.
-[workspace]
-
 [[bin]]
 name = "loom"
 path = "src/main.rs"

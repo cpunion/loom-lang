@@ -1,13 +1,14 @@
 # Native compiler seed
 
-This is the first executable slice of the replacement compiler described in the
-[roadmap](../ROADMAP.md). It is not the complete N0 milestone or a replacement
-for every program supported by the existing workspace compiler.
+This is the small native compiler for the N0 vertical slice described in the
+[roadmap](../ROADMAP.md), validated on macOS. It is not the complete language,
+a self-hosted compiler, or a compatibility implementation of the removed code.
 
-One Rust package connects source syntax, checked scalar functions, and LLVM 19
-through Inkwell. It does not depend on the existing compiler crates, interpreter,
-universal values, runtime bundle, or executor. The generated program links only
-the host C library for fault reporting. Ordinary arithmetic and calls lower
+One Rust package connects source syntax, checked functions, and LLVM 19
+through Inkwell. It does not depend on the removed compiler crates, interpreter,
+universal values, runtime bundle, or executor. Scalar-only programs link only
+the host C library for fault reporting; managed programs also link the small
+Rust runtime. Ordinary arithmetic and calls lower
 directly; LLVM's O2 pipeline promotes local storage and removes unused code.
 
 ## Build and try it
@@ -18,19 +19,21 @@ validation host. From the repository root:
 ```sh
 export LLVM_SYS_191_PREFIX="$(brew --prefix llvm@19)"
 export LOOM_CC="$LLVM_SYS_191_PREFIX/bin/clang"
-rustup run 1.88.0 cargo build --locked --manifest-path compiler/Cargo.toml
+cargo build --locked --workspace
 
-compiler/target/debug/loom check compiler/examples/scalar
-compiler/target/debug/loom build compiler/examples/scalar \
-  --output compiler/target/scalar --emit-ir compiler/target/scalar.ll
-compiler/target/scalar
-compiler/target/debug/loom test compiler/examples/scalar
-compiler/target/debug/loom run compiler/examples/scalar
-compiler/target/debug/loom test compiler/std/int
+target/debug/loom check compiler/examples/scalar
+target/debug/loom build compiler/examples/scalar \
+  --output target/scalar --emit-ir target/scalar.ll
+target/scalar
+target/debug/loom test compiler/examples/scalar
+target/debug/loom run compiler/examples/scalar
+target/debug/loom test compiler/std/int
+LOOM_GC_STRESS=1 target/debug/loom run compiler/examples/source
+LOOM_GC_STRESS=1 target/debug/loom test compiler/std/list
 ```
 
-This seed has its own Cargo workspace and lockfile, and its binary is still named
-`loom`. No new permanent CLI spelling or compatibility backend is introduced.
+The root Cargo workspace and lockfile build the maintained compiler. Its binary
+is named `loom`; there is no compatibility backend.
 Development builds find their source `std` beside this manifest; `LOOM_STD` can
 select another standard-library directory. This is not yet a relocatable release
 package. `--help` lists the small command surface.
@@ -41,6 +44,12 @@ package. `--help` lists the small command surface.
 - `let`, `var`, assignment, final-expression returns, early return, `if`/`else`,
   `while`, `assert`, and explicit `discard`. Boolean operators short-circuit.
 - Parameter-type/arity overloads with explicit ambiguity errors.
+- Immutable records and tagged enums, flat exhaustive `match`, generic type and
+  function parameters with inference or explicit arguments. Generic bodies are
+  checked without hidden requirements; reachable instances use concrete layouts.
+- Immutable UTF-8 `Text` and shared mutable `List[T]`. Copying a list binding
+  shares its header: aliases observe growth and element replacement. Scalar
+  records remain native values; managed fields retain their sharing semantics.
 - Directory packages, private helpers and `pub`, package-wide explicit imports,
   and a local import closure. A simple `loom.toml` supplies the module name;
   no `src/` is required. A directory without a manifest can use its own files
@@ -50,6 +59,12 @@ package. `--help` lists the small command surface.
   Identical test/production overload signatures are currently rejected.
 - A source `std.int` package with `minimum` and `maximum`, resolved through
   ordinary imports and calls, not compiler tables of library function names.
+- Source `std.text`, `std.list`, `std.result`, `std.file`, and `std.io`. Private
+  intrinsic signatures are checked against the runtime ABI and accepted only
+  from the configured standard-library source root. Reading loops, UTF-8
+  error policy, partial-write loops, and explicit file closure are ordinary Loom
+  source. `file.write_text` creates or truncates a file; it is not an atomic or
+  transactional write. `io.write_text` writes stdout without closing it.
 - Native executable builds when the selected package has `main`; otherwise,
   an object containing its public functions and their dependencies. Object
   symbols are private seed conventions, not a supported foreign ABI.
@@ -57,9 +72,22 @@ package. `--help` lists the small command surface.
 The scalar example covers recursion, loops, a pre/postcondition pair, an imported
 package, `std`, and both test forms. Native tests exercise overflow, division by
 zero, short-circuiting, entry reachability, and test exclusion. Faults report a
-brief reason and exit unsuccessfully; there is no recoverable failure type yet.
+brief reason and exit unsuccessfully. File errors use source-defined `Result`.
 
 ## Contract boundary
+
+Scalar constrained types use `type Positive = Int where self > 0`.
+`Positive(3)` yields `Positive` directly; a false constant is a diagnostic.
+An unproved input evaluates once and returns source
+`Result[Positive, ConstraintError]`. Widening `Positive` to `Int` emits no check;
+arithmetic returns `Int`, while generic inference retains nominal identity.
+`List[Positive]` never widens to `List[Int]`.
+
+This construction fragment constrains `Int` directly, with predicates over
+`self` and call-free scalar expressions. Constant arithmetic must be defined
+before it can justify check removal. Propagating local/branch facts into
+construction, pure function calls in predicates, shared-container constraints,
+and invariant-aware proofs over refined parameters are not implemented yet.
 
 `requires` is checked before the callee body. Every declared `ensures` must be
 proved; unknown or unsupported proofs reject the build, including for functions
@@ -80,11 +108,28 @@ proofs of termination or absence of runtime faults.
 
 ## Next boundary
 
-N0 is still incomplete. Records/enums, refined construction, basic generics,
-managed text/collections, lexical resources and real file I/O are next, so Loom
-can express compiler source and progress toward self-hosting. Shared mutable
-data, GC, Tasks, metaprogramming, dependency resolution, lockfile/cache behavior,
-deployment and semantic-change tools are not implemented by this slice.
+The `compiler/examples/data` package exercises records, enums, generic functions,
+and both test forms through the same CLI. Scalar-only records stay native values;
+enum storage uses its largest variant payload, not the sum of all variants.
+
+`compiler/examples/source` reads its scanner source from disk, produces a
+typed token list, checks constrained construction, and writes a success message
+to stdout. It is a small ASCII scanner, not a complete Loom lexer.
+
+The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
+frames register managed locals and expression temporaries across allocation;
+transitively nonallocating functions need no root frames. `LOOM_GC_STRESS=1`
+collects before every allocation for focused testing. Managed executables find
+`libloom_seed_runtime.a` beside the compiler, or at `LOOM_RUNTIME_LIBRARY`.
+No handles escape the file helpers; every recoverable branch closes the
+file explicitly. This is not general scoped cleanup or finalization.
+
+The N0 source-to-native gate is exercised by the examples and integration tests.
+Next is N1: move source handling, lexer/parser, and diagnostics into Loom.
+Recursive declarations, mutable record fields, broader proofs, moving GC,
+lexical resources, Tasks, metaprogramming,
+dependency resolution, lockfile/cache behavior, deployment and semantic-change
+tools remain outside this slice. No complete std or self-hosting claim is made.
 
 Unsupported syntax and manifest features reject explicitly. In particular,
 dependency and target declarations are not silently ignored. The accepted
@@ -94,8 +139,8 @@ these temporary limits do not redefine it.
 For this compiler's local gate:
 
 ```sh
-rustup run 1.88.0 cargo fmt --manifest-path compiler/Cargo.toml -- --check
-rustup run 1.88.0 cargo clippy --locked --manifest-path compiler/Cargo.toml \
-  --all-targets -- -D warnings
-rustup run 1.88.0 cargo test --locked --manifest-path compiler/Cargo.toml
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo build --locked --workspace
+cargo test --locked --workspace
 ```

@@ -126,6 +126,32 @@ fn error(span: Span) -> Diagnostic {
     )
 }
 
+/// Classify a constant boundary without executing effects or assuming that an
+/// overflowing arithmetic operation completed. None retains a runtime check.
+pub fn classify_refinement(value: &c::Expr, predicate: &c::Expr, self_slot: usize) -> Option<bool> {
+    let mut state = State {
+        locals: vec![None; self_slot + 1],
+        facts: Vec::new(),
+    };
+    defined(value, &state).ok()?;
+    let value = pure(value, &state).ok()?;
+    if !matches!(value, Value::Int(_)) {
+        return None;
+    }
+    state.locals[self_slot] = Some(value);
+    defined(predicate, &state).ok()?;
+    let Value::Bool(predicate) = pure(predicate, &state).ok()? else {
+        return None;
+    };
+    if holds(&predicate, &state.facts) {
+        Some(true)
+    } else if holds(&predicate.neg(), &state.facts) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 pub fn prove(
     function: &c::Function,
     ensures: &[c::Expr],
@@ -140,6 +166,9 @@ pub fn prove(
             Type::Int => Value::Int(Linear::variable(id)),
             Type::Bool => Value::Bool(Pred::Variable(id)),
             Type::Unit => Value::Unit,
+            Type::Text | Type::Bytes | Type::List(_) | Type::Data(_) | Type::Parameter(_) => {
+                return Err(error(function.span));
+            }
         });
     }
     let mut proof = Proof {
@@ -326,7 +355,7 @@ fn defined(expr: &c::Expr, state: &State) -> Result<(), Diagnostic> {
         return Ok(());
     }
     match &expr.kind {
-        c::ExprKind::Unary(_, inner) => defined(inner, state)?,
+        c::ExprKind::Unary(_, inner) | c::ExprKind::Coerce(inner) => defined(inner, state)?,
         c::ExprKind::Binary(op, a, b) => {
             defined(a, state)?;
             let mut branch = state.clone();
@@ -367,9 +396,18 @@ fn pure(expr: &c::Expr, state: &State) -> Result<Value, Diagnostic> {
         E::Int(n) => Some(Value::Int(Linear::constant(*n as i128))),
         E::Bool(v) => Some(Value::Bool(Pred::Constant(*v))),
         E::Local(id) => state.locals.get(*id).cloned().flatten(),
+        E::Coerce(value) => Some(pure(value, state)?),
         E::Unary(op, e) => unary(*op, pure(e, state)?),
         E::Binary(op, a, b) => binary(*op, pure(a, state)?, pure(b, state)?),
-        E::Call(..) | E::If { .. } => None,
+        E::Text(_)
+        | E::Primitive(..)
+        | E::Call(..)
+        | E::If { .. }
+        | E::Record(_)
+        | E::Field(..)
+        | E::Variant { .. }
+        | E::Match { .. }
+        | E::Block(_) => None,
     };
     value.ok_or_else(|| error(expr.span))
 }
@@ -389,6 +427,16 @@ fn binary(op: Binary, a: Value, b: Value) -> Option<Value> {
             B::Sub => Value::Int(a.add(b.scale(-1)?)?),
             B::Mul if a.terms.is_empty() => Value::Int(b.scale(a.constant)?),
             B::Mul if b.terms.is_empty() => Value::Int(a.scale(b.constant)?),
+            B::Div | B::Rem if a.terms.is_empty() && b.terms.is_empty() => {
+                let a = i64::try_from(a.constant).ok()?;
+                let b = i64::try_from(b.constant).ok()?;
+                let value = if op == B::Div {
+                    a.checked_div(b)?
+                } else {
+                    a.checked_rem(b)?
+                };
+                Value::Int(Linear::constant(value as i128))
+            }
             B::Eq | B::Ne | B::Lt | B::Le | B::Gt | B::Ge => {
                 let rel = match op {
                     B::Eq => Rel::Eq,
