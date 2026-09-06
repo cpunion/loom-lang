@@ -12,9 +12,16 @@ elif [[ $# != 0 ]]; then
     exit 2
 fi
 
+exe_suffix=""
+runtime_name="libloom_runtime.a"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) exe_suffix=".exe"; runtime_name="loom_runtime.lib" ;;
+esac
 seed_compiler=""
 if [[ -n "${LOOM_BOOTSTRAP_COMPILER:-}" ]]; then
-    seed_compiler="$(command -v "$LOOM_BOOTSTRAP_COMPILER")" || {
+    requested_compiler="$LOOM_BOOTSTRAP_COMPILER"
+    if [[ "$exe_suffix" == .exe ]]; then requested_compiler="$(cygpath -u "$requested_compiler")"; fi
+    seed_compiler="$(command -v "$requested_compiler")" || {
         printf 'Cannot find LOOM_BOOTSTRAP_COMPILER: %s\n' "$LOOM_BOOTSTRAP_COMPILER" >&2
         exit 1
     }
@@ -30,11 +37,6 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo_root"
 target_root="$repo_root/target"
-exe_suffix=""
-runtime_name="libloom_runtime.a"
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) exe_suffix=".exe"; runtime_name="loom_runtime.lib" ;;
-esac
 if $development && [[ -z "$seed_compiler" && -z "${LOOM_BOOTSTRAP_INPUT:-}" && -x "$target_root/loom$exe_suffix" ]]; then
     seed_compiler="$target_root/loom$exe_suffix"
 fi
@@ -55,7 +57,7 @@ cargo build --locked --workspace --target-dir "$target_root"
 export LOOM_RUNTIME_LIBRARY="$target_root/debug/$runtime_name"
 if [[ "$exe_suffix" == .exe ]]; then
     # Environment variables are not subject to Git Bash's argv path conversion.
-    export LOOM_RUNTIME_LIBRARY="$(cygpath -m "$LOOM_RUNTIME_LIBRARY")"
+    LOOM_RUNTIME_LIBRARY="$(cygpath -m "$LOOM_RUNTIME_LIBRARY")"
 fi
 if [[ -n "${LOOM_BOOTSTRAP_INPUT:-}" ]]; then
     seed_compiler="$target_root/loom-stage0$exe_suffix"

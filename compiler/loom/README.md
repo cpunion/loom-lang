@@ -20,7 +20,7 @@ target/loom test compiler/std/text
 
 Stages 0 through 3 are [bootstrap generations](../../ROADMAP.md#n1--move-the-compiler-into-loom),
 not language versions or additional supported compilers. Stage 0 is an existing
-Loom compiler, recovered from frozen history on macOS when needed. The
+Loom compiler, recovered from frozen history on macOS/Linux when needed. The
 [Windows bootstrap](../README.md#windows-bootstrap) can instead compile a trusted
 same-checkout checked export into its initial native compiler. New language
 features do not require a parallel Rust implementation; only their use in the
@@ -47,8 +47,8 @@ LOOM_GC_STRESS=1 compiler/std/loom/proof/target/tests
 
 The bootstrap integration gate compares stage 2 and 3 binaries, selected
 diagnostics and executable results, then runs compiler and source `std` tests.
-Agreement is evidence, not a proof of compiler correctness. macOS is the verified
-host; Windows native bootstrap and tests are wired into CI but await results.
+Agreement is evidence, not a proof of compiler correctness. macOS and Linux are
+verified hosts; Windows native bootstrap and tests are wired into CI but await results.
 Manifest helpers still implement the documented subset, not general TOML.
 
 ## Public syntax libraries

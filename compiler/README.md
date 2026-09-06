@@ -3,7 +3,7 @@
 The [Loom-written compiler](loom/README.md) implements package loading, parsing,
 binding, type checking, bounded required proofs, and checked program emission.
 It builds further compiler stages using one retained Rust LLVM/platform tool.
-The [roadmap](../ROADMAP.md) distinguishes this macOS bootstrap from completion
+The [roadmap](../ROADMAP.md) distinguishes the macOS/Linux bootstrap from completion
 of the accepted language. A previous Loom compiler is the bootstrap input;
 the frozen historical Rust seed is only a fallback for producing that input.
 
@@ -16,8 +16,8 @@ directly; LLVM's O2 pipeline promotes local storage and removes unused code.
 
 ## Build and try it
 
-Use Rust 1.88, LLVM 19 development libraries, and Clang. macOS is the initial
-validation host. On Ubuntu 24.04 install `llvm-19-dev`, `clang-19`, and
+Use Rust 1.88, LLVM 19 development libraries, and Clang. macOS and Linux have
+passed full native bootstrap and tests. On Ubuntu 24.04 install `llvm-19-dev`, `clang-19`, and
 `libpolly-19-dev`; set `LLVM_SYS_191_PREFIX=/usr/lib/llvm-19` and
 `LOOM_CC=/usr/bin/clang-19`. Linux CI runs the same full native/bootstrap gate.
 From the repository root on macOS:
@@ -41,7 +41,7 @@ LOOM_GC_STRESS=1 compiler/std/list/target/tests
 
 The [bootstrap script](../scripts/bootstrap.sh) builds the current Rust tool
 and runtime, then Loom stages 1, 2, and 3. It compares stages 2/3 byte-for-byte
-and publishes `target/loom`. On macOS, a cold build recovers stage 0 from the commit in
+and publishes `target/loom`. On macOS/Linux, a cold build recovers stage 0 from the commit in
 `compiler/bootstrap/seed`, using only that historical source and Rust seed in
 `target/bootstrap/<commit>/`. The pinned commit must be available in Git history;
 the script reports the exact fetch command when it is missing. The cache is
@@ -62,7 +62,7 @@ bash scripts/bootstrap.sh --dev
 This builds the native tool/runtime, compiles one new Loom compiler, and
 publishes `target/loom`, using LLVM O1 for this development rebuild.
 `LOOM_BOOTSTRAP_COMPILER` overrides the preceding
-compiler; on macOS, a missing installed compiler uses the historical fallback. This
+compiler; on macOS/Linux, a missing installed compiler uses the historical fallback. This
 short path does not compare stages. The no-argument command retains the full
 stage 1/2/3 verification at default O2 for CI and bootstrap-boundary changes.
 `LOOM_OPT_LEVEL=0..3` explicitly selects the native optimization level; this

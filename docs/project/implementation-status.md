@@ -22,20 +22,22 @@ declarations. Known true/false predicates remove the check or reject; unknown
 inputs or unsuccessful optional evaluation retain normal runtime construction
 and fault behavior. Function contracts remain call-free and proofs mandatory.
 
-The native gate uses macOS, Rust 1.88, and LLVM 19. Compiler, native integration,
+The native gates pass on macOS and Linux with Rust 1.88 and LLVM 19. Compiler, native integration,
 and runtime tests cover real check/build/test/run, required-proof rejection,
 input-boundary failures, and allocation-free scalar/record paths.
 The [Loom-written compiler](../../compiler/loom/README.md) now compiles its own
 sources: an existing compiler (stage 0) produces stage 1, stage 1 produces
 stage 2, and stage 2 produces stage 3. These are build generations, not language
 versions. Stage 2 and stage 3 executables are byte-identical on the
-validated macOS development build. Stage 3 passes compiler, `std`, and example
+validated builds on each host. Stage 3 passes compiler, `std`, and example
 package tests and runs the data example. Stages 2 and 3 agree on selected
 type/proof failure diagnostics. This gate combines the
 [bootstrap script](../../scripts/bootstrap.sh) and
 [frontend integration test](../../compiler/tests/frontend.rs). The source
 checker also checks its complete package closure, selected `std` packages,
 and the scalar/data examples.
+Linux CI independently passes the full historical-seed bootstrap and workspace
+test gate; it does not rely on a compiler exported from the macOS job.
 
 The Windows x64/MSVC implementation now includes native linking, binary file
 I/O with Unicode paths/arguments, drive/UNC/verbatim package paths, and native

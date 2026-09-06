@@ -5,7 +5,8 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
-- Add an independent Linux LLVM 19 / Rust 1.88 full bootstrap and native CI gate.
+- Pass the independent Linux LLVM 19 / Rust 1.88 full bootstrap and native CI gate,
+  alongside macOS. Windows verification remains pending.
 - Protect source extensions and native/IR outputs against case aliases on
   case-insensitive filesystems.
 - Implement the Windows MSVC native/runtime path, Unicode/binary I/O, canonical
