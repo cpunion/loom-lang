@@ -179,5 +179,5 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
-          LOOM_BOOTSTRAP_INPUT=target/bootstrap-input/compiler.checked bash scripts/bootstrap.sh
+          LOOM_NATIVE_TIMINGS=1 LOOM_BOOTSTRAP_INPUT=target/bootstrap-input/compiler.checked bash scripts/bootstrap.sh
           cargo test --locked --workspace

@@ -73,6 +73,10 @@ fn execute() -> Result<(), String> {
             .map_err(|error| format!("{}: {error}", input.display()))?;
         vec![input]
     };
+    let timings = std::env::var_os("LOOM_NATIVE_TIMINGS").is_some();
+    if timings {
+        eprintln!("loom-native phase: decode");
+    }
     let decode_started = Instant::now();
     let program = native_input::decode(&text)?;
     let decode_time = decode_started.elapsed();
@@ -92,6 +96,9 @@ fn execute() -> Result<(), String> {
         "program.o"
     });
     let emitted_ir = ir.as_ref().map(|_| temporary.path().join("program.ir"));
+    if timings {
+        eprintln!("loom-native phase: codegen");
+    }
     let backend_started = Instant::now();
     let emission = Llvm.emit(
         &program,
@@ -108,6 +115,9 @@ fn execute() -> Result<(), String> {
     } else {
         "program"
     });
+    if timings {
+        eprintln!("loom-native phase: link");
+    }
     let link_started = Instant::now();
     if !emission.library {
         link(
@@ -135,7 +145,7 @@ fn execute() -> Result<(), String> {
         }
         publish(from, to)?;
     }
-    if std::env::var_os("LOOM_NATIVE_TIMINGS").is_some() {
+    if timings {
         eprintln!(
             "loom-native timings: decode_ms={:.3} codegen_ms={:.3} link_ms={:.3}",
             decode_time.as_secs_f64() * 1000.0,
