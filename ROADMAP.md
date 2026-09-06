@@ -72,6 +72,13 @@ compiler tiers:
 4. Compare stage 2/3 artifacts and selected diagnostics; run compiler, `std`,
    and application tests with the resulting compiler.
 
+The Windows bootstrap path builds its initial native compiler from a trusted
+checked export of the same source checkout, then follows stages 1/2/3 on Windows.
+CI transfers that temporary input from the validated macOS job in the same
+workflow; no checked-IR snapshot or second frontend is maintained. Native MSVC
+linking, Unicode/binary I/O, and Windows package paths are implemented; successful
+Windows CI evidence remains the platform gate, not an assumption.
+
 The minimum bootstrap language subset constrains the compiler's own source,
 not which features it can implement for user programs. Implement a new feature
 using the preceding stage's supported subset before adopting that feature in

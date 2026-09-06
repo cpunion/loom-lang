@@ -10,7 +10,11 @@ pub fn root() -> &'static Path {
 }
 
 pub fn compiler() -> PathBuf {
-    root().join("target/loom")
+    executable(&root().join("target"), "loom")
+}
+
+pub fn executable(directory: &Path, name: &str) -> PathBuf {
+    directory.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
 pub fn command(args: &[&str]) -> Command {
@@ -18,7 +22,7 @@ pub fn command(args: &[&str]) -> Command {
     command.args(args).current_dir(root());
     if args
         .first()
-        .is_some_and(|mode| matches!(*mode, "check" | "build" | "test" | "run"))
+        .is_some_and(|mode| matches!(*mode, "check" | "build" | "test" | "run" | "emit-checked"))
     {
         command
             .arg("--std")
@@ -48,10 +52,10 @@ pub fn managed(args: &[&str], directory: &Path) -> Output {
     let temporary = tempfile::tempdir().unwrap();
     let artifact = if args[0] == "test" {
         success(&loom(args));
-        Path::new(args[1]).join("target/tests")
+        executable(&Path::new(args[1]).join("target"), "tests")
     } else {
         assert_eq!(args[0], "run");
-        let artifact = temporary.path().join("app");
+        let artifact = executable(temporary.path(), "app");
         success(&loom(&[
             "build",
             args[1],

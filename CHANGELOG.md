@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Implement the Windows MSVC native/runtime path, Unicode/binary I/O, canonical
+  package paths, and executable suffixes. Add checked compiler export and
+  same-workflow bootstrap transfer into a Windows CI gate; native Windows
+  verification is still pending.
 - Allow pure helper calls in `Int` type predicates, validating their operation
   closure even for unused declarations. Fold known predicates without weakening
   runtime construction or required proofs. Extend `comptime if` type guards to

@@ -25,7 +25,7 @@ fn main() -> ExitCode {
 fn execute() -> Result<(), String> {
     let optimization = optimization_level(std::env::var_os("LOOM_OPT_LEVEL").as_deref())?;
     let mut arguments = std::env::args_os().skip(1);
-    let input = arguments.next().ok_or("usage: loom-native <checked-input|-> --output <artifact> [--test] [--emit-ir <path>] [--runtime <archive>] [--linker <clang>]")?;
+    let input = arguments.next().ok_or("usage: loom-native <checked-input|-> --output <artifact> [--test] [--emit-ir <path>] [--runtime <archive>] [--linker <driver>]")?;
     let mut output = None;
     let mut ir = None;
     let mut runtime = None;
@@ -86,7 +86,11 @@ fn execute() -> Result<(), String> {
         }
     }
     let temporary = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let object = temporary.path().join("program.o");
+    let object = temporary.path().join(if cfg!(windows) {
+        "program.obj"
+    } else {
+        "program.o"
+    });
     let emitted_ir = ir.as_ref().map(|_| temporary.path().join("program.ll"));
     let llvm_started = Instant::now();
     let uses_runtime = native::emit(
@@ -97,7 +101,11 @@ fn execute() -> Result<(), String> {
         optimization,
     )?;
     let llvm_time = llvm_started.elapsed();
-    let executable = temporary.path().join("program");
+    let executable = temporary.path().join(if cfg!(windows) {
+        "program.exe"
+    } else {
+        "program"
+    });
     let library = !test_mode && program.entry.is_none();
     let link_started = Instant::now();
     if !library {

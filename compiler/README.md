@@ -38,7 +38,7 @@ LOOM_GC_STRESS=1 compiler/std/list/target/tests
 
 The [bootstrap script](../scripts/bootstrap.sh) builds the current Rust tool
 and runtime, then Loom stages 1, 2, and 3. It compares stages 2/3 byte-for-byte
-and publishes `target/loom`. A cold build recovers stage 0 from the commit in
+and publishes `target/loom`. On macOS, a cold build recovers stage 0 from the commit in
 `compiler/bootstrap/seed`, using only that historical source and Rust seed in
 `target/bootstrap/<commit>/`. The pinned commit must be available in Git history;
 the script reports the exact fetch command when it is missing. The cache is
@@ -59,7 +59,7 @@ bash scripts/bootstrap.sh --dev
 This builds the native tool/runtime, compiles one new Loom compiler, and
 publishes `target/loom`, using LLVM O1 for this development rebuild.
 `LOOM_BOOTSTRAP_COMPILER` overrides the preceding
-compiler; a missing installed compiler uses the historical fallback. This
+compiler; on macOS, a missing installed compiler uses the historical fallback. This
 short path does not compare stages. The no-argument command retains the full
 stage 1/2/3 verification at default O2 for CI and bootstrap-boundary changes.
 `LOOM_OPT_LEVEL=0..3` explicitly selects the native optimization level; this
@@ -73,6 +73,44 @@ public `loom` compiler. The source compiler defaults to `compiler/std` and
 `--native-tool` select explicit paths. These are development commands, not a
 relocatable release package or a stable compiler-artifact ABI. `--help` lists
 each tool's command surface.
+
+## Windows bootstrap
+
+The Windows implementation targets 64-bit MSVC; its CI gate is added but not yet
+verified. Use Rust 1.88, a Visual Studio developer environment, Git Bash, and an
+LLVM 19 development package with `llvm-config.exe`, LLVM libraries, and
+`clang-cl.exe`. The [CI recipe](../.github/workflows/ci.yml) provisions the 19.1.7
+archive and supplies its missing `libxml2s.lib` from a real static libxml2 build
+using the dynamic MSVC CRT, not a placeholder library.
+
+Windows cannot use the frozen historical Unix seed directly. Use an existing
+compatible Windows compiler via `LOOM_BOOTSTRAP_COMPILER`, or export a trusted
+checked compiler from the same checkout using an already validated macOS Loom:
+
+```sh
+target/loom emit-checked compiler/loom > target/compiler.checked
+```
+
+Transfer that file to the matching Windows checkout, then in Git Bash with the
+Visual Studio environment inherited:
+
+```sh
+export LLVM_SYS_191_PREFIX='C:/llvm-19'
+export LOOM_CC="$LLVM_SYS_191_PREFIX/bin/clang-cl.exe"
+LOOM_BOOTSTRAP_INPUT=compiler.checked bash scripts/bootstrap.sh
+target/loom.exe test compiler/examples/scalar
+```
+
+The native Windows bridge builds stage 0 from this checked input, then Loom
+builds stages 1/2/3 and compares 2/3. The result is `target/loom.exe`; default
+program/test outputs use `.exe`, library objects `.obj`, and the runtime archive
+is `loom_runtime.lib`. Subsequent local edits use `bash scripts/bootstrap.sh --dev`.
+
+`emit-checked` runs normal type/proof checks and writes the private artifact to
+stdout without invoking LLVM. This is not a stable IR ABI, release artifact,
+or committed seed snapshot. Use only trusted input matching the source and
+native tool: CI transfers it between jobs in the same workflow after the macOS
+gate, not from an arbitrary other build. The active frontend remains Loom-only.
 
 ## Compiler latency
 
@@ -279,7 +317,8 @@ The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;
 transitively nonallocating functions need no root frames. `LOOM_GC_STRESS=1`
 collects before every allocation for focused testing. The LLVM tool links managed
-programs with `libloom_runtime.a` beside it, or at `LOOM_RUNTIME_LIBRARY`.
+programs with `libloom_runtime.a` (`loom_runtime.lib` on Windows) beside it, or at
+`LOOM_RUNTIME_LIBRARY`.
 No handles escape the file helpers; every recoverable branch closes the
 file explicitly. This is not general scoped cleanup or finalization.
 

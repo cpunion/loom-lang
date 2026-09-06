@@ -41,8 +41,8 @@ fn emit_checked(
     llvm_ir: Option<&Path>,
     optimization: OptimizationLevel,
 ) -> NativeResult<bool> {
-    if !cfg!(unix) {
-        return Err("native emission currently requires a Unix host".into());
+    if !cfg!(any(unix, all(windows, target_env = "msvc"))) {
+        return Err("native emission requires a Unix or Windows MSVC host".into());
     }
     let roots = if test_mode {
         program.tests.clone()
@@ -63,7 +63,11 @@ fn emit_checked(
             &TargetMachine::get_host_cpu_name().to_string(),
             &TargetMachine::get_host_cpu_features().to_string(),
             optimization,
-            RelocMode::PIC,
+            if cfg!(windows) {
+                RelocMode::Default
+            } else {
+                RelocMode::PIC
+            },
             CodeModel::Default,
         )
         .ok_or("LLVM could not create a native target machine")?;
@@ -1227,14 +1231,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .append_basic_block(self.function, "guard.fault");
         self.builder.build_conditional_branch(valid, good, bad)?;
         self.builder.position_at_end(bad);
-        // macOS/Linux C ABI. The host links libc; Loom needs no native support library.
+        // Fault-only programs use the host CRT, without the managed runtime.
         let i32_type = self.context.i32_type();
-        let size_type = self.size_type;
         let pointer = self.context.ptr_type(AddressSpace::default());
-        let write = self.module.get_function("write").unwrap_or_else(|| {
+        let (write_name, write_result, write_count) =
+            fault_write_abi(self.context, self.size_type, cfg!(windows));
+        let write = self.module.get_function(write_name).unwrap_or_else(|| {
             self.module.add_function(
-                "write",
-                size_type.fn_type(&[i32_type.into(), pointer.into(), size_type.into()], false),
+                write_name,
+                write_result.fn_type(
+                    &[i32_type.into(), pointer.into(), write_count.into()],
+                    false,
+                ),
                 None,
             )
         });
@@ -1254,7 +1262,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[
                 i32_type.const_int(2, false).into(),
                 bytes.as_pointer_value().into(),
-                size_type.const_int(text.len() as u64, false).into(),
+                write_count.const_int(text.len() as u64, false).into(),
             ],
             "",
         )?;
@@ -1263,6 +1271,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.build_unreachable()?;
         self.builder.position_at_end(good);
         Ok(())
+    }
+}
+
+fn fault_write_abi<'ctx>(
+    context: &'ctx Context,
+    size_type: IntType<'ctx>,
+    windows: bool,
+) -> (&'static str, IntType<'ctx>, IntType<'ctx>) {
+    if windows {
+        ("_write", context.i32_type(), context.i32_type())
+    } else {
+        ("write", size_type, size_type)
     }
 }
 
@@ -1362,6 +1382,17 @@ fn reachable_functions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fault_writes_follow_host_crt_integer_widths() {
+        let context = Context::create();
+        for (windows, name, width) in [(false, "write", 64), (true, "_write", 32)] {
+            let (symbol, result, count) = fault_write_abi(&context, context.i64_type(), windows);
+            assert_eq!(symbol, name);
+            assert_eq!(result.get_bit_width(), width);
+            assert_eq!(count.get_bit_width(), width);
+        }
+    }
 
     #[test]
     fn enum_layout_uses_largest_payload_and_rejects_unbound_types() {

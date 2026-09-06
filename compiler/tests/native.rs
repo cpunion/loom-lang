@@ -18,7 +18,7 @@ fn path(path: &Path) -> &str {
 fn native_cli_closure_and_source_library() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/scalar");
     let directory = tempfile::tempdir().unwrap();
-    let artifact = directory.path().join("app");
+    let artifact = common::executable(directory.path(), "app");
     let ir = directory.path().join("app.ll");
     success(&loom(&["check", path(&fixture)]));
     success(&loom(&[
@@ -54,7 +54,7 @@ fn native_cli_closure_and_source_library() {
 fn native_generic_data() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/data");
     let directory = tempfile::tempdir().unwrap();
-    let artifact = directory.path().join("data");
+    let artifact = common::executable(directory.path(), "data");
     let ir = directory.path().join("data.ll");
     success(&loom(&["check", path(&fixture)]));
     success(&loom(&[
@@ -118,9 +118,7 @@ fn source_process_run_preserves_arguments_and_nonzero_exit_codes() {
          discard write_text(concat(get(args, index), \"\\n\"))\nindex = index + 1\n}\n\
          exit_code(7)\n}",
     );
-    let artifact = child
-        .path()
-        .join(format!("child process{}", std::env::consts::EXE_SUFFIX));
+    let artifact = common::executable(child.path(), "child process");
     success(&loom(&[
         "build",
         path(child.path()),

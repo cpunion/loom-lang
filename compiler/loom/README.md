@@ -20,7 +20,9 @@ target/loom test compiler/std/text
 
 Stages 0 through 3 are [bootstrap generations](../../ROADMAP.md#n1--move-the-compiler-into-loom),
 not language versions or additional supported compilers. Stage 0 is an existing
-Loom compiler, recovered from frozen history only when needed. New language
+Loom compiler, recovered from frozen history on macOS when needed. The
+[Windows bootstrap](../README.md#windows-bootstrap) can instead compile a trusted
+same-checkout checked export into its initial native compiler. New language
 features do not require a parallel Rust implementation; only their use in the
 compiler's own source must wait until the selected bootstrap compiler supports
 them.
@@ -30,6 +32,9 @@ package. It defaults to `compiler/std` and `target/debug/loom-native` relative t
 the working directory; use `--std` and `--native-tool` elsewhere. `build` accepts
 `--output`; native commands also accept `--emit-ir`. Library builds produce an
 object, and production excludes test files and test declarations.
+The private `emit-checked` command performs normal source/type/proof checks but
+writes the checked artifact to stdout without invoking a native tool. It serves
+bootstrap transfer, not a stable interchange or cache format.
 
 `lex` and `parse` inspect one or more source files, reporting token/declaration
 counts or positioned diagnostics. For example:
@@ -42,9 +47,9 @@ LOOM_GC_STRESS=1 compiler/std/loom/proof/target/tests
 
 The bootstrap integration gate compares stage 2 and 3 binaries, selected
 diagnostics and executable results, then runs compiler and source `std` tests.
-Agreement is evidence, not a proof of compiler correctness. macOS is the current
-validation host; the source path and manifest helpers intentionally implement
-only the documented subset, not all platforms or general TOML.
+Agreement is evidence, not a proof of compiler correctness. macOS is the verified
+host; Windows native bootstrap and tests are wired into CI but await results.
+Manifest helpers still implement the documented subset, not general TOML.
 
 ## Public syntax libraries
 
@@ -101,6 +106,10 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
 Package identities follow directories. Root and `std` paths are canonicalized;
 imported directory symlink aliases that change package identity are rejected.
 Source-file symlinks remain allowed, with trust based on canonical file paths.
+`join_path` preserves native separators when appending a component to a canonical
+absolute path; `is_windows_path` classifies its spelling, not the running host.
+Drive, UNC, and Windows verbatim prefixes are preserved. Unix backslashes are
+not rewritten as separators.
 
 `candidates(program, file, test_only, path)` returns indices into that program's
 symbol table, respecting the supplied file's visibility and test context.

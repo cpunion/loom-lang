@@ -34,6 +34,51 @@ fn source_compiler(compiler: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn checked_export_needs_no_native_tool_and_retains_required_proofs() {
+    let temporary = tempfile::tempdir().unwrap();
+    let package = temporary.path().join("package");
+    fs::create_dir(&package).unwrap();
+    let source = package.join("main.loom");
+    fs::write(
+        &source,
+        "fn answer() Int ensures result == 42 { 42 }\nfn main() { assert answer() == 42 }",
+    )
+    .unwrap();
+    let export = || {
+        Command::new(common::compiler())
+            .arg("emit-checked")
+            .arg(&package)
+            .arg("--std")
+            .arg(common::root().join("compiler/std"))
+            .args(["--native-tool", "missing-native-tool"])
+            .output()
+            .unwrap()
+    };
+    let output = export();
+    success(&output);
+    assert!(output.stdout.starts_with(b"loom-checked-1\n"));
+    assert!(output.stderr.is_empty());
+    let checked = temporary.path().join("program.checked");
+    fs::write(&checked, output.stdout).unwrap();
+    let executable = common::executable(temporary.path(), "exported");
+    success(
+        &Command::new(env!("CARGO_BIN_EXE_loom-native"))
+            .arg(&checked)
+            .arg("--output")
+            .arg(&executable)
+            .output()
+            .unwrap(),
+    );
+    success(&Command::new(executable).output().unwrap());
+
+    fs::write(&source, "fn answer() Int ensures result == 42 { 0 }").unwrap();
+    let rejected = export();
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(rejected.stdout.is_empty());
+    assert!(!rejected.stderr.is_empty());
+}
+
+#[test]
 fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
     let compiler = Path::new(env!("CARGO_MANIFEST_DIR"));
     let frontend = compiler.join("loom");
@@ -62,7 +107,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
     }
 
     // scripts/bootstrap.sh already builds and compares stage 2/3 once.
-    let stage2 = common::root().join("target/loom-stage2");
+    let stage2 = common::executable(&common::root().join("target"), "loom-stage2");
     let stage3 = &artifact;
     for package in [
         "std/loom/source",
@@ -105,7 +150,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
     // discovery. These examples deliberately print their results.
     for example in ["syntax", "semantic"] {
         let package = compiler.join("examples").join(example);
-        let binary = temp.path().join(example);
+        let binary = common::executable(temp.path(), example);
         let ir = temp.path().join(format!("{example}.ll"));
         success(&source_compiler(
             stage3,
@@ -200,7 +245,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
 fn ordinary_project_tool_selects_packages_and_tests_without_a_compiler_child() {
     let temp = tempfile::tempdir().unwrap();
     let root = common::root();
-    let tool = temp.path().join("project");
+    let tool = common::executable(temp.path(), "project");
     let ir = temp.path().join("project.ll");
     success(&loom(&[
         "build",
