@@ -58,7 +58,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
     }
     // Compile-time call targets never enter the runtime reachability queue.
     let env = Environment { source = context.env.source types = context.env.types signatures = context.env.signatures
-        pending = new[Instance]() stage_depth = context.env.stage_depth + 1 }
+        pending = new[Instance]() stage_depth = context.env.stage_depth + 1 computations = context.env.computations }
     let locals = new[Local]()
     var index = 0
     while index < length(context.locals) { push(locals, get(context.locals, index))
@@ -101,6 +101,9 @@ fn computed(context Context, node Node, input Node, expected Int) Result[Value, 
     let stage = staging(context, node)?
     let value = expr(stage, input, expected)?
     discard isolated(context, node, value, length(context.locals))?
+    // Type/capture validation always runs before reuse, including shadowed names.
+    let saved = computation(context, input, expected, value.ty)
+    if saved >= 0 { return Result.Ok(get(context.env.computations, saved).value) }
     let functions = new[Function]()
     var index = 0
     while index < length(stage.env.pending) {
@@ -110,39 +113,15 @@ fn computed(context Context, node Node, input Node, expected Int) Result[Value, 
     }
     let program = std.loom.typed.Program { types = stage.env.types functions = functions entry = -1 tests = new[Int]() exports = new[Int]() }
     match std.loom.eval.evaluate(program, value, length(stage.locals)) {
-        Result.Ok(value) => Result.Ok(value)
+        Result.Ok(value) => {
+            push(context.env.computations, Computation { owner = context.signature.symbol arguments = context.arguments
+                node = input expected = expected ty = value.ty value = value })
+            Result.Ok(value)
+        }
         Result.Err(failed) => Result.Err(error(context, node, failed.message))
     }
 }
 
-fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
-    let shape = get(context.env.types, value.ty)
-    if shape.kind == TypeKind.Unit { return Result.Ok(expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true)) }
-    if shape.kind == TypeKind.Int || shape.kind == TypeKind.Refined {
-        let integer = expression(ExprKind.Integer, 1, node, to_text(value.number), -1, new[Expr](), true)
-        return Result.Ok(if shape.kind == TypeKind.Int { integer } else {
-            expression(ExprKind.Coerce, value.ty, node, "", -1, expressions(integer), true)
-        })
-    }
-    if shape.kind == TypeKind.Bool {
-        return Result.Ok(expression(ExprKind.Bool, 2, node, if value.number == 0 { "false" } else { "true" }, -1, new[Expr](), true))
-    }
-    if shape.kind == TypeKind.Text { return Result.Ok(expression(ExprKind.Text, 3, node, value.text, -1, new[Expr](), true)) }
-    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum {
-        let fields = new[Expr]()
-        var index = 0
-        while index < length(value.items) {
-            let field = materialize(context, node, get(value.items, index))?
-            push(fields, if shape.kind == TypeKind.Record {
-                expression(ExprKind.Field, field.ty, node, "", index, expressions(field), true)
-            } else { field })
-            index = index + 1
-        }
-        return Result.Ok(expression(if shape.kind == TypeKind.Record { ExprKind.Record } else { ExprKind.Variant },
-            value.ty, node, "", if shape.kind == TypeKind.Record { -1 } else { value.number }, fields, true))
-    }
-    Result.Err(error(context, node, "comptime results cannot yet contain shared List or Bytes storage"))
-}
 fn type_operand(context Context, node Node) Bool {
     node.kind == NodeKind.Name && lookup(context, slice(node.value, 0, first_dot(node.value))) < 0
 }

@@ -29,3 +29,16 @@ pub fn has(node Node, kind NodeKind) Bool {
     }
     false
 }
+
+// Exact structural equality includes revision-relative spans, not durable IDs.
+pub fn same(left Node, right Node) Bool {
+    if left.kind != right.kind || left.value != right.value ||
+        left.span.start != right.span.start || left.span.end != right.span.end ||
+        length(left.children) != length(right.children) { return false }
+    var index = 0
+    while index < length(left.children) {
+        if !same(get(left.children, index), get(right.children, index)) { return false }
+        index = index + 1
+    }
+    true
+}

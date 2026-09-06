@@ -39,6 +39,7 @@ fn only_integer[T](value T) Int {
     comptime if T == Int { value } else { unavailable_for_other_types() }
 }
 fn main() {
+    shared_results()
     assert comptime { fibonacci(10) } == 55
     assert comptime { triangular(100) } == 5050
     let positive Positive = Positive(comptime { triangular(4) })

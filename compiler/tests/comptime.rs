@@ -8,6 +8,12 @@ fn compile_time_work_runs_natively_and_does_not_enter_runtime_reachability() {
     success(&loom(&["check", example.to_str().unwrap()]));
     success(&loom(&["run", example.to_str().unwrap()]));
     success(&loom(&["test", example.to_str().unwrap()]));
+    success(
+        &Command::new(example.join("target/tests"))
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
 
     let source = tempfile::tempdir().unwrap();
     fs::write(source.path().join("main.loom"),
@@ -62,7 +68,6 @@ fn compile_time_faults_captures_and_unproved_contracts_fail_closed() {
         "fn spin() Int { while true {} 0 }\nfn main() { discard comptime { spin() } }",
         "fn recurse() Int { recurse() }\nfn main() { discard comptime { recurse() } }",
         "fn cycle() Int { comptime { cycle() } }\nfn main() { discard cycle() }",
-        "import std.list.new\nfn main() { discard comptime { new[Int]() } }",
     ] {
         fs::write(source.path().join("main.loom"), text).unwrap();
         let output = loom(&["check", source.path().to_str().unwrap()]);

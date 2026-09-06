@@ -54,7 +54,7 @@ The compiler and ordinary Loom programs use the same source implementation:
 | --- | --- |
 | `std.loom.source` | `Span`, `Diagnostic`, `Position`, `position`, `render` |
 | `std.loom.lexer` | `lex`, `Token`, `Kind` |
-| `std.loom.ast` | `Node`, `NodeKind`, `has` (direct-child lookup) |
+| `std.loom.ast` | `Node`, `NodeKind`, `has` (direct-child lookup), `same` (exact structural equality) |
 | `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]` |
 
 Import, for example, `std.loom.parser.parse` and `std.loom.ast.NodeKind` in
@@ -74,6 +74,8 @@ a valid UTF-8 boundary and returns 1-based lines and Unicode scalar columns,
 not terminal-cell columns. Positions are revision-relative, not persistent
 definition identities. The parser implements the current syntax subset;
 successful parsing does not establish type or contract validity.
+`ast.same` includes spans as well as node values and children; it is not an
+identity-aware or formatting-preserving comparison.
 
 This is an evolving public API, not a stable node schema or lossless editor
 tree: comments and formatting trivia are discarded, and string token values are
