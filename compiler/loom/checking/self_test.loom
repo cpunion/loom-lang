@@ -1,7 +1,7 @@
-import frontend.loading.load
-import frontend.loading.Loaded
-import frontend.binding.bind
-import frontend.binding.Failure
+import std.loom.project.load
+import std.loom.project.Project
+import std.loom.binding.bind
+import std.loom.binding.Failure
 import std.loom.source.render
 import std.io.write_error
 import std.list.new
@@ -11,7 +11,7 @@ import std.list.length
 import std.text.concat
 import std.result.Result
 
-fn show_failure(loaded Loaded, failure Failure) {
+fn show_failure(loaded Project, failure Failure) {
     let source = get(loaded.files, failure.source)
     discard write_error(concat(render(source.path, source.text, failure.diagnostic), "\n"))
 }

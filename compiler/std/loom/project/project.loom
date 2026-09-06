@@ -1,10 +1,7 @@
-import frontend.binding.SourceFile
-import frontend.binding.has
-import frontend.binding.package
-import frontend.binding.qualify
-import frontend.manifest.Module
-import frontend.manifest.segment
-import frontend.manifest.parse
+import std.loom.ast.has
+import std.loom.manifest.Module
+import std.loom.manifest.segment
+import std.loom.manifest.parse
 import std.loom.parser.parse
 import std.loom.source.render
 import std.loom.ast.Node
@@ -16,7 +13,17 @@ import std.fs.FileKind
 import std.file.read_text
 import std.result.Result
 
-pub record Loaded { files List[SourceFile] root Text }
+pub record SourceFile {
+    package Text
+    path Text
+    text Text
+    tree Node
+    test_only Bool
+    trusted_std Bool
+}
+// A deterministic selected-package/import closure, not the entire repository.
+// File indices belong to this result and may change after a new load.
+pub record Project { files List[SourceFile] root Text }
 record ModuleRoot { name Text base Text }
 record Loader {
     files List[SourceFile]
@@ -49,7 +56,7 @@ fn module_root(directory Text) Result[ModuleRoot, Text] {
     while true {
         let path = join(current, "loom.toml")
         if is_file(path) {
-            let module = match frontend.manifest.parse(read(path)?) {
+            let module = match std.loom.manifest.parse(read(path)?) {
                 Result.Ok(value) => value
                 Result.Err(error) => { return Result.Err(concat(path, concat(": ", error))) }
             }
@@ -95,6 +102,11 @@ fn import_directory(loader Loader, package Text) Result[Text, Text] {
         }
         index = index + 1
     }
+    // Package identity comes from directories; aliases must not rename a package
+    // or bypass the nested-module checks above. Root paths are already canonical.
+    if canonical(directory)? != directory {
+        return Result.Err(concat("import directory changes package identity through a symlink: ", package))
+    }
     Result.Ok(directory)
 }
 fn production(tree Node, tests Bool) Node {
@@ -136,7 +148,7 @@ fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Res
                 let node = get(tree.children, item)
                 if node.kind == NodeKind.Refined && package != "std.result" { include(imports, "std.result") }
                 if node.kind == NodeKind.Import {
-                    let target = frontend.binding.package(node.value)
+                    let target = std.loom.project.package(node.value)
                     if target == "" {
                         return Result.Err(concat(path, ": imports name a module/package and declaration"))
                     }
@@ -166,7 +178,7 @@ fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Res
 
 // Only the selected root package contributes tests. Imports are directory
 // packages; compiler-owned intrinsic trust comes from each canonical file path.
-pub fn load(path Text, std_root Text, tests Bool) Result[Loaded, Text] {
+pub fn load(path Text, std_root Text, tests Bool) Result[Project, Text] {
     let directory = canonical(path)?
     let is_directory = match kind(directory) {
         Result.Ok(value) => value == FileKind.Directory
@@ -185,5 +197,5 @@ pub fn load(path Text, std_root Text, tests Bool) Result[Loaded, Text] {
         active = new[Text]() complete = new[Text]()
     }
     discard visit(loader, root, directory, tests, 0)?
-    Result.Ok(Loaded { files = files root = root })
+    Result.Ok(Project { files = files root = root })
 }

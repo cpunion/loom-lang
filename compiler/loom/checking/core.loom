@@ -1,10 +1,10 @@
-import frontend.binding.Program
-import frontend.binding.Failure
-import frontend.binding.Symbol
-import frontend.binding.candidates
-import frontend.binding.has
-import frontend.binding.name
-import frontend.binding.package
+import std.loom.binding.Program
+import std.loom.binding.Failure
+import std.loom.binding.Symbol
+import std.loom.binding.candidates
+import std.loom.ast.has
+import std.loom.project.name
+import std.loom.project.package
 import std.loom.source.Diagnostic
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
@@ -28,7 +28,7 @@ import std.result.Result
 record Signature { symbol Int parameters Int params List[Int] result Int }
 record Instance { signature Int arguments List[Int] }
 record Environment {
-    source frontend.binding.Program
+    source std.loom.binding.Program
     types List[Type]
     signatures List[Signature]
     pending List[Instance]
@@ -139,7 +139,7 @@ fn bind_local(context Context, node Node, value Text, ty Int, mutable Bool, boun
     Result.Ok(context_at(context, next))
 }
 
-pub fn check(source frontend.binding.Program) Result[frontend.typed.Program, Failure] {
+pub fn check(source std.loom.binding.Program) Result[frontend.typed.Program, Failure] {
     let env = Environment { source = source types = new[Type]() signatures = new[Signature]() pending = new[Instance]() }
     initialize_types(env)
     var index = 0

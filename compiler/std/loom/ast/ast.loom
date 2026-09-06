@@ -1,4 +1,6 @@
 import std.loom.source.Span
+import std.list.get
+import std.list.length
 
 // The source tree is compiler data, not a runtime representation for user values.
 // Children preserve source order. Parameter/argument groups remain explicit;
@@ -16,4 +18,14 @@ pub record Node {
     value Text
     span Span
     children List[Node]
+}
+
+// Checks direct children, for example a declaration's Public or Test marker.
+pub fn has(node Node, kind NodeKind) Bool {
+    var index = 0
+    while index < length(node.children) {
+        if get(node.children, index).kind == kind { return true }
+        index = index + 1
+    }
+    false
 }

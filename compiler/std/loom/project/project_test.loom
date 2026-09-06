@@ -1,4 +1,7 @@
 test fn package_path_boundaries() {
+    assert name("std.loom.parser.parse") == "parse" && package("std.loom.parser.parse") == "std.loom.parser"
+    assert name("parse") == "parse" && package("parse") == ""
+    assert qualify("std.loom.parser", "parse") == "std.loom.parser.parse" && qualify("", "parse") == "parse"
     assert parent("/a/b") == "/a"
     assert parent("/a") == "/" && parent("/") == "/"
     assert join("/", "a") == "/a"

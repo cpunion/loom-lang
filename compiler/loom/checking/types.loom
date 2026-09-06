@@ -1,4 +1,4 @@
-import frontend.binding.candidates
+import std.loom.binding.candidates
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import frontend.typed.Type

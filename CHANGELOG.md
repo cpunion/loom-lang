@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Share manifest parsing, project loading, and declaration binding through
+  `std.loom` libraries. An ordinary project inspector reports symbols, source
+  positions, and visible name candidates without invoking the compiler;
+  typed queries and persistent identities remain separate work.
 - Index package name lookup once, optimize the runtime without removing dev
   checks, and add single-stage O1 compiler rebuilding. Measure compiler latency,
   memory, and native phases with a small macOS benchmark harness; retain full

@@ -1,0 +1,24 @@
+import std.loom.project.SourceFile
+import std.loom.parser.parse
+import std.list.new
+import std.list.push
+
+test fn bind_supplied_source_without_reading_a_project() {
+    let text = "pub fn answer() Int { 42 }\nfn answer(value Int) Int { value }\ntest fn inline() {}"
+    match parse(text) {
+        Result.Err(_) => { assert false }
+        Result.Ok(tree) => {
+            let files = new[SourceFile]()
+            push(files, SourceFile { package = "app" path = "memory.loom" text = text
+                tree = tree test_only = false trusted_std = false })
+            match analyze(Project { files = files root = "app" }, false) {
+                Result.Err(_) => { assert false }
+                Result.Ok(program) => {
+                    assert length(program.symbols) == 2
+                    assert length(candidates(program, 0, false, "answer")) == 2
+                    assert describe(program) == "package app\nselected files 1\npub fn app.answer @ memory.loom:1:1 (name candidates 2)\nfn app.answer @ memory.loom:2:1 (name candidates 2)\n"
+                }
+            }
+        }
+    }
+}

@@ -41,8 +41,14 @@ The compiler and independent user packages now share the public
 [`std.loom.source`, `lexer`, `ast`, and `parser` libraries](../../compiler/loom/README.md#public-syntax-libraries).
 The standalone syntax example passes native check/build/test/run and inspects
 in-memory declarations, byte spans, and diagnostics without compiler imports.
-This is an evolving syntax API, not a stable AST schema or a lossless editor
-tree. Public project/semantic APIs and typed metaprogramming remain in the
+The opt-in [manifest, project, and binding libraries](../../compiler/loom/README.md#public-project-and-binding-libraries)
+also share the compiler's implementation. They load selected import closures,
+validate declarations/imports, and expose symbols and visible name candidates.
+An ordinary project inspector accepts a package path and `std` directory,
+reports root declarations and source locations, and handles load/binding errors
+without a compiler subprocess. Binding is not type checking or final overload
+selection; its indices belong to that program only. Stable schemas, lossless
+editing, typed queries, and metaprogramming remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 
 Normal compiler iteration can use a [single development rebuild](../../compiler/README.md#build-and-try-it);

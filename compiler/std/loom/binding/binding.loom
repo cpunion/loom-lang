@@ -1,28 +1,23 @@
 import std.loom.source.Diagnostic
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
+import std.loom.ast.has
+import std.loom.project.SourceFile
+import std.loom.project.name
+import std.loom.project.package
+import std.loom.project.qualify
 import std.list.new
 import std.list.push
 import std.list.get
 import std.list.length
 import std.result.Result
-import std.text.byte
-import std.text.length
-import std.text.slice
-import std.text.concat
 
-pub record SourceFile {
-    package Text
-    path Text
-    text Text
-    tree Node
-    test_only Bool
-    trusted_std Bool
-}
 pub record Failure { source Int diagnostic Diagnostic }
 pub record Symbol { file Int node Node name Text public Bool test_only Bool }
 record Lookup { path Text symbols List[Int] }
 record Scope { package Text production List[Lookup] testing List[Lookup] }
+// Source-file and symbol indices are local to this binding result. Rebind after
+// editing its input files or trees; the cached scopes are not an editing model.
 pub record Program {
     files List[SourceFile]
     symbols List[Symbol]
@@ -32,33 +27,6 @@ pub record Program {
     file_scopes List[Int]
 }
 
-pub fn has(node Node, kind NodeKind) Bool {
-    var index = 0
-    while index < length(node.children) {
-        if get(node.children, index).kind == kind { return true }
-        index = index + 1
-    }
-    false
-}
-fn last_dot(path Text) Int {
-    var index = length(path)
-    while index > 0 {
-        index = index - 1
-        if byte(path, index) == 46 { return index }
-    }
-    -1
-}
-pub fn name(path Text) Text {
-    let index = last_dot(path)
-    if index < 0 { path } else { slice(path, index + 1, length(path)) }
-}
-pub fn package(path Text) Text {
-    let index = last_dot(path)
-    if index < 0 { "" } else { slice(path, 0, index) }
-}
-pub fn qualify(package Text, name Text) Text {
-    if package == "" { name } else { concat(package, concat(".", name)) }
-}
 fn failure(file Int, node Node, message Text) Failure {
     Failure { source = file diagnostic = Diagnostic { span = node.span message = message } }
 }
@@ -219,7 +187,7 @@ fn imports(program Program) Result[Bool, Failure] {
             while index < length(source.tree.children) {
                 let node = get(source.tree.children, index)
                 if node.kind == NodeKind.Import {
-                    if last_dot(node.value) < 0 {
+                    if package(node.value) == "" {
                         return Result.Err(failure(file, node, "imports name a module/package and declaration"))
                     }
                     if !accessible_import(program, file, node.value) {
@@ -234,6 +202,7 @@ fn imports(program Program) Result[Bool, Failure] {
     Result.Ok(true)
 }
 
+// Tests extend only the selected root package; production scopes stay separate.
 pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failure] {
     let symbols = new[Symbol]()
     let paths = new[Text]()
