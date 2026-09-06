@@ -1,0 +1,6 @@
+schema = 2
+language = "0.4"
+
+[module]
+name = "scalar"
+version = "0.1.0"

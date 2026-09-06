@@ -33,10 +33,9 @@ records when their analysis remains useful.
 
 ## Releases and compatibility
 
-Only the maintainer may publish an official Loom release. A release must satisfy
-the repository's documented release gates and the process in the
-[release guide](docs/contributing/releases.md). Versioning policy is documented
-separately in [Versioning](docs/project/versioning.md).
+Only the maintainer may publish an official Loom release. Loom has not released
+a version; no old prototype compatibility is promised. Release and platform
+claims require evidence from the current compiler and its tests.
 
 ## Changes to governance
 

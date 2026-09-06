@@ -1,0 +1,7 @@
+test fn generic_enum() {
+    let value = Outcome.Value(7)
+    assert match value {
+        Outcome.Empty => false
+        Outcome.Value(n) => n == 7
+    }
+}

@@ -1,0 +1,11 @@
+fn value_or_error(value Result[Int, Text]) Int {
+    match value {
+        Ok(number) => number
+        Err(_) => -1
+    }
+}
+
+test fn result_variants() {
+    assert value_or_error(Result.Ok[Int, Text](7)) == 7
+    assert value_or_error(Result.Err[Int, Text]("failed")) == -1
+}

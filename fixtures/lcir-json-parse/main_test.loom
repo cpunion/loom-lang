@@ -1,3 +1,0 @@
-import std.json.parse_json
-
-test fn source_json_parse() Result[Unit, Problem] { verify() }

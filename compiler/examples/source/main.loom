@@ -1,0 +1,27 @@
+import std.file.read_text
+import std.list.length
+import std.result.Result
+import std.io.write_text
+
+// Run from the repository root to scan this example's own source.
+fn main() {
+    assert read_chunk_size() == 8192
+    match read_text("compiler/examples/source/scan.loom") {
+        Result.Ok(source) => {
+            let tokens = scan(source)
+            assert std.list.length(tokens) > 100
+            assert match positive(std.list.length(tokens)) {
+                Result.Ok(count) => count > 0
+                Result.Err(_) => false
+            }
+        }
+        Result.Err(error) => {
+            discard error
+            assert false
+        }
+    }
+    assert match write_text("source scan passed\n") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}

@@ -1,0 +1,16 @@
+intrinsic fn text_len(value Text) Int
+intrinsic fn text_byte(value Text, index Int) Int
+intrinsic fn text_concat(a Text, b Text) Text
+
+// Text is immutable UTF-8. Length and indexing count bytes.
+pub fn length(value Text) Int {
+    text_len(value)
+}
+
+pub fn byte(value Text, index Int) Int {
+    text_byte(value, index)
+}
+
+pub fn concat(a Text, b Text) Text {
+    text_concat(a, b)
+}

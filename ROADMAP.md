@@ -25,8 +25,10 @@ structure or maintain an interpreter/native feature matrix as a goal. A bounded
 compile-time evaluator uses the same checked rules; it is not a second public
 runtime backend. Remove replaced paths instead of adding compatibility adapters.
 
-No replacement compiler has been implemented by accepting this roadmap.
-Milestones below are exit criteria, not claims of completion.
+The [native seed](compiler/README.md) now passes the N0 vertical-slice gate on
+macOS: real check/build/test/run, typed data, shared lists, source file I/O,
+constrained construction, and bounded required proofs. N1 is next; later
+milestones below remain exit criteria, not completion claims.
 
 ## N0 — A native vertical slice
 
@@ -115,6 +117,6 @@ collection workloads. Investigate generated code before introducing another
 optimization layer; no performance target permits weaker contracts or cleanup.
 
 Alternate backends, a stable FFI/plugin ABI, and cross-cutting/AOP composition
-are separate future work. They do not block self-hosting. During replacement,
-the existing compiler remains usable as an implementation reference, not a
-permanent compatibility target.
+are separate future work. They do not block self-hosting. The superseded
+compiler remains in Git history as reference material, not in the active tree
+as a compatibility target.

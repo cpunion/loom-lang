@@ -1,0 +1,12 @@
+pub fn minimum(a Int, b Int) Int {
+    if a < b { a } else { b }
+}
+
+pub fn maximum(a Int, b Int) Int {
+    if a > b { a } else { b }
+}
+
+test fn bounds() {
+    assert minimum(-3, 5) == -3
+    assert maximum(-3, 5) == 5
+}
