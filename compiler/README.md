@@ -266,6 +266,12 @@ timings; local variables remain conservatively rooted for the function.
   not visited, while changes to unread elements are observed. Map/filter return
   a new outer List and retain element sharing. Fold accepts a distinct accumulator
   type and returns its initial value for an empty List.
+- Source `std.option` and `std.result` provide `map`, `and_then`, and
+  `unwrap_or_else`; Result also provides `map_err`. The selected branch invokes
+  its callback once, while the other branch preserves its payload without
+  calling it. Arguments, including callback-producing expressions, still follow
+  ordinary eager evaluation. These functions preserve payload sharing and work
+  at compile time with pure callbacks, without new intrinsics.
 - Source `std.text`, `std.list`, `std.result`, `std.file`, `std.fs`, and `std.io`. Private
   intrinsic signatures are checked against the runtime ABI and accepted only
   from the configured standard-library source root. Reading loops, UTF-8

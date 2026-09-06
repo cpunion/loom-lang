@@ -47,8 +47,8 @@ LOOM_GC_STRESS=1 compiler/std/loom/proof/target/tests
 
 The bootstrap integration gate compares stage 2 and 3 binaries, selected
 diagnostics and executable results, then runs compiler and source `std` tests.
-Agreement is evidence, not a proof of compiler correctness. macOS and Linux are
-verified hosts; Windows native bootstrap and tests are wired into CI but await results.
+Agreement is evidence, not a proof of compiler correctness. Native bootstrap and
+tests pass on macOS, Linux and Windows through the same LLVM 22 bridge.
 Manifest helpers still implement the documented subset, not general TOML.
 
 ## Public syntax libraries
