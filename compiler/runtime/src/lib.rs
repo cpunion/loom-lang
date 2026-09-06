@@ -2,8 +2,9 @@
 //! Generated code roots every live managed slot before an allocating call.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::ffi::{CStr, c_char};
 use std::ptr::{self, NonNull};
 
 type Trace = unsafe extern "C" fn(*mut u8);
@@ -58,6 +59,7 @@ impl Drop for Heap {
 
 thread_local! {
     static HEAP: RefCell<Heap> = RefCell::new(Heap::default());
+    static PROCESS_ARGS: Cell<(i32, *const *const c_char)> = const { Cell::new((0, ptr::null())) };
 }
 
 fn fault(message: &str) -> ! {
@@ -256,6 +258,74 @@ unsafe extern "C" fn loom_rt_text_concat(left: *const u8, right: *const u8) -> *
 unsafe extern "C" fn loom_rt_text_equal(left: *const u8, right: *const u8) -> i32 {
     // SAFETY: Both pointers denote live Text objects or static literals.
     i32::from(unsafe { text_bytes(left) == text_bytes(right) })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_text_slice(text: *const u8, start: i64, end: i64) -> *mut u8 {
+    // SAFETY: Text is valid UTF-8 and its caller roots it across the copy.
+    let text = unsafe { std::str::from_utf8_unchecked(text_bytes(text)) };
+    let range = usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .and_then(|(start, end)| text.get(start..end))
+        .unwrap_or_else(|| fault("invalid text slice range or UTF-8 boundary"));
+    // SAFETY: The validated range remains live through the rooted source Text.
+    unsafe { loom_rt_text_new(range.as_ptr(), range.len()) }
+}
+
+fn unicode_scalar(value: i64) -> Option<char> {
+    u32::try_from(value).ok().and_then(char::from_u32)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn loom_rt_unicode_alphabetic(value: i64) -> i32 {
+    i32::from(unicode_scalar(value).is_some_and(char::is_alphabetic))
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn loom_rt_unicode_alphanumeric(value: i64) -> i32 {
+    i32::from(unicode_scalar(value).is_some_and(char::is_alphanumeric))
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn loom_rt_unicode_whitespace(value: i64) -> i32 {
+    i32::from(unicode_scalar(value).is_some_and(char::is_whitespace))
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_process_init(argc: i32, argv: *const *const c_char) {
+    if argc < 0 || (argc != 0 && argv.is_null()) {
+        fault("invalid process arguments");
+    }
+    // The generated C entry point keeps argv and its strings live until exit.
+    // Retaining this descriptor neither allocates nor touches the managed heap.
+    PROCESS_ARGS.set((argc, argv));
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn loom_rt_process_arg_count() -> i64 {
+    i64::from(PROCESS_ARGS.get().0)
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_process_arg_text(index: i64) -> *mut u8 {
+    let (count, arguments) = PROCESS_ARGS.get();
+    let index = usize::try_from(index)
+        .ok()
+        .filter(|index| *index < count as usize)
+        .unwrap_or_else(|| fault("process argument index out of bounds"));
+    // SAFETY: process_init receives argc readable, NUL-terminated C arguments
+    // from main. Their storage is independent of GC and lives until exit.
+    unsafe {
+        let bytes = CStr::from_ptr(*arguments.add(index)).to_bytes();
+        loom_rt_text_new(bytes.as_ptr(), bytes.len())
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn loom_rt_process_exit(code: i64) -> ! {
+    let code = u8::try_from(code).unwrap_or_else(|_| fault("exit code out of range"));
+    std::process::exit(i32::from(code))
 }
 
 #[repr(C)]
@@ -595,6 +665,64 @@ mod tests {
             loom_rt_roots_leave(copied_root);
         }
         loom_rt_roots_leave(checkpoint);
+        loom_rt_collect();
+        assert_eq!(live(), 0);
+    }
+
+    #[test]
+    fn text_slices_copy_utf8_ranges_and_unicode_queries_validate_scalars() {
+        let mut source = text("A界🙂Z");
+        let checkpoint = root(&mut source);
+        HEAP.with(|heap| heap.borrow_mut().threshold = 0);
+        // SAFETY: source and slice stay rooted across all copying allocations.
+        unsafe {
+            let mut slice = loom_rt_text_slice(source, 1, 8);
+            let slice_root = root(&mut slice);
+            assert_eq!(text_bytes(slice), "界🙂".as_bytes());
+            assert_ne!(slice, source);
+            HEAP.with(|heap| heap.borrow_mut().threshold = 0);
+            assert_eq!(text_bytes(loom_rt_text_slice(slice, 3, 7)), "🙂".as_bytes());
+            assert_eq!(text_bytes(loom_rt_text_slice(source, 4, 4)), b"");
+            loom_rt_roots_leave(slice_root);
+        }
+        assert_eq!(loom_rt_unicode_alphabetic(i64::from('界' as u32)), 1);
+        assert_eq!(loom_rt_unicode_alphanumeric(i64::from('٣' as u32)), 1);
+        assert_eq!(loom_rt_unicode_whitespace(0x2003), 1);
+        assert_eq!(loom_rt_unicode_alphabetic(i64::from(b'3')), 0);
+        for invalid in [-1, 0xd800, 0x110000, i64::MAX] {
+            assert_eq!(loom_rt_unicode_alphabetic(invalid), 0);
+            assert_eq!(loom_rt_unicode_alphanumeric(invalid), 0);
+            assert_eq!(loom_rt_unicode_whitespace(invalid), 0);
+        }
+        loom_rt_roots_leave(checkpoint);
+        loom_rt_collect();
+        assert_eq!(live(), 0);
+    }
+
+    #[test]
+    fn process_arguments_are_copied_from_live_argv() {
+        let previous = PROCESS_ARGS.get();
+        let owned = [
+            std::ffi::CString::new("loom").unwrap(),
+            std::ffi::CString::new("hé.loom").unwrap(),
+        ];
+        let arguments = owned.each_ref().map(|argument| argument.as_ptr());
+        // SAFETY: argv and both CStrings remain alive through all argument reads.
+        unsafe { loom_rt_process_init(arguments.len() as i32, arguments.as_ptr()) };
+        assert_eq!(loom_rt_process_arg_count(), 2);
+        // SAFETY: Both requested indexes are within the live argv descriptor.
+        unsafe {
+            let mut executable = loom_rt_process_arg_text(0);
+            let checkpoint = root(&mut executable);
+            HEAP.with(|heap| heap.borrow_mut().threshold = 0);
+            let argument = loom_rt_process_arg_text(1);
+            assert_eq!(text_bytes(argument), "hé.loom".as_bytes());
+            assert_eq!(text_bytes(executable), b"loom");
+            loom_rt_roots_leave(checkpoint);
+            loom_rt_process_init(0, ptr::null());
+        }
+        assert_eq!(loom_rt_process_arg_count(), 0);
+        PROCESS_ARGS.set(previous);
         loom_rt_collect();
         assert_eq!(live(), 0);
     }

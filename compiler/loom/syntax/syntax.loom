@@ -1,0 +1,19 @@
+import frontend.source.Span
+
+// The source tree is compiler data, not a runtime representation for user values.
+// Children preserve source order. Parameter/argument groups remain explicit;
+// absent return annotations, contracts and else branches have no sentinel node.
+pub enum NodeKind {
+    File Import Record Enum Refined Function Public Test Intrinsic
+    TypeParameters Parameters Parameter Type TypeArguments Arguments ReturnType
+    Field Variant Requires Ensures Block Let Var Assign Return Assert Discard While
+    Integer Text Bool Name Call Construct Unary Binary Select Try
+    Match Arm Pattern Bindings Wildcard If
+}
+
+pub record Node {
+    kind NodeKind
+    value Text
+    span Span
+    children List[Node]
+}

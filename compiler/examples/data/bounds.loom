@@ -4,12 +4,12 @@ import std.result.ConstraintError
 type Positive = Int where self > 0
 
 // Constants construct the constrained value directly, then widen without a check.
-fn read_chunk_size() Int { Positive(8192) }
+fn fixed_size() Int { Positive(8192) }
 
 fn positive(value Int) Result[Positive, ConstraintError] { Positive(value) }
 
 test fn constrained_boundary() {
-    assert read_chunk_size() == 8192
+    assert fixed_size() == 8192
     assert match positive(3) {
         Result.Ok(value) => value == 3
         Result.Err(_) => false

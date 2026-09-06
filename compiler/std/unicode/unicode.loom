@@ -1,0 +1,11 @@
+intrinsic fn unicode_alphabetic(value Int) Bool
+intrinsic fn unicode_alphanumeric(value Int) Bool
+intrinsic fn unicode_whitespace(value Int) Bool
+
+// Character properties use the bootstrap host's Unicode tables.
+// Identifier and whitespace policy belongs to the source-language frontend.
+pub fn is_alphabetic(value Int) Bool { unicode_alphabetic(value) }
+
+pub fn is_alphanumeric(value Int) Bool { unicode_alphanumeric(value) }
+
+pub fn is_whitespace(value Int) Bool { unicode_whitespace(value) }

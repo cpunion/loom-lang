@@ -36,10 +36,11 @@ body:
       required: true
 
   - type: input
-    id: loom_version
+    id: loom_commit
     attributes:
-      label: Loom version or commit
-      placeholder: loom 0.1.0 or a full commit SHA
+      label: Loom commit
+      description: Loom has not published a release; identify the development revision.
+      placeholder: Full commit SHA
     validations:
       required: true
 
@@ -51,18 +52,6 @@ body:
     validations:
       required: true
 
-  - type: dropdown
-    id: backend
-    attributes:
-      label: Backend
-      options:
-        - LLVM native
-        - Interpreter
-        - Both
-        - Frontend only
-    validations:
-      required: true
-
   - type: checkboxes
     id: checks
     attributes:
@@ -70,4 +59,3 @@ body:
       options:
         - label: I searched existing issues and removed all secrets and private data.
           required: true
-

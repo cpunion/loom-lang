@@ -27,7 +27,8 @@ runtime backend. Remove replaced paths instead of adding compatibility adapters.
 
 The [native seed](compiler/README.md) now passes the N0 vertical-slice gate on
 macOS: real check/build/test/run, typed data, shared lists, source file I/O,
-constrained construction, and bounded required proofs. N1 is next; later
+constrained construction, and bounded required proofs. N1 has started with the
+[Loom-written frontend](compiler/loom/README.md); later
 milestones below remain exit criteria, not completion claims.
 
 ## N0 — A native vertical slice
@@ -52,6 +53,10 @@ Use real I/O and the necessary memory/resource substrate, not a mock executor
 or a host-language implementation masquerading as source `std`.
 
 ## N1 — Move the compiler into Loom
+
+Source positions, diagnostics, lexing, and syntax parsing now run as native
+Loom code. The frontend parses its own sources but does not yet bind, type-check,
+or compile them. None of the full bootstrap gates below is met.
 
 Use the N0 subset to implement compiler components in Loom, starting with source
 handling, lexer/parser, and diagnostics, then binding, typing, and checked

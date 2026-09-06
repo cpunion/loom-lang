@@ -1,0 +1,71 @@
+import frontend.lexer.lex
+import frontend.parser.parse
+import frontend.source.Diagnostic
+import frontend.source.render
+import std.file.read_text
+import std.int.to_text
+import std.io.write_text
+import std.io.write_error
+import std.list.get
+import std.list.length
+import std.process.arguments
+import std.process.exit_code
+import std.result.Result
+import std.text.concat
+
+fn report(message Text) {
+    discard write_error(concat(message, "\n"))
+}
+
+fn inspect(text Text, parse_mode Bool) Result[Text, Diagnostic] {
+    if parse_mode {
+        let tree = parse(text)?
+        Result.Ok(concat(to_text(length(tree.children)), " declarations\n"))
+    } else {
+        let tokens = lex(text)?
+        Result.Ok(concat(to_text(length(tokens) - 1), " tokens\n"))
+    }
+}
+
+fn main() {
+    let args = arguments()
+    if length(args) < 3 {
+        report("usage: loom-front <lex|parse> <source files...>")
+        exit_code(2)
+        return
+    }
+    let mode = get(args, 1)
+    if mode != "lex" && mode != "parse" {
+        report("expected lex or parse; this frontend does not yet compile")
+        exit_code(2)
+        return
+    }
+    var failed = false
+    var index = 2
+    while index < length(args) {
+        let path = get(args, index)
+        match read_text(path) {
+            Result.Ok(text) => {
+                match inspect(text, mode == "parse") {
+                    Result.Ok(summary) => {
+                        let message = concat(path, concat(": ", summary))
+                        match write_text(message) {
+                            Result.Ok(_) => {}
+                            Result.Err(_) => { failed = true }
+                        }
+                    }
+                    Result.Err(error) => {
+                        report(render(path, text, error))
+                        failed = true
+                    }
+                }
+            }
+            Result.Err(_) => {
+                report(concat(path, ": cannot read UTF-8 source"))
+                failed = true
+            }
+        }
+        index = index + 1
+    }
+    if failed { exit_code(1) }
+}

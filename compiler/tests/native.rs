@@ -71,10 +71,6 @@ fn native_cli_closure_and_source_library() {
             "unexpected scalar IR dependency: {forbidden}"
         );
     }
-    success(&loom(&[
-        "test",
-        path(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std/int")),
-    ]));
 }
 
 #[test]
@@ -105,27 +101,10 @@ fn native_generic_data() {
 }
 
 #[test]
-fn source_scanner_and_std_under_forced_collection() {
+fn source_std_under_forced_collection() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo = root.parent().unwrap();
-    let fixture = root.join("examples/source");
-    let directory = tempfile::tempdir().unwrap();
-    let artifact = directory.path().join("scanner");
-    success(&managed(&["check", path(&fixture)], repo));
-    success(&managed(
-        &["build", path(&fixture), "--output", path(&artifact)],
-        repo,
-    ));
-    success(
-        &Command::new(artifact)
-            .current_dir(repo)
-            .env("LOOM_GC_STRESS", "1")
-            .output()
-            .unwrap(),
-    );
-    success(&managed(&["run", path(&fixture)], repo));
-    success(&managed(&["test", path(&fixture)], repo));
-    for package in ["text", "list", "result"] {
+    for package in ["bytes", "int", "text", "list", "result", "unicode"] {
         success(&managed(
             &["test", path(&root.join("std").join(package))],
             repo,
@@ -147,6 +126,25 @@ fn source_scanner_and_std_under_forced_collection() {
         !llvm.contains("loom_rt_roots_enter"),
         "nonallocating functions need no GC root frame"
     );
+}
+
+#[test]
+fn propagation_requires_nominal_result_and_matching_error() {
+    for text in [
+        "import std.result.Result\nfn main() { discard Result.Ok[Int, Text](1)? }",
+        "import std.result.Result\nfn f(value Result[Int, Int]) Result[Int, Text] { Result.Ok(value?) }",
+        "import std.result.Result\nfn f() Result[Int, Text] { Result.Ok(42?) }",
+        "import std.result.Result\nenum Other[T, E] { Ok(T) Err(E) }\nfn f(value Other[Int, Text]) Result[Int, Text] { Result.Ok(value?) }",
+    ] {
+        let fixture = source(text);
+        let output = loom(&["check", path(fixture.path())]);
+        assert!(!output.status.success(), "accepted {text}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("`?`"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -286,6 +284,24 @@ fn production_library_excludes_both_test_forms() {
         1
     );
     assert!(!loom(&["test", path(dir.path())]).status.success());
+}
+
+#[test]
+fn manifest_does_not_silently_ignore_configuration() {
+    let fixture = source("fn main() {}");
+    let manifest = fixture.path().join("loom.toml");
+    fs::write(&manifest, "[module]\nname = 'demo'\nversion = '0.1.0'").unwrap();
+    success(&loom(&["check", path(fixture.path())]));
+    for field in ["target", "dependences"] {
+        fs::write(
+            &manifest,
+            format!("[module]\nname = 'demo'\n{field} = 'ignored'"),
+        )
+        .unwrap();
+        let output = loom(&["check", path(fixture.path())]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("module.{field}")));
+    }
 }
 
 #[test]

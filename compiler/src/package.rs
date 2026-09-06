@@ -151,6 +151,14 @@ fn read_module(directory: &Path) -> Result<(String, PathBuf), String> {
         .get("module")
         .and_then(toml::Value::as_table)
         .ok_or_else(|| format!("{}: missing [module]", path.display()))?;
+    for key in module.keys() {
+        if !matches!(key.as_str(), "name" | "version") {
+            return Err(format!(
+                "{}: manifest field module.{key} is not supported by the native seed",
+                path.display()
+            ));
+        }
+    }
     let name = module
         .get("name")
         .and_then(toml::Value::as_str)
@@ -198,10 +206,11 @@ impl Loader {
             if !tests {
                 syntax.functions.retain(|function| !function.test);
             }
-            if syntax
-                .data
-                .iter()
-                .any(|data| matches!(data.kind, crate::model::ast::DataKind::Refined { .. }))
+            if package != "std.result"
+                && syntax
+                    .data
+                    .iter()
+                    .any(|data| matches!(data.kind, crate::model::ast::DataKind::Refined { .. }))
             {
                 // Checked construction returns these ordinary source-defined
                 // language items; their identity and shape are checked later.

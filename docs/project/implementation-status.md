@@ -8,15 +8,21 @@ The active compiler has a real source-to-native check/build/test/run path,
 package/test isolation, concrete generic records/enums, shared lists, UTF-8
 text, real file reads/writes and stdout, scalar constrained construction, and
 mandatory postconditions within a bounded proof fragment. A Loom-written
-scanner reads real source and returns typed tokens; managed tests force
+frontend reads real source and returns recursive syntax trees; managed tests force
 collection before every allocation. Constants and safe scalar weakening avoid
 redundant checks; unknown construction returns an ordinary source `Result`.
+Postfix `?` propagates errors with ordinary enum control flow. Recursive data
+through `List` is supported; infinite inline layouts and growing generic
+specializations reject.
 
-The N0 vertical-slice gate passes on macOS with Rust 1.88 and LLVM 19: 23 compiler
-unit tests, 11 native integration tests, and 4 runtime tests. This includes real
-check/build/test/run, required-proof rejection, input-boundary failures, and
-allocation-free scalar/record paths. The [roadmap](../../ROADMAP.md) puts
-Loom-written source handling, lexer/parser, and diagnostics next in N1.
+The native gate uses macOS, Rust 1.88, and LLVM 19. Compiler, native integration,
+and runtime tests cover real check/build/test/run, required-proof rejection,
+input-boundary failures, and allocation-free scalar/record paths.
+The [roadmap](../../ROADMAP.md) puts binding and typing next in N1.
+[Source handling, lexing, syntax parsing, and positioned
+diagnostics](../../compiler/loom/README.md) now run as native Loom code over the
+frontend's own sources, `std`, and examples. The Rust seed still builds the
+tool; it cannot yet produce another compiler stage.
 
 Accepted language and deployment decisions remain targets, not claims that the
 whole design is implemented. No release, full platform matrix, complete

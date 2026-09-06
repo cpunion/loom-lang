@@ -7,3 +7,23 @@ test fn utf8_bytes_and_concatenation() {
     assert concat("", "hé") == "hé"
     assert concat("a", "b") != "ba"
 }
+
+test fn scalar_operations() {
+    let text = "Aé中😀"
+    assert width(text, 0) == 1
+    assert width(text, 1) == 2
+    assert width(text, 3) == 3
+    assert width(text, 6) == 4
+    assert codepoint(text, 0) == 65
+    assert codepoint(text, 1) == 233
+    assert codepoint(text, 3) == 20013
+    assert codepoint(text, 6) == 128512
+    assert from_codepoint(65) == "A"
+    assert from_codepoint(233) == "é"
+    assert from_codepoint(20013) == "中"
+    assert from_codepoint(128512) == "😀"
+    assert from_codepoint(1114111) == "\u{10ffff}"
+    assert from_codepoint(0) == "\0"
+    assert slice(text, 1, 6) == "é中"
+    assert slice(text, 10, 10) == ""
+}

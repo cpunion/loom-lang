@@ -158,8 +158,34 @@ fn emit_checked(
         }
     }
     if !library {
-        let main = module.add_function("main", context.i32_type().fn_type(&[], false), None);
+        let pointer = context.ptr_type(AddressSpace::default());
+        let main = module.add_function(
+            "main",
+            context
+                .i32_type()
+                .fn_type(&[context.i32_type().into(), pointer.into()], false),
+            None,
+        );
         builder.position_at_end(context.append_basic_block(main, "entry"));
+        if module.get_function("loom_rt_process_arg_count").is_some()
+            || module.get_function("loom_rt_process_arg_text").is_some()
+        {
+            let init = gc::runtime_function(
+                &context,
+                &module,
+                "process_init",
+                None,
+                &[context.i32_type().into(), pointer.into()],
+            );
+            builder.build_call(
+                init,
+                &[
+                    main.get_nth_param(0).unwrap().into(),
+                    main.get_nth_param(1).unwrap().into(),
+                ],
+                "",
+            )?;
+        }
         for root in roots {
             let function = &program.functions[root];
             if !function.params.is_empty() || function.result != Type::Unit {
@@ -334,6 +360,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::TextByte => ("text_byte", Some(i64_type.into())),
             Primitive::TextConcat => ("text_concat", Some(pointer.into())),
             Primitive::TextEqual => ("text_equal", Some(self.context.i32_type().into())),
+            Primitive::TextSlice => ("text_slice", Some(pointer.into())),
+            Primitive::UnicodeAlphabetic => {
+                ("unicode_alphabetic", Some(self.context.i32_type().into()))
+            }
+            Primitive::UnicodeAlphanumeric => {
+                ("unicode_alphanumeric", Some(self.context.i32_type().into()))
+            }
+            Primitive::UnicodeWhitespace => {
+                ("unicode_whitespace", Some(self.context.i32_type().into()))
+            }
+            Primitive::ArgCount => ("process_arg_count", Some(i64_type.into())),
+            Primitive::ArgText => ("process_arg_text", Some(pointer.into())),
+            Primitive::Exit => ("process_exit", None),
             Primitive::BytesNew => ("bytes_new", Some(pointer.into())),
             Primitive::BytesLen => ("bytes_len", Some(i64_type.into())),
             Primitive::BytesPush => ("bytes_push", None),

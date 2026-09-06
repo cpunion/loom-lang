@@ -1,0 +1,108 @@
+import frontend.parser.parse
+import frontend.source.Diagnostic
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import std.list.get
+import std.list.length
+import std.result.Result
+
+fn parsed(text Text) Node {
+    match parse(text) {
+        Result.Ok(tree) => tree
+        Result.Err(_) => {
+            assert false
+            parsed("")
+        }
+    }
+}
+fn rejected(text Text) Diagnostic {
+    match parse(text) {
+        Result.Err(failure) => failure
+        Result.Ok(_) => {
+            assert false
+            rejected("fn")
+        }
+    }
+}
+fn child(tree Node, index Int) Node { get(tree.children, index) }
+fn body(tree Node) Node { child(tree, length(tree.children) - 1) }
+
+test fn declarations_and_contracts() {
+    let tree = parsed("import app.math.add\npub record Pair[A, B] { first A second B }\nenum Outcome[T] { Empty Value(T) Partial(T, Int) }\npub type Positive = Int where self > 0\npub fn twice(value Int) Int\nrequires value >= 0\nensures result == value + value\n{ add(value, value) }\ntest fn example() { assert twice(2) == 4 }\nintrinsic fn copy[T](value T) T\n")
+    assert tree.kind == NodeKind.File
+    assert length(tree.children) == 7
+    assert child(tree, 0).value == "app.math.add"
+    let pair = child(tree, 1)
+    assert pair.kind == NodeKind.Record
+    assert child(pair, 0).kind == NodeKind.Public
+    assert length(child(pair, 1).children) == 2
+    assert child(pair, 3).value == "second"
+    assert child(tree, 3).kind == NodeKind.Refined
+    let twice = child(tree, 4)
+    assert twice.value == "twice"
+    assert child(twice, 4).kind == NodeKind.Requires
+    assert child(twice, 5).kind == NodeKind.Ensures
+    assert child(body(twice), 0).kind == NodeKind.Call
+    assert child(child(tree, 5), 0).kind == NodeKind.Test
+    assert child(child(tree, 6), 0).kind == NodeKind.Intrinsic
+}
+
+test fn expressions_preserve_precedence_and_spans() {
+    let tree = parsed("fn f() Int { let x = 1 +\n2 * 3\n(x\n+ 4) }\nfn low() Int { -9223372036854775808 }\nfn zero() Int { 0000000000000000000000000000000000000 }")
+    let statements = body(child(tree, 0))
+    let binding = child(statements, 0)
+    let sum = child(binding, 0)
+    assert binding.kind == NodeKind.Let
+    assert sum.kind == NodeKind.Binary && sum.value == "+"
+    assert child(sum, 1).value == "*"
+    assert child(statements, 1).value == "+"
+    assert child(body(child(tree, 1)), 0).value == "-9223372036854775808"
+    let minimum = parsed("fn f() Int { -1 }")
+    assert child(body(child(minimum, 0)), 0).span.start == 13
+    assert child(body(child(minimum, 0)), 0).span.end == 15
+    let continued = child(body(child(parsed("fn f() { call(1 + 2\n) }"), 0)), 0)
+    let argument = child(child(continued, 1), 0)
+    assert argument.span.start == 14 && argument.span.end == 19
+    let propagated = child(body(child(parsed("fn f() { (-1)? }"), 0)), 0)
+    assert propagated.kind == NodeKind.Try
+    assert child(propagated, 0).span.start == 9 && child(propagated, 0).span.end == 13
+    assert child(body(child(parsed("fn f() { -1? }"), 0)), 0).kind == NodeKind.Try
+}
+
+test fn control_flow_generics_records_and_propagation() {
+    let tree = parsed("fn f(flag Bool) Int {\nvar n = 0\nwhile flag { n = n + 1 }\nif flag { n = 2 }\nif (Pair { first = flag second = 1 }).first { 1 } else if flag { 2 } else { 3 }\n}\nfn g() Result[Int, Error] {\nlet p Pair[Int, Pair[Bool, Int]] = Pair { first = 1 second = Pair { first = true second = 2 } }\nlet v = identity[Pair[Int, Int]](p)?.first\nmatch Outcome.Value[Int](v) {\nOutcome.Value(n) => n,\nPartial(n, _) => { let x = n + 1\nx }\nEmpty => 0\n_ => -1\n}\n}")
+    let first = body(child(tree, 0))
+    assert child(first, 0).kind == NodeKind.Var
+    assert child(first, 1).kind == NodeKind.While
+    assert child(first, 2).kind == NodeKind.If
+    let conditional = child(first, 3)
+    assert child(conditional, 0).kind == NodeKind.Select
+    assert child(child(conditional, 2), 0).kind == NodeKind.If
+    let second = body(child(tree, 1))
+    let selected = child(child(second, 1), 0)
+    assert selected.kind == NodeKind.Select
+    assert child(selected, 0).kind == NodeKind.Try
+    let matched = child(second, 2)
+    assert matched.kind == NodeKind.Match
+    assert length(matched.children) == 5
+    assert child(child(matched, 4), 0).kind == NodeKind.Wildcard
+}
+
+test fn malformed_syntax_has_exact_location() {
+    assert rejected("fn f() Unit {}").message == "omit the Unit return annotation"
+    assert rejected("fn f() { Unit }").message == "omit explicit Unit expressions"
+    assert rejected("fn f() { let x = 1 let y = 2 }").span.start == 19
+    assert rejected("fn f() { await f() }").message == "expected a newline or '}' after the statement"
+    assert rejected("pub test fn f() {}").message == "test functions cannot be public"
+    assert rejected("intrinsic fn f() {}").message == "intrinsic declarations have no body or contracts"
+    assert rejected("fn f() { 9223372036854775808 }").message == "integer literal is outside the Int range"
+    assert rejected("fn f() { -9223372036854775809 }").message == "integer literal is outside the Int range"
+    assert rejected("fn f() { match x { Value(Empty()) => 0 } }").message == "nested patterns are not supported; bind the value and match it separately"
+    assert rejected("fn f() {").message == "expected '}' to close the block"
+    assert rejected("type Positive = Int").message == "expected 'where' before the type constraint"
+    assert rejected("// 🧵\nfn föö() { 1 2 }").span.start == 23
+    discard rejected("fn f() { ( }")
+    discard rejected("fn f[]() {}")
+    discard rejected("fn f() { a[Int] }")
+    discard rejected("import a fn f() {}")
+}
