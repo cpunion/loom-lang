@@ -1,0 +1,19 @@
+import std.list.push
+
+test fn deterministic_byte_order() {
+    let names = std.list.new[Text]()
+    push(names, "z")
+    push(names, "a")
+    push(names, "ä")
+    push(names, "aa")
+    push(names, "A")
+    push(names, "a")
+    sort(names)
+    assert get(names, 0) == "A"
+    assert get(names, 1) == "a"
+    assert get(names, 2) == "a"
+    assert get(names, 3) == "aa"
+    assert get(names, 4) == "z"
+    assert get(names, 5) == "ä"
+    sort(std.list.new[Text]())
+}

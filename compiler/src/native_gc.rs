@@ -68,12 +68,16 @@ fn allocates(operation: Primitive) -> bool {
         | Primitive::BytesTextCopy
         | Primitive::ListNew
         | Primitive::ListPush
-        | Primitive::Read => true,
+        | Primitive::Read
+        | Primitive::DirectoryRead
+        | Primitive::PathCanonical => true,
         Primitive::TextLen
         | Primitive::UnicodeAlphabetic
         | Primitive::UnicodeAlphanumeric
         | Primitive::UnicodeWhitespace
         | Primitive::ArgCount
+        | Primitive::ProcessRun
+        | Primitive::ProcessRunInput
         | Primitive::Exit
         | Primitive::TextByte
         | Primitive::TextEqual
@@ -85,7 +89,8 @@ fn allocates(operation: Primitive) -> bool {
         | Primitive::Open
         | Primitive::Create
         | Primitive::Write
-        | Primitive::Close => false,
+        | Primitive::Close
+        | Primitive::PathKind => false,
     }
 }
 

@@ -80,6 +80,8 @@ pub enum Primitive {
     UnicodeWhitespace,
     ArgCount,
     ArgText,
+    ProcessRun,
+    ProcessRunInput,
     Exit,
     BytesNew,
     BytesLen,
@@ -96,6 +98,9 @@ pub enum Primitive {
     Read,
     Write,
     Close,
+    DirectoryRead,
+    PathKind,
+    PathCanonical,
 }
 
 pub mod ast {

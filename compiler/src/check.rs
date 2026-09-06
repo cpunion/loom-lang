@@ -817,6 +817,18 @@ impl Environment<'_> {
             "unicode_whitespace" => (P::UnicodeWhitespace, 0, vec![T::Int], T::Bool),
             "arg_count" => (P::ArgCount, 0, vec![], T::Int),
             "arg_text" => (P::ArgText, 0, vec![T::Int], T::Text),
+            "process_run" => (
+                P::ProcessRun,
+                0,
+                vec![self.list(T::Text, item.span)?],
+                T::Int,
+            ),
+            "process_run_input" => (
+                P::ProcessRunInput,
+                0,
+                vec![self.list(T::Text, item.span)?, T::Text],
+                T::Int,
+            ),
             "exit" => (P::Exit, 0, vec![T::Int], T::Unit),
             "bytes_new" => (P::BytesNew, 0, vec![], T::Bytes),
             "bytes_len" => (P::BytesLen, 0, vec![T::Bytes], T::Int),
@@ -833,6 +845,14 @@ impl Environment<'_> {
             "read" => (P::Read, 0, vec![T::Int, T::Bytes, T::Int], T::Int),
             "write" => (P::Write, 0, vec![T::Int, T::Text, T::Int], T::Int),
             "close" => (P::Close, 0, vec![T::Int], T::Int),
+            "directory_read" => (
+                P::DirectoryRead,
+                0,
+                vec![T::Text, self.list(T::Text, item.span)?],
+                T::Int,
+            ),
+            "path_kind" => (P::PathKind, 0, vec![T::Text], T::Int),
+            "path_canonical" => (P::PathCanonical, 0, vec![T::Text, T::Bytes], T::Int),
             _ => {
                 return Err(Diagnostic::new(
                     item.span,

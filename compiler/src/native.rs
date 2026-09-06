@@ -372,6 +372,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             Primitive::ArgCount => ("process_arg_count", Some(i64_type.into())),
             Primitive::ArgText => ("process_arg_text", Some(pointer.into())),
+            Primitive::ProcessRun => ("process_run", Some(i64_type.into())),
+            Primitive::ProcessRunInput => ("process_run_input", Some(i64_type.into())),
             Primitive::Exit => ("process_exit", None),
             Primitive::BytesNew => ("bytes_new", Some(pointer.into())),
             Primitive::BytesLen => ("bytes_len", Some(i64_type.into())),
@@ -445,6 +447,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::Read => ("file_read", Some(i64_type.into())),
             Primitive::Write => ("file_write", Some(i64_type.into())),
             Primitive::Close => ("file_close", Some(i64_type.into())),
+            Primitive::DirectoryRead => ("directory_read", Some(i64_type.into())),
+            Primitive::PathKind => ("path_kind", Some(i64_type.into())),
+            Primitive::PathCanonical => ("path_canonical", Some(i64_type.into())),
         };
         let value = self.runtime_call(name, result_type, &values)?;
         if result == Type::Bool {

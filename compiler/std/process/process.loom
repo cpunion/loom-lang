@@ -1,9 +1,30 @@
 import std.list.new
 import std.list.push
+import std.result.Result
 
 intrinsic fn arg_count() Int
 intrinsic fn arg_text(index Int) Text
+intrinsic fn process_run(arguments List[Text]) Int
+intrinsic fn process_run_input(arguments List[Text], input Text) Int
 intrinsic fn exit(code Int)
+
+pub enum SpawnError { EmptyArguments Failed Terminated }
+
+fn outcome(status Int) Result[Int, SpawnError] {
+    if status == -2 { return Result.Err(SpawnError.EmptyArguments) }
+    if status == -3 { return Result.Err(SpawnError.Terminated) }
+    if status < 0 { return Result.Err(SpawnError.Failed) }
+    Result.Ok(status)
+}
+
+// Runs the executable at index 0 with literal arguments and inherited streams.
+// No shell command is constructed. Nonzero exit codes are successful results.
+pub fn run(arguments List[Text]) Result[Int, SpawnError] { outcome(process_run(arguments)) }
+
+// Writes input to the child's stdin, closes it, then waits for the exit status.
+pub fn run_input(arguments List[Text], input Text) Result[Int, SpawnError] {
+    outcome(process_run_input(arguments, input))
+}
 
 // Includes the executable at index 0; values are immutable UTF-8 copies.
 pub fn arguments() List[Text] {
