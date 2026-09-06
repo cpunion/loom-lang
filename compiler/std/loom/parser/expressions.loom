@@ -76,6 +76,7 @@ fn expr(cursor Cursor, minimum Int, multiline Bool, records Bool) Result[Step, D
     Result.Ok(parsed)
 }
 fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] {
+    if word(cursor, "fn") || word(cursor, "dyn") { return fields(cursor, type_ref(cursor)?) }
     if word(cursor, "comptime") { return fields(cursor, comptime_expr(cursor)?) }
     if word(cursor, "if") { return fields(cursor, if_expr(cursor)?) }
     if word(cursor, "match") { return fields(cursor, match_expr(cursor)?) }
@@ -178,7 +179,12 @@ fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
         } else {
             if at(rest, Kind.Question) {
                 parsed = done(start, next(rest), NodeKind.Try, "", one(parsed.node))
-            } else { more = false }
+            } else {
+                if at(rest, Kind.LParen) {
+                    let args = sequence(rest, Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
+                    parsed = done(start, args.rest, NodeKind.Invoke, "", two(parsed.node, args.node))
+                } else { more = false }
+            }
         }
     }
     Result.Ok(parsed)

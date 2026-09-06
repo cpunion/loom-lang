@@ -32,7 +32,7 @@ fn scan(state State, expr Expr, seen List[Int], depth Int) Result[Bool, Failure]
     if expr.kind == ExprKind.Intrinsic && !pure_intrinsic(expr.text) {
         return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", expr.text)))
     }
-    if expr.kind == ExprKind.Call {
+    if expr.kind == ExprKind.Call || expr.kind == ExprKind.FunctionRef {
         if expr.index < 0 || expr.index >= length(state.program.functions) {
             return Result.Err(failure(expr, "compile-time call has no checked function body"))
         }

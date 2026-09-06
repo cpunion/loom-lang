@@ -17,6 +17,8 @@ pub enum Type {
     List(usize),
     /// Nominal erased interface in Program::interfaces.
     Dyn(usize),
+    /// Structural signature in Program::function_types; an unmanaged code pointer.
+    Function(usize),
     Unit,
     Data(usize),
     /// Describes an unused generic type template; invalid in emitted instances.
@@ -94,6 +96,7 @@ pub mod checked {
         pub types: Vec<Data>,
         pub lists: Vec<Type>,
         pub functions: Vec<Function>,
+        pub function_types: Vec<Signature>,
         pub interfaces: Vec<Interface>,
         pub witnesses: Vec<Witness>,
         pub entry: Option<usize>,
@@ -103,15 +106,15 @@ pub mod checked {
     }
 
     #[derive(Debug)]
-    pub struct Method {
-        /// Excludes the erased receiver.
+    pub struct Signature {
         pub params: Vec<Type>,
         pub result: Type,
     }
 
     #[derive(Debug)]
     pub struct Interface {
-        pub methods: Vec<Method>,
+        /// Method signatures exclude the erased receiver.
+        pub methods: Vec<Signature>,
     }
 
     #[derive(Debug)]
@@ -192,6 +195,11 @@ pub mod checked {
         Unary(Unary, Box<Expr>),
         Binary(Binary, Box<Expr>, Box<Expr>),
         Call(usize, Vec<Expr>),
+        FunctionRef(usize),
+        IndirectCall {
+            callee: Box<Expr>,
+            arguments: Vec<Expr>,
+        },
         DynBox {
             witness: usize,
             value: Box<Expr>,

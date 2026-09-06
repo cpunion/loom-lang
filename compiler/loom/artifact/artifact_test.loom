@@ -33,6 +33,18 @@ test fn abstract_associated_types_use_non_executable_placeholders() {
     assert std.bytes.to_text(buffer) == "5\n7\n"
 }
 
+test fn function_signatures_are_structural_and_references_are_explicit() {
+    let signature = std.list.new[Int]()
+    std.list.push(signature, 1)
+    std.list.push(signature, 3)
+    let value = Type { kind = TypeKind.Function symbol = -1 arguments = signature
+        fields = std.list.new[Field]() variants = std.list.new[Variant]() constraint = std.list.new[Expr]() }
+    let buffer = std.bytes.new()
+    data(buffer, value)
+    assert std.bytes.to_text(buffer) == "12\n-1\n1\n1\n3\n"
+    assert expression_tag(ExprKind.FunctionRef) == 24 && expression_tag(ExprKind.IndirectCall) == 25
+}
+
 test fn dynamic_metadata_is_an_explicit_sparse_tail() {
     let types = std.list.new[Type]()
     std.list.push(types, Type { kind = TypeKind.Dyn symbol = 0 arguments = std.list.new[Int]()

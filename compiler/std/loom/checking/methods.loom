@@ -36,10 +36,10 @@ fn bound_method(context Context, ty Int, member Text, arity Int) Bool {
     }
     false
 }
-fn method_call(context Context, node Node, source Node, member Text, types List[Node], inputs List[Node], selected Int, expected Int) Result[Expr, Failure] {
+fn method_call(context Context, node Node, source Node, method_name Text, types List[Node], inputs List[Node], selected Int, expected Int) Result[Expr, Failure] {
     if length(types) != 0 { return Result.Err(error(context, node, "concept methods do not yet take type arguments")) }
     let receiver = expr(context, source, -1)?
-    let bound = bound_method(context, receiver.ty, member, length(inputs) + 1)
+    let bound = bound_method(context, receiver.ty, method_name, length(inputs) + 1)
     let options = new[Int]()
     var index = 0
     let receiver_type = get(context.env.types, receiver.ty)
@@ -55,7 +55,7 @@ fn method_call(context Context, node Node, source Node, member Text, types List[
         while index < length(methods) {
             let id = get(methods, index)
             let current = get(context.env.signatures, id)
-            if symbol(context.env, current.symbol).name == member && length(current.params) == length(inputs) + 1 { push(options, id) }
+            if symbol(context.env, current.symbol).name == method_name && length(current.params) == length(inputs) + 1 { push(options, id) }
             index = index + 1
         }
     } else {
@@ -74,7 +74,7 @@ fn method_call(context Context, node Node, source Node, member Text, types List[
             while method < length(methods) {
                 let id = get(methods, method)
                 let current = get(context.env.signatures, id)
-                if symbol(context.env, current.symbol).name == member && length(current.params) == length(inputs) + 1 {
+                if symbol(context.env, current.symbol).name == method_name && length(current.params) == length(inputs) + 1 {
                     push(options, id)
                 }
                 method = method + 1
@@ -82,6 +82,17 @@ fn method_call(context Context, node Node, source Node, member Text, types List[
         }
         index = index + 1
     }
+    }
+    if selected < 0 && receiver_type.kind == TypeKind.Record {
+        var field = 0
+        while field < length(receiver_type.fields) {
+            let current = get(receiver_type.fields, field)
+            if current.name == method_name && get(context.env.types, current.ty).kind == TypeKind.Function {
+                let callee = member(context, node, receiver, method_name)?
+                return field_call(context, node, source, receiver, callee, inputs, options, expected)
+            }
+            field = field + 1
+        }
     }
     if length(options) == 0 {
         return Result.Err(error(context, node, "method needs an accessible concept and explicit conformance; generic requirements must be declared"))

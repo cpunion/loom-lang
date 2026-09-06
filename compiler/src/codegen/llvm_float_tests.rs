@@ -217,6 +217,7 @@ fn ieee_float_operations_and_aggregate_payloads_execute_without_runtime() {
         },
     });
     let program = checked::Program {
+        function_types: vec![],
         interfaces: vec![],
         witnesses: vec![],
         types: vec![

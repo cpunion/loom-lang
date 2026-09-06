@@ -124,6 +124,19 @@ fn computed(context Context, node Node, input Node, expected Int) Result[Value, 
 }
 
 fn type_operand(context Context, node Node) Bool {
+    if node.kind == NodeKind.FunctionType {
+        var group = 0
+        while group < length(node.children) {
+            let types = child(node, group).children
+            var index = 0
+            while index < length(types) {
+                if !type_operand(context, get(types, index)) { return false }
+                index = index + 1
+            }
+            group = group + 1
+        }
+        return true
+    }
     if (node.kind != NodeKind.Name && node.kind != NodeKind.Type && node.kind != NodeKind.Tuple && node.kind != NodeKind.TupleType && node.kind != NodeKind.DynType) ||
         lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 { return false }
     var index = 0

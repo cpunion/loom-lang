@@ -141,6 +141,11 @@ native aggregate path, including generics, shared containers, and compile-time
 results. More general patterns and runtime-sized task composition remain later
 work; a tuple does not substitute for a dynamically sized List.
 
+Named function values now support ordinary higher-order functions, structural
+signatures, aggregate storage, exact-reference reachability and pure compile-time
+invocation/reification. Capturing closures and compile-time function parameters
+remain separate steps; runtime callbacks are not template parameters.
+
 The early syntax portion of the
 [compiler-library gate](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)
 now has native evidence: an independent [user package](compiler/examples/syntax/main.loom)

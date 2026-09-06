@@ -19,12 +19,15 @@ import std.list.length
 // Type: tag, symbol, then List/refined element ID, record fields(name,type), or
 // enum variants(name,payload IDs). Tuples use record layout, with symbol -1 and
 // positional field names. Dyn stores its interface index in symbol, no payload.
-// Tags 0..11 follow type_tag below.
+// Function types store parameter IDs followed by the result ID. Tags 0..12
+// follow type_tag below.
 // Unused abstract associated projections use the existing parameter placeholder;
 // concrete executable projections must already have normalized to their type.
 // Function: symbol, span(start,end), params, result, locals, preconditions, body.
 // Expr: tag,type,span,text,index,falls,children,arms. Arm: variant,bindings,whole,
-// body; absent bindings/variants use -1. Tags 0..23 follow expression_tag below.
+// body; absent bindings/variants use -1. Tags 0..25 follow expression_tag below.
+// FunctionRef.index is the concrete function ID (no children); IndirectCall has
+// index -1 and children [callee,args...].
 // DynBox.index is a witness ID, children=[value]; DynCall.index is a method slot,
 // children=[receiver,args...]. The optional tail exists only with dynamic data:
 // feature tag 1, interfaces(methods(params excluding receiver,result)), witnesses
@@ -60,6 +63,7 @@ fn type_tag(kind TypeKind) Int {
         TypeKind.Text => 3, TypeKind.Bytes => 4, TypeKind.Parameter => 5, TypeKind.Associated => 5
         TypeKind.List => 6, TypeKind.Record => 7, TypeKind.Tuple => 7
         TypeKind.Enum => 8, TypeKind.Refined => 9, TypeKind.Float => 10, TypeKind.Dyn => 11
+        TypeKind.Function => 12
     }
 }
 fn data(buffer Bytes, value Type) {
@@ -67,6 +71,14 @@ fn data(buffer Bytes, value Type) {
     integer(buffer, value.symbol)
     if value.kind == TypeKind.List { integer(buffer, get(value.arguments, 0)) }
     if value.kind == TypeKind.Refined { integer(buffer, get(value.fields, 0).ty) }
+    if value.kind == TypeKind.Function {
+        let count = length(value.arguments) - 1
+        integer(buffer, count)
+        var index = 0
+        while index < count { integer(buffer, get(value.arguments, index))
+            index = index + 1 }
+        integer(buffer, get(value.arguments, count))
+    }
     if value.kind == TypeKind.Record || value.kind == TypeKind.Tuple {
         integer(buffer, length(value.fields))
         var index = 0
@@ -96,6 +108,7 @@ fn expression_tag(kind ExprKind) Int {
         ExprKind.Let => 12, ExprKind.Assign => 13, ExprKind.Return => 14, ExprKind.Assert => 15
         ExprKind.Discard => 16, ExprKind.While => 17, ExprKind.If => 18, ExprKind.Match => 19
         ExprKind.Coerce => 20, ExprKind.Float => 21, ExprKind.DynBox => 22, ExprKind.DynCall => 23
+        ExprKind.FunctionRef => 24, ExprKind.IndirectCall => 25
         // A deferred generic branch is check-only and must be instantiated.
         ExprKind.Deferred => { assert false
             -1 }

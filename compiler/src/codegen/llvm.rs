@@ -11,7 +11,7 @@ use inkwell::{
     module::{Linkage, Module},
     passes::PassBuilderOptions,
     targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
-    types::{BasicType, BasicTypeEnum, IntType},
+    types::{BasicType, BasicTypeEnum, FunctionType, IntType},
     values::{BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue},
 };
 use std::{
@@ -140,15 +140,7 @@ fn emit_checked(
     trace_phase("declarations");
     for &id in &reachable {
         let source = &program.functions[id];
-        let params = source
-            .params
-            .iter()
-            .map(|ty| native_type(&context, program, *ty).map(Into::into))
-            .collect::<NativeResult<Vec<_>>>()?;
-        let ty = match source.result {
-            Type::Unit => context.void_type().fn_type(&params, false),
-            ty => native_type(&context, program, ty)?.fn_type(&params, false),
-        };
+        let ty = native_signature(&context, program, &source.params, source.result)?;
         let linkage = if library && program.exports.contains(&id) {
             Linkage::External
         } else {
@@ -298,6 +290,23 @@ fn emit_checked(
         .any(|function| function.get_name().to_bytes().starts_with(b"loom_rt_")))
 }
 
+fn native_signature<'ctx>(
+    context: &'ctx Context,
+    program: &checked::Program,
+    params: &[Type],
+    result: Type,
+) -> NativeResult<FunctionType<'ctx>> {
+    let params = params
+        .iter()
+        .map(|ty| native_type(context, program, *ty).map(Into::into))
+        .collect::<NativeResult<Vec<_>>>()?;
+    Ok(if result == Type::Unit {
+        context.void_type().fn_type(&params, false)
+    } else {
+        native_type(context, program, result)?.fn_type(&params, false)
+    })
+}
+
 fn native_type<'ctx>(
     context: &'ctx Context,
     program: &checked::Program,
@@ -313,7 +322,7 @@ fn native_type<'ctx>(
                 .struct_type(&[pointer.into(), pointer.into()], false)
                 .into()
         }
-        Type::Text | Type::Bytes | Type::List(_) => {
+        Type::Text | Type::Bytes | Type::List(_) | Type::Function(_) => {
             context.ptr_type(AddressSpace::default()).into()
         }
         Type::Unit => context.struct_type(&[], false).into(),
@@ -365,7 +374,13 @@ fn payload_words(
 
 fn value_words(program: &checked::Program, ty: Type) -> NativeResult<usize> {
     match ty {
-        Type::Int | Type::Float | Type::Bool | Type::Text | Type::Bytes | Type::List(_) => Ok(1),
+        Type::Int
+        | Type::Float
+        | Type::Bool
+        | Type::Text
+        | Type::Bytes
+        | Type::List(_)
+        | Type::Function(_) => Ok(1),
         Type::Dyn(_) => Ok(2),
         Type::Unit => Ok(0),
         Type::Parameter(_) => Err("unbound type parameter reached native layout".into()),
@@ -798,6 +813,43 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )?;
                 return Ok(call.try_as_basic_value().basic());
             }
+            checked::ExprKind::FunctionRef(function) => self.functions[*function]
+                .ok_or("unresolved checked function reference")?
+                .as_global_value()
+                .as_pointer_value()
+                .into(),
+            checked::ExprKind::IndirectCall { callee, arguments } => {
+                let Type::Function(signature) = callee.ty else {
+                    return Err("invalid checked callable type".into());
+                };
+                let Some(callee) = self.expr(callee)? else {
+                    return Ok(None);
+                };
+                let mut values = Vec::with_capacity(arguments.len());
+                for argument in arguments {
+                    let Some(value) = self.expr(argument)? else {
+                        return Ok(None);
+                    };
+                    values.push(value.into());
+                }
+                let signature = &self.program.function_types[signature];
+                let call = self.builder.build_indirect_call(
+                    native_signature(
+                        self.context,
+                        self.program,
+                        &signature.params,
+                        signature.result,
+                    )?,
+                    callee.into_pointer_value(),
+                    &values,
+                    if signature.result == Type::Unit {
+                        ""
+                    } else {
+                        "indirect.call"
+                    },
+                )?;
+                return Ok(call.try_as_basic_value().basic());
+            }
             checked::ExprKind::Record(fields) => {
                 let mut result = native_type(self.context, self.program, expr.ty)?
                     .into_struct_type()
@@ -1075,11 +1127,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .build_bit_cast(value, self.context.i64_type(), "float.word")?
                     .into_int_value(),
             ),
-            Type::Text | Type::Bytes | Type::List(_) => words.push(self.builder.build_ptr_to_int(
-                value.into_pointer_value(),
-                self.context.i64_type(),
-                "pointer.word",
-            )?),
+            Type::Text | Type::Bytes | Type::List(_) | Type::Function(_) => {
+                words.push(self.builder.build_ptr_to_int(
+                    value.into_pointer_value(),
+                    self.context.i64_type(),
+                    "pointer.word",
+                )?)
+            }
             Type::Bool => words.push(self.builder.build_int_z_extend(
                 value.into_int_value(),
                 self.context.i64_type(),
@@ -1164,7 +1218,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     word.into()
                 }
             }
-            Type::Text | Type::Bytes | Type::List(_) => {
+            Type::Text | Type::Bytes | Type::List(_) | Type::Function(_) => {
                 let word = words[*offset];
                 *offset += 1;
                 self.builder
@@ -1235,6 +1289,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         left: BasicValueEnum<'ctx>,
         right: BasicValueEnum<'ctx>,
     ) -> NativeResult<IntValue<'ctx>> {
+        if matches!(ty, Type::Function(_)) {
+            return Err("function values do not support equality".into());
+        }
         if ty == Type::Text {
             let value = self
                 .runtime_call(
@@ -1539,6 +1596,13 @@ fn reachable_functions(
                     expr(arg, calls, witnesses, slots);
                 }
             }
+            checked::ExprKind::FunctionRef(function) => calls.push(*function),
+            checked::ExprKind::IndirectCall { callee, arguments } => {
+                expr(callee, calls, witnesses, slots);
+                for argument in arguments {
+                    expr(argument, calls, witnesses, slots);
+                }
+            }
             checked::ExprKind::Primitive(_, args) => {
                 for arg in args {
                     expr(arg, calls, witnesses, slots);
@@ -1687,6 +1751,10 @@ fn reachable_functions(
 mod float_tests;
 
 #[cfg(test)]
+#[path = "llvm_function_tests.rs"]
+mod function_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1704,6 +1772,7 @@ mod tests {
     #[test]
     fn enum_layout_uses_largest_payload_and_rejects_unbound_types() {
         let program = checked::Program {
+            function_types: vec![],
             interfaces: vec![],
             witnesses: vec![],
             lists: vec![],

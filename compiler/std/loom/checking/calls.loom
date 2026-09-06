@@ -135,7 +135,12 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let inputs = child(node, 1).children
     let first = slice(node.value, 0, first_dot(node.value))
     if lookup(context, first) >= 0 {
-        if package(node.value) == "" { return Result.Err(error(context, node, "a local value is not callable")) }
+        if package(node.value) == "" {
+            let callee = Node { kind = NodeKind.Name value = node.value span = node.span children = new[Node]() }
+            let value = expr(context, callee, -1)?
+            if get(context.env.types, value.ty).kind != TypeKind.Function { return Result.Err(error(context, node, "a local value is not callable")) }
+            return call_value(context, node, value, types, inputs)
+        }
         let receiver = Node { kind = NodeKind.Name value = package(node.value) span = node.span children = new[Node]() }
         return method_call(context, node, receiver, name(node.value), types, inputs, -1, expected)
     }
@@ -180,39 +185,40 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     invoke(context, node, options, types, inputs, new[Expr](), expected)
 }
 fn invoke(context Context, node Node, options List[Int], types List[Node], inputs List[Node], prefix List[Expr], expected Int) Result[Expr, Failure] {
-    let hints = new[Int]()
-    var index = 0
-    while index < length(inputs) { push(hints, -1)
-        index = index + 1
-    }
-    if length(options) == 1 {
-        let signature = get(context.env.signatures, get(options, 0))
-        let args = supplied(context, node, types, signature.parameters)?
-        index = 0
-        while index < length(prefix) {
-            discard infer(context.env, get(signature.params, index), get(prefix, index).ty, args)
-            index = index + 1
-        }
-        if complete(args) {
-            index = 0
-            while index < length(inputs) {
-                set(hints, index, substitute(context.env, context.signature.symbol, get(signature.params, index), args, node)?)
-                index = index + 1
-            }
-        }
-    }
     let values = new[Expr]()
-    index = 0
+    var index = 0
     while index < length(prefix) { push(values, get(prefix, index))
         index = index + 1 }
-    while index < length(inputs) { push(values, expr(context, get(inputs, index), get(hints, index))?)
+    let inferred = if length(options) == 1 { supplied(context, node, types, get(context.env.signatures, get(options, 0)).parameters)? } else { new[Int]() }
+    if length(options) == 1 {
+        var previous = 0
+        while previous < length(prefix) {
+            discard infer(context.env, get(get(context.env.signatures, get(options, 0)).params, previous), get(prefix, previous).ty, inferred)
+            previous = previous + 1
+        }
+    }
+    while index < length(inputs) {
+        var expected_argument = -1
+        if length(options) == 1 {
+            expected_argument = hint(context, get(get(context.env.signatures, get(options, 0)).params, index), inferred, node)?
+        }
+        let value = expr(context, get(inputs, index), expected_argument)?
+        push(values, value)
+        if length(options) == 1 {
+            discard infer(context.env, get(get(context.env.signatures, get(options, 0)).params, index), value.ty, inferred)
+        }
         index = index + 1
     }
+    let matches = matching_overloads(context, node, options, types, values, expected)?
+    invoke_selected(context, node, choose_overload(context, node, matches)?, inputs, values)
+}
+record OverloadSet { candidates List[Instance] widening List[Bool] exact Bool missing_requirement Bool }
+fn matching_overloads(context Context, node Node, options List[Int], types List[Node], values List[Expr], expected Int) Result[OverloadSet, Failure] {
     let matches = new[Instance]()
     let widening = new[Bool]()
     var exact = false
     var missing_requirement = false
-    index = 0
+    var index = 0
     while index < length(options) {
         let id = get(options, index)
         let candidate_signature = get(context.env.signatures, id)
@@ -245,23 +251,28 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
         }
         index = index + 1
     }
+    Result.Ok(OverloadSet { candidates = matches widening = widening exact = exact missing_requirement = missing_requirement })
+}
+fn choose_overload(context Context, node Node, matches OverloadSet) Result[Instance, Failure] {
     var selected = -1
-    index = 0
-    while index < length(matches) {
-        if !exact || !get(widening, index) {
+    var index = 0
+    while index < length(matches.candidates) {
+        if !matches.exact || !get(matches.widening, index) {
             if selected >= 0 { return Result.Err(error(context, node, "ambiguous overload; qualify the call or supply type arguments")) }
             selected = index
         }
         index = index + 1
     }
     if selected < 0 {
-        return Result.Err(error(context, node, if missing_requirement {
+        return Result.Err(error(context, node, if matches.missing_requirement {
             "type argument needs an explicit implementation of the required concept"
         } else { "no accessible overload matches these arguments" }))
     }
-    let instance = get(matches, selected)
+    Result.Ok(get(matches.candidates, selected))
+}
+fn invoke_selected(context Context, node Node, instance Instance, inputs List[Node], values List[Expr]) Result[Expr, Failure] {
     let signature = get(context.env.signatures, instance.signature)
-    index = 0
+    var index = 0
     while index < length(values) {
         let target = substitute(context.env, context.signature.symbol, get(signature.params, index), instance.arguments, node)?
         set(values, index, typed(context, get(inputs, index), get(values, index), target)?)
