@@ -33,6 +33,9 @@ pub(super) fn allocating_functions(
         block_expressions(&source.body, &mut values);
         for value in values {
             match value.kind {
+                checked::ExprKind::DynBox { .. } | checked::ExprKind::DynCall { .. } => {
+                    allocating.insert(*id);
+                }
                 checked::ExprKind::Primitive(operation, _) => {
                     if allocates(operation) {
                         allocating.insert(*id);
@@ -100,7 +103,7 @@ fn allocates(operation: Primitive) -> bool {
 
 pub(super) fn managed(program: &checked::Program, ty: Type) -> bool {
     match ty {
-        Type::Text | Type::Bytes | Type::List(_) => true,
+        Type::Text | Type::Bytes | Type::List(_) | Type::Dyn(_) => true,
         Type::Data(id) => match &program.types[id].kind {
             checked::DataKind::Refined(base) => managed(program, *base),
             checked::DataKind::Record(fields) => fields.iter().any(|(_, ty)| managed(program, *ty)),
@@ -156,7 +159,18 @@ impl TemporarySlots {
         match &value.kind {
             checked::ExprKind::Unary(_, value)
             | checked::ExprKind::Field(value, _)
-            | checked::ExprKind::Coerce(value) => self.expression(program, value),
+            | checked::ExprKind::Coerce(value)
+            | checked::ExprKind::DynBox { value, .. } => self.expression(program, value),
+            checked::ExprKind::DynCall {
+                receiver,
+                arguments,
+                ..
+            } => {
+                self.expression(program, receiver);
+                for argument in arguments {
+                    self.expression(program, argument);
+                }
+            }
             checked::ExprKind::Binary(_, left, right) => {
                 self.expression(program, left);
                 self.expression(program, right);
@@ -332,7 +346,18 @@ fn expressions<'a>(value: &'a checked::Expr, values: &mut Vec<&'a checked::Expr>
     match &value.kind {
         checked::ExprKind::Unary(_, value)
         | checked::ExprKind::Field(value, _)
-        | checked::ExprKind::Coerce(value) => expressions(value, values),
+        | checked::ExprKind::Coerce(value)
+        | checked::ExprKind::DynBox { value, .. } => expressions(value, values),
+        checked::ExprKind::DynCall {
+            receiver,
+            arguments,
+            ..
+        } => {
+            expressions(receiver, values);
+            for argument in arguments {
+                expressions(argument, values);
+            }
+        }
         checked::ExprKind::Binary(_, left, right) => {
             expressions(left, values);
             expressions(right, values);
@@ -455,6 +480,14 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
     fn value(&self, ty: Type, value: BasicValueEnum<'ctx>) -> NativeResult<()> {
         match ty {
             Type::Text | Type::Bytes | Type::List(_) => self.mark(value.into_pointer_value())?,
+            Type::Dyn(_) => {
+                let data = self.builder.build_extract_value(
+                    value.into_struct_value(),
+                    0,
+                    "trace.dyn.data",
+                )?;
+                self.mark(data.into_pointer_value())?;
+            }
             Type::Data(id) => match &self.program.types[id].kind {
                 checked::DataKind::Refined(base) => self.value(*base, value)?,
                 checked::DataKind::Record(fields) => {
@@ -542,7 +575,7 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
         offset: usize,
     ) -> NativeResult<()> {
         match ty {
-            Type::Text | Type::Bytes | Type::List(_) => {
+            Type::Text | Type::Bytes | Type::List(_) | Type::Dyn(_) => {
                 let word = self
                     .builder
                     .build_extract_value(payload, offset as u32, "trace.word")?
@@ -583,6 +616,8 @@ mod tests {
 
     fn program() -> checked::Program {
         checked::Program {
+            interfaces: vec![],
+            witnesses: vec![],
             types: vec![checked::Data {
                 name: "Choice".into(),
                 kind: checked::DataKind::Enum(vec![

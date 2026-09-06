@@ -60,7 +60,8 @@ fn staging(context Context, node Node) Result[Context, Failure] {
     // Compile-time call targets never enter the runtime reachability queue.
     let env = Environment { source = context.env.source types = context.env.types signatures = context.env.signatures
         pending = new[Instance]() stage_depth = context.env.stage_depth + 1 computations = context.env.computations
-        concepts = context.env.concepts implementations = context.env.implementations }
+        concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces
+        witnesses = new[Witness]() uses = new[SlotUse]() }
     let locals = new[Local]()
     var index = 0
     while index < length(context.locals) { push(locals, get(context.locals, index))
@@ -100,14 +101,9 @@ fn isolated(context Context, node Node, value Expr, boundary Int) Result[Bool, F
     Result.Ok(true)
 }
 fn prepared(stage Context) Result[std.loom.typed.Program, Failure] {
-    let functions = new[Function]()
-    var index = 0
-    while index < length(stage.env.pending) {
-        let instance = get(stage.env.pending, index)
-        push(functions, function(stage.env, instance.signature, instance.arguments, true)?)
-        index = index + 1
-    }
-    Result.Ok(std.loom.typed.Program { types = stage.env.types functions = functions entry = -1 tests = new[Int]() exports = new[Int]() })
+    let functions = emit_functions(stage.env, false)?
+    Result.Ok(std.loom.typed.Program { types = stage.env.types functions = functions entry = -1 tests = new[Int]() exports = new[Int]()
+        interfaces = stage.env.interfaces witnesses = stage.env.witnesses })
 }
 fn computed(context Context, node Node, input Node, expected Int) Result[Value, Failure] {
     let stage = staging(context, node)?
@@ -128,7 +124,7 @@ fn computed(context Context, node Node, input Node, expected Int) Result[Value, 
 }
 
 fn type_operand(context Context, node Node) Bool {
-    if (node.kind != NodeKind.Name && node.kind != NodeKind.Type && node.kind != NodeKind.Tuple && node.kind != NodeKind.TupleType) ||
+    if (node.kind != NodeKind.Name && node.kind != NodeKind.Type && node.kind != NodeKind.Tuple && node.kind != NodeKind.TupleType && node.kind != NodeKind.DynType) ||
         lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 { return false }
     var index = 0
     while index < length(node.children) {

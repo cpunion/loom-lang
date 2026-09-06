@@ -173,6 +173,11 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
     if length(options) == 1 {
         let signature = get(context.env.signatures, get(options, 0))
         let args = supplied(context, node, types, signature.parameters)?
+        index = 0
+        while index < length(prefix) {
+            discard infer(context.env, get(signature.params, index), get(prefix, index).ty, args)
+            index = index + 1
+        }
         if complete(args) {
             index = 0
             while index < length(inputs) {
@@ -205,7 +210,7 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
             let value = get(values, argument)
             if !infer(context.env, pattern, value.ty, args) {
                 let target = hint(context, pattern, args, node)?
-                if get(context.env.types, value.ty).kind == TypeKind.Refined && target == base_type(context.env, value.ty) {
+                if can_widen(context, value.ty, target) {
                     widened = true
                 } else { matched = false }
             }
@@ -244,6 +249,9 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
         index = index + 1
     }
     let output = substitute(context.env, context.signature.symbol, signature.result, instance.arguments, node)?
+    if prototype(context.env, signature.symbol) && length(values) != 0 && get(context.env.types, get(values, 0).ty).kind == TypeKind.Dyn {
+        return dynamic_call(context, node, instance.signature, output, values)
+    }
     let target = if context.emit { schedule(context.env, instance.signature, instance.arguments, node)? } else { -1 }
     Result.Ok(expression(ExprKind.Call, output, node, "", target, values, all_fall(values)))
 }

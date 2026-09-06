@@ -79,6 +79,11 @@ pub fn type_name(analysis Analysis, ty Int) Text {
     if value.kind == TypeKind.Text { return "Text" }
     if value.kind == TypeKind.Bytes { return "Bytes" }
     if value.kind == TypeKind.Float { return "Float" }
+    if value.kind == TypeKind.Dyn {
+        let interface = get(analysis.program.interfaces, value.symbol)
+        let symbol = get(analysis.bindings.symbols, interface.symbol)
+        return concat("dyn ", qualify(get(analysis.bindings.files, symbol.file).package, symbol.name))
+    }
     if value.kind == TypeKind.Parameter { return concat("T", to_text(value.symbol)) }
     if value.kind == TypeKind.Tuple {
         var label = "("

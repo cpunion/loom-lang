@@ -217,6 +217,8 @@ fn ieee_float_operations_and_aggregate_payloads_execute_without_runtime() {
         },
     });
     let program = checked::Program {
+        interfaces: vec![],
+        witnesses: vec![],
         types: vec![
             checked::Data {
                 name: "Number".into(),

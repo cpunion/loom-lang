@@ -1,0 +1,27 @@
+test fn dynamic_types_cover_annotations_and_nested_type_arguments() {
+    let tree = parsed("record Holder { value dyn app.Display }\nenum Item { Some(dyn Display) }\nfn f(value dyn Display) dyn Display {\nlet item dyn Display = value\nlet items List[dyn Display] = make[dyn Display]()\nlet pair (dyn Display, Int) = (value, 1)\nvalue\n}")
+    let field = child(child(child(tree, 0), 1), 0)
+    assert field.kind == NodeKind.DynType && field.value == "app.Display"
+    assert child(child(child(tree, 1), 1), 0).kind == NodeKind.DynType
+    let function = child(tree, 2)
+    assert child(child(child(function, 1), 0), 0).kind == NodeKind.DynType
+    assert child(child(function, 2), 0).kind == NodeKind.DynType
+    assert child(child(body(function), 0), 0).kind == NodeKind.DynType
+    let items = child(body(function), 1)
+    assert child(child(items, 0), 0).kind == NodeKind.DynType
+    assert child(child(child(items, 1), 0), 0).kind == NodeKind.DynType
+    assert child(child(child(body(function), 2), 0), 0).kind == NodeKind.DynType
+    let grouped = child(child(child(child(parsed("fn f(value (dyn C)) {}"), 0), 1), 0), 0)
+    assert grouped.kind == NodeKind.DynType && grouped.value == "C"
+    let plain = child(child(child(child(parsed("fn f(value dyn C) {}"), 0), 1), 0), 0)
+    assert plain.span.start == 11 && plain.span.end == 16
+}
+
+test fn dyn_is_reserved_and_keeps_semantic_arguments_for_the_checker() {
+    discard rejected("fn dyn() {}")
+    discard rejected("fn f() { let dyn = 1 }")
+    discard rejected("fn f(value dyn) {}")
+    discard rejected("fn f(value dyn dyn C) {}")
+    let ty = child(child(child(child(parsed("fn f(value dyn C[Int]) {}"), 0), 1), 0), 0)
+    assert ty.kind == NodeKind.DynType && child(ty, 0).value == "Int"
+}

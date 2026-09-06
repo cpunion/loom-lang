@@ -107,7 +107,9 @@ fn conformances(env Environment) Result[Bool, Failure] {
         if item.node.kind == NodeKind.Impl {
             let capability = required_concept(env, owner, child(item.node, 0))?
             let ty = resolve(env, owner, child(item.node, 1), new[Int](), 0)?
-            if !concrete(env, ty) { return Result.Err(failure(env, owner, item.node, "an implementation needs a concrete target type")) }
+            if !concrete(env, ty) || get(env.types, ty).kind == TypeKind.Dyn {
+                return Result.Err(failure(env, owner, item.node, "an implementation needs a concrete, non-dynamic target type"))
+            }
             var index = 0
             while index < length(env.implementations) {
                 let previous = get(env.implementations, index)
@@ -178,6 +180,9 @@ fn implementation(context Context, ty Int, capability Int) Int {
     -1
 }
 fn satisfies(context Context, ty Int, capability Int) Bool {
+    if get(context.env.types, ty).kind == TypeKind.Dyn {
+        return get(context.env.interfaces, get(context.env.types, ty).symbol).symbol == capability
+    }
     evidence(context, ty, capability) || implementation(context, ty, capability) >= 0
 }
 fn satisfies_arguments(context Context, current Signature, arguments List[Int], node Node) Result[Bool, Failure] {

@@ -65,7 +65,7 @@ fn reserved(value Text) Bool {
     value == "return" || value == "assert" || value == "discard" || value == "while" ||
     value == "if" || value == "else" || value == "requires" || value == "ensures" ||
     value == "true" || value == "false" || value == "comptime" ||
-    value == "concept" || value == "impl" || value == "for" || value == "implements"
+    value == "concept" || value == "impl" || value == "for" || value == "implements" || value == "dyn"
 }
 fn name(cursor Cursor) Result[Step, Diagnostic] {
     if !at(cursor, Kind.Name) || reserved(token(cursor).value) {
@@ -86,9 +86,10 @@ fn path(cursor Cursor) Result[Step, Diagnostic] {
 }
 fn type_ref(cursor Cursor) Result[Step, Diagnostic] {
     if at(cursor, Kind.LParen) { return parenthesized(cursor, Items.Types, NodeKind.TupleType) }
-    let named = path(cursor)?
+    let dynamic = word(cursor, "dyn")
+    let named = path(if dynamic { next(cursor) } else { cursor })?
     let args = type_args(named.rest)?
-    Result.Ok(done(cursor, args.rest, NodeKind.Type, named.node.value, args.node.children))
+    Result.Ok(done(cursor, args.rest, if dynamic { NodeKind.DynType } else { NodeKind.Type }, named.node.value, args.node.children))
 }
 fn parameter(cursor Cursor) Result[Step, Diagnostic] {
     let named = name(cursor)?

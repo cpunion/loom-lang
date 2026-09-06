@@ -89,6 +89,7 @@ fn find_data(env Environment, owner Int, node Node, path Text) Result[Int, Failu
 }
 fn resolve(env Environment, owner Int, node Node, arguments List[Int], depth Int) Result[Int, Failure] {
     if depth > 64 { return Result.Err(failure(env, owner, node, "type specialization depth exceeded")) }
+    if node.kind == NodeKind.DynType { return dynamic_type(env, owner, node) }
     if node.kind == NodeKind.TupleType || node.kind == NodeKind.Tuple {
         let elements = new[Int]()
         var index = 0

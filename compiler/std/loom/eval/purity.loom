@@ -1,5 +1,6 @@
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
+import std.loom.typed.TypeKind
 import std.list.get
 import std.list.push
 import std.list.length
@@ -17,6 +18,10 @@ fn scan(state State, expr Expr, seen List[Int], depth Int) Result[Bool, Failure]
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
     discard spend(state, expr, 0, 1)?
     if expr.kind == ExprKind.Deferred { return Result.Err(failure(expr, "compile-time expression still has unresolved types")) }
+    if expr.kind == ExprKind.DynBox || expr.kind == ExprKind.DynCall ||
+        (expr.ty >= 0 && expr.ty < length(state.program.types) && get(state.program.types, expr.ty).kind == TypeKind.Dyn) {
+        return Result.Err(failure(expr, "dynamic concept values and calls are not supported at compile time"))
+    }
     if state.partial && expr.kind != ExprKind.Integer && expr.kind != ExprKind.Float && expr.kind != ExprKind.Bool && expr.kind != ExprKind.Text &&
         expr.kind != ExprKind.Local && expr.kind != ExprKind.Unary && expr.kind != ExprKind.Binary && expr.kind != ExprKind.Coerce {
         return Result.Err(failure(expr, "expression is not a call-free scalar constant"))

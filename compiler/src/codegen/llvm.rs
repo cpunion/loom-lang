@@ -20,6 +20,8 @@ use std::{
     sync::Once,
 };
 
+#[path = "llvm_dyn.rs"]
+mod dynamic;
 #[path = "llvm_gc.rs"]
 mod gc;
 
@@ -102,7 +104,11 @@ fn emit_checked(
     };
     let library = !test_mode && program.entry.is_none();
     trace_phase("reachability");
-    let reachable = reachable_functions(program, &roots)?;
+    let Reachable {
+        functions: reachable,
+        witnesses: live_witnesses,
+        slots: live_slots,
+    } = reachable_functions(program, &roots, library)?;
     let allocating = gc::allocating_functions(program, &reachable);
     trace_phase("target");
     Target::initialize_native(&InitializationConfig::default())?;
@@ -150,6 +156,14 @@ fn emit_checked(
         };
         functions[id] = Some(module.add_function(&format!("loom.fn.{id}"), ty, Some(linkage)));
     }
+    let witnesses = dynamic::emit_witnesses(
+        &context,
+        &module,
+        program,
+        &functions,
+        &live_witnesses,
+        &live_slots,
+    )?;
     trace_phase("lower");
     for &id in &reachable {
         let function = functions[id].ok_or("missing checked function")?;
@@ -193,6 +207,7 @@ fn emit_checked(
             module: &module,
             builder: &builder,
             functions: &functions,
+            witnesses: &witnesses,
             function,
             locals,
             program,
@@ -292,6 +307,12 @@ fn native_type<'ctx>(
         Type::Bool => context.bool_type().into(),
         Type::Int => context.i64_type().into(),
         Type::Float => context.f64_type().into(),
+        Type::Dyn(_) => {
+            let pointer = context.ptr_type(AddressSpace::default());
+            context
+                .struct_type(&[pointer.into(), pointer.into()], false)
+                .into()
+        }
         Type::Text | Type::Bytes | Type::List(_) => {
             context.ptr_type(AddressSpace::default()).into()
         }
@@ -345,6 +366,7 @@ fn payload_words(
 fn value_words(program: &checked::Program, ty: Type) -> NativeResult<usize> {
     match ty {
         Type::Int | Type::Float | Type::Bool | Type::Text | Type::Bytes | Type::List(_) => Ok(1),
+        Type::Dyn(_) => Ok(2),
         Type::Unit => Ok(0),
         Type::Parameter(_) => Err("unbound type parameter reached native layout".into()),
         Type::Data(id) => match &program.types[id].kind {
@@ -368,6 +390,7 @@ struct FunctionEmitter<'a, 'ctx> {
     module: &'a Module<'ctx>,
     builder: &'a Builder<'ctx>,
     functions: &'a [Option<FunctionValue<'ctx>>],
+    witnesses: &'a [Option<PointerValue<'ctx>>],
     function: FunctionValue<'ctx>,
     locals: Vec<Option<PointerValue<'ctx>>>,
     program: &'a checked::Program,
@@ -690,6 +713,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             checked::ExprKind::Primitive(operation, args) => {
                 return self.primitive(expr.ty, *operation, args);
+            }
+            checked::ExprKind::DynBox { witness, value } => return self.dyn_box(*witness, value),
+            checked::ExprKind::DynCall {
+                receiver,
+                slot,
+                arguments,
+            } => {
+                return self.dyn_call(receiver, *slot, arguments);
             }
             checked::ExprKind::Local(local) => {
                 let Some(pointer) = self.locals[*local] else {
@@ -1025,6 +1056,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         words: &mut Vec<IntValue<'ctx>>,
     ) -> NativeResult<()> {
         match ty {
+            Type::Dyn(_) => {
+                for index in 0..2 {
+                    let pointer = self
+                        .builder
+                        .build_extract_value(value.into_struct_value(), index, "dyn.word")?
+                        .into_pointer_value();
+                    words.push(self.builder.build_ptr_to_int(
+                        pointer,
+                        self.context.i64_type(),
+                        "pointer.word",
+                    )?);
+                }
+            }
             Type::Int => words.push(value.into_int_value()),
             Type::Float => words.push(
                 self.builder
@@ -1085,6 +1129,24 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         offset: &mut usize,
     ) -> NativeResult<BasicValueEnum<'ctx>> {
         Ok(match ty {
+            Type::Dyn(_) => {
+                let mut value = native_type(self.context, self.program, ty)?
+                    .into_struct_type()
+                    .const_zero();
+                for index in 0..2 {
+                    let pointer = self.builder.build_int_to_ptr(
+                        words[*offset],
+                        self.context.ptr_type(AddressSpace::default()),
+                        "word.pointer",
+                    )?;
+                    *offset += 1;
+                    value = self
+                        .builder
+                        .build_insert_value(value, pointer, index, "payload.dyn")?
+                        .into_struct_value();
+                }
+                value.into()
+            }
             Type::Float => {
                 let word = words[*offset];
                 *offset += 1;
@@ -1430,62 +1492,95 @@ fn fault_write_abi<'ctx>(
     }
 }
 
+#[derive(Debug)]
+struct Reachable {
+    functions: BTreeSet<usize>,
+    witnesses: BTreeSet<usize>,
+    slots: BTreeSet<(Type, usize)>,
+}
+
 fn reachable_functions(
     program: &checked::Program,
     roots: &[usize],
-) -> NativeResult<BTreeSet<usize>> {
-    fn expr(value: &checked::Expr, calls: &mut Vec<usize>) {
+    library: bool,
+) -> NativeResult<Reachable> {
+    fn expr(
+        value: &checked::Expr,
+        calls: &mut Vec<usize>,
+        witnesses: &mut Vec<usize>,
+        slots: &mut BTreeSet<(Type, usize)>,
+    ) {
         match &value.kind {
             checked::ExprKind::Unary(_, value)
             | checked::ExprKind::Field(value, _)
-            | checked::ExprKind::Coerce(value) => expr(value, calls),
+            | checked::ExprKind::Coerce(value) => expr(value, calls, witnesses, slots),
+            checked::ExprKind::DynBox { witness, value } => {
+                witnesses.push(*witness);
+                expr(value, calls, witnesses, slots);
+            }
+            checked::ExprKind::DynCall {
+                receiver,
+                slot,
+                arguments,
+            } => {
+                slots.insert((receiver.ty, *slot));
+                expr(receiver, calls, witnesses, slots);
+                for argument in arguments {
+                    expr(argument, calls, witnesses, slots);
+                }
+            }
             checked::ExprKind::Binary(_, left, right) => {
-                expr(left, calls);
-                expr(right, calls);
+                expr(left, calls, witnesses, slots);
+                expr(right, calls, witnesses, slots);
             }
             checked::ExprKind::Call(function, args) => {
                 calls.push(*function);
                 for arg in args {
-                    expr(arg, calls);
+                    expr(arg, calls, witnesses, slots);
                 }
             }
             checked::ExprKind::Primitive(_, args) => {
                 for arg in args {
-                    expr(arg, calls);
+                    expr(arg, calls, witnesses, slots);
                 }
             }
             checked::ExprKind::Record(fields) => {
                 for (_, field) in fields {
-                    expr(field, calls);
+                    expr(field, calls, witnesses, slots);
                 }
             }
             checked::ExprKind::Variant { fields, .. } => {
                 for field in fields {
-                    expr(field, calls);
+                    expr(field, calls, witnesses, slots);
                 }
             }
             checked::ExprKind::Match { value, arms } => {
-                expr(value, calls);
+                expr(value, calls, witnesses, slots);
                 for arm in arms {
-                    block(&arm.body, calls);
+                    block(&arm.body, calls, witnesses, slots);
                 }
             }
-            checked::ExprKind::Block(body) => block(body, calls),
+            checked::ExprKind::Block(body) => block(body, calls, witnesses, slots),
             checked::ExprKind::If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                expr(condition, calls);
-                block(then_body, calls);
+                expr(condition, calls, witnesses, slots);
+                block(then_body, calls, witnesses, slots);
                 if let Some(body) = else_body {
-                    block(body, calls);
+                    block(body, calls, witnesses, slots);
                 }
             }
             _ => {}
         }
     }
-    fn block(value: &checked::Block, calls: &mut Vec<usize>) {
+    fn block(
+        value: &checked::Block,
+        calls: &mut Vec<usize>,
+        witnesses: &mut Vec<usize>,
+        slots: &mut BTreeSet<(Type, usize)>,
+    ) {
         for statement in &value.statements {
             match &statement.kind {
                 checked::StmtKind::Let { value, .. }
@@ -1493,34 +1588,98 @@ fn reachable_functions(
                 | checked::StmtKind::Assert(value)
                 | checked::StmtKind::Discard(value)
                 | checked::StmtKind::Expr(value)
-                | checked::StmtKind::Return(Some(value)) => expr(value, calls),
+                | checked::StmtKind::Return(Some(value)) => expr(value, calls, witnesses, slots),
                 checked::StmtKind::While { condition, body } => {
-                    expr(condition, calls);
-                    block(body, calls);
+                    expr(condition, calls, witnesses, slots);
+                    block(body, calls, witnesses, slots);
                 }
                 checked::StmtKind::Return(None) => {}
             }
         }
         if let Some(tail) = &value.tail {
-            expr(tail, calls);
+            expr(tail, calls, witnesses, slots);
         }
     }
     let mut reachable = BTreeSet::new();
     let mut pending = roots.to_vec();
-    while let Some(id) = pending.pop() {
-        if !reachable.insert(id) {
-            continue;
+    let mut witnesses = BTreeSet::new();
+    let mut pending_witnesses = Vec::new();
+    let mut slots = BTreeSet::new();
+    loop {
+        while let Some(id) = pending.pop() {
+            if !reachable.insert(id) {
+                continue;
+            }
+            let function = program
+                .functions
+                .get(id)
+                .ok_or("invalid checked function ID")?;
+            for requirement in &function.requires {
+                expr(
+                    requirement,
+                    &mut pending,
+                    &mut pending_witnesses,
+                    &mut slots,
+                );
+            }
+            block(
+                &function.body,
+                &mut pending,
+                &mut pending_witnesses,
+                &mut slots,
+            );
         }
-        let function = program
-            .functions
-            .get(id)
-            .ok_or("invalid checked function ID")?;
-        for requirement in &function.requires {
-            expr(requirement, &mut pending);
+        while let Some(id) = pending_witnesses.pop() {
+            if witnesses.insert(id) {
+                let witness = program
+                    .witnesses
+                    .get(id)
+                    .ok_or("invalid checked witness ID")?;
+                if library && witness.methods.iter().any(Option::is_none) {
+                    return Err("exported witness tables must retain every method".into());
+                }
+                if library {
+                    slots.extend(
+                        (0..witness.methods.len()).map(|slot| (Type::Dyn(witness.interface), slot)),
+                    );
+                }
+            }
         }
-        block(&function.body, &mut pending);
+        // Only actual call slots activate a live witness's methods. Those
+        // methods can construct further witnesses or call further slots.
+        for &(ty, slot) in &slots {
+            let Type::Dyn(interface) = ty else {
+                return Err("invalid dyn receiver type".into());
+            };
+            program
+                .interfaces
+                .get(interface)
+                .and_then(|value| value.methods.get(slot))
+                .ok_or("invalid checked dyn method slot")?;
+            for id in &witnesses {
+                let witness = &program.witnesses[*id];
+                if witness.interface == interface {
+                    let target = witness
+                        .methods
+                        .get(slot)
+                        .copied()
+                        .flatten()
+                        .ok_or("reachable dyn call refers to an absent witness method")?;
+                    if !reachable.contains(&target) {
+                        pending.push(target);
+                    }
+                }
+            }
+        }
+        if pending.is_empty() {
+            break;
+        }
     }
-    Ok(reachable)
+    Ok(Reachable {
+        functions: reachable,
+        witnesses,
+        slots,
+    })
 }
 
 #[cfg(test)]
@@ -1545,6 +1704,8 @@ mod tests {
     #[test]
     fn enum_layout_uses_largest_payload_and_rejects_unbound_types() {
         let program = checked::Program {
+            interfaces: vec![],
+            witnesses: vec![],
             lists: vec![],
             types: vec![
                 checked::Data {

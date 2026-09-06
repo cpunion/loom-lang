@@ -175,7 +175,8 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     // Guard expansion shares this function queue, unlike compile-time staging.
     let env = Environment { source = context.env.source types = context.env.types signatures = context.env.signatures
         pending = context.env.pending stage_depth = context.env.stage_depth + 1 computations = context.env.computations
-        concepts = context.env.concepts implementations = context.env.implementations }
+        concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces
+        witnesses = context.env.witnesses uses = context.env.uses }
     let predicate = expr(predicate_context(env, declaration, context.locals, local, context.emit),
         predicate_node(context.env, declaration), 2)?
     let branches = expressions(predicate_at(predicate, node))
