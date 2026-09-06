@@ -308,7 +308,7 @@ fn ordinary_project_tool_selects_packages_and_tests_without_a_compiler_child() {
     fs::write(package.join("dep/broken_test.loom"), "invalid source").unwrap();
     fs::write(
         package.join("testutil/main.loom"),
-        "pub fn extra() Int { 7 }",
+        "import app.answer\npub fn extra() Int { assert answer() == 42\n7 }",
     )
     .unwrap();
     fs::write(package.join("unselected/main.loom"), "invalid source").unwrap();
@@ -340,6 +340,21 @@ fn ordinary_project_tool_selects_packages_and_tests_without_a_compiler_child() {
     // The same selection also type-checks and runs through the compiler.
     success(&loom(&["check", package.to_str().unwrap()]));
     success(&loom(&["test", package.to_str().unwrap()]));
+    // Test helpers may depend on the root's production API; production cycles
+    // remain invalid, including when tests are selected.
+    fs::write(
+        package.join("dep/main.loom"),
+        "import app.answer\npub fn open() Int { answer() }",
+    )
+    .unwrap();
+    let output = inspect(true);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("package import cycle"));
+    fs::write(
+        package.join("dep/main.loom"),
+        "pub fn open() Int { 42 }\nfn hidden() {}",
+    )
+    .unwrap();
     fs::write(package.join("main.loom"), "import app.dep.hidden\n").unwrap();
     let output = inspect(false);
     assert_eq!(output.status.code(), Some(1));
