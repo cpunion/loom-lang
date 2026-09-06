@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Reuse same-type GC temporary slots across completed statements and exclusive
+  branches. Preserve live argument snapshots, local roots, and deterministic
+  bootstrap without changing the runtime ABI or adding a liveness IR.
 - Add structural tuples, positional access, and exactly-once `let`/`var`
   destructuring to the Loom-written frontend. Reuse aggregate native layout and
   compile-time graph reconstruction, including generic and shared fields.
