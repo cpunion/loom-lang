@@ -132,7 +132,7 @@ fn execute() -> Result<ExitCode, String> {
 
 fn help() {
     println!(
-        "Loom native seed\n\n  loom check [directory]\n  loom build [directory] [--output path] [--emit-ir path]\n  loom test  [directory] [--emit-ir path]\n  loom run   [directory] [--emit-ir path]\n\nThe seed implements a documented scalar subset. build emits a library object\nwhen the selected package has no main. LOOM_CC selects the host Clang linker."
+        "Loom native compiler\n\n  loom check [directory]\n  loom build [directory] [--output path] [--emit-ir path]\n  loom test  [directory] [--emit-ir path]\n  loom run   [directory] [--emit-ir path]\n\nSee compiler/README.md for the supported subset. build emits a library object\nwhen the selected package has no main. LOOM_CC selects the host Clang linker."
     );
 }
 

@@ -371,7 +371,7 @@ impl Parser {
             } else {
                 let span = self.peek().span;
                 let public = self.eat_word("pub");
-                if self.word("record") || self.word("enum") {
+                if self.word("record") || self.word("enum") || self.word("type") {
                     file.data.push(self.data(public, span)?);
                 } else {
                     file.functions.push(self.function(public, span)?);
@@ -383,6 +383,28 @@ impl Parser {
     }
 
     fn data(&mut self, public: bool, mut span: Span) -> Result<ast::Data, Diagnostic> {
+        if self.eat_word("type") {
+            let (name, _) = self.name()?;
+            let parameters = self.parameters()?;
+            self.expect(Kind::Assign, "'=' before the constrained base type")?;
+            self.newlines();
+            let base = self.type_ref()?;
+            if !self.eat_word("where") {
+                return Err(self.error("expected 'where' before the type constraint"));
+            }
+            let predicate = self.expr(0, false, true)?;
+            if !self.at(&Kind::Newline) && !self.at(&Kind::Eof) {
+                return Err(self.error("expected a newline after the constrained type"));
+            }
+            span.end = predicate.span.end;
+            return Ok(ast::Data {
+                name,
+                public,
+                parameters,
+                kind: ast::DataKind::Refined { base, predicate },
+                span,
+            });
+        }
         let record = self.eat_word("record");
         if !record {
             self.bump();
@@ -443,7 +465,9 @@ impl Parser {
             return Err(self.error("intrinsic declarations must be private and cannot be tests"));
         }
         if !self.eat_word("fn") {
-            return Err(self.error("expected a function, record, enum, or import declaration"));
+            return Err(
+                self.error("expected a function, record, enum, type, or import declaration")
+            );
         }
         let (name, _) = self.name()?;
         let parameters = self.parameters()?;
@@ -904,6 +928,8 @@ fn reserved(name: &str) -> bool {
         name,
         "fn" | "pub"
             | "intrinsic"
+            | "type"
+            | "where"
             | "record"
             | "enum"
             | "match"
@@ -1212,6 +1238,41 @@ fn example() Text { "hé\n\t\"\\\u{1f9f5}" }
             "fn f() Text { \"line\nbreak\" }",
             r#"fn f() Text { "\x01" }"#,
             r#"fn f() Text { "\u{110000}" }"#,
+        ] {
+            assert!(parse(0, source).is_err(), "unexpectedly accepted {source}");
+        }
+    }
+
+    #[test]
+    fn constrained_type_declarations() {
+        let source = "pub type Positive = Int where self > 0\n\
+            type Small = Int where self >= 0 &&\n self < 10\n\
+            fn identity(value Positive) Positive { value }";
+        let file = parse(2, source).unwrap();
+        assert_eq!(file.data.len(), 2);
+        let positive = &file.data[0];
+        assert!(positive.public);
+        assert_eq!(positive.name, "Positive");
+        assert_eq!(
+            &source[positive.span.start..positive.span.end],
+            "pub type Positive = Int where self > 0"
+        );
+        let ast::DataKind::Refined { base, predicate } = &positive.kind else {
+            panic!()
+        };
+        assert_eq!(base.path, ["Int"]);
+        assert!(matches!(
+            predicate.kind,
+            ast::ExprKind::Binary(Binary::Gt, _, _)
+        ));
+        assert_eq!(file.functions.len(), 1);
+        for source in [
+            "type Positive Int where self > 0",
+            "type Positive = Int",
+            "type Positive = Int where",
+            "type Positive = Int where self > 0 {}",
+            "type Positive: Int where self > 0",
+            "type Positive = Int where true fn f() {}",
         ] {
             assert!(parse(0, source).is_err(), "unexpectedly accepted {source}");
         }

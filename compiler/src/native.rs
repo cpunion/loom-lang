@@ -201,6 +201,7 @@ fn native_type<'ctx>(
         Type::Unit => context.struct_type(&[], false).into(),
         Type::Parameter(_) => return Err("unbound type parameter reached native emission".into()),
         Type::Data(id) => match &program.types[id].kind {
+            checked::DataKind::Refined(base) => native_type(context, program, *base)?,
             checked::DataKind::Record(fields) => {
                 let fields = fields
                     .iter()
@@ -250,6 +251,7 @@ fn value_words(program: &checked::Program, ty: Type) -> NativeResult<usize> {
         Type::Unit => Ok(0),
         Type::Parameter(_) => Err("unbound type parameter reached native layout".into()),
         Type::Data(id) => match &program.types[id].kind {
+            checked::DataKind::Refined(base) => value_words(program, *base),
             checked::DataKind::Record(fields) => {
                 fields.iter().try_fold(0usize, |total, (_, ty)| {
                     total
@@ -400,7 +402,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ("list_push", None)
             }
             Primitive::Open => ("file_open", Some(i64_type.into())),
+            Primitive::Create => ("file_create", Some(i64_type.into())),
             Primitive::Read => ("file_read", Some(i64_type.into())),
+            Primitive::Write => ("file_write", Some(i64_type.into())),
             Primitive::Close => ("file_close", Some(i64_type.into())),
         };
         let value = self.runtime_call(name, result_type, &values)?;
@@ -670,6 +674,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 return self.match_expr(expr.ty, value, arms);
             }
             checked::ExprKind::Block(body) => return self.block(body),
+            checked::ExprKind::Coerce(value) => return self.expr(value),
             checked::ExprKind::If {
                 condition,
                 then_body,
@@ -876,6 +881,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Type::Unit => {}
             Type::Parameter(_) => return Err("unbound type parameter in enum payload".into()),
             Type::Data(id) => match &self.program.types[id].kind {
+                checked::DataKind::Refined(base) => self.flatten(*base, value, words)?,
                 checked::DataKind::Record(fields) => {
                     for (index, (_, ty)) in fields.iter().enumerate() {
                         let field = self.builder.build_extract_value(
@@ -941,10 +947,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Type::Unit => self.context.struct_type(&[], false).const_zero().into(),
             Type::Parameter(_) => return Err("unbound type parameter in enum payload".into()),
             Type::Data(id) => {
+                if let checked::DataKind::Refined(base) = &self.program.types[id].kind {
+                    return self.rebuild(*base, words, offset);
+                }
                 let mut result = native_type(self.context, self.program, ty)?
                     .into_struct_type()
                     .const_zero();
                 match &self.program.types[id].kind {
+                    checked::DataKind::Refined(_) => {
+                        unreachable!("refined layouts use their base representation")
+                    }
                     checked::DataKind::Record(fields) => {
                         for (index, (_, ty)) in fields.iter().enumerate() {
                             result = self
@@ -1207,9 +1219,9 @@ fn reachable_functions(
 ) -> NativeResult<BTreeSet<usize>> {
     fn expr(value: &checked::Expr, calls: &mut Vec<usize>) {
         match &value.kind {
-            checked::ExprKind::Unary(_, value) | checked::ExprKind::Field(value, _) => {
-                expr(value, calls)
-            }
+            checked::ExprKind::Unary(_, value)
+            | checked::ExprKind::Field(value, _)
+            | checked::ExprKind::Coerce(value) => expr(value, calls),
             checked::ExprKind::Binary(_, left, right) => {
                 expr(left, calls);
                 expr(right, calls);
@@ -1318,6 +1330,10 @@ mod tests {
                         ("Triple".into(), vec![Type::Int, Type::Int, Type::Int]),
                     ]),
                 },
+                checked::Data {
+                    name: "Positive".into(),
+                    kind: checked::DataKind::Refined(Type::Int),
+                },
             ],
             functions: vec![],
             entry: None,
@@ -1338,6 +1354,12 @@ mod tests {
             3
         );
         assert_eq!(value_words(&program, Type::Data(1)).unwrap(), 4);
+        assert_eq!(
+            native_type(&context, &program, Type::Data(2)).unwrap(),
+            context.i64_type().into()
+        );
+        assert_eq!(value_words(&program, Type::Data(2)).unwrap(), 1);
+        assert!(!gc::managed(&program, Type::Data(2)));
         assert!(native_type(&context, &program, Type::Parameter(0)).is_err());
     }
 }

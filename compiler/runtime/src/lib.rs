@@ -430,6 +430,37 @@ unsafe extern "C" fn loom_rt_file_open(path: *const u8) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_file_create(path: *const u8) -> i64 {
+    // SAFETY: path is live UTF-8; CString rejects embedded NUL bytes.
+    let Ok(path) = std::ffi::CString::new(unsafe { text_bytes(path) }) else {
+        return -1;
+    };
+    // SAFETY: open consumes a NUL-terminated path and promoted mode argument.
+    // The process umask determines the final permissions of a new file.
+    i64::from(unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+            0o666 as libc::c_uint,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_file_write(fd: i64, text: *const u8, offset: i64) -> i64 {
+    let (Ok(fd), Ok(offset)) = (libc::c_int::try_from(fd), usize::try_from(offset)) else {
+        return -1;
+    };
+    // SAFETY: text is live for this non-retaining, nonallocating call.
+    let bytes = unsafe { text_bytes(text) };
+    let Some(bytes) = bytes.get(offset..) else {
+        return -1;
+    };
+    // SAFETY: write only reads the remaining initialized bytes and validates fd.
+    unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) as i64 }
+}
+
+#[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_file_read(fd: i64, bytes: *mut u8, limit: i64) -> i64 {
     let (Ok(fd), Ok(limit)) = (libc::c_int::try_from(fd), usize::try_from(limit)) else {
         return -1;
@@ -589,6 +620,24 @@ mod tests {
             assert_eq!(loom_rt_file_close(fd), 0);
             assert_eq!(loom_rt_file_read(-1, bytes, 1), -1);
             assert_eq!(loom_rt_file_close(-1), -1);
+
+            let mut output = text("prefix:ok");
+            let output_root = root(&mut output);
+            let fd = loom_rt_file_create(path);
+            assert!(fd >= 0);
+            assert_eq!(loom_rt_file_write(fd, output, -1), -1);
+            assert_eq!(loom_rt_file_write(fd, output, 10), -1);
+            assert_eq!(loom_rt_file_write(-1, output, 0), -1);
+            assert_eq!(loom_rt_file_write(fd, output, 7), 2);
+            assert_eq!(loom_rt_file_close(fd), 0);
+            bytes = loom_rt_bytes_new();
+            let fd = loom_rt_file_open(path);
+            assert!(fd >= 0);
+            assert_eq!(loom_rt_file_read(fd, bytes, 16), 2);
+            assert_eq!(buffer_bytes(bytes), b"ok");
+            assert_eq!(loom_rt_file_close(fd), 0);
+            loom_rt_roots_leave(output_root);
+
             let missing = file.path().with_extension("missing");
             path = text(missing.to_str().unwrap());
             assert_eq!(loom_rt_file_open(path), -1);

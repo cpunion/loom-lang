@@ -76,6 +76,8 @@ fn allocates(operation: Primitive) -> bool {
         | Primitive::ListGet
         | Primitive::ListSet
         | Primitive::Open
+        | Primitive::Create
+        | Primitive::Write
         | Primitive::Close => false,
     }
 }
@@ -84,6 +86,7 @@ pub(super) fn managed(program: &checked::Program, ty: Type) -> bool {
     match ty {
         Type::Text | Type::Bytes | Type::List(_) => true,
         Type::Data(id) => match &program.types[id].kind {
+            checked::DataKind::Refined(base) => managed(program, *base),
             checked::DataKind::Record(fields) => fields.iter().any(|(_, ty)| managed(program, *ty)),
             checked::DataKind::Enum(variants) => variants
                 .iter()
@@ -203,9 +206,9 @@ pub(super) fn root_function<'ctx>(
 fn expressions<'a>(value: &'a checked::Expr, values: &mut Vec<&'a checked::Expr>) {
     values.push(value);
     match &value.kind {
-        checked::ExprKind::Unary(_, value) | checked::ExprKind::Field(value, _) => {
-            expressions(value, values)
-        }
+        checked::ExprKind::Unary(_, value)
+        | checked::ExprKind::Field(value, _)
+        | checked::ExprKind::Coerce(value) => expressions(value, values),
         checked::ExprKind::Binary(_, left, right) => {
             expressions(left, values);
             expressions(right, values);
@@ -329,6 +332,7 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
         match ty {
             Type::Text | Type::Bytes | Type::List(_) => self.mark(value.into_pointer_value())?,
             Type::Data(id) => match &self.program.types[id].kind {
+                checked::DataKind::Refined(base) => self.value(*base, value)?,
                 checked::DataKind::Record(fields) => {
                     for (index, (_, ty)) in fields.iter().enumerate() {
                         if managed(self.program, *ty) {
@@ -426,6 +430,7 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
                 )?)?;
             }
             Type::Data(id) => match &self.program.types[id].kind {
+                checked::DataKind::Refined(base) => self.words(*base, payload, offset)?,
                 checked::DataKind::Record(fields) => {
                     let mut offset = offset;
                     for (_, ty) in fields {

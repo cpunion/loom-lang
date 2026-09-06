@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Complete the N0 native vertical slice with scalar constrained construction,
+  check-free widening, and source-owned file/stdout write loops. Unknown
+  construction returns a source `Result`; failed required proofs still reject.
 - Compile generic records/enums and exhaustive matches with concrete layouts.
   Add shared lists, UTF-8 Text, a small nonmoving collector, and source `std`
   text/list/result/file packages, exercised by a native source scanner.

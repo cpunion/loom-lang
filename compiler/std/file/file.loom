@@ -1,14 +1,18 @@
 import std.result.Result
+import std.text.length
 
 pub enum FileError {
     Open
     Read
+    Write
     Close
     Utf8
 }
 
 intrinsic fn open(path Text) Int
+intrinsic fn create(path Text) Int
 intrinsic fn read(handle Int, buffer Bytes, limit Int) Int
+intrinsic fn write(handle Int, value Text, offset Int) Int
 intrinsic fn close(handle Int) Int
 intrinsic fn bytes_new() Bytes
 intrinsic fn bytes_utf8(buffer Bytes) Bool
@@ -29,4 +33,23 @@ pub fn read_text(path Text) Result[Text, FileError] {
     if closed < 0 { return Result.Err(FileError.Close) }
     if !bytes_utf8(buffer) { return Result.Err(FileError.Utf8) }
     Result.Ok(bytes_text_copy(buffer))
+}
+
+// Create or replace a file, handling partial writes in source code.
+pub fn write_text(path Text, value Text) Result[Int, FileError] {
+    let handle = create(path)
+    if handle < 0 { return Result.Err(FileError.Open) }
+    let size = length(value)
+    var offset = 0
+    while offset < size {
+        let count = write(handle, value, offset)
+        if count <= 0 {
+            discard close(handle)
+            return Result.Err(FileError.Write)
+        }
+        offset = offset + count
+    }
+    let closed = close(handle)
+    if closed < 0 { return Result.Err(FileError.Close) }
+    Result.Ok(offset)
 }

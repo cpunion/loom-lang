@@ -171,6 +171,9 @@ pub fn check(
         env.signatures[id].params = arguments;
         env.signatures[id].result = result;
     }
+    for id in 0..env.declarations.len() {
+        env.validate_refinement(id)?;
+    }
     for id in 0..env.signatures.len() {
         let sig = &env.signatures[id];
         let item = &files[sig.file].syntax.functions[sig.function];
@@ -427,6 +430,22 @@ impl Environment<'_> {
             .collect();
         let mut names = HashSet::new();
         let kind = match &item.kind {
+            ast::DataKind::Refined { base, predicate } => {
+                if !item.parameters.is_empty() {
+                    return Err(Diagnostic::new(
+                        item.span,
+                        "generic constrained declarations are not supported yet",
+                    ));
+                }
+                if self.resolve(base, file, source.test_only, &params)? != Type::Int {
+                    return Err(Diagnostic::new(
+                        base.span,
+                        "this slice only constrains Int directly; nested or shared constrained bases are unsupported",
+                    ));
+                }
+                refinement_predicate(predicate)?;
+                c::DataKind::Refined(Type::Int)
+            }
             ast::DataKind::Record(fields) => {
                 let mut result = Vec::new();
                 for field in fields {
@@ -474,6 +493,113 @@ impl Environment<'_> {
             arguments,
         });
         Ok(Type::Data(id))
+    }
+
+    fn validate_refinement(&mut self, declaration: usize) -> Result<(), Diagnostic> {
+        let (file, index) = self.declarations[declaration];
+        let ast::DataKind::Refined { predicate, .. } =
+            self.files[file].syntax.data[index].kind.clone()
+        else {
+            return Ok(());
+        };
+        let test_only = self.files[file].test_only;
+        let mut checker = Checker {
+            env: self,
+            current: Signature {
+                file,
+                function: 0,
+                params: Vec::new(),
+                result: Type::Unit,
+                test_only,
+            },
+            type_params: HashMap::new(),
+            emit: false,
+            scopes: vec![HashMap::new()],
+            locals: Vec::new(),
+        };
+        checker.bind("self", Type::Int, false, predicate.span)?;
+        checker.expect(&predicate, Type::Bool)?;
+        Ok(())
+    }
+
+    fn widens(&self, actual: Type, expected: Type) -> bool {
+        matches!(actual, Type::Data(id) if matches!(self.types[id].kind, c::DataKind::Refined(base) if base == expected))
+    }
+
+    fn result_language_items(
+        &mut self,
+        value: Type,
+        span: Span,
+    ) -> Result<(Type, Type, usize, usize, usize), Diagnostic> {
+        let mut result = None;
+        let mut error = None;
+        for (id, &(file, index)) in self.declarations.iter().enumerate() {
+            let source = &self.files[file];
+            let item = &source.syntax.data[index];
+            if source.trusted_std
+                && source.package == "std.result"
+                && item.public
+                && !source.test_only
+            {
+                match item.name.as_str() {
+                    "Result" if item.parameters.len() == 2 => result = Some(id),
+                    "ConstraintError" if item.parameters.is_empty() => error = Some(id),
+                    _ => (),
+                }
+            }
+        }
+        let (Some(result), Some(error)) = (result, error) else {
+            return Err(Diagnostic::new(
+                span,
+                "constrained construction requires trusted std.result.Result and ConstraintError declarations",
+            ));
+        };
+        let error_ty = self.data(error, Vec::new(), span)?;
+        let Type::Data(error_id) = error_ty else {
+            unreachable!()
+        };
+        let c::DataKind::Enum(error_variants) = &self.types[error_id].kind else {
+            return Err(Diagnostic::new(
+                span,
+                "ConstraintError must be the source enum containing Rejected",
+            ));
+        };
+        if error_variants.as_slice() != [("Rejected".into(), Vec::new())] {
+            return Err(Diagnostic::new(
+                span,
+                "ConstraintError must contain only the empty Rejected variant",
+            ));
+        }
+        let template = self.data(result, vec![Type::Parameter(0), Type::Parameter(1)], span)?;
+        let Type::Data(template) = template else {
+            unreachable!()
+        };
+        let c::DataKind::Enum(variants) = &self.types[template].kind else {
+            return Err(Diagnostic::new(
+                span,
+                "Result must be the source enum with Ok(T) and Err(E)",
+            ));
+        };
+        let ok = variants
+            .iter()
+            .position(|(name, fields)| name == "Ok" && fields == &[Type::Parameter(0)]);
+        let err = variants
+            .iter()
+            .position(|(name, fields)| name == "Err" && fields == &[Type::Parameter(1)]);
+        let (Some(ok), Some(err)) = (ok, err) else {
+            return Err(Diagnostic::new(
+                span,
+                "Result must contain exactly Ok(T) and Err(E)",
+            ));
+        };
+        if variants.len() != 2 {
+            return Err(Diagnostic::new(
+                span,
+                "Result must contain exactly Ok(T) and Err(E)",
+            ));
+        }
+        let result_ty = self.data(result, vec![value, error_ty], span)?;
+        Ok((result_ty, error_ty, ok, err, 0))
     }
 
     fn substitute(&mut self, ty: Type, arguments: &[Type], span: Span) -> Result<Type, Diagnostic> {
@@ -603,7 +729,9 @@ impl Environment<'_> {
             "list_push" => (P::ListPush, 1, vec![list, parameter], T::Unit),
             "list_set" => (P::ListSet, 1, vec![list, T::Int, parameter], T::Unit),
             "open" => (P::Open, 0, vec![T::Text], T::Int),
+            "create" => (P::Create, 0, vec![T::Text], T::Int),
             "read" => (P::Read, 0, vec![T::Int, T::Bytes, T::Int], T::Int),
+            "write" => (P::Write, 0, vec![T::Int, T::Text, T::Int], T::Int),
             "close" => (P::Close, 0, vec![T::Int], T::Int),
             _ => {
                 return Err(Diagnostic::new(
@@ -752,6 +880,22 @@ fn scalar_contract(expr: &ast::Expr) -> Result<(), Diagnostic> {
     }
 }
 
+fn refinement_predicate(expr: &ast::Expr) -> Result<(), Diagnostic> {
+    match &expr.kind {
+        ast::ExprKind::Int(_) | ast::ExprKind::Bool(_) => Ok(()),
+        ast::ExprKind::Name(path) if path == &["self"] => Ok(()),
+        ast::ExprKind::Unary(_, value) => refinement_predicate(value),
+        ast::ExprKind::Binary(_, a, b) => {
+            refinement_predicate(a)?;
+            refinement_predicate(b)
+        }
+        _ => Err(Diagnostic::new(
+            expr.span,
+            "this slice supports only scalar constraint predicates over self, without calls or external state",
+        )),
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Binding {
     local: usize,
@@ -768,6 +912,30 @@ struct Checker<'a, 'b> {
 }
 
 impl Checker<'_, '_> {
+    fn coerce(&self, value: c::Expr, expected: Type) -> Result<c::Expr, Diagnostic> {
+        if value.ty == expected {
+            return Ok(value);
+        }
+        if self.env.widens(value.ty, expected) {
+            let span = value.span;
+            return Ok(c::Expr {
+                kind: c::ExprKind::Coerce(Box::new(value)),
+                ty: expected,
+                span,
+            });
+        }
+        if !expr_falls(&value) {
+            return Ok(value);
+        }
+        Err(Diagnostic::new(
+            value.span,
+            format!(
+                "expected {expected:?}, found {:?}; use discard to ignore a value",
+                value.ty
+            ),
+        ))
+    }
+
     fn resolve(&mut self, reference: &ast::TypeRef) -> Result<Type, Diagnostic> {
         self.env.resolve(
             reference,
@@ -985,7 +1153,10 @@ impl Checker<'_, '_> {
                 (C::Unary(*op, Box::new(self.expect(value, ty)?)), ty)
             }
             A::Binary(op, left, right) => {
-                let left = self.expr(left, None)?;
+                let mut left = self.expr(left, None)?;
+                if self.env.widens(left.ty, Type::Int) {
+                    left = self.coerce(left, Type::Int)?;
+                }
                 if left.ty == Type::Text && matches!(op, Binary::Eq | Binary::Ne) {
                     let right = self.expect(right, Type::Text)?;
                     let equal = c::Expr {
@@ -1081,16 +1252,11 @@ impl Checker<'_, '_> {
             ty,
             span: expr.span,
         };
-        if expected.is_some_and(|e| e != ty) && expr_falls(&checked) {
-            return Err(Diagnostic::new(
-                expr.span,
-                format!(
-                    "expected {:?}, found {ty:?}; use discard to ignore a value",
-                    expected.unwrap()
-                ),
-            ));
+        if let Some(expected) = expected {
+            self.coerce(checked, expected)
+        } else {
+            Ok(checked)
         }
-        Ok(checked)
     }
 
     fn arguments(
@@ -1133,6 +1299,36 @@ impl Checker<'_, '_> {
                 span,
                 format!("local `{}` is not callable", path[0]),
             ));
+        }
+        if let Ok(declaration) =
+            self.env
+                .data_name(path, self.current.file, self.current.test_only, span)
+        {
+            let (file, index) = self.env.declarations[declaration];
+            if matches!(
+                self.env.files[file].syntax.data[index].kind,
+                ast::DataKind::Refined { .. }
+            ) {
+                let (name, _) = split_path(path);
+                let packages = self
+                    .env
+                    .packages(path, self.current.file, self.current.test_only);
+                if self.env.signatures.iter().any(|s| {
+                    let source = &self.env.files[s.file];
+                    let item = &source.syntax.functions[s.function];
+                    item.name == name
+                        && packages.contains(&source.package)
+                        && (source.package == self.env.files[self.current.file].package
+                            || item.public)
+                        && (!s.test_only || self.current.test_only)
+                }) {
+                    return Err(Diagnostic::new(
+                        span,
+                        "a constrained constructor and function share this name; resolve the collision explicitly",
+                    ));
+                }
+                return self.refined(declaration, types, arguments, span);
+            }
         }
         if path.len() > 1
             && self
@@ -1190,12 +1386,23 @@ impl Checker<'_, '_> {
         for (id, sig) in candidates {
             let item = &self.env.files[sig.file].syntax.functions[sig.function];
             let mut inferred = self.arguments(types, item.parameters.len(), span)?;
-            if !sig
-                .params
-                .iter()
-                .zip(&args)
-                .all(|(p, a)| self.env.infer(*p, a.ty, &mut inferred))
-            {
+            let mut widened = false;
+            let matched = sig.params.iter().zip(&args).all(|(p, a)| {
+                if self.env.infer(*p, a.ty, &mut inferred) {
+                    return true;
+                }
+                let target = match p {
+                    Type::Parameter(index) => inferred[*index],
+                    _ => Some(*p),
+                };
+                if target.is_some_and(|target| self.env.widens(a.ty, target)) {
+                    widened = true;
+                    true
+                } else {
+                    false
+                }
+            });
+            if !matched {
                 continue;
             }
             if inferred.iter().any(Option::is_none) {
@@ -1204,10 +1411,13 @@ impl Checker<'_, '_> {
                 }
             }
             if let Some(inferred) = inferred.into_iter().collect::<Option<Vec<_>>>() {
-                matches.push((id, sig, inferred));
+                matches.push((id, sig, inferred, widened));
             }
         }
-        let (id, sig, inferred) = match matches.as_slice() {
+        if matches.iter().any(|(_, _, _, widened)| !widened) {
+            matches.retain(|(_, _, _, widened)| !widened);
+        }
+        let (id, sig, inferred, _) = match matches.as_slice() {
             [only] => only.clone(),
             [] => {
                 return Err(Diagnostic::new(
@@ -1228,6 +1438,14 @@ impl Checker<'_, '_> {
                 ));
             }
         };
+        let args = args
+            .into_iter()
+            .zip(&sig.params)
+            .map(|(value, ty)| {
+                let ty = self.env.substitute(*ty, &inferred, span)?;
+                self.coerce(value, ty)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let result = self.env.substitute(sig.result, &inferred, span)?;
         let instance = if self.emit {
             self.env.schedule(id, inferred, span)?
@@ -1235,6 +1453,107 @@ impl Checker<'_, '_> {
             0
         };
         Ok((c::ExprKind::Call(instance, args), result))
+    }
+
+    fn refined(
+        &mut self,
+        declaration: usize,
+        types: &[ast::TypeRef],
+        arguments: &[ast::Expr],
+        span: Span,
+    ) -> Result<(c::ExprKind, Type), Diagnostic> {
+        if !types.is_empty() || arguments.len() != 1 {
+            return Err(Diagnostic::new(
+                span,
+                "a constrained constructor takes one Int value and no type arguments",
+            ));
+        }
+        let target = self.env.data(declaration, Vec::new(), span)?;
+        let value = self.expr(&arguments[0], None)?;
+        if value.ty == target {
+            return Ok((value.kind, target));
+        }
+        let value = self.coerce(value, Type::Int)?;
+        let (file, index) = self.env.declarations[declaration];
+        let ast::DataKind::Refined { predicate, .. } =
+            self.env.files[file].syntax.data[index].kind.clone()
+        else {
+            unreachable!()
+        };
+        let local = self.locals.len();
+        self.locals.push(Type::Int);
+        self.scopes.push(HashMap::from([(
+            "self".into(),
+            Binding {
+                local,
+                mutable: false,
+            },
+        )]));
+        let predicate = self.expect(&predicate, Type::Bool)?;
+        self.scopes.pop();
+        match crate::proof::classify_refinement(&value, &predicate, local) {
+            Some(true) => {
+                self.locals.pop();
+                return Ok((c::ExprKind::Coerce(Box::new(value)), target));
+            }
+            Some(false) => {
+                self.locals.pop();
+                return Err(Diagnostic::new(
+                    span,
+                    "this constant does not satisfy the type constraint",
+                ));
+            }
+            None => (),
+        }
+        let (result, error, ok, err, rejected) = self.env.result_language_items(target, span)?;
+        let local_value = c::Expr {
+            kind: c::ExprKind::Local(local),
+            ty: Type::Int,
+            span,
+        };
+        let success = c::Expr {
+            kind: c::ExprKind::Coerce(Box::new(local_value)),
+            ty: target,
+            span,
+        };
+        let rejection = c::Expr {
+            kind: c::ExprKind::Variant {
+                variant: rejected,
+                fields: Vec::new(),
+            },
+            ty: error,
+            span,
+        };
+        let arm = |variant, value| c::Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(c::Expr {
+                kind: c::ExprKind::Variant {
+                    variant,
+                    fields: vec![value],
+                },
+                ty: result,
+                span,
+            })),
+            falls_through: true,
+        };
+        let falls_through = expr_falls(&value);
+        let block = c::Block {
+            statements: vec![c::Stmt {
+                kind: c::StmtKind::Let { local, value },
+                span,
+            }],
+            tail: Some(Box::new(c::Expr {
+                kind: c::ExprKind::If {
+                    condition: Box::new(predicate),
+                    then_body: arm(ok, success),
+                    else_body: Some(arm(err, rejection)),
+                },
+                ty: result,
+                span,
+            })),
+            falls_through,
+        };
+        Ok((c::ExprKind::Block(block), result))
     }
 
     fn data_arguments(
@@ -1543,7 +1862,9 @@ fn expr_falls(expr: &c::Expr) -> bool {
         c::ExprKind::Match { value, arms } => {
             expr_falls(value) && arms.iter().any(|a| a.body.falls_through)
         }
-        c::ExprKind::Unary(_, e) | c::ExprKind::Field(e, _) => expr_falls(e),
+        c::ExprKind::Unary(_, e) | c::ExprKind::Field(e, _) | c::ExprKind::Coerce(e) => {
+            expr_falls(e)
+        }
         c::ExprKind::Binary(Binary::And | Binary::Or, a, _) => expr_falls(a),
         c::ExprKind::Binary(_, a, b) => expr_falls(a) && expr_falls(b),
         c::ExprKind::Call(_, args)
@@ -1783,5 +2104,110 @@ fn main() {
         rejects("fn bad(values List[Int]) Bool { values == values }");
         rejects("fn bad(value Bytes) Bool { value == value }");
         rejects("fn bad(value Text) Bool ensures result { value == value }");
+    }
+
+    fn refined_program(source: &str) -> Result<c::Program, Diagnostic> {
+        let mut library = file(
+            "std.result",
+            "pub enum Result[T, E] { Ok(T)\nErr(E) } pub enum ConstraintError { Rejected }",
+            false,
+        );
+        library.trusted_std = true;
+        check(&[library, file("app", source, false)], "app", false)
+    }
+
+    #[test]
+    fn constrained_constants_widen_without_changing_nominal_inference() {
+        let program = refined_program(
+            r#"
+type Positive = Int where self > 0
+fn pick(value Positive) Int { 1 }
+fn pick(value Int) Int { 2 }
+fn id[T](value T) T { value }
+fn widened(value Int) Int { value }
+fn main() {
+    let positive = Positive(6 / 2)
+    assert pick(id(positive)) == 1
+    assert widened(positive) == 3
+    assert positive + 1 == 4
+}
+"#,
+        )
+        .unwrap();
+        let selected: Vec<_> = program
+            .functions
+            .iter()
+            .filter(|f| f.name == "app.pick")
+            .collect();
+        assert_eq!(selected.len(), 1);
+        assert!(matches!(selected[0].params[0], Type::Data(_)));
+        for source in [
+            "type Positive = Int where self > 0\nfn main() { discard Positive(0) }",
+            "type Positive = Int where self > 0\nfn main() { let value Positive = 1 }",
+            "type Positive = Int where self > 0\nfn bad(values List[Positive]) List[Int] { values }",
+            "type Positive = Int where self > 0\nfn Positive(value Int) Int { value } fn main() { discard Positive(1) }",
+            "type Bad[T] = Int where self > 0",
+            "type Bad = List[Int] where true",
+            "type A = Int where self > 0\ntype B = A where self > 1",
+            "type Bad = Int where self + 1",
+            "type Bad = Int where external > 0",
+            "fn external() Bool { true } type Bad = Int where external()",
+        ] {
+            assert!(refined_program(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn unknown_constraints_evaluate_once_and_constant_faults_are_not_proofs() {
+        let program = refined_program(
+            r#"
+import std.result.Result
+import std.result.ConstraintError
+type Positive = Int where self > 0
+pub fn checked(value Int) Result[Positive, ConstraintError] { Positive(value) }
+"#,
+        )
+        .unwrap();
+        let c::ExprKind::Block(block) = &program.functions[0].body.tail.as_ref().unwrap().kind
+        else {
+            panic!("missing checked boundary");
+        };
+        assert_eq!(block.statements.len(), 1);
+        assert!(matches!(
+            &block.statements[0].kind,
+            c::StmtKind::Let {
+                value: c::Expr {
+                    kind: c::ExprKind::Local(0),
+                    ..
+                },
+                ..
+            }
+        ));
+        for (predicate, input) in [
+            ("self > 0", "9223372036854775807 + 1"),
+            ("self + 1 > self", "9223372036854775807"),
+            ("self > 0", "1 / 0"),
+            ("self > 0", "-9223372036854775808 % -1"),
+        ] {
+            let source = format!(
+                "type Guard = Int where {predicate}\nfn main() {{ discard Guard({input}) }}"
+            );
+            let program = refined_program(&source).unwrap();
+            let c::StmtKind::Discard(value) = &program.functions[0].body.statements[0].kind else {
+                panic!("missing discard");
+            };
+            assert!(matches!(value.kind, c::ExprKind::Block(_)), "{source}");
+        }
+        let library = file(
+            "std.result",
+            "pub enum Result[T, E] { Ok(T)\nErr(E) } pub enum ConstraintError { Rejected }",
+            false,
+        );
+        let app = file(
+            "app",
+            "type Positive = Int where self > 0\nfn f(value Int) { discard Positive(value) }",
+            false,
+        );
+        assert!(check(&[library, app], "app", false).is_err());
     }
 }

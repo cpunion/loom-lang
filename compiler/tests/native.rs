@@ -154,11 +154,25 @@ fn source_file_library_reads_chunks_and_reports_boundaries() {
     let dir = source(
         r#"
 import std.file.read_text
+import std.file.write_text
+import std.io.write_text
 import std.file.FileError
 import std.text.length
 import std.result.Result
 
 fn main() {
+    assert match std.file.write_text("written.txt", "hello") {
+        Result.Ok(count) => count == 5
+        Result.Err(_) => false
+    }
+    assert match std.file.write_text("absent/child.txt", "hello") {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    assert match std.io.write_text("native I/O\n") {
+        Result.Ok(count) => count == 11
+        Result.Err(_) => false
+    }
     assert match read_text("large.txt") {
         Result.Ok(text) => length(text) == 20000
         Result.Err(_) => false
@@ -176,9 +190,74 @@ fn main() {
     );
     fs::write(dir.path().join("large.txt"), "x".repeat(20000)).unwrap();
     fs::write(dir.path().join("invalid.txt"), [0xff]).unwrap();
-    success(&managed(&["run", path(dir.path())], dir.path()));
+    let output = managed(&["run", path(dir.path())], dir.path());
+    success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "native I/O\n");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("written.txt")).unwrap(),
+        "hello"
+    );
     let forged = source("intrinsic fn open(path Text) Int\nfn main() { discard open(\"file\") }");
     assert!(!loom(&["check", path(forged.path())]).status.success());
+}
+
+#[test]
+fn constrained_values_keep_native_scalar_boundaries() {
+    let library =
+        source("type Positive = Int where self > 0\npub fn fixed() Int { Positive(21 * 2) }");
+    let ir = library.path().join("fixed.ll");
+    success(&loom(&[
+        "build",
+        path(library.path()),
+        "--emit-ir",
+        path(&ir),
+    ]));
+    let llvm = fs::read_to_string(ir).unwrap();
+    assert!(llvm.contains("ret i64 42"));
+    assert!(!llvm.contains("loom_rt_"));
+    assert!(!llvm.contains("with.overflow"));
+
+    let application = source(
+        r#"
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.result.Result
+import std.result.ConstraintError
+type Positive = Int where self > 0
+fn next(counter List[Int]) Int {
+    set(counter, 0, get(counter, 0) + 1)
+    get(counter, 0)
+}
+fn checked(value Int) Result[Positive, ConstraintError] { Positive(value) }
+fn main() {
+    let counter = new[Int]()
+    push(counter, 0)
+    assert match Positive(next(counter)) {
+        Result.Ok(value) => value == 1
+        Result.Err(_) => false
+    }
+    assert get(counter, 0) == 1
+    assert match checked(0) {
+        Result.Ok(_) => false
+        Result.Err(error) => match error { ConstraintError.Rejected => true }
+    }
+}
+"#,
+    );
+    success(&managed(
+        &["run", path(application.path())],
+        application.path(),
+    ));
+    let invalid = source("type Positive = Int where self > 0\nfn main() { discard Positive(0) }");
+    assert!(!loom(&["check", path(invalid.path())]).status.success());
+    let overflow = source(
+        "type Guard = Int where self + 1 > self\nfn main() { discard Guard(9223372036854775807) }",
+    );
+    let output = loom(&["run", path(overflow.path())]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("overflow"));
 }
 
 #[test]

@@ -85,7 +85,9 @@ pub enum Primitive {
     ListPush,
     ListSet,
     Open,
+    Create,
     Read,
+    Write,
     Close,
 }
 
@@ -119,6 +121,7 @@ pub mod ast {
     pub enum DataKind {
         Record(Vec<Field>),
         Enum(Vec<Variant>),
+        Refined { base: TypeRef, predicate: Expr },
     }
 
     #[derive(Clone, Debug)]
@@ -281,6 +284,7 @@ pub mod checked {
     pub enum DataKind {
         Record(Vec<(String, Type)>),
         Enum(Vec<(String, Vec<Type>)>),
+        Refined(Type),
     }
 
     #[derive(Debug)]
@@ -333,6 +337,8 @@ pub mod checked {
         Bool(bool),
         Text(String),
         Primitive(Primitive, Vec<Expr>),
+        /// Same native representation; construction or safe scalar weakening.
+        Coerce(Box<Expr>),
         Local(usize),
         Unary(Unary, Box<Expr>),
         Binary(Binary, Box<Expr>, Box<Expr>),

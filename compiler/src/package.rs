@@ -198,6 +198,15 @@ impl Loader {
             if !tests {
                 syntax.functions.retain(|function| !function.test);
             }
+            if syntax
+                .data
+                .iter()
+                .any(|data| matches!(data.kind, crate::model::ast::DataKind::Refined { .. }))
+            {
+                // Checked construction returns these ordinary source-defined
+                // language items; their identity and shape are checked later.
+                imports.insert("std.result".into());
+            }
             for import in &syntax.imports {
                 if import.path.len() < 2 {
                     return Err(diagnostic(

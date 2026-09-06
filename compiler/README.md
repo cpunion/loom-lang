@@ -1,8 +1,8 @@
 # Native compiler seed
 
-This is the first executable slice of the replacement compiler described in the
-[roadmap](../ROADMAP.md). It is not the complete N0 milestone or a replacement
-for every program supported by the superseded compiler in Git history.
+This is the small native compiler for the N0 vertical slice described in the
+[roadmap](../ROADMAP.md), validated on macOS. It is not the complete language,
+a self-hosted compiler, or a compatibility implementation of the removed code.
 
 One Rust package connects source syntax, checked functions, and LLVM 19
 through Inkwell. It does not depend on the removed compiler crates, interpreter,
@@ -59,10 +59,12 @@ package. `--help` lists the small command surface.
   Identical test/production overload signatures are currently rejected.
 - A source `std.int` package with `minimum` and `maximum`, resolved through
   ordinary imports and calls, not compiler tables of library function names.
-- Source `std.text`, `std.list`, `std.result`, and `std.file.read_text`. Private
+- Source `std.text`, `std.list`, `std.result`, `std.file`, and `std.io`. Private
   intrinsic signatures are checked against the runtime ABI and accepted only
   from the configured standard-library source root. Reading loops, UTF-8
-  error policy, and explicit file closure are ordinary Loom source.
+  error policy, partial-write loops, and explicit file closure are ordinary Loom
+  source. `file.write_text` creates or truncates a file; it is not an atomic or
+  transactional write. `io.write_text` writes stdout without closing it.
 - Native executable builds when the selected package has `main`; otherwise,
   an object containing its public functions and their dependencies. Object
   symbols are private seed conventions, not a supported foreign ABI.
@@ -73,6 +75,19 @@ zero, short-circuiting, entry reachability, and test exclusion. Faults report a
 brief reason and exit unsuccessfully. File errors use source-defined `Result`.
 
 ## Contract boundary
+
+Scalar constrained types use `type Positive = Int where self > 0`.
+`Positive(3)` yields `Positive` directly; a false constant is a diagnostic.
+An unproved input evaluates once and returns source
+`Result[Positive, ConstraintError]`. Widening `Positive` to `Int` emits no check;
+arithmetic returns `Int`, while generic inference retains nominal identity.
+`List[Positive]` never widens to `List[Int]`.
+
+This construction fragment constrains `Int` directly, with predicates over
+`self` and call-free scalar expressions. Constant arithmetic must be defined
+before it can justify check removal. Propagating local/branch facts into
+construction, pure function calls in predicates, shared-container constraints,
+and invariant-aware proofs over refined parameters are not implemented yet.
 
 `requires` is checked before the callee body. Every declared `ensures` must be
 proved; unknown or unsupported proofs reject the build, including for functions
@@ -97,19 +112,22 @@ The `compiler/examples/data` package exercises records, enums, generic functions
 and both test forms through the same CLI. Scalar-only records stay native values;
 enum storage uses its largest variant payload, not the sum of all variants.
 
-`compiler/examples/source` reads its scanner source from disk and produces a
-typed token list. It is a small ASCII scanner, not a complete Loom lexer.
+`compiler/examples/source` reads its scanner source from disk, produces a
+typed token list, checks constrained construction, and writes a success message
+to stdout. It is a small ASCII scanner, not a complete Loom lexer.
 
 The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;
 transitively nonallocating functions need no root frames. `LOOM_GC_STRESS=1`
 collects before every allocation for focused testing. Managed executables find
 `libloom_seed_runtime.a` beside the compiler, or at `LOOM_RUNTIME_LIBRARY`.
-No handles escape `std.file.read_text`; every recoverable branch closes the
+No handles escape the file helpers; every recoverable branch closes the
 file explicitly. This is not general scoped cleanup or finalization.
 
-N0 still needs refined construction. Recursive declarations, mutable record
-fields, broader proofs, moving GC, lexical resources, Tasks, metaprogramming,
+The N0 source-to-native gate is exercised by the examples and integration tests.
+Next is N1: move source handling, lexer/parser, and diagnostics into Loom.
+Recursive declarations, mutable record fields, broader proofs, moving GC,
+lexical resources, Tasks, metaprogramming,
 dependency resolution, lockfile/cache behavior, deployment and semantic-change
 tools remain outside this slice. No complete std or self-hosting claim is made.
 

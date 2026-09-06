@@ -25,9 +25,10 @@ structure or maintain an interpreter/native feature matrix as a goal. A bounded
 compile-time evaluator uses the same checked rules; it is not a second public
 runtime backend. Remove replaced paths instead of adding compatibility adapters.
 
-The [native seed](compiler/README.md) now implements a first scalar slice with
-real native check/build/test/run and a bounded required-postcondition prover.
-N0 remains incomplete. Milestones below are exit criteria, not completion claims.
+The [native seed](compiler/README.md) now passes the N0 vertical-slice gate on
+macOS: real check/build/test/run, typed data, shared lists, source file I/O,
+constrained construction, and bounded required proofs. N1 is next; later
+milestones below remain exit criteria, not completion claims.
 
 ## N0 — A native vertical slice
 
