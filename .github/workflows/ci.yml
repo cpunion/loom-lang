@@ -115,13 +115,20 @@ jobs:
 
       - name: Install the LLVM development archive
         shell: pwsh
+        timeout-minutes: 10
         run: |
           $archive = "$env:RUNNER_TEMP/llvm-dev.tar.xz"
           curl.exe -fL --retry 3 -o $archive 'https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/clang%2Bllvm-19.1.7-x86_64-pc-windows-msvc.tar.xz'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          New-Item -ItemType Directory -Force C:/llvm-19 | Out-Null
-          tar.exe -xf $archive --strip-components=1 -C C:/llvm-19
+          # Windows tar stalled on this xz archive. Decode both archive layers
+          # explicitly with 7-Zip; a single extraction only produces the tar.
+          $expanded = "$env:RUNNER_TEMP/llvm-expanded"
+          $sevenZip = "$env:ProgramFiles/7-Zip/7z.exe"
+          & $sevenZip x $archive "-o$expanded" -y -bsp0
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $sevenZip x "$expanded/llvm-dev.tar" "-o$expanded/tree" -y -bsp0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item "$expanded/tree/clang+llvm-19.1.7-x86_64-pc-windows-msvc" C:/llvm-19
           'LLVM_PATH=C:/llvm-19' >> $env:GITHUB_ENV
           'C:/llvm-19/bin' >> $env:GITHUB_PATH
 
