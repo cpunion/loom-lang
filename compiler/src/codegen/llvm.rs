@@ -1,5 +1,6 @@
 //! Direct LLVM lowering of checked Loom programs. No source-language frontend.
 
+use super::{Backend, EmissionResult, EmitOptions, Optimization};
 use crate::model::{Binary, Primitive, Type, Unary, checked};
 use inkwell::{
     AddressSpace, IntPredicate, OptimizationLevel,
@@ -19,21 +20,39 @@ use std::{
     sync::Once,
 };
 
-#[path = "native_gc.rs"]
+#[path = "llvm_gc.rs"]
 mod gc;
 
 type NativeResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-pub fn emit(
-    program: &checked::Program,
-    test_mode: bool,
-    object: &Path,
-    llvm_ir: Option<&Path>,
-    optimization: OptimizationLevel,
-) -> Result<bool, String> {
-    configure_codegen();
-    emit_checked(program, test_mode, object, llvm_ir, optimization)
-        .map_err(|error| error.to_string())
+pub struct Llvm;
+
+impl Backend for Llvm {
+    fn emit(
+        &self,
+        program: &checked::Program,
+        options: EmitOptions<'_>,
+    ) -> Result<EmissionResult, String> {
+        configure_codegen();
+        let optimization = match options.optimization {
+            Optimization::O0 => OptimizationLevel::None,
+            Optimization::O1 => OptimizationLevel::Less,
+            Optimization::O2 => OptimizationLevel::Default,
+            Optimization::O3 => OptimizationLevel::Aggressive,
+        };
+        let uses_runtime = emit_checked(
+            program,
+            options.test_mode,
+            options.object,
+            options.ir,
+            optimization,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(EmissionResult {
+            library: !options.test_mode && program.entry.is_none(),
+            uses_runtime,
+        })
+    }
 }
 
 fn configure_codegen() {

@@ -7,6 +7,8 @@ implementation, not a compatibility ledger for previous prototypes.
 
 - Upgrade the native bridge and frozen source seed to LLVM 22 through the existing
   Inkwell 0.10 binding. Keep Rust 1.88 and avoid a second LLVM install for bootstrap.
+- Separate the backend-neutral codegen interface from the LLVM implementation;
+  bound LLVM scheduling search to avoid its large-block compile-time regression.
 - Pass the independent Linux / Rust 1.88 full bootstrap and native CI gate,
   alongside macOS. Windows verification remains pending.
 - Protect source extensions and native/IR outputs against case aliases on

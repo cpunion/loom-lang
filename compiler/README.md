@@ -14,6 +14,13 @@ the host C library for fault reporting; managed programs also link the small
 Rust runtime. Ordinary arithmetic and calls lower
 directly; LLVM's O2 pipeline promotes local storage and removes unused code.
 
+The [codegen boundary](src/codegen.rs) consumes the checked program and emits a
+native object plus linking requirements. Its optimization levels and options do
+not expose Inkwell types. LLVM is the only implementation today; target-machine
+setup, passes, and tuning stay inside that backend. Another backend can reuse
+the source frontend, proofs, checked input, host linker, and runtime boundary
+without an alternate language implementation or a dispatch/plugin framework.
+
 ## Build and try it
 
 Use Rust 1.88, LLVM 22 development libraries, and Clang. macOS and Linux pass the

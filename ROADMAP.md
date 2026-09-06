@@ -95,7 +95,9 @@ policy or another frontend to extend. Do not add a bulky checked-IR seed
 snapshot. The retained Rust LLVM binding, host linker, GC, and platform runtime
 are separate implementation boundaries, not a permanent basic language version.
 They may evolve for native code and platform facilities without duplicating
-source-language analysis. Bootstrap agreement is evidence, not a proof of
+source-language analysis. Codegen consumes backend-neutral checked programs;
+LLVM is a replaceable implementation, not part of the source language or its
+proof rules. Bootstrap agreement is evidence, not a proof of
 compiler correctness.
 
 ## N2 — Complete the language and source library
