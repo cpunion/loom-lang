@@ -1,0 +1,160 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Function
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+fn has_static(signature Signature) Bool { length(signature.compile_time) != 0 }
+fn is_static(signature Signature, position Int) Bool {
+    var index = 0
+    while index < length(signature.compile_time) {
+        if get(signature.compile_time, index) == position { return true }
+        index = index + 1
+    }
+    false
+}
+fn unknown_constants(signature Signature) List[StaticValue] {
+    let values = new[StaticValue]()
+    var index = 0
+    while index < length(signature.compile_time) {
+        push(values, StaticValue { ty = get(signature.params, get(signature.compile_time, index)) known = false number = 0 text = "" })
+        index = index + 1
+    }
+    values
+}
+fn same_constants(left List[StaticValue], right List[StaticValue]) Bool {
+    if length(left) != length(right) { return false }
+    var index = 0
+    while index < length(left) {
+        let a = get(left, index)
+        let b = get(right, index)
+        if a.ty != b.ty || a.known != b.known || a.number != b.number || a.text != b.text { return false }
+        index = index + 1
+    }
+    true
+}
+fn known_constants(values List[StaticValue]) Bool {
+    var index = 0
+    while index < length(values) {
+        if !get(values, index).known { return false }
+        index = index + 1
+    }
+    true
+}
+fn static_expression(context Context, node Node, value StaticValue) Expr {
+    if !value.known { return expression(ExprKind.Deferred, value.ty, node, "", -1, new[Expr](), true) }
+    let kind = if value.ty == 1 { ExprKind.Integer } else { if value.ty == 2 { ExprKind.Bool } else { ExprKind.Text } }
+    let text = if value.ty == 1 { std.int.to_text(value.number) } else {
+        if value.ty == 2 { if value.number != 0 { "true" } else { "false" } } else { value.text }
+    }
+    expression(kind, value.ty, node, text, -1, new[Expr](), true)
+}
+fn unknown_static(context Context, node Node) Bool {
+    if node.kind == NodeKind.Name {
+        let index = lookup(context, slice(node.value, 0, first_dot(node.value)))
+        if index >= 0 {
+            let binding = get(context.bindings, index)
+            if binding.constant >= 0 && !get(context.constants, binding.constant).known { return true }
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        if unknown_static(context, child(node, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+fn contains_deferred(value Expr) Bool {
+    if value.kind == ExprKind.Deferred { return true }
+    var index = 0
+    while index < length(value.children) {
+        if contains_deferred(get(value.children, index)) { return true }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var item = 0
+        while item < length(arm.body) {
+            if contains_deferred(get(arm.body, item)) { return true }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    false
+}
+fn static_options(context Context, options List[Int]) Bool {
+    var index = 0
+    while index < length(options) {
+        if has_static(get(context.env.signatures, get(options, index))) { return true }
+        index = index + 1
+    }
+    false
+}
+fn static_position(context Context, options List[Int], position Int) Bool {
+    var index = 0
+    while index < length(options) {
+        if is_static(get(context.env.signatures, get(options, index)), position) { return true }
+        index = index + 1
+    }
+    false
+}
+fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let stage = staging(context, node)?
+    let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
+        locals = stage.locals bindings = stage.bindings head = stage.head emit = false }
+    expr(validation, node, expected)
+}
+fn static_argument(context Context, node Node, checked Expr, expected Int) Result[StaticValue, Failure] {
+    if contains_deferred(checked) || (abstract_context(context) && depends_on_type(context, node)) {
+        // Later runtime arguments may have appended block locals since the
+        // overload probe. Check isolation against this fresh staging boundary.
+        let validation = static_probe(context, node, expected)?
+        discard isolated(context, node, validation, length(context.locals))?
+        return Result.Ok(StaticValue { ty = expected known = false number = 0 text = "" })
+    }
+    let value = computed(context, node, node, expected)?
+    Result.Ok(StaticValue { ty = expected known = true number = if expected == 3 { 0 } else { value.number }
+        text = if expected == 3 { value.text } else { "" } })
+}
+
+// A selected static tuple is checked with abstract types and only the public
+// declaration's bounds. Concrete incidental implementations grant no evidence.
+fn validate_static(env Environment, id Int, constants List[StaticValue], node Node) Result[Bool, Failure] {
+    if length(constants) == 0 || !known_constants(constants) { return Result.Ok(true) }
+    var index = 0
+    while index < length(env.validations) {
+        let previous = get(env.validations, index)
+        if previous.signature == id && same_constants(previous.constants, constants) {
+            // A visiting entry breaks recursive type checking, not a proof:
+            // the original traversal still verifies this function's contracts.
+            return Result.Ok(true)
+        }
+        index = index + 1
+    }
+    let original = get(env.signatures, id)
+    if env.stage_depth >= 32 { return Result.Err(failure(env, original.symbol, node, "comptime specialization depth exceeded; expansion must be finite")) }
+    if length(env.validations) >= 1024 { return Result.Err(failure(env, original.symbol, node, "comptime specialization budget exceeded; expansion must be finite")) }
+    let selected = length(env.validations)
+    push(env.validations, Validation { signature = id constants = constants })
+    let validation = Environment { source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data
+        signatures = env.signatures pending = env.pending stage_depth = env.stage_depth + 1 computations = env.computations
+        validations = env.validations concepts = env.concepts implementations = env.implementations interfaces = env.interfaces
+        witnesses = env.witnesses uses = env.uses }
+    match function(validation, id, abstract_arguments(env, original.parameters), constants, false) {
+        Result.Ok(_) => {}
+        Result.Err(failed) => {
+            // Optional folding can catch an error. A failed traversal must not
+            // leave a visiting entry that another call could mistake for valid.
+            set(env.validations, selected, Validation { signature = -1 constants = constants })
+            return Result.Err(failed)
+        }
+    }
+    Result.Ok(true)
+}

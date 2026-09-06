@@ -36,17 +36,18 @@ fn signature(env Environment, id Int, arguments List[Int], node Node) Result[Sig
         index = index + 1
     }
     Result.Ok(Signature { symbol = original.symbol parameters = original.parameters params = params
-        result = substitute(env, original.symbol, original.result, arguments, node)? requirements = obligations })
+        compile_time = original.compile_time result = substitute(env, original.symbol, original.result, arguments, node)? requirements = obligations })
 }
-fn schedule(env Environment, id Int, arguments List[Int], node Node) Result[Int, Failure] {
+fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticValue], node Node) Result[Int, Failure] {
     let current = get(env.signatures, id)
     if prototype(env, current.symbol) { return Result.Err(failure(env, current.symbol, node, "concept evidence has no concrete implementation")) }
     var index = 0
     while index < length(env.pending) {
         let previous = get(env.pending, index)
-        if previous.signature == id && same(previous.arguments, arguments) { return Result.Ok(index) }
+        if previous.signature == id && same(previous.arguments, arguments) && same_constants(previous.constants, constants) { return Result.Ok(index) }
         index = index + 1
     }
+    if !known_constants(constants) { return Result.Err(failure(env, current.symbol, node, "comptime arguments must be determined for this instance")) }
     if length(env.pending) >= 1024 {
         return Result.Err(failure(env, current.symbol, node, "function specialization budget exceeded; expansion must be finite"))
     }
@@ -61,7 +62,7 @@ fn schedule(env Environment, id Int, arguments List[Int], node Node) Result[Int,
         index = index + 1
     }
     let scheduled = length(env.pending)
-    push(env.pending, Instance { signature = id arguments = arguments })
+    push(env.pending, Instance { signature = id arguments = arguments constants = constants })
     Result.Ok(scheduled)
 }
 fn runtime(parameters Int, params List[Int], returns Int) RuntimeSignature {
@@ -151,18 +152,27 @@ fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failu
     Result.Ok(clauses)
 }
 
-fn function(env Environment, id Int, arguments List[Int], emit Bool) Result[Function, Failure] {
+fn function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
     let original = get(env.signatures, id)
     let item = symbol(env, original.symbol)
     let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
     let current = signature(env, id, arguments, item.node)?
     var context = Context { env = env signature = current arguments = arguments
-        locals = new[Local]() bindings = new[Binding]() head = -1 emit = emit }
+        constants = constants locals = new[Local]() bindings = new[Binding]() head = -1 emit = emit }
     let parameters = group(item.node, NodeKind.Parameters)
+    let filtered = has_static(current)
+    let runtime_params = if filtered { new[Int]() } else { current.params }
     var index = 0
+    var constant = 0
     while index < length(parameters) {
         let parameter = get(parameters, index)
-        context = bind_local(context, parameter, parameter.value, get(current.params, index), false, -1)?
+        if is_static(current, index) {
+            context = bind_name(context, parameter, parameter.value, -1, constant, -1)?
+            constant = constant + 1
+        } else {
+            context = bind_local(context, parameter, parameter.value, get(current.params, index), false, -1)?
+            if filtered { push(runtime_params, get(current.params, index)) }
+        }
         index = index + 1
     }
     let preconditions = contracts(context, item.node, NodeKind.Requires)?
@@ -183,11 +193,11 @@ fn function(env Environment, id Int, arguments List[Int], emit Bool) Result[Func
         result_local = length(context.locals)
         push(context.locals, Local { name = "result" ty = current.result mutable = false })
         let binding = length(context.bindings)
-        push(context.bindings, Binding { local = result_local previous = context.head })
+        push(context.bindings, Binding { name = "result" local = result_local constant = -1 previous = context.head })
         context = context_at(context, binding)
     }
     let postconditions = contracts(context, item.node, NodeKind.Ensures)?
-    let checked_function = Function { symbol = current.symbol arguments = arguments params = current.params result = current.result
+    let checked_function = Function { symbol = current.symbol arguments = arguments params = runtime_params result = current.result
         locals = context.locals preconditions = preconditions postconditions = postconditions result_local = result_local
         body = body runtime_name = runtime_name span = item.node.span }
     if length(postconditions) != 0 {

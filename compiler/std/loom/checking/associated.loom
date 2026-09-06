@@ -35,7 +35,7 @@ fn enclosing(env Environment, owner Int) Int {
 }
 fn header_environment(env Environment) Environment {
     Environment { source = env.source types = env.types type_states = env.type_states expand_data = false
-        signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations
+        signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
         concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses }
 }
 fn implementation_type(env Environment, index Int, depth Int) Result[Int, Failure] {

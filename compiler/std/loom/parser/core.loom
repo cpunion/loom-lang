@@ -107,9 +107,14 @@ fn function_type(cursor Cursor) Result[Step, Diagnostic] {
     Result.Ok(done(cursor, rest, NodeKind.FunctionType, "", two(params.node, output.node)))
 }
 fn parameter(cursor Cursor) Result[Step, Diagnostic] {
-    let named = name(cursor)?
+    let compile_time = word(cursor, "comptime")
+    let named = name(if compile_time { next(cursor) } else { cursor })?
     let ty = type_ref(named.rest)?
-    Result.Ok(done(cursor, ty.rest, NodeKind.Parameter, named.node.value, one(ty.node)))
+    let children = one(ty.node)
+    if compile_time {
+        push(children, done(cursor, next(cursor), NodeKind.Comptime, "", new[Node]()).node)
+    }
+    Result.Ok(done(cursor, ty.rest, NodeKind.Parameter, named.node.value, children))
 }
 fn type_parameter(cursor Cursor) Result[Step, Diagnostic] {
     let named = name(cursor)?

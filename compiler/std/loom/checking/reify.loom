@@ -85,7 +85,7 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
         index = 0
         while index < length(value.items) { push(arguments, get(value.items, index).number)
             index = index + 1 }
-        let function = if state.context.emit { schedule(state.context.env, target, arguments, node)? } else { -1 }
+        let function = if state.context.emit { schedule(state.context.env, target, arguments, new[StaticValue](), node)? } else { -1 }
         return Result.Ok(expression(ExprKind.FunctionRef, value.ty, node, "", function, new[Expr](), true))
     }
     if kind == TypeKind.Int || kind == TypeKind.Float || kind == TypeKind.Refined {

@@ -151,6 +151,12 @@ signatures, aggregate storage, exact-reference reachability and pure compile-tim
 invocation/reification. Capturing closures and compile-time function parameters
 remain separate steps; runtime callbacks are not template parameters.
 
+Scalar compile-time parameters now specialize named calls with Int/Bool/Text
+values and leave only runtime arguments in the native ABI. Selected branches
+retain explicit generic requirements and mandatory abstract proofs. Function
+references to partially specialized static declarations, static callback/closure
+parameters and heterogeneous packs remain open.
+
 The early syntax portion of the
 [compiler-library gate](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)
 now has native evidence: an independent [user package](compiler/examples/syntax/main.loom)
