@@ -1,0 +1,143 @@
+import std.loom.ast.Node
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Local
+import std.loom.typed.TypeKind
+import std.loom.eval.Value
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+import std.text.length
+import std.int.to_text
+import std.result.Result
+
+record ReifyObject { value Value local Int }
+record Reification {
+    context Context
+    node Node
+    objects List[ReifyObject]
+    by_id List[Int]
+    budget List[Int]
+}
+fn reify_spend(state Reification, index Int, amount Int) Result[Bool, Failure] {
+    let remaining = get(state.budget, index)
+    if amount < 0 || amount > remaining {
+        return Result.Err(error(state.context, state.node, "comptime result expansion budget exhausted"))
+    }
+    set(state.budget, index, remaining - amount)
+    Result.Ok(true)
+}
+fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] {
+    if depth >= 256 { return Result.Err(error(state.context, state.node, "comptime result depth exhausted")) }
+    discard reify_spend(state, 0, 1)?
+    if value.ty < 0 || value.ty >= length(state.context.env.types) {
+        return Result.Err(error(state.context, state.node, "comptime result has no concrete type"))
+    }
+    let kind = get(state.context.env.types, value.ty).kind
+    let shared = kind == TypeKind.List || kind == TypeKind.Bytes
+    if shared {
+        if value.number <= 0 || value.number > 100000 {
+            return Result.Err(error(state.context, state.node, "comptime result has no fresh container identity"))
+        }
+        while length(state.by_id) <= value.number {
+            discard reify_spend(state, 0, 1)?
+            push(state.by_id, -1)
+        }
+        if get(state.by_id, value.number) >= 0 { return Result.Ok(true) }
+        let local = length(state.context.locals)
+        push(state.context.locals, Local { name = "" ty = value.ty mutable = false })
+        set(state.by_id, value.number, length(state.objects))
+        push(state.objects, ReifyObject { value = value local = local })
+    }
+    // Register containers before walking their contents: aliases and cycles
+    // revisit an ID, while record/enum fields retain ordinary value semantics.
+    if shared || kind == TypeKind.Record || kind == TypeKind.Enum {
+        var index = 0
+        while index < length(value.items) {
+            discard reify_visit(state, get(value.items, index), depth + 1)?
+            index = index + 1
+        }
+    }
+    Result.Ok(true)
+}
+fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] {
+    if depth >= 256 { return Result.Err(error(state.context, state.node, "comptime result depth exhausted")) }
+    discard reify_spend(state, 0, 2)?
+    let node = state.node
+    let kind = get(state.context.env.types, value.ty).kind
+    if kind == TypeKind.List || kind == TypeKind.Bytes {
+        let object = get(state.objects, get(state.by_id, value.number))
+        return Result.Ok(atom(ExprKind.Local, value.ty, node, object.local))
+    }
+    if kind == TypeKind.Unit { return Result.Ok(expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true)) }
+    if kind == TypeKind.Int || kind == TypeKind.Refined {
+        let integer = expression(ExprKind.Integer, 1, node, to_text(value.number), -1, new[Expr](), true)
+        return Result.Ok(if kind == TypeKind.Int { integer } else {
+            expression(ExprKind.Coerce, value.ty, node, "", -1, expressions(integer), true)
+        })
+    }
+    if kind == TypeKind.Bool {
+        return Result.Ok(expression(ExprKind.Bool, 2, node, if value.number == 0 { "false" } else { "true" }, -1, new[Expr](), true))
+    }
+    if kind == TypeKind.Text {
+        // Count each emitted occurrence, even when immutable Text was shared
+        // in the evaluator, so repeated large literals cannot explode output.
+        discard reify_spend(state, 1, length(value.text))?
+        return Result.Ok(expression(ExprKind.Text, 3, node, value.text, -1, new[Expr](), true))
+    }
+    if kind == TypeKind.Record || kind == TypeKind.Enum {
+        let fields = new[Expr]()
+        var index = 0
+        while index < length(value.items) {
+            let field = reify_value(state, get(value.items, index), depth + 1)?
+            if kind == TypeKind.Record { discard reify_spend(state, 0, 1)? }
+            push(fields, if kind == TypeKind.Record {
+                expression(ExprKind.Field, field.ty, node, "", index, expressions(field), true)
+            } else { field })
+            index = index + 1
+        }
+        return Result.Ok(expression(if kind == TypeKind.Record { ExprKind.Record } else { ExprKind.Variant },
+            value.ty, node, "", if kind == TypeKind.Record { -1 } else { value.number }, fields, true))
+    }
+    Result.Err(error(state.context, node, "comptime result has no concrete representation"))
+}
+
+fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
+    let budget = new[Int]()
+    push(budget, 100000)
+    push(budget, 16777216)
+    let state = Reification { context = context node = node objects = new[ReifyObject]() by_id = new[Int]() budget = budget }
+    discard reify_visit(state, value, 0)?
+    let body = new[Expr]()
+    var index = 0
+    // Every container exists before any is filled. References in cyclic or
+    // shared aggregates therefore never read an uninitialized runtime local.
+    while index < length(state.objects) {
+        let object = get(state.objects, index)
+        discard reify_spend(state, 0, 2)?
+        let create = expression(ExprKind.Intrinsic, object.value.ty, node,
+            if object.value.ty == 4 { "bytes_new" } else { "list_new" }, -1, new[Expr](), true)
+        push(body, expression(ExprKind.Let, 0, node, "", object.local, expressions(create), true))
+        index = index + 1
+    }
+    index = 0
+    while index < length(state.objects) {
+        let object = get(state.objects, index)
+        var item = 0
+        while item < length(object.value.items) {
+            discard reify_spend(state, 0, 2)?
+            let content = reify_value(state, get(object.value.items, item), 0)?
+            let reference = atom(ExprKind.Local, object.value.ty, node, object.local)
+            push(body, expression(ExprKind.Intrinsic, 0, node,
+                if object.value.ty == 4 { "bytes_push" } else { "list_push" }, -1, pair(reference, content), true))
+            item = item + 1
+        }
+        index = index + 1
+    }
+    let final_value = reify_value(state, value, 0)?
+    if length(body) == 0 { return Result.Ok(final_value) }
+    push(body, final_value)
+    Result.Ok(expression(ExprKind.Block, value.ty, node, "", -1, body, true))
+}

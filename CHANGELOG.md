@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Reconstruct shared `comptime` List/Bytes results as fresh runtime graphs,
+  preserving internal aliases and cycles. Reuse successful pure evaluations
+  within one check without adding a persistent cache or mutable globals.
 - Share checked types, concrete call targets, and source-snapshot checks through
   `std.loom.analysis`, exercised by an independent in-memory semantic consumer.
   Add bounded pure `comptime` evaluation and selected type-guard branches over

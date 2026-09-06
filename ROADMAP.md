@@ -136,7 +136,10 @@ Bounded [compile-time execution](compiler/README.md#compile-time-execution) now
 uses the same checked model and a Loom-written evaluator. Explicit blocks
 support pure calls, local loops/recursion, and value results; `comptime if`
 selects one branch, including type equality/inequality guards. Shared-container
-results, variadics, typed macros, and broader reflection remain incomplete.
+results preserve internal aliases and cycles while constructing a fresh graph
+on each runtime evaluation. Successful pure results can be reused within one
+check; persistent/incremental reuse, variadics, typed macros, and broader
+reflection remain incomplete.
 Execution never substitutes for a required proof. Type predicates and contracts
 still use the documented call-free proof fragment.
 

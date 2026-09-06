@@ -213,15 +213,22 @@ fn main() {
 
 The [comptime example](examples/comptime/main.loom) also exercises ordinary pure
 function calls, recursion, local mutation, records/enums, and fresh list aliases.
-`Bool`, `Int`, `Text`, and records/enums containing supported values can become
-native constants. Fresh lists and byte buffers can be used internally, but
-results cannot yet contain shared `List` or `Bytes` storage.
+Results support `Bool`, `Int`, `Text`, records/enums, shared lists, and byte
+buffers. Scalar values become constants; containers are allocated and populated
+whenever the expression runs. Each runtime evaluation gets a fresh graph, while
+aliases and cycles inside that graph are preserved. Mutating one invocation's
+result cannot affect the next; there is no hidden mutable global or package
+initialization. The [shared-result example](examples/comptime/shared.loom)
+exercises these distinctions.
 
 Explicit blocks cannot read or write surrounding runtime locals, or return from
 the enclosing function, including through `?`; called functions may return
 normally. I/O and other external inputs are disallowed. Calls and loops are
 bounded by work, depth, and allocation limits; faults or exhausted limits are
 diagnostics, never a fallback to runtime execution.
+Result expansion is bounded too. Successful pure computations may be reused
+within one check after type/capture validation, but each use still reconstructs
+fresh runtime containers. This is not a persistent or incremental build cache.
 
 Every branch must parse, but unselected `comptime if` branches impose no type or
 call requirements. Type guards currently compare unshadowed type names with

@@ -57,8 +57,10 @@ not monitor files or provide incremental reuse.
 [Compile-time execution](../../compiler/README.md#compile-time-execution) uses a
 bounded Loom evaluator over the native compiler's checked model. Explicit
 blocks support pure calls, local mutation, loops/recursion, and scalar or
-record/enum results; shared lists/bytes can be used internally but cannot yet
-escape as results. `comptime if` selects code using a computed Boolean or type
+record/enum results, including shared lists/bytes. Every runtime evaluation
+constructs a fresh graph with its internal aliases and cycles preserved; no
+hidden mutable global is introduced. Successful pure results can be reused
+within one check, not across builds. `comptime if` selects code using a computed Boolean or type
 equality/inequality. Runtime captures, external effects, faults, and exhausted
 budgets reject. Scalar constraint folding shares this evaluator; required
 postconditions still use the prover, with no evaluation-as-proof fallback.

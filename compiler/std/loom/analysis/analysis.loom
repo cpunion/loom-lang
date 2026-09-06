@@ -1,4 +1,5 @@
 import std.loom.ast.Node
+import std.loom.ast.same
 import std.loom.project.Project
 import std.loom.project.SourceFile
 import std.loom.project.qualify
@@ -50,18 +51,6 @@ pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
     Result.Ok(Analysis { bindings = bindings program = check(bindings)? })
 }
 
-fn same_node(left Node, right Node) Bool {
-    if left.kind != right.kind || left.value != right.value ||
-        left.span.start != right.span.start || left.span.end != right.span.end ||
-        length(left.children) != length(right.children) { return false }
-    var index = 0
-    while index < length(left.children) {
-        if !same_node(get(left.children, index), get(right.children, index)) { return false }
-        index = index + 1
-    }
-    true
-}
-
 // This checks the supplied project, not the filesystem. Reload first to detect
 // disk edits. Comparing ASTs as well as text also detects in-memory tree edits.
 pub fn is_current(analysis Analysis, project Project, tests Bool) Bool {
@@ -74,7 +63,7 @@ pub fn is_current(analysis Analysis, project Project, tests Bool) Bool {
         let right = get(project.files, index)
         if left.package != right.package || left.path != right.path || left.text != right.text ||
             left.test_only != right.test_only || left.trusted_std != right.trusted_std ||
-            !same_node(left.tree, right.tree) { return false }
+            !same(left.tree, right.tree) { return false }
         index = index + 1
     }
     true

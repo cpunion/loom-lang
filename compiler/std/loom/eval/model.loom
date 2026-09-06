@@ -11,11 +11,13 @@ import std.list.set
 import std.list.length
 import std.result.Result
 
+// Mutable containers use a positive evaluation-local allocation ID in number;
+// records use zero and enums keep their variant tag. These are not addresses.
 pub record Value { ty Int number Int text Text items List[Value] }
 pub record Failure { span Span message Text }
 record Step { value Value returned Bool }
 record Frame { locals List[Value] calls Int }
-// Shared work/allocation counters cover the entire evaluation, including calls.
+// Shared work/allocation counters and next container ID cover all calls.
 record State { program Program budget List[Int] partial Bool }
 
 pub fn unknown() Value { Value { ty = -1 number = 0 text = "" items = new[Value]() } }
@@ -30,7 +32,14 @@ fn state(program Program, partial Bool) State {
     let budget = new[Int]()
     push(budget, 100000)
     push(budget, 16777216)
+    push(budget, 0)
     State { program = program budget = budget partial = partial }
+}
+fn fresh(state State, ty Int) Value {
+    // execute's work budget bounds the number of allocations well below Int.
+    let id = get(state.budget, 2) + 1
+    set(state.budget, 2, id)
+    aggregate(ty, id, new[Value]())
 }
 fn spend(state State, expr Expr, index Int, amount Int) Result[Bool, Failure] {
     let remaining = get(state.budget, index)

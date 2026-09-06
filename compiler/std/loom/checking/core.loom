@@ -33,6 +33,7 @@ record Environment {
     signatures List[Signature]
     pending List[Instance]
     stage_depth Int
+    computations List[Computation]
 }
 record Binding { local Int previous Int }
 record Context {
@@ -141,7 +142,8 @@ fn bind_local(context Context, node Node, value Text, ty Int, mutable Bool, boun
 }
 
 pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
-    let env = Environment { source = source types = new[Type]() signatures = new[Signature]() pending = new[Instance]() stage_depth = 0 }
+    let env = Environment { source = source types = new[Type]() signatures = new[Signature]() pending = new[Instance]()
+        stage_depth = 0 computations = new[Computation]() }
     initialize_types(env)
     var index = 0
     while index < length(source.symbols) {

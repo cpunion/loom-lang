@@ -66,7 +66,7 @@ fn primitive(state State, expr Expr, values List[Value]) Result[Value, Failure] 
     if !pure_intrinsic(name) { return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", name))) }
     if length(values) != arity(name) { return Result.Err(failure(expr, "invalid checked intrinsic arity")) }
     if name == "list_new" || name == "bytes_new" {
-        return Result.Ok(aggregate(expr.ty, 0, std.list.new[Value]()))
+        return Result.Ok(fresh(state, expr.ty))
     }
     let first = get(values, 0)
     if name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" {
