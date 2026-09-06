@@ -1,0 +1,67 @@
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+import std.text.concat
+
+concept Source {
+    type Item
+    fn item(self Self) Self.Item
+}
+concept Rank {
+    type Item
+    fn rank(self Self) Self.Item
+}
+
+record NumberSource { value Int }
+record TextSource { values List[Text] }
+
+impl Source for NumberSource {
+    type Item = Int
+    fn item(self NumberSource) Int { self.value }
+}
+impl Source for TextSource {
+    type Item = Text
+    fn item(self TextSource) Text { get(self.values, 0) }
+}
+impl Rank for TextSource {
+    type Item = Int
+    fn rank(self TextSource) Int { 7 }
+}
+
+record Cache[S Source] { source S value S.Item }
+enum Cached[S Source] { Ready(Cache[S]) Empty }
+
+fn cached[S Source](source S) Cache[S] {
+    Cache { value = source.item() source = source }
+}
+fn from_cache[S Source](cache Cache[S]) S.Item { cache.value }
+fn pair[S Source](first S.Item, source S) (S.Item, S.Item) {
+    (first, source.item())
+}
+fn selected[S Source + Rank](source S) (S.Source.Item, S.Rank.Item) {
+    (source.item(), source.rank())
+}
+
+fn exercise() {
+    let number = NumberSource { value = 42 }
+    let cached_number = cached(number)
+    assert from_cache(cached_number) == 42
+    let left, right = pair(3, number)
+    assert left == 3 && right == 42
+    let prepared = comptime { cached(NumberSource { value = 7 }) }
+    assert prepared.value == 7
+
+    let values = new[Text]()
+    push(values, concat("shared", "!"))
+    let source = TextSource { values = values }
+    let saved = cached(source)
+    set(values, 0, concat("changed", "!"))
+    assert saved.value == "shared!" && saved.source.item() == "changed!"
+    let text, rank = selected(source)
+    assert text == "changed!" && rank == 7
+    let ready = Cached.Ready(saved)
+    assert match ready { Cached.Ready(value) => from_cache(value) == "shared!", Cached.Empty => false }
+}
+
+fn main() { exercise() }

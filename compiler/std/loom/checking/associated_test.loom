@@ -1,0 +1,67 @@
+fn associated_definitions() Text {
+    "concept Source { type Item\nfn first(self Self) Self.Item }\nconcept Rank { type Item\nfn rank(self Self) Self.Item }\nimpl Source for Int { type Item = Int\nfn first(self Int) Self.Item { self } }\nimpl Source for Bool { type Item = Text\nfn first(self Bool) Text { \"bool\" } }\nimpl Rank for Bool { type Item = Int\nfn rank(self Bool) Int { 7 } }\nrecord Cache[S Source] { value S.Item source S }\nenum Cached[S Source] { Ready(Cache[S]) Empty }\nfn cached[S Source](source S) Cache[S] { Cache { value = source.first() source = source } }\nfn pair[S Source](first S.Item, source S) (S.Item, S.Item) { (first, source.first()) }\n"
+}
+
+test fn associated_values_normalize_through_calls_data_and_compile_time_execution() {
+    let program = accepted(concat(associated_definitions(), "fn main() { let cache = cached(true)\nassert cache.value == \"bool\"\nlet direct = Cache { value = 3 source = 4 }\nassert direct.value == 3\nlet values = pair(\"first\", true)\nassert values.0 == \"first\" && values.1 == \"bool\"\nlet wrapped = Cached.Ready(cache)\nassert match wrapped { Cached.Ready(inner) => inner.value == \"bool\", _ => false }\nlet constant = comptime { cached(9) }\nassert constant.value == 9 }"))
+    var concrete_cache = false
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        assert get(program.types, function.result).kind != TypeKind.Associated
+        if length(function.arguments) == 1 && get(function.arguments, 0) == 2 &&
+            get(program.types, function.result).kind == TypeKind.Record {
+            let shape = get(program.types, function.result)
+            assert get(shape.fields, 0).ty == 3
+            concrete_cache = true
+        }
+        index = index + 1
+    }
+    assert concrete_cache
+    rejects(concat(associated_definitions(), "fn main() { discard pair(true, 1) }"))
+    rejects(concat(associated_definitions(), "fn uninferrable[S Source](value S.Item) S.Item { value }\nfn main() { discard uninferrable(1) }"))
+    discard accepted(concat(associated_definitions(), "fn explicit[S Source](value S.Item) S.Item { value }\nfn main() { assert explicit[Int](1) == 1 }"))
+}
+
+test fn bounded_data_requires_evidence_at_every_use_not_just_first_interning() {
+    let definitions = "concept C {}\nconcept D {}\nimpl C for Int {}\nimpl D for Int {}\nrecord Box[T C + D] { value T }\nenum Maybe[T C] { Some(T) None }\n"
+    discard accepted(concat(definitions, "fn carry[T C + D](value Box[T]) T { value.value }\nfn optional[T](value T) Int { comptime if T implements C { let wrapped Maybe[T] = Maybe.Some(value)\ndiscard wrapped\n1 } else { 0 } }\nfn main() { assert carry(Box { value = 3 }) == 3\nassert optional(1) == 1\nassert optional(true) == 0 }"))
+    rejects(concat(definitions, "fn valid[T C + D](value Box[T]) {}\npub fn missing[T](value Box[T]) {}"))
+    rejects(concat(definitions, "record Outer[T C] { value Box[T] }"))
+    rejects(concat(definitions, "fn main() { let missing Maybe[Bool] = Maybe.None\ndiscard missing }"))
+    rejects(concat(definitions, "record Empty[T C] {}\nfn main() { discard Empty[Bool] {} }"))
+    rejects(concat(definitions, "fn hidden[T](value T) { comptime if T implements C { let valid Maybe[T] = Maybe.Some(value)\ndiscard valid }\nlet invalid Maybe[T] = Maybe.Some(value)\ndiscard invalid }"))
+}
+
+test fn associated_bindings_and_projection_ambiguity_are_checked_before_emission() {
+    discard accepted(concat(associated_definitions(), "fn both[S Source + Rank](value S) (S.Source.Item, S.Rank.Item) { (Source.first(value), Rank.rank(value)) }\nfn choose[S Source](source S) S.Item { comptime if S.Item == Int { source.first() } else { source.first() } }\nfn main() { let values = both(true)\nassert values.0 == \"bool\" && values.1 == 7\nassert choose(3) == 3 }") )
+    rejects(concat(associated_definitions(), "fn ambiguous[S Source + Rank](value S) S.Item { value.first() }"))
+    rejects(concat(associated_definitions(), "pub fn hidden[S](value S) S.Source.Item { value.first() }"))
+    rejects("concept C { type Item }\nimpl C for Int {}")
+    rejects("concept C { type Item }\nimpl C for Int { type Other = Int }")
+    rejects("concept C { type Item\nfn first(self Self) Self.Item }\nimpl C for Int { type Item = Bool\nfn first(self Int) Int { self } }")
+    rejects("concept C { type Item }\nimpl C for Int { type Item = List[Self.Item] }")
+    rejects("concept C { type Item\ntype Other }\nimpl C for Int { type Item = Self.Other\ntype Other = Self.Item }")
+    discard accepted("concept C { type Item\ntype Other\nfn first(self Self) Self.Item }\nimpl C for Int { type Item = Self.Other\ntype Other = Int\nfn first(self Int) Self.Item { self } }\nfn main() { assert C.first(3) == 3 }")
+    rejects("concept C { type Item }\nfn unsupported(value dyn C) {}")
+    rejects(concat(associated_definitions(), "fn unsupported[S Source](value S) S.Item ensures result == value { value.first() }"))
+}
+
+test fn associated_data_test_evidence_does_not_leak_into_production() {
+    let declarations = "concept C { type Item\nfn value(self Self) Self.Item }\nrecord Item {}\nrecord Box[T C] { value T result T.Item }\nfn box[T C](value T) Box[T] { Box { result = value.value() value = value } }\n"
+    let files = source_files(declarations)
+    let testing = source_file("app", "impl C for Item { type Item = Int\nfn value(self Item) Int { 7 } }\ntest fn check_bound() { let value = box(Item {})\nassert value.result == 7 }", false)
+    push(files, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(files, "app", true) {
+        Result.Ok(bound) => match check(bound) { Result.Ok(_) => {}
+            Result.Err(_) => { assert false } }
+        Result.Err(_) => { assert false }
+    }
+    let invalid = source_files(concat(declarations, "pub fn production(value Box[Item]) {}"))
+    push(invalid, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(invalid, "app", true) {
+        Result.Ok(bound) => match check(bound) { Result.Err(_) => {}
+            Result.Ok(_) => { assert false } }
+        Result.Err(_) => { assert false }
+    }
+}

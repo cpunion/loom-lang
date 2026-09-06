@@ -1,11 +1,13 @@
 import std.loom.source.Span
 
 // IDs address immutable entries in the checked program, never source names.
-pub enum TypeKind { Unit Int Bool Text Bytes Parameter List Record Enum Refined Tuple Float Dyn }
+pub enum TypeKind { Unit Int Bool Text Bytes Parameter List Record Enum Refined Tuple Float Dyn Associated }
 pub record Field { name Text ty Int }
 pub record Variant { name Text fields List[Int] }
 pub record Type {
     kind TypeKind
+    // Associated uses the concept member's source symbol and [receiver] arguments.
+    // Concrete projections normalize before executable IR reaches the backend.
     symbol Int
     arguments List[Int]
     fields List[Field]

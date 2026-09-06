@@ -16,6 +16,10 @@ record SlotUse { interface Int slot Int }
 fn fill_interface(env Environment, index Int) Result[Bool, Failure] {
     let declaration = get(env.interfaces, index)
     let capability = get(env.concepts, concept_index(env, declaration.symbol))
+    if length(capability.associated) != 0 {
+        return Result.Err(failure(env, capability.symbol, symbol(env, capability.symbol).node,
+            "dyn concepts with associated types need explicit bindings, which are not yet supported"))
+    }
     let methods = new[Method]()
     var method = 0
     while method < length(capability.methods) {

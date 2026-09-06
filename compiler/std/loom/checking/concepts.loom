@@ -7,8 +7,8 @@ import std.list.push
 import std.list.length
 import std.result.Result
 
-record Concept { symbol Int methods List[Int] }
-record Implementation { symbol Int capability Int ty Int methods List[Int] }
+record Concept { symbol Int methods List[Int] associated List[Int] }
+record Implementation { symbol Int capability Int ty Int methods List[Int] associated List[Int] state Int }
 
 fn prototype(env Environment, owner Int) Bool {
     let parent = symbol(env, owner).owner
@@ -97,7 +97,8 @@ fn conformances(env Environment) Result[Bool, Failure] {
                 }
                 index = index + 1
             }
-            push(env.concepts, Concept { symbol = owner methods = methods })
+            let position = concept_index(env, owner)
+            set(env.concepts, position, Concept { symbol = owner methods = methods associated = get(env.concepts, position).associated })
         }
         owner = owner + 1
     }
@@ -105,26 +106,17 @@ fn conformances(env Environment) Result[Bool, Failure] {
     while owner < length(env.source.symbols) {
         let item = symbol(env, owner)
         if item.node.kind == NodeKind.Impl {
-            let capability = required_concept(env, owner, child(item.node, 0))?
-            let ty = resolve(env, owner, child(item.node, 1), new[Int](), 0)?
-            if !concrete(env, ty) || get(env.types, ty).kind == TypeKind.Dyn {
-                return Result.Err(failure(env, owner, item.node, "an implementation needs a concrete, non-dynamic target type"))
-            }
-            var index = 0
-            while index < length(env.implementations) {
-                let previous = get(env.implementations, index)
-                if previous.capability == capability && previous.ty == ty {
-                    return Result.Err(failure(env, owner, item.node, "duplicate explicit implementation for this concept and type"))
-                }
-                index = index + 1
-            }
+            let position = implementation_owner(env, owner)
+            let header = get(env.implementations, position)
+            let capability = header.capability
+            let ty = header.ty
             let expected = get(env.concepts, concept_index(env, capability)).methods
             let actual = owned_signatures(env, owner)
             if length(actual) != length(expected) {
                 return Result.Err(failure(env, owner, item.node, "an implementation must define each concept method exactly once"))
             }
             let methods = new[Int]()
-            index = 0
+            var index = 0
             while index < length(expected) {
                 let requirement = signature(env, get(expected, index), ints(ty), item.node)?
                 var found = -1
@@ -141,7 +133,7 @@ fn conformances(env Environment) Result[Bool, Failure] {
                 push(methods, found)
                 index = index + 1
             }
-            push(env.implementations, Implementation { symbol = owner capability = capability ty = ty methods = methods })
+            set(env.implementations, position, Implementation { symbol = owner capability = capability ty = ty methods = methods associated = header.associated state = 2 })
         }
         owner = owner + 1
     }

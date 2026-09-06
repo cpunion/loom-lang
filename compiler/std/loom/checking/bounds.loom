@@ -1,0 +1,102 @@
+import std.loom.ast.Node
+import std.loom.typed.TypeKind
+import std.list.new
+import std.list.get
+import std.list.length
+import std.result.Result
+
+// Type interning stores structure, not scope-dependent conformance permission.
+fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement], node Node, depth Int) Result[Bool, Failure] {
+    if length(env.concepts) == 0 { return Result.Ok(true) }
+    if depth > 64 { return Result.Err(failure(env, owner, node, "type requirement expansion must be finite")) }
+    let shape = get(env.types, ty)
+    var index = 0
+    while index < length(shape.arguments) {
+        discard well_formed(env, owner, get(shape.arguments, index), obligations, node, depth + 1)?
+        index = index + 1
+    }
+    if shape.kind == TypeKind.Associated {
+        if !admitted(env, owner, obligations, get(shape.arguments, 0), symbol(env, shape.symbol).owner) {
+            return Result.Err(failure(env, owner, node, "associated type needs its declared concept requirement"))
+        }
+    }
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
+        let bounds = requirements(env, shape.symbol, shape.arguments)?
+        index = 0
+        while index < length(bounds) {
+            let bound = get(bounds, index)
+            if !admitted(env, owner, obligations, bound.ty, bound.capability) {
+                return Result.Err(failure(env, owner, node, "data type argument needs an explicit implementation or declared concept requirement"))
+            }
+            index = index + 1
+        }
+    }
+    Result.Ok(true)
+}
+fn context_type(context Context, node Node) Result[Int, Failure] {
+    let ty = resolve_bound(context.env, context.signature.symbol, node, context.arguments, context.signature.requirements, 0)?
+    discard well_formed(context.env, context.signature.symbol, ty, context.signature.requirements, node, 0)?
+    Result.Ok(ty)
+}
+fn constructed_type(context Context, declaration Int, arguments List[Int], node Node) Result[Int, Failure] {
+    let ty = data_type(context.env, declaration, arguments, 0)?
+    discard well_formed(context.env, context.signature.symbol, ty, context.signature.requirements, node, 0)?
+    Result.Ok(ty)
+}
+fn declaration_types(env Environment) Result[Bool, Failure] {
+    if length(env.concepts) == 0 { return Result.Ok(true) }
+    var pending = 0
+    while pending < length(env.types) {
+        if get(env.type_states, pending) == 0 { discard expand_type(env, pending, 0)? }
+        pending = pending + 1
+    }
+    var owner = 0
+    while owner < length(env.source.symbols) {
+        let item = symbol(env, owner)
+        if nominal_data(item.node.kind) {
+            let arguments = abstract_arguments(env, length(group(item.node, NodeKind.TypeParameters)))
+            let ty = get(env.types, data_type(env, owner, arguments, 0)?)
+            let obligations = requirements(env, owner, arguments)?
+            var index = 0
+            while index < length(ty.fields) {
+                discard well_formed(env, owner, get(ty.fields, index).ty, obligations, item.node, 0)?
+                index = index + 1
+            }
+            index = 0
+            while index < length(ty.variants) {
+                let fields = get(ty.variants, index).fields
+                var field = 0
+                while field < length(fields) {
+                    discard well_formed(env, owner, get(fields, field), obligations, item.node, 0)?
+                    field = field + 1
+                }
+                index = index + 1
+            }
+        }
+        if item.node.kind == NodeKind.AssociatedType && symbol(env, item.owner).node.kind == NodeKind.Impl {
+            let ty = resolve(env, owner, child(item.node, 0), new[Int](), 0)?
+            if !concrete(env, ty) { return Result.Err(failure(env, owner, item.node, "associated type binding must resolve to a concrete type")) }
+            discard well_formed(env, owner, ty, new[Requirement](), item.node, 0)?
+        }
+        owner = owner + 1
+    }
+    var index = 0
+    while index < length(env.signatures) {
+        let current = get(env.signatures, index)
+        let node = symbol(env, current.symbol).node
+        var parameter = 0
+        while parameter < length(current.params) {
+            discard well_formed(env, current.symbol, get(current.params, parameter), current.requirements, node, 0)?
+            parameter = parameter + 1
+        }
+        discard well_formed(env, current.symbol, current.result, current.requirements, node, 0)?
+        index = index + 1
+    }
+    index = 0
+    while index < length(env.implementations) {
+        let header = get(env.implementations, index)
+        discard well_formed(env, header.symbol, header.ty, new[Requirement](), symbol(env, header.symbol).node, 0)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}

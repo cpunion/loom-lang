@@ -1,0 +1,25 @@
+test fn associated_members_and_projections_preserve_their_source_shape() {
+    let tree = parsed("pub concept Source {\ntype Item\nfn next(self Self) Self.Item\n}\nimpl Source for Counter {\ntype Item = Int\nfn next(self Counter) Int { 1 }\n}\nrecord Holder[T Source] { value T.Item }\nfn take[T Source](value T) T.Source.Item { value.next() }\ntype Positive = Int where self > 0\n")
+    let capability = child(tree, 0)
+    let declaration = child(capability, 1)
+    assert declaration.kind == NodeKind.AssociatedType && declaration.value == "Item"
+    assert length(declaration.children) == 0 && declaration.span.end - declaration.span.start == 9
+    assert child(child(child(capability, 2), 2), 0).value == "Self.Item"
+    let binding = child(child(tree, 1), 2)
+    assert binding.kind == NodeKind.AssociatedType && binding.value == "Item"
+    assert length(binding.children) == 1 && child(binding, 0).value == "Int"
+    let holder = child(tree, 2)
+    assert child(child(child(holder, 0), 0), 0).value == "Source"
+    assert child(child(holder, 1), 0).value == "T.Item"
+    assert child(child(child(tree, 3), 2), 0).value == "T.Source.Item"
+    assert child(tree, 4).kind == NodeKind.Refined
+}
+
+test fn associated_types_do_not_change_top_level_refinements() {
+    assert rejected("type Alias = Int\n").message == "expected 'where' before the type constraint"
+    discard rejected("concept C { type Item = Int }")
+    discard rejected("concept C { type Item[T] }")
+    discard rejected("impl C for Int { type Item }")
+    discard rejected("impl C for Int { type Item = Int where self > 0 }")
+    assert rejected("impl C for Int { pub type Item = Int }").message == "associated types inherit their owner's visibility"
+}

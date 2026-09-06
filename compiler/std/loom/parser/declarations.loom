@@ -33,8 +33,11 @@ fn concept_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, D
     if at(named.rest, Kind.LBracket) { return Result.Err(error(named.rest, "concepts do not take type parameters")) }
     var rest = newlines(expect(newlines(named.rest), Kind.LBrace, "'{' after the concept name")?)
     while !at(rest, Kind.RBrace) {
-        if !word(rest, "fn") { return Result.Err(error(rest, "expected a concept method prototype or '}'")) }
-        let method = function(rest, rest, new[Node](), false, true)?
+        if !word(rest, "fn") && !word(rest, "type") {
+            return Result.Err(error(rest, "expected a concept method, associated type, or '}'"))
+        }
+        let method = if word(rest, "type") { associated_type(rest, false)? }
+            else { function(rest, rest, new[Node](), false, true)? }
         push(children, method.node)
         rest = newlines(method.rest)
     }
@@ -52,11 +55,29 @@ fn impl_decl(cursor Cursor) Result[Step, Diagnostic] {
         let begin = if public { next(rest) } else { rest }
         let flags = new[Node]()
         if public { push(flags, done(rest, begin, NodeKind.Public, "", new[Node]()).node) }
-        let method = function(rest, begin, flags, public, false)?
+        if public && word(begin, "type") {
+            return Result.Err(error(rest, "associated types inherit their owner's visibility"))
+        }
+        let method = if word(begin, "type") { associated_type(begin, true)? }
+            else { function(rest, begin, flags, public, false)? }
         push(children, method.node)
         rest = newlines(method.rest)
     }
     Result.Ok(done(cursor, next(rest), NodeKind.Impl, "", children))
+}
+fn associated_type(cursor Cursor, implementation Bool) Result[Step, Diagnostic] {
+    let named = name(next(cursor))?
+    var rest = named.rest
+    let children = new[Node]()
+    if implementation {
+        let value = type_ref(expect(rest, Kind.Assign, "'=' after the associated type name")?)?
+        push(children, value.node)
+        rest = value.rest
+    }
+    if !at(rest, Kind.Newline) && !at(rest, Kind.RBrace) {
+        return Result.Err(error(rest, "expected a newline or '}' after the associated type"))
+    }
+    Result.Ok(done(cursor, rest, NodeKind.AssociatedType, named.node.value, children))
 }
 fn data_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, Diagnostic] {
     let named = name(next(cursor))?
