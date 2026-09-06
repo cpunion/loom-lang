@@ -52,6 +52,7 @@ if [[ "$exe_suffix" == .exe && -z "$seed_compiler" && -z "${LOOM_BOOTSTRAP_INPUT
 fi
 
 printf 'Building the native LLVM bridge and runtime...\n'
+if [[ "$exe_suffix" == .exe ]]; then source "$repo_root/scripts/windows-env.sh"; fi
 cargo build --locked --workspace --target-dir "$target_root"
 
 export LOOM_RUNTIME_LIBRARY="$target_root/debug/$runtime_name"

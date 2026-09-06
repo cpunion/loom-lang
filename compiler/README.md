@@ -102,6 +102,9 @@ using the static MSVC CRT, not a placeholder library. The Windows Cargo target
 configuration and emitted program linker use the same static CRT. This matches
 the LLVM package's allocator override; mixing dynamic-CRT allocation with its
 message deallocator can crash even before IR lowering.
+Bootstrap imports SDK library paths from the developer environment automatically.
+Before standalone Cargo commands in Git Bash, run `source scripts/windows-env.sh`
+to make those paths available to Rust's static-library packaging as well.
 
 Windows cannot use the frozen historical Unix seed directly. Use an existing
 compatible Windows compiler via `LOOM_BOOTSTRAP_COMPILER`, or export a trusted
