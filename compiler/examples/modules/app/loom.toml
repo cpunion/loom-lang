@@ -1,0 +1,5 @@
+[module]
+name = "app"
+
+[dependencies.codec]
+path = "../codec"

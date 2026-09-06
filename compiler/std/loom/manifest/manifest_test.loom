@@ -2,14 +2,39 @@ fn parsed(text Text) Module {
     match parse(text) {
         Result.Ok(module) => module
         Result.Err(_) => { assert false
-            Module { name = "" version = "" } }
+            Module { name = "" version = "" dependencies = std.list.new[Dependency]() } }
     }
 }
 
 test fn supported_manifest_subset() {
     let module = parsed("schema = 2 # version\nlanguage = '0.4'\n[module]\nname = \"front\\u0065nd\"\nversion = \"0.1#dev\" # comment\n[dependencies]\n")
     assert module.name == "frontend" && module.version == "0.1#dev"
+    assert length(module.dependencies) == 0
     assert parsed("dependencies = {}\n[module]\nname = 'demo'\n").name == "demo"
+}
+
+test fn path_dependencies_decode_strings_and_keep_declaration_order() {
+    let module = parsed("[module]\nname='app'\n[dependencies.codec]\npath = \"../codec\"\n[dependencies]\n[dependencies.json]\npath = '../json#fork' # a literal hash\n")
+    assert length(module.dependencies) == 2
+    assert get(module.dependencies, 0).name == "codec" && get(module.dependencies, 0).path == "../codec"
+    assert get(module.dependencies, 1).name == "json" && get(module.dependencies, 1).path == "../json#fork"
+    let escaped = parsed("[module]\nname='app'\n[dependencies.codec]\npath=\"../codec\\u0020fork\"")
+    assert get(escaped.dependencies, 0).path == "../codec fork"
+}
+
+test fn incomplete_duplicate_and_nonpath_dependencies_reject() {
+    let prefix = "[module]\nname='app'\n"
+    rejects(concat(prefix, "[dependencies.codec]"))
+    rejects(concat(prefix, "[dependencies.codec]\npath=''"))
+    rejects(concat(prefix, "[dependencies.codec]\npath='../codec'\npath='../other'"))
+    rejects(concat(prefix, "[dependencies.codec]\npath='../codec'\n[dependencies.codec]"))
+    rejects(concat(prefix, "[dependencies.codec]\ngit='https://example.com/codec'"))
+    rejects(concat(prefix, "[dependencies.codec]\npath='../codec'\nversion='1'"))
+    rejects(concat(prefix, "[dependencies]\ncodec={path='../codec'}"))
+    rejects(concat(prefix, "[dependencies.Codec]\npath='../codec'"))
+    rejects(concat(prefix, "[dependencies.std]\npath='../std'"))
+    rejects(concat(prefix, "[dependencies.app]\npath='../other'"))
+    rejects("dependencies={}\n[module]\nname='app'\n[dependencies.codec]\npath='../codec'")
 }
 
 fn rejects(text Text) {

@@ -235,7 +235,7 @@ timings; local variables remain conservatively rooted for the function.
   shares its header: aliases observe growth and element replacement. Scalar
   records remain native values; managed fields retain their sharing semantics.
 - Directory packages, private helpers and `pub`, package-wide explicit imports,
-  and a local import closure. A simple `loom.toml` supplies the module name;
+  and importer-scoped path dependencies. A simple `loom.toml` supplies the module name;
   no `src/` is required. A directory without a manifest can use its own files
   and `std`. Imported packages do not run initialization or their own tests.
 - Both colocated `*_test.loom` and embedded `test fn`. Only tests can access
@@ -411,6 +411,38 @@ conversion supplies evidence. Cross-dyn conversion, concrete recovery, and
 compile-time dynamic execution currently reject. A dyn-compatible method can use
 `Self` only as its first receiver parameter; static-only concepts may also use it
 elsewhere. Dynamic associated bindings remain future work.
+
+## Local module dependencies
+
+A dependency path is relative to the manifest declaring it; the key must match
+the target module's name:
+
+```toml
+[module]
+name = "app"
+
+[dependencies.codec]
+path = "../codec"
+```
+
+`import codec.parser.answer` selects the `parser` directory package in that
+module. Each module can use its own direct dependencies; an application cannot
+implicitly import its dependencies' dependencies. Only imported packages are
+loaded, and only the selected root package contributes tests. Unused dependency
+paths are not opened. Canonical roots are reused, without permitting imported
+directory aliases to rename a package or cross nested module boundaries.
+
+The [module example](examples/modules/app/main.loom) traverses three modules:
+
+```sh
+target/loom run compiler/examples/modules/app
+target/loom test compiler/examples/modules/app
+```
+
+This offline slice rejects different roots declaring the same module name until
+instance-qualified identities support multiversion builds. Git/fork sources,
+version resolution, lockfiles and persistent build caching remain later work.
+Path dependencies are editable source, not content frozen by a lockfile.
 
 ## Function values
 
@@ -612,11 +644,11 @@ language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Mutable record fields, broader proofs, moving GC,
 lexical resources, Tasks, complete compile-time programming,
-dependency resolution, lockfile/cache behavior, deployment and semantic-change
+Git/version resolution, lockfile/cache behavior, deployment and semantic-change
 tools remain outside this slice. No complete language or `std` claim is made.
 
 Unsupported syntax and manifest features reject explicitly. In particular,
-dependency and target declarations are not silently ignored. The accepted
+unsupported dependency sources and target declarations are not silently ignored. The accepted
 [language foundation](../docs/rfcs/language-foundation.md) remains the goal;
 these temporary limits do not redefine it.
 

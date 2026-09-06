@@ -1,0 +1,5 @@
+[module]
+name = "codec"
+
+[dependencies.seed]
+path = "../seed"
