@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add structural tuples, positional access, and exactly-once `let`/`var`
+  destructuring to the Loom-written frontend. Reuse aggregate native layout and
+  compile-time graph reconstruction, including generic and shared fields.
 - Add pure Loom decimal integer parsing with explicit syntax/range errors and
   compile-time execution. Exercise command-line parsing and constrained input
   in an ordinary application with colocated tests.

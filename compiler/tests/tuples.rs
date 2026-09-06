@@ -1,0 +1,48 @@
+use std::{fs, process::Command};
+mod common;
+use common::{loom, success};
+
+#[test]
+fn tuple_values_run_natively_and_keep_managed_fields_alive() {
+    let example = common::root().join("compiler/examples/tuples");
+    success(&loom(&["check", example.to_str().unwrap()]));
+    let output = tempfile::tempdir().unwrap();
+    let executable = common::executable(output.path(), "tuples");
+    success(
+        &common::command(&[
+            "build",
+            example.to_str().unwrap(),
+            "--output",
+            executable.to_str().unwrap(),
+        ])
+        .env("LOOM_OPT_LEVEL", "0")
+        .output()
+        .unwrap(),
+    );
+    success(
+        &Command::new(executable)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+}
+
+#[test]
+fn tuple_errors_are_source_diagnostics_not_native_failures() {
+    let source = tempfile::tempdir().unwrap();
+    for text in [
+        "fn main() { let a, b = (1,) }",
+        "fn main() { let a, b = 1 }",
+        "fn main() { let a, a = (1, 2) }",
+        "fn main() { discard (1, true).2 }",
+        "fn main() { discard (1, true).999999999999999999999999999 }",
+        "fn main() { let value (Int, Bool) = (true, 1) }",
+        "record Cycle { next (Int, Cycle) }",
+        "fn main() { discard () }",
+    ] {
+        fs::write(source.path().join("main.loom"), text).unwrap();
+        let output = loom(&["check", source.path().to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(1), "{text}: {output:?}");
+        assert!(!output.stderr.is_empty());
+    }
+}

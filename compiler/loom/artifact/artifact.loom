@@ -17,7 +17,8 @@ import std.list.length
 // then raw UTF-8, without a trailing separator. Lists start with their count.
 // Program: types, functions, entry (-1 absent), tests, exports.
 // Type: tag, symbol, then List/refined element ID, record fields(name,type), or
-// enum variants(name,payload IDs). Tags 0..9 follow type_tag below.
+// enum variants(name,payload IDs). Tuples use record layout, with symbol -1 and
+// positional field names. Tags 0..9 follow type_tag below.
 // Function: symbol, span(start,end), params, result, locals, preconditions, body.
 // Expr: tag,type,span,text,index,falls,children,arms. Arm: variant,bindings,whole,
 // body; absent bindings/variants use -1. Tags 0..20 follow expression_tag below.
@@ -49,7 +50,8 @@ fn type_tag(kind TypeKind) Int {
     match kind {
         TypeKind.Unit => 0, TypeKind.Int => 1, TypeKind.Bool => 2
         TypeKind.Text => 3, TypeKind.Bytes => 4, TypeKind.Parameter => 5
-        TypeKind.List => 6, TypeKind.Record => 7, TypeKind.Enum => 8, TypeKind.Refined => 9
+        TypeKind.List => 6, TypeKind.Record => 7, TypeKind.Tuple => 7
+        TypeKind.Enum => 8, TypeKind.Refined => 9
     }
 }
 fn data(buffer Bytes, value Type) {
@@ -57,7 +59,7 @@ fn data(buffer Bytes, value Type) {
     integer(buffer, value.symbol)
     if value.kind == TypeKind.List { integer(buffer, get(value.arguments, 0)) }
     if value.kind == TypeKind.Refined { integer(buffer, get(value.fields, 0).ty) }
-    if value.kind == TypeKind.Record {
+    if value.kind == TypeKind.Record || value.kind == TypeKind.Tuple {
         integer(buffer, length(value.fields))
         var index = 0
         while index < length(value.fields) {

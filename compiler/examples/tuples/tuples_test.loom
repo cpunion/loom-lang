@@ -1,0 +1,1 @@
+test fn tuples_preserve_types_order_and_sharing() { exercise() }
