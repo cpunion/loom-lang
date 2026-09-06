@@ -10,9 +10,12 @@ enum Kind {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Comma,
     Dot,
     Assign,
+    Arrow,
     Plus,
     Minus,
     Star,
@@ -83,6 +86,8 @@ fn lex(source: usize, text: &str) -> Result<Vec<Token>, Diagnostic> {
             ')' => Kind::RParen,
             '{' => Kind::LBrace,
             '}' => Kind::RBrace,
+            '[' => Kind::LBracket,
+            ']' => Kind::RBracket,
             ',' => Kind::Comma,
             '.' => Kind::Dot,
             '+' => Kind::Plus,
@@ -90,6 +95,10 @@ fn lex(source: usize, text: &str) -> Result<Vec<Token>, Diagnostic> {
             '*' => Kind::Star,
             '/' => Kind::Slash,
             '%' => Kind::Percent,
+            '=' if text[offset..].starts_with('>') => {
+                offset += 1;
+                Kind::Arrow
+            }
             '=' | '!' | '<' | '>' => {
                 let paired = text[offset..].starts_with('=');
                 if paired {
@@ -235,6 +244,55 @@ impl Parser {
         Ok((path, span))
     }
 
+    fn type_ref(&mut self) -> Result<ast::TypeRef, Diagnostic> {
+        let (path, mut span) = self.path()?;
+        let args = self.type_args()?;
+        if !args.is_empty() {
+            span.end = self.tokens[self.pos - 1].span.end;
+        }
+        Ok(ast::TypeRef { path, args, span })
+    }
+
+    fn type_args(&mut self) -> Result<Vec<ast::TypeRef>, Diagnostic> {
+        let mut args = Vec::new();
+        if self.eat(&Kind::LBracket) {
+            self.newlines();
+            loop {
+                args.push(self.type_ref()?);
+                self.newlines();
+                if !self.eat(&Kind::Comma) {
+                    break;
+                }
+                self.newlines();
+                if self.at(&Kind::RBracket) {
+                    break;
+                }
+            }
+            self.expect(Kind::RBracket, "']'")?;
+        }
+        Ok(args)
+    }
+
+    fn parameters(&mut self) -> Result<Vec<String>, Diagnostic> {
+        let mut parameters = Vec::new();
+        if self.eat(&Kind::LBracket) {
+            self.newlines();
+            loop {
+                parameters.push(self.name()?.0);
+                self.newlines();
+                if !self.eat(&Kind::Comma) {
+                    break;
+                }
+                self.newlines();
+                if self.at(&Kind::RBracket) {
+                    break;
+                }
+            }
+            self.expect(Kind::RBracket, "']'")?;
+        }
+        Ok(parameters)
+    }
+
     fn file(mut self) -> Result<ast::File, Diagnostic> {
         let mut file = ast::File::default();
         self.newlines();
@@ -246,31 +304,87 @@ impl Parser {
                 }
                 file.imports.push(ast::Import { path, span });
             } else {
-                file.functions.push(self.function()?);
+                let span = self.peek().span;
+                let public = self.eat_word("pub");
+                if self.word("record") || self.word("enum") {
+                    file.data.push(self.data(public, span)?);
+                } else {
+                    file.functions.push(self.function(public, span)?);
+                }
             }
             self.newlines();
         }
         Ok(file)
     }
 
-    fn function(&mut self) -> Result<ast::Function, Diagnostic> {
-        let mut span = self.peek().span;
-        let public = self.eat_word("pub");
+    fn data(&mut self, public: bool, mut span: Span) -> Result<ast::Data, Diagnostic> {
+        let record = self.eat_word("record");
+        if !record {
+            self.bump();
+        }
+        let (name, _) = self.name()?;
+        let parameters = self.parameters()?;
+        self.newlines();
+        self.expect(Kind::LBrace, "'{'")?;
+        self.newlines();
+        let mut fields = Vec::new();
+        let mut variants = Vec::new();
+        while !self.at(&Kind::RBrace) {
+            let (name, mut span) = self.name()?;
+            if record {
+                let ty = self.type_ref()?;
+                span.end = ty.span.end;
+                fields.push(ast::Field { name, ty, span });
+            } else {
+                let mut fields = Vec::new();
+                if self.eat(&Kind::LParen) {
+                    self.newlines();
+                    while !self.at(&Kind::RParen) {
+                        fields.push(self.type_ref()?);
+                        self.newlines();
+                        if !self.eat(&Kind::Comma) {
+                            break;
+                        }
+                        self.newlines();
+                    }
+                    span.end = self.expect(Kind::RParen, "')'")?.span.end;
+                }
+                variants.push(ast::Variant { name, fields, span });
+            }
+            self.eat(&Kind::Comma);
+            self.newlines();
+        }
+        span.end = self.bump().span.end;
+        Ok(ast::Data {
+            name,
+            public,
+            parameters,
+            kind: if record {
+                ast::DataKind::Record(fields)
+            } else {
+                ast::DataKind::Enum(variants)
+            },
+            span,
+        })
+    }
+
+    fn function(&mut self, public: bool, mut span: Span) -> Result<ast::Function, Diagnostic> {
         let test = self.eat_word("test");
         if public && test {
             return Err(self.error("test functions cannot be public"));
         }
         if !self.eat_word("fn") {
-            return Err(self.error("expected a function or import declaration"));
+            return Err(self.error("expected a function, record, enum, or import declaration"));
         }
         let (name, _) = self.name()?;
+        let parameters = self.parameters()?;
         self.expect(Kind::LParen, "'('")?;
         let mut params = Vec::new();
         self.newlines();
         while !self.at(&Kind::RParen) {
             let (name, mut span) = self.name()?;
-            let (ty, end) = self.name()?;
-            span.end = end.end;
+            let ty = self.type_ref()?;
+            span.end = ty.span.end;
             params.push(ast::Param { name, ty, span });
             self.newlines();
             if !self.eat(&Kind::Comma) {
@@ -284,11 +398,11 @@ impl Parser {
             && !self.word("requires")
             && !self.word("ensures")
         {
-            let (name, span) = self.name()?;
-            if name == "Unit" {
-                return Err(Diagnostic::new(span, "omit the Unit return annotation"));
+            let ty = self.type_ref()?;
+            if ty.path == ["Unit"] {
+                return Err(Diagnostic::new(ty.span, "omit the Unit return annotation"));
             }
-            Some(name)
+            Some(ty)
         } else {
             None
         };
@@ -300,7 +414,7 @@ impl Parser {
             if !is_requires {
                 self.bump();
             }
-            let condition = self.expr(0, false)?;
+            let condition = self.expr(0, false, false)?;
             if is_requires {
                 requires.push(condition);
             } else {
@@ -314,6 +428,7 @@ impl Parser {
             name,
             public,
             test,
+            parameters,
             params,
             result,
             requires,
@@ -339,7 +454,9 @@ impl Parser {
                 statement.kind,
                 ast::StmtKind::While { .. }
                     | ast::StmtKind::Expr(ast::Expr {
-                        kind: ast::ExprKind::If { .. },
+                        kind: ast::ExprKind::If { .. }
+                            | ast::ExprKind::Match { .. }
+                            | ast::ExprKind::Block(_),
                         ..
                     })
             );
@@ -361,7 +478,7 @@ impl Parser {
             }
             let (name, _) = self.name()?;
             let annotation = if matches!(self.peek().kind, Kind::Name(_)) {
-                Some(self.name()?.0)
+                Some(self.type_ref()?)
             } else {
                 None
             };
@@ -370,22 +487,22 @@ impl Parser {
                 name,
                 mutable,
                 annotation,
-                value: self.expr(0, false)?,
+                value: self.expr(0, false, true)?,
             }
         } else if self.eat_word("return") {
             let value = if self.at(&Kind::Newline) || self.at(&Kind::RBrace) || self.at(&Kind::Eof)
             {
                 None
             } else {
-                Some(self.expr(0, false)?)
+                Some(self.expr(0, false, true)?)
             };
             ast::StmtKind::Return(value)
         } else if self.eat_word("assert") {
-            ast::StmtKind::Assert(self.expr(0, false)?)
+            ast::StmtKind::Assert(self.expr(0, false, true)?)
         } else if self.eat_word("discard") {
-            ast::StmtKind::Discard(self.expr(0, false)?)
+            ast::StmtKind::Discard(self.expr(0, false, true)?)
         } else if self.eat_word("while") {
-            let condition = self.expr(0, false)?;
+            let condition = self.expr(0, false, false)?;
             let (body, _) = self.block()?;
             ast::StmtKind::While { condition, body }
         } else if matches!(&self.peek().kind, Kind::Name(_))
@@ -398,19 +515,24 @@ impl Parser {
             self.bump();
             ast::StmtKind::Assign {
                 name,
-                value: self.expr(0, false)?,
+                value: self.expr(0, false, true)?,
             }
         } else {
-            ast::StmtKind::Expr(self.expr(0, false)?)
+            ast::StmtKind::Expr(self.expr(0, false, true)?)
         };
         span.end = self.tokens[self.pos.saturating_sub(1)].span.end;
         Ok(ast::Stmt { kind, span })
     }
 
-    fn expr(&mut self, min_precedence: u8, multiline: bool) -> Result<ast::Expr, Diagnostic> {
+    fn expr(
+        &mut self,
+        min_precedence: u8,
+        multiline: bool,
+        records: bool,
+    ) -> Result<ast::Expr, Diagnostic> {
         // A newline may follow an unfinished operator, opening delimiter, or '='.
         self.newlines();
-        let mut left = self.prefix(multiline)?;
+        let mut left = self.prefix(multiline, records)?;
         loop {
             if multiline {
                 self.newlines();
@@ -422,7 +544,7 @@ impl Parser {
                 break;
             }
             self.bump();
-            let right = self.expr(precedence + 1, multiline)?;
+            let right = self.expr(precedence + 1, multiline, records)?;
             let span = Span {
                 end: right.span.end,
                 ..left.span
@@ -435,9 +557,14 @@ impl Parser {
         Ok(left)
     }
 
-    fn prefix(&mut self, multiline: bool) -> Result<ast::Expr, Diagnostic> {
+    fn prefix(&mut self, multiline: bool, records: bool) -> Result<ast::Expr, Diagnostic> {
         if self.word("if") {
-            return self.if_expr();
+            let value = self.if_expr()?;
+            return self.fields(value);
+        }
+        if self.word("match") {
+            let value = self.match_expr()?;
+            return self.fields(value);
         }
         let token = self.bump();
         let mut span = token.span;
@@ -456,11 +583,15 @@ impl Parser {
                     self.pos -= 1;
                     let (path, path_span) = self.path()?;
                     span = path_span;
+                    let types = self.type_args()?;
+                    if !types.is_empty() {
+                        span.end = self.tokens[self.pos - 1].span.end;
+                    }
                     if self.eat(&Kind::LParen) {
                         let mut args = Vec::new();
                         self.newlines();
                         while !self.at(&Kind::RParen) {
-                            args.push(self.expr(0, true)?);
+                            args.push(self.expr(0, true, true)?);
                             self.newlines();
                             if !self.eat(&Kind::Comma) {
                                 break;
@@ -468,8 +599,29 @@ impl Parser {
                             self.newlines();
                         }
                         span.end = self.expect(Kind::RParen, "')'")?.span.end;
-                        ast::ExprKind::Call(path, args)
+                        ast::ExprKind::Call { path, types, args }
+                    } else if records && self.eat(&Kind::LBrace) {
+                        let ty = ast::TypeRef {
+                            path,
+                            args: types,
+                            span,
+                        };
+                        let mut fields = Vec::new();
+                        self.newlines();
+                        while !self.at(&Kind::RBrace) {
+                            let (name, _) = self.name()?;
+                            self.expect(Kind::Assign, "'=' after the field name")?;
+                            fields.push((name, self.expr(0, false, true)?));
+                            self.eat(&Kind::Comma);
+                            self.newlines();
+                        }
+                        span.end = self.expect(Kind::RBrace, "'}'")?.span.end;
+                        ast::ExprKind::Record { ty, fields }
                     } else {
+                        if !types.is_empty() {
+                            return Err(self
+                                .error("expected a call or record literal after type arguments"));
+                        }
                         ast::ExprKind::Name(path)
                     }
                 }
@@ -504,24 +656,124 @@ impl Parser {
                             });
                         }
                     }
-                    let value = self.expr(7, multiline)?;
+                    let value = self.expr(7, multiline, records)?;
                     span.end = value.span.end;
                     ast::ExprKind::Unary(operator, Box::new(value))
                 }
                 Kind::LParen => {
-                    let value = self.expr(0, true)?;
+                    let value = self.expr(0, true, true)?;
                     self.newlines();
                     span.end = self.expect(Kind::RParen, "')'")?.span.end;
-                    return Ok(ast::Expr { span, ..value });
+                    return self.fields(ast::Expr { span, ..value });
+                }
+                Kind::LBrace => {
+                    self.pos -= 1;
+                    let (body, end) = self.block()?;
+                    span.end = end.end;
+                    ast::ExprKind::Block(body)
                 }
                 _ => return Err(Diagnostic::new(span, "expected an expression")),
             };
-        Ok(ast::Expr { kind, span })
+        self.fields(ast::Expr { kind, span })
+    }
+
+    fn fields(&mut self, mut value: ast::Expr) -> Result<ast::Expr, Diagnostic> {
+        while self.eat(&Kind::Dot) {
+            let (field, end) = self.name()?;
+            let span = Span {
+                end: end.end,
+                ..value.span
+            };
+            value = ast::Expr {
+                kind: ast::ExprKind::Field(Box::new(value), field),
+                span,
+            };
+        }
+        Ok(value)
+    }
+
+    fn pattern(&mut self) -> Result<ast::Pattern, Diagnostic> {
+        if self.eat_word("_") {
+            return Ok(ast::Pattern::Wildcard);
+        }
+        let (path, _) = self.path()?;
+        if !self.eat(&Kind::LParen) {
+            return Ok(ast::Pattern::Name(path));
+        }
+        let mut bindings = Vec::new();
+        self.newlines();
+        while !self.at(&Kind::RParen) {
+            bindings.push(if self.eat_word("_") {
+                None
+            } else {
+                Some(self.name()?.0)
+            });
+            if self.at(&Kind::LParen) || self.at(&Kind::Dot) || self.at(&Kind::LBrace) {
+                return Err(self.error(
+                    "nested patterns are not supported; bind the value and match it separately",
+                ));
+            }
+            self.newlines();
+            if !self.eat(&Kind::Comma) {
+                break;
+            }
+            self.newlines();
+        }
+        self.expect(Kind::RParen, "')' after pattern bindings")?;
+        Ok(ast::Pattern::Variant { path, bindings })
+    }
+
+    fn match_expr(&mut self) -> Result<ast::Expr, Diagnostic> {
+        let mut span = self.bump().span;
+        let value = Box::new(self.expr(0, false, false)?);
+        self.newlines();
+        self.expect(Kind::LBrace, "'{' after the matched value")?;
+        self.newlines();
+        let mut arms = Vec::new();
+        while !self.at(&Kind::RBrace) {
+            let mut span = self.peek().span;
+            let pattern = self.pattern()?;
+            self.expect(Kind::Arrow, "'=>' after the pattern")?;
+            self.newlines();
+            let braced = self.at(&Kind::LBrace);
+            let body = if braced {
+                let (body, end) = self.block()?;
+                span.end = end.end;
+                body
+            } else {
+                let value = self.expr(0, false, true)?;
+                span.end = value.span.end;
+                vec![ast::Stmt {
+                    span: value.span,
+                    kind: ast::StmtKind::Expr(value),
+                }]
+            };
+            arms.push(ast::MatchArm {
+                pattern,
+                body,
+                span,
+            });
+            if !self.eat(&Kind::Comma)
+                && !braced
+                && !self.at(&Kind::Newline)
+                && !self.at(&Kind::RBrace)
+            {
+                return Err(self.error("expected a comma, newline, or '}' after the match arm"));
+            }
+            self.newlines();
+        }
+        span.end = self.bump().span.end;
+        Ok(ast::Expr {
+            kind: ast::ExprKind::Match { value, arms },
+            span,
+        })
     }
 
     fn if_expr(&mut self) -> Result<ast::Expr, Diagnostic> {
         let mut span = self.bump().span;
-        let condition = Box::new(self.expr(0, false)?);
+        // The following brace starts the control-flow body. Record literals in
+        // conditions can be parenthesized to make their boundary unambiguous.
+        let condition = Box::new(self.expr(0, false, false)?);
         let (then_body, end) = self.block()?;
         span.end = end.end;
         let before_newlines = self.pos;
@@ -559,6 +811,9 @@ fn reserved(name: &str) -> bool {
     matches!(
         name,
         "fn" | "pub"
+            | "record"
+            | "enum"
+            | "match"
             | "test"
             | "import"
             | "let"
@@ -609,8 +864,8 @@ mod tests {
         assert_eq!(file.imports[0].path, ["app", "math", "add"]);
         let function = &file.functions[0];
         assert!(function.public);
-        assert_eq!(function.params[0].ty, "Int");
-        assert_eq!(function.result.as_deref(), Some("Int"));
+        assert_eq!(function.params[0].ty.path, ["Int"]);
+        assert_eq!(function.result.as_ref().unwrap().path, ["Int"]);
         assert_eq!(function.requires.len(), 1);
         assert_eq!(function.ensures.len(), 1);
         assert!(file.functions[1].test);
@@ -704,6 +959,7 @@ mod tests {
             "fn f() { 1; }",
             "fn f() { let x = 1 let y = 2 }",
             "fn f() { await f() }",
+            "pub test fn f() {}",
             "fn f() Int { 9223372036854775808 }",
             "fn f() Int { -9223372036854775809 }",
             "fn f() { ( }",
@@ -715,5 +971,120 @@ mod tests {
         let error = parse(7, source).unwrap_err();
         assert_eq!(error.span.source, 7);
         assert_eq!(&source[error.span.start..error.span.end], "🧶");
+    }
+
+    #[test]
+    fn generic_data_and_computed_field_access() {
+        let file = parse(
+            0,
+            "pub record Pair[A, B] { first A second B }\n\
+            enum Outcome[T] { Empty Value(T) Partial(T, Int) }\n\
+            fn identity[T](value T) T { value }\n\
+            fn example() Int {\n\
+                let pair Pair[Int, Pair[Bool, Int]] = Pair {\n\
+                    second = Pair { first = true second = 2 }\n\
+                    first = 1\n\
+                }\n\
+                identity[Pair[Int, Pair[Bool, Int]]](pair).second.second\n\
+            }",
+        )
+        .unwrap();
+        assert!(file.data[0].public);
+        assert_eq!(file.data[0].parameters, ["A", "B"]);
+        let ast::DataKind::Record(fields) = &file.data[0].kind else {
+            panic!()
+        };
+        assert_eq!(fields[1].ty.path, ["B"]);
+        let ast::DataKind::Enum(variants) = &file.data[1].kind else {
+            panic!()
+        };
+        assert_eq!(variants[2].fields.len(), 2);
+        assert_eq!(file.functions[0].parameters, ["T"]);
+        let ast::StmtKind::Let {
+            annotation: Some(ty),
+            value,
+            ..
+        } = &file.functions[1].body[0].kind
+        else {
+            panic!()
+        };
+        assert_eq!(ty.args[1].args[1].path, ["Int"]);
+        let ast::ExprKind::Record { fields, .. } = &value.kind else {
+            panic!()
+        };
+        assert_eq!(fields[0].0, "second");
+        assert_eq!(fields[1].0, "first");
+        let ast::StmtKind::Expr(value) = &file.functions[1].body[1].kind else {
+            panic!()
+        };
+        let ast::ExprKind::Field(receiver, name) = &value.kind else {
+            panic!()
+        };
+        assert_eq!(name, "second");
+        assert!(matches!(receiver.kind, ast::ExprKind::Field(_, _)));
+    }
+
+    #[test]
+    fn constructors_match_patterns_and_blocks() {
+        let file = parse(
+            0,
+            "fn example() Int {\n\
+            let value = Outcome.Value[Int](3)\n\
+            match value {\n\
+                Outcome.Value(n) => n,\n\
+                Partial(n, _) => { let result = n + 1\n result }\n\
+                Empty => 0\n\
+                _ => -1\n\
+            }\n\
+        }\n\
+        fn binding() Int { match Outcome.Empty { value => { 1 } } }\n\
+        fn block() Int { { 42 } }",
+        )
+        .unwrap();
+        let ast::StmtKind::Let { value, .. } = &file.functions[0].body[0].kind else {
+            panic!()
+        };
+        let ast::ExprKind::Call { path, types, args } = &value.kind else {
+            panic!()
+        };
+        assert_eq!(path, &["Outcome", "Value"]);
+        assert_eq!(types[0].path, ["Int"]);
+        assert_eq!(args.len(), 1);
+        let ast::StmtKind::Expr(value) = &file.functions[0].body[1].kind else {
+            panic!()
+        };
+        let ast::ExprKind::Match { arms, .. } = &value.kind else {
+            panic!()
+        };
+        assert_eq!(arms.len(), 4);
+        assert_eq!(arms[1].body.len(), 2);
+        assert!(matches!(arms[3].pattern, ast::Pattern::Wildcard));
+        let error = parse(0, "fn f() { match x { Value(Empty()) => 0 } }").unwrap_err();
+        assert!(error.message.contains("nested patterns"));
+    }
+
+    #[test]
+    fn record_literals_do_not_steal_control_flow_bodies() {
+        let file = parse(
+            0,
+            "fn f(flag Bool) Int {\n\
+            var done = false\n\
+            while flag { done = true }\n\
+            if flag { done = true }\n\
+            if (Pair { first = done second = 1 }).first { 1 } else { 0 }\n\
+        }",
+        )
+        .unwrap();
+        let ast::StmtKind::While { condition, .. } = &file.functions[0].body[1].kind else {
+            panic!()
+        };
+        assert!(matches!(condition.kind, ast::ExprKind::Name(_)));
+        let ast::StmtKind::Expr(value) = &file.functions[0].body[3].kind else {
+            panic!()
+        };
+        let ast::ExprKind::If { condition, .. } = &value.kind else {
+            panic!()
+        };
+        assert!(matches!(condition.kind, ast::ExprKind::Field(_, _)));
     }
 }

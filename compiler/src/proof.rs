@@ -140,6 +140,7 @@ pub fn prove(
             Type::Int => Value::Int(Linear::variable(id)),
             Type::Bool => Value::Bool(Pred::Variable(id)),
             Type::Unit => Value::Unit,
+            Type::Data(_) | Type::Parameter(_) => return Err(error(function.span)),
         });
     }
     let mut proof = Proof {
@@ -369,7 +370,13 @@ fn pure(expr: &c::Expr, state: &State) -> Result<Value, Diagnostic> {
         E::Local(id) => state.locals.get(*id).cloned().flatten(),
         E::Unary(op, e) => unary(*op, pure(e, state)?),
         E::Binary(op, a, b) => binary(*op, pure(a, state)?, pure(b, state)?),
-        E::Call(..) | E::If { .. } => None,
+        E::Call(..)
+        | E::If { .. }
+        | E::Record(_)
+        | E::Field(..)
+        | E::Variant { .. }
+        | E::Match { .. }
+        | E::Block(_) => None,
     };
     value.ok_or_else(|| error(expr.span))
 }

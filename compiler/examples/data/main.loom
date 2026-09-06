@@ -1,0 +1,29 @@
+record Pair[A, B] {
+    first A
+    second B
+}
+
+enum Outcome[T] {
+    Empty
+    Value(T)
+}
+
+fn identity[T](value T) T { value }
+
+fn score(value Outcome[Pair[Int, Bool]]) Int {
+    match value {
+        Outcome.Empty => 0
+        Outcome.Value(pair) => if pair.second { pair.first } else { 0 }
+    }
+}
+
+fn main() {
+    let pair = Pair { first = 42, second = true }
+    assert score(Outcome.Value(identity(pair))) == 42
+    assert score(Outcome.Empty[Pair[Int, Bool]]()) == 0
+}
+
+test fn generic_record() {
+    let pair = Pair { first = true, second = 7 }
+    assert identity(pair).second == 7
+}

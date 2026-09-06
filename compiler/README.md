@@ -41,6 +41,9 @@ package. `--help` lists the small command surface.
 - `let`, `var`, assignment, final-expression returns, early return, `if`/`else`,
   `while`, `assert`, and explicit `discard`. Boolean operators short-circuit.
 - Parameter-type/arity overloads with explicit ambiguity errors.
+- Immutable records and tagged enums, flat exhaustive `match`, generic type and
+  function parameters with inference or explicit arguments. Generic bodies are
+  checked without hidden requirements; reachable instances use concrete layouts.
 - Directory packages, private helpers and `pub`, package-wide explicit imports,
   and a local import closure. A simple `loom.toml` supplies the module name;
   no `src/` is required. A directory without a manifest can use its own files
@@ -80,8 +83,12 @@ proofs of termination or absence of runtime faults.
 
 ## Next boundary
 
-N0 is still incomplete. Records/enums, refined construction, basic generics,
-managed text/collections, lexical resources and real file I/O are next, so Loom
+The `compiler/examples/data` package exercises records, enums, generic functions,
+and both test forms through the same CLI. Scalar-only records stay native values;
+enum storage uses its largest variant payload, not the sum of all variants.
+
+N0 is still incomplete. Refined construction, managed text/collections,
+lexical resources and real file I/O are next, so Loom
 can express compiler source and progress toward self-hosting. Shared mutable
 data, GC, Tasks, metaprogramming, dependency resolution, lockfile/cache behavior,
 deployment and semantic-change tools are not implemented by this slice.

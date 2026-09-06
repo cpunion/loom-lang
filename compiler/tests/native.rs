@@ -69,6 +69,33 @@ fn native_cli_closure_and_source_library() {
 }
 
 #[test]
+fn native_generic_data() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/data");
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = directory.path().join("data");
+    let ir = directory.path().join("data.ll");
+    success(&loom(&["check", path(&fixture)]));
+    success(&loom(&[
+        "build",
+        path(&fixture),
+        "--output",
+        path(&artifact),
+        "--emit-ir",
+        path(&ir),
+    ]));
+    success(&Command::new(artifact).output().unwrap());
+    success(&loom(&["run", path(&fixture)]));
+    success(&loom(&["test", path(&fixture)]));
+    let llvm = fs::read_to_string(ir).unwrap();
+    for forbidden in ["executor", "loom_rt_", "malloc", "universal"] {
+        assert!(
+            !llvm.contains(forbidden),
+            "unexpected data IR dependency: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn production_library_excludes_both_test_forms() {
     let dir = source("pub fn answer() Int { 42 }\ntest fn ignored() { absent() }\n");
     // A test file is not even parsed during a production build.

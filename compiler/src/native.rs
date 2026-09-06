@@ -3,14 +3,15 @@
 use crate::model::{Binary, Type, Unary, checked};
 use inkwell::{
     AddressSpace, IntPredicate, OptimizationLevel,
+    basic_block::BasicBlock,
     builder::Builder,
     context::Context,
     intrinsics::Intrinsic,
     module::{Linkage, Module},
     passes::PassBuilderOptions,
     targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
-    types::IntType,
-    values::{FunctionValue, IntValue, PointerValue},
+    types::{BasicType, BasicTypeEnum, IntType},
+    values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
 };
 use std::{collections::BTreeSet, path::Path};
 
@@ -67,11 +68,11 @@ fn emit_checked(
         let params = source
             .params
             .iter()
-            .map(|ty| scalar_type(&context, *ty).into())
-            .collect::<Vec<_>>();
+            .map(|ty| native_type(&context, program, *ty).map(Into::into))
+            .collect::<NativeResult<Vec<_>>>()?;
         let ty = match source.result {
             Type::Unit => context.void_type().fn_type(&params, false),
-            ty => scalar_type(&context, ty).fn_type(&params, false),
+            ty => native_type(&context, program, ty)?.fn_type(&params, false),
         };
         let linkage = if library && program.exports.contains(&id) {
             Linkage::External
@@ -92,12 +93,13 @@ fn emit_checked(
                 if *ty == Type::Unit {
                     Ok(None)
                 } else {
-                    builder
-                        .build_alloca(scalar_type(&context, *ty), "local")
-                        .map(Some)
+                    Ok(Some(builder.build_alloca(
+                        native_type(&context, program, *ty)?,
+                        "local",
+                    )?))
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<NativeResult<Vec<_>>>()?;
         for (index, value) in function.get_param_iter().enumerate() {
             builder.build_store(locals[index].ok_or("invalid checked parameter")?, value)?;
         }
@@ -108,13 +110,14 @@ fn emit_checked(
             functions: &functions,
             function,
             locals,
+            program,
             size_type: context.ptr_sized_int_type(&machine.get_target_data(), None),
         };
         for requirement in &source.requires {
             let condition = emitter
                 .expr(requirement)?
                 .ok_or("invalid checked precondition")?;
-            emitter.guard(condition, "precondition failed")?;
+            emitter.guard(condition.into_int_value(), "precondition failed")?;
         }
         let result = emitter.block(&source.body)?;
         if emitter.live() {
@@ -156,10 +159,77 @@ fn emit_checked(
     Ok(())
 }
 
-fn scalar_type(context: &Context, ty: Type) -> IntType<'_> {
+fn native_type<'ctx>(
+    context: &'ctx Context,
+    program: &checked::Program,
+    ty: Type,
+) -> NativeResult<BasicTypeEnum<'ctx>> {
+    Ok(match ty {
+        Type::Bool => context.bool_type().into(),
+        Type::Int => context.i64_type().into(),
+        Type::Unit => context.struct_type(&[], false).into(),
+        Type::Parameter(_) => return Err("unbound type parameter reached native emission".into()),
+        Type::Data(id) => match &program.types[id].kind {
+            checked::DataKind::Record(fields) => {
+                let fields = fields
+                    .iter()
+                    .map(|(_, ty)| native_type(context, program, *ty))
+                    .collect::<NativeResult<Vec<_>>>()?;
+                context.struct_type(&fields, false).into()
+            }
+            checked::DataKind::Enum(variants) => {
+                let words = payload_words(program, variants)?;
+                let count =
+                    u32::try_from(words).map_err(|_| "enum payload exceeds LLVM array limit")?;
+                context
+                    .struct_type(
+                        &[
+                            context.i64_type().into(),
+                            context.i64_type().array_type(count).into(),
+                        ],
+                        false,
+                    )
+                    .into()
+            }
+        },
+    })
+}
+
+/// Enum payloads use the largest variant, never the sum of variant layouts.
+/// Scalar leaves are normalized to words; constructors zero unused words.
+fn payload_words(
+    program: &checked::Program,
+    variants: &[(String, Vec<Type>)],
+) -> NativeResult<usize> {
+    variants
+        .iter()
+        .map(|(_, fields)| {
+            fields.iter().try_fold(0usize, |total, ty| {
+                total
+                    .checked_add(value_words(program, *ty)?)
+                    .ok_or_else(|| "enum layout is too large".into())
+            })
+        })
+        .try_fold(0, |largest, count| count.map(|count| largest.max(count)))
+}
+
+fn value_words(program: &checked::Program, ty: Type) -> NativeResult<usize> {
     match ty {
-        Type::Bool => context.bool_type(),
-        Type::Int | Type::Unit => context.i64_type(),
+        Type::Int | Type::Bool => Ok(1),
+        Type::Unit => Ok(0),
+        Type::Parameter(_) => Err("unbound type parameter reached native layout".into()),
+        Type::Data(id) => match &program.types[id].kind {
+            checked::DataKind::Record(fields) => {
+                fields.iter().try_fold(0usize, |total, (_, ty)| {
+                    total
+                        .checked_add(value_words(program, *ty)?)
+                        .ok_or_else(|| "record layout is too large".into())
+                })
+            }
+            checked::DataKind::Enum(variants) => payload_words(program, variants)?
+                .checked_add(1)
+                .ok_or_else(|| "enum layout is too large".into()),
+        },
     }
 }
 
@@ -170,6 +240,7 @@ struct FunctionEmitter<'a, 'ctx> {
     functions: &'a [Option<FunctionValue<'ctx>>],
     function: FunctionValue<'ctx>,
     locals: Vec<Option<PointerValue<'ctx>>>,
+    program: &'a checked::Program,
     size_type: IntType<'ctx>,
 }
 
@@ -180,7 +251,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .is_some_and(|block| block.get_terminator().is_none())
     }
 
-    fn block(&mut self, block: &checked::Block) -> NativeResult<Option<IntValue<'ctx>>> {
+    fn block(&mut self, block: &checked::Block) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         for statement in &block.statements {
             if !self.live() {
                 break;
@@ -213,7 +284,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 }
                 checked::StmtKind::Assert(value) => {
                     if let Some(value) = self.expr(value)? {
-                        self.guard(value, "assertion failed")?;
+                        self.guard(value.into_int_value(), "assertion failed")?;
                     }
                 }
                 checked::StmtKind::Discard(value) | checked::StmtKind::Expr(value) => {
@@ -226,8 +297,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     self.builder.build_unconditional_branch(test)?;
                     self.builder.position_at_end(test);
                     if let Some(condition) = self.expr(condition)? {
-                        self.builder
-                            .build_conditional_branch(condition, run, done)?;
+                        self.builder.build_conditional_branch(
+                            condition.into_int_value(),
+                            run,
+                            done,
+                        )?;
                         self.builder.position_at_end(run);
                         self.block(body)?;
                         if self.live() {
@@ -251,24 +325,33 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(None)
     }
 
-    fn expr(&mut self, expr: &checked::Expr) -> NativeResult<Option<IntValue<'ctx>>> {
+    fn expr(&mut self, expr: &checked::Expr) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         let value = match &expr.kind {
-            checked::ExprKind::Int(value) => self.context.i64_type().const_int(*value as u64, true),
-            checked::ExprKind::Bool(value) => {
-                self.context.bool_type().const_int(u64::from(*value), false)
-            }
+            checked::ExprKind::Int(value) => self
+                .context
+                .i64_type()
+                .const_int(*value as u64, true)
+                .into(),
+            checked::ExprKind::Bool(value) => self
+                .context
+                .bool_type()
+                .const_int(u64::from(*value), false)
+                .into(),
             checked::ExprKind::Local(local) => {
                 let Some(pointer) = self.locals[*local] else {
                     return Ok(None);
                 };
-                self.builder
-                    .build_load(scalar_type(self.context, expr.ty), pointer, "load")?
-                    .into_int_value()
+                self.builder.build_load(
+                    native_type(self.context, self.program, expr.ty)?,
+                    pointer,
+                    "load",
+                )?
             }
             checked::ExprKind::Unary(op, value) => {
                 let Some(value) = self.expr(value)? else {
                     return Ok(None);
                 };
+                let value = value.into_int_value();
                 match op {
                     Unary::Not => self.builder.build_not(value, "not")?,
                     Unary::Neg => self.overflow(
@@ -277,18 +360,30 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         value,
                     )?,
                 }
+                .into()
             }
             checked::ExprKind::Binary(op, left, right) => {
+                let operand_type = left.ty;
                 let Some(left) = self.expr(left)? else {
                     return Ok(None);
                 };
                 if matches!(op, Binary::And | Binary::Or) {
-                    return self.short_circuit(*op, left, right);
+                    return self.short_circuit(*op, left.into_int_value(), right);
                 }
                 let Some(right) = self.expr(right)? else {
                     return Ok(None);
                 };
-                self.binary(*op, left, right)?
+                if matches!(op, Binary::Eq | Binary::Ne) {
+                    let equal = self.equal(operand_type, left, right)?;
+                    if *op == Binary::Ne {
+                        self.builder.build_not(equal, "not.equal")?.into()
+                    } else {
+                        equal.into()
+                    }
+                } else {
+                    self.binary(*op, left.into_int_value(), right.into_int_value())?
+                        .into()
+                }
             }
             checked::ExprKind::Call(function, args) => {
                 let mut values = Vec::with_capacity(args.len());
@@ -303,11 +398,73 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     &values,
                     if expr.ty == Type::Unit { "" } else { "call" },
                 )?;
-                return Ok(call
-                    .try_as_basic_value()
-                    .basic()
-                    .map(|value| value.into_int_value()));
+                return Ok(call.try_as_basic_value().basic());
             }
+            checked::ExprKind::Record(fields) => {
+                let mut result = native_type(self.context, self.program, expr.ty)?
+                    .into_struct_type()
+                    .const_zero();
+                // The checked field indices preserve source evaluation order even
+                // when construction names fields in a different declaration order.
+                for (index, field) in fields {
+                    let Some(value) = self.expr(field)? else {
+                        return Ok(None);
+                    };
+                    result = self
+                        .builder
+                        .build_insert_value(result, value, *index as u32, "record.field")?
+                        .into_struct_value();
+                }
+                result.into()
+            }
+            checked::ExprKind::Field(value, index) => {
+                let Some(value) = self.expr(value)? else {
+                    return Ok(None);
+                };
+                self.builder.build_extract_value(
+                    value.into_struct_value(),
+                    *index as u32,
+                    "field",
+                )?
+            }
+            checked::ExprKind::Variant { variant, fields } => {
+                let ty = native_type(self.context, self.program, expr.ty)?.into_struct_type();
+                let mut result = self
+                    .builder
+                    .build_insert_value(
+                        ty.const_zero(),
+                        self.context.i64_type().const_int(*variant as u64, false),
+                        0,
+                        "enum.tag",
+                    )?
+                    .into_struct_value();
+                let mut payload = self
+                    .builder
+                    .build_extract_value(result, 1, "enum.payload")?
+                    .into_array_value();
+                let mut words = Vec::new();
+                for field in fields {
+                    let Some(value) = self.expr(field)? else {
+                        return Ok(None);
+                    };
+                    self.flatten(field.ty, value, &mut words)?;
+                }
+                for (index, word) in words.into_iter().enumerate() {
+                    payload = self
+                        .builder
+                        .build_insert_value(payload, word, index as u32, "payload.word")?
+                        .into_array_value();
+                }
+                result = self
+                    .builder
+                    .build_insert_value(result, payload, 1, "enum.value")?
+                    .into_struct_value();
+                result.into()
+            }
+            checked::ExprKind::Match { value, arms } => {
+                return self.match_expr(expr.ty, value, arms);
+            }
+            checked::ExprKind::Block(body) => return self.block(body),
             checked::ExprKind::If {
                 condition,
                 then_body,
@@ -319,8 +476,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 let then_block = self.context.append_basic_block(self.function, "if.then");
                 let else_block = self.context.append_basic_block(self.function, "if.else");
                 let done = self.context.append_basic_block(self.function, "if.done");
-                self.builder
-                    .build_conditional_branch(condition, then_block, else_block)?;
+                self.builder.build_conditional_branch(
+                    condition.into_int_value(),
+                    then_block,
+                    else_block,
+                )?;
                 let mut incoming = Vec::new();
                 let mut live_arms = 0;
                 for (start, body) in [
@@ -344,27 +504,285 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         self.builder.build_unconditional_branch(done)?;
                     }
                 }
-                self.builder.position_at_end(done);
-                if live_arms == 0 {
-                    self.builder.build_unreachable()?;
-                    return Ok(None);
-                }
-                if expr.ty == Type::Unit {
-                    return Ok(None);
-                }
-                if incoming.len() != live_arms {
-                    return Err("missing checked branch value".into());
-                }
-                let phi = self
-                    .builder
-                    .build_phi(scalar_type(self.context, expr.ty), "if.value")?;
-                for (value, predecessor) in &incoming {
-                    phi.add_incoming(&[(value, *predecessor)]);
-                }
-                phi.as_basic_value().into_int_value()
+                return self.join(expr.ty, done, live_arms, &incoming);
             }
         };
         Ok(Some(value))
+    }
+
+    fn join(
+        &self,
+        ty: Type,
+        done: BasicBlock<'ctx>,
+        live_arms: usize,
+        incoming: &[(BasicValueEnum<'ctx>, BasicBlock<'ctx>)],
+    ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
+        self.builder.position_at_end(done);
+        if live_arms == 0 {
+            self.builder.build_unreachable()?;
+            return Ok(None);
+        }
+        if ty == Type::Unit {
+            return Ok(None);
+        }
+        if incoming.len() != live_arms {
+            return Err("missing checked branch value".into());
+        }
+        let phi = self
+            .builder
+            .build_phi(native_type(self.context, self.program, ty)?, "branch.value")?;
+        for (value, predecessor) in incoming {
+            phi.add_incoming(&[(value, *predecessor)]);
+        }
+        Ok(Some(phi.as_basic_value()))
+    }
+
+    fn match_expr(
+        &mut self,
+        result_type: Type,
+        value: &checked::Expr,
+        arms: &[checked::MatchArm],
+    ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
+        let Some(scrutinee) = self.expr(value)? else {
+            return Ok(None);
+        };
+        let blocks = arms
+            .iter()
+            .map(|_| self.context.append_basic_block(self.function, "match.arm"))
+            .collect::<Vec<_>>();
+        let done = self.context.append_basic_block(self.function, "match.done");
+        let fallback = arms.iter().position(|arm| arm.variant.is_none());
+        if arms.iter().any(|arm| arm.variant.is_some()) {
+            let tag = self
+                .builder
+                .build_extract_value(scrutinee.into_struct_value(), 0, "match.tag")?
+                .into_int_value();
+            let default = fallback.map(|index| blocks[index]).unwrap_or_else(|| {
+                self.context
+                    .append_basic_block(self.function, "match.unreachable")
+            });
+            let cases = arms
+                .iter()
+                .zip(&blocks)
+                .filter_map(|(arm, block)| {
+                    arm.variant.map(|variant| {
+                        (
+                            self.context.i64_type().const_int(variant as u64, false),
+                            *block,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            self.builder.build_switch(tag, default, &cases)?;
+            if fallback.is_none() {
+                self.builder.position_at_end(default);
+                self.builder.build_unreachable()?;
+            }
+        } else {
+            self.builder
+                .build_unconditional_branch(blocks[fallback.ok_or("empty checked match")?])?;
+        }
+        let mut live_arms = 0;
+        let mut incoming = Vec::new();
+        for (arm, start) in arms.iter().zip(blocks) {
+            self.builder.position_at_end(start);
+            if let Some(local) = arm.whole {
+                self.builder.build_store(
+                    self.locals[local].ok_or("invalid whole-pattern local")?,
+                    scrutinee,
+                )?;
+            }
+            if let Some(variant) = arm.variant {
+                let Type::Data(id) = value.ty else {
+                    return Err("non-enum variant pattern".into());
+                };
+                let checked::DataKind::Enum(variants) = &self.program.types[id].kind else {
+                    return Err("non-enum variant pattern".into());
+                };
+                let fields = &variants[variant].1;
+                let payload = self
+                    .builder
+                    .build_extract_value(scrutinee.into_struct_value(), 1, "match.payload")?
+                    .into_array_value();
+                let mut words = Vec::new();
+                let count = fields
+                    .iter()
+                    .map(|ty| value_words(self.program, *ty))
+                    .collect::<NativeResult<Vec<_>>>()?
+                    .into_iter()
+                    .sum::<usize>();
+                for index in 0..count {
+                    words.push(
+                        self.builder
+                            .build_extract_value(payload, index as u32, "match.word")?
+                            .into_int_value(),
+                    );
+                }
+                let mut offset = 0;
+                for (ty, local) in fields.iter().zip(&arm.bindings) {
+                    if let Some(local) = local {
+                        let field = self.rebuild(*ty, &words, &mut offset)?;
+                        self.builder.build_store(
+                            self.locals[*local].ok_or("invalid pattern local")?,
+                            field,
+                        )?;
+                    } else {
+                        offset += value_words(self.program, *ty)?;
+                    }
+                }
+            }
+            let result = self.block(&arm.body)?;
+            if self.live() {
+                live_arms += 1;
+                if let Some(result) = result {
+                    incoming.push((
+                        result,
+                        self.builder
+                            .get_insert_block()
+                            .ok_or("missing match block")?,
+                    ));
+                }
+                self.builder.build_unconditional_branch(done)?;
+            }
+        }
+        self.join(result_type, done, live_arms, &incoming)
+    }
+
+    /// A canonical, typed payload representation avoids memory casts and does
+    /// not expose padding bytes when nested records and enums are compared.
+    fn flatten(
+        &self,
+        ty: Type,
+        value: BasicValueEnum<'ctx>,
+        words: &mut Vec<IntValue<'ctx>>,
+    ) -> NativeResult<()> {
+        match ty {
+            Type::Int => words.push(value.into_int_value()),
+            Type::Bool => words.push(self.builder.build_int_z_extend(
+                value.into_int_value(),
+                self.context.i64_type(),
+                "bool.word",
+            )?),
+            Type::Unit => {}
+            Type::Parameter(_) => return Err("unbound type parameter in enum payload".into()),
+            Type::Data(id) => match &self.program.types[id].kind {
+                checked::DataKind::Record(fields) => {
+                    for (index, (_, ty)) in fields.iter().enumerate() {
+                        let field = self.builder.build_extract_value(
+                            value.into_struct_value(),
+                            index as u32,
+                            "record.word",
+                        )?;
+                        self.flatten(*ty, field, words)?;
+                    }
+                }
+                checked::DataKind::Enum(_) => {
+                    words.push(
+                        self.builder
+                            .build_extract_value(value.into_struct_value(), 0, "enum.tag")?
+                            .into_int_value(),
+                    );
+                    let payload = self
+                        .builder
+                        .build_extract_value(value.into_struct_value(), 1, "enum.payload")?
+                        .into_array_value();
+                    for index in 0..payload.get_type().len() {
+                        words.push(
+                            self.builder
+                                .build_extract_value(payload, index, "enum.word")?
+                                .into_int_value(),
+                        );
+                    }
+                }
+            },
+        }
+        Ok(())
+    }
+
+    fn rebuild(
+        &self,
+        ty: Type,
+        words: &[IntValue<'ctx>],
+        offset: &mut usize,
+    ) -> NativeResult<BasicValueEnum<'ctx>> {
+        Ok(match ty {
+            Type::Int | Type::Bool => {
+                let word = words[*offset];
+                *offset += 1;
+                if ty == Type::Bool {
+                    self.builder
+                        .build_int_truncate(word, self.context.bool_type(), "word.bool")?
+                        .into()
+                } else {
+                    word.into()
+                }
+            }
+            Type::Unit => self.context.struct_type(&[], false).const_zero().into(),
+            Type::Parameter(_) => return Err("unbound type parameter in enum payload".into()),
+            Type::Data(id) => {
+                let mut result = native_type(self.context, self.program, ty)?
+                    .into_struct_type()
+                    .const_zero();
+                match &self.program.types[id].kind {
+                    checked::DataKind::Record(fields) => {
+                        for (index, (_, ty)) in fields.iter().enumerate() {
+                            result = self
+                                .builder
+                                .build_insert_value(
+                                    result,
+                                    self.rebuild(*ty, words, offset)?,
+                                    index as u32,
+                                    "payload.record",
+                                )?
+                                .into_struct_value();
+                        }
+                    }
+                    checked::DataKind::Enum(_) => {
+                        result = self
+                            .builder
+                            .build_insert_value(result, words[*offset], 0, "payload.tag")?
+                            .into_struct_value();
+                        *offset += 1;
+                        let mut payload = self
+                            .builder
+                            .build_extract_value(result, 1, "payload")?
+                            .into_array_value();
+                        for index in 0..payload.get_type().len() {
+                            payload = self
+                                .builder
+                                .build_insert_value(payload, words[*offset], index, "payload.word")?
+                                .into_array_value();
+                            *offset += 1;
+                        }
+                        result = self
+                            .builder
+                            .build_insert_value(result, payload, 1, "payload.enum")?
+                            .into_struct_value();
+                    }
+                }
+                result.into()
+            }
+        })
+    }
+
+    fn equal(
+        &self,
+        ty: Type,
+        left: BasicValueEnum<'ctx>,
+        right: BasicValueEnum<'ctx>,
+    ) -> NativeResult<IntValue<'ctx>> {
+        let mut left_words = Vec::new();
+        let mut right_words = Vec::new();
+        self.flatten(ty, left, &mut left_words)?;
+        self.flatten(ty, right, &mut right_words)?;
+        let mut equal = self.context.bool_type().const_int(1, false);
+        for (left, right) in left_words.into_iter().zip(right_words) {
+            let word_equal =
+                self.builder
+                    .build_int_compare(IntPredicate::EQ, left, right, "word.equal")?;
+            equal = self.builder.build_and(equal, word_equal, "value.equal")?;
+        }
+        Ok(equal)
     }
 
     fn short_circuit(
@@ -372,7 +790,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         op: Binary,
         left: IntValue<'ctx>,
         right: &checked::Expr,
-    ) -> NativeResult<Option<IntValue<'ctx>>> {
+    ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         let origin = self
             .builder
             .get_insert_block()
@@ -402,7 +820,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         if let Some(right) = right {
             phi.add_incoming(&[(&right, right_end)]);
         }
-        Ok(Some(phi.as_basic_value().into_int_value()))
+        Ok(Some(phi.as_basic_value()))
     }
 
     fn binary(
@@ -549,7 +967,9 @@ fn reachable_functions(
 ) -> NativeResult<BTreeSet<usize>> {
     fn expr(value: &checked::Expr, calls: &mut Vec<usize>) {
         match &value.kind {
-            checked::ExprKind::Unary(_, value) => expr(value, calls),
+            checked::ExprKind::Unary(_, value) | checked::ExprKind::Field(value, _) => {
+                expr(value, calls)
+            }
             checked::ExprKind::Binary(_, left, right) => {
                 expr(left, calls);
                 expr(right, calls);
@@ -560,6 +980,23 @@ fn reachable_functions(
                     expr(arg, calls);
                 }
             }
+            checked::ExprKind::Record(fields) => {
+                for (_, field) in fields {
+                    expr(field, calls);
+                }
+            }
+            checked::ExprKind::Variant { fields, .. } => {
+                for field in fields {
+                    expr(field, calls);
+                }
+            }
+            checked::ExprKind::Match { value, arms } => {
+                expr(value, calls);
+                for arm in arms {
+                    block(&arm.body, calls);
+                }
+            }
+            checked::ExprKind::Block(body) => block(body, calls),
             checked::ExprKind::If {
                 condition,
                 then_body,
@@ -610,4 +1047,51 @@ fn reachable_functions(
         block(&function.body, &mut pending);
     }
     Ok(reachable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enum_layout_uses_largest_payload_and_rejects_unbound_types() {
+        let program = checked::Program {
+            types: vec![
+                checked::Data {
+                    name: "Pair".into(),
+                    kind: checked::DataKind::Record(vec![
+                        ("flag".into(), Type::Bool),
+                        ("number".into(), Type::Int),
+                    ]),
+                },
+                checked::Data {
+                    name: "Choice".into(),
+                    kind: checked::DataKind::Enum(vec![
+                        ("Empty".into(), vec![]),
+                        ("Pair".into(), vec![Type::Data(0)]),
+                        ("Triple".into(), vec![Type::Int, Type::Int, Type::Int]),
+                    ]),
+                },
+            ],
+            functions: vec![],
+            entry: None,
+            tests: vec![],
+            exports: vec![],
+        };
+        let context = Context::create();
+        let choice = native_type(&context, &program, Type::Data(1))
+            .unwrap()
+            .into_struct_type();
+        assert_eq!(choice.count_fields(), 2);
+        assert_eq!(
+            choice
+                .get_field_type_at_index(1)
+                .unwrap()
+                .into_array_type()
+                .len(),
+            3
+        );
+        assert_eq!(value_words(&program, Type::Data(1)).unwrap(), 4);
+        assert!(native_type(&context, &program, Type::Parameter(0)).is_err());
+    }
 }
