@@ -5,10 +5,13 @@ safe evolution of deployed systems. Developers use ordinary source files;
 the long-term tools reason about types, contracts, dependencies, and semantic
 changes.
 
-The active implementation is a small Rust compiler using LLVM 19 through
-Inkwell. The previous compiler, interpreter, runtime, and their dedicated
-tooling have been removed from the active tree. Git history retains that work;
-there is no second implementation to maintain.
+The active frontend is written in Loom: it loads packages, parses source,
+checks types and required proofs, and produces a checked native program.
+A narrow Rust tool lowers that program through LLVM 19/Inkwell. A Rust seed
+currently builds the first compiler stage; subsequent stages compile the same
+Loom sources. Retiring the replaced seed frontend is next, not maintaining two
+language implementations. The previous compiler and interpreter remain only
+in Git history.
 
 ## Start here
 
@@ -20,13 +23,13 @@ there is no second implementation to maintain.
 - [Current implementation status](docs/project/implementation-status.md)
 - [Documentation index](docs/README.md)
 
-Accepted goals are not implementation claims. The native seed is not yet a
-complete language implementation or a self-hosted compiler.
+Accepted goals are not implementation claims. Staged bootstrap does not mean
+the complete language, standard library, or tooling design is implemented.
 
 ## Repository
 
-- `compiler/src`: syntax, type/proof checking, and native code generation.
-- `compiler/loom`: Loom-written lexing, syntax trees, parsing, and diagnostics.
+- `compiler/src`: Rust bootstrap seed and the retained LLVM/platform bridge.
+- `compiler/loom`: Loom-written compiler and reusable frontend packages.
 - `compiler/std`: standard-library source, compiled like application code.
 - `compiler/runtime`: managed-memory and private platform primitives in Rust.
 - `compiler/examples` and `compiler/tests`: runnable examples and focused tests.

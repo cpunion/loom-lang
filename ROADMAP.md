@@ -27,8 +27,9 @@ runtime backend. Remove replaced paths instead of adding compatibility adapters.
 
 The [native seed](compiler/README.md) now passes the N0 vertical-slice gate on
 macOS: real check/build/test/run, typed data, shared lists, source file I/O,
-constrained construction, and bounded required proofs. N1 has started with the
-[Loom-written frontend](compiler/loom/README.md); later
+constrained construction, and bounded required proofs. N1 now has a
+[Loom-written compiler](compiler/loom/README.md) producing successive native
+compiler stages through the retained LLVM tool; later
 milestones below remain exit criteria, not completion claims.
 
 ## N0 — A native vertical slice
@@ -54,9 +55,12 @@ or a host-language implementation masquerading as source `std`.
 
 ## N1 — Move the compiler into Loom
 
-Source positions, diagnostics, lexing, and syntax parsing now run as native
-Loom code. The frontend parses its own sources but does not yet bind, type-check,
-or compile them. None of the full bootstrap gates below is met.
+Source handling, package loading, binding, typing, bounded required proofs,
+and checked program construction now run as native Loom code. Stage 1 builds
+stage 2, and stage 2 builds a byte-identical stage 3 on macOS, using the same
+retained Rust LLVM/platform bridge. Stage 3 passes compiler, `std`, and example
+tests; stages agree on selected type/proof failure diagnostics. The first
+bootstrap gate below is met for this subset, not all of N2.
 
 Use the N0 subset to implement compiler components in Loom, starting with source
 handling, lexer/parser, and diagnostics, then binding, typing, and checked
@@ -67,7 +71,8 @@ The first self-hosting gate is concrete:
 
 1. The Rust seed builds a native Loom-written compiler, stage 1.
 2. Stage 1 builds the same compiler source, producing stage 2.
-3. Stage 2 builds the source again and runs compiler and `std` package tests.
+3. Stage 2 builds the source again; the resulting compiler runs compiler and
+   `std` package tests.
 4. The stages agree on selected interfaces, diagnostics, and executable results;
    compare reproducible artifacts where their representation is controlled.
 
@@ -75,7 +80,9 @@ A small documented LLVM/platform bridge may remain in Rust. A Loom lexer
 called by an otherwise Rust compiler is a useful intermediate step, not the
 self-hosting gate. Do not wait for the entire metaprogramming, deployment, or
 editor surface before making this transition. Bootstrap agreement is evidence,
-not a proof of compiler correctness.
+not a proof of compiler correctness. After transition validation, delete the
+replaced Rust parsing, binding, checking, and proof stages rather than extending
+both frontends with N2 features.
 
 ## N2 — Complete the language and source library
 
@@ -95,6 +102,15 @@ Each addition must work through the native CLI and its `std` tests. Required
 proofs remain mandatory even while the supported prover fragment grows. Exact
 overload ranking, macro spelling, solver choice, artifact encoding, and runtime
 layout belong to focused implementation designs, not new feature checklists.
+
+Deliver the [compiler-library boundaries](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)
+as an early N2 gate: a user Loom package imports the parser and AST, parses an
+in-memory source string, inspects declarations and spans, and reports a syntax
+diagnostic without importing the compiler CLI, LLVM bridge, project loader, or
+compiler-specific runtime hooks. Project loading and bound/typed queries are
+opt-in layers over the same implementation; typed metaprogramming later reuses
+them. This gate does not require freezing the current internal AST as a stable
+public schema or completing semantic version-control tooling.
 
 ## N3 — Deliver semantic change and deployment workflows
 
