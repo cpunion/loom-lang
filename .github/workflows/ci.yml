@@ -83,6 +83,7 @@ jobs:
       - uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
         with:
           version: '19.1.7'
+          force-url: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/clang%2Bllvm-19.1.7-x86_64-pc-windows-msvc.tar.xz
           directory: C:/llvm-19
           env: false
 
