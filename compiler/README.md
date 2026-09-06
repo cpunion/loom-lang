@@ -238,6 +238,9 @@ timings; local variables remain conservatively rooted for the function.
   `inf`, `+inf`, `-inf`, without whitespace or separators. Decimal overflow and
   underflow follow binary64 rounding. Grammar and errors live in Loom; narrow
   runtime codecs reuse Rust's numeric conversion, not a second source parser.
+- Source Text operations include `starts_with`, `ends_with`, `find`, `contains`,
+  `split`, `join`, and Unicode `trim`. Search offsets are UTF-8 bytes; an empty
+  separator splits Unicode scalars. Join builds bytes once, not repeated concatenation.
 - Source `std.text`, `std.list`, `std.result`, `std.file`, `std.fs`, and `std.io`. Private
   intrinsic signatures are checked against the runtime ABI and accepted only
   from the configured standard-library source root. Reading loops, UTF-8

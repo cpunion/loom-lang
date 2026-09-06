@@ -1,0 +1,33 @@
+test fn exact_search_uses_utf8_byte_offsets() {
+    assert starts_with("é😀xé", "é😀") && ends_with("é😀xé", "xé")
+    assert !starts_with("é", "éé") && !ends_with("é", "😀")
+    assert starts_with("", "") && ends_with("", "") && contains("", "")
+    assert find("é😀xé", "😀") == 2 && find("é😀xé", "é") == 0
+    assert find("é", "") == 0 && find("", "é") == -1
+    assert !contains("é", "e\u{301}") && find("a\0b", "\0") == 1
+}
+
+test fn split_and_join_preserve_fields_and_scalars() {
+    let parts = split("::é::::😀::", "::")
+    assert std.list.length(parts) == 5
+    assert get(parts, 0) == "" && get(parts, 1) == "é" && get(parts, 4) == ""
+    assert join(parts, ":") == ":é::😀:"
+    assert join(split("a😀b😀", "😀"), "/") == "a/b/"
+    assert std.list.length(split("aaaa", "aa")) == 3
+    let scalars = split("é😀e\u{301}", "")
+    assert std.list.length(scalars) == 4 && join(scalars, "|") == "é|😀|e|\u{301}"
+    assert join(scalars, "") == "é😀e\u{301}"
+    assert std.list.length(split("", "")) == 0 && join(split("", ""), ",") == ""
+    assert std.list.length(split("", ",")) == 1 && get(split("", ","), 0) == ""
+}
+
+test fn unicode_trim_and_comptime_search_agree() {
+    assert trim(" \t\u{a0}é \t😀\r\n\u{3000}") == "é \t😀"
+    assert trim("\u{2003}\t\u{3000}") == "" && trim("") == ""
+    assert trim("\u{200b}é\u{200b}") == "\u{200b}é\u{200b}"
+    let prepared = comptime { join(split(trim("\u{2003}é,😀,\u{3000}"), ","), "|") }
+    assert prepared == "é|😀|"
+    assert prepared == join(split(trim("\u{2003}é,😀,\u{3000}"), ","), "|")
+    let position = comptime { find("é😀", "😀") }
+    assert position == 2 && position == find("é😀", "😀")
+}

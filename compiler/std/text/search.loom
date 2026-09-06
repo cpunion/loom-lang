@@ -1,0 +1,101 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+import std.unicode.is_whitespace
+
+fn matches_at(value Text, pattern Text, offset Int) Bool {
+    let size = length(pattern)
+    if size > length(value) - offset { return false }
+    var index = 0
+    while index < size {
+        if byte(value, offset + index) != byte(pattern, index) { return false }
+        index = index + 1
+    }
+    true
+}
+
+// Empty prefixes and suffixes match every Text, including empty Text.
+pub fn starts_with(value Text, prefix Text) Bool { matches_at(value, prefix, 0) }
+pub fn ends_with(value Text, suffix Text) Bool {
+    if length(suffix) > length(value) { return false }
+    matches_at(value, suffix, length(value) - length(suffix))
+}
+
+fn find_from(value Text, pattern Text, start Int) Int {
+    let last = length(value) - length(pattern)
+    var offset = start
+    while offset <= last {
+        if matches_at(value, pattern, offset) { return offset }
+        offset = offset + width(value, offset)
+    }
+    -1
+}
+
+// Exact UTF-8 matching; returns the first byte offset, or -1. Empty matches at 0.
+pub fn find(value Text, pattern Text) Int { find_from(value, pattern, 0) }
+pub fn contains(value Text, pattern Text) Bool { find(value, pattern) >= 0 }
+
+// Nonempty separators match left-to-right without overlap and preserve empty
+// fields. An empty separator splits Unicode scalars, with no empty edge fields.
+pub fn split(value Text, separator Text) List[Text] {
+    let parts = std.list.new[Text]()
+    var start = 0
+    if length(separator) == 0 {
+        while start < length(value) {
+            let end = start + width(value, start)
+            std.list.push(parts, slice(value, start, end))
+            start = end
+        }
+        return parts
+    }
+    var next = find_from(value, separator, start)
+    while next >= 0 {
+        std.list.push(parts, slice(value, start, next))
+        start = next + length(separator)
+        next = find_from(value, separator, start)
+    }
+    std.list.push(parts, slice(value, start, length(value)))
+    parts
+}
+
+fn append_text(buffer Bytes, value Text) {
+    var index = 0
+    while index < length(value) {
+        std.bytes.push(buffer, byte(value, index))
+        index = index + 1
+    }
+}
+
+// Appends each byte once, then validates/copies the completed UTF-8 buffer.
+pub fn join(values List[Text], separator Text) Text {
+    let buffer = std.bytes.new()
+    var index = 0
+    while index < std.list.length(values) {
+        if index > 0 { append_text(buffer, separator) }
+        append_text(buffer, get(values, index))
+        index = index + 1
+    }
+    to_text(buffer)
+}
+
+// Removes surrounding Unicode whitespace; interior scalars are unchanged.
+pub fn trim(value Text) Text {
+    var start = 0
+    var end = length(value)
+    while start < end && is_whitespace(codepoint(value, start)) {
+        start = start + width(value, start)
+    }
+    while end > start {
+        var previous = end - 1
+        while byte(value, previous) >= 128 && byte(value, previous) < 192 {
+            previous = previous - 1
+        }
+        if !is_whitespace(codepoint(value, previous)) { return slice(value, start, end) }
+        end = previous
+    }
+    slice(value, start, end)
+}
