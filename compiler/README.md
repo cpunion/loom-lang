@@ -28,8 +28,9 @@ target/scalar
 target/debug/loom test compiler/examples/scalar
 target/debug/loom run compiler/examples/scalar
 target/debug/loom test compiler/std/int
-LOOM_GC_STRESS=1 target/debug/loom run compiler/examples/source
 LOOM_GC_STRESS=1 target/debug/loom test compiler/std/list
+target/debug/loom build compiler/loom --output target/loom-front
+target/loom-front lex compiler/loom/main.loom
 ```
 
 The root Cargo workspace and lockfile build the maintained compiler. Its binary
@@ -47,6 +48,7 @@ package. `--help` lists the small command surface.
 - Immutable records and tagged enums, flat exhaustive `match`, generic type and
   function parameters with inference or explicit arguments. Generic bodies are
   checked without hidden requirements; reachable instances use concrete layouts.
+  Payload-free enums support equality within the same nominal type.
 - Immutable UTF-8 `Text` and shared mutable `List[T]`. Copying a list binding
   shares its header: aliases observe growth and element replacement. Scalar
   records remain native values; managed fields retain their sharing semantics.
@@ -65,6 +67,9 @@ package. `--help` lists the small command surface.
   error policy, partial-write loops, and explicit file closure are ordinary Loom
   source. `file.write_text` creates or truncates a file; it is not an atomic or
   transactional write. `io.write_text` writes stdout without closing it.
+- Source UTF-8 scalar helpers, shared byte buffers, integer rendering, Unicode
+  property wrappers, stderr output, and process arguments/exit. Native entry
+  initializes argument access only when the emitted program needs it.
 - Native executable builds when the selected package has `main`; otherwise,
   an object containing its public functions and their dependencies. Object
   symbols are private seed conventions, not a supported foreign ABI.
@@ -112,9 +117,9 @@ The `compiler/examples/data` package exercises records, enums, generic functions
 and both test forms through the same CLI. Scalar-only records stay native values;
 enum storage uses its largest variant payload, not the sum of all variants.
 
-`compiler/examples/source` reads its scanner source from disk, produces a
-typed token list, checks constrained construction, and writes a success message
-to stdout. It is a small ASCII scanner, not a complete Loom lexer.
+The [Loom-written frontend](loom/README.md) replaces the ASCII scanner example.
+It tokenizes its own source files and emits positioned diagnostics through real
+file I/O and command-line arguments. It is not yet a complete compiler.
 
 The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;
@@ -125,7 +130,8 @@ No handles escape the file helpers; every recoverable branch closes the
 file explicitly. This is not general scoped cleanup or finalization.
 
 The N0 source-to-native gate is exercised by the examples and integration tests.
-Next is N1: move source handling, lexer/parser, and diagnostics into Loom.
+N1 has started with Loom source handling, lexing, and diagnostics; syntax
+parsing, binding, typing, and staged self-hosting remain next.
 Recursive declarations, mutable record fields, broader proofs, moving GC,
 lexical resources, Tasks, metaprogramming,
 dependency resolution, lockfile/cache behavior, deployment and semantic-change

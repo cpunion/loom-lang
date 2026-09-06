@@ -1,0 +1,132 @@
+import std.list.get
+import std.list.length
+
+fn lexed(text Text) List[Token] {
+    match lex(text) {
+        Result.Ok(tokens) => tokens
+        Result.Err(_) => {
+            assert false
+            new[Token]()
+        }
+    }
+}
+
+fn token_is(tokens List[Token], index Int, kind Kind, value Text, start Int, end Int) {
+    let token = get(tokens, index)
+    assert token.kind == kind
+    assert token.value == value
+    assert token.span.start == start && token.span.end == end
+}
+
+fn error_is(text Text, message Text, start Int, end Int) {
+    match lex(text) {
+        Result.Ok(_) => { assert false }
+        Result.Err(failure) => {
+            assert failure.message == message
+            assert failure.span.start == start && failure.span.end == end
+        }
+    }
+}
+
+test fn identifiers_and_byte_spans() {
+    let tokens = lexed("_a café 变量9 β٢")
+    assert std.list.length(tokens) == 5
+    token_is(tokens, 0, Kind.Name, "_a", 0, 2)
+    token_is(tokens, 1, Kind.Name, "café", 3, 8)
+    token_is(tokens, 2, Kind.Name, "变量9", 9, 16)
+    token_is(tokens, 3, Kind.Name, "β٢", 17, 21)
+    token_is(tokens, 4, Kind.Eof, "", 21, 21)
+}
+
+test fn trivia_and_newlines() {
+    let tokens = lexed("\t\u{a0}\u{2003}\u{2028}// 注释\r\n\r\n// eof")
+    assert std.list.length(tokens) == 3
+    token_is(tokens, 0, Kind.Newline, "", 18, 20)
+    token_is(tokens, 1, Kind.Newline, "", 20, 22)
+    token_is(tokens, 2, Kind.Eof, "", 28, 28)
+    let separate = lexed("\r \n")
+    token_is(separate, 0, Kind.Newline, "", 0, 1)
+    token_is(separate, 1, Kind.Newline, "", 2, 3)
+    token_is(lexed(""), 0, Kind.Eof, "", 0, 0)
+}
+
+fn symbol_is(text Text, kind Kind) {
+    let tokens = lexed(text)
+    assert std.list.length(tokens) == 2
+    token_is(tokens, 0, kind, "", 0, std.text.length(text))
+}
+
+test fn punctuation_and_longest_operators() {
+    symbol_is("(", Kind.LParen)
+    symbol_is(")", Kind.RParen)
+    symbol_is("{", Kind.LBrace)
+    symbol_is("}", Kind.RBrace)
+    symbol_is("[", Kind.LBracket)
+    symbol_is("]", Kind.RBracket)
+    symbol_is(",", Kind.Comma)
+    symbol_is(".", Kind.Dot)
+    symbol_is("=", Kind.Assign)
+    symbol_is("=>", Kind.Arrow)
+    symbol_is("+", Kind.Plus)
+    symbol_is("-", Kind.Minus)
+    symbol_is("*", Kind.Star)
+    symbol_is("/", Kind.Slash)
+    symbol_is("%", Kind.Percent)
+    symbol_is("==", Kind.Eq)
+    symbol_is("!=", Kind.Ne)
+    symbol_is("<", Kind.Lt)
+    symbol_is("<=", Kind.Le)
+    symbol_is(">", Kind.Gt)
+    symbol_is(">=", Kind.Ge)
+    symbol_is("&&", Kind.And)
+    symbol_is("||", Kind.Or)
+    symbol_is("!", Kind.Not)
+    let tokens = lexed("===>!==")
+    token_is(tokens, 0, Kind.Eq, "", 0, 2)
+    token_is(tokens, 1, Kind.Arrow, "", 2, 4)
+    token_is(tokens, 2, Kind.Ne, "", 4, 6)
+    token_is(tokens, 3, Kind.Assign, "", 6, 7)
+}
+
+test fn numbers_are_lexemes_not_host_integers() {
+    let tokens = lexed("-12 34.56 999999999999999999999999999999 0x10")
+    assert std.list.length(tokens) == 9
+    token_is(tokens, 0, Kind.Minus, "", 0, 1)
+    token_is(tokens, 1, Kind.Number, "12", 1, 3)
+    token_is(tokens, 2, Kind.Number, "34", 4, 6)
+    token_is(tokens, 3, Kind.Dot, "", 6, 7)
+    token_is(tokens, 4, Kind.Number, "56", 7, 9)
+    token_is(tokens, 5, Kind.Number, "999999999999999999999999999999", 10, 40)
+    token_is(tokens, 6, Kind.Number, "0", 41, 42)
+    token_is(tokens, 7, Kind.Name, "x10", 42, 45)
+}
+
+test fn decoded_strings() {
+    let tokens = lexed("\"é\\n\\r\\t\\0\\\"\\\\\\u{1f600}\\u{10ffff}\" \"\"")
+    assert std.list.length(tokens) == 3
+    assert get(tokens, 0).kind == Kind.Text
+    assert get(tokens, 0).value == "é\n\r\t\0\"\\😀\u{10ffff}"
+    assert get(tokens, 1).kind == Kind.Text && get(tokens, 1).value == ""
+    let null = lexed("\"\\u{0}\"")
+    token_is(null, 0, Kind.Text, "\0", 0, 7)
+}
+
+test fn lexical_failures() {
+    error_is("a;", "statements use newlines, not semicolons", 1, 2)
+    error_is("a:", "write a type after its name without a colon", 1, 2)
+    error_is("&", "unsupported character", 0, 1)
+    error_is("|", "unsupported character", 0, 1)
+    error_is("😀", "unsupported character", 0, 4)
+    error_is("١", "unsupported character", 0, 2)
+    error_is("\"abc", "unterminated string literal", 0, 4)
+    error_is("\"a\n", "escape newlines inside string literals", 0, 3)
+    error_is("\"a\r", "escape newlines inside string literals", 0, 3)
+    error_is("\"\\", "invalid string escape", 0, 2)
+    error_is("\"\\q\"", "invalid string escape", 0, 3)
+    error_is("\"\\u1\"", "invalid string escape", 0, 3)
+    error_is("\"\\u{}\"", "invalid Unicode escape", 0, 4)
+    error_is("\"\\u{d800}\"", "invalid Unicode escape", 0, 8)
+    error_is("\"\\u{110000}\"", "invalid Unicode escape", 0, 10)
+    error_is("\"\\u{0000000}\"", "invalid Unicode escape", 0, 11)
+    error_is("\"\\u{12x}\"", "invalid Unicode escape", 0, 6)
+}

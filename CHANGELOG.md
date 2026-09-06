@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Begin N1 with a native Loom-written lexer, source positions, diagnostics,
+  and file-based command-line frontend. Add source Unicode/UTF-8 helpers,
+  integer formatting, and process/std-error APIs; replace the ASCII scanner.
 - Complete the N0 native vertical slice with scalar constrained construction,
   check-free widening, and source-owned file/stdout write loops. Unknown
   construction returns a source `Result`; failed required proofs still reject.

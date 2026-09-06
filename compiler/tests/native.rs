@@ -71,10 +71,6 @@ fn native_cli_closure_and_source_library() {
             "unexpected scalar IR dependency: {forbidden}"
         );
     }
-    success(&loom(&[
-        "test",
-        path(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std/int")),
-    ]));
 }
 
 #[test]
@@ -105,27 +101,10 @@ fn native_generic_data() {
 }
 
 #[test]
-fn source_scanner_and_std_under_forced_collection() {
+fn source_std_under_forced_collection() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo = root.parent().unwrap();
-    let fixture = root.join("examples/source");
-    let directory = tempfile::tempdir().unwrap();
-    let artifact = directory.path().join("scanner");
-    success(&managed(&["check", path(&fixture)], repo));
-    success(&managed(
-        &["build", path(&fixture), "--output", path(&artifact)],
-        repo,
-    ));
-    success(
-        &Command::new(artifact)
-            .current_dir(repo)
-            .env("LOOM_GC_STRESS", "1")
-            .output()
-            .unwrap(),
-    );
-    success(&managed(&["run", path(&fixture)], repo));
-    success(&managed(&["test", path(&fixture)], repo));
-    for package in ["text", "list", "result"] {
+    for package in ["bytes", "int", "text", "list", "result", "unicode"] {
         success(&managed(
             &["test", path(&root.join("std").join(package))],
             repo,

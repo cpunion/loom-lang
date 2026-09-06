@@ -1,0 +1,278 @@
+import frontend.source.Span
+import frontend.source.Diagnostic
+import std.result.Result
+import std.list.new
+import std.list.push
+import std.text.byte
+import std.text.length
+import std.text.slice
+import std.text.width
+import std.text.codepoint
+import std.text.from_codepoint
+import std.unicode.is_alphabetic
+import std.unicode.is_alphanumeric
+import std.unicode.is_whitespace
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+
+pub enum Kind {
+    Name
+    Number
+    Text
+    LParen
+    RParen
+    LBrace
+    RBrace
+    LBracket
+    RBracket
+    Comma
+    Dot
+    Assign
+    Arrow
+    Plus
+    Minus
+    Star
+    Slash
+    Percent
+    Eq
+    Ne
+    Lt
+    Le
+    Gt
+    Ge
+    And
+    Or
+    Not
+    Newline
+    Eof
+}
+
+// Spans are UTF-8 byte offsets. Names/numbers retain their spelling and strings
+// their decoded value. Punctuation, newlines and EOF need no copied text.
+pub record Token {
+    kind Kind
+    value Text
+    span Span
+}
+
+record Scan {
+    end Int
+    value Text
+}
+
+fn error(start Int, end Int, message Text) Diagnostic {
+    Diagnostic { span = Span { start = start end = end } message = message }
+}
+
+fn digit(value Int) Bool { value >= 48 && value <= 57 }
+
+fn hex(value Int) Int {
+    if digit(value) { return value - 48 }
+    if value >= 65 && value <= 70 { return value - 55 }
+    if value >= 97 && value <= 102 { return value - 87 }
+    -1
+}
+
+fn starts(text Text, offset Int, value Int) Bool {
+    offset < length(text) && byte(text, offset) == value
+}
+
+// Unicode escapes contain one to six hexadecimal digits and a scalar value.
+fn unicode_escape(text Text, offset Int, start Int) Result[Scan, Diagnostic] {
+    var end = offset
+    var value = 0
+    while end < length(text) && hex(byte(text, end)) >= 0 {
+        // Keep scanning excessive digits for the complete diagnostic span,
+        // but do not overflow while processing malformed input.
+        if end - offset < 6 { value = value * 16 + hex(byte(text, end)) }
+        end = end + 1
+    }
+    if end == offset || end - offset > 6 || !starts(text, end, 125) {
+        return Result.Err(error(start, end, "invalid Unicode escape"))
+    }
+    if value > 1114111 || (value >= 55296 && value <= 57343) {
+        return Result.Err(error(start, end, "invalid Unicode escape"))
+    }
+    Result.Ok(Scan { end = end + 1 value = from_codepoint(value) })
+}
+
+fn escape(text Text, offset Int, start Int) Result[Scan, Diagnostic] {
+    if offset == length(text) {
+        return Result.Err(error(start, offset, "invalid string escape"))
+    }
+    let value = codepoint(text, offset)
+    let end = offset + width(text, offset)
+    if value == 117 && starts(text, end, 123) {
+        return unicode_escape(text, end + 1, start)
+    }
+    var decoded = -1
+    if value == 110 { decoded = 10 }
+    if value == 114 { decoded = 13 }
+    if value == 116 { decoded = 9 }
+    if value == 48 { decoded = 0 }
+    if value == 34 || value == 92 { decoded = value }
+    if decoded < 0 {
+        return Result.Err(error(start, end, "invalid string escape"))
+    }
+    Result.Ok(Scan { end = end value = from_codepoint(decoded) })
+}
+
+fn append(buffer Bytes, value Text, start Int, end Int) {
+    var offset = start
+    while offset < end {
+        std.bytes.push(buffer, byte(value, offset))
+        offset = offset + 1
+    }
+}
+
+fn string_literal(text Text, start Int) Result[Scan, Diagnostic] {
+    let buffer = std.bytes.new()
+    var offset = start + 1
+    while offset < length(text) {
+        let current = codepoint(text, offset)
+        let end = offset + width(text, offset)
+        if current == 34 {
+            return Result.Ok(Scan { end = end value = to_text(buffer) })
+        }
+        if current == 10 || current == 13 {
+            return Result.Err(error(start, end, "escape newlines inside string literals"))
+        }
+        if current == 92 {
+            let scanned = match escape(text, end, start) {
+                Result.Ok(value) => value
+                Result.Err(failure) => { return Result.Err(failure) }
+            }
+            append(buffer, scanned.value, 0, length(scanned.value))
+            offset = scanned.end
+        } else {
+            append(buffer, text, offset, end)
+            offset = end
+        }
+    }
+    Result.Err(error(start, offset, "unterminated string literal"))
+}
+
+fn symbol(value Int) Kind {
+    if value == 40 { return Kind.LParen }
+    if value == 41 { return Kind.RParen }
+    if value == 123 { return Kind.LBrace }
+    if value == 125 { return Kind.RBrace }
+    if value == 91 { return Kind.LBracket }
+    if value == 93 { return Kind.RBracket }
+    if value == 44 { return Kind.Comma }
+    if value == 46 { return Kind.Dot }
+    if value == 43 { return Kind.Plus }
+    if value == 45 { return Kind.Minus }
+    if value == 42 { return Kind.Star }
+    if value == 47 { return Kind.Slash }
+    if value == 37 { return Kind.Percent }
+    if value == 61 { return Kind.Assign }
+    if value == 33 { return Kind.Not }
+    if value == 60 { return Kind.Lt }
+    if value == 62 { return Kind.Gt }
+    Kind.Eof
+}
+
+fn paired(value Int) Kind {
+    if value == 61 { return Kind.Eq }
+    if value == 33 { return Kind.Ne }
+    if value == 60 { return Kind.Le }
+    Kind.Ge
+}
+
+fn punctuation(text Text, start Int, end Int, value Int) Result[Token, Diagnostic] {
+    var kind = symbol(value)
+    var offset = end
+    if value == 61 && starts(text, offset, 62) {
+        kind = Kind.Arrow
+        offset = offset + 1
+    } else {
+        if (value == 61 || value == 33 || value == 60 || value == 62) && starts(text, offset, 61) {
+            kind = paired(value)
+            offset = offset + 1
+        } else {
+            if (value == 38 || value == 124) && starts(text, offset, value) {
+                kind = if value == 38 { Kind.And } else { Kind.Or }
+                offset = offset + 1
+            }
+        }
+    }
+    if value == 59 {
+        return Result.Err(error(start, offset, "statements use newlines, not semicolons"))
+    }
+    if value == 58 {
+        return Result.Err(error(start, offset, "write a type after its name without a colon"))
+    }
+    if kind == Kind.Eof {
+        return Result.Err(error(start, offset, "unsupported character"))
+    }
+    Result.Ok(Token {
+        kind = kind value = ""
+        span = Span { start = start end = offset }
+    })
+}
+
+fn scanned(kind Kind, text Text, start Int, end Int) Token {
+    Token { kind = kind value = slice(text, start, end) span = Span { start = start end = end } }
+}
+
+fn trivia(start Int, end Int) Token {
+    Token { kind = Kind.Eof value = "" span = Span { start = start end = end } }
+}
+
+fn next_token(text Text, start Int) Result[Token, Diagnostic] {
+    let current = codepoint(text, start)
+    var offset = start + width(text, start)
+    if current == 10 || current == 13 {
+        if current == 13 && starts(text, offset, 10) { offset = offset + 1 }
+        return Result.Ok(Token { kind = Kind.Newline value = "" span = Span { start = start end = offset } })
+    }
+    // Internal EOF-kind tokens skip trivia; lex emits only the final EOF.
+    // Other Unicode whitespace does not separate statements.
+    if is_whitespace(current) {
+        return Result.Ok(trivia(start, offset))
+    }
+    if current == 47 && starts(text, offset, 47) {
+        while offset < length(text) && !starts(text, offset, 10) && !starts(text, offset, 13) {
+            offset = offset + width(text, offset)
+        }
+        return Result.Ok(trivia(start, offset))
+    }
+    if current == 34 {
+        let literal = match string_literal(text, start) {
+            Result.Ok(value) => value
+            Result.Err(failure) => { return Result.Err(failure) }
+        }
+        return Result.Ok(Token {
+            kind = Kind.Text value = literal.value
+            span = Span { start = start end = literal.end }
+        })
+    }
+    if digit(current) {
+        while offset < length(text) && digit(byte(text, offset)) { offset = offset + 1 }
+        return Result.Ok(scanned(Kind.Number, text, start, offset))
+    }
+    if current == 95 || is_alphabetic(current) {
+        while offset < length(text) && (codepoint(text, offset) == 95 || is_alphanumeric(codepoint(text, offset))) {
+            offset = offset + width(text, offset)
+        }
+        return Result.Ok(scanned(Kind.Name, text, start, offset))
+    }
+    punctuation(text, start, offset, current)
+}
+
+pub fn lex(text Text) Result[List[Token], Diagnostic] {
+    let tokens = new[Token]()
+    var offset = 0
+    while offset < length(text) {
+        let token = match next_token(text, offset) {
+            Result.Ok(value) => value
+            Result.Err(failure) => { return Result.Err(failure) }
+        }
+        offset = token.span.end
+        if token.kind != Kind.Eof { push(tokens, token) }
+    }
+    push(tokens, Token { kind = Kind.Eof value = "" span = Span { start = offset end = offset } })
+    Result.Ok(tokens)
+}
