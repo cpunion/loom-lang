@@ -126,6 +126,110 @@ pub(super) fn runtime_function<'ctx>(
     })
 }
 
+#[derive(Default)]
+struct TemporarySlots {
+    // Physical slots follow first source use, never HashMap iteration order.
+    types: Vec<Type>,
+    pools: HashMap<Type, Vec<usize>>,
+    used: HashMap<Type, usize>,
+    expressions: HashMap<*const checked::Expr, usize>,
+}
+
+impl TemporarySlots {
+    fn expression(&mut self, program: &checked::Program, value: &checked::Expr) {
+        if managed(program, value.ty) {
+            let used = self.used.entry(value.ty).or_default();
+            let pool = self.pools.entry(value.ty).or_default();
+            if *used == pool.len() {
+                pool.push(self.types.len());
+                self.types.push(value.ty);
+            }
+            self.expressions.insert(value, pool[*used]);
+            *used += 1;
+        }
+        // Reserve the result before its children. Previously evaluated sibling
+        // arguments/fields and enclosing results remain outside nested scopes.
+        match &value.kind {
+            checked::ExprKind::Unary(_, value)
+            | checked::ExprKind::Field(value, _)
+            | checked::ExprKind::Coerce(value) => self.expression(program, value),
+            checked::ExprKind::Binary(_, left, right) => {
+                self.expression(program, left);
+                self.expression(program, right);
+            }
+            checked::ExprKind::Call(_, args)
+            | checked::ExprKind::Primitive(_, args)
+            | checked::ExprKind::Variant { fields: args, .. } => {
+                for arg in args {
+                    self.expression(program, arg);
+                }
+            }
+            checked::ExprKind::Record(fields) => {
+                for (_, field) in fields {
+                    self.expression(program, field);
+                }
+            }
+            checked::ExprKind::Block(body) => self.block(program, body),
+            checked::ExprKind::Match { value, arms } => {
+                self.expression(program, value);
+                self.branches(program, arms.iter().map(|arm| &arm.body));
+            }
+            checked::ExprKind::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                self.expression(program, condition);
+                self.branches(program, std::iter::once(then_body).chain(else_body));
+            }
+            _ => {}
+        }
+    }
+
+    fn branches<'a>(
+        &mut self,
+        program: &checked::Program,
+        bodies: impl IntoIterator<Item = &'a checked::Block>,
+    ) {
+        let base = self.used.clone();
+        let mut peak = base.clone();
+        for body in bodies {
+            self.used.clone_from(&base);
+            self.block(program, body);
+            for (ty, used) in &self.used {
+                let maximum = peak.entry(*ty).or_default();
+                *maximum = (*maximum).max(*used);
+            }
+        }
+        self.used = peak;
+    }
+
+    fn block(&mut self, program: &checked::Program, body: &checked::Block) {
+        let base = self.used.clone();
+        for statement in &body.statements {
+            match &statement.kind {
+                checked::StmtKind::Let { value, .. }
+                | checked::StmtKind::Assign { value, .. }
+                | checked::StmtKind::Assert(value)
+                | checked::StmtKind::Discard(value)
+                | checked::StmtKind::Expr(value)
+                | checked::StmtKind::Return(Some(value)) => self.expression(program, value),
+                checked::StmtKind::While { condition, body } => {
+                    self.expression(program, condition);
+                    self.block(program, body);
+                }
+                checked::StmtKind::Return(None) => {}
+            }
+            // Let/Assign have copied into permanent local roots; other completed
+            // statements retain no value. A return never reaches the next one.
+            self.used.clone_from(&base);
+        }
+        if let Some(tail) = &body.tail {
+            self.expression(program, tail);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn root_function<'ctx>(
     context: &'ctx Context,
@@ -147,21 +251,25 @@ pub(super) fn root_function<'ctx>(
             slots.push((slot, *ty));
         }
     }
-    let mut values = Vec::new();
+    let mut temporary = TemporarySlots::default();
     for value in &source.requires {
-        expressions(value, &mut values);
+        temporary.expression(program, value);
+        temporary.used.clear();
     }
-    block_expressions(&source.body, &mut values);
-    let mut expressions = HashMap::new();
-    for value in values {
-        if managed(program, value.ty) {
-            let ty = native_type(context, program, value.ty)?;
-            let slot = builder.build_alloca(ty, "gc.temporary")?;
-            builder.build_store(slot, ty.const_zero())?;
-            expressions.insert(value as *const checked::Expr, slot);
-            slots.push((slot, value.ty));
-        }
+    temporary.block(program, &source.body);
+    let mut storage = Vec::new();
+    for ty in temporary.types {
+        let native = native_type(context, program, ty)?;
+        let slot = builder.build_alloca(native, "gc.temporary")?;
+        builder.build_store(slot, native.const_zero())?;
+        storage.push(slot);
+        slots.push((slot, ty));
     }
+    let expressions = temporary
+        .expressions
+        .into_iter()
+        .map(|(value, slot)| (value, storage[slot]))
+        .collect();
     if slots.is_empty() {
         return Ok(RootFrame {
             checkpoint: None,
@@ -461,5 +569,155 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
             _ => {}
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Span;
+
+    fn program() -> checked::Program {
+        checked::Program {
+            types: vec![checked::Data {
+                name: "Choice".into(),
+                kind: checked::DataKind::Enum(vec![
+                    ("A".into(), vec![Type::Text]),
+                    ("B".into(), vec![Type::Text]),
+                ]),
+            }],
+            lists: vec![],
+            functions: vec![],
+            entry: None,
+            tests: vec![],
+            exports: vec![],
+        }
+    }
+
+    fn expr(kind: checked::ExprKind, ty: Type) -> checked::Expr {
+        checked::Expr {
+            kind,
+            ty,
+            span: Span::default(),
+        }
+    }
+
+    fn block(statements: Vec<checked::Expr>, tail: checked::Expr) -> checked::Block {
+        checked::Block {
+            statements: statements
+                .into_iter()
+                .map(|value| checked::Stmt {
+                    kind: checked::StmtKind::Discard(value),
+                    span: Span::default(),
+                })
+                .collect(),
+            tail: Some(Box::new(tail)),
+            falls_through: true,
+        }
+    }
+
+    fn local(ty: Type) -> checked::Expr {
+        expr(checked::ExprKind::Local(0), ty)
+    }
+
+    fn slot(slots: &TemporarySlots, value: &checked::Expr) -> usize {
+        slots.expressions[&(value as *const checked::Expr)]
+    }
+
+    #[test]
+    fn statement_temporaries_reuse_exact_types_but_not_enclosing_results() {
+        let value = expr(
+            checked::ExprKind::Block(block(
+                vec![local(Type::Text), local(Type::Bytes), local(Type::Text)],
+                local(Type::Text),
+            )),
+            Type::Text,
+        );
+        let mut slots = TemporarySlots::default();
+        slots.expression(&program(), &value);
+        assert_eq!(slots.types, [Type::Text, Type::Text, Type::Bytes]);
+        let checked::ExprKind::Block(body) = &value.kind else {
+            panic!();
+        };
+        for (index, statement) in body.statements.iter().enumerate() {
+            let checked::StmtKind::Discard(value) = &statement.kind else {
+                panic!();
+            };
+            assert_eq!(slot(&slots, value), if index == 1 { 2 } else { 1 });
+        }
+        assert_eq!(slot(&slots, body.tail.as_ref().unwrap()), 1);
+        assert_eq!(slot(&slots, &value), 0);
+    }
+
+    #[test]
+    fn branch_pools_preserve_argument_condition_and_scrutinee_prefixes() {
+        let conditional = expr(
+            checked::ExprKind::If {
+                condition: Box::new(expr(
+                    checked::ExprKind::Primitive(
+                        Primitive::TextEqual,
+                        vec![local(Type::Text), local(Type::Text)],
+                    ),
+                    Type::Bool,
+                )),
+                then_body: block(vec![], local(Type::Text)),
+                else_body: Some(block(vec![], local(Type::Text))),
+            },
+            Type::Text,
+        );
+        let matched = expr(
+            checked::ExprKind::Match {
+                value: Box::new(local(Type::Data(0))),
+                arms: vec![conditional, local(Type::Text)]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(variant, tail)| checked::MatchArm {
+                        variant: Some(variant),
+                        bindings: vec![None],
+                        whole: None,
+                        body: block(vec![local(Type::Data(0))], tail),
+                    })
+                    .collect(),
+            },
+            Type::Text,
+        );
+        let call = expr(
+            checked::ExprKind::Call(0, vec![local(Type::Text), matched]),
+            Type::Text,
+        );
+        let mut slots = TemporarySlots::default();
+        slots.expression(&program(), &call);
+        let checked::ExprKind::Call(_, arguments) = &call.kind else {
+            panic!();
+        };
+        let checked::ExprKind::Match { value, arms } = &arguments[1].kind else {
+            panic!();
+        };
+        let first = arms[0].body.tail.as_ref().unwrap();
+        let second = arms[1].body.tail.as_ref().unwrap();
+        assert_eq!(slot(&slots, first), slot(&slots, second));
+        assert_ne!(slot(&slots, first), slot(&slots, &arguments[0]));
+        assert_ne!(slot(&slots, first), slot(&slots, &arguments[1]));
+        let checked::StmtKind::Discard(inner) = &arms[0].body.statements[0].kind else {
+            panic!();
+        };
+        assert_ne!(slot(&slots, value), slot(&slots, inner));
+        let checked::ExprKind::If {
+            condition,
+            then_body,
+            else_body,
+        } = &first.kind
+        else {
+            panic!();
+        };
+        let yes = then_body.tail.as_ref().unwrap();
+        let no = else_body.as_ref().unwrap().tail.as_ref().unwrap();
+        assert_eq!(slot(&slots, yes), slot(&slots, no));
+        let checked::ExprKind::Primitive(_, values) = &condition.kind else {
+            panic!();
+        };
+        for condition in values {
+            assert_ne!(slot(&slots, condition), slot(&slots, yes));
+        }
     }
 }

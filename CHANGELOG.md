@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Reuse same-type GC temporary slots across completed statements and exclusive
+  branches. Preserve live argument snapshots, local roots, and deterministic
+  bootstrap without changing the runtime ABI or adding a liveness IR.
 - Add pure Loom decimal integer parsing with explicit syntax/range errors and
   compile-time execution. Exercise command-line parsing and constrained input
   in an ordinary application with colocated tests.

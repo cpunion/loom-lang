@@ -183,6 +183,13 @@ remained around 210 ms in a separate alternating comparison. This is evidence
 for the compiler workload, not a guarantee for every generated program. Recheck
 the budget on future LLVM upgrades; these tuning options are not a stable API.
 
+Lexical temporary-root reuse on the same checked compiler input (`3903ae2d`)
+reduces static temporary slots from 9,908 to 3,279. The largest per-function root
+table falls from 302 to 82 entries. Controlled Windows-target O2 codegen reduces
+the former largest-root function's stack allocation from 15,160 to 3,736 bytes.
+These are IR/object measurements, not whole-process peak stack or on-runner
+timings; local variables remain conservatively rooted for the function.
+
 ## Implemented subset
 
 - Signed, checked 64-bit `Int`, `Bool`, scalar parameters, calls and recursion.
@@ -357,7 +364,11 @@ declaration binding alone still provides only name candidates.
 
 The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;
-transitively nonallocating functions need no root frames. `LOOM_GC_STRESS=1`
+transitively nonallocating functions need no root frames.
+Temporaries in completed statements and mutually exclusive branches reuse
+same-type slots. Pending arguments, enclosing results, and permanent locals keep
+their own roots; no runtime registration is added at each statement.
+`LOOM_GC_STRESS=1`
 collects before every allocation for focused testing. The LLVM tool links managed
 programs with `libloom_runtime.a` (`loom_runtime.lib` on Windows) beside it, or at
 `LOOM_RUNTIME_LIBRARY`.
