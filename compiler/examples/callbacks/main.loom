@@ -2,7 +2,7 @@ import std.list.new
 import std.list.push
 import std.list.get
 import std.list.set
-import std.list.length
+import std.list.map
 import std.text.concat
 import std.int.to_text
 import std.result.Result
@@ -14,15 +14,6 @@ fn label(value Text) Text { concat("text:", value) }
 fn identity[T](value T) T { value }
 
 fn apply[T, U](action fn(T) U, value T) U { action(value) }
-fn map[T, U](values List[T], transform fn(T) U) List[U] {
-    let output = new[U]()
-    var index = 0
-    while index < length(values) {
-        push(output, transform(get(values, index)))
-        index = index + 1
-    }
-    output
-}
 fn choose(first Bool) fn(Int) Int {
     if first { increment } else { double }
 }

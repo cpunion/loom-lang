@@ -37,6 +37,11 @@ under forced collection; O0 scalar callbacks have no Loom runtime dependency
 and retain only referenced targets. Capturing closures and compile-time function
 parameters are not yet implemented.
 
+Source `std.list.map/filter/fold` use those function values without new runtime
+operations. They traverse the initial index range in order, preserve shared
+element semantics, and execute at compile time with pure callbacks. A pinned
+function-capable source checkpoint precedes this standard-library adoption.
+
 Static concepts use explicit nominal `impl` declarations, generic bounds and
 ordinary direct-call specialization. Conditional `T implements C` tests select
 only that instance's branch; they do not add a public generic requirement.

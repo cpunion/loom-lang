@@ -1,0 +1,36 @@
+// Visit the initial index range once, in order. Read each element just before
+// its callback: changes to unread elements are visible; appends are not visited.
+// map/filter create a fresh outer List; elements retain normal sharing.
+pub fn map[T, U](values List[T], transform fn(T) U) List[U] {
+    let count = length(values)
+    let output = new[U]()
+    var index = 0
+    while index < count {
+        push(output, transform(get(values, index)))
+        index = index + 1
+    }
+    output
+}
+
+pub fn filter[T](values List[T], predicate fn(T) Bool) List[T] {
+    let count = length(values)
+    let output = new[T]()
+    var index = 0
+    while index < count {
+        let value = get(values, index)
+        if predicate(value) { push(output, value) }
+        index = index + 1
+    }
+    output
+}
+
+pub fn fold[T, A](values List[T], initial A, combine fn(A, T) A) A {
+    let count = length(values)
+    var accumulator = initial
+    var index = 0
+    while index < count {
+        accumulator = combine(accumulator, get(values, index))
+        index = index + 1
+    }
+    accumulator
+}
