@@ -16,9 +16,8 @@ directly; LLVM's O2 pipeline promotes local storage and removes unused code.
 
 ## Build and try it
 
-Use Rust 1.88, LLVM 22 development libraries, and Clang. macOS passes the LLVM 22
-bootstrap and native gate; Linux previously passed with LLVM 19 and is being
-revalidated on LLVM 22. On Ubuntu 24.04 use the signed
+Use Rust 1.88, LLVM 22 development libraries, and Clang. macOS and Linux pass the
+LLVM 22 bootstrap and native gate. On Ubuntu 24.04 use the signed
 [LLVM apt repository](https://apt.llvm.org/) and install `llvm-22-dev`, `clang-22`,
 and `libpolly-22-dev`; set `LLVM_SYS_221_PREFIX=/usr/lib/llvm-22` and
 `LOOM_CC=/usr/bin/clang-22`. The [CI recipe](../.github/workflows/ci.yml) shows

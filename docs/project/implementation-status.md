@@ -22,8 +22,8 @@ declarations. Known true/false predicates remove the check or reject; unknown
 inputs or unsuccessful optional evaluation retain normal runtime construction
 and fault behavior. Function contracts remain call-free and proofs mandatory.
 
-The native toolchain uses Rust 1.88 and LLVM 22. macOS bootstrap and native
-verification pass; Linux passed the LLVM 19 gate and awaits LLVM 22 CI results.
+The native toolchain uses Rust 1.88 and LLVM 22. macOS and Linux pass the full
+bootstrap and native gate.
 Compiler, native integration,
 and runtime tests cover real check/build/test/run, required-proof rejection,
 input-boundary failures, and allocation-free scalar/record paths.
