@@ -416,6 +416,21 @@ arithmetic returns `Int`, while generic inference retains nominal identity.
 Float needs no check. Money never implicitly converts to Int. Finiteness is a
 predicate choice, not an extra hidden restriction on Float constraints.
 
+An explicit conversion between Int refinements can also return the destination
+directly when the source predicate proves the destination predicate, including
+the absence of overflow in that predicate:
+
+```loom
+type Positive = Int where self > 0
+type NonNegative = Int where self >= 0
+fn widen(value Positive) NonNegative { NonNegative(value) }
+```
+
+The input still evaluates once. Reverse conversions, helper-call predicates,
+Float predicates, and exhausted or unsupported proofs retain ordinary checked
+`Result` construction. This bounded implication uses the existing integer prover;
+it does not infer new facts from arbitrary preceding statements.
+
 Predicates over `Int` or `Float` may call ordinary pure helpers, including helpers with
 loops, recursion, and freshly allocated data:
 

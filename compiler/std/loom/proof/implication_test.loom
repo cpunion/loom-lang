@@ -1,0 +1,22 @@
+test fn refinement_implication_requires_truth_and_definedness() {
+    let self = local(0)
+    let positive = operation(">", self, literal("0"))
+    let nonnegative = operation(">=", self, literal("0"))
+    let yes = expression(ExprKind.Bool, 2, "true", -1, new[Expr]())
+    assert implies(positive, nonnegative) && !implies(nonnegative, positive)
+    let increment = operation(">", operation("+", self, literal("1")), self)
+    assert !implies(yes, increment)
+    assert implies(operation("<", self, literal("9223372036854775807")), increment)
+    let fault = operation("==", operation("/", literal("1"), literal("0")), literal("0"))
+    assert !implies(yes, fault) && implies(yes, operation("||", yes, fault))
+    assert !implies(positive, operation(">=", operation("*", self, self), literal("0")))
+    assert !implies(positive, expression(ExprKind.Call, 2, "", 0, nodes(self)))
+    assert !implies(expression(ExprKind.Float, 5, "1.0", -1, new[Expr]()), yes)
+    var deep = positive
+    var count = 0
+    while count < 70 {
+        deep = expression(ExprKind.Unary, 2, "!", -1, nodes(deep))
+        count = count + 1
+    }
+    assert !implies(positive, deep)
+}

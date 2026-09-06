@@ -176,6 +176,9 @@ reflection remain incomplete.
 known constants remove checks, while unknown results retain the runtime
 construction boundary. Execution never substitutes for a required proof:
 function contracts still use the documented call-free proof fragment.
+Explicit Int refinement conversion now reuses that fragment to eliminate a
+destination check only when both truth and definedness follow from the source
+predicate. Local-flow facts and helper-call summaries remain later work.
 
 Typed metaprogramming later reuses this infrastructure. Public analysis does not
 freeze the schemas or complete

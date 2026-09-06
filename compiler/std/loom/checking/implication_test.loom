@@ -1,0 +1,30 @@
+test fn refinement_implication_removes_only_the_second_boundary() {
+    let program = accepted_result("import std.result.Result\nimport std.result.ConstraintError\ntype Positive = Int where self > 0\ntype NonNegative = Int where self >= 0\nfn source(value Positive) Positive { value }\npub fn wider(value Positive) NonNegative { NonNegative(source(value)) }\npub fn narrower(value NonNegative) Result[Positive, ConstraintError] { Positive(value) }")
+    let wider = get(get(program.functions, 0).body.children, 0)
+    let narrower = get(get(program.functions, 1).body.children, 0)
+    assert wider.kind == ExprKind.Coerce && dynamic_count(wider, ExprKind.Call) == 1
+    assert narrower.kind == ExprKind.Block && dynamic_count(narrower, ExprKind.If) == 1
+}
+
+test fn implication_templates_are_ready_before_helper_validation() {
+    let simple = "type Positive = Int where self > 0\ntype NonNegative = Int where self >= 0\n"
+    let helpers = "fn positive(value Int) Positive { Positive(1) }\nfn valid(value Int) Bool { let widened NonNegative = NonNegative(positive(value))\nwidened >= 0 }\n"
+    let direct = "type Direct = Int where accept(NonNegative(positive(self)))\nfn accept(value NonNegative) Bool { value >= 0 }\n"
+    let outer = "type Outer = Int where valid(self)\n"
+    let a = accepted_result(concat(concat(outer, direct), concat(helpers, simple)))
+    let b = accepted_result(concat(simple, concat(helpers, concat(direct, outer))))
+    assert length(a.functions) == 0 && length(b.functions) == 0
+}
+
+test fn unproved_or_faulting_refinements_keep_checked_construction() {
+    let imports = "import std.result.Result\nimport std.result.ConstraintError\n"
+    let definitions = "type Whole = Int where true\ntype Increment = Int where self + 1 > self\ntype Hidden = Int where accepts(self)\nfn accepts(value Int) Bool { value >= 0 }\ntype Finite = Float where self >= 0.0 && self <= 100.0\ntype Wide = Float where self >= 0.0\n"
+    let functions = "pub fn overflow(value Whole) Result[Increment, ConstraintError] { Increment(value) }\npub fn opaque(value Whole) Result[Hidden, ConstraintError] { Hidden(value) }\npub fn floating(value Finite) Result[Wide, ConstraintError] { Wide(value) }\n"
+    let program = accepted_result(concat(imports, concat(definitions, functions)))
+    var index = 0
+    while index < 3 {
+        let boundary = get(get(program.functions, index).body.children, 0)
+        assert boundary.kind == ExprKind.Block && dynamic_count(boundary, ExprKind.If) == 1
+        index = index + 1
+    }
+}

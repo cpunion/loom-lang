@@ -18,15 +18,17 @@ import std.loom.eval.scalar
 import std.loom.eval.unknown
 import std.loom.eval.validate
 import std.loom.eval.evaluate
+import std.loom.proof.implies
 
-fn predicate_form(node Node) Bool {
+fn predicate_form(node Node, calls Bool) Bool {
     if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool || node.kind == NodeKind.Text { return true }
     if node.kind == NodeKind.Name { return node.value == "self" }
     if node.kind == NodeKind.Call {
+        if !calls { return false }
         let arguments = child(node, 1).children
         var index = 0
         while index < length(arguments) {
-            if !predicate_form(get(arguments, index)) { return false }
+            if !predicate_form(get(arguments, index), calls) { return false }
             index = index + 1
         }
         return true
@@ -34,7 +36,7 @@ fn predicate_form(node Node) Bool {
     if node.kind != NodeKind.Unary && node.kind != NodeKind.Binary { return false }
     var index = 0
     while index < length(node.children) {
-        if !predicate_form(child(node, index)) { return false }
+        if !predicate_form(child(node, index), calls) { return false }
         index = index + 1
     }
     true
@@ -56,26 +58,43 @@ fn predicate_scope(env Environment, owner Int, base Int) Context {
 }
 fn refinement(env Environment, owner Int, base Int) Result[Expr, Failure] {
     let predicate = predicate_node(env, owner)
-    if !predicate_form(predicate) { return Result.Err(failure(env, owner, predicate, "constraints require expressions over self and pure function calls")) }
-    let context = predicate_scope(env, owner, base)
-    let stage = staging(context, predicate)?
+    if !predicate_form(predicate, true) { return Result.Err(failure(env, owner, predicate, "constraints require expressions over self and pure function calls")) }
+    // Templates are fully typed, but hold no executable call indices.
+    expr(predicate_scope(env, owner, base), predicate, 2)
+}
+fn validate_refinement(env Environment, owner Int, base Int) Result[Bool, Failure] {
+    let predicate = predicate_node(env, owner)
+    let stage = staging(predicate_scope(env, owner, base), predicate)?
     let value = expr(stage, predicate, 2)?
     match std.loom.eval.validate(prepared(stage)?, value) {
         Result.Ok(_) => {}
         Result.Err(failed) => { return Result.Err(failure(env, owner, predicate, concat("type constraint: ", failed.message))) }
     }
-    // The stored template has no executable call indices. Each construction
-    // binds the source again into its own staging/runtime queue and self slot.
-    expr(context, predicate, 2)
+    Result.Ok(true)
 }
 fn refinements(env Environment) Result[Bool, Failure] {
+    // Make every proof-eligible template available before typing predicates
+    // with constructors/calls, then validate closures only after all templates.
+    // This makes inferred construction types independent of declaration order.
+    var pass = 0
+    while pass < 2 {
+        var index = 0
+        while index < length(env.types) {
+            let ty = get(env.types, index)
+            if ty.kind == TypeKind.Refined && predicate_form(predicate_node(env, ty.symbol), false) == (pass == 0) {
+                let predicate = refinement(env, ty.symbol, get(ty.fields, 0).ty)?
+                set(env.types, index, Type { kind = ty.kind symbol = ty.symbol arguments = ty.arguments
+                    fields = ty.fields variants = ty.variants constraint = expressions(predicate) })
+            }
+            index = index + 1
+        }
+        pass = pass + 1
+    }
     var index = 0
     while index < length(env.types) {
         let ty = get(env.types, index)
         if ty.kind == TypeKind.Refined {
-            let predicate = refinement(env, ty.symbol, get(ty.fields, 0).ty)?
-            set(env.types, index, Type { kind = ty.kind symbol = ty.symbol arguments = ty.arguments
-                fields = ty.fields variants = ty.variants constraint = expressions(predicate) })
+            discard validate_refinement(env, ty.symbol, get(ty.fields, 0).ty)?
         }
         index = index + 1
     }
@@ -150,6 +169,13 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     let input = expr(context, get(inputs, 0), -1)?
     if input.ty == target { return Result.Ok(input) }
     let value = typed(context, node, input, base)?
+    let source = get(context.env.types, input.ty)
+    let destination = get(context.env.types, target)
+    if base == 1 && source.kind == TypeKind.Refined && base_type(context.env, input.ty) == 1 &&
+        length(source.constraint) == 1 && length(destination.constraint) == 1 &&
+        implies(get(source.constraint, 0), get(destination.constraint, 0)) {
+        return Result.Ok(expression(ExprKind.Coerce, target, node, "", -1, expressions(value), value.falls))
+    }
     let known = folded(value, unknown())
     if known.ty == base {
         let checked = folded_predicate(context.env, declaration, known)?
