@@ -82,9 +82,9 @@ fn link_command(
         destination.push(output);
         command.args(["/link", "/SUBSYSTEM:CONSOLE", "/INCREMENTAL:NO", "/Brepro"]);
         command.arg(destination);
-        // LLVM objects have no Clang-generated CRT .drectve section. Match
-        // Rust's default dynamic MSVC CRT, including scalar-only executables.
-        command.args(["/DEFAULTLIB:msvcrt", "/DEFAULTLIB:oldnames"]);
+        // Native objects have no Clang-generated CRT .drectve section. Match
+        // the runtime's static MSVC CRT, including scalar-only executables.
+        command.args(["/DEFAULTLIB:libcmt", "/DEFAULTLIB:oldnames"]);
         if runtime.is_some() {
             command.args([
                 "kernel32.lib",
@@ -183,7 +183,7 @@ mod tests {
         assert_eq!(args[2], runtime.as_os_str());
         for argument in [
             "/OUT:build files/program.exe",
-            "/DEFAULTLIB:msvcrt",
+            "/DEFAULTLIB:libcmt",
             "/Brepro",
             "dbghelp.lib",
         ] {
@@ -191,7 +191,7 @@ mod tests {
         }
         let scalar = link_command(object, output, None, OsStr::new("clang-cl"), true);
         let args: Vec<_> = scalar.get_args().collect();
-        assert!(args.contains(&OsStr::new("/DEFAULTLIB:msvcrt")));
+        assert!(args.contains(&OsStr::new("/DEFAULTLIB:libcmt")));
         assert!(!args.contains(&runtime.as_os_str()));
     }
 }

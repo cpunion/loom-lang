@@ -154,9 +154,9 @@ jobs:
           $systemLibraries
           # Complete an advertised but missing dependency with a real library.
           if ($systemLibraries -match '\bxml2s\.lib\b' -and !(Test-Path "$env:LLVM_PATH/lib/xml2s.lib")) {
-            & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install 'libxml2[core]:x64-windows-static-md'
+            & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install 'libxml2[core]:x64-windows-static'
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md/lib/libxml2.lib" "$env:LLVM_PATH/lib/xml2s.lib"
+            Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static/lib/libxml2.lib" "$env:LLVM_PATH/lib/xml2s.lib"
           }
           "LLVM_SYS_221_PREFIX=$env:LLVM_PATH" >> $env:GITHUB_ENV
           "LOOM_CC=$env:LLVM_PATH/bin/clang-cl.exe" >> $env:GITHUB_ENV
@@ -180,4 +180,5 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
           LOOM_NATIVE_TIMINGS=1 LOOM_BOOTSTRAP_INPUT=target/bootstrap-input/compiler.checked bash scripts/bootstrap.sh
+          llvm-readobj --coff-imports target/debug/loom-native.exe | grep 'Name:'
           cargo test --locked --workspace

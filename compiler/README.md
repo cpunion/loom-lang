@@ -98,7 +98,10 @@ verified. Use Rust 1.88, a Visual Studio developer environment, Git Bash, and an
 LLVM 22 development package with `llvm-config.exe`, LLVM libraries, and
 `clang-cl.exe`. The [CI recipe](../.github/workflows/ci.yml) provisions the 22.1.8
 archive and supplies its missing `xml2s.lib` from a real static libxml2 build
-using the dynamic MSVC CRT, not a placeholder library.
+using the static MSVC CRT, not a placeholder library. The Windows Cargo target
+configuration and emitted program linker use the same static CRT. This matches
+the LLVM package's allocator override; mixing dynamic-CRT allocation with its
+message deallocator can crash even before IR lowering.
 
 Windows cannot use the frozen historical Unix seed directly. Use an existing
 compatible Windows compiler via `LOOM_BOOTSTRAP_COMPILER`, or export a trusted
