@@ -1,0 +1,16 @@
+test fn defer_requires_a_block_and_preserves_lexical_structure() {
+    let statements = body(child(parsed("fn f() { defer { done() } assert true\nif true { defer {} } else { defer {} } }"), 0))
+    assert length(statements.children) == 3
+    let cleanup = child(statements, 0)
+    assert cleanup.kind == NodeKind.Defer && length(cleanup.children) == 1
+    assert cleanup.span.start == 9 && cleanup.span.end == 25
+    assert child(cleanup, 0).kind == NodeKind.Block
+    assert child(cleanup, 0).span.start == 15 && child(cleanup, 0).span.end == 25
+    assert child(child(cleanup, 0), 0).kind == NodeKind.Call
+    assert child(child(child(statements, 2), 1), 0).kind == NodeKind.Defer
+    assert child(child(child(statements, 2), 2), 0).kind == NodeKind.Defer
+    assert rejected("fn defer() {}").message == "expected a name"
+    assert rejected("fn f() { let defer = 1 }").message == "expected a name"
+    let unbraced = rejected("fn f() { defer done() }")
+    assert unbraced.message == "expected '{'" && unbraced.span.start == 15
+}

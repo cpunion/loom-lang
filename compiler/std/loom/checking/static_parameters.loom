@@ -108,7 +108,8 @@ fn static_position(context Context, options List[Int], position Int) Bool {
 fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] {
     let stage = staging(context, node)?
     let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
-        locals = stage.locals bindings = stage.bindings head = stage.head emit = false }
+        locals = stage.locals bindings = stage.bindings head = stage.head
+        cleanups = stage.cleanups cleanup_head = stage.cleanup_head emit = false }
     expr(validation, node, expected)
 }
 fn static_argument(context Context, node Node, checked Expr, expected Int) Result[StaticValue, Failure] {

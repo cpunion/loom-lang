@@ -16,10 +16,11 @@ import std.result.Result
 
 fn statement_kind(kind NodeKind) Bool {
     kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign || kind == NodeKind.Return ||
-    kind == NodeKind.Assert || kind == NodeKind.Discard || kind == NodeKind.While || kind == NodeKind.Destructure
+    kind == NodeKind.Assert || kind == NodeKind.Discard || kind == NodeKind.While || kind == NodeKind.Destructure || kind == NodeKind.Defer
 }
 fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
     let kind = node.kind
+    if kind == NodeKind.Defer { return registered_cleanup(context, node) }
     if kind == NodeKind.Destructure { return destructure(context, node, boundary) }
     if kind == NodeKind.Let || kind == NodeKind.Var {
         let annotation = if length(node.children) == 2 { context_type(context, child(node, 0))? } else { -1 }
@@ -43,7 +44,7 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
         if length(node.children) == 0 {
             if context.signature.result != 0 { return Result.Err(error(context, node, "return requires a value")) }
         } else { push(values, expr(context, child(node, 0), context.signature.result)?) }
-        expression(ExprKind.Return, 0, node, "", -1, values, false)
+        returning(context, node, values)
     } else {
     if kind == NodeKind.Assert {
         let value = expr(context, child(node, 0), 2)?
@@ -84,7 +85,8 @@ fn block(context Context, node Node, expected Int, enforce Bool) Result[Expr, Fa
         index = index + 1
     }
     let value = expression(ExprKind.Block, output, node, "", -1, values, falls)
-    if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+    let checked = if enforce { typed(context, node, value, expected)? } else { value }
+    Result.Ok(cleaned(current, node, context.cleanup_head, checked))
 }
 fn conditional(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let condition = expr(context, child(node, 0), 2)?
@@ -227,7 +229,7 @@ fn propagated(context Context, node Node, expected Int) Result[Expr, Failure] {
     push(arms, Arm { variant = shape.ok bindings = ints(success) whole = -1 body = expressions(ok) })
     let error_value = atom(ExprKind.Local, error_type, node, success + 1)
     let rejected = expression(ExprKind.Variant, context.signature.result, node, "", shape.err, expressions(error_value), true)
-    let exit = expression(ExprKind.Return, 0, node, "", -1, expressions(rejected), false)
+    let exit = returning(context, node, expressions(rejected))
     let body = expression(ExprKind.Block, 0, node, "", -1, expressions(exit), false)
     push(arms, Arm { variant = shape.err bindings = ints(success + 1) whole = -1 body = expressions(body) })
     Result.Ok(Expr { kind = ExprKind.Match ty = payload span = node.span text = "" index = -1 children = expressions(value) arms = arms falls = value.falls })

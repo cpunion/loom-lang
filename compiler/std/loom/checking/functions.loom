@@ -158,7 +158,8 @@ fn function(env Environment, id Int, arguments List[Int], constants List[StaticV
     let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
     let current = signature(env, id, arguments, item.node)?
     var context = Context { env = env signature = current arguments = arguments
-        constants = constants locals = new[Local]() bindings = new[Binding]() head = -1 emit = emit }
+        constants = constants locals = new[Local]() bindings = new[Binding]() head = -1
+        cleanups = new[Cleanup]() cleanup_head = -1 emit = emit }
     let parameters = group(item.node, NodeKind.Parameters)
     let filtered = has_static(current)
     let runtime_params = if filtered { new[Int]() } else { current.params }

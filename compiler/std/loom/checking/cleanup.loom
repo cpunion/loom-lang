@@ -1,0 +1,59 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Local
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+fn cleanup_form(context Context, node Node) Result[Bool, Failure] {
+    if node.kind == NodeKind.Return || node.kind == NodeKind.Try || node.kind == NodeKind.Defer {
+        return Result.Err(error(context, node, "defer blocks cannot contain return, ? or another defer"))
+    }
+    var index = 0
+    while index < length(node.children) {
+        discard cleanup_form(context, child(node, index))?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn registered_cleanup(context Context, node Node) Result[Step, Failure] {
+    let source = child(node, 0)
+    discard cleanup_form(context, source)?
+    // Binding resolution happens now, but Local reads execute at scope exit.
+    let body = block(context, source, 0, true)?
+    let head = length(context.cleanups)
+    push(context.cleanups, Cleanup { body = body previous = context.cleanup_head })
+    let next = Context { env = context.env signature = context.signature arguments = context.arguments constants = context.constants
+        locals = context.locals bindings = context.bindings head = context.head cleanups = context.cleanups cleanup_head = head emit = context.emit }
+    Result.Ok(Step { context = next expression = expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true) })
+}
+
+// The value is evaluated once before cleanup. A hidden slot preserves scalar or
+// managed aggregate snapshots when cleanup rebinds the original variable.
+fn cleaned(context Context, node Node, boundary Int, value Expr) Expr {
+    if context.cleanup_head == boundary || !value.falls { return value }
+    let values = new[Expr]()
+    var saved = -1
+    if value.ty == 0 { push(values, value) } else {
+        saved = length(context.locals)
+        push(context.locals, Local { name = "" ty = value.ty mutable = false })
+        push(values, expression(ExprKind.Let, 0, node, "", saved, expressions(value), true))
+    }
+    var head = context.cleanup_head
+    while head != boundary {
+        let cleanup = get(context.cleanups, head)
+        push(values, cleanup.body)
+        head = cleanup.previous
+    }
+    if saved >= 0 { push(values, atom(ExprKind.Local, value.ty, node, saved)) }
+    expression(ExprKind.Block, value.ty, node, "", -1, values, all_fall(values))
+}
+fn returning(context Context, node Node, values List[Expr]) Expr {
+    if context.cleanup_head < 0 { return expression(ExprKind.Return, 0, node, "", -1, values, false) }
+    let value = if length(values) == 0 { expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true) } else { get(values, 0) }
+    expression(ExprKind.Return, 0, node, "", -1, expressions(cleaned(context, node, -1, value)), false)
+}

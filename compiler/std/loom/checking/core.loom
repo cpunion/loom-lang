@@ -51,6 +51,7 @@ record Environment {
     uses List[SlotUse]
 }
 record Binding { name Text local Int constant Int previous Int }
+record Cleanup { body Expr previous Int }
 record Context {
     env Environment
     signature Signature
@@ -59,6 +60,8 @@ record Context {
     locals List[Local]
     bindings List[Binding]
     head Int
+    cleanups List[Cleanup]
+    cleanup_head Int
     emit Bool
 }
 record Step { context Context expression Expr }
@@ -141,7 +144,8 @@ fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Fail
 }
 fn context_at(context Context, head Int) Context {
     Context { env = context.env signature = context.signature arguments = context.arguments
-        constants = context.constants locals = context.locals bindings = context.bindings head = head emit = context.emit }
+        constants = context.constants locals = context.locals bindings = context.bindings head = head
+        cleanups = context.cleanups cleanup_head = context.cleanup_head emit = context.emit }
 }
 fn lookup(context Context, value Text) Int {
     var head = context.head
