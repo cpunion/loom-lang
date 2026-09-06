@@ -1,4 +1,4 @@
-import frontend.typed.Function
+import std.loom.typed.Function
 import std.list.new
 import std.list.push
 import std.list.get

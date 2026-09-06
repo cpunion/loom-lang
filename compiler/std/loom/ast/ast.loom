@@ -10,7 +10,7 @@ pub enum NodeKind {
     TypeParameters Parameters Parameter Type TypeArguments Arguments ReturnType
     Field Variant Requires Ensures Block Let Var Assign Return Assert Discard While
     Integer Text Bool Name Call Construct Unary Binary Select Try
-    Match Arm Pattern Bindings Wildcard If
+    Match Arm Pattern Bindings Wildcard If Comptime
 }
 
 pub record Node {

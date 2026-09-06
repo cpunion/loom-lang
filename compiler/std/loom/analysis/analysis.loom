@@ -1,0 +1,167 @@
+import std.loom.ast.Node
+import std.loom.project.Project
+import std.loom.project.SourceFile
+import std.loom.project.qualify
+import std.loom.binding.Program
+import std.loom.binding.Failure
+import std.loom.binding.bind
+import std.loom.checking.check
+import std.loom.typed.Program
+import std.loom.typed.Expr
+import std.loom.typed.TypeKind
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+import std.text.concat
+import std.int.to_text
+import std.result.Result
+
+// Results own a detached source/AST snapshot. Treat all result lists as read-only;
+// IDs belong to this analysis, not to later analyses or persistent declarations.
+pub record Analysis { bindings std.loom.binding.Program program std.loom.typed.Program }
+pub record Expression { function Int expression Expr }
+
+fn copy_node(node Node) Node {
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, copy_node(get(node.children, index)))
+        index = index + 1
+    }
+    Node { kind = node.kind value = node.value span = node.span children = children }
+}
+fn snapshot(project Project) List[SourceFile] {
+    let files = new[SourceFile]()
+    var index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        push(files, SourceFile { package = file.package path = file.path text = file.text
+            tree = copy_node(file.tree) test_only = file.test_only trusted_std = file.trusted_std })
+        index = index + 1
+    }
+    files
+}
+
+// Uses the compiler's binding, typing and proof checks, without a CLI or backend.
+pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
+    let bindings = bind(snapshot(project), project.root, tests)?
+    Result.Ok(Analysis { bindings = bindings program = check(bindings)? })
+}
+
+fn same_node(left Node, right Node) Bool {
+    if left.kind != right.kind || left.value != right.value ||
+        left.span.start != right.span.start || left.span.end != right.span.end ||
+        length(left.children) != length(right.children) { return false }
+    var index = 0
+    while index < length(left.children) {
+        if !same_node(get(left.children, index), get(right.children, index)) { return false }
+        index = index + 1
+    }
+    true
+}
+
+// This checks the supplied project, not the filesystem. Reload first to detect
+// disk edits. Comparing ASTs as well as text also detects in-memory tree edits.
+pub fn is_current(analysis Analysis, project Project, tests Bool) Bool {
+    let saved = analysis.bindings
+    if saved.root != project.root || saved.tests != tests ||
+        length(saved.files) != length(project.files) { return false }
+    var index = 0
+    while index < length(saved.files) {
+        let left = get(saved.files, index)
+        let right = get(project.files, index)
+        if left.package != right.package || left.path != right.path || left.text != right.text ||
+            left.test_only != right.test_only || left.trusted_std != right.trusted_std ||
+            !same_node(left.tree, right.tree) { return false }
+        index = index + 1
+    }
+    true
+}
+
+// Type IDs must come from this analysis. () labels the internal no-value type;
+// abstract parameter labels are positional, not recovered source spellings.
+pub fn type_name(analysis Analysis, ty Int) Text {
+    let value = get(analysis.program.types, ty)
+    if value.kind == TypeKind.Unit { return "()" }
+    if value.kind == TypeKind.Int { return "Int" }
+    if value.kind == TypeKind.Bool { return "Bool" }
+    if value.kind == TypeKind.Text { return "Text" }
+    if value.kind == TypeKind.Bytes { return "Bytes" }
+    if value.kind == TypeKind.Parameter { return concat("T", to_text(value.symbol)) }
+    var label = "List"
+    if value.kind != TypeKind.List {
+        let symbol = get(analysis.bindings.symbols, value.symbol)
+        label = qualify(get(analysis.bindings.files, symbol.file).package, symbol.name)
+    }
+    if length(value.arguments) > 0 {
+        label = concat(label, "[")
+        var index = 0
+        while index < length(value.arguments) {
+            if index > 0 { label = concat(label, ", ") }
+            label = concat(label, type_name(analysis, get(value.arguments, index)))
+            index = index + 1
+        }
+        label = concat(label, "]")
+    }
+    label
+}
+
+fn covering(value Expr, offset Int, found List[Expr]) {
+    if offset < value.span.start || offset >= value.span.end { return }
+    var index = 0
+    while index < length(value.children) {
+        covering(get(value.children, index), offset, found)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var child = 0
+        while child < length(arm.body) {
+            covering(get(arm.body, child), offset, found)
+            child = child + 1
+        }
+        index = index + 1
+    }
+    if length(found) == 0 { push(found, value) } else {
+        let previous = get(found, 0)
+        if value.span.end - value.span.start <= previous.span.end - previous.span.start {
+            set(found, 0, value)
+        }
+    }
+}
+
+// One smallest covering expression per reachable concrete function instance;
+// Equal spans prefer the outer resolved expression (for selections/coercions).
+// Offsets are half-open UTF-8 byte offsets.
+// Call.index addresses program.functions, not declaration-binding candidates.
+// Local/Let/Assign.index addresses that function's locals (including inferred ty).
+// Uninstantiated templates and signature-only positions have no typed result.
+pub fn expressions_at(analysis Analysis, file Int, offset Int) List[Expression] {
+    let matches = new[Expression]()
+    var index = 0
+    while index < length(analysis.program.functions) {
+        let function = get(analysis.program.functions, index)
+        if get(analysis.bindings.symbols, function.symbol).file == file {
+            let found = new[Expr]()
+            covering(function.body, offset, found)
+            var clause = 0
+            while clause < length(function.preconditions) {
+                covering(get(function.preconditions, clause), offset, found)
+                clause = clause + 1
+            }
+            clause = 0
+            while clause < length(function.postconditions) {
+                covering(get(function.postconditions, clause), offset, found)
+                clause = clause + 1
+            }
+            if length(found) > 0 {
+                push(matches, Expression { function = index expression = get(found, 0) })
+            }
+        }
+        index = index + 1
+    }
+    matches
+}

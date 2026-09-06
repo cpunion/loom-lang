@@ -47,8 +47,24 @@ validate declarations/imports, and expose symbols and visible name candidates.
 An ordinary project inspector accepts a package path and `std` directory,
 reports root declarations and source locations, and handles load/binding errors
 without a compiler subprocess. Binding is not type checking or final overload
-selection; its indices belong to that program only. Stable schemas, lossless
-editing, typed queries, and metaprogramming remain in the
+selection; its indices belong to that program only. The additional
+[typed analysis library](../../compiler/loom/README.md#public-typed-analysis)
+shares the checker/prover, returning inferred expression types and concrete call
+targets. Its ordinary semantic example uses only in-memory source and detects
+snapshot changes. Queries cover concrete instances; snapshot comparison does
+not monitor files or provide incremental reuse.
+
+[Compile-time execution](../../compiler/README.md#compile-time-execution) uses a
+bounded Loom evaluator over the native compiler's checked model. Explicit
+blocks support pure calls, local mutation, loops/recursion, and scalar or
+record/enum results; shared lists/bytes can be used internally but cannot yet
+escape as results. `comptime if` selects code using a computed Boolean or type
+equality/inequality. Runtime captures, external effects, faults, and exhausted
+budgets reject. Scalar constraint folding shares this evaluator; required
+postconditions still use the prover, with no evaluation-as-proof fallback.
+
+Stable schemas, lossless editing, variadics, typed macros, broader compile-time
+reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 
 Normal compiler iteration can use a [single development rebuild](../../compiler/README.md#build-and-try-it);

@@ -125,8 +125,23 @@ package/import closure and reports declarations and visible overload candidates
 without a compiler subprocess. These are program-local indices and name
 candidates, not final call resolution or checked expression types.
 
-Next expose typed semantic queries; typed metaprogramming later reuses this
-infrastructure. Public analysis does not freeze the schemas or complete
+The opt-in `std.loom.analysis` layer now exposes checked expression types and
+concrete call targets from a detached source snapshot. An independent
+[semantic consumer](compiler/examples/semantic/main.loom) uses the same checker
+and required prover without the compiler CLI/backend. Queries cover concrete
+instances, not every template or signature position; snapshot checks are not
+incremental reuse.
+
+Bounded [compile-time execution](compiler/README.md#compile-time-execution) now
+uses the same checked model and a Loom-written evaluator. Explicit blocks
+support pure calls, local loops/recursion, and value results; `comptime if`
+selects one branch, including type equality/inequality guards. Shared-container
+results, variadics, typed macros, and broader reflection remain incomplete.
+Execution never substitutes for a required proof. Type predicates and contracts
+still use the documented call-free proof fragment.
+
+Typed metaprogramming later reuses this infrastructure. Public analysis does not
+freeze the schemas or complete
 trivia-preserving editing, persistent identities, incremental reuse, or semantic
 version-control tooling.
 

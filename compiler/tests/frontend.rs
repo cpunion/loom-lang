@@ -71,8 +71,10 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/loom/binding",
         "std/loom/manifest",
         "std/loom/project",
-        "loom/proof",
-        "loom/checking",
+        "std/loom/proof",
+        "std/loom/checking",
+        "std/loom/analysis",
+        "std/loom/eval",
         "loom/artifact",
         "std/int",
         "std/text",
@@ -86,6 +88,8 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/data",
         "examples/syntax",
         "examples/project",
+        "examples/semantic",
+        "examples/comptime",
     ] {
         success(&source_compiler(
             stage3,
@@ -97,35 +101,36 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         &["run", compiler.join("examples/data").to_str().unwrap()],
     ));
 
-    // An ordinary user package imports syntax APIs without the compiler module.
-    let syntax = compiler.join("examples/syntax");
-    let syntax_binary = temp.path().join("syntax");
-    let syntax_ir = temp.path().join("syntax.ll");
-    success(&source_compiler(
-        stage3,
-        &[
-            "build",
-            syntax.to_str().unwrap(),
-            "--output",
-            syntax_binary.to_str().unwrap(),
-            "--emit-ir",
-            syntax_ir.to_str().unwrap(),
-        ],
-    ));
-    success(&Command::new(syntax_binary).output().unwrap());
-    let ir = fs::read_to_string(syntax_ir).unwrap();
-    // The example deliberately prints its result; syntax itself needs neither
-    // filesystem discovery/input nor compiler/process invocation.
-    for absent in [
-        "loom_rt_process_arg",
-        "loom_rt_process_run",
-        "loom_rt_directory_",
-        "loom_rt_path_",
-        "loom_rt_file_open",
-        "loom_rt_file_read",
-        "loom_rt_file_create",
-    ] {
-        assert!(!ir.contains(absent), "syntax API leaked {absent}");
+    // Ordinary in-memory syntax/semantic clients need no compiler module or I/O
+    // discovery. These examples deliberately print their results.
+    for example in ["syntax", "semantic"] {
+        let package = compiler.join("examples").join(example);
+        let binary = temp.path().join(example);
+        let ir = temp.path().join(format!("{example}.ll"));
+        success(&source_compiler(
+            stage3,
+            &[
+                "build",
+                package.to_str().unwrap(),
+                "--output",
+                binary.to_str().unwrap(),
+                "--emit-ir",
+                ir.to_str().unwrap(),
+            ],
+        ));
+        success(&Command::new(binary).output().unwrap());
+        let ir = fs::read_to_string(ir).unwrap();
+        for absent in [
+            "loom_rt_process_arg",
+            "loom_rt_process_run",
+            "loom_rt_directory_",
+            "loom_rt_path_",
+            "loom_rt_file_open",
+            "loom_rt_file_read",
+            "loom_rt_file_create",
+        ] {
+            assert!(!ir.contains(absent), "{example} API leaked {absent}");
+        }
     }
 
     // Source checks do not need a native tool. Compare selected type/proof

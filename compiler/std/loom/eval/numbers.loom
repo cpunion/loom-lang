@@ -1,0 +1,56 @@
+import std.loom.typed.Expr
+import std.text.byte
+import std.text.length
+import std.result.Result
+
+fn integer(expr Expr) Result[Int, Failure] {
+    let text = expr.text
+    if length(text) == 0 { return Result.Err(failure(expr, "invalid checked integer")) }
+    let negative = byte(text, 0) == 45
+    var index = if negative { 1 } else { 0 }
+    if index == length(text) { return Result.Err(failure(expr, "invalid checked integer")) }
+    let limit = if negative { -9223372036854775808 } else { -9223372036854775807 }
+    var value = 0
+    while index < length(text) {
+        let digit = byte(text, index) - 48
+        if digit < 0 || digit > 9 || value < limit / 10 {
+            return Result.Err(failure(expr, "compile-time integer overflow"))
+        }
+        value = value * 10
+        if value < limit + digit { return Result.Err(failure(expr, "compile-time integer overflow")) }
+        value = value - digit
+        index = index + 1
+    }
+    Result.Ok(if negative { value } else { -value })
+}
+fn arithmetic(expr Expr, a Int, b Int) Result[Value, Failure] {
+    let operator = expr.text
+    if operator == "==" { return Result.Ok(flag(a == b)) }
+    if operator == "!=" { return Result.Ok(flag(a != b)) }
+    if operator == "<" { return Result.Ok(flag(a < b)) }
+    if operator == "<=" { return Result.Ok(flag(a <= b)) }
+    if operator == ">" { return Result.Ok(flag(a > b)) }
+    if operator == ">=" { return Result.Ok(flag(a >= b)) }
+    let low = -9223372036854775808
+    let high = 9223372036854775807
+    let overflow = failure(expr, "compile-time integer overflow")
+    if operator == "+" {
+        if (b > 0 && a > high - b) || (b < 0 && a < low - b) { return Result.Err(overflow) }
+        return Result.Ok(number(a + b))
+    }
+    if operator == "-" {
+        if (b < 0 && a > high + b) || (b > 0 && a < low + b) { return Result.Err(overflow) }
+        return Result.Ok(number(a - b))
+    }
+    if operator == "*" {
+        if a > 0 && ((b > 0 && a > high / b) || (b < 0 && b < low / a)) { return Result.Err(overflow) }
+        if a < 0 && ((b > 0 && a < low / b) || (b < 0 && a < high / b)) { return Result.Err(overflow) }
+        return Result.Ok(number(a * b))
+    }
+    if operator == "/" || operator == "%" {
+        if b == 0 { return Result.Err(failure(expr, "compile-time division by zero")) }
+        if a == low && b == -1 { return Result.Err(overflow) }
+        return Result.Ok(number(if operator == "/" { a / b } else { a % b }))
+    }
+    Result.Err(failure(expr, "unsupported compile-time integer operator"))
+}

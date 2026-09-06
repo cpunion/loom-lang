@@ -1,0 +1,60 @@
+import std.list.new
+import std.list.push
+import std.list.set
+import std.list.get
+import std.int.to_text
+
+type Positive = Int where self > 0
+
+fn fibonacci(n Int) Int {
+    if n < 2 { n } else { fibonacci(n - 1) + fibonacci(n - 2) }
+}
+fn triangular(n Int) Int {
+    var total = 0
+    var i = 0
+    while i <= n { total = total + i
+        i = i + 1 }
+    total
+}
+fn shared_work() Int {
+    let values = new[Int]()
+    push(values, 2)
+    push(values, 3)
+    let alias = values
+    set(alias, 0, 7)
+    get(values, 0) + get(values, 1)
+}
+record Summary { total Int label Text }
+enum Computed { Ready(Summary) Empty }
+fn summary() Computed {
+    Computed.Ready(Summary { total = shared_work() label = to_text(triangular(5)) })
+}
+
+// Only the selector runs at compile time here; the selected body accepts a
+// normal runtime value. The unselected body imposes no requirements on T.
+fn adjusted[T](value T) Int {
+    comptime if T == Int { value + 1 } else { 0 }
+}
+fn only_integer[T](value T) Int {
+    comptime if T == Int { value } else { unavailable_for_other_types() }
+}
+fn main() {
+    assert comptime { fibonacci(10) } == 55
+    assert comptime { triangular(100) } == 5050
+    let positive Positive = Positive(comptime { triangular(4) })
+    assert positive == 10
+    assert comptime { shared_work() } == 10
+    let prepared = comptime { summary() }
+    match prepared {
+        Computed.Ready(value) => { assert value.total == 10 && value.label == "15" }
+        Computed.Empty => { assert false }
+    }
+    assert adjusted(8) == 9 && adjusted(true) == 0
+    assert only_integer(4) == 4
+    comptime if false { unknown_unselected_name() } else { assert true }
+}
+
+test fn compile_time_and_runtime_agree() {
+    let fixed = comptime { fibonacci(10) }
+    assert fixed == fibonacci(10)
+}

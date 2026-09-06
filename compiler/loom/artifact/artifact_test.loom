@@ -1,4 +1,4 @@
-import frontend.typed.Function
+import std.loom.typed.Function
 import std.list.new
 
 test fn counted_fields_preserve_utf8_newlines_and_nuls() {

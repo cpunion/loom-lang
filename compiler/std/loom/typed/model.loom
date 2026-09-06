@@ -15,7 +15,7 @@ pub record Type {
 pub record Local { name Text ty Int mutable Bool }
 pub enum ExprKind {
     Integer Bool Text Local Unary Binary Call Intrinsic Record Field Variant
-    Block Let Assign Return Assert Discard While If Match Coerce
+    Block Let Assign Return Assert Discard While If Match Coerce Deferred
 }
 pub record Expr {
     kind ExprKind

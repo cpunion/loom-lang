@@ -64,7 +64,7 @@ fn reserved(value Text) Bool {
     value == "test" || value == "import" || value == "let" || value == "var" ||
     value == "return" || value == "assert" || value == "discard" || value == "while" ||
     value == "if" || value == "else" || value == "requires" || value == "ensures" ||
-    value == "true" || value == "false"
+    value == "true" || value == "false" || value == "comptime"
 }
 fn name(cursor Cursor) Result[Step, Diagnostic] {
     if !at(cursor, Kind.Name) || reserved(token(cursor).value) {

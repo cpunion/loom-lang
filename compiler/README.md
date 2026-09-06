@@ -30,7 +30,7 @@ target/loom build compiler/examples/scalar \
 target/scalar
 target/loom test compiler/examples/scalar
 target/loom run compiler/examples/data
-target/loom test compiler/loom/checking
+target/loom test compiler/std/loom/checking
 target/loom test compiler/std/result
 target/loom test compiler/std/list
 LOOM_GC_STRESS=1 compiler/std/list/target/tests
@@ -185,9 +185,54 @@ must itself be defined within `Int` bounds.
 
 Calls, loops, nonlinear arithmetic and division in a function requiring proof
 are outside this first proof fragment. Contracts themselves are call-free until
-purity analysis is available. Solver work is bounded; exhaustion is a diagnostic,
+the prover supports pure calls. Solver work is bounded; exhaustion is a diagnostic,
 not permission to trust an obligation. These are normal-return guarantees, not
 proofs of termination or absence of runtime faults.
+
+## Compile-time execution
+
+`comptime { ... }` evaluates a complete expression during checking. In contrast,
+`comptime if` evaluates only its condition and checks the selected body as normal
+code, which may use runtime parameters:
+
+```loom
+fn adjusted[T](value T) Int {
+    comptime if T == Int { value + 1 } else { 0 }
+}
+
+fn main() {
+    let count = comptime {
+        var n = 0
+        while n < 3 { n = n + 1 }
+        n
+    }
+    assert adjusted(count) == 4
+    assert adjusted("text") == 0
+}
+```
+
+The [comptime example](examples/comptime/main.loom) also exercises ordinary pure
+function calls, recursion, local mutation, records/enums, and fresh list aliases.
+`Bool`, `Int`, `Text`, and records/enums containing supported values can become
+native constants. Fresh lists and byte buffers can be used internally, but
+results cannot yet contain shared `List` or `Bytes` storage.
+
+Explicit blocks cannot read or write surrounding runtime locals, or return from
+the enclosing function, including through `?`; called functions may return
+normally. I/O and other external inputs are disallowed. Calls and loops are
+bounded by work, depth, and allocation limits; faults or exhausted limits are
+diagnostics, never a fallback to runtime execution.
+
+Every branch must parse, but unselected `comptime if` branches impose no type or
+call requirements. Type guards currently compare unshadowed type names with
+`==` or `!=`. An unresolved generic choice requires a contextual result type and
+waits for concrete instantiation; code outside that choice is still checked.
+
+The Loom-written evaluator consumes the same checked model as native lowering;
+scalar constraint folding uses this engine too. Evaluation is not proof:
+declared postconditions still require the existing prover, and pure function
+calls in type predicates or contracts remain unsupported. Variadics, typed
+macros, and broader compile-time reflection remain later work.
 
 ## Next boundary
 
@@ -201,9 +246,9 @@ It checks its own sources and builds subsequent native stages. The compiler and
 independent user packages share the public
 [`std.loom` syntax libraries](loom/README.md#public-syntax-libraries) and opt-in
 [project/binding APIs](loom/README.md#public-project-and-binding-libraries).
-Typed queries remain a separate
-[library acceptance gate](../ROADMAP.md#n2--complete-the-language-and-source-library);
-declaration candidates do not imply final overload resolution or checked types.
+[Typed analysis](loom/README.md#public-typed-analysis) adds checked expression
+types and concrete call targets without invoking the compiler CLI or backend;
+declaration binding alone still provides only name candidates.
 
 The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;
@@ -221,7 +266,7 @@ old-language support policy. Stage numbers denote bootstrap generations, not
 language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Mutable record fields, broader proofs, moving GC,
-lexical resources, Tasks, metaprogramming,
+lexical resources, Tasks, complete compile-time programming,
 dependency resolution, lockfile/cache behavior, deployment and semantic-change
 tools remain outside this slice. No complete language or `std` claim is made.
 

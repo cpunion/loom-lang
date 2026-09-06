@@ -1,0 +1,128 @@
+import std.loom.parser.parse
+import std.loom.source.Span
+import std.loom.typed.ExprKind
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+import std.text.length
+import std.text.slice
+import std.text.concat
+import std.result.Result
+
+fn input(text Text) Project {
+    let tree = match parse(text) {
+        Result.Ok(tree) => tree
+        Result.Err(_) => { assert false
+            get(input("").files, 0).tree }
+    }
+    let files = new[SourceFile]()
+    push(files, SourceFile { package = "app" path = "main.loom" text = text tree = tree
+        test_only = false trusted_std = false })
+    Project { files = files root = "app" }
+}
+fn accepted(project Project) Analysis {
+    match analyze(project, false) {
+        Result.Ok(analysis) => analysis
+        Result.Err(_) => { assert false
+            accepted(project) }
+    }
+}
+fn offset(text Text, fragment Text) Int {
+    var index = 0
+    while index + length(fragment) <= length(text) {
+        if slice(text, index, index + length(fragment)) == fragment { return index }
+        index = index + 1
+    }
+    assert false
+    -1
+}
+
+test fn inferred_local_types_and_qualified_generic_names() {
+    let text = "record Box[T] { value T }\nfn main() {\nlet count = 3\nassert count == 3\nlet boxed = Box { value = count }\nassert boxed.value == 3\ndiscard boxed\n}"
+    let project = input(text)
+    let analysis = accepted(project)
+    assert is_current(analysis, project, false)
+    let local = get(expressions_at(analysis, 0, offset(text, "count ==")), 0)
+    assert local.expression.kind == ExprKind.Local
+    assert type_name(analysis, local.expression.ty) == "Int"
+    let function = get(analysis.program.functions, local.function)
+    assert get(function.locals, local.expression.index).name == "count"
+    assert get(function.locals, local.expression.index).ty == local.expression.ty
+    let boxed = get(expressions_at(analysis, 0, offset(text, "discard boxed") + 8), 0)
+    assert type_name(analysis, boxed.expression.ty) == "app.Box[Int]"
+    let field = get(expressions_at(analysis, 0, offset(text, "boxed.value")), 0)
+    assert field.expression.kind == ExprKind.Field
+    assert type_name(analysis, field.expression.ty) == "Int"
+    assert length(expressions_at(analysis, 0, offset(text, "fn main"))) == 0
+    assert length(expressions_at(analysis, 0, length(text))) == 0
+}
+
+test fn snapshots_detect_metadata_text_and_nested_ast_edits() {
+    let project = input("fn main() { let count = 3\nassert count == 3 }")
+    let analysis = accepted(project)
+    assert !is_current(analysis, project, true)
+    assert !is_current(analysis, Project { files = project.files root = "other" }, false)
+    let file = get(project.files, 0)
+    let declaration = get(file.tree.children, 0)
+    let body = get(declaration.children, length(declaration.children) - 1)
+    let statement = get(body.children, 0)
+    set(body.children, 0, Node { kind = statement.kind value = "changed"
+        span = statement.span children = statement.children })
+    assert !is_current(analysis, project, false)
+    let saved = get(get(analysis.bindings.files, 0).tree.children, 0)
+    let saved_body = get(saved.children, length(saved.children) - 1)
+    assert get(saved_body.children, 0).value == "count"
+    set(body.children, 0, Node { kind = statement.kind value = statement.value
+        span = Span { start = statement.span.start end = statement.span.end + 1 } children = statement.children })
+    assert !is_current(analysis, project, false)
+    set(body.children, 0, statement)
+    assert is_current(analysis, project, false)
+    set(project.files, 0, SourceFile { package = file.package path = "moved.loom" text = file.text
+        tree = file.tree test_only = file.test_only trusted_std = file.trusted_std })
+    assert !is_current(analysis, project, false)
+    set(project.files, 0, SourceFile { package = file.package path = file.path text = concat(file.text, "\n")
+        tree = file.tree test_only = file.test_only trusted_std = file.trusted_std })
+    assert !is_current(analysis, project, false)
+    assert get(analysis.bindings.files, 0).text == file.text
+    set(project.files, 0, file)
+    assert is_current(analysis, project, false)
+    push(project.files, file)
+    assert !is_current(analysis, project, false)
+    assert length(analysis.bindings.files) == 1
+}
+
+test fn calls_resolve_overloads_and_each_concrete_generic_instance() {
+    let text = "fn identity[T](x T) T { x }\nfn unused[T](x T) T { x }\nfn pick(x Int) Int { x }\nfn pick(x Bool) Bool { x }\nfn main() {\nassert pick(2) == 2\nassert pick(true)\nassert identity(2) == 2\nassert identity(true)\n}"
+    let analysis = accepted(input(text))
+    let int_call = get(expressions_at(analysis, 0, offset(text, "pick(2)")), 0).expression
+    let bool_call = get(expressions_at(analysis, 0, offset(text, "pick(true)")), 0).expression
+    assert int_call.kind == ExprKind.Call && bool_call.kind == ExprKind.Call
+    let int_target = get(analysis.program.functions, int_call.index)
+    let bool_target = get(analysis.program.functions, bool_call.index)
+    assert int_target.symbol != bool_target.symbol
+    assert type_name(analysis, int_target.result) == "Int"
+    assert type_name(analysis, bool_target.result) == "Bool"
+    let generic = get(expressions_at(analysis, 0, offset(text, "identity(true)")), 0).expression
+    assert generic.kind == ExprKind.Call
+    let target = get(analysis.program.functions, generic.index)
+    assert type_name(analysis, get(target.arguments, 0)) == "Bool"
+    let instances = expressions_at(analysis, 0, offset(text, "{ x }") + 2)
+    assert length(instances) == 2
+    let first = get(instances, 0)
+    let second = get(instances, 1)
+    assert first.function != second.function
+    assert first.expression.kind == ExprKind.Local && second.expression.kind == ExprKind.Local
+    assert type_name(analysis, first.expression.ty) == "Int"
+    assert type_name(analysis, second.expression.ty) == "Bool"
+    assert length(expressions_at(analysis, 0, offset(text, "fn unused") + 22)) == 0
+}
+
+test fn semantic_failures_keep_source_diagnostics() {
+    match analyze(input("fn main() { assert 1 }"), false) {
+        Result.Err(failure) => { assert failure.source == 0
+            assert failure.diagnostic.span.start == 19 }
+        Result.Ok(_) => { assert false }
+    }
+}

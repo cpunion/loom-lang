@@ -1,0 +1,190 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Local
+import std.loom.typed.Function
+import std.loom.typed.Program
+import std.loom.typed.TypeKind
+import std.loom.eval.Value
+import std.loom.eval.evaluate
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.int.to_text
+import std.result.Result
+
+fn abstract_context(context Context) Bool {
+    var index = 0
+    while index < length(context.arguments) {
+        if !concrete(context.env, get(context.arguments, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+fn parameter_name(context Context, name Text) Bool {
+    let parameters = group(symbol(context.env, context.signature.symbol).node, NodeKind.TypeParameters)
+    var index = 0
+    while index < length(parameters) {
+        if name == get(parameters, index).value { return true }
+        index = index + 1
+    }
+    false
+}
+fn depends_on_type(context Context, node Node) Bool {
+    if node.kind == NodeKind.Type && parameter_name(context, node.value) { return true }
+    if node.kind == NodeKind.Binary && (node.value == "==" || node.value == "!=") &&
+        type_operand(context, child(node, 0)) && type_operand(context, child(node, 1)) &&
+        (parameter_name(context, child(node, 0).value) || parameter_name(context, child(node, 1).value)) { return true }
+    var index = 0
+    while index < length(node.children) {
+        if depends_on_type(context, child(node, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+
+// This is an unknown check-only obligation, never an invented constant or an
+// unreachable branch. The prover rejects it when a required proof needs it.
+fn deferred(context Context, node Node, expected Int) Result[Expr, Failure] {
+    if context.emit { return Result.Err(error(context, node, "compile-time selection must be determined for this instance")) }
+    if expected < 0 { return Result.Err(error(context, node, "type-dependent comptime expression needs an explicit result type")) }
+    Result.Ok(expression(ExprKind.Deferred, expected, node, "", -1, new[Expr](), true))
+}
+fn staging(context Context, node Node) Result[Context, Failure] {
+    if context.env.stage_depth >= 32 {
+        return Result.Err(error(context, node, "compile-time staging depth exceeded; check for a dependency cycle"))
+    }
+    // Compile-time call targets never enter the runtime reachability queue.
+    let env = Environment { source = context.env.source types = context.env.types signatures = context.env.signatures
+        pending = new[Instance]() stage_depth = context.env.stage_depth + 1 }
+    let locals = new[Local]()
+    var index = 0
+    while index < length(context.locals) { push(locals, get(context.locals, index))
+        index = index + 1 }
+    let bindings = new[Binding]()
+    index = 0
+    while index < length(context.bindings) { push(bindings, get(context.bindings, index))
+        index = index + 1 }
+    Result.Ok(Context { env = env signature = context.signature arguments = context.arguments
+        locals = locals bindings = bindings head = context.head emit = true })
+}
+fn isolated(context Context, node Node, value Expr, boundary Int) Result[Bool, Failure] {
+    if value.kind == ExprKind.Local && value.index < boundary {
+        return Result.Err(error(context, node, "comptime cannot capture a runtime binding"))
+    }
+    if value.kind == ExprKind.Assign && value.index < boundary {
+        return Result.Err(error(context, node, "comptime cannot assign a runtime binding"))
+    }
+    if value.kind == ExprKind.Return {
+        return Result.Err(error(context, node, "return cannot cross a comptime block boundary; use its tail value"))
+    }
+    var index = 0
+    while index < length(value.children) {
+        discard isolated(context, node, get(value.children, index), boundary)?
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var item = 0
+        while item < length(arm.body) {
+            discard isolated(context, node, get(arm.body, item), boundary)?
+            item = item + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn computed(context Context, node Node, input Node, expected Int) Result[Value, Failure] {
+    let stage = staging(context, node)?
+    let value = expr(stage, input, expected)?
+    discard isolated(context, node, value, length(context.locals))?
+    let functions = new[Function]()
+    var index = 0
+    while index < length(stage.env.pending) {
+        let instance = get(stage.env.pending, index)
+        push(functions, function(stage.env, instance.signature, instance.arguments, true)?)
+        index = index + 1
+    }
+    let program = std.loom.typed.Program { types = stage.env.types functions = functions entry = -1 tests = new[Int]() exports = new[Int]() }
+    match std.loom.eval.evaluate(program, value, length(stage.locals)) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(failed) => Result.Err(error(context, node, failed.message))
+    }
+}
+
+fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
+    let shape = get(context.env.types, value.ty)
+    if shape.kind == TypeKind.Unit { return Result.Ok(expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true)) }
+    if shape.kind == TypeKind.Int || shape.kind == TypeKind.Refined {
+        let integer = expression(ExprKind.Integer, 1, node, to_text(value.number), -1, new[Expr](), true)
+        return Result.Ok(if shape.kind == TypeKind.Int { integer } else {
+            expression(ExprKind.Coerce, value.ty, node, "", -1, expressions(integer), true)
+        })
+    }
+    if shape.kind == TypeKind.Bool {
+        return Result.Ok(expression(ExprKind.Bool, 2, node, if value.number == 0 { "false" } else { "true" }, -1, new[Expr](), true))
+    }
+    if shape.kind == TypeKind.Text { return Result.Ok(expression(ExprKind.Text, 3, node, value.text, -1, new[Expr](), true)) }
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum {
+        let fields = new[Expr]()
+        var index = 0
+        while index < length(value.items) {
+            let field = materialize(context, node, get(value.items, index))?
+            push(fields, if shape.kind == TypeKind.Record {
+                expression(ExprKind.Field, field.ty, node, "", index, expressions(field), true)
+            } else { field })
+            index = index + 1
+        }
+        return Result.Ok(expression(if shape.kind == TypeKind.Record { ExprKind.Record } else { ExprKind.Variant },
+            value.ty, node, "", if shape.kind == TypeKind.Record { -1 } else { value.number }, fields, true))
+    }
+    Result.Err(error(context, node, "comptime results cannot yet contain shared List or Bytes storage"))
+}
+fn type_operand(context Context, node Node) Bool {
+    node.kind == NodeKind.Name && lookup(context, slice(node.value, 0, first_dot(node.value))) < 0
+}
+fn selected(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
+    let condition = child(source, 0)
+    var yes = false
+    if condition.kind == NodeKind.Binary && (condition.value == "==" || condition.value == "!=") &&
+        (type_operand(context, child(condition, 0)) || type_operand(context, child(condition, 1))) {
+        if !type_operand(context, child(condition, 0)) || !type_operand(context, child(condition, 1)) {
+            return Result.Err(error(context, condition, "comptime type comparison requires two unshadowed type names"))
+        }
+        let left = resolve(context.env, context.signature.symbol, child(condition, 0), context.arguments, 0)?
+        let right = resolve(context.env, context.signature.symbol, child(condition, 1), context.arguments, 0)?
+        if left != right && (!concrete(context.env, left) || !concrete(context.env, right)) {
+            return deferred(context, node, expected)
+        }
+        yes = if condition.value == "==" { left == right } else { left != right }
+    } else {
+        if abstract_context(context) && depends_on_type(context, condition) {
+            let stage = staging(context, node)?
+            let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
+                locals = stage.locals bindings = stage.bindings head = stage.head emit = false }
+            let value = expr(validation, condition, 2)?
+            discard isolated(context, node, value, length(context.locals))?
+            return deferred(context, node, expected)
+        }
+        yes = computed(context, node, condition, 2)?.number != 0
+    }
+    if yes { return block(context, child(source, 1), expected, enforce) }
+    if length(source.children) == 3 { return block(context, child(source, 2), expected, enforce) }
+    typed(context, node, expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true), expected)
+}
+fn compile_time(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
+    let source = child(node, 0)
+    if source.kind == NodeKind.If { return selected(context, node, source, expected, enforce) }
+    if abstract_context(context) && depends_on_type(context, source) {
+        let stage = staging(context, node)?
+        let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
+            locals = stage.locals bindings = stage.bindings head = stage.head emit = false }
+        let value = block(validation, source, expected, enforce)?
+        discard isolated(context, node, value, length(context.locals))?
+        return deferred(context, node, value.ty)
+    }
+    materialize(context, node, computed(context, node, source, expected)?)
+}
