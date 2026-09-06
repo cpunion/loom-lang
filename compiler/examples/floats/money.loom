@@ -1,0 +1,44 @@
+import std.result.Result
+import std.result.ConstraintError
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+
+// Both range comparisons reject NaN, and the upper bound excludes infinity.
+type Money = Float where self >= 0.0 && self <= 1000000.0
+
+fn checked_money(value Float) Result[Money, ConstraintError] { Money(value) }
+fn observed_input(calls List[Int], value Float) Float {
+    set(calls, 0, get(calls, 0) + 1)
+    value
+}
+fn observed_money(calls List[Int], value Float) Result[Money, ConstraintError] {
+    Money(observed_input(calls, value))
+}
+fn checked_amount(value Float) Result[Float, ConstraintError] {
+    let amount Float = checked_money(value)?
+    Result.Ok(amount)
+}
+
+fn money_boundaries() {
+    let calls = new[Int]()
+    push(calls, 0)
+    assert match observed_money(calls, 1.0) { Result.Ok(_) => true, _ => false }
+    assert match observed_money(calls, -1.0) { Result.Err(_) => true, _ => false }
+    assert get(calls, 0) == 2
+    let price Money = Money(10.0)
+    let amount Float = price
+    let prepared Money = comptime { Money(2.5 * 4.0) }
+    assert amount == 10.0 && prepared == 10.0
+    assert match checked_amount(3.5) { Result.Ok(value) => value == 3.5, _ => false }
+    assert match checked_money(-1.0) {
+        Result.Err(error) => error == ConstraintError.Rejected, _ => false
+    }
+    assert match checked_money(1.0 / 0.0) {
+        Result.Err(error) => error == ConstraintError.Rejected, _ => false
+    }
+    assert match checked_money(0.0 / 0.0) {
+        Result.Err(error) => error == ConstraintError.Rejected, _ => false
+    }
+}

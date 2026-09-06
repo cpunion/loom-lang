@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # A preceding Loom compiler builds current Loom. The frozen Rust compiler is
-# recovered only when no installed Loom seed is supplied. Advance the pin only
-# after a verified bootstrap; current source must remain accepted by its seed.
+# recovered only when no installed Loom seed is supplied. Verified source
+# checkpoints let the compiler adopt capabilities it previously implemented.
 development=false
 if [[ $# == 1 && "$1" == --dev ]]; then
     development=true
@@ -87,6 +87,33 @@ elif [[ -z "$seed_compiler" ]]; then
             "$bootstrap_cache/target/debug/loom" build "$seed_source/compiler/loom" \
             --output "$seed_compiler"
     fi
+    # Each immutable checkpoint uses only its predecessor's language subset.
+    # These are cached bootstrap inputs, not active frontends or compatibility
+    # layers. The current LLVM bridge/runtime serve every source checkpoint.
+    while IFS= read -r checkpoint || [[ -n "$checkpoint" ]]; do
+        if [[ ! "$checkpoint" =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'Invalid source bootstrap checkpoint: %s\n' "$checkpoint" >&2
+            exit 1
+        fi
+        checkpoint_cache="$target_root/bootstrap/$checkpoint"
+        checkpoint_source="$checkpoint_cache/source"
+        checkpoint_compiler="$checkpoint_cache/loom-stage0"
+        if [[ ! -x "$checkpoint_compiler" ]]; then
+            if ! git cat-file -e "$checkpoint^{commit}" 2>/dev/null; then
+                printf 'Missing source bootstrap checkpoint %s.\nFetch it with: git fetch origin %s\n' "$checkpoint" "$checkpoint" >&2
+                exit 1
+            fi
+            printf 'Building source bootstrap checkpoint %s...\n' "$checkpoint"
+            mkdir -p "$checkpoint_source"
+            git archive "$checkpoint" compiler/loom compiler/std |
+                tar -xf - -C "$checkpoint_source"
+            "$seed_compiler" build "$checkpoint_source/compiler/loom" \
+                --std "$checkpoint_source/compiler/std" \
+                --native-tool "$target_root/debug/loom-native$exe_suffix" \
+                --output "$checkpoint_compiler"
+        fi
+        seed_compiler="$checkpoint_compiler"
+    done < compiler/bootstrap/checkpoints
 fi
 
 # Every current stage uses one current native backend/runtime. Only the source

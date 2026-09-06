@@ -184,7 +184,9 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
             let value = get(values, argument)
             if !infer(context.env, pattern, value.ty, args) {
                 let target = hint(context, pattern, args, node)?
-                if target == 1 && get(context.env.types, value.ty).kind == TypeKind.Refined { widened = true } else { matched = false }
+                if get(context.env.types, value.ty).kind == TypeKind.Refined && target == base_type(context.env, value.ty) {
+                    widened = true
+                } else { matched = false }
             }
             argument = argument + 1
         }

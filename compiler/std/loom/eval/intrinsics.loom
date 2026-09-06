@@ -16,10 +16,13 @@ import std.bytes.new
 import std.bytes.push
 import std.bytes.to_text
 import std.result.Result
+import std.float.from_int
+import std.float.to_text
 
 fn arity(name Text) Int {
     if name == "list_new" || name == "bytes_new" { return 0 }
     if name == "text_len" || name == "list_len" || name == "bytes_len" || name == "bytes_utf8" || name == "bytes_text_copy" ||
+        name == "float_from_int" || name == "float_to_int" || name == "float_parse" || name == "float_format" ||
         name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" { return 1 }
     if name == "text_slice" || name == "list_set" { return 3 }
     2
@@ -69,6 +72,20 @@ fn primitive(state State, expr Expr, values List[Value]) Result[Value, Failure] 
         return Result.Ok(fresh(state, expr.ty))
     }
     let first = get(values, 0)
+    if name == "float_from_int" { return Result.Ok(floating(from_int(integer_argument(expr, first)?))) }
+    if name == "float_parse" {
+        let text = text_argument(expr, first)?
+        discard spend(state, expr, 0, length(text))?
+        return decimal(expr, text)
+    }
+    if name == "float_to_int" || name == "float_format" {
+        if first.ty != 5 { return Result.Err(failure(expr, "compile-time intrinsic needs a Float argument")) }
+        if name == "float_to_int" { return Result.Ok(number(saturating_integer(first.floating))) }
+        let text = std.float.to_text(first.floating)
+        discard spend(state, expr, 0, length(text) / 32 + 1)?
+        discard spend(state, expr, 1, length(text))?
+        return Result.Ok(string(text))
+    }
     if name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" {
         let codepoint = integer_argument(expr, first)?
         return Result.Ok(flag(if name == "unicode_alphabetic" { is_alphabetic(codepoint) }

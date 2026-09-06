@@ -7,7 +7,7 @@ fn floats_use_native_aggregates_and_scalar_programs_need_no_loom_runtime() {
     let source = tempfile::tempdir().unwrap();
     fs::write(
         source.path().join("main.loom"),
-        "fn remainder(a Float, b Float) Float { a % b }\nfn main() { assert remainder(5.5, 2.0) == 1.5 }",
+        "type Money = Float where self >= 0.0\nfn widen(value Money) Float { value }\nfn remainder(a Float, b Float) Float { a % b }\nfn main() { assert remainder(5.5, 2.0) == 1.5\nassert widen(Money(10.0)) == 10.0 }",
     )
     .unwrap();
     let executable = common::executable(source.path(), "scalar");
@@ -61,7 +61,6 @@ fn float_mixing_and_unproved_contracts_reject_in_source() {
         "fn main() { discard 1.0 && 2.0 }",
         "fn bad(value Float) Float ensures result == value { value }",
         "fn bad() Bool ensures result { 0.0 / 0.0 == 0.0 / 0.0 }",
-        "fn main() { discard comptime { 1.0 + 2.0 } }",
     ] {
         fs::write(source.path().join("main.loom"), text).unwrap();
         let output = loom(&["check", source.path().to_str().unwrap()]);

@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Execute Float in the shared compile-time evaluator and support Float-based
+  constrained types, with direct constant construction and once-only dynamic
+  checks. Bootstrap through a pinned Loom source checkpoint, leaving the frozen
+  Rust frontend unchanged; required unsupported Float proofs still reject.
+
 - Add native IEEE binary64 Float and explicit numeric conversions. Keep decimal
   syntax/error policy in Loom std over narrow numeric codecs; scalar arithmetic
   needs no Loom runtime. Establish the Float-capable bootstrap checkpoint before

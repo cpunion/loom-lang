@@ -2,6 +2,37 @@ import std.loom.typed.Expr
 import std.text.byte
 import std.text.length
 import std.result.Result
+import std.float.parse
+import std.float.to_int
+
+fn decimal(expr Expr, text Text) Result[Value, Failure] {
+    match parse(text) {
+        Result.Ok(value) => Result.Ok(floating(value))
+        Result.Err(_) => Result.Err(failure(expr, "invalid compile-time Float text"))
+    }
+}
+fn float_arithmetic(expr Expr, a Float, b Float) Result[Value, Failure] {
+    let operator = expr.text
+    if operator == "==" { return Result.Ok(flag(a == b)) }
+    if operator == "!=" { return Result.Ok(flag(a != b)) }
+    if operator == "<" { return Result.Ok(flag(a < b)) }
+    if operator == "<=" { return Result.Ok(flag(a <= b)) }
+    if operator == ">" { return Result.Ok(flag(a > b)) }
+    if operator == ">=" { return Result.Ok(flag(a >= b)) }
+    if operator == "+" { return Result.Ok(floating(a + b)) }
+    if operator == "-" { return Result.Ok(floating(a - b)) }
+    if operator == "*" { return Result.Ok(floating(a * b)) }
+    if operator == "/" { return Result.Ok(floating(a / b)) }
+    if operator == "%" { return Result.Ok(floating(a % b)) }
+    Result.Err(failure(expr, "unsupported compile-time Float operator"))
+}
+fn saturating_integer(value Float) Int {
+    // Match the total private machine intrinsic, not the public Result policy.
+    if value != value { return 0 }
+    if value <= -9223372036854775808.0 { return -9223372036854775808 }
+    if value >= 9223372036854775808.0 { return 9223372036854775807 }
+    match to_int(value) { Result.Ok(integer) => integer, Result.Err(_) => 0 }
+}
 
 fn integer(expr Expr) Result[Int, Failure] {
     let text = expr.text

@@ -112,8 +112,8 @@ fn all_fall(values List[Expr]) Bool {
     true
 }
 fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Failure] {
-    if expected == 1 && get(context.env.types, value.ty).kind == TypeKind.Refined {
-        return Result.Ok(expression(ExprKind.Coerce, 1, node, "", -1, expressions(value), value.falls))
+    if get(context.env.types, value.ty).kind == TypeKind.Refined && expected == base_type(context.env, value.ty) {
+        return Result.Ok(expression(ExprKind.Coerce, expected, node, "", -1, expressions(value), value.falls))
     }
     if expected >= 0 && value.ty != expected && value.falls {
         return Result.Err(error(context, node, "expression type does not match; use discard to ignore a value"))

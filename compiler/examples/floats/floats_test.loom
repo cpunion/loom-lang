@@ -1,1 +1,1 @@
-test fn float_aggregates_and_explicit_conversion() { exercise() }
+test fn float_values_comptime_and_money_boundaries() { exercise() }
