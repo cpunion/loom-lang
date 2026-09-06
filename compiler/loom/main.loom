@@ -1,7 +1,7 @@
-import frontend.lexer.lex
-import frontend.parser.parse
-import frontend.source.Diagnostic
-import frontend.source.render
+import std.loom.lexer.lex
+import std.loom.parser.parse
+import std.loom.source.Diagnostic
+import std.loom.source.render
 import std.file.read_text
 import std.int.to_text
 import std.io.write_text

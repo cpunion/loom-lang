@@ -1,7 +1,7 @@
-import frontend.parser.parse
-import frontend.source.Diagnostic
-import frontend.syntax.Node
-import frontend.syntax.NodeKind
+import std.loom.parser.parse
+import std.loom.source.Diagnostic
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
 import std.list.get
 import std.list.length
 import std.result.Result

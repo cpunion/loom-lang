@@ -5,10 +5,10 @@ import frontend.binding.qualify
 import frontend.manifest.Module
 import frontend.manifest.segment
 import frontend.manifest.parse
-import frontend.parser.parse
-import frontend.source.render
-import frontend.syntax.Node
-import frontend.syntax.NodeKind
+import std.loom.parser.parse
+import std.loom.source.render
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
 import std.fs.entries
 import std.fs.kind
 import std.fs.canonicalize
@@ -127,7 +127,7 @@ fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Res
         let test_only = ends(name, "_test.loom")
         if ends(name, ".loom") && (!test_only || tests) && is_file(path) {
             let text = read(path)?
-            let tree = match frontend.parser.parse(text) {
+            let tree = match std.loom.parser.parse(text) {
                 Result.Ok(value) => production(value, tests)
                 Result.Err(error) => { return Result.Err(render(path, text, error)) }
             }

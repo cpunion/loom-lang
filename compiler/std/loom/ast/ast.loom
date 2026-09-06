@@ -1,4 +1,4 @@
-import frontend.source.Span
+import std.loom.source.Span
 
 // The source tree is compiler data, not a runtime representation for user values.
 // Children preserve source order. Parameter/argument groups remain explicit;

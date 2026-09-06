@@ -1,4 +1,4 @@
-import frontend.source.Span
+import std.loom.source.Span
 import frontend.typed.Function
 import frontend.typed.Local
 import frontend.typed.Expr

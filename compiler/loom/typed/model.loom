@@ -1,4 +1,4 @@
-import frontend.source.Span
+import std.loom.source.Span
 
 // IDs address immutable entries in the checked program, never source names.
 pub enum TypeKind { Unit Int Bool Text Bytes Parameter List Record Enum Refined }

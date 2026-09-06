@@ -1,7 +1,7 @@
 import frontend.binding.SourceFile
 import frontend.binding.Failure
 import frontend.binding.bind
-import frontend.parser.parse
+import std.loom.parser.parse
 import frontend.checking.check
 import frontend.typed.Program
 import frontend.typed.ExprKind

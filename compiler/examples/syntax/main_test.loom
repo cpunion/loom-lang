@@ -1,0 +1,31 @@
+import std.loom.source.position
+
+test fn inspect_declarations_and_byte_spans() {
+    let source = "pub record Point { x Int }\nfn answer() Int { 42 }\n"
+    match parse(source) {
+        Result.Ok(file) => {
+            assert file.kind == NodeKind.File && length(file.children) == 2
+            let point = get(file.children, 0)
+            assert point.kind == NodeKind.Record && point.value == "Point"
+            assert point.span.start == 0 && point.span.end == 26
+            let function = get(file.children, 1)
+            assert function.kind == NodeKind.Function && function.value == "answer"
+            assert function.span.start == 27 && function.span.end == 49
+            let location = position(source, function.span.start)
+            assert location.line == 2 && location.column == 1
+        }
+        Result.Err(_) => { assert false }
+    }
+}
+
+test fn diagnostics_are_ordinary_values() {
+    let source = "fn bad() Unit {}"
+    match parse(source) {
+        Result.Ok(_) => { assert false }
+        Result.Err(error) => {
+            assert error.span.start == 9 && error.span.end == 13
+            assert error.message == "omit the Unit return annotation"
+            assert render("memory.loom", source, error) == "memory.loom:1:10: omit the Unit return annotation"
+        }
+    }
+}

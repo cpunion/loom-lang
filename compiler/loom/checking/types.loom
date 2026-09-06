@@ -1,6 +1,6 @@
 import frontend.binding.candidates
-import frontend.syntax.Node
-import frontend.syntax.NodeKind
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
 import frontend.typed.Type
 import frontend.typed.TypeKind
 import frontend.typed.Field

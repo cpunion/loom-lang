@@ -5,17 +5,17 @@ test fn package_path_boundaries() {
     assert inside("/std/text", "/std") && inside("/std", "/std")
     assert !inside("/std-copy/text", "/std")
     assert !ends("test.loom.bak", ".loom") && ends("unit_test.loom", "_test.loom")
-    let values = parts("frontend.parser", 46)
+    let values = parts("app.parser", 46)
     assert length(values) == 2 && get(values, 1) == "parser"
 }
 
 test fn imports_are_unique_and_deterministic() {
     let values = new[Text]()
     include(values, "std.text")
-    include(values, "frontend.parser")
+    include(values, "app.parser")
     include(values, "std.text")
     include(values, "std.list")
     assert length(values) == 3
-    assert get(values, 0) == "frontend.parser"
+    assert get(values, 0) == "app.parser"
     assert get(values, 1) == "std.list" && get(values, 2) == "std.text"
 }

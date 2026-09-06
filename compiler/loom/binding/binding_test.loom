@@ -1,11 +1,11 @@
-import frontend.parser.parse
+import std.loom.parser.parse
 import frontend.binding.SourceFile
 import frontend.binding.Program
 import frontend.binding.Failure
 import frontend.binding.bind
 import frontend.binding.candidates
 import frontend.binding.has
-import frontend.syntax.NodeKind
+import std.loom.ast.NodeKind
 import std.list.new
 import std.list.push
 import std.list.get
@@ -78,6 +78,28 @@ test fn private_and_unimported_names_are_not_exported() {
     assert failure.source == 1
     assert failure.diagnostic.span.start == 0
     assert failure.diagnostic.message == "import does not name an accessible declaration"
+}
+
+test fn indexed_names_preserve_order_without_duplicates_or_shared_results() {
+    let files = one_source("import tools.util.pick\nimport extra.pick\nfn pick(x Text) Text { x }")
+    push(files, source("tools.util", "util/pick.loom", "pub fn pick(x Int) Int { x }", false, false))
+    push(files, source("app", "app/pick.loom", "import tools.util.pick\nfn pick(x Bool) Bool { x }", false, false))
+    push(files, source("extra", "extra/pick.loom", "pub fn pick(x Text) Text { x }", false, false))
+    let program = bound(files, false)
+    let picks = candidates(program, 0, false, "pick")
+    assert length(picks) == 4
+    var index = 0
+    while index < length(picks) {
+        assert get(picks, index) == index
+        index = index + 1
+    }
+    let local = candidates(program, 0, false, "app.pick")
+    assert length(local) == 2
+    assert get(local, 0) == 0 && get(local, 1) == 2
+    let imported = candidates(program, 2, false, "tools.util.pick")
+    assert length(imported) == 1 && get(imported, 0) == 1
+    set(picks, 0, 99)
+    assert get(candidates(program, 0, false, "pick"), 0) == 0
 }
 
 test fn tests_cannot_extend_production_scope_or_select_dependency_tests() {

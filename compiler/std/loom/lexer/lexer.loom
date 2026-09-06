@@ -1,5 +1,5 @@
-import frontend.source.Span
-import frontend.source.Diagnostic
+import std.loom.source.Span
+import std.loom.source.Diagnostic
 import std.result.Result
 import std.list.new
 import std.list.push

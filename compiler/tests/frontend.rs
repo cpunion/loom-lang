@@ -65,9 +65,9 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
     let stage2 = common::root().join("target/loom-stage2");
     let stage3 = &artifact;
     for package in [
-        "loom/source",
-        "loom/lexer",
-        "loom/parser",
+        "std/loom/source",
+        "std/loom/lexer",
+        "std/loom/parser",
         "loom/binding",
         "loom/manifest",
         "loom/loading",
@@ -84,6 +84,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/process",
         "examples/scalar",
         "examples/data",
+        "examples/syntax",
     ] {
         success(&source_compiler(
             stage3,
@@ -94,6 +95,37 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         stage3,
         &["run", compiler.join("examples/data").to_str().unwrap()],
     ));
+
+    // An ordinary user package imports syntax APIs without the compiler module.
+    let syntax = compiler.join("examples/syntax");
+    let syntax_binary = temp.path().join("syntax");
+    let syntax_ir = temp.path().join("syntax.ll");
+    success(&source_compiler(
+        stage3,
+        &[
+            "build",
+            syntax.to_str().unwrap(),
+            "--output",
+            syntax_binary.to_str().unwrap(),
+            "--emit-ir",
+            syntax_ir.to_str().unwrap(),
+        ],
+    ));
+    success(&Command::new(syntax_binary).output().unwrap());
+    let ir = fs::read_to_string(syntax_ir).unwrap();
+    // The example deliberately prints its result; syntax itself needs neither
+    // filesystem discovery/input nor compiler/process invocation.
+    for absent in [
+        "loom_rt_process_arg",
+        "loom_rt_process_run",
+        "loom_rt_directory_",
+        "loom_rt_path_",
+        "loom_rt_file_open",
+        "loom_rt_file_read",
+        "loom_rt_file_create",
+    ] {
+        assert!(!ir.contains(absent), "syntax API leaked {absent}");
+    }
 
     // Source checks do not need a native tool. Compare selected type/proof
     // failures across stages, without maintaining a dual-backend test matrix.
