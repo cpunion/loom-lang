@@ -1,49 +1,70 @@
-# Loom-written frontend
+# Loom-written compiler
 
-The N1 frontend is native Loom code: source positions, diagnostics, lexing, and
-syntax parsing for the seed's current language. The Rust seed builds it; it
-does not call the Rust lexer or parser while running. This is not yet a binder,
-type checker, or self-hosted compiler.
+The native Loom frontend loads packages, parses source, binds names, checks
+types and required contracts, specializes reachable functions, and sends a
+checked program to the single LLVM backend. It does not invoke the Rust source
+parser, checker, or prover. The retained `loom-native` tool uses Rust/Inkwell for
+LLVM lowering and host linking; it accepts checked IR, not Loom source.
+
+## Bootstrap
 
 From the repository root, after building the [seed](../README.md):
 
 ```sh
-target/debug/loom check compiler/loom
-target/debug/loom build compiler/loom --output target/loom-front
-target/loom-front lex compiler/loom/main.loom compiler/loom/lexer/lexer.loom
-target/loom-front parse compiler/loom/main.loom compiler/loom/parser/core.loom
-LOOM_GC_STRESS=1 target/debug/loom test compiler/loom/lexer
-LOOM_GC_STRESS=1 target/debug/loom test compiler/loom/source
-LOOM_GC_STRESS=1 target/debug/loom test compiler/loom/parser
+target/debug/loom build compiler/loom --output target/loom-stage1
+target/loom-stage1 build compiler/loom --output target/loom-stage2
+target/loom-stage2 build compiler/loom --output target/loom-stage3
+target/loom-stage3 check compiler/examples/scalar
+target/loom-stage3 run compiler/examples/data
+target/loom-stage3 test compiler/loom/checking
+target/loom-stage3 test compiler/std/text
 ```
 
-`loom-front` is a development artifact name, not another supported compiler
-command. `lex` reads one or more files, reports token counts excluding EOF on
-stdout. `parse` reports top-level declaration counts, including imports.
-Both send diagnostics to stderr. Exit codes are 0 for success, 1 for input/output
-or syntax failure, and 2 for invalid command usage.
+The stage names are development artifacts, not additional supported compilers.
+The source CLI provides `check`, `build`, `test`, and `run` for one directory
+package. It defaults to `compiler/std` and `target/debug/loom-native` relative to
+the working directory; use `--std` and `--native-tool` elsewhere. `build` accepts
+`--output`; native commands also accept `--emit-ir`. Library builds produce an
+object, and production excludes test files and test declarations.
 
-Each directory is a package under the `frontend` module:
+`lex` and `parse` inspect one or more source files, reporting token/declaration
+counts or positioned diagnostics. For example:
 
-- `source`: byte spans and 1-based line/Unicode-scalar columns, including CRLF,
-  CR, and LF. Display columns are not terminal cell widths.
-- `lexer`: Unicode identifiers, whitespace/comments, operators, numbers as
-  lexemes, UTF-8 strings and escape decoding. Tokens retain byte spans and
-  decoded string values; only the final token is EOF.
-- `syntax`: recursive nodes with explicit kinds, values, spans, and ordered
-  children. These are compiler data, not the representation of user values.
-- `parser`: declarations, types, contracts, statements, expressions, and flat
-  patterns. Parsing functions return the next cursor and syntax node; errors
-  propagate with `?`. Binding, type checking, and proof remain separate stages.
-- Root package: file/argument handling and diagnostics through source `std`.
+```sh
+target/loom-stage3 parse compiler/loom/main.loom
+target/loom-stage3 test compiler/loom/proof
+LOOM_GC_STRESS=1 compiler/loom/proof/target/tests
+```
 
-UTF-8 decoding/encoding, integer rendering, tokenization, and I/O loops are Loom
-code. Unicode property tables currently use a private Rust standard-library
-bridge; they contain no Loom lexical policy. Character classifications follow
-the Rust toolchain used to build the runtime.
+The bootstrap integration gate compares stage 2 and 3 binaries, selected
+diagnostics and executable results, then runs compiler and source `std` tests.
+Agreement is evidence, not a proof of compiler correctness. macOS is the current
+validation host; the source path and manifest helpers intentionally implement
+only the documented subset, not all platforms or general TOML.
 
-Native integration tests run this tool over its own, `std`, and example source
-files. Focused package and error-path tests run with forced GC. The former
-ASCII-only scanner example has been removed rather than maintained in parallel.
-Next are binding, typing, and the staged bootstrap gates in the
-[roadmap](../../ROADMAP.md).
+## Package boundaries
+
+Each directory is an ordinary package in the `frontend` module:
+
+- `source`, `lexer`, `syntax`, `parser`: UTF-8 source, byte spans, positioned
+  diagnostics, tokens and recursive syntax. No filesystem or LLVM dependency.
+- `manifest`, `loading`: module metadata and the selected directory/import
+  closure; only the root contributes tests.
+- `binding`: package visibility, imports and overload candidates.
+- `typed`, `checking`: checked types, expressions, concrete function instances,
+  private runtime signatures and required-proof obligations.
+- `proof`: bounded scalar reasoning with mathematical integers. Unsupported
+  required proofs reject; there is no runtime postcondition fallback.
+- `artifact`: a private counted UTF-8 stream to the LLVM tool, not a stable
+  package, cache or public AST format. Proof-only locals are not emitted.
+- Root: CLI orchestration using source `std.fs`, `std.file`, `std.io` and
+  `std.process`. Process arguments are literal; no shell is implicitly invoked.
+
+These boundaries will also serve user-callable parser/AST and project-analysis
+libraries, then typed metaprogramming. The current internal node schema is not
+yet that public API: comment-preserving editing, semantic queries and durable
+definition identities remain planned. See the [roadmap](../../ROADMAP.md).
+
+This is the self-hosting subset, not the complete accepted language. Broader
+contracts, concepts, compile-time programming, resources, Tasks and module
+resolution remain in [implementation status](../../docs/project/implementation-status.md).

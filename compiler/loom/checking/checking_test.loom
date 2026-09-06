@@ -1,0 +1,68 @@
+import frontend.binding.Failure
+import frontend.typed.TypeKind
+import frontend.typed.ExprKind
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.result.Result
+
+fn with_result(text Text) Result[frontend.typed.Program, Failure] {
+    let files = source_files(text)
+    push(files, source_file("std.result", "pub enum Result[T, E] { Ok(T) Err(E) }\npub enum ConstraintError { Rejected }", true))
+    checked(files)
+}
+fn accepted_result(text Text) frontend.typed.Program {
+    match with_result(text) {
+        Result.Ok(program) => program
+        Result.Err(_) => { assert false
+            accepted_result("") }
+    }
+}
+fn rejects_result(text Text) {
+    match with_result(text) { Result.Err(_) => {}
+        Result.Ok(_) => { assert false } }
+}
+
+test fn recursive_data_and_checked_control_flow() {
+    let program = accepted("enum Tree[T] { Leaf(T) Branch(List[Tree[T]]) }\nrecord Pair[A, B] { first A second B }\nfn first[A, B](pair Pair[A, B]) A { pair.first }\nfn inspect(tree Tree[Int]) Int { match tree { Tree.Leaf(value) => value\nTree.Branch(_) => 0 } }\nfn main() { var count = 0\nwhile count < 3 { count = count + 1 }\nlet pair = Pair { second = true first = count }\nassert first(pair) == 3\nassert inspect(Tree.Leaf(7)) == 7 }")
+    assert length(program.functions) == 3
+    let main = get(program.functions, program.entry)
+    assert main.body.kind == ExprKind.Block
+    assert get(main.body.children, 1).kind == ExprKind.While
+    let constructor = get(get(main.body.children, 2).children, 0)
+    assert constructor.kind == ExprKind.Record
+    assert get(constructor.children, 0).index == 1
+    assert get(constructor.children, 1).index == 0
+    rejects("record Cycle { next Cycle }")
+    rejects("record A { next B } enum B { End More(A) }")
+    rejects("record Grow[T] { children List[Grow[List[T]]] }")
+    rejects("enum Choice { A B } fn f(x Choice) Int { match x { Choice.A => 1 } }")
+    rejects("record Pair { x Int y Int } fn main() { discard Pair { x = 1 } }")
+    rejects("fn main() { let number = 1\nnumber = 2 }")
+    rejects("fn main() { if true { let number = 1 }\ndiscard number }")
+    rejects("fn main() { 42 }")
+}
+
+test fn constrained_construction_and_propagation_have_explicit_ir() {
+    let program = accepted_result("import std.result.Result\nimport std.result.ConstraintError\ntype Positive = Int where self > 0\nfn fixed() Positive { Positive(2 * 3) }\nfn checked_input(value Int) Result[Positive, ConstraintError] { Positive(value) }\nfn widen(value Int) Result[Int, ConstraintError] { let number Int = checked_input(value)?\nResult.Ok(number) }\nfn main() { assert fixed() == 6\ndiscard widen(3) }")
+    var refined = -1
+    var index = 0
+    while index < length(program.types) {
+        if get(program.types, index).kind == TypeKind.Refined { refined = index }
+        index = index + 1
+    }
+    assert refined >= 0
+    assert length(get(program.types, refined).constraint) == 1
+    let main = get(program.functions, program.entry)
+    assert main.body.kind == ExprKind.Block
+    // The direct constant constructor remains a coercion, not a Result check.
+    let fixed = get(program.functions, 1)
+    assert get(fixed.body.children, 0).kind == ExprKind.Coerce
+    rejects_result("type Positive = Int where self > 0\nfn main() { discard Positive(0) }")
+    rejects_result("type Fixed = List[Int] where true\n")
+    rejects_result("import std.result.Result\nfn wrong(input Result[Int, Int]) Result[Int, Text] { Result.Ok(input?) }")
+    rejects_result("import std.result.Result\nfn wrong() Result[Int, Text] { Result.Ok(1?) }")
+    rejects_result("import std.result.Result\nfn main() { discard Result.Ok[Int, Text](1)? }")
+    rejects_result("type Positive = Int where self > 0\nfn widen(values List[Positive]) List[Int] { values }")
+}

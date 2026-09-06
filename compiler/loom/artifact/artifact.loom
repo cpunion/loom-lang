@@ -1,0 +1,150 @@
+import frontend.typed.Program
+import frontend.typed.Type
+import frontend.typed.TypeKind
+import frontend.typed.Expr
+import frontend.typed.ExprKind
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+import std.int.to_text
+import std.text.byte
+import std.text.length
+import std.list.get
+import std.list.length
+
+// Private source-compiler -> LLVM bridge format, not a package/cache format.
+// Header: loom-checked-1\n. Integers are decimal lines; strings are byte length
+// then raw UTF-8, without a trailing separator. Lists start with their count.
+// Program: types, functions, entry (-1 absent), tests, exports.
+// Type: tag, symbol, then List/refined element ID, record fields(name,type), or
+// enum variants(name,payload IDs). Tags 0..9 follow type_tag below.
+// Function: symbol, span(start,end), params, result, locals, preconditions, body.
+// Expr: tag,type,span,text,index,falls,children,arms. Arm: variant,bindings,whole,
+// body; absent bindings/variants use -1. Tags 0..20 follow expression_tag below.
+// Constraints, proof results, generic metadata and local names are not emitted.
+
+fn raw(buffer Bytes, value Text) {
+    var index = 0
+    while index < length(value) {
+        push(buffer, byte(value, index))
+        index = index + 1
+    }
+}
+fn integer(buffer Bytes, value Int) {
+    raw(buffer, std.int.to_text(value))
+    push(buffer, 10)
+}
+fn text(buffer Bytes, value Text) {
+    integer(buffer, length(value))
+    raw(buffer, value)
+}
+fn integers(buffer Bytes, values List[Int]) {
+    integer(buffer, length(values))
+    var index = 0
+    while index < length(values) { integer(buffer, get(values, index))
+        index = index + 1
+    }
+}
+fn type_tag(kind TypeKind) Int {
+    match kind {
+        TypeKind.Unit => 0, TypeKind.Int => 1, TypeKind.Bool => 2
+        TypeKind.Text => 3, TypeKind.Bytes => 4, TypeKind.Parameter => 5
+        TypeKind.List => 6, TypeKind.Record => 7, TypeKind.Enum => 8, TypeKind.Refined => 9
+    }
+}
+fn data(buffer Bytes, value Type) {
+    integer(buffer, type_tag(value.kind))
+    integer(buffer, value.symbol)
+    if value.kind == TypeKind.List { integer(buffer, get(value.arguments, 0)) }
+    if value.kind == TypeKind.Refined { integer(buffer, get(value.fields, 0).ty) }
+    if value.kind == TypeKind.Record {
+        integer(buffer, length(value.fields))
+        var index = 0
+        while index < length(value.fields) {
+            let field = get(value.fields, index)
+            text(buffer, field.name)
+            integer(buffer, field.ty)
+            index = index + 1
+        }
+    }
+    if value.kind == TypeKind.Enum {
+        integer(buffer, length(value.variants))
+        var index = 0
+        while index < length(value.variants) {
+            let variant = get(value.variants, index)
+            text(buffer, variant.name)
+            integers(buffer, variant.fields)
+            index = index + 1
+        }
+    }
+}
+fn expression_tag(kind ExprKind) Int {
+    match kind {
+        ExprKind.Integer => 0, ExprKind.Bool => 1, ExprKind.Text => 2, ExprKind.Local => 3
+        ExprKind.Unary => 4, ExprKind.Binary => 5, ExprKind.Call => 6, ExprKind.Intrinsic => 7
+        ExprKind.Record => 8, ExprKind.Field => 9, ExprKind.Variant => 10, ExprKind.Block => 11
+        ExprKind.Let => 12, ExprKind.Assign => 13, ExprKind.Return => 14, ExprKind.Assert => 15
+        ExprKind.Discard => 16, ExprKind.While => 17, ExprKind.If => 18, ExprKind.Match => 19
+        ExprKind.Coerce => 20
+    }
+}
+fn expressions(buffer Bytes, values List[Expr]) {
+    integer(buffer, length(values))
+    var index = 0
+    while index < length(values) { expression(buffer, get(values, index))
+        index = index + 1
+    }
+}
+fn expression(buffer Bytes, value Expr) {
+    integer(buffer, expression_tag(value.kind))
+    integer(buffer, value.ty)
+    integer(buffer, value.span.start)
+    integer(buffer, value.span.end)
+    text(buffer, value.text)
+    integer(buffer, value.index)
+    integer(buffer, if value.falls { 1 } else { 0 })
+    expressions(buffer, value.children)
+    integer(buffer, length(value.arms))
+    var index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        integer(buffer, arm.variant)
+        integers(buffer, arm.bindings)
+        integer(buffer, arm.whole)
+        expressions(buffer, arm.body)
+        index = index + 1
+    }
+}
+
+pub fn encode(program Program) Text {
+    let buffer = new()
+    raw(buffer, "loom-checked-1\n")
+    integer(buffer, length(program.types))
+    var index = 0
+    while index < length(program.types) { data(buffer, get(program.types, index))
+        index = index + 1
+    }
+    integer(buffer, length(program.functions))
+    index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        integer(buffer, function.symbol)
+        integer(buffer, function.span.start)
+        integer(buffer, function.span.end)
+        integers(buffer, function.params)
+        integer(buffer, function.result)
+        let locals = if function.result_local >= 0 { function.result_local } else { length(function.locals) }
+        integer(buffer, locals)
+        var local = 0
+        while local < locals { integer(buffer, get(function.locals, local).ty)
+            local = local + 1
+        }
+        expressions(buffer, function.preconditions)
+        expression(buffer, function.body)
+        index = index + 1
+    }
+    integer(buffer, program.entry)
+    integers(buffer, program.tests)
+    integers(buffer, program.exports)
+    std.bytes.to_text(buffer)
+}

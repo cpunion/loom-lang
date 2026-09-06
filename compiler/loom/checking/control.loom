@@ -1,0 +1,231 @@
+import frontend.binding.name
+import frontend.binding.package
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import frontend.typed.Expr
+import frontend.typed.ExprKind
+import frontend.typed.TypeKind
+import frontend.typed.Arm
+import frontend.typed.Local
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+fn statement_kind(kind NodeKind) Bool {
+    kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign || kind == NodeKind.Return ||
+    kind == NodeKind.Assert || kind == NodeKind.Discard || kind == NodeKind.While
+}
+fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
+    let kind = node.kind
+    if kind == NodeKind.Let || kind == NodeKind.Var {
+        let annotation = if length(node.children) == 2 { resolve(context.env, context.signature.symbol, child(node, 0), context.arguments, 0)? } else { -1 }
+        let value = expr(context, child(node, length(node.children) - 1), annotation)?
+        let local = length(context.locals)
+        let next = bind_local(context, node, node.value, value.ty, kind == NodeKind.Var, boundary)?
+        return Result.Ok(Step { context = next expression = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls) })
+    }
+    let value = if kind == NodeKind.Assign {
+        let local = lookup(context, node.value)
+        if local < 0 { return Result.Err(error(context, node, "unknown assignment local")) }
+        let target = get(context.locals, local)
+        if !target.mutable { return Result.Err(error(context, node, "assignment requires a var binding")) }
+        let value = expr(context, child(node, 0), target.ty)?
+        expression(ExprKind.Assign, 0, node, "", local, expressions(value), value.falls)
+    } else {
+    if kind == NodeKind.Return {
+        let values = new[Expr]()
+        if length(node.children) == 0 {
+            if context.signature.result != 0 { return Result.Err(error(context, node, "return requires a value")) }
+        } else { push(values, expr(context, child(node, 0), context.signature.result)?) }
+        expression(ExprKind.Return, 0, node, "", -1, values, false)
+    } else {
+    if kind == NodeKind.Assert {
+        let value = expr(context, child(node, 0), 2)?
+        expression(ExprKind.Assert, 0, node, "", -1, expressions(value), value.falls)
+    } else {
+    if kind == NodeKind.Discard {
+        let value = expr(context, child(node, 0), -1)?
+        expression(ExprKind.Discard, 0, node, "", -1, expressions(value), value.falls)
+    } else {
+    if kind == NodeKind.While {
+        let condition = expr(context, child(node, 0), 2)?
+        let body = block(context, child(node, 1), 0, true)?
+        expression(ExprKind.While, 0, node, "", -1, pair(condition, body), condition.falls)
+    } else { return Result.Err(error(context, node, "unknown statement")) }
+    } } } }
+    Result.Ok(Step { context = context expression = value })
+}
+fn block(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
+    let values = new[Expr]()
+    var current = context
+    var falls = true
+    var output = 0
+    var index = 0
+    while index < length(node.children) {
+        let source = child(node, index)
+        if statement_kind(source.kind) {
+            let next = statement(current, source, context.head)?
+            current = next.context
+            push(values, next.expression)
+            falls = falls && next.expression.falls
+        } else {
+            let tail = index + 1 == length(node.children)
+            let value = expr_mode(current, source, if tail { expected } else { 0 }, !tail || enforce)?
+            push(values, value)
+            falls = falls && value.falls
+            if tail { output = value.ty }
+        }
+        index = index + 1
+    }
+    let value = expression(ExprKind.Block, output, node, "", -1, values, falls)
+    if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+}
+fn conditional(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
+    let condition = expr(context, child(node, 0), 2)?
+    let yes = block(context, child(node, 1), expected, enforce)?
+    let values = pair(condition, yes)
+    let hint = if enforce && expected >= 0 { expected } else { if yes.falls { yes.ty } else { expected } }
+    var other_type = 0
+    var other_falls = true
+    if length(node.children) == 3 {
+        let no = block(context, child(node, 2), hint, enforce || yes.falls)?
+        push(values, no)
+        other_type = no.ty
+        other_falls = no.falls
+    }
+    let output = if yes.falls { yes.ty } else { other_type }
+    if other_falls && output != other_type { return Result.Err(error(context, node, "if branches must have the same type; values require else")) }
+    Result.Ok(expression(ExprKind.If, output, node, "", -1, values, condition.falls && (yes.falls || other_falls)))
+}
+fn matched(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
+    let value = expr(context, child(node, 0), -1)?
+    let shape = get(context.env.types, value.ty)
+    let covered = new[Bool]()
+    var index = 0
+    while index < length(shape.variants) { push(covered, false)
+        index = index + 1
+    }
+    let arms = new[Arm]()
+    var count = 0
+    var complete = false
+    var output = if enforce { expected } else { -1 }
+    var falls = false
+    index = 1
+    while index < length(node.children) {
+        let arm = child(node, index)
+        let pattern = child(arm, 0)
+        if complete { return Result.Err(error(context, pattern, "unreachable match arm")) }
+        var current = context
+        var selected = -1
+        var whole = -1
+        let locals = new[Int]()
+        if pattern.kind != NodeKind.Wildcard {
+            var variant = 0
+            while variant < length(shape.variants) {
+                if get(shape.variants, variant).name == name(pattern.value) { selected = variant }
+                variant = variant + 1
+            }
+            if package(pattern.value) != "" {
+                let target = find_data(context.env, context.signature.symbol, pattern, package(pattern.value))?
+                if shape.kind != TypeKind.Enum || target != shape.symbol { return Result.Err(error(context, pattern, "pattern belongs to a different nominal enum")) }
+            }
+            if selected >= 0 {
+                let declaration = symbol(context.env, shape.symbol)
+                let here = symbol(context.env, context.signature.symbol)
+                if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
+                    return Result.Err(error(context, pattern, "cannot inspect a private enum from another package"))
+                }
+                if get(covered, selected) { return Result.Err(error(context, pattern, "duplicate variant match arm")) }
+                set(covered, selected, true)
+                count = count + 1
+                let fields = get(shape.variants, selected).fields
+                let bindings = group(pattern, NodeKind.Bindings)
+                if length(bindings) != length(fields) { return Result.Err(error(context, pattern, "pattern payload count does not match")) }
+                var field = 0
+                while field < length(fields) {
+                    let binding = get(bindings, field)
+                    if binding.kind == NodeKind.Wildcard { push(locals, -1) } else {
+                        push(locals, length(current.locals))
+                        current = bind_local(current, binding, binding.value, get(fields, field), false, context.head)?
+                    }
+                    field = field + 1
+                }
+                complete = count == length(shape.variants)
+            } else {
+                if package(pattern.value) != "" || length(pattern.children) != 0 { return Result.Err(error(context, pattern, "unknown enum variant in pattern")) }
+                whole = length(current.locals)
+                current = bind_local(current, pattern, pattern.value, value.ty, false, context.head)?
+                complete = true
+            }
+        } else { complete = true }
+        let body = block(current, child(arm, 1), if output >= 0 { output } else { expected }, enforce || output >= 0)?
+        if body.falls { output = body.ty }
+        falls = falls || body.falls
+        push(arms, Arm { variant = selected bindings = locals whole = whole body = expressions(body) })
+        index = index + 1
+    }
+    if !complete { return Result.Err(error(context, node, "non-exhaustive match")) }
+    Result.Ok(Expr { kind = ExprKind.Match ty = if output < 0 { 0 } else { output } span = node.span text = "" index = -1 children = expressions(value) arms = arms falls = value.falls && falls })
+}
+
+record ResultShape { declaration Int ok Int err Int }
+fn result_shape(context Context, node Node) Result[ResultShape, Failure] {
+    var declaration = -1
+    var index = 0
+    while index < length(context.env.source.symbols) {
+        let item = symbol(context.env, index)
+        let file = get(context.env.source.files, item.file)
+        if file.package == "std.result" && file.trusted_std && !item.test_only && item.public && item.name == "Result" && length(group(item.node, NodeKind.TypeParameters)) == 2 { declaration = index }
+        index = index + 1
+    }
+    if declaration < 0 { return Result.Err(error(context, node, "operation requires trusted std.result.Result")) }
+    let params = abstract_arguments(context.env, 2)
+    let shape = get(context.env.types, data_type(context.env, declaration, params, 0)?)
+    var ok = -1
+    var err = -1
+    index = 0
+    while index < length(shape.variants) {
+        let variant = get(shape.variants, index)
+        if variant.name == "Ok" && same(variant.fields, ints(get(params, 0))) { ok = index }
+        if variant.name == "Err" && same(variant.fields, ints(get(params, 1))) { err = index }
+        index = index + 1
+    }
+    if shape.kind != TypeKind.Enum || length(shape.variants) != 2 || ok < 0 || err < 0 { return Result.Err(error(context, node, "Result must be the source enum containing Ok(T) and Err(E)")) }
+    Result.Ok(ResultShape { declaration = declaration ok = ok err = err })
+}
+fn result_types(context Context, node Node, shape ResultShape, ty Int) Result[List[Int], Failure] {
+    let found = get(context.env.types, ty)
+    if found.kind != TypeKind.Enum || found.symbol != shape.declaration { return Result.Err(error(context, node, "`?` requires a Result value and a Result-returning function")) }
+    Result.Ok(found.arguments)
+}
+fn result_type(context Context, node Node, shape ResultShape, ok Int, err Int) Result[Int, Failure] {
+    let args = ints(ok)
+    push(args, err)
+    data_type(context.env, shape.declaration, args, 0)
+}
+fn propagated(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let shape = result_shape(context, node)?
+    let returned = result_types(context, node, shape, context.signature.result)?
+    let error_type = get(returned, 1)
+    let hint = if expected < 0 { -1 } else { result_type(context, node, shape, expected, error_type)? }
+    let value = expr_mode(context, child(node, 0), hint, false)?
+    let arguments = result_types(context, node, shape, value.ty)?
+    if get(arguments, 1) != error_type { return Result.Err(error(context, node, "`?` error type must match the enclosing function")) }
+    let success = length(context.locals)
+    let payload = get(arguments, 0)
+    push(context.locals, Local { name = "" ty = payload mutable = false })
+    push(context.locals, Local { name = "" ty = error_type mutable = false })
+    let arms = new[Arm]()
+    let accepted = atom(ExprKind.Local, payload, node, success)
+    let ok = expression(ExprKind.Block, payload, node, "", -1, expressions(accepted), true)
+    push(arms, Arm { variant = shape.ok bindings = ints(success) whole = -1 body = expressions(ok) })
+    let error_value = atom(ExprKind.Local, error_type, node, success + 1)
+    let rejected = expression(ExprKind.Variant, context.signature.result, node, "", shape.err, expressions(error_value), true)
+    let exit = expression(ExprKind.Return, 0, node, "", -1, expressions(rejected), false)
+    let body = expression(ExprKind.Block, 0, node, "", -1, expressions(exit), false)
+    push(arms, Arm { variant = shape.err bindings = ints(success + 1) whole = -1 body = expressions(body) })
+    Result.Ok(Expr { kind = ExprKind.Match ty = payload span = node.span text = "" index = -1 children = expressions(value) arms = arms falls = value.falls })
+}

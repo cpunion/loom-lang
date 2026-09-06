@@ -104,7 +104,9 @@ fn native_generic_data() {
 fn source_std_under_forced_collection() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo = root.parent().unwrap();
-    for package in ["bytes", "int", "text", "list", "result", "unicode"] {
+    for package in [
+        "bytes", "int", "text", "list", "result", "unicode", "process",
+    ] {
         success(&managed(
             &["test", path(&root.join("std").join(package))],
             repo,
@@ -126,6 +128,59 @@ fn source_std_under_forced_collection() {
         !llvm.contains("loom_rt_roots_enter"),
         "nonallocating functions need no GC root frame"
     );
+}
+
+#[test]
+fn source_process_run_preserves_arguments_and_nonzero_exit_codes() {
+    let child = source(
+        "import std.process.arguments\nimport std.process.exit_code\n\
+         import std.list.get\nimport std.list.length\n\
+         import std.io.write_text\nimport std.text.concat\n\
+         fn main() {\nlet args = arguments()\nvar index = 1\n\
+         while index < length(args) {\n\
+         discard write_text(concat(get(args, index), \"\\n\"))\nindex = index + 1\n}\n\
+         exit_code(7)\n}",
+    );
+    let artifact = child
+        .path()
+        .join(format!("child process{}", std::env::consts::EXE_SUFFIX));
+    success(&loom(&[
+        "build",
+        path(child.path()),
+        "--output",
+        path(&artifact),
+    ]));
+    let literal = "spaces ; $HOME $(touch MUST_NOT_EXIST) \"quotes\" \\backslash 🧵";
+    let parent = source(&format!(
+        "import std.process.run\nimport std.list.new\nimport std.list.push\n\
+         import std.result.Result\nfn main() {{\nlet args = new[Text]()\n\
+         push(args, {:?})\npush(args, {literal:?})\npush(args, \"\")\n\
+         match run(args) {{ Result.Ok(code) => {{ assert code == 7 }}\n\
+         Result.Err(_) => {{ assert false }} }}\n}}",
+        path(&artifact),
+    ));
+    let output = managed(&["run", path(parent.path())], parent.path());
+    success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("{literal}\n\n")
+    );
+    assert!(!parent.path().join("MUST_NOT_EXIST").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn source_process_run_input_closes_stdin_before_waiting() {
+    let text = "literal input; $HOME $(not a command) 🧵\n".repeat(4096);
+    let parent = source(&format!(
+        "import std.process.run_input\nimport std.list.new\nimport std.list.push\n\
+         import std.result.Result\nfn main() {{\nlet args = new[Text]()\n\
+         push(args, \"/bin/cat\")\nmatch run_input(args, {text:?}) {{\n\
+         Result.Ok(code) => {{ assert code == 0 }}\nResult.Err(_) => {{ assert false }}\n}}\n}}"
+    ));
+    let output = managed(&["run", path(parent.path())], parent.path());
+    success(&output);
+    assert_eq!(output.stdout, text.as_bytes());
 }
 
 #[test]

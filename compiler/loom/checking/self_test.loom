@@ -1,0 +1,40 @@
+import frontend.loading.load
+import frontend.loading.Loaded
+import frontend.binding.bind
+import frontend.binding.Failure
+import frontend.source.render
+import std.io.write_error
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.text.concat
+import std.result.Result
+
+fn show_failure(loaded Loaded, failure Failure) {
+    let source = get(loaded.files, failure.source)
+    discard write_error(concat(render(source.path, source.text, failure.diagnostic), "\n"))
+}
+fn self_check(path Text) {
+    match load(path, "compiler/std", false) {
+        Result.Err(message) => { discard write_error(concat(message, "\n"))
+            assert false }
+        Result.Ok(loaded) => match bind(loaded.files, loaded.root, false) {
+            Result.Err(failure) => { show_failure(loaded, failure)
+                assert false }
+            Result.Ok(bound) => match check(bound) {
+                Result.Err(failure) => { show_failure(loaded, failure)
+                    assert false }
+                Result.Ok(program) => { assert length(program.types) >= 5 }
+            }
+        }
+    }
+}
+
+test fn source_checker_handles_real_compiler_and_library_packages() {
+    self_check("compiler/examples/scalar")
+    self_check("compiler/examples/data")
+    self_check("compiler/std/text")
+    self_check("compiler/std/list")
+    self_check("compiler/loom/checking")
+}

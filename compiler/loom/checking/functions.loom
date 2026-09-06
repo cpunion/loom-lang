@@ -1,0 +1,188 @@
+import frontend.binding.Failure
+import frontend.binding.has
+import frontend.binding.package
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import frontend.typed.TypeKind
+import frontend.typed.Local
+import frontend.typed.Expr
+import frontend.typed.ExprKind
+import frontend.typed.Function
+import frontend.proof.verify
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+record RuntimeSignature { parameters Int params List[Int] result Int }
+
+fn signature(env Environment, id Int, arguments List[Int], node Node) Result[Signature, Failure] {
+    let original = get(env.signatures, id)
+    if length(arguments) != original.parameters {
+        return Result.Err(failure(env, original.symbol, node, "wrong number of function type arguments"))
+    }
+    let params = new[Int]()
+    var index = 0
+    while index < length(original.params) {
+        push(params, substitute(env, original.symbol, get(original.params, index), arguments, node)?)
+        index = index + 1
+    }
+    Result.Ok(Signature { symbol = original.symbol parameters = original.parameters params = params
+        result = substitute(env, original.symbol, original.result, arguments, node)? })
+}
+fn schedule(env Environment, id Int, arguments List[Int], node Node) Result[Int, Failure] {
+    let current = get(env.signatures, id)
+    var index = 0
+    while index < length(env.pending) {
+        let previous = get(env.pending, index)
+        if previous.signature == id && same(previous.arguments, arguments) { return Result.Ok(index) }
+        index = index + 1
+    }
+    if length(env.pending) >= 1024 {
+        return Result.Err(failure(env, current.symbol, node, "function specialization budget exceeded; expansion must be finite"))
+    }
+    index = 0
+    while index < length(arguments) {
+        if type_depth(env, get(arguments, index)) >= 64 {
+            return Result.Err(failure(env, current.symbol, node, "function specialization depth exceeded; expansion must be finite"))
+        }
+        if !concrete(env, get(arguments, index)) {
+            return Result.Err(failure(env, current.symbol, node, "cannot emit unresolved type parameters"))
+        }
+        index = index + 1
+    }
+    let scheduled = length(env.pending)
+    push(env.pending, Instance { signature = id arguments = arguments })
+    Result.Ok(scheduled)
+}
+fn runtime(parameters Int, params List[Int], returns Int) RuntimeSignature {
+    RuntimeSignature { parameters = parameters params = params result = returns }
+}
+fn two_types(a Int, b Int) List[Int] { let values = ints(a)
+    push(values, b)
+    values
+}
+fn three_types(a Int, b Int, c Int) List[Int] { let values = two_types(a, b)
+    push(values, c)
+    values
+}
+fn runtime_signature(env Environment, name Text) RuntimeSignature {
+    if name == "text_len" || name == "open" || name == "create" || name == "path_kind" { return runtime(0, ints(3), 1) }
+    if name == "text_byte" { return runtime(0, two_types(3, 1), 1) }
+    if name == "text_concat" { return runtime(0, two_types(3, 3), 3) }
+    if name == "text_equal" { return runtime(0, two_types(3, 3), 2) }
+    if name == "text_slice" { return runtime(0, three_types(3, 1, 1), 3) }
+    if name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" { return runtime(0, ints(1), 2) }
+    if name == "arg_count" { return runtime(0, new[Int](), 1) }
+    if name == "arg_text" { return runtime(0, ints(1), 3) }
+    if name == "process_run" { return runtime(0, ints(intern(env, TypeKind.List, -1, ints(3))), 1) }
+    if name == "process_run_input" { return runtime(0, two_types(intern(env, TypeKind.List, -1, ints(3)), 3), 1) }
+    if name == "exit" { return runtime(0, ints(1), 0) }
+    if name == "bytes_new" { return runtime(0, new[Int](), 4) }
+    if name == "bytes_len" { return runtime(0, ints(4), 1) }
+    if name == "bytes_push" { return runtime(0, two_types(4, 1), 0) }
+    if name == "bytes_utf8" { return runtime(0, ints(4), 2) }
+    if name == "bytes_text_copy" { return runtime(0, ints(4), 3) }
+    if name == "read" { return runtime(0, three_types(1, 4, 1), 1) }
+    if name == "write" { return runtime(0, three_types(1, 3, 1), 1) }
+    if name == "close" { return runtime(0, ints(1), 1) }
+    if name == "directory_read" { return runtime(0, two_types(3, intern(env, TypeKind.List, -1, ints(3))), 1) }
+    if name == "path_canonical" { return runtime(0, two_types(3, 4), 1) }
+    let parameter = get(abstract_arguments(env, 1), 0)
+    let list = intern(env, TypeKind.List, -1, ints(parameter))
+    if name == "list_new" { return runtime(1, new[Int](), list) }
+    if name == "list_len" { return runtime(1, ints(list), 1) }
+    if name == "list_get" { return runtime(1, two_types(list, 1), parameter) }
+    if name == "list_push" { return runtime(1, two_types(list, parameter), 0) }
+    if name == "list_set" { return runtime(1, three_types(list, 1, parameter), 0) }
+    runtime(-1, new[Int](), -1)
+}
+fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
+    let current = get(env.signatures, id)
+    let item = symbol(env, current.symbol)
+    let expected = runtime_signature(env, item.name)
+    if expected.parameters < 0 { return Result.Err(failure(env, current.symbol, item.node, "unknown private runtime intrinsic")) }
+    if current.parameters != expected.parameters || !same(current.params, expected.params) || current.result != expected.result {
+        return Result.Err(failure(env, current.symbol, item.node, "intrinsic declaration does not match its runtime signature"))
+    }
+    if has(item.node, NodeKind.Block) || has(item.node, NodeKind.Requires) || has(item.node, NodeKind.Ensures) {
+        return Result.Err(failure(env, current.symbol, item.node, "intrinsic declarations have no source body or contracts"))
+    }
+    Result.Ok(item.name)
+}
+fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
+    if node.kind == NodeKind.Integer || node.kind == NodeKind.Bool { return Result.Ok(true) }
+    if node.kind == NodeKind.Name && package(node.value) == "" { return Result.Ok(true) }
+    if node.kind == NodeKind.Unary || node.kind == NodeKind.Binary {
+        var index = 0
+        while index < length(node.children) {
+            discard scalar_contract(context, child(node, index))?
+            index = index + 1
+        }
+        return Result.Ok(true)
+    }
+    Result.Err(error(context, node, "the seed supports only scalar, call-free contract predicates"))
+}
+fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failure] {
+    let clauses = new[Expr]()
+    var index = 0
+    while index < length(node.children) {
+        let member = child(node, index)
+        if member.kind == kind {
+            let predicate = child(member, 0)
+            discard scalar_contract(context, predicate)?
+            push(clauses, expr(context, predicate, 2)?)
+        }
+        index = index + 1
+    }
+    Result.Ok(clauses)
+}
+
+fn function(env Environment, id Int, arguments List[Int], emit Bool) Result[Function, Failure] {
+    let original = get(env.signatures, id)
+    let item = symbol(env, original.symbol)
+    let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
+    let current = signature(env, id, arguments, item.node)?
+    var context = Context { env = env signature = current arguments = arguments
+        locals = new[Local]() bindings = new[Binding]() head = -1 emit = emit }
+    let parameters = group(item.node, NodeKind.Parameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        context = bind_local(context, parameter, parameter.value, get(current.params, index), false, -1)?
+        index = index + 1
+    }
+    let preconditions = contracts(context, item.node, NodeKind.Requires)?
+    let body = if runtime_name == "" {
+        block(context, child(item.node, part(item.node, NodeKind.Block)), current.result, true)?
+    } else {
+        let values = new[Expr]()
+        index = 0
+        while index < length(current.params) {
+            push(values, atom(ExprKind.Local, get(current.params, index), item.node, index))
+            index = index + 1
+        }
+        let call = expression(ExprKind.Intrinsic, current.result, item.node, runtime_name, -1, values, true)
+        expression(ExprKind.Block, current.result, item.node, "", -1, expressions(call), true)
+    }
+    var result_local = -1
+    if has(item.node, NodeKind.Ensures) {
+        result_local = length(context.locals)
+        push(context.locals, Local { name = "result" ty = current.result mutable = false })
+        let binding = length(context.bindings)
+        push(context.bindings, Binding { local = result_local previous = context.head })
+        context = context_at(context, binding)
+    }
+    let postconditions = contracts(context, item.node, NodeKind.Ensures)?
+    let checked_function = Function { symbol = current.symbol arguments = arguments params = current.params result = current.result
+        locals = context.locals preconditions = preconditions postconditions = postconditions result_local = result_local
+        body = body runtime_name = runtime_name span = item.node.span }
+    if length(postconditions) != 0 {
+        match verify(checked_function) {
+            Result.Ok(_) => {}
+            Result.Err(message) => { return Result.Err(failure(env, current.symbol, item.node, message)) }
+        }
+    }
+    Result.Ok(checked_function)
+}

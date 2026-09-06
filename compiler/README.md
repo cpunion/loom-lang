@@ -1,12 +1,15 @@
-# Native compiler seed
+# Native compiler
 
-This is the small native compiler for the N0 vertical slice described in the
-[roadmap](../ROADMAP.md), validated on macOS. It is not the complete language,
-a self-hosted compiler, or a compatibility implementation of the removed code.
+The [Loom-written compiler](loom/README.md) implements package loading, parsing,
+binding, type checking, bounded required proofs, and checked program emission.
+It builds further compiler stages using one retained Rust LLVM/platform tool.
+The [roadmap](../ROADMAP.md) distinguishes this macOS bootstrap from completion
+of the accepted language; the Rust seed remains only for the initial stage and
+transition validation.
 
-One Rust package connects source syntax, checked functions, and LLVM 19
-through Inkwell. It does not depend on the removed compiler crates, interpreter,
-universal values, runtime bundle, or executor. Scalar-only programs link only
+The native tool consumes a checked program, not source that it parses or
+type-checks again. It shares the seed's LLVM 19 lowering through Inkwell;
+there is no second backend or runtime interpreter. Scalar-only programs link only
 the host C library for fault reporting; managed programs also link the small
 Rust runtime. Ordinary arithmetic and calls lower
 directly; LLVM's O2 pipeline promotes local storage and removes unused code.
@@ -29,16 +32,21 @@ target/debug/loom test compiler/examples/scalar
 target/debug/loom run compiler/examples/scalar
 target/debug/loom test compiler/std/int
 LOOM_GC_STRESS=1 target/debug/loom test compiler/std/list
-target/debug/loom build compiler/loom --output target/loom-front
-target/loom-front lex compiler/loom/main.loom
-target/loom-front parse compiler/loom/main.loom
+target/debug/loom build compiler/loom --output target/loom-stage1
+target/loom-stage1 build compiler/loom --output target/loom-stage2
+target/loom-stage2 build compiler/loom --output target/loom-stage3
+cmp target/loom-stage2 target/loom-stage3
+target/loom-stage3 test compiler/loom/checking
+target/loom-stage3 test compiler/std/result
+target/loom-stage3 run compiler/examples/data
 ```
 
-The root Cargo workspace and lockfile build the maintained compiler. Its binary
-is named `loom`; there is no compatibility backend.
-Development builds find their source `std` beside this manifest; `LOOM_STD` can
-select another standard-library directory. This is not yet a relocatable release
-package. `--help` lists the small command surface.
+The root Cargo workspace builds the initial `loom` seed and `loom-native` tool.
+The source compiler defaults to `compiler/std` and `target/debug/loom-native`
+relative to the working directory; `--std` and `--native-tool` select explicit
+paths. The Rust seed instead finds `std` beside its build-time manifest or via
+`LOOM_STD`. These are development commands, not a relocatable release package
+or a stable compiler-artifact ABI. `--help` lists each tool's command surface.
 
 ## Implemented subset
 
@@ -67,14 +75,16 @@ package. `--help` lists the small command surface.
   Identical test/production overload signatures are currently rejected.
 - A source `std.int` package with `minimum` and `maximum`, resolved through
   ordinary imports and calls, not compiler tables of library function names.
-- Source `std.text`, `std.list`, `std.result`, `std.file`, and `std.io`. Private
+- Source `std.text`, `std.list`, `std.result`, `std.file`, `std.fs`, and `std.io`. Private
   intrinsic signatures are checked against the runtime ABI and accepted only
   from the configured standard-library source root. Reading loops, UTF-8
   error policy, partial-write loops, and explicit file closure are ordinary Loom
   source. `file.write_text` creates or truncates a file; it is not an atomic or
   transactional write. `io.write_text` writes stdout without closing it.
 - Source UTF-8 scalar helpers, shared byte buffers, integer rendering, Unicode
-  property wrappers, stderr output, and process arguments/exit. Native entry
+  property wrappers, stderr output, process arguments/exit, and direct child
+  process invocation without a shell, with optional stdin input. Filesystem
+  path and directory operations support source package loading. Native entry
   initializes argument access only when the emitted program needs it.
 - Native executable builds when the selected package has `main`; otherwise,
   an object containing its public functions and their dependencies. Object
@@ -123,10 +133,12 @@ The `compiler/examples/data` package exercises records, enums, generic functions
 and both test forms through the same CLI. Scalar-only records stay native values;
 enum storage uses its largest variant payload, not the sum of all variants.
 
-The [Loom-written frontend](loom/README.md) replaces the ASCII scanner example.
-It parses its own source files into recursive syntax trees and emits positioned
-diagnostics through real file I/O and command-line arguments. It is not yet a
-complete compiler.
+The [Loom-written compiler](loom/README.md) uses ordinary source packages for
+syntax, project loading, binding, checking, proof, and typed artifact emission.
+It checks its own sources and builds subsequent native stages. Public parser/AST
+and optional semantic-query APIs are a separate
+[library acceptance gate](../ROADMAP.md#n2--complete-the-language-and-source-library),
+not a promise that the current internal structures are stable public schemas.
 
 The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;
@@ -137,12 +149,13 @@ No handles escape the file helpers; every recoverable branch closes the
 file explicitly. This is not general scoped cleanup or finalization.
 
 The N0 source-to-native gate is exercised by the examples and integration tests.
-N1 now has Loom source handling, lexing, syntax parsing, and diagnostics;
-binding, typing, and staged self-hosting remain next.
+N1 now includes the complete source frontend for this subset and native staged
+bootstrap through the retained LLVM tool. The replaced Rust source frontend
+must retire after transition validation; it is not a parallel product target.
 Mutable record fields, broader proofs, moving GC,
 lexical resources, Tasks, metaprogramming,
 dependency resolution, lockfile/cache behavior, deployment and semantic-change
-tools remain outside this slice. No complete std or self-hosting claim is made.
+tools remain outside this slice. No complete language or `std` claim is made.
 
 Unsupported syntax and manifest features reject explicitly. In particular,
 dependency and target declarations are not silently ignored. The accepted

@@ -1,0 +1,80 @@
+import std.result.Result
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.length
+import std.text.byte
+import std.text.length
+import std.bytes.new
+import std.bytes.to_text
+
+pub enum FileKind {
+    File
+    Directory
+    Other
+}
+
+pub enum FsError {
+    Read
+    Metadata
+    Canonical
+    Utf8
+}
+
+intrinsic fn directory_read(path Text, names List[Text]) Int
+intrinsic fn path_kind(path Text) Int
+intrinsic fn path_canonical(path Text, buffer Bytes) Int
+
+fn before(left Text, right Text) Bool {
+    var index = 0
+    while index < std.text.length(left) && index < std.text.length(right) {
+        let a = byte(left, index)
+        let b = byte(right, index)
+        if a != b { return a < b }
+        index = index + 1
+    }
+    std.text.length(left) < std.text.length(right)
+}
+
+fn sort(names List[Text]) {
+    var index = 1
+    while index < std.list.length(names) {
+        let value = get(names, index)
+        var position = index
+        while position > 0 && before(value, get(names, position - 1)) {
+            set(names, position, get(names, position - 1))
+            position = position - 1
+        }
+        set(names, position, value)
+        index = index + 1
+    }
+}
+
+// Entry names only, ordered by UTF-8 bytes. A failed enumeration returns no
+// partial list. Non-UTF-8 names are errors, never silently rewritten.
+pub fn entries(path Text) Result[List[Text], FsError] {
+    let names = std.list.new[Text]()
+    let status = directory_read(path, names)
+    if status == -2 { return Result.Err(FsError.Utf8) }
+    if status < 0 { return Result.Err(FsError.Read) }
+    sort(names)
+    Result.Ok(names)
+}
+
+// Follows symlinks. Missing paths and broken symlinks return an error.
+pub fn kind(path Text) Result[FileKind, FsError] {
+    let value = path_kind(path)
+    if value < 0 { return Result.Err(FsError.Metadata) }
+    if value == 0 { return Result.Ok(FileKind.File) }
+    if value == 1 { return Result.Ok(FileKind.Directory) }
+    Result.Ok(FileKind.Other)
+}
+
+// Resolves an existing path, including symlinks, to an absolute spelling.
+pub fn canonicalize(path Text) Result[Text, FsError] {
+    let buffer = std.bytes.new()
+    let status = path_canonical(path, buffer)
+    if status == -2 { return Result.Err(FsError.Utf8) }
+    if status < 0 { return Result.Err(FsError.Canonical) }
+    Result.Ok(to_text(buffer))
+}

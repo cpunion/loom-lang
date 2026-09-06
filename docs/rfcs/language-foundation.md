@@ -32,6 +32,34 @@ unification. A locked build preserves its dependency graph. Fork selection is
 local by default; graph-wide selection is explicit in a dependency entry,
 without a separate `replace` table.
 
+## Compiler libraries and tooling
+
+Loom programs must be able to use the language's parser and analysis as
+libraries, not only through the compiler executable. Keep these boundaries
+separate:
+
+- **Syntax:** parse supplied source text into structured syntax with source
+  spans and diagnostics. This lightweight layer does not discover projects,
+  read files, resolve imports, invoke the CLI, or load a native backend.
+- **Projects:** explicitly load files, manifests, and selected package/test
+  dependencies. In-memory parsing remains usable without filesystem access.
+- **Semantics:** optionally request resolved declarations, bindings, inferred
+  types, and diagnostics for a selected program basis. Syntax tools need not
+  type-check a complete project. Semantic results identify their basis so
+  clients cannot mistake stale results for current facts.
+- **Metaprogramming:** typed reflection and code generation reuse the syntax
+  and semantic infrastructure, subject to visibility, staging, and tracked
+  build-input rules. They do not bypass those rules through a tooling API.
+
+Ordinary files remain the user's editing surface. Source spans describe a
+particular revision's locations; they are not persistent declaration identities.
+Semantic-change tools combine these libraries with the separate identity and
+history metadata needed to distinguish a move from an edit, as specified in
+[Changes and deployment](change-and-deployment.md#story-2-merge-ordinary-source-and-retain-useful-feedback).
+Library access must not require adopting a source database or compiler driver.
+These are responsibility boundaries, not settled package names, a stable AST
+schema, or a promise that every internal compiler structure becomes public API.
+
 ## Functions and polymorphism
 
 Parameters and fields use `name Type`. An omitted return type means no value

@@ -16,6 +16,11 @@ struct Root {
     trace: Trace,
 }
 
+unsafe extern "C" fn trace_pointer(address: *mut u8) {
+    // SAFETY: Pointer roots and managed list elements are initialized slots.
+    loom_rt_mark(unsafe { *address.cast::<*mut u8>() });
+}
+
 struct Allocation {
     pointer: NonNull<u8>,
     layout: Layout,
@@ -322,6 +327,80 @@ unsafe extern "C" fn loom_rt_process_arg_text(index: i64) -> *mut u8 {
     }
 }
 
+unsafe fn process_command(arguments: *const u8) -> Result<std::process::Command, i64> {
+    // SAFETY: The intrinsic accepts only List[Text]. Command copies each argument
+    // into OS-owned storage; this synchronous call never allocates in Loom's heap.
+    let arguments = unsafe { &*arguments.cast::<List>() };
+    if arguments.buffer.len == 0 {
+        return Err(-2);
+    }
+    let argument = |index: usize| {
+        // SAFETY: Each initialized List element is a valid UTF-8 Text pointer.
+        unsafe {
+            let text = *arguments
+                .buffer
+                .data
+                .add(index * arguments.stride)
+                .cast::<*const u8>();
+            std::str::from_utf8_unchecked(text_bytes(text))
+        }
+    };
+    // Command otherwise dispatches Windows batch files through cmd.exe.
+    #[cfg(windows)]
+    if std::path::Path::new(argument(0))
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("bat") || extension.eq_ignore_ascii_case("cmd")
+        })
+    {
+        return Err(-1);
+    }
+    let mut command = std::process::Command::new(argument(0));
+    for index in 1..arguments.buffer.len {
+        command.arg(argument(index));
+    }
+    Ok(command)
+}
+
+fn process_status(status: std::io::Result<std::process::ExitStatus>) -> i64 {
+    match status {
+        Ok(status) => status.code().map_or(-3, |code| i64::from(code as u32)),
+        Err(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_process_run(arguments: *const u8) -> i64 {
+    // SAFETY: The private ABI passes List[Text]; no managed allocation occurs.
+    match unsafe { process_command(arguments) } {
+        Ok(mut command) => process_status(command.status()),
+        Err(status) => status,
+    }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_process_run_input(arguments: *const u8, input: *const u8) -> i64 {
+    use std::io::Write;
+
+    // SAFETY: Both arguments remain live for this nonallocating synchronous call.
+    let mut command = match unsafe { process_command(arguments) } {
+        Ok(command) => command,
+        Err(status) => return status,
+    };
+    let Ok(mut child) = command.stdin(std::process::Stdio::piped()).spawn() else {
+        return -1;
+    };
+    // Taking stdin guarantees the pipe closes before wait, including write errors.
+    // The child is reaped even if it stops reading before consuming all input.
+    let written = child.stdin.take().is_some_and(|mut pipe| {
+        // SAFETY: input is immutable UTF-8 Text and no Loom GC runs while writing.
+        pipe.write_all(unsafe { text_bytes(input) }).is_ok()
+    });
+    let status = child.wait();
+    if written { process_status(status) } else { -1 }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn loom_rt_process_exit(code: i64) -> ! {
     let code = u8::try_from(code).unwrap_or_else(|_| fault("exit code out of range"));
@@ -561,14 +640,87 @@ extern "C" fn loom_rt_file_close(fd: i64) -> i64 {
     i64::from(unsafe { libc::close(fd) })
 }
 
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_directory_read(path: *const u8, names: *mut u8) -> i64 {
+    // SAFETY: The caller supplies rooted Text and List[Text] values. Text is
+    // valid UTF-8; read_dir consumes the path without retaining its bytes.
+    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return -1;
+    };
+    let mut name: *mut u8 = ptr::null_mut();
+    let root = Root {
+        address: ptr::from_mut(&mut name).cast(),
+        trace: trace_pointer,
+    };
+    // SAFETY: The slot stays live until roots_leave, including early failures
+    // inside the closure. Growing names can collect the just-created Text.
+    let checkpoint = unsafe { loom_rt_roots_enter(&root, 1) };
+    let status = (|| {
+        for entry in entries {
+            let Ok(entry) = entry else { return -1 };
+            let spelling = entry.file_name();
+            let Some(spelling) = spelling.to_str() else {
+                return -2;
+            };
+            // SAFETY: Owned OS bytes survive the Text allocation; the name
+            // root protects its copy through any list backing-buffer growth.
+            unsafe {
+                name = loom_rt_text_new(spelling.as_ptr(), spelling.len());
+                loom_rt_list_push(names, ptr::from_ref(&name).cast());
+            }
+        }
+        0
+    })();
+    loom_rt_roots_leave(checkpoint);
+    status
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_path_kind(path: *const u8) -> i64 {
+    // SAFETY: The non-retaining call receives valid UTF-8 Text. Metadata follows
+    // symlinks; a missing target is reported as an error, not as a file kind.
+    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return -1;
+    };
+    if metadata.is_file() {
+        0
+    } else if metadata.is_dir() {
+        1
+    } else {
+        2
+    }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_path_canonical(path: *const u8, bytes: *mut u8) -> i64 {
+    // SAFETY: The caller roots the Text and mutable Bytes arguments.
+    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return -1;
+    };
+    let Some(spelling) = canonical.to_str() else {
+        return -2;
+    };
+    let buffer = bytes.cast::<Buffer>();
+    // SAFETY: reserve may collect but the caller roots bytes and the canonical
+    // path owns its spelling separately. The reserved tail holds every byte.
+    unsafe {
+        reserve(buffer, spelling.len(), 1);
+        ptr::copy_nonoverlapping(
+            spelling.as_ptr(),
+            (*buffer).data.add((*buffer).len),
+            spelling.len(),
+        );
+        (*buffer).len += spelling.len();
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    unsafe extern "C" fn trace_pointer(address: *mut u8) {
-        // SAFETY: Test roots and list elements are initialized pointer slots.
-        loom_rt_mark(unsafe { *address.cast::<*mut u8>() });
-    }
 
     fn live() -> usize {
         HEAP.with(|heap| heap.borrow().objects.len())

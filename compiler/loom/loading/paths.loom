@@ -1,0 +1,69 @@
+import std.text.byte
+import std.text.slice
+import std.text.length
+import std.text.concat
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+
+// The bootstrap currently targets POSIX hosts. All filesystem boundaries use
+// std.fs canonical paths; these are spelling operations, not existence checks.
+fn starts(value Text, prefix Text) Bool {
+    length(value) >= length(prefix) && slice(value, 0, length(prefix)) == prefix
+}
+fn ends(value Text, suffix Text) Bool {
+    length(value) >= length(suffix) && slice(value, length(value) - length(suffix), length(value)) == suffix
+}
+fn join(base Text, part Text) Text {
+    concat(base, concat(if ends(base, "/") { "" } else { "/" }, part))
+}
+fn parent(path Text) Text {
+    var offset = length(path)
+    while offset > 1 {
+        offset = offset - 1
+        if byte(path, offset) == 47 { return slice(path, 0, offset) }
+    }
+    "/"
+}
+fn inside(path Text, root Text) Bool { path == root || starts(path, join(root, "")) }
+fn parts(value Text, separator Int) List[Text] {
+    let values = new[Text]()
+    var start = 0
+    var offset = 0
+    while offset <= length(value) {
+        if offset == length(value) || byte(value, offset) == separator {
+            push(values, slice(value, start, offset))
+            start = offset + 1
+        }
+        offset = offset + 1
+    }
+    values
+}
+fn contains(values List[Text], value Text, count Int) Bool {
+    var index = 0
+    while index < count {
+        if get(values, index) == value { return true }
+        index = index + 1
+    }
+    false
+}
+fn before(left Text, right Text) Bool {
+    var index = 0
+    while index < length(left) && index < length(right) {
+        if byte(left, index) != byte(right, index) { return byte(left, index) < byte(right, index) }
+        index = index + 1
+    }
+    length(left) < length(right)
+}
+fn include(values List[Text], value Text) {
+    if contains(values, value, length(values)) { return }
+    var position = length(values)
+    push(values, value)
+    while position > 0 && before(value, get(values, position - 1)) {
+        set(values, position, get(values, position - 1))
+        position = position - 1
+    }
+    set(values, position, value)
+}

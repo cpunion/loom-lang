@@ -1,0 +1,164 @@
+import frontend.typed.Function
+import frontend.typed.Expr
+import frontend.typed.ExprKind
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+fn returned(function Function, state State, value Value) Result[Bool, Text] {
+    let returned = assigned(state, function.result_local, value)
+    var index = 0
+    while index < length(function.postconditions) {
+        let condition = get(function.postconditions, index)
+        discard defined(condition, returned)?
+        if !holds(boolean(pure(condition, returned)?)?, returned.facts) {
+            return Result.Err("required postcondition is not proved by the bounded scalar prover")
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn add_outcome(output List[Outcome], value Outcome) Result[Bool, Text] {
+    if length(output) >= 4096 { return Result.Err("proof path budget exhausted") }
+    push(output, value)
+    Result.Ok(true)
+}
+fn append(output List[Outcome], values List[Outcome]) Result[Bool, Text] {
+    var index = 0
+    while index < length(values) { discard add_outcome(output, get(values, index))?
+        index = index + 1 }
+    Result.Ok(true)
+}
+fn block(function Function, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+    var states = outcomes(state, Value.Empty)
+    var index = 0
+    while index < length(expr.children) {
+        let next = new[Outcome]()
+        var path = 0
+        while path < length(states) {
+            discard append(next, execute(function, get(expr.children, index), get(states, path).state, depth - 1)?)?
+            path = path + 1
+        }
+        states = next
+        index = index + 1
+    }
+    Result.Ok(states)
+}
+fn conditional(function Function, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+    let output = new[Outcome]()
+    let conditions = execute(function, get(expr.children, 0), state, depth - 1)?
+    var index = 0
+    while index < length(conditions) {
+        let condition = get(conditions, index)
+        let fact = boolean(condition.value)?
+        discard append(output, execute(function, get(expr.children, 1), assume(condition.state, fact), depth - 1)?)?
+        let alternative = assume(condition.state, not(fact))
+        if length(expr.children) == 3 {
+            discard append(output, execute(function, get(expr.children, 2), alternative, depth - 1)?)?
+        } else { discard add_outcome(output, Outcome { state = alternative value = Value.Empty })? }
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+fn operation(function Function, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+    let output = new[Outcome]()
+    let left = execute(function, get(expr.children, 0), state, depth - 1)?
+    var index = 0
+    while index < length(left) {
+        let first = get(left, index)
+        if expr.kind == ExprKind.Unary {
+            let value = unary(expr.text, first.value)?
+            discard add_outcome(output, Outcome { state = bounded(value, first.state) value = value })?
+        } else {
+            if expr.text == "&&" || expr.text == "||" {
+                let fact = boolean(first.value)?
+                let and = expr.text == "&&"
+                let skipped = assume(first.state, if and { not(fact) } else { fact })
+                discard add_outcome(output, Outcome { state = skipped value = Value.Boolean(Predicate.Constant(!and)) })?
+                let next = assume(first.state, if and { fact } else { not(fact) })
+                discard append(output, execute(function, get(expr.children, 1), next, depth - 1)?)?
+            } else {
+                let right = execute(function, get(expr.children, 1), first.state, depth - 1)?
+                var other = 0
+                while other < length(right) {
+                    let second = get(right, other)
+                    let value = binary(expr.text, first.value, second.value)?
+                    discard add_outcome(output, Outcome { state = bounded(value, second.state) value = value })?
+                    other = other + 1
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+fn execute(function Function, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+    if depth <= 0 { return Result.Err("proof depth budget exhausted") }
+    if holds(Predicate.Constant(false), state.facts) { return Result.Ok(new[Outcome]()) }
+    if expr.kind == ExprKind.Block { return block(function, expr, state, depth) }
+    if expr.kind == ExprKind.If { return conditional(function, expr, state, depth) }
+    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary { return operation(function, expr, state, depth) }
+    if expr.kind == ExprKind.Coerce { return execute(function, get(expr.children, 0), state, depth - 1) }
+    if expr.kind == ExprKind.Return && length(expr.children) == 0 {
+        discard returned(function, state, Value.Empty)?
+        return Result.Ok(new[Outcome]())
+    }
+    if expr.kind == ExprKind.Let || expr.kind == ExprKind.Assign || expr.kind == ExprKind.Return || expr.kind == ExprKind.Assert || expr.kind == ExprKind.Discard {
+        let values = execute(function, get(expr.children, 0), state, depth - 1)?
+        let output = new[Outcome]()
+        var index = 0
+        while index < length(values) {
+            let value = get(values, index)
+            if expr.kind == ExprKind.Return {
+                discard returned(function, value.state, value.value)?
+            } else {
+                let state = if expr.kind == ExprKind.Assert {
+                    assume(value.state, boolean(value.value)?)
+                } else {
+                    if expr.kind == ExprKind.Let || expr.kind == ExprKind.Assign {
+                        assigned(value.state, expr.index, value.value)
+                    } else { value.state }
+                }
+                discard add_outcome(output, Outcome { state = state value = Value.Empty })?
+            }
+            index = index + 1
+        }
+        return Result.Ok(output)
+    }
+    Result.Ok(outcomes(state, pure(expr, state)?))
+}
+
+pub fn verify(function Function) Result[Bool, Text] {
+    if length(function.postconditions) == 0 { return Result.Ok(true) }
+    let locals = new[Value]()
+    var index = 0
+    while index < length(function.locals) { push(locals, Value.Empty)
+        index = index + 1 }
+    var state = State { locals = locals facts = new[Predicate]() }
+    index = 0
+    while index < length(function.params) {
+        let ty = get(function.params, index)
+        let value = if ty == 1 { Value.Number(variable(index)) } else {
+            if ty == 2 { Value.Boolean(Predicate.Variable(index)) } else {
+                return Result.Err("required proof currently needs scalar parameters")
+            }
+        }
+        state = assigned(state, index, value)
+        index = index + 1
+    }
+    index = 0
+    while index < length(function.preconditions) {
+        state = assume(state, boolean(pure(get(function.preconditions, index), state)?)?)
+        index = index + 1
+    }
+    let exits = execute(function, function.body, state, 256)?
+    index = 0
+    while index < length(exits) {
+        let exit = get(exits, index)
+        discard returned(function, exit.state, exit.value)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}

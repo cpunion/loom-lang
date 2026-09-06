@@ -1,0 +1,189 @@
+import frontend.binding.SourceFile
+import frontend.binding.has
+import frontend.binding.package
+import frontend.binding.qualify
+import frontend.manifest.Module
+import frontend.manifest.segment
+import frontend.manifest.parse
+import frontend.parser.parse
+import frontend.source.render
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import std.fs.entries
+import std.fs.kind
+import std.fs.canonicalize
+import std.fs.FileKind
+import std.file.read_text
+import std.result.Result
+
+pub record Loaded { files List[SourceFile] root Text }
+record ModuleRoot { name Text base Text }
+record Loader {
+    files List[SourceFile]
+    module ModuleRoot
+    std_root Text
+    active List[Text]
+    complete List[Text]
+}
+
+fn is_file(path Text) Bool {
+    match kind(path) {
+        Result.Ok(value) => value == FileKind.File
+        Result.Err(_) => false
+    }
+}
+fn canonical(path Text) Result[Text, Text] {
+    match canonicalize(path) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(_) => Result.Err(concat(path, ": cannot resolve filesystem path"))
+    }
+}
+fn read(path Text) Result[Text, Text] {
+    match read_text(path) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(_) => Result.Err(concat(path, ": cannot read UTF-8 source"))
+    }
+}
+fn module_root(directory Text) Result[ModuleRoot, Text] {
+    var current = directory
+    while true {
+        let path = join(current, "loom.toml")
+        if is_file(path) {
+            let module = match frontend.manifest.parse(read(path)?) {
+                Result.Ok(value) => value
+                Result.Err(error) => { return Result.Err(concat(path, concat(": ", error))) }
+            }
+            return Result.Ok(ModuleRoot { name = module.name base = current })
+        }
+        let next = parent(current)
+        if next == current { return Result.Ok(ModuleRoot { name = "" base = "" }) }
+        current = next
+    }
+    Result.Err("unreachable module root")
+}
+fn package_name(directory Text, base Text, name Text) Result[Text, Text] {
+    if directory == base { return Result.Ok(name) }
+    let relative = slice(directory, length(join(base, "")), length(directory))
+    let segments = parts(relative, 47)
+    var index = 0
+    var qualified = name
+    while index < length(segments) {
+        let part = get(segments, index)
+        if !segment(part) { return Result.Err(concat("invalid package directory ", part)) }
+        qualified = qualify(qualified, part)
+        index = index + 1
+    }
+    Result.Ok(qualified)
+}
+fn import_directory(loader Loader, package Text) Result[Text, Text] {
+    let segments = parts(package, 46)
+    let module = get(segments, 0)
+    var directory = loader.std_root
+    if module != "std" {
+        if module != loader.module.name || module == "" {
+            return Result.Err(concat("unknown module or missing loom.toml for import ", package))
+        }
+        directory = loader.module.base
+    }
+    var index = 1
+    while index < length(segments) {
+        let part = get(segments, index)
+        if !segment(part) { return Result.Err(concat("invalid package path ", package)) }
+        directory = join(directory, part)
+        if is_file(join(directory, "loom.toml")) {
+            return Result.Err(concat("import crosses a nested module boundary: ", package))
+        }
+        index = index + 1
+    }
+    Result.Ok(directory)
+}
+fn production(tree Node, tests Bool) Node {
+    if tests { return tree }
+    let children = new[Node]()
+    var index = 0
+    while index < length(tree.children) {
+        let child = get(tree.children, index)
+        if child.kind != NodeKind.Function || !has(child, NodeKind.Test) { push(children, child) }
+        index = index + 1
+    }
+    Node { kind = tree.kind value = tree.value span = tree.span children = children }
+}
+fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Result[Bool, Text] {
+    if contains(loader.active, package, depth) {
+        return Result.Err(concat("package import cycle through ", package))
+    }
+    if contains(loader.complete, package, length(loader.complete)) { return Result.Ok(true) }
+    if depth == length(loader.active) { push(loader.active, package) } else { set(loader.active, depth, package) }
+    let names = match entries(directory) {
+        Result.Ok(value) => value
+        Result.Err(_) => { return Result.Err(concat(directory, ": cannot read directory")) }
+    }
+    let imports = new[Text]()
+    var count = 0
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        let path = join(directory, name)
+        let test_only = ends(name, "_test.loom")
+        if ends(name, ".loom") && (!test_only || tests) && is_file(path) {
+            let text = read(path)?
+            let tree = match frontend.parser.parse(text) {
+                Result.Ok(value) => production(value, tests)
+                Result.Err(error) => { return Result.Err(render(path, text, error)) }
+            }
+            var item = 0
+            while item < length(tree.children) {
+                let node = get(tree.children, item)
+                if node.kind == NodeKind.Refined && package != "std.result" { include(imports, "std.result") }
+                if node.kind == NodeKind.Import {
+                    let target = frontend.binding.package(node.value)
+                    if target == "" {
+                        return Result.Err(concat(path, ": imports name a module/package and declaration"))
+                    }
+                    if target != package { include(imports, target) }
+                }
+                item = item + 1
+            }
+            let resolved = canonical(path)?
+            push(loader.files, SourceFile {
+                package = package path = path text = text tree = tree
+                test_only = test_only trusted_std = inside(resolved, loader.std_root)
+            })
+            count = count + 1
+        }
+        index = index + 1
+    }
+    if count == 0 { return Result.Err(concat(directory, ": no selected Loom source files")) }
+    index = 0
+    while index < length(imports) {
+        let target = get(imports, index)
+        discard visit(loader, target, import_directory(loader, target)?, false, depth + 1)?
+        index = index + 1
+    }
+    push(loader.complete, package)
+    Result.Ok(true)
+}
+
+// Only the selected root package contributes tests. Imports are directory
+// packages; compiler-owned intrinsic trust comes from each canonical file path.
+pub fn load(path Text, std_root Text, tests Bool) Result[Loaded, Text] {
+    let directory = canonical(path)?
+    let is_directory = match kind(directory) {
+        Result.Ok(value) => value == FileKind.Directory
+        Result.Err(_) => false
+    }
+    if !is_directory { return Result.Err("expected a package directory, not an individual source file") }
+    let standard = canonical(std_root)?
+    let module = module_root(directory)?
+    var root = ""
+    if module.name != "" { root = package_name(directory, module.base, module.name)? } else {
+        if inside(directory, standard) { root = package_name(directory, standard, "std")? }
+    }
+    let files = new[SourceFile]()
+    let loader = Loader {
+        files = files module = module std_root = standard
+        active = new[Text]() complete = new[Text]()
+    }
+    discard visit(loader, root, directory, tests, 0)?
+    Result.Ok(Loaded { files = files root = root })
+}

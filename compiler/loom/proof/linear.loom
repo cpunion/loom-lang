@@ -1,0 +1,172 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+
+fn add(a Linear, b Linear) Linear {
+    let terms = new[Term]()
+    var left = 0
+    var right = 0
+    while left < length(a.terms) || right < length(b.terms) {
+        let id = if right == length(b.terms) {
+            get(a.terms, left).id
+        } else {
+            if left == length(a.terms) { get(b.terms, right).id } else {
+                let first = get(a.terms, left).id
+                let second = get(b.terms, right).id
+                if first < second { first } else { second }
+            }
+        }
+        var factor = integer(0)
+        if left < length(a.terms) && get(a.terms, left).id == id {
+            factor = get(a.terms, left).factor
+            left = left + 1
+        }
+        if right < length(b.terms) && get(b.terms, right).id == id {
+            factor = sum(factor, get(b.terms, right).factor)
+            right = right + 1
+        }
+        if length(factor.digits) != 0 { push(terms, Term { id = id factor = factor }) }
+    }
+    Linear { constant = sum(a.constant, b.constant) terms = terms }
+}
+fn scale(value Linear, factor Number) Linear {
+    let terms = new[Term]()
+    var index = 0
+    while index < length(value.terms) {
+        let term = get(value.terms, index)
+        let coefficient = product(term.factor, factor)
+        if length(coefficient.digits) != 0 { push(terms, Term { id = term.id factor = coefficient }) }
+        index = index + 1
+    }
+    Linear { constant = product(value.constant, factor) terms = terms }
+}
+fn same_terms(a List[Term], b List[Term]) Bool {
+    if length(a) != length(b) { return false }
+    var index = 0
+    while index < length(a) {
+        let left = get(a, index)
+        let right = get(b, index)
+        if left.id != right.id || compare(left.factor, right.factor) != 0 { return false }
+        index = index + 1
+    }
+    true
+}
+fn same_predicates(a List[Predicate], b List[Predicate]) Bool {
+    if length(a) != length(b) { return false }
+    var index = 0
+    while index < length(a) {
+        if !same(get(a, index), get(b, index)) { return false }
+        index = index + 1
+    }
+    true
+}
+fn same(a Predicate, b Predicate) Bool {
+    match a {
+        Predicate.Constant(value) => match b { Predicate.Constant(other) => value == other, _ => false }
+        Predicate.Variable(id) => match b { Predicate.Variable(other) => id == other, _ => false }
+        Predicate.Compare(relation, value) => match b {
+            Predicate.Compare(other, term) => relation == other && compare(value.constant, term.constant) == 0 && same_terms(value.terms, term.terms)
+            _ => false
+        }
+        Predicate.Equal(values) => match b { Predicate.Equal(other) => same_predicates(values, other), _ => false }
+        Predicate.Not(values) => match b { Predicate.Not(other) => same_predicates(values, other), _ => false }
+        Predicate.And(values) => match b { Predicate.And(other) => same_predicates(values, other), _ => false }
+        Predicate.Or(values) => match b { Predicate.Or(other) => same_predicates(values, other), _ => false }
+    }
+}
+fn tighten(bounds Bounds, relation Text, value Number) Bounds {
+    var low = bounds.low
+    var high = bounds.high
+    if relation == "==" || relation == ">=" || relation == ">" {
+        let minimum = if relation == ">" { sum(value, integer(1)) } else { value }
+        if compare(low, minimum) < 0 { low = minimum }
+    }
+    if relation == "==" || relation == "<=" || relation == "<" {
+        let maximum = if relation == "<" { subtract(value, integer(1)) } else { value }
+        if compare(high, maximum) > 0 { high = maximum }
+    }
+    Bounds { low = low high = high }
+}
+fn range(value Linear, facts List[Predicate]) Bounds {
+    var low = value.constant
+    var high = value.constant
+    var index = 0
+    while index < length(value.terms) {
+        let coefficient = get(value.terms, index)
+        var bounds = Bounds { low = integer(-9223372036854775808) high = integer(9223372036854775807) }
+        var fact_index = 0
+        while fact_index < length(facts) {
+            match get(facts, fact_index) {
+                Predicate.Compare(relation, term) => {
+                    if length(term.terms) == 1 && get(term.terms, 0).id == coefficient.id {
+                        let factor = get(term.terms, 0).factor
+                        if compare(factor, integer(1)) == 0 { bounds = tighten(bounds, relation, negate(term.constant)) }
+                        if compare(factor, integer(-1)) == 0 { bounds = tighten(bounds, flip(relation), term.constant) }
+                    }
+                }
+                _ => {}
+            }
+            fact_index = fact_index + 1
+        }
+        if compare(bounds.low, bounds.high) > 0 { return Bounds { low = integer(1) high = integer(0) } }
+        let a = if coefficient.factor.negative { bounds.high } else { bounds.low }
+        let b = if coefficient.factor.negative { bounds.low } else { bounds.high }
+        low = sum(low, product(a, coefficient.factor))
+        high = sum(high, product(b, coefficient.factor))
+        index = index + 1
+    }
+    var bounds = Bounds { low = low high = high }
+    index = 0
+    while index < length(facts) {
+        match get(facts, index) {
+            Predicate.Compare(relation, term) => {
+                if same_terms(value.terms, term.terms) {
+                    bounds = tighten(bounds, relation, subtract(value.constant, term.constant))
+                }
+            }
+            _ => {}
+        }
+        index = index + 1
+    }
+    bounds
+}
+fn interval(relation Text, bounds Bounds) Bool {
+    if compare(bounds.low, bounds.high) > 0 { return true }
+    let low = compare(bounds.low, integer(0))
+    let high = compare(bounds.high, integer(0))
+    if relation == "==" { return low == 0 && high == 0 }
+    if relation == "!=" { return high < 0 || low > 0 }
+    if relation == "<" { return high < 0 }
+    if relation == "<=" { return high <= 0 }
+    if relation == ">" { return low > 0 }
+    low >= 0
+}
+fn holds(predicate Predicate, facts List[Predicate]) Bool {
+    var index = 0
+    while index < length(facts) {
+        let fact = get(facts, index)
+        if same(predicate, fact) { return true }
+        match fact {
+            Predicate.Constant(value) => { if !value { return true } }
+            Predicate.Compare(relation, term) => { if interval(inverse(relation), range(term, facts)) { return true } }
+            _ => {}
+        }
+        var other = 0
+        let opposite = not(fact)
+        while other < index {
+            if same(get(facts, other), opposite) { return true }
+            other = other + 1
+        }
+        index = index + 1
+    }
+    match predicate {
+        Predicate.Constant(value) => value
+        Predicate.Compare(relation, value) => interval(relation, range(value, facts))
+        Predicate.And(values) => holds(get(values, 0), facts) && holds(get(values, 1), facts)
+        Predicate.Or(values) => holds(get(values, 0), facts) || holds(get(values, 1), facts)
+        Predicate.Equal(values) => (holds(get(values, 0), facts) && holds(get(values, 1), facts)) ||
+            (holds(not(get(values, 0)), facts) && holds(not(get(values, 1)), facts))
+        _ => false
+    }
+}
