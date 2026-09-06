@@ -1,6 +1,6 @@
-import frontend.binding.SourceFile
-import frontend.binding.Failure
-import frontend.binding.bind
+import std.loom.project.SourceFile
+import std.loom.binding.Failure
+import std.loom.binding.bind
 import std.loom.parser.parse
 import frontend.checking.check
 import frontend.typed.Program

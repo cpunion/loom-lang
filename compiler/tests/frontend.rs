@@ -68,9 +68,9 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/loom/source",
         "std/loom/lexer",
         "std/loom/parser",
-        "loom/binding",
-        "loom/manifest",
-        "loom/loading",
+        "std/loom/binding",
+        "std/loom/manifest",
+        "std/loom/project",
         "loom/proof",
         "loom/checking",
         "loom/artifact",
@@ -85,6 +85,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/scalar",
         "examples/data",
         "examples/syntax",
+        "examples/project",
     ] {
         success(&source_compiler(
             stage3,
@@ -188,4 +189,109 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
     let output = loom(&["run", invalid_slice.to_str().unwrap()]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("UTF-8 boundary"));
+}
+
+#[test]
+fn ordinary_project_tool_selects_packages_and_tests_without_a_compiler_child() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = common::root();
+    let tool = temp.path().join("project");
+    let ir = temp.path().join("project.ll");
+    success(&loom(&[
+        "build",
+        root.join("compiler/examples/project").to_str().unwrap(),
+        "--output",
+        tool.to_str().unwrap(),
+        "--emit-ir",
+        ir.to_str().unwrap(),
+    ]));
+    let ir = fs::read_to_string(ir).unwrap();
+    for absent in ["loom_rt_process_run", "loom_rt_file_create"] {
+        assert!(!ir.contains(absent), "project API leaked {absent}");
+    }
+
+    let package = temp.path().join("app");
+    for directory in ["dep", "testutil", "unselected"] {
+        fs::create_dir_all(package.join(directory)).unwrap();
+    }
+    fs::write(
+        package.join("loom.toml"),
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let production = "import app.dep.open\nfn secret() Int { 7 }\npub fn answer() Int { open() }\ntest fn inline() { assert secret() == helper() }\n";
+    fs::write(package.join("main.loom"), production).unwrap();
+    fs::write(
+        package.join("main_test.loom"),
+        "import app.testutil.extra\nfn helper() Int { extra() }\ntest fn colocated() { assert secret() == helper() }\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("dep/main.loom"),
+        "pub fn open() Int { 42 }\nfn hidden() {}\ntest fn dependency() { absent() }\n",
+    )
+    .unwrap();
+    fs::write(package.join("dep/broken_test.loom"), "invalid source").unwrap();
+    fs::write(
+        package.join("testutil/main.loom"),
+        "pub fn extra() Int { 7 }",
+    )
+    .unwrap();
+    fs::write(package.join("unselected/main.loom"), "invalid source").unwrap();
+    let inspect = |tests| {
+        let mut command = Command::new(&tool);
+        command.arg(&package).arg(root.join("compiler/std"));
+        if tests {
+            command.arg("--tests");
+        }
+        command.output().unwrap()
+    };
+    let output = inspect(false);
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("package app\nselected files 2\n"));
+    assert!(stdout.contains("fn app.secret @"));
+    assert!(stdout.contains("pub fn app.answer @"));
+    assert!(!stdout.contains("test fn"));
+    assert!(!stdout.contains("app.helper"));
+    let output = inspect(true);
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("package app\nselected files 4\n"));
+    assert!(stdout.contains("test fn app.inline @"));
+    assert!(stdout.contains("test-only fn app.helper @"));
+    assert!(stdout.contains("test fn app.colocated @"));
+    assert!(!stdout.contains("app.dep.dependency"));
+
+    // The same selection also type-checks and runs through the compiler.
+    success(&loom(&["check", package.to_str().unwrap()]));
+    success(&loom(&["test", package.to_str().unwrap()]));
+    fs::write(package.join("main.loom"), "import app.dep.hidden\n").unwrap();
+    let output = inspect(false);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("main.loom:1:1: import does not name an accessible declaration")
+    );
+
+    #[cfg(unix)]
+    {
+        // A directory alias must not give a foreign module a second identity.
+        let foreign = temp.path().join("foreign");
+        fs::create_dir_all(foreign.join("lib")).unwrap();
+        fs::write(
+            foreign.join("loom.toml"),
+            "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"foreign\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(foreign.join("lib/main.loom"), "pub fn open() {}").unwrap();
+        std::os::unix::fs::symlink(foreign.join("lib"), package.join("alias")).unwrap();
+        fs::write(package.join("main.loom"), "import app.alias.open\n").unwrap();
+        let output = inspect(false);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("import directory changes package identity through a symlink: app.alias")
+        );
+    }
 }

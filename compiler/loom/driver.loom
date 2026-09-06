@@ -1,7 +1,7 @@
-import frontend.loading.load
-import frontend.binding.bind
-import frontend.binding.Failure
-import frontend.binding.SourceFile
+import std.loom.project.load
+import std.loom.binding.bind
+import std.loom.binding.Failure
+import std.loom.project.SourceFile
 import frontend.checking.check
 import frontend.artifact.encode
 import frontend.typed.Program

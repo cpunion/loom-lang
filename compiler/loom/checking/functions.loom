@@ -1,6 +1,6 @@
-import frontend.binding.Failure
-import frontend.binding.has
-import frontend.binding.package
+import std.loom.binding.Failure
+import std.loom.ast.has
+import std.loom.project.package
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import frontend.typed.TypeKind

@@ -12,6 +12,7 @@ import std.text.slice
 import std.text.concat
 import std.text.from_codepoint
 
+// Parsed module identity; dependency resolution is not part of this API yet.
 pub record Module { name Text version Text }
 
 pub fn segment(value Text) Bool {

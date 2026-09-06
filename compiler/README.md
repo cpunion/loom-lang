@@ -199,10 +199,11 @@ The [Loom-written compiler](loom/README.md) uses ordinary source packages for
 syntax, project loading, binding, checking, proof, and typed artifact emission.
 It checks its own sources and builds subsequent native stages. The compiler and
 independent user packages share the public
-[`std.loom` syntax libraries](loom/README.md#public-syntax-libraries).
-Project/semantic APIs remain a separate
+[`std.loom` syntax libraries](loom/README.md#public-syntax-libraries) and opt-in
+[project/binding APIs](loom/README.md#public-project-and-binding-libraries).
+Typed queries remain a separate
 [library acceptance gate](../ROADMAP.md#n2--complete-the-language-and-source-library);
-the syntax API does not promise a stable node schema or lossless editing.
+declaration candidates do not imply final overload resolution or checked types.
 
 The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;

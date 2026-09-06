@@ -1,10 +1,10 @@
 import std.loom.parser.parse
-import frontend.binding.SourceFile
-import frontend.binding.Program
-import frontend.binding.Failure
-import frontend.binding.bind
-import frontend.binding.candidates
-import frontend.binding.has
+import std.loom.project.SourceFile
+import std.loom.binding.Program
+import std.loom.binding.Failure
+import std.loom.binding.bind
+import std.loom.binding.candidates
+import std.loom.ast.has
 import std.loom.ast.NodeKind
 import std.list.new
 import std.list.push

@@ -54,7 +54,7 @@ The compiler and ordinary Loom programs use the same source implementation:
 | --- | --- |
 | `std.loom.source` | `Span`, `Diagnostic`, `Position`, `position`, `render` |
 | `std.loom.lexer` | `lex`, `Token`, `Kind` |
-| `std.loom.ast` | `Node`, `NodeKind` |
+| `std.loom.ast` | `Node`, `NodeKind`, `has` (direct-child lookup) |
 | `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]` |
 
 Import, for example, `std.loom.parser.parse` and `std.loom.ast.NodeKind` in
@@ -78,16 +78,55 @@ successful parsing does not establish type or contract validity.
 This is an evolving public API, not a stable node schema or lossless editor
 tree: comments and formatting trivia are discarded, and string token values are
 decoded. Preserve original source when tooling needs its spelling and layout.
-Public project loading, semantic queries, typed metaprogramming, and identity-aware
-editing remain later library boundaries in the [roadmap](../../ROADMAP.md).
+Typed semantic queries, metaprogramming, and identity-aware editing remain
+later library boundaries in the [roadmap](../../ROADMAP.md).
+
+## Public project and binding libraries
+
+Project analysis is opt-in; in-memory syntax users do not import these layers:
+
+- `std.loom.manifest.parse(text)` returns `Result[Module, Text]`, with module
+  name/version metadata. It parses the supported manifest subset, not general
+  TOML or registry/dependency resolution.
+- `std.loom.project.load(path, std_root, tests)` returns `Result[Project, Text]`.
+  `Project` contains `files List[SourceFile]` and a root package name. It reads
+  the selected directory package and its import closure, not the whole
+  repository. Only the selected root contributes tests when requested.
+- `std.loom.binding.bind(files, root, tests)` returns `Result[Program, Failure]`
+  after declaration/import validation. Inspect `Program.symbols` for
+  declarations; `Failure.source` identifies the input file for its diagnostic.
+
+Package identities follow directories. Root and `std` paths are canonicalized;
+imported directory symlink aliases that change package identity are rejected.
+Source-file symlinks remain allowed, with trust based on canonical file paths.
+
+`candidates(program, file, test_only, path)` returns indices into that program's
+symbol table, respecting the supplied file's visibility and test context.
+These are name/overload candidates, not the selected function at a call site;
+binding does not type-check expressions or prove contracts. `Symbol.file`
+indexes `Program.files`, and `Symbol.node.span` locates the declaration there.
+The project's `name`, `package`, and `qualify` helpers manipulate qualified
+names, not filesystem paths.
+
+The standalone [project example](../examples/project/main.loom) loads a user
+package, reports root declarations and source positions, and renders failures
+without invoking the compiler or a backend child process:
+
+```sh
+target/loom build compiler/examples/project --output target/project
+target/project compiler/examples/data compiler/std --tests
+target/loom test compiler/examples/project
+```
+
+File and symbol indices belong to one analysis result; they are not stable
+definition identities. Reload/rebind after editing input files or trees: the
+lookup tables are not an editing model or incremental compilation cache. The
+compiler uses these same libraries, with no private copies or wrapper APIs.
 
 ## Compiler packages
 
 The remaining directories are internal packages in the `frontend` module:
 
-- `manifest`, `loading`: module metadata and the selected directory/import
-  closure; only the root contributes tests.
-- `binding`: package visibility, imports and overload candidates.
 - `typed`, `checking`: checked types, expressions, concrete function instances,
   private runtime signatures and required-proof obligations.
 - `proof`: bounded scalar reasoning with mathematical integers. Unsupported

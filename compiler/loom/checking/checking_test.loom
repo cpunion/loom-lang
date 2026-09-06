@@ -1,4 +1,4 @@
-import frontend.binding.Failure
+import std.loom.binding.Failure
 import frontend.typed.TypeKind
 import frontend.typed.ExprKind
 import std.list.new

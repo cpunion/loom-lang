@@ -1,0 +1,84 @@
+import std.loom.project.load
+import std.loom.project.Project
+import std.loom.project.qualify
+import std.loom.binding.bind
+import std.loom.binding.Program
+import std.loom.binding.candidates
+import std.loom.ast.NodeKind
+import std.loom.ast.has
+import std.loom.source.position
+import std.loom.source.render
+import std.list.get
+import std.list.length
+import std.int.to_text
+import std.text.concat
+import std.io.write_text
+import std.io.write_error
+import std.process.arguments
+import std.process.exit_code
+import std.result.Result
+
+fn analyze(project Project, tests Bool) Result[Program, Text] {
+    match bind(project.files, project.root, tests) {
+        Result.Ok(program) => Result.Ok(program)
+        Result.Err(failure) => {
+            let source = get(project.files, failure.source)
+            Result.Err(render(source.path, source.text, failure.diagnostic))
+        }
+    }
+}
+
+// Binding supplies declarations and visible overload candidates, not checked
+// expression types or the selected overload of a call.
+fn describe(program Program) Text {
+    let header = concat("package ", concat(program.root, "\nselected files "))
+    var summary = concat(header, concat(to_text(length(program.files)), "\n"))
+    var index = 0
+    while index < length(program.symbols) {
+        let symbol = get(program.symbols, index)
+        let source = get(program.files, symbol.file)
+        if source.package == program.root {
+            let visibility = if symbol.public { "pub " } else { "" }
+            let kind = if symbol.node.kind == NodeKind.Function { "fn " } else { "type " }
+            let mode = if has(symbol.node, NodeKind.Test) { "test " } else {
+                if symbol.test_only { "test-only " } else { "" }
+            }
+            let declaration = concat(visibility, concat(mode, concat(kind, qualify(source.package, symbol.name))))
+            let location = position(source.text, symbol.node.span.start)
+            let at = concat(source.path, concat(":", concat(to_text(location.line), concat(":", to_text(location.column)))))
+            let count = length(candidates(program, symbol.file, symbol.test_only, symbol.name))
+            let suffix = concat(" (name candidates ", concat(to_text(count), ")\n"))
+            summary = concat(summary, concat(declaration, concat(" @ ", concat(at, suffix))))
+        }
+        index = index + 1
+    }
+    summary
+}
+
+fn inspect(path Text, standard Text, tests Bool) Result[Text, Text] {
+    Result.Ok(describe(analyze(load(path, standard, tests)?, tests)?))
+}
+
+fn main() {
+    let args = arguments()
+    let count = length(args)
+    if count != 1 && count != 3 && count != 4 {
+        discard write_error("usage: project [PACKAGE STD_DIRECTORY [--tests]]\n")
+        exit_code(2)
+        return
+    }
+    if count == 4 && get(args, 3) != "--tests" {
+        discard write_error("expected --tests\n")
+        exit_code(2)
+        return
+    }
+    let path = if count == 1 { "compiler/examples/data" } else { get(args, 1) }
+    let standard = if count == 1 { "compiler/std" } else { get(args, 2) }
+    match inspect(path, standard, count == 4) {
+        Result.Ok(summary) => { discard write_text(summary) }
+        Result.Err(error) => {
+            discard write_error(concat(error, "\n"))
+            exit_code(1)
+        }
+    }
+}

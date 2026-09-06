@@ -118,10 +118,17 @@ declarations and spans, and reports a syntax diagnostic. It does not import
 the compiler CLI, LLVM bridge, project loader, or compiler-specific runtime
 hooks; the compiler uses the same source libraries.
 
-Next expose project loading and bound/typed queries as opt-in public layers;
-typed metaprogramming later reuses them. Public syntax access does not freeze
-the node schema or complete trivia-preserving editing, semantic identities,
-or semantic version-control tooling.
+The opt-in `std.loom.manifest`, `project`, and `binding` layers now share the
+compiler's implementation. A standalone
+[project inspector](compiler/examples/project/main.loom) loads a selected
+package/import closure and reports declarations and visible overload candidates
+without a compiler subprocess. These are program-local indices and name
+candidates, not final call resolution or checked expression types.
+
+Next expose typed semantic queries; typed metaprogramming later reuses this
+infrastructure. Public analysis does not freeze the schemas or complete
+trivia-preserving editing, persistent identities, incremental reuse, or semantic
+version-control tooling.
 
 ## N3 — Deliver semantic change and deployment workflows
 
