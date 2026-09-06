@@ -6,14 +6,15 @@ import std.list.length
 
 // Successful pure results within one check() basis only. Values stay internal;
 // materialization creates a new runtime graph on every source evaluation.
-record Computation { owner Int arguments List[Int] node Node expected Int ty Int value Value }
+record Computation { owner Int arguments List[Int] constants List[StaticValue] node Node expected Int ty Int value Value }
 
 fn computation(context Context, node Node, expected Int, ty Int) Int {
     var index = 0
     while index < length(context.env.computations) {
         let saved = get(context.env.computations, index)
         if saved.owner == context.signature.symbol && saved.expected == expected && saved.ty == ty &&
-            same(saved.arguments, context.arguments) && std.loom.ast.same(saved.node, node) { return index }
+            same(saved.arguments, context.arguments) && same_constants(saved.constants, context.constants) &&
+            std.loom.ast.same(saved.node, node) { return index }
         index = index + 1
     }
     -1

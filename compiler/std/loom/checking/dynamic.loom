@@ -136,7 +136,7 @@ fn activate_witnesses(env Environment, retain Bool) Result[Bool, Failure] {
             if get(witness.methods, slot) < 0 && (retain || slot_used(env, witness.interface, slot)) {
                 let method = get(implementation.methods, slot)
                 let declaration = symbol(env, get(env.signatures, method).symbol)
-                set(witness.methods, slot, schedule(env, method, new[Int](), declaration.node)?)
+                set(witness.methods, slot, schedule(env, method, new[Int](), new[StaticValue](), declaration.node)?)
                 changed = true
             }
             slot = slot + 1
@@ -152,7 +152,7 @@ fn emit_functions(env Environment, retain Bool) Result[List[Function], Failure] 
     while more {
         while index < length(env.pending) {
             let instance = get(env.pending, index)
-            push(functions, function(env, instance.signature, instance.arguments, true)?)
+            push(functions, function(env, instance.signature, instance.arguments, instance.constants, true)?)
             index = index + 1
         }
         more = activate_witnesses(env, retain)?

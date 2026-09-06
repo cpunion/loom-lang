@@ -29,8 +29,10 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
         return Result.Ok(Step { context = next expression = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls) })
     }
     let value = if kind == NodeKind.Assign {
-        let local = lookup(context, node.value)
-        if local < 0 { return Result.Err(error(context, node, "unknown assignment local")) }
+        let found = lookup(context, node.value)
+        if found < 0 { return Result.Err(error(context, node, "unknown assignment local")) }
+        let local = get(context.bindings, found).local
+        if local < 0 { return Result.Err(error(context, node, "comptime parameters cannot be assigned")) }
         let target = get(context.locals, local)
         if !target.mutable { return Result.Err(error(context, node, "assignment requires a var binding")) }
         let value = expr(context, child(node, 0), target.ty)?

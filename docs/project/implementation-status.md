@@ -158,6 +158,15 @@ Stable schemas, lossless editing, variadics, typed macros, broader compile-time
 reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 
+Scalar `comptime` parameters specialize named calls using canonical Int/Bool/Text
+keys and disappear before the native ABI. Static-value branches are checked with
+abstract type arguments and declared requirements, not incidental concrete
+conformances. Unknown runtime inputs and unproved abstract postconditions reject.
+The [static-parameter example](../../compiler/examples/comptime_parameters/main.loom)
+also exercises ordinary callbacks returned by specialized selectors. References
+to static-parameter declarations, static function/closure parameters and variadics
+are not included in this slice.
+
 Normal compiler iteration can use a [single development rebuild](../../compiler/README.md#build-and-try-it);
 CI retains full bootstrap generation checks. The initial
 [latency harness](../../compiler/README.md#compiler-latency) measures fresh-process

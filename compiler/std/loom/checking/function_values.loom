@@ -41,11 +41,13 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
     var selected = -1
     var output = -1
     var arguments = new[Int]()
+    var static_only = false
     var index = 0
     while index < length(options) {
         let id = get(options, index)
         let candidate = get(context.env.signatures, id)
-        if length(supplied_types) == 0 || length(supplied_types) == candidate.parameters {
+        static_only = static_only || has_static(candidate)
+        if !has_static(candidate) && (length(supplied_types) == 0 || length(supplied_types) == candidate.parameters) {
             let inferred = supplied(context, node, supplied_types, candidate.parameters)?
             if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments
@@ -72,9 +74,10 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
         index = index + 1
     }
     if selected < 0 {
+        if static_only { return Result.Err(error(context, node, "functions with comptime parameters cannot be used as function values yet")) }
         return Result.Err(error(context, node, "no accessible function reference matches; provide an exact function type and required concept evidence"))
     }
-    let target = if context.emit { schedule(context.env, selected, arguments, node)? } else { -1 }
+    let target = if context.emit { schedule(context.env, selected, arguments, new[StaticValue](), node)? } else { -1 }
     Result.Ok(expression(ExprKind.FunctionRef, output, node, "", target, new[Expr](), true))
 }
 fn call_value(context Context, node Node, callee Expr, types List[Node], inputs List[Node]) Result[Expr, Failure] {
@@ -131,5 +134,5 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
         }
         return Result.Ok(expression(ExprKind.IndirectCall, get(shape, count), node, "", -1, arguments, all_fall(arguments)))
     }
-    invoke_selected(context, node, choose_overload(context, node, methods)?, declarations, values)
+    invoke_selected(context, node, choose_overload(context, node, methods)?, declarations, values, new[Bool]())
 }

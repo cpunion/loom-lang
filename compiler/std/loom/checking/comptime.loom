@@ -21,7 +21,7 @@ fn abstract_context(context Context) Bool {
         if !concrete(context.env, get(context.arguments, index)) { return true }
         index = index + 1
     }
-    false
+    !known_constants(context.constants)
 }
 fn parameter_name(context Context, name Text) Bool {
     let parameters = group(symbol(context.env, context.signature.symbol).node, NodeKind.TypeParameters)
@@ -60,6 +60,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
     // Compile-time call targets never enter the runtime reachability queue.
     let env = Environment { source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true signatures = context.env.signatures
         pending = new[Instance]() stage_depth = context.env.stage_depth + 1 computations = context.env.computations
+        validations = context.env.validations
         concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces
         witnesses = new[Witness]() uses = new[SlotUse]() }
     let locals = new[Local]()
@@ -71,7 +72,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
     while index < length(context.bindings) { push(bindings, get(context.bindings, index))
         index = index + 1 }
     Result.Ok(Context { env = env signature = context.signature arguments = context.arguments
-        locals = locals bindings = bindings head = context.head emit = true })
+        constants = context.constants locals = locals bindings = bindings head = context.head emit = true })
 }
 fn isolated(context Context, node Node, value Expr, boundary Int) Result[Bool, Failure] {
     if value.kind == ExprKind.Local && value.index < boundary {
@@ -116,7 +117,7 @@ fn computed(context Context, node Node, input Node, expected Int) Result[Value, 
     match std.loom.eval.evaluate(program, value, length(stage.locals)) {
         Result.Ok(value) => {
             push(context.env.computations, Computation { owner = context.signature.symbol arguments = context.arguments
-                node = input expected = expected ty = value.ty value = value })
+                constants = context.constants node = input expected = expected ty = value.ty value = value })
             Result.Ok(value)
         }
         Result.Err(failed) => Result.Err(error(context, node, failed.message))
@@ -182,13 +183,14 @@ fn selected(context Context, node Node, source Node, expected Int, enforce Bool)
         }
         yes = if condition.value == "==" { left == right } else { left != right }
     } else {
-        if abstract_context(context) && depends_on_type(context, condition) {
+        let type_dependent = abstract_context(context) && depends_on_type(context, condition)
+        if type_dependent || unknown_static(context, condition) {
             let stage = staging(context, node)?
             let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
-                locals = stage.locals bindings = stage.bindings head = stage.head emit = false }
+                constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head emit = false }
             let value = expr(validation, condition, 2)?
             discard isolated(context, node, value, length(context.locals))?
-            return deferred(context, node, expected)
+            if type_dependent || contains_deferred(value) { return deferred(context, node, expected) }
         }
         yes = computed(context, node, condition, 2)?.number != 0
     } }
@@ -199,13 +201,16 @@ fn selected(context Context, node Node, source Node, expected Int, enforce Bool)
 fn compile_time(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let source = child(node, 0)
     if source.kind == NodeKind.If { return selected(context, node, source, expected, enforce) }
-    if abstract_context(context) && depends_on_type(context, source) {
+    let type_dependent = abstract_context(context) && depends_on_type(context, source)
+    if type_dependent || unknown_static(context, source) {
         let stage = staging(context, node)?
         let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
-            locals = stage.locals bindings = stage.bindings head = stage.head emit = false }
+            constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head emit = false }
         let value = block(validation, source, expected, enforce)?
         discard isolated(context, node, value, length(context.locals))?
-        return deferred(context, node, value.ty)
+        // Syntax may mention a shadowed static name. Only checked IR can show
+        // that this computation still depends on its unknown value.
+        if type_dependent || contains_deferred(value) { return deferred(context, node, value.ty) }
     }
     materialize(context, node, computed(context, node, source, expected)?)
 }

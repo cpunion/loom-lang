@@ -1,0 +1,1 @@
+test fn static_arguments_specialize_native_calls() { exercise() }

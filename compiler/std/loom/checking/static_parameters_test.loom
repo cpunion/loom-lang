@@ -1,0 +1,34 @@
+test fn static_arguments_specialize_values_without_runtime_slots_or_helper_reachability() {
+    let program = accepted("fn amount() Int { 2 }\nfn add(value Int, comptime extra Int) Int { value + extra }\nfn main() { assert add(40, amount()) == 42\nassert add(41, 1 + 1) == 43\nassert add(39, 3) == 42 }")
+    assert length(program.functions) == 3
+    var index = 1
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        assert function.symbol == 1
+        assert length(function.params) == 1 && length(function.locals) == 1
+        assert get(function.locals, 0).name == "value"
+        index = index + 1
+    }
+    discard accepted("fn identity(comptime value Int) Int { value }\nfn forwarded(comptime value Int) Int { comptime { identity(value) } }\nfn main() { assert comptime { forwarded(-9223372036854775808) } == -9223372036854775808 }")
+    discard accepted("fn sum(comptime left Int, right Int) Int { left + right }\nfn forwarded(comptime value Int) Int { sum({ let fresh = value\nfresh }, { let runtime = 3\nruntime }) }\nfn main() { assert sum({ let fresh = 2\nfresh }, { let runtime = 3\nruntime }) == 5\nassert forwarded(2) == 5 }")
+    // Type-based overload selection precedes static evaluation. A runtime
+    // alternative stays callable but is never a fallback for an unknown Int.
+    discard accepted("fn pick(comptime value Int) Int { value }\nfn pick(value Text) Text { value }\nfn main() { let input = \"runtime\"\nassert pick(input) == input\nlet callback fn(Text) Text = pick\nassert callback(input) == input }")
+    rejects("fn pick(comptime value Int) Int { value }\nfn pick(value Text) Text { value }\nfn input(value Int) Int { pick(value) }")
+}
+
+test fn static_selection_preserves_abstract_generic_requirements_and_mandatory_proofs() {
+    let declarations = "concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\n"
+    let hidden = "fn hidden[T](value T, comptime enabled Bool) Int { comptime if enabled { value.value() } else { 0 } }\n"
+    rejects(concat(declarations, concat(hidden, "fn main() { assert hidden(1, true) == 1 }")))
+    rejects(concat(declarations, concat(hidden, "fn unused[T](value T) Int { hidden(value, true) }")))
+    discard accepted(concat(declarations, "fn required[T C](value T, comptime enabled Bool) Int { comptime if enabled { value.value() } else { 0 } }\nfn optional[T](value T, comptime enabled Bool) Int { comptime if enabled { comptime if T implements C { value.value() } else { 0 } } else { 0 } }\nfn main() { assert required(3, true) == 3\nassert optional(4, true) == 4 && optional(true, true) == 0 }"))
+    discard accepted("fn unchanged(value Int, comptime selected Bool) Int ensures result == value { value }\nfn main() { assert unchanged(3, true) == 3 }")
+    rejects("fn unused(comptime value Int) Int ensures result == 1 { 0 }")
+    rejects("fn unproved(comptime value Int) Int ensures result == value { value }")
+    rejects("fn infinite(comptime value Int) Int { infinite(value + 1) }\nfn main() { discard infinite(0) }")
+    rejects("fn invalid(comptime value Float) Float { value }")
+    rejects("fn value(comptime number Int) Int { number }\nfn value(number Int) Int { number }")
+    rejects("fn value(comptime number Int) Int { number }\nfn main() { let callback = value\ndiscard callback }")
+    rejects("fn value(comptime number Int) Int { number = 1\nnumber }")
+}

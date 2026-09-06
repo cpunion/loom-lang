@@ -186,8 +186,11 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
 }
 fn invoke(context Context, node Node, options List[Int], types List[Node], inputs List[Node], prefix List[Expr], expected Int) Result[Expr, Failure] {
     let values = new[Expr]()
+    let probes = new[Bool]()
+    let probing = static_options(context, options)
     var index = 0
     while index < length(prefix) { push(values, get(prefix, index))
+        if probing { push(probes, false) }
         index = index + 1 }
     let inferred = if length(options) == 1 { supplied(context, node, types, get(context.env.signatures, get(options, 0)).parameters)? } else { new[Int]() }
     if length(options) == 1 {
@@ -202,7 +205,11 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
         if length(options) == 1 {
             expected_argument = hint(context, get(get(context.env.signatures, get(options, 0)).params, index), inferred, node)?
         }
-        let value = expr(context, get(inputs, index), expected_argument)?
+        let probe = probing && static_position(context, options, index)
+        let value = if probe { static_probe(context, get(inputs, index), expected_argument)? } else {
+            expr(context, get(inputs, index), expected_argument)?
+        }
+        if probing { push(probes, probe) }
         push(values, value)
         if length(options) == 1 {
             discard infer(context.env, get(get(context.env.signatures, get(options, 0)).params, index), value.ty, inferred)
@@ -210,7 +217,7 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
         index = index + 1
     }
     let matches = matching_overloads(context, node, options, types, values, expected)?
-    invoke_selected(context, node, choose_overload(context, node, matches)?, inputs, values)
+    invoke_selected(context, node, choose_overload(context, node, matches)?, inputs, values, probes)
 }
 record OverloadSet { candidates List[Instance] widening List[Bool] exact Bool missing_requirement Bool }
 fn matching_overloads(context Context, node Node, options List[Int], types List[Node], values List[Expr], expected Int) Result[OverloadSet, Failure] {
@@ -243,7 +250,7 @@ fn matching_overloads(context Context, node Node, options List[Int], types List[
                     argument = argument + 1
                 }
                 if matched {
-                    push(matches, Instance { signature = id arguments = args })
+                    push(matches, Instance { signature = id arguments = args constants = new[StaticValue]() })
                     push(widening, widened)
                     exact = exact || !widened
                 }
@@ -270,18 +277,33 @@ fn choose_overload(context Context, node Node, matches OverloadSet) Result[Insta
     }
     Result.Ok(get(matches.candidates, selected))
 }
-fn invoke_selected(context Context, node Node, instance Instance, inputs List[Node], values List[Expr]) Result[Expr, Failure] {
+fn invoke_selected(context Context, node Node, instance Instance, inputs List[Node], values List[Expr], probes List[Bool]) Result[Expr, Failure] {
     let signature = get(context.env.signatures, instance.signature)
+    let constants = new[StaticValue]()
+    let filtered = has_static(signature)
+    let runtime_values = if filtered { new[Expr]() } else { values }
     var index = 0
     while index < length(values) {
         let target = substitute(context.env, context.signature.symbol, get(signature.params, index), instance.arguments, node)?
-        set(values, index, typed(context, get(inputs, index), get(values, index), target)?)
+        let input = get(inputs, index)
+        if is_static(signature, index) {
+            push(constants, static_argument(context, input, get(values, index), target)?)
+        } else {
+            let value = if length(probes) != 0 && get(probes, index) { expr(context, input, target)? } else {
+                typed(context, input, get(values, index), target)?
+            }
+            if filtered { push(runtime_values, value) } else { set(runtime_values, index, value) }
+        }
         index = index + 1
     }
+    discard validate_static(context.env, instance.signature, constants, node)?
     let output = substitute(context.env, context.signature.symbol, signature.result, instance.arguments, node)?
-    if prototype(context.env, signature.symbol) && length(values) != 0 && get(context.env.types, get(values, 0).ty).kind == TypeKind.Dyn {
-        return dynamic_call(context, node, instance.signature, output, values)
+    if !context.emit && !known_constants(constants) {
+        return Result.Ok(expression(ExprKind.Deferred, output, node, "", -1, runtime_values, all_fall(runtime_values)))
     }
-    let target = if context.emit { schedule(context.env, instance.signature, instance.arguments, node)? } else { -1 }
-    Result.Ok(expression(ExprKind.Call, output, node, "", target, values, all_fall(values)))
+    if prototype(context.env, signature.symbol) && length(runtime_values) != 0 && get(context.env.types, get(runtime_values, 0).ty).kind == TypeKind.Dyn {
+        return dynamic_call(context, node, instance.signature, output, runtime_values)
+    }
+    let target = if context.emit { schedule(context.env, instance.signature, instance.arguments, constants, node)? } else { -1 }
+    Result.Ok(expression(ExprKind.Call, output, node, "", target, runtime_values, all_fall(runtime_values)))
 }

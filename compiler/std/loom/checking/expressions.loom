@@ -51,7 +51,10 @@ fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
         if end < length(node.value) { return variant(context, node, new[Node](), new[Node](), expected) }
         return Result.Err(error(context, node, "unknown local value"))
     }
-    var value = atom(ExprKind.Local, get(context.locals, local).ty, node, local)
+    let binding = get(context.bindings, local)
+    var value = if binding.constant >= 0 { static_expression(context, node, get(context.constants, binding.constant)) } else {
+        atom(ExprKind.Local, get(context.locals, binding.local).ty, node, binding.local)
+    }
     var index = end
     while index < length(node.value) {
         let rest = slice(node.value, index + 1, length(node.value))

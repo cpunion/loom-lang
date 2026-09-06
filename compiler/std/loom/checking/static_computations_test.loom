@@ -1,0 +1,5 @@
+test fn static_computations_keep_distinct_values_and_respect_shadowing() {
+    discard accepted("fn next(comptime value Int) Int { comptime { value + 1 } }\nfn label(comptime value Text) Text { comptime { value } }\nfn choice(comptime value Bool) Int { comptime if value { 1 } else { 2 } }\nfn shadow(comptime value Int) Int { comptime { let value = 3\nvalue + 1 } }\nfn main() { discard comptime { assert next(1) == 2 && next(2) == 3\nassert label(\"first\") == \"first\" && label(\"second\") == \"second\"\nassert choice(true) == 1 && choice(false) == 2\nassert shadow(17) == 4\ntrue } }")
+    // An unknown static operand cannot hide an actual runtime capture.
+    rejects("fn capture(value Int, comptime extra Int) Int { comptime { value + extra } }")
+}

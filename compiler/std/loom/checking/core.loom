@@ -29,8 +29,11 @@ import std.list.length
 import std.result.Result
 
 record Requirement { ty Int capability Int }
-record Signature { symbol Int parameters Int params List[Int] result Int requirements List[Requirement] }
-record Instance { signature Int arguments List[Int] }
+record StaticValue { ty Int known Bool number Int text Text }
+// compile_time contains ordered source parameter positions, empty for ordinary functions.
+record Signature { symbol Int parameters Int params List[Int] compile_time List[Int] result Int requirements List[Requirement] }
+record Instance { signature Int arguments List[Int] constants List[StaticValue] }
+record Validation { signature Int constants List[StaticValue] }
 record Environment {
     source std.loom.binding.Program
     types List[Type]
@@ -40,17 +43,19 @@ record Environment {
     pending List[Instance]
     stage_depth Int
     computations List[Computation]
+    validations List[Validation]
     concepts List[Concept]
     implementations List[Implementation]
     interfaces List[Interface]
     witnesses List[Witness]
     uses List[SlotUse]
 }
-record Binding { local Int previous Int }
+record Binding { name Text local Int constant Int previous Int }
 record Context {
     env Environment
     signature Signature
     arguments List[Int]
+    constants List[StaticValue]
     locals List[Local]
     bindings List[Binding]
     head Int
@@ -136,37 +141,42 @@ fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Fail
 }
 fn context_at(context Context, head Int) Context {
     Context { env = context.env signature = context.signature arguments = context.arguments
-        locals = context.locals bindings = context.bindings head = head emit = context.emit }
+        constants = context.constants locals = context.locals bindings = context.bindings head = head emit = context.emit }
 }
 fn lookup(context Context, value Text) Int {
     var head = context.head
     while head >= 0 {
         let binding = get(context.bindings, head)
-        if get(context.locals, binding.local).name == value { return binding.local }
+        if binding.name == value { return head }
         head = binding.previous
     }
     -1
 }
 fn bind_local(context Context, node Node, value Text, ty Int, mutable Bool, boundary Int) Result[Context, Failure] {
     if value == "result" || ty == 0 { return Result.Err(error(context, node, "invalid local binding")) }
+    let local = length(context.locals)
+    let next = bind_name(context, node, value, local, -1, boundary)?
+    push(context.locals, Local { name = value ty = ty mutable = mutable })
+    Result.Ok(next)
+}
+fn bind_name(context Context, node Node, value Text, local Int, constant Int, boundary Int) Result[Context, Failure] {
+    if value == "result" { return Result.Err(error(context, node, "invalid local binding")) }
     var head = context.head
     while head != boundary && head >= 0 {
         let binding = get(context.bindings, head)
-        if get(context.locals, binding.local).name == value {
+        if binding.name == value {
             return Result.Err(error(context, node, "duplicate local binding"))
         }
         head = binding.previous
     }
-    let local = length(context.locals)
-    push(context.locals, Local { name = value ty = ty mutable = mutable })
     let next = length(context.bindings)
-    push(context.bindings, Binding { local = local previous = context.head })
+    push(context.bindings, Binding { name = value local = local constant = constant previous = context.head })
     Result.Ok(context_at(context, next))
 }
 
 pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
     let env = Environment { source = source types = new[Type]() type_states = new[Int]() expand_data = true signatures = new[Signature]() pending = new[Instance]()
-        stage_depth = 0 computations = new[Computation]() concepts = new[Concept]() implementations = new[Implementation]()
+        stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         interfaces = new[Interface]() witnesses = new[Witness]() uses = new[SlotUse]() }
     initialize_types(env)
     discard conformance_headers(env)?
@@ -192,10 +202,21 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
             let arguments = abstract_arguments(env, count)
             let obligations = requirements(env, index, arguments)?
             let params = new[Int]()
+            let compile_time = new[Int]()
             let declarations = group(item.node, NodeKind.Parameters)
             var parameter = 0
             while parameter < length(declarations) {
-                push(params, resolve_bound(env, index, child(get(declarations, parameter), 0), arguments, obligations, 0)?)
+                let declaration = get(declarations, parameter)
+                let ty = resolve_bound(env, index, child(declaration, 0), arguments, obligations, 0)?
+                let constant = has(declaration, NodeKind.Comptime)
+                if constant && (item.owner >= 0 || has(item.node, NodeKind.Intrinsic)) {
+                    return Result.Err(failure(env, index, declaration, "comptime parameters are not supported on concept, implementation or intrinsic methods"))
+                }
+                if constant && ty != 1 && ty != 2 && ty != 3 {
+                    return Result.Err(failure(env, index, declaration, "comptime parameters require exactly Int, Bool or Text"))
+                }
+                push(params, ty)
+                if constant { push(compile_time, parameter) }
                 parameter = parameter + 1
             }
             let returns = group(item.node, NodeKind.ReturnType)
@@ -214,7 +235,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
                 previous = previous + 1
             }
             push(env.signatures, Signature { symbol = index parameters = count params = params result = output
-                requirements = obligations })
+                compile_time = compile_time requirements = obligations })
         }
         index = index + 1
     }
@@ -226,7 +247,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
     index = 0
     while index < length(env.signatures) {
         let signature = get(env.signatures, index)
-        if !prototype(env, signature.symbol) { discard function(env, index, abstract_arguments(env, signature.parameters), false)? }
+        if !prototype(env, signature.symbol) { discard function(env, index, abstract_arguments(env, signature.parameters), unknown_constants(signature), false)? }
         index = index + 1
     }
     var entry = -1
@@ -237,10 +258,10 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
         let signature = get(env.signatures, index)
         let item = symbol(env, signature.symbol)
         let root = get(source.files, item.file).package == source.root
-        if signature.parameters == 0 && root && item.owner < 0 {
-            if item.name == "main" && !item.test_only { entry = schedule(env, index, new[Int](), item.node)? }
-            if item.public && !item.test_only { push(exports, schedule(env, index, new[Int](), item.node)?) }
-            if has(item.node, NodeKind.Test) { push(tests, schedule(env, index, new[Int](), item.node)?) }
+        if signature.parameters == 0 && !has_static(signature) && root && item.owner < 0 {
+            if item.name == "main" && !item.test_only { entry = schedule(env, index, new[Int](), new[StaticValue](), item.node)? }
+            if item.public && !item.test_only { push(exports, schedule(env, index, new[Int](), new[StaticValue](), item.node)?) }
+            if has(item.node, NodeKind.Test) { push(tests, schedule(env, index, new[Int](), new[StaticValue](), item.node)?) }
         }
         index = index + 1
     }

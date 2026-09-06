@@ -26,3 +26,25 @@ test fn arbitrary_callees_chain_without_changing_named_calls() {
     assert second.kind == NodeKind.Invoke && child(second, 0).kind == NodeKind.Call
     assert child(child(body, 3), 0).kind == NodeKind.Call
 }
+
+test fn compile_time_parameters_preserve_types_spans_and_ordinary_calls() {
+    let tree = parsed("fn repeat[T](value T, comptime count Int) T { repeat(value, count) }\nfn flags(comptime enabled Bool, comptime label Text) {}")
+    let function = child(tree, 0)
+    let parameters = child(function, 1)
+    assert length(child(parameters, 0).children) == 1
+    let count = child(parameters, 1)
+    assert count.kind == NodeKind.Parameter && count.value == "count"
+    assert child(count, 0).kind == NodeKind.Type && child(count, 0).value == "Int"
+    let marker = child(count, 1)
+    assert marker.kind == NodeKind.Comptime && length(marker.children) == 0
+    assert marker.span.start == 22 && marker.span.end == 30
+    assert count.span.start == 22 && count.span.end == 40
+    let call = child(body(function), 0)
+    assert call.kind == NodeKind.Call && length(child(call, 1).children) == 2
+    assert child(child(call, 1), 1).kind == NodeKind.Name
+    assert child(child(child(child(tree, 1), 1), 1), 0).value == "Text"
+    discard rejected("fn f(action fn(comptime Int) Int) {}")
+    discard rejected("fn f(count comptime Int) {}")
+    discard rejected("fn f(comptime comptime count Int) {}")
+    discard rejected("fn f(comptime count) {}")
+}
