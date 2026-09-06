@@ -15,6 +15,7 @@ Run the relevant local gate:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo build --locked --workspace
 cargo test --locked --workspace
 node .github/scripts/check-docs.mjs
 node --test .github/scripts/check-docs.test.mjs

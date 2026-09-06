@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compile generic records/enums and exhaustive matches with concrete layouts.
+  Add shared lists, UTF-8 Text, a small nonmoving collector, and source `std`
+  text/list/result/file packages, exercised by a native source scanner.
 - Start a small Rust/Inkwell compiler with real native check/build/test/run,
   checked scalar arithmetic, control flow, local package imports, isolated
   tests, source `std.int`, and required static postconditions in a bounded

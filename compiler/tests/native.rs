@@ -9,6 +9,15 @@ fn loom(args: &[&str]) -> Output {
         .unwrap()
 }
 
+fn managed(args: &[&str], directory: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_loom"))
+        .args(args)
+        .env("LOOM_GC_STRESS", "1")
+        .current_dir(directory)
+        .output()
+        .unwrap()
+}
+
 fn success(output: &Output) {
     assert!(
         output.status.success(),
@@ -93,6 +102,83 @@ fn native_generic_data() {
             "unexpected data IR dependency: {forbidden}"
         );
     }
+}
+
+#[test]
+fn source_scanner_and_std_under_forced_collection() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo = root.parent().unwrap();
+    let fixture = root.join("examples/source");
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = directory.path().join("scanner");
+    success(&managed(&["check", path(&fixture)], repo));
+    success(&managed(
+        &["build", path(&fixture), "--output", path(&artifact)],
+        repo,
+    ));
+    success(
+        &Command::new(artifact)
+            .current_dir(repo)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+    success(&managed(&["run", path(&fixture)], repo));
+    success(&managed(&["test", path(&fixture)], repo));
+    for package in ["text", "list", "result"] {
+        success(&managed(
+            &["test", path(&root.join("std").join(package))],
+            repo,
+        ));
+    }
+    let library = source(
+        "import std.text.byte\npub fn byte_at(value Text, index Int) Int { byte(value, index) }",
+    );
+    let ir = library.path().join("library.ll");
+    success(&loom(&[
+        "build",
+        path(library.path()),
+        "--emit-ir",
+        path(&ir),
+    ]));
+    let llvm = fs::read_to_string(ir).unwrap();
+    assert!(llvm.contains("loom_rt_text_byte"));
+    assert!(
+        !llvm.contains("loom_rt_roots_enter"),
+        "nonallocating functions need no GC root frame"
+    );
+}
+
+#[test]
+fn source_file_library_reads_chunks_and_reports_boundaries() {
+    let dir = source(
+        r#"
+import std.file.read_text
+import std.file.FileError
+import std.text.length
+import std.result.Result
+
+fn main() {
+    assert match read_text("large.txt") {
+        Result.Ok(text) => length(text) == 20000
+        Result.Err(_) => false
+    }
+    assert match read_text("invalid.txt") {
+        Result.Ok(_) => false
+        Result.Err(error) => match error { FileError.Utf8 => true, _ => false }
+    }
+    assert match read_text("absent.txt") {
+        Result.Ok(_) => false
+        Result.Err(error) => match error { FileError.Open => true, _ => false }
+    }
+}
+"#,
+    );
+    fs::write(dir.path().join("large.txt"), "x".repeat(20000)).unwrap();
+    fs::write(dir.path().join("invalid.txt"), [0xff]).unwrap();
+    success(&managed(&["run", path(dir.path())], dir.path()));
+    let forged = source("intrinsic fn open(path Text) Int\nfn main() { discard open(\"file\") }");
+    assert!(!loom(&["check", path(forged.path())]).status.success());
 }
 
 #[test]

@@ -48,6 +48,13 @@ pub fn load(path: &Path, tests: bool) -> Result<Loaded, String> {
         .find(|dir| dir.join("loom.toml").is_file())
         .map(read_module)
         .transpose()?;
+    let std_root = std::env::var_os("LOOM_STD").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std"),
+        PathBuf::from,
+    );
+    let std_root = std_root
+        .canonicalize()
+        .map_err(|error| format!("standard library: {error}"))?;
     let root_package = if let Some((name, base)) = &module {
         let mut parts = vec![name.clone()];
         for part in directory
@@ -62,13 +69,18 @@ pub fn load(path: &Path, tests: bool) -> Result<Loaded, String> {
             parts.push(part.into());
         }
         parts.join(".")
+    } else if let Ok(relative) = directory.strip_prefix(&std_root) {
+        std::iter::once("std".into())
+            .chain(
+                relative
+                    .iter()
+                    .map(|part| part.to_string_lossy().into_owned()),
+            )
+            .collect::<Vec<String>>()
+            .join(".")
     } else {
         String::new()
     };
-    let std_root = std::env::var_os("LOOM_STD").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("std"),
-        PathBuf::from,
-    );
     let mut loader = Loader {
         loaded: Loaded {
             sources: vec![],
@@ -203,6 +215,10 @@ impl Loader {
             }
             self.loaded.files.push(PackageFile {
                 package: package.into(),
+                trusted_std: self.loaded.sources[source_id]
+                    .path
+                    .canonicalize()
+                    .is_ok_and(|path| path.starts_with(&self.std_root)),
                 test_only,
                 syntax,
             });

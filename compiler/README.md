@@ -6,8 +6,9 @@ for every program supported by the superseded compiler in Git history.
 
 One Rust package connects source syntax, checked functions, and LLVM 19
 through Inkwell. It does not depend on the removed compiler crates, interpreter,
-universal values, runtime bundle, or executor. The generated program links only
-the host C library for fault reporting. Ordinary arithmetic and calls lower
+universal values, runtime bundle, or executor. Scalar-only programs link only
+the host C library for fault reporting; managed programs also link the small
+Rust runtime. Ordinary arithmetic and calls lower
 directly; LLVM's O2 pipeline promotes local storage and removes unused code.
 
 ## Build and try it
@@ -18,7 +19,7 @@ validation host. From the repository root:
 ```sh
 export LLVM_SYS_191_PREFIX="$(brew --prefix llvm@19)"
 export LOOM_CC="$LLVM_SYS_191_PREFIX/bin/clang"
-cargo build --locked
+cargo build --locked --workspace
 
 target/debug/loom check compiler/examples/scalar
 target/debug/loom build compiler/examples/scalar \
@@ -27,6 +28,8 @@ target/scalar
 target/debug/loom test compiler/examples/scalar
 target/debug/loom run compiler/examples/scalar
 target/debug/loom test compiler/std/int
+LOOM_GC_STRESS=1 target/debug/loom run compiler/examples/source
+LOOM_GC_STRESS=1 target/debug/loom test compiler/std/list
 ```
 
 The root Cargo workspace and lockfile build the maintained compiler. Its binary
@@ -44,6 +47,9 @@ package. `--help` lists the small command surface.
 - Immutable records and tagged enums, flat exhaustive `match`, generic type and
   function parameters with inference or explicit arguments. Generic bodies are
   checked without hidden requirements; reachable instances use concrete layouts.
+- Immutable UTF-8 `Text` and shared mutable `List[T]`. Copying a list binding
+  shares its header: aliases observe growth and element replacement. Scalar
+  records remain native values; managed fields retain their sharing semantics.
 - Directory packages, private helpers and `pub`, package-wide explicit imports,
   and a local import closure. A simple `loom.toml` supplies the module name;
   no `src/` is required. A directory without a manifest can use its own files
@@ -53,6 +59,10 @@ package. `--help` lists the small command surface.
   Identical test/production overload signatures are currently rejected.
 - A source `std.int` package with `minimum` and `maximum`, resolved through
   ordinary imports and calls, not compiler tables of library function names.
+- Source `std.text`, `std.list`, `std.result`, and `std.file.read_text`. Private
+  intrinsic signatures are checked against the runtime ABI and accepted only
+  from the configured standard-library source root. Reading loops, UTF-8
+  error policy, and explicit file closure are ordinary Loom source.
 - Native executable builds when the selected package has `main`; otherwise,
   an object containing its public functions and their dependencies. Object
   symbols are private seed conventions, not a supported foreign ABI.
@@ -60,7 +70,7 @@ package. `--help` lists the small command surface.
 The scalar example covers recursion, loops, a pre/postcondition pair, an imported
 package, `std`, and both test forms. Native tests exercise overflow, division by
 zero, short-circuiting, entry reachability, and test exclusion. Faults report a
-brief reason and exit unsuccessfully; there is no recoverable failure type yet.
+brief reason and exit unsuccessfully. File errors use source-defined `Result`.
 
 ## Contract boundary
 
@@ -87,11 +97,21 @@ The `compiler/examples/data` package exercises records, enums, generic functions
 and both test forms through the same CLI. Scalar-only records stay native values;
 enum storage uses its largest variant payload, not the sum of all variants.
 
-N0 is still incomplete. Refined construction, managed text/collections,
-lexical resources and real file I/O are next, so Loom
-can express compiler source and progress toward self-hosting. Shared mutable
-data, GC, Tasks, metaprogramming, dependency resolution, lockfile/cache behavior,
-deployment and semantic-change tools are not implemented by this slice.
+`compiler/examples/source` reads its scanner source from disk and produces a
+typed token list. It is a small ASCII scanner, not a complete Loom lexer.
+
+The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
+frames register managed locals and expression temporaries across allocation;
+transitively nonallocating functions need no root frames. `LOOM_GC_STRESS=1`
+collects before every allocation for focused testing. Managed executables find
+`libloom_seed_runtime.a` beside the compiler, or at `LOOM_RUNTIME_LIBRARY`.
+No handles escape `std.file.read_text`; every recoverable branch closes the
+file explicitly. This is not general scoped cleanup or finalization.
+
+N0 still needs refined construction. Recursive declarations, mutable record
+fields, broader proofs, moving GC, lexical resources, Tasks, metaprogramming,
+dependency resolution, lockfile/cache behavior, deployment and semantic-change
+tools remain outside this slice. No complete std or self-hosting claim is made.
 
 Unsupported syntax and manifest features reject explicitly. In particular,
 dependency and target declarations are not silently ignored. The accepted
@@ -103,5 +123,6 @@ For this compiler's local gate:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo build --locked --workspace
 cargo test --locked --workspace
 ```

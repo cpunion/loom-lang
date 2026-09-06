@@ -1,6 +1,6 @@
 //! Direct native lowering for the checked seed language. No universal values or executor.
 
-use crate::model::{Binary, Type, Unary, checked};
+use crate::model::{Binary, Primitive, Type, Unary, checked};
 use inkwell::{
     AddressSpace, IntPredicate, OptimizationLevel,
     basic_block::BasicBlock,
@@ -13,7 +13,13 @@ use inkwell::{
     types::{BasicType, BasicTypeEnum, IntType},
     values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
 };
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::Path,
+};
+
+#[path = "native_gc.rs"]
+mod gc;
 
 type NativeResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -22,7 +28,7 @@ pub fn emit(
     test_mode: bool,
     object: &Path,
     llvm_ir: Option<&Path>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     emit_checked(program, test_mode, object, llvm_ir).map_err(|error| error.to_string())
 }
 
@@ -31,7 +37,7 @@ fn emit_checked(
     test_mode: bool,
     object: &Path,
     llvm_ir: Option<&Path>,
-) -> NativeResult<()> {
+) -> NativeResult<bool> {
     if !cfg!(unix) {
         return Err("seed native emission currently requires a Unix host".into());
     }
@@ -44,6 +50,7 @@ fn emit_checked(
     };
     let library = !test_mode && program.entry.is_none();
     let reachable = reachable_functions(program, &roots)?;
+    let allocating = gc::allocating_functions(program, &reachable);
     Target::initialize_native(&InitializationConfig::default())?;
     let triple = TargetMachine::get_default_triple();
     let machine = Target::from_triple(&triple)
@@ -62,6 +69,7 @@ fn emit_checked(
     module.set_triple(&triple);
     module.set_data_layout(&machine.get_target_data().get_data_layout());
     let builder = context.create_builder();
+    let mut tracers = HashMap::new();
     let mut functions = vec![None; program.functions.len()];
     for &id in &reachable {
         let source = &program.functions[id];
@@ -103,6 +111,21 @@ fn emit_checked(
         for (index, value) in function.get_param_iter().enumerate() {
             builder.build_store(locals[index].ok_or("invalid checked parameter")?, value)?;
         }
+        let size_type = context.ptr_sized_int_type(&machine.get_target_data(), None);
+        let roots = if allocating.contains(&id) {
+            gc::root_function(
+                &context,
+                &module,
+                &builder,
+                program,
+                source,
+                &locals,
+                size_type,
+                &mut tracers,
+            )?
+        } else {
+            gc::RootFrame::empty()
+        };
         let mut emitter = FunctionEmitter {
             context: &context,
             module: &module,
@@ -111,7 +134,9 @@ fn emit_checked(
             function,
             locals,
             program,
-            size_type: context.ptr_sized_int_type(&machine.get_target_data(), None),
+            size_type,
+            roots,
+            tracers: &mut tracers,
         };
         for requirement in &source.requires {
             let condition = emitter
@@ -121,6 +146,7 @@ fn emit_checked(
         }
         let result = emitter.block(&source.body)?;
         if emitter.live() {
+            emitter.leave_roots()?;
             match source.result {
                 Type::Unit => {
                     builder.build_return(None)?;
@@ -156,7 +182,9 @@ fn emit_checked(
     machine
         .write_to_file(&module, FileType::Object, object)
         .map_err(|error| format!("{}: {error}", object.display()))?;
-    Ok(())
+    Ok(module
+        .get_functions()
+        .any(|function| function.get_name().to_bytes().starts_with(b"loom_rt_")))
 }
 
 fn native_type<'ctx>(
@@ -167,6 +195,9 @@ fn native_type<'ctx>(
     Ok(match ty {
         Type::Bool => context.bool_type().into(),
         Type::Int => context.i64_type().into(),
+        Type::Text | Type::Bytes | Type::List(_) => {
+            context.ptr_type(AddressSpace::default()).into()
+        }
         Type::Unit => context.struct_type(&[], false).into(),
         Type::Parameter(_) => return Err("unbound type parameter reached native emission".into()),
         Type::Data(id) => match &program.types[id].kind {
@@ -215,7 +246,7 @@ fn payload_words(
 
 fn value_words(program: &checked::Program, ty: Type) -> NativeResult<usize> {
     match ty {
-        Type::Int | Type::Bool => Ok(1),
+        Type::Int | Type::Bool | Type::Text | Type::Bytes | Type::List(_) => Ok(1),
         Type::Unit => Ok(0),
         Type::Parameter(_) => Err("unbound type parameter reached native layout".into()),
         Type::Data(id) => match &program.types[id].kind {
@@ -242,9 +273,152 @@ struct FunctionEmitter<'a, 'ctx> {
     locals: Vec<Option<PointerValue<'ctx>>>,
     program: &'a checked::Program,
     size_type: IntType<'ctx>,
+    roots: gc::RootFrame<'ctx>,
+    tracers: &'a mut HashMap<Type, FunctionValue<'ctx>>,
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    fn runtime_call(
+        &self,
+        name: &str,
+        result: Option<BasicTypeEnum<'ctx>>,
+        args: &[BasicValueEnum<'ctx>],
+    ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
+        let function = gc::runtime_function(
+            self.context,
+            self.module,
+            name,
+            result,
+            &args
+                .iter()
+                .map(|value| value.get_type())
+                .collect::<Vec<_>>(),
+        );
+        Ok(self
+            .builder
+            .build_call(
+                function,
+                &args.iter().map(|value| (*value).into()).collect::<Vec<_>>(),
+                if result.is_some() { "runtime" } else { "" },
+            )?
+            .try_as_basic_value()
+            .basic())
+    }
+
+    fn leave_roots(&self) -> NativeResult<()> {
+        if let Some(checkpoint) = self.roots.checkpoint {
+            self.runtime_call("roots_leave", None, &[checkpoint.into()])?;
+        }
+        Ok(())
+    }
+
+    fn primitive(
+        &mut self,
+        result: Type,
+        operation: Primitive,
+        args: &[checked::Expr],
+    ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
+        let mut values = Vec::new();
+        for arg in args {
+            let Some(value) = self.expr(arg)? else {
+                return Ok(None);
+            };
+            values.push(value);
+        }
+        let pointer = self.context.ptr_type(AddressSpace::default());
+        let i64_type = self.context.i64_type();
+        let (name, result_type) = match operation {
+            Primitive::TextLen => ("text_len", Some(i64_type.into())),
+            Primitive::TextByte => ("text_byte", Some(i64_type.into())),
+            Primitive::TextConcat => ("text_concat", Some(pointer.into())),
+            Primitive::TextEqual => ("text_equal", Some(self.context.i32_type().into())),
+            Primitive::BytesNew => ("bytes_new", Some(pointer.into())),
+            Primitive::BytesLen => ("bytes_len", Some(i64_type.into())),
+            Primitive::BytesPush => ("bytes_push", None),
+            Primitive::BytesUtf8 => ("bytes_utf8", Some(self.context.i32_type().into())),
+            Primitive::BytesTextCopy => ("bytes_text_copy", Some(pointer.into())),
+            Primitive::ListNew => {
+                let Type::List(id) = result else {
+                    return Err("invalid list constructor type".into());
+                };
+                let element = self.program.lists[id];
+                let ty = native_type(self.context, self.program, element)?;
+                let stride = ty.size_of().ok_or("unsized list element")?;
+                let trace = if gc::managed(self.program, element) {
+                    gc::tracer(
+                        self.context,
+                        self.module,
+                        self.program,
+                        element,
+                        self.tracers,
+                    )?
+                    .as_global_value()
+                    .as_pointer_value()
+                } else {
+                    pointer.const_null()
+                };
+                values = vec![
+                    self.builder
+                        .build_int_cast(stride, self.size_type, "element.stride")?
+                        .into(),
+                    trace.into(),
+                ];
+                ("list_new", Some(pointer.into()))
+            }
+            Primitive::ListLen => ("list_len", Some(i64_type.into())),
+            Primitive::ListGet | Primitive::ListSet => {
+                let slot = self
+                    .runtime_call("list_get", Some(pointer.into()), &values[..2])?
+                    .ok_or("missing list element slot")?
+                    .into_pointer_value();
+                if operation == Primitive::ListGet {
+                    return Ok(Some(self.builder.build_load(
+                        native_type(self.context, self.program, result)?,
+                        slot,
+                        "list.element",
+                    )?));
+                }
+                self.builder.build_store(slot, values[2])?;
+                return Ok(None);
+            }
+            Primitive::ListPush => {
+                // Runtime growth may collect, so the source value remains in
+                // its expression root while this ABI copy slot is consumed.
+                let entry = self
+                    .function
+                    .get_first_basic_block()
+                    .ok_or("missing entry")?;
+                let allocas = self.context.create_builder();
+                if let Some(first) = entry.get_first_instruction() {
+                    allocas.position_before(&first);
+                } else {
+                    allocas.position_at_end(entry);
+                }
+                let item = allocas.build_alloca(values[1].get_type(), "list.item")?;
+                self.builder.build_store(item, values[1])?;
+                values[1] = item.into();
+                ("list_push", None)
+            }
+            Primitive::Open => ("file_open", Some(i64_type.into())),
+            Primitive::Read => ("file_read", Some(i64_type.into())),
+            Primitive::Close => ("file_close", Some(i64_type.into())),
+        };
+        let value = self.runtime_call(name, result_type, &values)?;
+        if result == Type::Bool {
+            return Ok(Some(
+                self.builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        value.ok_or("missing runtime Boolean")?.into_int_value(),
+                        self.context.i32_type().const_zero(),
+                        "runtime.bool",
+                    )?
+                    .into(),
+            ));
+        }
+        Ok(value)
+    }
+
     fn live(&self) -> bool {
         self.builder
             .get_insert_block()
@@ -272,6 +446,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         None => None,
                     };
                     if self.live() {
+                        self.leave_roots()?;
                         match value {
                             Some(value) => {
                                 self.builder.build_return(Some(&value))?;
@@ -326,6 +501,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     fn expr(&mut self, expr: &checked::Expr) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
+        let value = self.expr_inner(expr)?;
+        if let Some(value) = value
+            && let Some(slot) = self.roots.expressions.get(&(expr as *const checked::Expr))
+        {
+            self.builder.build_store(*slot, value)?;
+        }
+        Ok(value)
+    }
+
+    fn expr_inner(&mut self, expr: &checked::Expr) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         let value = match &expr.kind {
             checked::ExprKind::Int(value) => self
                 .context
@@ -337,6 +522,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .bool_type()
                 .const_int(u64::from(*value), false)
                 .into(),
+            checked::ExprKind::Text(text) => {
+                let bytes = self.context.const_string(text.as_bytes(), false);
+                let value = self.context.const_struct(
+                    &[
+                        self.size_type.const_int(text.len() as u64, false).into(),
+                        bytes.into(),
+                    ],
+                    false,
+                );
+                let global = self
+                    .module
+                    .add_global(value.get_type(), None, "text.literal");
+                global.set_initializer(&value);
+                global.set_constant(true);
+                global.set_linkage(Linkage::Private);
+                global.as_pointer_value().into()
+            }
+            checked::ExprKind::Primitive(operation, args) => {
+                return self.primitive(expr.ty, *operation, args);
+            }
             checked::ExprKind::Local(local) => {
                 let Some(pointer) = self.locals[*local] else {
                     return Ok(None);
@@ -658,6 +863,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> NativeResult<()> {
         match ty {
             Type::Int => words.push(value.into_int_value()),
+            Type::Text | Type::Bytes | Type::List(_) => words.push(self.builder.build_ptr_to_int(
+                value.into_pointer_value(),
+                self.context.i64_type(),
+                "pointer.word",
+            )?),
             Type::Bool => words.push(self.builder.build_int_z_extend(
                 value.into_int_value(),
                 self.context.i64_type(),
@@ -717,6 +927,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     word.into()
                 }
             }
+            Type::Text | Type::Bytes | Type::List(_) => {
+                let word = words[*offset];
+                *offset += 1;
+                self.builder
+                    .build_int_to_ptr(
+                        word,
+                        self.context.ptr_type(AddressSpace::default()),
+                        "word.pointer",
+                    )?
+                    .into()
+            }
             Type::Unit => self.context.struct_type(&[], false).const_zero().into(),
             Type::Parameter(_) => return Err("unbound type parameter in enum payload".into()),
             Type::Data(id) => {
@@ -771,6 +992,25 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         left: BasicValueEnum<'ctx>,
         right: BasicValueEnum<'ctx>,
     ) -> NativeResult<IntValue<'ctx>> {
+        if ty == Type::Text {
+            let value = self
+                .runtime_call(
+                    "text_equal",
+                    Some(self.context.i32_type().into()),
+                    &[left, right],
+                )?
+                .ok_or("missing Text comparison result")?
+                .into_int_value();
+            return Ok(self.builder.build_int_compare(
+                IntPredicate::NE,
+                value,
+                self.context.i32_type().const_zero(),
+                "text.equal",
+            )?);
+        }
+        if gc::managed(self.program, ty) {
+            return Err("equality is not yet supported for managed aggregate values".into());
+        }
         let mut left_words = Vec::new();
         let mut right_words = Vec::new();
         self.flatten(ty, left, &mut left_words)?;
@@ -980,6 +1220,11 @@ fn reachable_functions(
                     expr(arg, calls);
                 }
             }
+            checked::ExprKind::Primitive(_, args) => {
+                for arg in args {
+                    expr(arg, calls);
+                }
+            }
             checked::ExprKind::Record(fields) => {
                 for (_, field) in fields {
                     expr(field, calls);
@@ -1056,6 +1301,7 @@ mod tests {
     #[test]
     fn enum_layout_uses_largest_payload_and_rejects_unbound_types() {
         let program = checked::Program {
+            lists: vec![],
             types: vec![
                 checked::Data {
                     name: "Pair".into(),

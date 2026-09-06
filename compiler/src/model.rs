@@ -34,6 +34,10 @@ pub struct Source {
 pub enum Type {
     Int,
     Bool,
+    Text,
+    Bytes,
+    /// Interned element type in Program::lists.
+    List(usize),
     Unit,
     Data(usize),
     /// Used only to check a generic definition, never in emitted instances.
@@ -61,6 +65,28 @@ pub enum Binary {
     Ge,
     And,
     Or,
+}
+
+/// Irreducible private standard-library operations, not public API dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Primitive {
+    TextLen,
+    TextByte,
+    TextConcat,
+    TextEqual,
+    BytesNew,
+    BytesLen,
+    BytesPush,
+    BytesUtf8,
+    BytesTextCopy,
+    ListNew,
+    ListLen,
+    ListGet,
+    ListPush,
+    ListSet,
+    Open,
+    Read,
+    Close,
 }
 
 pub mod ast {
@@ -118,6 +144,7 @@ pub mod ast {
     #[derive(Clone, Debug)]
     pub struct Function {
         pub name: String,
+        pub intrinsic: bool,
         pub public: bool,
         pub test: bool,
         pub parameters: Vec<String>,
@@ -176,6 +203,7 @@ pub mod ast {
     pub enum ExprKind {
         Int(i64),
         Bool(bool),
+        Text(String),
         Name(Vec<String>),
         Unary(Unary, Box<Expr>),
         Binary(Binary, Box<Expr>, Box<Expr>),
@@ -222,17 +250,20 @@ pub mod ast {
 #[derive(Clone, Debug)]
 pub struct PackageFile {
     pub package: String,
+    /// Source was resolved from the configured compiler standard-library root.
+    pub trusted_std: bool,
     /// Helpers in *_test.loom are unavailable to production declarations.
     pub test_only: bool,
     pub syntax: ast::File,
 }
 
 pub mod checked {
-    use super::{Binary, Span, Type, Unary};
+    use super::{Binary, Primitive, Span, Type, Unary};
 
     #[derive(Debug)]
     pub struct Program {
         pub types: Vec<Data>,
+        pub lists: Vec<Type>,
         pub functions: Vec<Function>,
         pub entry: Option<usize>,
         pub tests: Vec<usize>,
@@ -300,6 +331,8 @@ pub mod checked {
     pub enum ExprKind {
         Int(i64),
         Bool(bool),
+        Text(String),
+        Primitive(Primitive, Vec<Expr>),
         Local(usize),
         Unary(Unary, Box<Expr>),
         Binary(Binary, Box<Expr>, Box<Expr>),

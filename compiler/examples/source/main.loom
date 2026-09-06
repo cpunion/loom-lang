@@ -1,0 +1,17 @@
+import std.file.read_text
+import std.list.length
+import std.result.Result
+
+// Run from the repository root to scan this example's own source.
+fn main() {
+    match read_text("compiler/examples/source/scan.loom") {
+        Result.Ok(source) => {
+            let tokens = scan(source)
+            assert std.list.length(tokens) > 100
+        }
+        Result.Err(error) => {
+            discard error
+            assert false
+        }
+    }
+}

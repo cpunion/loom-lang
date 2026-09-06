@@ -1,0 +1,32 @@
+import std.result.Result
+
+pub enum FileError {
+    Open
+    Read
+    Close
+    Utf8
+}
+
+intrinsic fn open(path Text) Int
+intrinsic fn read(handle Int, buffer Bytes, limit Int) Int
+intrinsic fn close(handle Int) Int
+intrinsic fn bytes_new() Bytes
+intrinsic fn bytes_utf8(buffer Bytes) Bool
+intrinsic fn bytes_text_copy(buffer Bytes) Text
+
+// The source library owns the read loop, UTF-8 policy, and explicit close.
+// No file handle escapes and no GC finalizer owns an external resource.
+pub fn read_text(path Text) Result[Text, FileError] {
+    let handle = open(path)
+    if handle < 0 { return Result.Err(FileError.Open) }
+    let buffer = bytes_new()
+    var count = read(handle, buffer, 8192)
+    while count > 0 {
+        count = read(handle, buffer, 8192)
+    }
+    let closed = close(handle)
+    if count < 0 { return Result.Err(FileError.Read) }
+    if closed < 0 { return Result.Err(FileError.Close) }
+    if !bytes_utf8(buffer) { return Result.Err(FileError.Utf8) }
+    Result.Ok(bytes_text_copy(buffer))
+}

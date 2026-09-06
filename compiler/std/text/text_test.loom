@@ -1,0 +1,9 @@
+test fn utf8_bytes_and_concatenation() {
+    assert length("hé") == 3
+    assert byte("hé", 0) == 104
+    assert byte("hé", 1) == 195
+    assert byte("hé", 2) == 169
+    assert concat("lo", "om") == "loom"
+    assert concat("", "hé") == "hé"
+    assert concat("a", "b") != "ba"
+}

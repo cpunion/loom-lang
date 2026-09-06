@@ -6,6 +6,7 @@ use crate::model::{Binary, Diagnostic, Span, Unary, ast};
 enum Kind {
     Name(String),
     Number(String),
+    Text(String),
     LParen,
     RParen,
     LBrace,
@@ -58,6 +59,7 @@ fn lex(source: usize, text: &str) -> Result<Vec<Token>, Diagnostic> {
                 Kind::Newline
             }
             c if c.is_whitespace() => continue,
+            '"' => Kind::Text(string_literal(text, &mut offset, span(start + 1))?),
             '/' if text[offset..].starts_with('/') => {
                 while let Some(c) = text[offset..].chars().next() {
                     if c == '\n' || c == '\r' {
@@ -153,6 +155,69 @@ fn lex(source: usize, text: &str) -> Result<Vec<Token>, Diagnostic> {
         },
     });
     Ok(tokens)
+}
+
+fn string_literal(text: &str, offset: &mut usize, mut span: Span) -> Result<String, Diagnostic> {
+    let mut value = String::new();
+    while let Some(ch) = text[*offset..].chars().next() {
+        *offset += ch.len_utf8();
+        match ch {
+            '"' => return Ok(value),
+            '\n' | '\r' => {
+                span.end = *offset;
+                return Err(Diagnostic::new(
+                    span,
+                    "escape newlines inside string literals",
+                ));
+            }
+            '\\' => {
+                let escaped = text[*offset..].chars().next();
+                if let Some(ch) = escaped {
+                    *offset += ch.len_utf8();
+                }
+                let ch = match escaped {
+                    Some('n') => '\n',
+                    Some('r') => '\r',
+                    Some('t') => '\t',
+                    Some('0') => '\0',
+                    Some('"') => '"',
+                    Some('\\') => '\\',
+                    Some('u') if text[*offset..].starts_with('{') => {
+                        *offset += 1;
+                        let start = *offset;
+                        while text
+                            .as_bytes()
+                            .get(*offset)
+                            .is_some_and(u8::is_ascii_hexdigit)
+                        {
+                            *offset += 1;
+                        }
+                        let digits = &text[start..*offset];
+                        let decoded = u32::from_str_radix(digits, 16)
+                            .ok()
+                            .and_then(char::from_u32);
+                        if digits.len() > 6
+                            || !text[*offset..].starts_with('}')
+                            || decoded.is_none()
+                        {
+                            span.end = *offset;
+                            return Err(Diagnostic::new(span, "invalid Unicode escape"));
+                        }
+                        *offset += 1;
+                        decoded.unwrap()
+                    }
+                    _ => {
+                        span.end = *offset;
+                        return Err(Diagnostic::new(span, "invalid string escape"));
+                    }
+                };
+                value.push(ch);
+            }
+            _ => value.push(ch),
+        }
+    }
+    span.end = *offset;
+    Err(Diagnostic::new(span, "unterminated string literal"))
 }
 
 pub fn parse(source: usize, text: &str) -> Result<ast::File, Diagnostic> {
@@ -370,8 +435,12 @@ impl Parser {
 
     fn function(&mut self, public: bool, mut span: Span) -> Result<ast::Function, Diagnostic> {
         let test = self.eat_word("test");
+        let intrinsic = self.eat_word("intrinsic");
         if public && test {
             return Err(self.error("test functions cannot be public"));
+        }
+        if intrinsic && (public || test) {
+            return Err(self.error("intrinsic declarations must be private and cannot be tests"));
         }
         if !self.eat_word("fn") {
             return Err(self.error("expected a function, record, enum, or import declaration"));
@@ -393,7 +462,9 @@ impl Parser {
             self.newlines();
         }
         self.expect(Kind::RParen, "')'")?;
-        self.newlines();
+        if !intrinsic {
+            self.newlines();
+        }
         let result = if matches!(self.peek().kind, Kind::Name(_))
             && !self.word("requires")
             && !self.word("ensures")
@@ -406,6 +477,25 @@ impl Parser {
         } else {
             None
         };
+        if intrinsic {
+            if !self.at(&Kind::Newline) && !self.at(&Kind::Eof) {
+                return Err(self.error("intrinsic declarations have no body or contracts"));
+            }
+            span.end = self.tokens[self.pos - 1].span.end;
+            return Ok(ast::Function {
+                name,
+                public,
+                test,
+                intrinsic,
+                parameters,
+                params,
+                result,
+                requires: Vec::new(),
+                ensures: Vec::new(),
+                body: Vec::new(),
+                span,
+            });
+        }
         self.newlines();
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
@@ -428,6 +518,7 @@ impl Parser {
             name,
             public,
             test,
+            intrinsic,
             parameters,
             params,
             result,
@@ -573,6 +664,7 @@ impl Parser {
                 Kind::Number(number) => ast::ExprKind::Int(number.parse().map_err(|_| {
                     Diagnostic::new(span, "integer literal is outside the Int range")
                 })?),
+                Kind::Text(value) => ast::ExprKind::Text(value),
                 Kind::Name(ref name) if name == "true" || name == "false" => {
                     ast::ExprKind::Bool(name == "true")
                 }
@@ -811,6 +903,7 @@ fn reserved(name: &str) -> bool {
     matches!(
         name,
         "fn" | "pub"
+            | "intrinsic"
             | "record"
             | "enum"
             | "match"
@@ -1086,5 +1179,41 @@ mod tests {
             panic!()
         };
         assert!(matches!(condition.kind, ast::ExprKind::Field(_, _)));
+    }
+
+    #[test]
+    fn text_literals_and_private_intrinsic_declarations() {
+        let file = parse(
+            0,
+            r#"intrinsic fn copy[T](value T) T
+intrinsic fn collect()
+fn example() Text { "hé\n\t\"\\\u{1f9f5}" }
+"#,
+        )
+        .unwrap();
+        assert!(file.functions[0].intrinsic);
+        assert_eq!(file.functions[0].parameters, ["T"]);
+        assert!(file.functions[0].body.is_empty());
+        assert!(file.functions[1].result.is_none());
+        let ast::StmtKind::Expr(value) = &file.functions[2].body[0].kind else {
+            panic!()
+        };
+        let ast::ExprKind::Text(value) = &value.kind else {
+            panic!()
+        };
+        assert_eq!(value, "hé\n\t\"\\🧵");
+        for source in [
+            "pub intrinsic fn f()",
+            "test intrinsic fn f()",
+            "intrinsic fn f() {}",
+            "intrinsic fn f() requires true",
+            "intrinsic fn f() Unit",
+            "fn f() Text { \"unterminated }",
+            "fn f() Text { \"line\nbreak\" }",
+            r#"fn f() Text { "\x01" }"#,
+            r#"fn f() Text { "\u{110000}" }"#,
+        ] {
+            assert!(parse(0, source).is_err(), "unexpectedly accepted {source}");
+        }
     }
 }

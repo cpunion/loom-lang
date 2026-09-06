@@ -27,6 +27,7 @@ complete language implementation or a self-hosted compiler.
 
 - `compiler/src`: syntax, type/proof checking, and native code generation.
 - `compiler/std`: standard-library source, compiled like application code.
+- `compiler/runtime`: managed-memory and private platform primitives in Rust.
 - `compiler/examples` and `compiler/tests`: runnable examples and focused tests.
 - `docs`: goals, decisions, and current status.
 

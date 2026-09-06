@@ -1,0 +1,19 @@
+import std.list.get
+import std.list.length
+
+test fn token_spans() {
+    let tokens = scan("let answer = 42")
+    assert std.list.length(tokens) == 4
+    let first = get(tokens, 0)
+    assert first.start == 0 && first.end == 3
+    assert match first.kind {
+        Kind.Name => true
+        _ => false
+    }
+    let last = get(tokens, 3)
+    assert last.start == 13 && last.end == 15
+    assert match last.kind {
+        Kind.Number => true
+        _ => false
+    }
+}

@@ -2,7 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{Binary, Diagnostic, PackageFile, Span, Type, Unary, ast, checked as c};
+use crate::model::{
+    Binary, Diagnostic, PackageFile, Primitive, Span, Type, Unary, ast, checked as c,
+};
 
 #[derive(Clone)]
 struct Signature {
@@ -24,6 +26,7 @@ struct Environment<'a> {
     signatures: Vec<Signature>,
     declarations: Vec<(usize, usize)>,
     types: Vec<c::Data>,
+    lists: Vec<Type>,
     data_instances: Vec<DataInstance>,
     building: Vec<usize>,
     functions: Vec<(usize, Vec<Type>)>,
@@ -47,10 +50,12 @@ fn qualified(package: &str, name: &str) -> String {
 fn parameters(names: &[String], span: Span) -> Result<HashMap<String, Type>, Diagnostic> {
     let mut result = HashMap::new();
     for (index, name) in names.iter().enumerate() {
-        if matches!(name.as_str(), "Int" | "Bool" | "Unit")
-            || result
-                .insert(name.clone(), Type::Parameter(index))
-                .is_some()
+        if matches!(
+            name.as_str(),
+            "Int" | "Bool" | "Text" | "Bytes" | "List" | "Unit"
+        ) || result
+            .insert(name.clone(), Type::Parameter(index))
+            .is_some()
         {
             return Err(Diagnostic::new(
                 span,
@@ -71,6 +76,7 @@ pub fn check(
         signatures: Vec::new(),
         declarations: Vec::new(),
         types: Vec::new(),
+        lists: Vec::new(),
         data_instances: Vec::new(),
         building: Vec::new(),
         functions: Vec::new(),
@@ -81,11 +87,12 @@ pub fn check(
         }
         for (index, data) in source.syntax.data.iter().enumerate() {
             parameters(&data.parameters, data.span)?;
-            if matches!(data.name.as_str(), "Int" | "Bool" | "Unit")
-                || env.declarations.iter().any(|&(f, d)| {
-                    files[f].package == source.package && files[f].syntax.data[d].name == data.name
-                })
-            {
+            if matches!(
+                data.name.as_str(),
+                "Int" | "Bool" | "Text" | "Bytes" | "List" | "Unit"
+            ) || env.declarations.iter().any(|&(f, d)| {
+                files[f].package == source.package && files[f].syntax.data[d].name == data.name
+            }) {
                 return Err(Diagnostic::new(
                     data.span,
                     "duplicate or reserved data declaration",
@@ -96,6 +103,14 @@ pub fn check(
         for (function, item) in source.syntax.functions.iter().enumerate() {
             if item.test && !test_mode {
                 continue;
+            }
+            if item.intrinsic
+                && (!source.trusted_std || item.public || item.test || source.test_only)
+            {
+                return Err(Diagnostic::new(
+                    item.span,
+                    "intrinsics are private declarations of the trusted standard library",
+                ));
             }
             parameters(&item.parameters, item.span)?;
             env.signatures.push(Signature {
@@ -164,6 +179,7 @@ pub fn check(
     }
     let mut program = c::Program {
         types: Vec::new(),
+        lists: Vec::new(),
         functions: Vec::new(),
         entry: None,
         tests: Vec::new(),
@@ -198,6 +214,7 @@ pub fn check(
         next += 1;
     }
     program.types = env.types;
+    program.lists = env.lists;
     Ok(program)
 }
 
@@ -302,9 +319,21 @@ impl Environment<'_> {
     ) -> Result<Type, Diagnostic> {
         if reference.path.len() == 1 {
             let name = &reference.path[0];
+            if name == "List" {
+                let [element] = reference.args.as_slice() else {
+                    return Err(Diagnostic::new(
+                        reference.span,
+                        "List requires exactly one element type",
+                    ));
+                };
+                let element = self.resolve(element, file, test_only, parameters)?;
+                return self.list(element, reference.span);
+            }
             let builtin = match name.as_str() {
                 "Int" => Some(Type::Int),
                 "Bool" => Some(Type::Bool),
+                "Text" => Some(Type::Text),
+                "Bytes" => Some(Type::Bytes),
                 "Unit" => {
                     return Err(Diagnostic::new(
                         reference.span,
@@ -330,6 +359,21 @@ impl Environment<'_> {
             .map(|r| self.resolve(r, file, test_only, parameters))
             .collect::<Result<Vec<_>, _>>()?;
         self.data(id, arguments, reference.span)
+    }
+
+    fn list(&mut self, element: Type, span: Span) -> Result<Type, Diagnostic> {
+        if self.type_depth(element) >= 64 {
+            return Err(Diagnostic::new(
+                span,
+                "type specialization depth exceeded; generic expansion must be finite",
+            ));
+        }
+        if let Some(id) = self.lists.iter().position(|t| *t == element) {
+            return Ok(Type::List(id));
+        }
+        let id = self.lists.len();
+        self.lists.push(element);
+        Ok(Type::List(id))
     }
 
     fn data(
@@ -435,6 +479,10 @@ impl Environment<'_> {
     fn substitute(&mut self, ty: Type, arguments: &[Type], span: Span) -> Result<Type, Diagnostic> {
         match ty {
             Type::Parameter(index) => Ok(arguments[index]),
+            Type::List(id) => {
+                let element = self.substitute(self.lists[id], arguments, span)?;
+                self.list(element, span)
+            }
             Type::Data(id) => {
                 let instance = self.data_instances[id].clone();
                 let args = instance
@@ -469,6 +517,12 @@ impl Environment<'_> {
                         .zip(&a.arguments)
                         .all(|(p, a)| self.infer(*p, *a, arguments))
             }
+            Type::List(p) => {
+                let Type::List(a) = actual else {
+                    return false;
+                };
+                self.infer(self.lists[p], self.lists[a], arguments)
+            }
             _ => pattern == actual,
         }
     }
@@ -476,6 +530,7 @@ impl Environment<'_> {
     fn concrete(&self, ty: Type) -> bool {
         match ty {
             Type::Parameter(_) => false,
+            Type::List(id) => self.concrete(self.lists[id]),
             Type::Data(id) => self.data_instances[id]
                 .arguments
                 .iter()
@@ -486,6 +541,7 @@ impl Environment<'_> {
 
     fn type_depth(&self, ty: Type) -> usize {
         match ty {
+            Type::List(id) => 1 + self.type_depth(self.lists[id]),
             Type::Data(id) => {
                 1 + self.data_instances[id]
                     .arguments
@@ -522,6 +578,55 @@ impl Environment<'_> {
         Ok(id)
     }
 
+    fn intrinsic(
+        &mut self,
+        item: &ast::Function,
+        sig: &Signature,
+    ) -> Result<Primitive, Diagnostic> {
+        use Primitive as P;
+        use Type as T;
+        let parameter = T::Parameter(0);
+        let list = self.list(parameter, item.span)?;
+        let (primitive, count, params, result) = match item.name.as_str() {
+            "text_len" => (P::TextLen, 0, vec![T::Text], T::Int),
+            "text_byte" => (P::TextByte, 0, vec![T::Text, T::Int], T::Int),
+            "text_concat" => (P::TextConcat, 0, vec![T::Text, T::Text], T::Text),
+            "text_equal" => (P::TextEqual, 0, vec![T::Text, T::Text], T::Bool),
+            "bytes_new" => (P::BytesNew, 0, vec![], T::Bytes),
+            "bytes_len" => (P::BytesLen, 0, vec![T::Bytes], T::Int),
+            "bytes_push" => (P::BytesPush, 0, vec![T::Bytes, T::Int], T::Unit),
+            "bytes_utf8" => (P::BytesUtf8, 0, vec![T::Bytes], T::Bool),
+            "bytes_text_copy" => (P::BytesTextCopy, 0, vec![T::Bytes], T::Text),
+            "list_new" => (P::ListNew, 1, vec![], list),
+            "list_len" => (P::ListLen, 1, vec![list], T::Int),
+            "list_get" => (P::ListGet, 1, vec![list, T::Int], parameter),
+            "list_push" => (P::ListPush, 1, vec![list, parameter], T::Unit),
+            "list_set" => (P::ListSet, 1, vec![list, T::Int, parameter], T::Unit),
+            "open" => (P::Open, 0, vec![T::Text], T::Int),
+            "read" => (P::Read, 0, vec![T::Int, T::Bytes, T::Int], T::Int),
+            "close" => (P::Close, 0, vec![T::Int], T::Int),
+            _ => {
+                return Err(Diagnostic::new(
+                    item.span,
+                    "unknown private runtime intrinsic",
+                ));
+            }
+        };
+        if item.parameters.len() != count || sig.params != params || sig.result != result {
+            return Err(Diagnostic::new(
+                item.span,
+                "intrinsic declaration does not match its runtime signature",
+            ));
+        }
+        if !item.body.is_empty() || !item.requires.is_empty() || !item.ensures.is_empty() {
+            return Err(Diagnostic::new(
+                item.span,
+                "intrinsic declarations have no source body or contracts; put policy in source wrappers",
+            ));
+        }
+        Ok(primitive)
+    }
+
     fn function(
         &mut self,
         id: usize,
@@ -530,6 +635,11 @@ impl Environment<'_> {
     ) -> Result<c::Function, Diagnostic> {
         let mut sig = self.signatures[id].clone();
         let item = self.files[sig.file].syntax.functions[sig.function].clone();
+        let primitive = if item.intrinsic {
+            Some(self.intrinsic(&item, &sig)?)
+        } else {
+            None
+        };
         let package = self.files[sig.file].package.clone();
         sig.params = sig
             .params
@@ -562,7 +672,29 @@ impl Environment<'_> {
             .iter()
             .map(|e| checker.expect(e, Type::Bool))
             .collect::<Result<Vec<_>, _>>()?;
-        let (body, _) = checker.block(&item.body, Some(sig.result))?;
+        let body = if let Some(primitive) = primitive {
+            let args = sig
+                .params
+                .iter()
+                .enumerate()
+                .map(|(local, ty)| c::Expr {
+                    kind: c::ExprKind::Local(local),
+                    ty: *ty,
+                    span: item.span,
+                })
+                .collect();
+            c::Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(c::Expr {
+                    kind: c::ExprKind::Primitive(primitive, args),
+                    ty: sig.result,
+                    span: item.span,
+                })),
+                falls_through: true,
+            }
+        } else {
+            checker.block(&item.body, Some(sig.result))?.0
+        };
         if body.falls_through && sig.result != Type::Unit && body.tail.is_none() {
             return Err(Diagnostic::new(
                 item.span,
@@ -823,6 +955,7 @@ impl Checker<'_, '_> {
         let (kind, ty) = match &expr.kind {
             A::Int(value) => (C::Int(*value), Type::Int),
             A::Bool(value) => (C::Bool(*value), Type::Bool),
+            A::Text(value) => (C::Text(value.clone()), Type::Text),
             A::Name(path) => {
                 if let Some(binding) = self.local(&path[0]) {
                     let mut value = c::Expr {
@@ -853,6 +986,27 @@ impl Checker<'_, '_> {
             }
             A::Binary(op, left, right) => {
                 let left = self.expr(left, None)?;
+                if left.ty == Type::Text && matches!(op, Binary::Eq | Binary::Ne) {
+                    let right = self.expect(right, Type::Text)?;
+                    let equal = c::Expr {
+                        kind: C::Primitive(Primitive::TextEqual, vec![left, right]),
+                        ty: Type::Bool,
+                        span: expr.span,
+                    };
+                    let result = if *op == Binary::Ne {
+                        c::Expr {
+                            kind: C::Unary(Unary::Not, Box::new(equal)),
+                            ty: Type::Bool,
+                            span: expr.span,
+                        }
+                    } else {
+                        equal
+                    };
+                    if expected.is_some_and(|t| t != Type::Bool) && expr_falls(&result) {
+                        return Err(Diagnostic::new(expr.span, "text comparison produces Bool"));
+                    }
+                    return Ok(result);
+                }
                 let argument = match op {
                     Binary::And | Binary::Or => Type::Bool,
                     Binary::Eq | Binary::Ne => left.ty,
@@ -1392,9 +1546,9 @@ fn expr_falls(expr: &c::Expr) -> bool {
         c::ExprKind::Unary(_, e) | c::ExprKind::Field(e, _) => expr_falls(e),
         c::ExprKind::Binary(Binary::And | Binary::Or, a, _) => expr_falls(a),
         c::ExprKind::Binary(_, a, b) => expr_falls(a) && expr_falls(b),
-        c::ExprKind::Call(_, args) | c::ExprKind::Variant { fields: args, .. } => {
-            args.iter().all(expr_falls)
-        }
+        c::ExprKind::Call(_, args)
+        | c::ExprKind::Primitive(_, args)
+        | c::ExprKind::Variant { fields: args, .. } => args.iter().all(expr_falls),
         c::ExprKind::Record(fields) => fields.iter().all(|(_, e)| expr_falls(e)),
         _ => true,
     }
@@ -1406,6 +1560,7 @@ mod tests {
     fn file(package: &str, source: &str, test_only: bool) -> PackageFile {
         PackageFile {
             package: package.into(),
+            trusted_std: false,
             test_only,
             syntax: crate::parser::parse(0, source).unwrap(),
         }
@@ -1567,5 +1722,66 @@ mod tests {
             "record Wrap[T] { value T } fn grow[T](x T) { grow(Wrap { value = x }) } fn main() { grow(1) }",
         );
         check(&[file("", "record A { next B } record B { number Int } fn main() { assert (A { next = B { number = 9 } }).next.number == 9 }", false)], "", false).unwrap();
+    }
+
+    #[test]
+    fn intrinsic_declarations_require_trust_and_exact_abstract_signatures() {
+        let source = "intrinsic fn text_len(value Text) Int";
+        assert!(check(&[file("std.text", source, false)], "std.text", false).is_err());
+        for source in [
+            "intrinsic fn text_len(value Int) Int",
+            "intrinsic fn list_get[T](values List[T], index Int) Int",
+            "intrinsic fn list_push[T](values List[T], value Int)",
+            "intrinsic fn arbitrary(value Text) Int",
+        ] {
+            let mut source = file("std.internal", source, false);
+            source.trusted_std = true;
+            assert!(check(&[source], "std.internal", false).is_err());
+        }
+    }
+
+    #[test]
+    fn shared_lists_are_invariant_and_primitives_stay_behind_source_calls() {
+        let mut library = file(
+            "collection",
+            r#"
+intrinsic fn list_new[T]() List[T]
+intrinsic fn list_get[T](values List[T], index Int) T
+intrinsic fn list_push[T](values List[T], value T)
+pub fn make[T]() List[T] { list_new[T]() }
+pub fn first[T](values List[T]) T { list_get(values, 0) }
+pub fn append[T](values List[T], value T) { list_push(values, value) }
+"#,
+            false,
+        );
+        library.trusted_std = true;
+        let app = file(
+            "app",
+            r#"
+import collection.make
+import collection.first
+import collection.append
+fn main() {
+    let values List[Text] = make()
+    let alias = values
+    append(alias, "hello")
+    assert first(values) == "hello"
+    assert first(values) != "goodbye"
+}
+"#,
+            false,
+        );
+        let program = check(&[library.clone(), app], "app", false).unwrap();
+        assert!(program.lists.contains(&Type::Text));
+        assert_eq!(program.functions.len(), 7);
+        let invalid = file(
+            "app",
+            "import collection.make\nimport collection.append\nfn main() { let values List[Text] = make()\nappend[Int](values, 1) }",
+            false,
+        );
+        assert!(check(&[library, invalid], "app", false).is_err());
+        rejects("fn bad(values List[Int]) Bool { values == values }");
+        rejects("fn bad(value Bytes) Bool { value == value }");
+        rejects("fn bad(value Text) Bool ensures result { value == value }");
     }
 }
