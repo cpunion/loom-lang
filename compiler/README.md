@@ -4,12 +4,12 @@ The [Loom-written compiler](loom/README.md) implements package loading, parsing,
 binding, type checking, bounded required proofs, and checked program emission.
 It builds further compiler stages using one retained Rust LLVM/platform tool.
 The [roadmap](../ROADMAP.md) distinguishes this macOS bootstrap from completion
-of the accepted language; the Rust seed remains only for the initial stage and
-transition validation.
+of the accepted language. A previous Loom compiler is the bootstrap input;
+the frozen historical Rust seed is only a fallback for producing that input.
 
 The native tool consumes a checked program, not source that it parses or
-type-checks again. It shares the seed's LLVM 19 lowering through Inkwell;
-there is no second backend or runtime interpreter. Scalar-only programs link only
+type-checks again. It uses LLVM 19 through Inkwell; there is no second language
+frontend or runtime interpreter. Scalar-only programs link only
 the host C library for fault reporting; managed programs also link the small
 Rust runtime. Ordinary arithmetic and calls lower
 directly; LLVM's O2 pipeline promotes local storage and removes unused code.
@@ -22,31 +22,39 @@ validation host. From the repository root:
 ```sh
 export LLVM_SYS_191_PREFIX="$(brew --prefix llvm@19)"
 export LOOM_CC="$LLVM_SYS_191_PREFIX/bin/clang"
-cargo build --locked --workspace
+bash scripts/bootstrap.sh
 
-target/debug/loom check compiler/examples/scalar
-target/debug/loom build compiler/examples/scalar \
+target/loom check compiler/examples/scalar
+target/loom build compiler/examples/scalar \
   --output target/scalar --emit-ir target/scalar.ll
 target/scalar
-target/debug/loom test compiler/examples/scalar
-target/debug/loom run compiler/examples/scalar
-target/debug/loom test compiler/std/int
-LOOM_GC_STRESS=1 target/debug/loom test compiler/std/list
-target/debug/loom build compiler/loom --output target/loom-stage1
-target/loom-stage1 build compiler/loom --output target/loom-stage2
-target/loom-stage2 build compiler/loom --output target/loom-stage3
-cmp target/loom-stage2 target/loom-stage3
-target/loom-stage3 test compiler/loom/checking
-target/loom-stage3 test compiler/std/result
-target/loom-stage3 run compiler/examples/data
+target/loom test compiler/examples/scalar
+target/loom run compiler/examples/data
+target/loom test compiler/loom/checking
+target/loom test compiler/std/result
+LOOM_GC_STRESS=1 target/loom test compiler/std/list
 ```
 
-The root Cargo workspace builds the initial `loom` seed and `loom-native` tool.
-The source compiler defaults to `compiler/std` and `target/debug/loom-native`
-relative to the working directory; `--std` and `--native-tool` select explicit
-paths. The Rust seed instead finds `std` beside its build-time manifest or via
-`LOOM_STD`. These are development commands, not a relocatable release package
-or a stable compiler-artifact ABI. `--help` lists each tool's command surface.
+The [bootstrap script](../scripts/bootstrap.sh) builds the current Rust tool
+and runtime, then Loom stages 1, 2, and 3. It compares stages 2/3 byte-for-byte
+and publishes `target/loom`. A cold build recovers stage 0 from the commit in
+`compiler/bootstrap/seed`, using only that historical source and Rust seed in
+`target/bootstrap/<commit>/`. The pinned commit must be available in Git history;
+the script reports the exact fetch command when it is missing. The cache is
+disposable and is not a second source tree to maintain.
+
+An existing compatible Loom compiler bypasses historical seed recovery:
+
+```sh
+LOOM_BOOTSTRAP_COMPILER=/path/to/loom bash scripts/bootstrap.sh
+```
+
+The root Cargo workspace alone builds `loom-native` and the runtime, not the
+public `loom` compiler. The source compiler defaults to `compiler/std` and
+`target/debug/loom-native` relative to the working directory; `--std` and
+`--native-tool` select explicit paths. These are development commands, not a
+relocatable release package or a stable compiler-artifact ABI. `--help` lists
+each tool's command surface.
 
 ## Implemented subset
 
@@ -88,7 +96,7 @@ or a stable compiler-artifact ABI. `--help` lists each tool's command surface.
   initializes argument access only when the emitted program needs it.
 - Native executable builds when the selected package has `main`; otherwise,
   an object containing its public functions and their dependencies. Object
-  symbols are private seed conventions, not a supported foreign ABI.
+  symbols are private compiler conventions, not a supported foreign ABI.
 
 The scalar example covers recursion, loops, a pre/postcondition pair, an imported
 package, `std`, and both test forms. Native tests exercise overflow, division by
@@ -143,15 +151,18 @@ not a promise that the current internal structures are stable public schemas.
 The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;
 transitively nonallocating functions need no root frames. `LOOM_GC_STRESS=1`
-collects before every allocation for focused testing. Managed executables find
-`libloom_seed_runtime.a` beside the compiler, or at `LOOM_RUNTIME_LIBRARY`.
+collects before every allocation for focused testing. The LLVM tool links managed
+programs with `libloom_runtime.a` beside it, or at `LOOM_RUNTIME_LIBRARY`.
 No handles escape the file helpers; every recoverable branch closes the
 file explicitly. This is not general scoped cleanup or finalization.
 
 The N0 source-to-native gate is exercised by the examples and integration tests.
 N1 now includes the complete source frontend for this subset and native staged
-bootstrap through the retained LLVM tool. The replaced Rust source frontend
-must retire after transition validation; it is not a parallel product target.
+bootstrap through the retained LLVM tool. Replaced Rust source-language stages
+are absent from the active tree; the pinned historical fallback is not an
+old-language support policy. Stage numbers denote bootstrap generations, not
+language versions. The bootstrap subset limits how the compiler source is
+written, not what language features the resulting compiler can offer users.
 Mutable record fields, broader proofs, moving GC,
 lexical resources, Tasks, metaprogramming,
 dependency resolution, lockfile/cache behavior, deployment and semantic-change
@@ -167,6 +178,6 @@ For this compiler's local gate:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo build --locked --workspace
+bash scripts/bootstrap.sh
 cargo test --locked --workspace
 ```

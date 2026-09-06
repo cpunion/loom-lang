@@ -54,11 +54,7 @@ impl Reader<'_> {
         if start > end {
             return Err("reversed checked-IR span".into());
         }
-        Ok(Span {
-            source: 0,
-            start,
-            end,
-        })
+        Ok(Span { start, end })
     }
 
     fn expression(&mut self, depth: usize) -> Result<Expr> {

@@ -21,7 +21,7 @@ pub fn link(
                 .unwrap_or_else(|| {
                     std::env::current_exe()
                         .unwrap_or_default()
-                        .with_file_name("libloom_seed_runtime.a")
+                        .with_file_name("libloom_runtime.a")
                 })
         });
         if !runtime.is_file() {

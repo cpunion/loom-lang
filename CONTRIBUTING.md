@@ -8,14 +8,17 @@ implementations or lower the accepted goals to match a temporary subset.
 
 Use Rust 1.88, LLVM 19, and Clang. See the
 [compiler guide](compiler/README.md) for setup and executable examples.
-The root Cargo workspace contains the active compiler and its small runtime.
+The root Cargo workspace contains the LLVM/platform tool and small runtime;
+the language frontend is Loom source. The guide describes bootstrapping it
+from an existing compiler or a frozen historical seed, not a second active
+Rust frontend.
 
 Run the relevant local gate:
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo build --locked --workspace
+bash scripts/bootstrap.sh
 cargo test --locked --workspace
 node .github/scripts/check-docs.mjs
 node --test .github/scripts/check-docs.test.mjs

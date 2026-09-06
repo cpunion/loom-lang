@@ -122,7 +122,7 @@ fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
         }
         return Result.Ok(true)
     }
-    Result.Err(error(context, node, "the seed supports only scalar, call-free contract predicates"))
+    Result.Err(error(context, node, "contracts currently support only scalar, call-free predicates"))
 }
 fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failure] {
     let clauses = new[Expr]()

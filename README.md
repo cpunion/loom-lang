@@ -7,10 +7,10 @@ changes.
 
 The active frontend is written in Loom: it loads packages, parses source,
 checks types and required proofs, and produces a checked native program.
-A narrow Rust tool lowers that program through LLVM 19/Inkwell. A Rust seed
-currently builds the first compiler stage; subsequent stages compile the same
-Loom sources. Retiring the replaced seed frontend is next, not maintaining two
-language implementations. The previous compiler and interpreter remain only
+A narrow Rust tool lowers that program through LLVM 19/Inkwell. An existing
+Loom compiler bootstraps the current source; a pinned historical seed can be
+built on demand when needed. The active tree has one language frontend, not a
+permanent Rust basic version. Previous frontends and interpreters remain only
 in Git history.
 
 ## Start here
@@ -28,7 +28,7 @@ the complete language, standard library, or tooling design is implemented.
 
 ## Repository
 
-- `compiler/src`: Rust bootstrap seed and the retained LLVM/platform bridge.
+- `compiler/src`: Rust LLVM lowering, checked-artifact input, and host linking.
 - `compiler/loom`: Loom-written compiler and reusable frontend packages.
 - `compiler/std`: standard-library source, compiled like application code.
 - `compiler/runtime`: managed-memory and private platform primitives in Rust.

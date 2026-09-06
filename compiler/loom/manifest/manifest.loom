@@ -154,8 +154,8 @@ pub fn parse(text Text) Result[Module, Text] {
                 if equal == length(line) { return Result.Err("expected a manifest key = value") }
                 let key = trim(slice(line, 0, equal))
                 let value = trim(slice(line, equal + 1, length(line)))
-                let full = concat(section, concat(".", key))
-                if contains(seen, full) { return Result.Err("duplicate manifest key") }
+                let full = if section == "" { key } else { concat(section, concat(".", key)) }
+                if contains(seen, full) { return Result.Err(concat("duplicate manifest key: ", full)) }
                 push(seen, full)
                 if section == "" {
                     if key == "schema" {
@@ -167,14 +167,14 @@ pub fn parse(text Text) Result[Module, Text] {
                             if key == "dependencies" && value == "{}" {
                                 if contains(seen, "[dependencies]") { return Result.Err("duplicate manifest table") }
                                 push(seen, "[dependencies]")
-                            } else { return Result.Err("unsupported manifest field or TOML syntax") }
+                            } else { return Result.Err(concat("unsupported manifest field or TOML syntax: ", full)) }
                         }
                     }
                 } else {
                     if section == "dependencies" { return Result.Err("dependency resolution is not implemented") }
                     if key == "name" { name = quoted(value)? } else {
                         if key == "version" { version = quoted(value)? } else {
-                            return Result.Err("unsupported module manifest field")
+                            return Result.Err(concat("unsupported module manifest field: ", full))
                         }
                     }
                 }

@@ -4,10 +4,10 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use loom_seed::native_tool::{
+use loom_native::native_tool::{
     link, output_identity, prepare_parent, publish, reject_source_output,
 };
-use loom_seed::{native, native_input};
+use loom_native::{native, native_input};
 
 fn main() -> ExitCode {
     match execute() {
