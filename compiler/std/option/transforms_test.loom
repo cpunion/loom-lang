@@ -1,0 +1,57 @@
+import std.bytes.new
+import std.bytes.push
+import std.bytes.length
+import std.bytes.to_text
+
+fn label(value Int) Text { if value == 7 { "seven" } else { "other" } }
+fn recognized(value Text) Option[Bool] {
+    if value == "seven" { Option.Some(true) } else { Option.None }
+}
+fn no() Bool { false }
+fn transformed_values() Bool {
+    let mapped = map[Int, Text](Option.Some(7), label)
+    let found = and_then[Text, Bool](mapped, recognized)
+    let missing = and_then[Text, Bool](Option.Some("other"), recognized)
+    unwrap_or_else(found, no) && !unwrap_or_else(missing, no)
+}
+
+test fn mixed_transforms_work_at_runtime_and_compile_time() {
+    assert transformed_values()
+    assert comptime { transformed_values() }
+}
+
+fn touch(value Bytes) Bytes { push(value, 65)
+    value
+}
+fn maybe_touch(value Bytes) Option[Bytes] { push(value, 66)
+    Option.Some(value)
+}
+fn unexpected(value Bytes) Bytes { assert false
+    value
+}
+fn unexpected_option(value Bytes) Option[Bytes] { Option.Some(unexpected(value)) }
+fn unexpected_default() Bytes { assert false
+    new()
+}
+fn default_for(trace Bytes) fn() Bytes {
+    push(trace, 67)
+    unexpected_default
+}
+
+test fn selected_callbacks_run_once_and_preserve_shared_payloads() {
+    let shared = new()
+    let mapped = map[Bytes, Bytes](Option.Some(shared), touch)
+    let chained = and_then[Bytes, Bytes](mapped, maybe_touch)
+    // The callback expression evaluates normally; its body stays uncalled.
+    let output = unwrap_or_else(chained, default_for(shared))
+    assert to_text(shared) == "ABC"
+    push(output, 68)
+    assert to_text(shared) == "ABCD"
+
+    let absent Option[Bytes] = Option.None
+    assert match map[Bytes, Bytes](absent, unexpected) { Option.None => true, _ => false }
+    assert match and_then[Bytes, Bytes](absent, unexpected_option) { Option.None => true, _ => false }
+    let fallback = unwrap_or_else(absent, new)
+    push(fallback, 69)
+    assert length(fallback) == 1 && length(shared) == 4
+}

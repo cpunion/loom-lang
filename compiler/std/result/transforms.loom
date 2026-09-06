@@ -1,0 +1,27 @@
+pub fn map[T, U, E](value Result[T, E], transform fn(T) U) Result[U, E] {
+    match value {
+        Result.Ok(item) => Result.Ok(transform(item))
+        Result.Err(error) => Result.Err(error)
+    }
+}
+
+pub fn map_err[T, E, F](value Result[T, E], transform fn(E) F) Result[T, F] {
+    match value {
+        Result.Ok(item) => Result.Ok(item)
+        Result.Err(error) => Result.Err(transform(error))
+    }
+}
+
+pub fn and_then[T, U, E](value Result[T, E], next fn(T) Result[U, E]) Result[U, E] {
+    match value {
+        Result.Ok(item) => next(item)
+        Result.Err(error) => Result.Err(error)
+    }
+}
+
+pub fn unwrap_or_else[T, E](value Result[T, E], fallback fn(E) T) T {
+    match value {
+        Result.Ok(item) => item
+        Result.Err(error) => fallback(error)
+    }
+}

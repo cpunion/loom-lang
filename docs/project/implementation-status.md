@@ -49,6 +49,10 @@ Source `std.list.map/filter/fold` use those function values without new runtime
 operations. They traverse the initial index range in order, preserve shared
 element semantics, and execute at compile time with pure callbacks. A pinned
 function-capable source checkpoint precedes this standard-library adoption.
+Source Option/Result transformations use the same callbacks for value mapping,
+fallible chaining and conditional fallback; Result also maps errors. Only the
+selected callback is invoked, and payload sharing is preserved. Colocated source
+tests exercise native, compile-time and forced-GC execution.
 
 Static concepts use explicit nominal `impl` declarations, generic bounds and
 ordinary direct-call specialization. Conditional `T implements C` tests select

@@ -1,0 +1,21 @@
+// Only the selected branch invokes its callback. Payloads retain normal sharing.
+pub fn map[T, U](value Option[T], transform fn(T) U) Option[U] {
+    match value {
+        Option.Some(value) => Option.Some(transform(value))
+        Option.None => Option.None
+    }
+}
+
+pub fn and_then[T, U](value Option[T], transform fn(T) Option[U]) Option[U] {
+    match value {
+        Option.Some(value) => transform(value)
+        Option.None => Option.None
+    }
+}
+
+pub fn unwrap_or_else[T](value Option[T], fallback fn() T) T {
+    match value {
+        Option.Some(value) => value
+        Option.None => fallback()
+    }
+}

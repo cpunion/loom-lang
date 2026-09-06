@@ -1,0 +1,60 @@
+import std.int.to_text
+import std.text.length
+
+fn positive(value Int) Result[Bool, Text] {
+    if value > 0 { Result.Ok(true) } else { Result.Err("nonpositive") }
+}
+fn transform_values() Bool {
+    let mapped = map[Int, Text, Text](Result.Ok(7), to_text)
+    let mapped_error = map_err[Int, Text, Int](Result.Err("bad"), length)
+    let chained = and_then[Int, Bool, Text](Result.Ok(7), positive)
+    let failed = and_then[Int, Bool, Text](Result.Ok(0), positive)
+    (match mapped { Result.Ok(value) => value == "7", Result.Err(_) => false }) &&
+    (match mapped_error { Result.Ok(_) => false, Result.Err(value) => value == 3 }) &&
+    (match chained { Result.Ok(value) => value, Result.Err(_) => false }) &&
+    (match failed { Result.Ok(_) => false, Result.Err(value) => value == "nonpositive" }) &&
+    unwrap_or_else[Int, Text](Result.Err("fallback"), length) == 8
+}
+
+test fn result_transformations_work_at_runtime_and_compile_time() {
+    assert transform_values()
+    assert comptime { transform_values() }
+}
+
+fn touch(value List[Int]) List[Int] { push(value, 1)
+    value
+}
+fn touch_error(value List[Int]) Result[List[Int], List[Int]] { Result.Err(touch(value)) }
+fn unexpected(value List[Int]) List[Int] { assert false
+    value
+}
+fn unexpected_next(value List[Int]) Result[List[Int], List[Int]] { assert false
+    Result.Ok(value)
+}
+fn payload(value Result[List[Int], List[Int]]) List[Int] {
+    match value { Result.Ok(item) => item, Result.Err(error) => error }
+}
+
+test fn result_callbacks_are_selected_once_and_preserve_shared_payloads() {
+    let values = new[Int]()
+    let mapped = payload(map[List[Int], List[Int], List[Int]](Result.Ok(values), touch))
+    assert length(values) == 1
+    let mapped_error = payload(map_err[List[Int], List[Int], List[Int]](Result.Err(values), touch))
+    assert length(values) == 2
+    let chained = and_then[List[Int], List[Int], List[Int]](Result.Ok(values), touch_error)
+    assert length(values) == 3
+    assert match chained { Result.Ok(_) => false, Result.Err(value) => length(value) == 3 }
+    let recovered = unwrap_or_else[List[Int], List[Int]](Result.Err(values), touch)
+    assert length(values) == 4
+
+    let skipped_map = payload(map[List[Int], List[Int], List[Int]](Result.Err(values), unexpected))
+    let skipped_error = payload(map_err[List[Int], List[Int], List[Int]](Result.Ok(values), unexpected))
+    let skipped_next = payload(and_then[List[Int], List[Int], List[Int]](Result.Err(values), unexpected_next))
+    let skipped_fallback = unwrap_or_else[List[Int], List[Int]](Result.Ok(values), unexpected)
+    assert length(values) == 4
+    push(mapped, 2)
+    assert length(mapped_error) == 5 && length(payload(chained)) == 5 && length(recovered) == 5
+    push(skipped_map, 3)
+    assert length(skipped_error) == 6 && length(skipped_next) == 6 && length(skipped_fallback) == 6
+    assert length(values) == 6
+}
