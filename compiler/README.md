@@ -241,6 +241,11 @@ timings; local variables remain conservatively rooted for the function.
 - Source Text operations include `starts_with`, `ends_with`, `find`, `contains`,
   `split`, `join`, and Unicode `trim`. Search offsets are UTF-8 bytes; an empty
   separator splits Unicode scalars. Join builds bytes once, not repeated concatenation.
+- Source `std.option.Option[T]` provides `Some(T)` and `None`. List helpers include
+  optional `first`/`last`, `is_empty`, shallow `clone`, in-place `reverse`, and
+  `append`. Self-append copies the initial source prefix; clone detaches the outer
+  list while preserving sharing of contained data. These are ordinary Loom functions
+  and work at compile time, without additional intrinsics.
 - Source `std.text`, `std.list`, `std.result`, `std.file`, `std.fs`, and `std.io`. Private
   intrinsic signatures are checked against the runtime ABI and accepted only
   from the configured standard-library source root. Reading loops, UTF-8

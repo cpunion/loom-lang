@@ -127,6 +127,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/text",
         "std/bytes",
         "std/list",
+        "std/option",
         "std/result",
         "std/unicode",
         "std/fs",

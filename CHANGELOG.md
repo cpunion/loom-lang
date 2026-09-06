@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add source `Option[T]` and list endpoints, emptiness, shallow cloning, reversal
+  and alias-safe append. Compile-time and native execution share the same library code.
+
 - Add static nominal concepts, explicit implementations, generic bounds and
   conditional conformance queries. Lower selected methods as direct calls,
   preserve test isolation, and provide source `std.display` without a runtime registry.

@@ -1,0 +1,43 @@
+fn repeated_reverse() List[Int] {
+    let values = new[Int]()
+    push(values, 1)
+    push(values, 2)
+    push(values, 3)
+    append(values, values)
+    reverse(values)
+    values
+}
+
+test fn optional_edges_self_append_and_reverse_agree_at_compile_time() {
+    let empty = new[Int]()
+    reverse(empty)
+    append(empty, empty)
+    assert is_empty(empty)
+    assert match first(empty) { Option.None => true, _ => false }
+    assert match last(empty) { Option.None => true, _ => false }
+    let values = repeated_reverse()
+    let prepared = comptime { repeated_reverse() }
+    assert !is_empty(values) && length(values) == 6 && length(prepared) == 6
+    assert match first(values) { Option.Some(value) => value == 3, _ => false }
+    assert match last(values) { Option.Some(value) => value == 1, _ => false }
+    var index = 0
+    while index < length(values) {
+        assert get(values, index) == 3 - index % 3
+        assert get(prepared, index) == get(values, index)
+        index = index + 1
+    }
+}
+
+test fn cloning_detaches_only_the_outer_list() {
+    let inner = new[Int]()
+    push(inner, 7)
+    let values = new[List[Int]]()
+    push(values, inner)
+    let copied = clone(values)
+    push(copied, new[Int]())
+    assert length(values) == 1 && length(copied) == 2
+    set(get(copied, 0), 0, 9)
+    assert get(get(values, 0), 0) == 9
+    set(copied, 0, new[Int]())
+    assert is_empty(get(copied, 0)) && length(get(values, 0)) == 1
+}

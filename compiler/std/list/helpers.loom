@@ -1,0 +1,40 @@
+import std.option.Option
+
+pub fn is_empty[T](values List[T]) Bool { length(values) == 0 }
+
+pub fn first[T](values List[T]) Option[T] {
+    if is_empty(values) { Option.None } else { Option.Some(get(values, 0)) }
+}
+
+pub fn last[T](values List[T]) Option[T] {
+    if is_empty(values) { Option.None } else { Option.Some(get(values, length(values) - 1)) }
+}
+
+// Copy the initial source prefix, including when source and target are aliases.
+pub fn append[T](target List[T], source List[T]) {
+    let count = length(source)
+    var index = 0
+    while index < count {
+        push(target, get(source, index))
+        index = index + 1
+    }
+}
+
+// The outer list is fresh; contained shared data remains shared.
+pub fn clone[T](values List[T]) List[T] {
+    let copied = new[T]()
+    append(copied, values)
+    copied
+}
+
+pub fn reverse[T](values List[T]) {
+    var left = 0
+    var right = length(values) - 1
+    while left < right {
+        let saved = get(values, left)
+        set(values, left, get(values, right))
+        set(values, right, saved)
+        left = left + 1
+        right = right - 1
+    }
+}
