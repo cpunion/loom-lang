@@ -1,0 +1,56 @@
+test fn tuples_are_structural_and_generic() {
+    let program = accepted("fn identity[T](value T) T { value }\nfn first[A, B](value (A, B)) A { value.0 }\nfn pair[T](value T) (T, Bool) { (value, true) }\nfn main() {\nlet value (Int, Bool) = identity[(Int, Bool)]((7, true))\nlet other = pair(\"text\")\nassert first(value) == 7\nassert other.1\nlet single (Int,) = (2,)\nassert single.0 == 2\nassert value.00 == 7\n}")
+    let main = get(program.functions, program.entry)
+    let ty = get(program.types, get(main.locals, 0).ty)
+    assert ty.kind == TypeKind.Tuple
+    assert ty.symbol == -1
+    assert length(ty.arguments) == 2
+    assert get(ty.arguments, 0) == 1
+    assert get(ty.arguments, 1) == 2
+    assert get(ty.fields, 0).name == "0"
+    assert get(ty.fields, 1).name == "1"
+    discard accepted_result("import std.result.Result\nfn relay(value Result[(Int, Text), Bool]) Result[(Int, Text), Bool] { let number, text = value?\nResult.Ok((number, text)) }\nfn unchanged(values List[(Int, Text)]) List[(Int, Text)] { values }\nfn main() { discard relay(Result.Ok((3, \"yes\"))) }")
+    discard accepted("record Tree { children List[(Int, Tree)] }\n")
+    rejects("fn use(value (Int, Bool)) {}\nfn main() { use((1, 2)) }")
+    rejects("fn main() { discard (1, true).2 }")
+    rejects("fn main() { discard (1, true).9223372036854775807 }")
+    rejects("fn main() { discard (1, true).name }")
+    rejects("fn main() { assert (1, 2) == (1, 2) }")
+    rejects("fn no_value() {}\nfn main() { discard (no_value(), 1) }")
+    rejects("fn invalid(value (Int, Unit)) {}")
+}
+
+test fn tuple_destructuring_evaluates_rhs_once() {
+    let program = accepted("fn pair() (Int, Bool) { (1, true) }\nfn main() { var number, flag = pair()\nnumber = 2\nflag = false\nassert number == 2\nassert !flag }")
+    let main = get(program.functions, program.entry)
+    let binding = get(main.body.children, 0)
+    assert binding.kind == ExprKind.Block
+    assert length(binding.children) == 3
+    let saved = get(binding.children, 0)
+    assert saved.kind == ExprKind.Let
+    assert get(saved.children, 0).kind == ExprKind.Call
+    let first = get(get(binding.children, 1).children, 0)
+    let second = get(get(binding.children, 2).children, 0)
+    assert first.kind == ExprKind.Field && first.index == 0
+    assert second.kind == ExprKind.Field && second.index == 1
+    assert get(first.children, 0).index == saved.index
+    assert get(second.children, 0).index == saved.index
+    assert get(main.locals, get(binding.children, 1).index).mutable
+    assert get(main.locals, get(binding.children, 2).index).mutable
+    rejects("fn main() { let a, b = 1 }")
+    rejects("fn main() { let a, b = (1, true, 3) }")
+    rejects("fn main() { let a, a = (1, 2) }")
+    rejects("fn main() { let a = 1\nlet a, b = (2, 3) }")
+    rejects("fn main() { let a, b = (1, 2)\na = 3 }")
+    rejects("fn main() { if true { let a, b = (1, 2) }\ndiscard a }")
+}
+
+test fn tuples_stage_without_weakening_type_or_layout_rules() {
+    discard accepted("fn pair[T](value T) (T, Bool) { (value, true) }\nfn choose[T](value T) Int { comptime if T == (Int, Text) { value.0 } else { 9 } }\nfn main() { let value = comptime { let a, b = pair(4)\n(a, b) }\nassert value.0 == 4 && value.1\nassert choose((3, \"x\")) == 3\nassert choose(false) == 9 }")
+    rejects("fn invalid[T](value T) Int { value.0 }")
+    rejects("record Cycle { value (Cycle, Int) }")
+    rejects("record A { pair (B, Int) }\nenum B { More((A,)) }")
+    rejects("record Grow[T] { children List[Grow[(T, Int)]] }")
+    rejects("type Bad = (Int, Int) where true\n")
+    rejects("fn false_proof() (Int, Bool) ensures false { (1, true) }")
+}

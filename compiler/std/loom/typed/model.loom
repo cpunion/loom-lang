@@ -1,7 +1,7 @@
 import std.loom.source.Span
 
 // IDs address immutable entries in the checked program, never source names.
-pub enum TypeKind { Unit Int Bool Text Bytes Parameter List Record Enum Refined }
+pub enum TypeKind { Unit Int Bool Text Bytes Parameter List Record Enum Refined Tuple }
 pub record Field { name Text ty Int }
 pub record Variant { name Text fields List[Int] }
 pub record Type {

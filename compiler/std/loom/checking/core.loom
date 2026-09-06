@@ -60,6 +60,15 @@ fn group(node Node, kind NodeKind) List[Node] {
     let index = part(node, kind)
     if index < 0 { new[Node]() } else { child(node, index).children }
 }
+fn type_part(node Node) Int {
+    var index = 0
+    while index < length(node.children) {
+        let kind = child(node, index).kind
+        if kind == NodeKind.Type || kind == NodeKind.TupleType { return index }
+        index = index + 1
+    }
+    -1
+}
 fn symbol(env Environment, index Int) Symbol { get(env.source.symbols, index) }
 fn failure(env Environment, source Int, node Node, message Text) Failure {
     Failure { source = symbol(env, source).file diagnostic = Diagnostic { span = node.span message = message } }

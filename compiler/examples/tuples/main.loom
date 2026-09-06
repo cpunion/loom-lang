@@ -1,0 +1,58 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+import std.text.concat
+
+pub fn tagged[T](value T) (T, Text) { (value, "item") }
+
+fn counted(counter List[Int]) (Int, Text) {
+    set(counter, 0, get(counter, 0) + 1)
+    (get(counter, 0), concat("call", "ed"))
+}
+
+fn shared() (List[Int], List[Int]) {
+    let values = new[Int]()
+    push(values, 7)
+    (values, values)
+}
+
+fn wrapped(value Int) Result[(Int, Text), Text] { Result.Ok(tagged(value)) }
+fn unwrap(value Int) Result[Int, Text] {
+    let number, label = wrapped(value)?
+    assert label == "item"
+    Result.Ok(number)
+}
+
+fn exercise() {
+    let counter = new[Int]()
+    push(counter, 0)
+    let number, label = counted(counter)
+    assert number == 1 && label == "called" && get(counter, 0) == 1
+
+    // Tuple elements evaluate in source order; destructuring does not repeat RHS.
+    let first, second = (counted(counter).0, counted(counter).0)
+    assert first == 2 && second == 3 && get(counter, 0) == 3
+    var left, right = (1, true)
+    left = 2
+    right = false
+    assert left == 2 && !right
+
+    let nested = (tagged(3), (true,))
+    assert nested.0.0 == 3 && nested.0.1 == "item" && nested.1.0
+    let pairs = new[(Int, Text)]()
+    push(pairs, tagged[Int](4))
+    assert get(pairs, 0).0 == 4
+    assert match unwrap(5) { Result.Ok(value) => value == 5, _ => false }
+
+    let a, b = comptime { shared() }
+    let separate = comptime { shared() }
+    set(a, 0, 9)
+    assert get(b, 0) == 9 && get(separate.0, 0) == 7
+    push(b, 10)
+    assert length(a) == 2
+}
+
+fn main() { exercise() }

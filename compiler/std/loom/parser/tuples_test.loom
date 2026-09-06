@@ -1,0 +1,60 @@
+import std.loom.ast.NodeKind
+import std.list.length
+
+test fn tuple_types_cover_annotations_and_generic_arguments() {
+    let tree = parsed("record Holder[T] { value (T, Text) }\nenum Option { Some((Int, Text)) }\nfn f(pair (Int, Text), one (Bool,)) (Int, (Text,)) {\nlet value (Int, Text) = (1, \"x\")\nlet nested List[(Int, Text)] = make[(Int, Text)]()\n(1, (\"x\",))\n}\nfn grouped(value (Int)) (Int) { value }")
+    assert child(child(child(tree, 0), 1), 0).kind == NodeKind.TupleType
+    assert child(child(child(tree, 1), 1), 0).kind == NodeKind.TupleType
+    let function = child(tree, 2)
+    let parameters = child(function, 1)
+    assert child(child(parameters, 0), 0).kind == NodeKind.TupleType
+    assert length(child(child(parameters, 1), 0).children) == 1
+    let returned = child(child(function, 2), 0)
+    assert returned.kind == NodeKind.TupleType
+    assert child(returned, 1).kind == NodeKind.TupleType
+    assert child(child(body(function), 0), 0).kind == NodeKind.TupleType
+    let nested = child(body(function), 1)
+    assert child(child(nested, 0), 0).kind == NodeKind.TupleType
+    assert child(child(child(nested, 1), 0), 0).kind == NodeKind.TupleType
+    let grouped = child(tree, 3)
+    assert child(child(child(grouped, 1), 0), 0).kind == NodeKind.Type
+    assert child(child(grouped, 2), 0).value == "Int"
+}
+
+test fn tuple_values_destructuring_and_numeric_selection() {
+    let statements = body(child(parsed("fn f() {\nlet pair = (1, \"x\")\nlet one = (true,)\nlet grouped = (2)\nlet a, b = pair\nvar c, d = (1, 2)\npackage.call().0.1\npair.0\n(pair).1\n}"), 0))
+    assert child(child(statements, 0), 0).kind == NodeKind.Tuple
+    assert length(child(child(statements, 1), 0).children) == 1
+    assert child(child(statements, 2), 0).kind == NodeKind.Integer
+    let binding = child(statements, 3)
+    assert binding.kind == NodeKind.Destructure && binding.value == "let"
+    assert child(binding, 0).kind == NodeKind.Bindings
+    assert child(child(binding, 0), 0).kind == NodeKind.Name
+    assert child(child(binding, 0), 1).value == "b"
+    assert child(binding, 1).value == "pair"
+    assert child(statements, 4).value == "var"
+    let selected = child(statements, 5)
+    assert selected.kind == NodeKind.Select && selected.value == "1"
+    assert child(selected, 0).value == "0"
+    assert child(child(selected, 0), 0).value == "package.call"
+    assert child(statements, 6).kind == NodeKind.Select
+    assert child(statements, 7).kind == NodeKind.Select
+    let tuple = child(body(child(parsed("fn f() { (1, \"a\") }"), 0)), 0)
+    assert tuple.span.start == 9 && tuple.span.end == 17
+    assert child(tuple, 0).span.start == 10 && child(tuple, 1).span.end == 16
+}
+
+test fn tuple_syntax_rejects_empty_and_unsupported_patterns() {
+    assert rejected("fn f() { () }").message == "empty tuples are not supported"
+    assert rejected("fn f(value ()) {}").message == "empty tuples are not supported"
+    assert rejected("fn f() { let a, _ = pair }").message == "destructuring requires names, not wildcards"
+    assert rejected("fn f() { var _, b = pair }").message == "destructuring requires names, not wildcards"
+    discard rejected("fn f() { let a, = pair }")
+    discard rejected("fn f() { let a, (b, c) = pair }")
+    discard rejected("fn f() { let a, b (Int, Int) = pair }")
+    discard rejected("fn f() { (1,,) }")
+    discard rejected("fn f(value (Int,,)) {}")
+    discard rejected("import app.0\nfn f() {}")
+    // Duplicate-name diagnostics belong to binding/type checking, not parsing.
+    assert child(body(child(parsed("fn f() { let a, a = pair }"), 0)), 0).kind == NodeKind.Destructure
+}

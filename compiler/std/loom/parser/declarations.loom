@@ -91,7 +91,7 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool) Resul
     push(children, params.node)
     rest = params.rest
     if !is_intrinsic { rest = newlines(rest) }
-    if at(rest, Kind.Name) && !word(rest, "requires") && !word(rest, "ensures") {
+    if at(rest, Kind.LParen) || (at(rest, Kind.Name) && !word(rest, "requires") && !word(rest, "ensures")) {
         let ty = type_ref(rest)?
         if ty.node.value == "Unit" { return Result.Err(error(rest, "omit the Unit return annotation")) }
         push(children, done(rest, ty.rest, NodeKind.ReturnType, "", one(ty.node)).node)
@@ -139,8 +139,27 @@ fn statement(cursor Cursor) Result[Step, Diagnostic] {
         let kind = if word(rest, "let") { NodeKind.Let } else { NodeKind.Var }
         let named = name(next(rest))?
         rest = named.rest
+        if at(rest, Kind.Comma) {
+            if named.node.value == "_" {
+                return Result.Err(error(next(cursor), "destructuring requires names, not wildcards"))
+            }
+            let names = one(named.node)
+            while at(rest, Kind.Comma) {
+                rest = newlines(next(rest))
+                let binding = name(rest)?
+                if binding.node.value == "_" {
+                    return Result.Err(error(rest, "destructuring requires names, not wildcards"))
+                }
+                push(names, binding.node)
+                rest = binding.rest
+            }
+            let bindings = done(next(cursor), rest, NodeKind.Bindings, "", names)
+            rest = expect(rest, Kind.Assign, "'=' after destructuring names")?
+            let value = expr(rest, 0, false, true)?
+            return Result.Ok(done(cursor, value.rest, NodeKind.Destructure, token(cursor).value, two(bindings.node, value.node)))
+        }
         let children = new[Node]()
-        if at(rest, Kind.Name) {
+        if at(rest, Kind.Name) || at(rest, Kind.LParen) {
             let ty = type_ref(rest)?
             push(children, ty.node)
             rest = ty.rest

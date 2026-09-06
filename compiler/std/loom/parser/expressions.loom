@@ -102,9 +102,7 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
         return fields(cursor, expression_end(done(cursor, value.rest, NodeKind.Unary, operator(current.kind), one(value.node)), value.node.span.end))
     }
     if at(cursor, Kind.LParen) {
-        let value = expr(next(cursor), 0, true, true)?
-        let rest = expect(newlines(value.rest), Kind.RParen, "')'")?
-        return fields(cursor, done(cursor, rest, value.node.kind, value.node.value, value.node.children))
+        return fields(cursor, parenthesized(cursor, Items.Arguments, NodeKind.Tuple)?)
     }
     if at(cursor, Kind.LBrace) { return fields(cursor, block(cursor)?) }
     Result.Err(error(cursor, "expected an expression"))
@@ -149,7 +147,10 @@ fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
     while more {
         let rest = parsed.rest
         if at(rest, Kind.Dot) {
-            let field = name(next(rest))?
+            let after = next(rest)
+            let field = if at(after, Kind.Number) {
+                done(after, next(after), NodeKind.Name, token(after).value, new[Node]())
+            } else { name(after)? }
             parsed = done(start, field.rest, NodeKind.Select, field.node.value, one(parsed.node))
         } else {
             if at(rest, Kind.Question) {

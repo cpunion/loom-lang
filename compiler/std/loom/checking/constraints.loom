@@ -40,7 +40,7 @@ fn predicate_form(node Node) Bool {
 }
 fn predicate_node(env Environment, owner Int) Node {
     let declaration = symbol(env, owner).node
-    child(declaration, part(declaration, NodeKind.Type) + 1)
+    child(declaration, type_part(declaration) + 1)
 }
 fn predicate_context(env Environment, owner Int, locals List[Local], self_local Int, emit Bool) Context {
     let bindings = new[Binding]()

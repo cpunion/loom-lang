@@ -76,7 +76,7 @@ fn path(cursor Cursor) Result[Step, Diagnostic] {
     let first = name(cursor)?
     var rest = first.rest
     var value = first.node.value
-    while at(rest, Kind.Dot) {
+    while at(rest, Kind.Dot) && !at(next(rest), Kind.Number) {
         let part = name(next(rest))?
         value = concat(value, concat(".", part.node.value))
         rest = part.rest
@@ -84,6 +84,7 @@ fn path(cursor Cursor) Result[Step, Diagnostic] {
     Result.Ok(done(cursor, rest, NodeKind.Name, value, new[Node]()))
 }
 fn type_ref(cursor Cursor) Result[Step, Diagnostic] {
+    if at(cursor, Kind.LParen) { return parenthesized(cursor, Items.Types, NodeKind.TupleType) }
     let named = path(cursor)?
     let args = type_args(named.rest)?
     Result.Ok(done(cursor, args.rest, NodeKind.Type, named.node.value, args.node.children))
@@ -100,6 +101,27 @@ fn item(cursor Cursor, mode Items) Result[Step, Diagnostic] {
         Items.Arguments => expr(cursor, 0, true, true)
         Items.Parameters => parameter(cursor)
     }
+}
+fn parenthesized(cursor Cursor, mode Items, tuple_kind NodeKind) Result[Step, Diagnostic] {
+    let start = newlines(next(cursor))
+    if at(start, Kind.RParen) { return Result.Err(error(start, "empty tuples are not supported")) }
+    let first = item(start, mode)?
+    var rest = newlines(first.rest)
+    if !at(rest, Kind.Comma) {
+        rest = expect(rest, Kind.RParen, "')'")?
+        return Result.Ok(done(cursor, rest, first.node.kind, first.node.value, first.node.children))
+    }
+    let children = one(first.node)
+    while at(rest, Kind.Comma) {
+        rest = newlines(next(rest))
+        if !at(rest, Kind.RParen) {
+            let value = item(rest, mode)?
+            push(children, value.node)
+            rest = newlines(value.rest)
+        }
+    }
+    rest = expect(rest, Kind.RParen, "')'")?
+    Result.Ok(done(cursor, rest, tuple_kind, "", children))
 }
 fn sequence(cursor Cursor, open Kind, close Kind, kind NodeKind, mode Items, nonempty Bool) Result[Step, Diagnostic] {
     let opening = if open == Kind.LParen { "'('" } else { "'['" }

@@ -11,7 +11,12 @@ pub enum NodeKind {
     Field Variant Requires Ensures Block Let Var Assign Return Assert Discard While
     Integer Text Bool Name Call Construct Unary Binary Select Try
     Match Arm Pattern Bindings Wildcard If Comptime
+    TupleType Tuple Destructure
 }
+
+// TupleType/Tuple children are ordered elements. Destructure stores "let" or
+// "var", with children [Bindings(Name...), initializer]. Numeric Select values
+// identify tuple positions; a parenthesized single item without a comma groups.
 
 pub record Node {
     kind NodeKind
