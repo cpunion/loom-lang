@@ -71,7 +71,9 @@ fn allocates(operation: Primitive) -> bool {
         | Primitive::Read
         | Primitive::DirectoryRead
         | Primitive::PathCanonical => true,
-        Primitive::TextLen
+        Primitive::FloatFromInt
+        | Primitive::FloatToInt
+        | Primitive::TextLen
         | Primitive::UnicodeAlphabetic
         | Primitive::UnicodeAlphanumeric
         | Primitive::UnicodeWhitespace
@@ -104,7 +106,7 @@ pub(super) fn managed(program: &checked::Program, ty: Type) -> bool {
                 .iter()
                 .any(|(_, fields)| fields.iter().any(|ty| managed(program, *ty))),
         },
-        Type::Int | Type::Bool | Type::Unit | Type::Parameter(_) => false,
+        Type::Int | Type::Float | Type::Bool | Type::Unit | Type::Parameter(_) => false,
     }
 }
 

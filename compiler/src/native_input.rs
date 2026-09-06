@@ -212,6 +212,7 @@ pub fn decode(text: &str) -> Result<c::Program> {
             2 => Type::Bool,
             3 => Type::Text,
             4 => Type::Bytes,
+            10 => Type::Float,
             5 => Type::Parameter(index(data.symbol)?),
             6 => {
                 let id = program.lists.len();
@@ -462,6 +463,11 @@ impl Converter<'_> {
                     .parse()
                     .map_err(|_| "invalid checked Int literal")?,
             ),
+            21 => E::Float(
+                node.text
+                    .parse()
+                    .map_err(|_| "invalid checked Float literal")?,
+            ),
             1 => E::Bool(match node.text.as_str() {
                 "true" => true,
                 "false" => false,
@@ -626,6 +632,8 @@ fn binary(value: &str) -> Result<Binary> {
 fn primitive(value: &str) -> Result<Primitive> {
     use Primitive as P;
     Ok(match value {
+        "float_from_int" => P::FloatFromInt,
+        "float_to_int" => P::FloatToInt,
         "text_len" => P::TextLen,
         "text_byte" => P::TextByte,
         "text_concat" => P::TextConcat,
@@ -665,7 +673,9 @@ fn primitive_arity(operation: Primitive) -> usize {
     use Primitive as P;
     match operation {
         P::ArgCount | P::BytesNew | P::ListNew => 0,
-        P::TextLen
+        P::FloatFromInt
+        | P::FloatToInt
+        | P::TextLen
         | P::UnicodeAlphabetic
         | P::UnicodeAlphanumeric
         | P::UnicodeWhitespace
@@ -717,5 +727,35 @@ mod tests {
         assert!(decode(cycle).unwrap_err().contains("recursive by-value"));
         let invalid = "loom-checked-1\n1\n9\n0\n8\n0\n-1\n0\n0\n";
         assert!(decode(invalid).unwrap_err().contains("out of bounds"));
+    }
+
+    #[test]
+    fn float_wire_literals_preserve_ieee_edges() {
+        for (literal, expected) in [
+            ("1.25", 1.25_f64),
+            ("-0.0", -0.0),
+            ("1e9999", f64::INFINITY),
+            ("-1e-9999", -0.0),
+        ] {
+            // One Float type and a public function whose block returns tag 21.
+            let stream = format!(
+                "loom-checked-1\n1\n10\n-1\n1\n0\n0\n0\n0\n0\n0\n0\n\
+                 11\n0\n0\n0\n0\n-1\n1\n1\n\
+                 21\n0\n0\n0\n{}\n{literal}-1\n1\n0\n0\n\
+                 0\n-1\n0\n1\n0\n",
+                literal.len()
+            );
+            let program = decode(&stream).unwrap();
+            assert_eq!(program.functions[0].result, Type::Float);
+            let c::ExprKind::Float(value) = program.functions[0].body.tail.as_ref().unwrap().kind
+            else {
+                panic!("expected a Float literal");
+            };
+            assert_eq!(value.to_bits(), expected.to_bits());
+            assert!(decode(&stream.replace(literal, &"x".repeat(literal.len()))).is_err());
+        }
+        for name in ["float_from_int", "float_to_int"] {
+            assert_eq!(primitive_arity(primitive(name).unwrap()), 1);
+        }
     }
 }

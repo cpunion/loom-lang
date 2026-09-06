@@ -1,0 +1,40 @@
+import std.loom.ast.NodeKind
+
+test fn float_literals_keep_spelling_signs_and_precedence() {
+    let statements = body(child(parsed("fn f() {\n1.5 + 2e3 * -1.2e-3\n-0.0\n1e99999\n1e-99999\n}"), 0))
+    let sum = child(statements, 0)
+    assert sum.kind == NodeKind.Binary && sum.value == "+"
+    assert child(sum, 0).kind == NodeKind.Float && child(sum, 0).value == "1.5"
+    let product = child(sum, 1)
+    assert product.kind == NodeKind.Binary && product.value == "*"
+    assert child(product, 0).value == "2e3"
+    assert child(product, 1).kind == NodeKind.Unary
+    assert child(child(product, 1), 0).value == "1.2e-3"
+    let negative = child(statements, 1)
+    assert negative.kind == NodeKind.Unary && negative.value == "-"
+    assert child(negative, 0).kind == NodeKind.Float && child(negative, 0).value == "0.0"
+    assert child(statements, 2).value == "1e99999"
+    assert child(statements, 3).value == "1e-99999"
+    let zero = child(body(child(parsed("fn f() { -0.0 }"), 0)), 0)
+    assert zero.span.start == 9 && zero.span.end == 13
+    assert child(zero, 0).span.start == 10 && child(zero, 0).span.end == 13
+}
+
+test fn floats_preserve_tuple_selection_and_integer_boundaries() {
+    let statements = body(child(parsed("fn f() {\npair.0.1\n(1.0,).0\n9223372036854775808.0\n-9223372036854775808\n}"), 0))
+    let chain = child(statements, 0)
+    assert chain.kind == NodeKind.Select && chain.value == "1"
+    assert child(chain, 0).kind == NodeKind.Select && child(chain, 0).value == "0"
+    assert child(child(chain, 0), 0).value == "pair"
+    let selected = child(statements, 1)
+    assert selected.kind == NodeKind.Select && selected.value == "0"
+    assert child(selected, 0).kind == NodeKind.Tuple
+    assert child(child(selected, 0), 0).kind == NodeKind.Float
+    assert child(statements, 2).kind == NodeKind.Float
+    assert child(statements, 3).kind == NodeKind.Integer
+    assert rejected("fn f() { 9223372036854775808 }").message == "integer literal is outside the Int range"
+    assert rejected("fn f() { -9223372036854775809 }").message == "integer literal is outside the Int range"
+    discard rejected("fn f() { .5 }")
+    discard rejected("fn f() { 1. }")
+    discard rejected("fn f() { 1.0e+ }")
+}

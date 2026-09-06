@@ -18,10 +18,10 @@ import std.list.length
 // Program: types, functions, entry (-1 absent), tests, exports.
 // Type: tag, symbol, then List/refined element ID, record fields(name,type), or
 // enum variants(name,payload IDs). Tuples use record layout, with symbol -1 and
-// positional field names. Tags 0..9 follow type_tag below.
+// positional field names. Tags 0..10 follow type_tag below.
 // Function: symbol, span(start,end), params, result, locals, preconditions, body.
 // Expr: tag,type,span,text,index,falls,children,arms. Arm: variant,bindings,whole,
-// body; absent bindings/variants use -1. Tags 0..20 follow expression_tag below.
+// body; absent bindings/variants use -1. Tags 0..21 follow expression_tag below.
 // Constraints, proof results, generic metadata and local names are not emitted.
 
 fn raw(buffer Bytes, value Text) {
@@ -51,7 +51,7 @@ fn type_tag(kind TypeKind) Int {
         TypeKind.Unit => 0, TypeKind.Int => 1, TypeKind.Bool => 2
         TypeKind.Text => 3, TypeKind.Bytes => 4, TypeKind.Parameter => 5
         TypeKind.List => 6, TypeKind.Record => 7, TypeKind.Tuple => 7
-        TypeKind.Enum => 8, TypeKind.Refined => 9
+        TypeKind.Enum => 8, TypeKind.Refined => 9, TypeKind.Float => 10
     }
 }
 fn data(buffer Bytes, value Type) {
@@ -87,7 +87,7 @@ fn expression_tag(kind ExprKind) Int {
         ExprKind.Record => 8, ExprKind.Field => 9, ExprKind.Variant => 10, ExprKind.Block => 11
         ExprKind.Let => 12, ExprKind.Assign => 13, ExprKind.Return => 14, ExprKind.Assert => 15
         ExprKind.Discard => 16, ExprKind.While => 17, ExprKind.If => 18, ExprKind.Match => 19
-        ExprKind.Coerce => 20
+        ExprKind.Coerce => 20, ExprKind.Float => 21
         // A deferred generic branch is check-only and must be instantiated.
         ExprKind.Deferred => { assert false
             -1 }

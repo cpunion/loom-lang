@@ -3,7 +3,7 @@
 use super::{Backend, EmissionResult, EmitOptions, Optimization};
 use crate::model::{Binary, Primitive, Type, Unary, checked};
 use inkwell::{
-    AddressSpace, IntPredicate, OptimizationLevel,
+    AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel,
     basic_block::BasicBlock,
     builder::Builder,
     context::Context,
@@ -12,7 +12,7 @@ use inkwell::{
     passes::PassBuilderOptions,
     targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
     types::{BasicType, BasicTypeEnum, IntType},
-    values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
+    values::{BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue},
 };
 use std::{
     collections::{BTreeSet, HashMap},
@@ -291,6 +291,7 @@ fn native_type<'ctx>(
     Ok(match ty {
         Type::Bool => context.bool_type().into(),
         Type::Int => context.i64_type().into(),
+        Type::Float => context.f64_type().into(),
         Type::Text | Type::Bytes | Type::List(_) => {
             context.ptr_type(AddressSpace::default()).into()
         }
@@ -343,7 +344,7 @@ fn payload_words(
 
 fn value_words(program: &checked::Program, ty: Type) -> NativeResult<usize> {
     match ty {
-        Type::Int | Type::Bool | Type::Text | Type::Bytes | Type::List(_) => Ok(1),
+        Type::Int | Type::Float | Type::Bool | Type::Text | Type::Bytes | Type::List(_) => Ok(1),
         Type::Unit => Ok(0),
         Type::Parameter(_) => Err("unbound type parameter reached native layout".into()),
         Type::Data(id) => match &program.types[id].kind {
@@ -426,6 +427,33 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let pointer = self.context.ptr_type(AddressSpace::default());
         let i64_type = self.context.i64_type();
         let (name, result_type) = match operation {
+            Primitive::FloatFromInt => {
+                return Ok(Some(
+                    self.builder
+                        .build_signed_int_to_float(
+                            values[0].into_int_value(),
+                            self.context.f64_type(),
+                            "float.from.int",
+                        )?
+                        .into(),
+                ));
+            }
+            Primitive::FloatToInt => {
+                // Total even outside the public std conversion's checked range:
+                // ordinary fptosi would introduce LLVM poison for NaN/overflow.
+                let function = Intrinsic::find("llvm.fptosi.sat")
+                    .ok_or("missing saturating Float conversion intrinsic")?
+                    .get_declaration(
+                        self.module,
+                        &[i64_type.into(), self.context.f64_type().into()],
+                    )
+                    .ok_or("missing saturating Float conversion declaration")?;
+                return Ok(self
+                    .builder
+                    .build_call(function, &[values[0].into()], "float.to.int")?
+                    .try_as_basic_value()
+                    .basic());
+            }
             Primitive::TextLen => ("text_len", Some(i64_type.into())),
             Primitive::TextByte => ("text_byte", Some(i64_type.into())),
             Primitive::TextConcat => ("text_concat", Some(pointer.into())),
@@ -635,6 +663,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .i64_type()
                 .const_int(*value as u64, true)
                 .into(),
+            checked::ExprKind::Float(value) => self.context.f64_type().const_float(*value).into(),
             checked::ExprKind::Bool(value) => self
                 .context
                 .bool_type()
@@ -671,9 +700,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )?
             }
             checked::ExprKind::Unary(op, value) => {
+                let operand_type = value.ty;
                 let Some(value) = self.expr(value)? else {
                     return Ok(None);
                 };
+                if operand_type == Type::Float {
+                    if *op != Unary::Neg {
+                        return Err("invalid checked Float unary operation".into());
+                    }
+                    return Ok(Some(
+                        self.builder
+                            .build_float_neg(value.into_float_value(), "float.neg")?
+                            .into(),
+                    ));
+                }
                 let value = value.into_int_value();
                 match op {
                     Unary::Not => self.builder.build_not(value, "not")?,
@@ -696,7 +736,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 let Some(right) = self.expr(right)? else {
                     return Ok(None);
                 };
-                if matches!(op, Binary::Eq | Binary::Ne) {
+                if operand_type == Type::Float {
+                    self.float_binary(*op, left.into_float_value(), right.into_float_value())?
+                } else if matches!(op, Binary::Eq | Binary::Ne) {
                     let equal = self.equal(operand_type, left, right)?;
                     if *op == Binary::Ne {
                         self.builder.build_not(equal, "not.equal")?.into()
@@ -982,6 +1024,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> NativeResult<()> {
         match ty {
             Type::Int => words.push(value.into_int_value()),
+            Type::Float => words.push(
+                self.builder
+                    .build_bit_cast(value, self.context.i64_type(), "float.word")?
+                    .into_int_value(),
+            ),
             Type::Text | Type::Bytes | Type::List(_) => words.push(self.builder.build_ptr_to_int(
                 value.into_pointer_value(),
                 self.context.i64_type(),
@@ -1036,6 +1083,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         offset: &mut usize,
     ) -> NativeResult<BasicValueEnum<'ctx>> {
         Ok(match ty {
+            Type::Float => {
+                let word = words[*offset];
+                *offset += 1;
+                self.builder
+                    .build_bit_cast(word, self.context.f64_type(), "word.float")?
+            }
             Type::Int | Type::Bool => {
                 let word = words[*offset];
                 *offset += 1;
@@ -1187,6 +1240,38 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             phi.add_incoming(&[(&right, right_end)]);
         }
         Ok(Some(phi.as_basic_value()))
+    }
+
+    fn float_binary(
+        &self,
+        op: Binary,
+        left: FloatValue<'ctx>,
+        right: FloatValue<'ctx>,
+    ) -> NativeResult<BasicValueEnum<'ctx>> {
+        let predicate = match op {
+            Binary::Eq => Some(FloatPredicate::OEQ),
+            Binary::Ne => Some(FloatPredicate::UNE),
+            Binary::Lt => Some(FloatPredicate::OLT),
+            Binary::Le => Some(FloatPredicate::OLE),
+            Binary::Gt => Some(FloatPredicate::OGT),
+            Binary::Ge => Some(FloatPredicate::OGE),
+            _ => None,
+        };
+        if let Some(predicate) = predicate {
+            return Ok(self
+                .builder
+                .build_float_compare(predicate, left, right, "float.compare")?
+                .into());
+        }
+        Ok(match op {
+            Binary::Add => self.builder.build_float_add(left, right, "float.add")?,
+            Binary::Sub => self.builder.build_float_sub(left, right, "float.sub")?,
+            Binary::Mul => self.builder.build_float_mul(left, right, "float.mul")?,
+            Binary::Div => self.builder.build_float_div(left, right, "float.div")?,
+            Binary::Rem => self.builder.build_float_rem(left, right, "float.rem")?,
+            _ => return Err("invalid checked Float binary operation".into()),
+        }
+        .into())
     }
 
     fn binary(
@@ -1435,6 +1520,10 @@ fn reachable_functions(
     }
     Ok(reachable)
 }
+
+#[cfg(test)]
+#[path = "llvm_float_tests.rs"]
+mod float_tests;
 
 #[cfg(test)]
 mod tests {

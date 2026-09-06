@@ -47,6 +47,7 @@ pub enum Kind {
     Not
     Newline
     Eof
+    Float
 }
 
 // Spans are UTF-8 byte offsets. Names/numbers retain their spelling and strings
@@ -220,7 +221,36 @@ fn trivia(start Int, end Int) Token {
     Token { kind = Kind.Eof value = "" span = Span { start = start end = end } }
 }
 
-fn next_token(text Text, start Int) Result[Token, Diagnostic] {
+fn numeric_literal(text Text, start Int, selector Bool) Result[Token, Diagnostic] {
+    var offset = start
+    while offset < length(text) && digit(byte(text, offset)) { offset = offset + 1 }
+    var kind = Kind.Number
+    // A numeric field after '.' is an integer position, even in pair.0.1.
+    if !selector && starts(text, offset, 46) {
+        offset = offset + 1
+        if offset == length(text) || !digit(byte(text, offset)) {
+            return Result.Err(error(start, offset, "expected digits after the decimal point"))
+        }
+        kind = Kind.Float
+        while offset < length(text) && digit(byte(text, offset)) { offset = offset + 1 }
+    }
+    if !selector && (starts(text, offset, 101) || starts(text, offset, 69)) {
+        kind = Kind.Float
+        offset = offset + 1
+        if starts(text, offset, 43) || starts(text, offset, 45) { offset = offset + 1 }
+        let exponent = offset
+        while offset < length(text) && digit(byte(text, offset)) { offset = offset + 1 }
+        if exponent == offset { return Result.Err(error(start, offset, "expected digits in the exponent")) }
+    }
+    let end = offset
+    while offset < length(text) && (codepoint(text, offset) == 95 || is_alphanumeric(codepoint(text, offset))) {
+        offset = offset + width(text, offset)
+    }
+    if offset != end { return Result.Err(error(start, offset, "invalid numeric literal suffix")) }
+    Result.Ok(scanned(kind, text, start, offset))
+}
+
+fn next_token(text Text, start Int, selector Bool) Result[Token, Diagnostic] {
     let current = codepoint(text, start)
     var offset = start + width(text, start)
     if current == 10 || current == 13 {
@@ -246,8 +276,7 @@ fn next_token(text Text, start Int) Result[Token, Diagnostic] {
         })
     }
     if digit(current) {
-        while offset < length(text) && digit(byte(text, offset)) { offset = offset + 1 }
-        return Result.Ok(scanned(Kind.Number, text, start, offset))
+        return numeric_literal(text, start, selector)
     }
     if current == 95 || is_alphabetic(current) {
         while offset < length(text) && (codepoint(text, offset) == 95 || is_alphanumeric(codepoint(text, offset))) {
@@ -261,10 +290,14 @@ fn next_token(text Text, start Int) Result[Token, Diagnostic] {
 pub fn lex(text Text) Result[List[Token], Diagnostic] {
     let tokens = new[Token]()
     var offset = 0
+    var selector = false
     while offset < length(text) {
-        let token = next_token(text, offset)?
+        let token = next_token(text, offset, selector)?
         offset = token.span.end
-        if token.kind != Kind.Eof { push(tokens, token) }
+        if token.kind != Kind.Eof {
+            push(tokens, token)
+            selector = token.kind == Kind.Dot
+        }
     }
     push(tokens, Token { kind = Kind.Eof value = "" span = Span { start = offset end = offset } })
     Result.Ok(tokens)

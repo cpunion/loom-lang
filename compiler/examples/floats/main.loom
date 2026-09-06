@@ -1,0 +1,30 @@
+import std.float.from_int
+import std.float.to_int
+import std.list.new
+import std.list.push
+import std.list.get
+import std.result.Result
+import std.text.concat
+
+record Point { x Float y Float }
+enum Sample { Value(Float, Text) Empty }
+fn identity[T](value T) T { value }
+
+fn exercise() {
+    let point = Point { x = 1.25 y = 2.5 }
+    assert point.x * point.y == 3.125
+    assert 5.5 % 2.0 == 1.5 && -5.5 % 2.0 == -1.5
+    let values = new[(Float, Text)]()
+    push(values, identity((point.x + point.y, concat("sa", "mple"))))
+    let value, label = get(values, 0)
+    let sample = Sample.Value(value, label)
+    match sample {
+        Sample.Value(number, text) => { assert number == 3.75 && text == "sample" }
+        Sample.Empty => { assert false }
+    }
+    let nested = ((1.0, 2.0), (3.0,))
+    assert nested.0.1 == 2.0 && nested.1.0 == 3.0
+    assert match to_int(from_int(42) / 2.0) { Result.Ok(number) => number == 21, _ => false }
+}
+
+fn main() { exercise() }

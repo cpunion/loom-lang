@@ -1,0 +1,28 @@
+test fn explicit_integer_conversions_and_bounds() {
+    assert from_int(7) == 7.0
+    assert from_int(9007199254740993) == 9007199254740992.0
+    assert match to_int(1.75) { Result.Ok(value) => value == 1, _ => false }
+    assert match to_int(-1.75) { Result.Ok(value) => value == -1, _ => false }
+    assert match to_int(from_int(-9223372036854775808)) {
+        Result.Ok(value) => value == -9223372036854775808, _ => false
+    }
+    assert match to_int(from_int(9223372036854775807)) {
+        Result.Err(error) => error == FloatToIntError.OutOfRange, _ => false
+    }
+    assert match to_int(-9223372036854777856.0) {
+        Result.Err(error) => error == FloatToIntError.OutOfRange, _ => false
+    }
+}
+
+test fn ieee_special_values_do_not_use_integer_fault_rules() {
+    let infinity = 1.0 / 0.0
+    let nan = 0.0 / 0.0
+    assert !is_finite(infinity) && !is_finite(nan)
+    assert is_nan(nan) && !is_nan(infinity)
+    assert is_finite(1.7976931348623157e308)
+    assert nan != nan && !(nan == nan) && !(nan < 1.0) && !(nan >= 1.0)
+    assert 0.0 == -0.0 && 1.0 / -0.0 == -infinity
+    assert 1e999 == infinity && 1e-999 == 0.0
+    assert match to_int(nan) { Result.Err(error) => error == FloatToIntError.NonFinite, _ => false }
+    assert match to_int(infinity) { Result.Err(error) => error == FloatToIntError.NonFinite, _ => false }
+}

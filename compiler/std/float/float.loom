@@ -1,0 +1,22 @@
+import std.result.Result
+
+pub enum FloatToIntError { NonFinite OutOfRange }
+
+intrinsic fn float_from_int(value Int) Float
+// Total machine conversion; the public wrapper reports invalid input explicitly.
+intrinsic fn float_to_int(value Float) Int
+
+// Binary64 rounding is nearest, ties to even; large Int values can lose precision.
+pub fn from_int(value Int) Float { float_from_int(value) }
+pub fn is_nan(value Float) Bool { value != value }
+pub fn is_finite(value Float) Bool { value - value == 0.0 }
+
+// Truncate toward zero. The upper bound is exclusive: from_int(Int's maximum)
+// rounds to 2^63, which is not a representable Int.
+pub fn to_int(value Float) Result[Int, FloatToIntError] {
+    if !is_finite(value) { return Result.Err(FloatToIntError.NonFinite) }
+    if value < -9223372036854775808.0 || value >= 9223372036854775808.0 {
+        return Result.Err(FloatToIntError.OutOfRange)
+    }
+    Result.Ok(float_to_int(value))
+}

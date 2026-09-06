@@ -122,6 +122,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/loom/eval",
         "loom/artifact",
         "std/int",
+        "std/float",
         "std/text",
         "std/bytes",
         "std/list",
@@ -137,6 +138,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/comptime",
         "examples/arguments",
         "examples/tuples",
+        "examples/floats",
     ] {
         let output = source_compiler(stage3, &["test", compiler.join(package).to_str().unwrap()]);
         assert!(output.status.success(), "{package}: {output:?}");

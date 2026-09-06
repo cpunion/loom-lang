@@ -1,0 +1,60 @@
+test fn float_literals_operations_and_generic_values_have_distinct_types() {
+    let program = accepted("record Box[T] { value T }\nenum Number[T] { Value(T) }\nfn identity[T](value T) T { value }\nfn pick(value Int) Int { value }\nfn pick(value Float) Float { value }\nfn positive[T](value T) Bool { comptime if T == Float { value > 0.0 } else { true } }\nfn unchanged(values List[(Float, Bool)]) List[(Float, Bool)] { values }\nfn main() {\nlet zero = -0.0\nlet boxed = Box { value = identity(1.25e2) }\nlet pair (Float, Bool) = (pick(boxed.value), positive(boxed.value))\nassert pair.0 == 125.0 && pair.1\nlet wrapped = Number.Value[Float](pair.0)\nassert match wrapped { Number.Value(value) => value >= 0.0 }\nassert (3.0 + 2.0 - 1.0) * 2.0 / 4.0 % 3.0 == 2.0\nassert 1.0 < 2.0 && 2.0 <= 2.0 && 3.0 > 2.0 && 3.0 >= 3.0\nassert 1.0 != 2.0\ndiscard 1e99999\ndiscard 1e-99999\n}")
+    assert get(program.types, 5).kind == TypeKind.Float
+    let main = get(program.functions, program.entry)
+    assert get(main.locals, 0).ty == 5
+    let negative = get(get(main.body.children, 0).children, 0)
+    assert negative.kind == ExprKind.Unary && negative.ty == 5
+    let literal = get(negative.children, 0)
+    assert literal.kind == ExprKind.Float && literal.text == "0.0"
+    discard accepted_result("import std.result.Result\nfn relay(value Result[(Float, Bool), Text]) Result[(Float, Bool), Text] { Result.Ok(value?) }\nfn main() { discard relay(Result.Ok((1.5, true))) }")
+}
+
+test fn float_has_no_implicit_integer_conversion_or_integer_proof_rules() {
+    rejects("fn main() { discard 1 + 2.0 }")
+    rejects("fn main() { discard 1.0 + 2 }")
+    rejects("fn main() { assert 1 == 1.0 }")
+    rejects("fn main() { let value Float = 1 }")
+    rejects("fn main() { let value Int = 1.0 }")
+    rejects("fn main() { discard !1.0 }")
+    rejects("fn main() { discard 1.0 && 2.0 }")
+    rejects("fn invalid(value Float[Int]) {}")
+    rejects("type Positive = Float where self > 0.0\n")
+    rejects("fn identity(value Float) Float ensures result == value { value }")
+    rejects("fn reflexive(value Float) Bool ensures result { value == value }")
+    rejects("fn arithmetic() Bool ensures result { 0.0 / 0.0 == 0.0 / 0.0 }")
+    rejects("fn main() { discard comptime { 1.0 + 2.0 } }")
+    rejects("fn main() { comptime if 1.0 == 1.0 { assert true } }")
+    discard accepted("fn positive(value Float) Float requires value > 0.0 { value }")
+}
+
+test fn float_conversion_intrinsics_have_exact_source_signatures() {
+    let files = source_files("import std.float.from_int\nimport std.float.truncate\nfn main() { assert truncate(from_int(42)) == 42 }")
+    push(files, source_file("std.float", "intrinsic fn float_from_int(value Int) Float\nintrinsic fn float_to_int(value Float) Int\npub fn from_int(value Int) Float { float_from_int(value) }\npub fn truncate(value Float) Int { float_to_int(value) }", true))
+    match checked(files) {
+        Result.Ok(program) => {
+            var conversions = 0
+            var index = 0
+            while index < length(program.functions) {
+                let function = get(program.functions, index)
+                if function.runtime_name == "float_from_int" {
+                    assert get(function.params, 0) == 1 && function.result == 5
+                    conversions = conversions + 1
+                }
+                if function.runtime_name == "float_to_int" {
+                    assert get(function.params, 0) == 5 && function.result == 1
+                    conversions = conversions + 1
+                }
+                index = index + 1
+            }
+            assert conversions == 2
+        }
+        Result.Err(_) => { assert false }
+    }
+    let invalid = source_files("")
+    push(invalid, source_file("std.float", "intrinsic fn float_from_int(value Float) Int\n", true))
+    match checked(invalid) {
+        Result.Err(failure) => { assert failure.diagnostic.message == "intrinsic declaration does not match its runtime signature" }
+        Result.Ok(_) => { assert false }
+    }
+}

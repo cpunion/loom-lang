@@ -140,6 +140,7 @@ pub fn verify(function Function) Result[Bool, Text] {
     index = 0
     while index < length(function.params) {
         let ty = get(function.params, index)
+        if ty == 5 { return Result.Err("Float parameters are not supported in required proofs") }
         let value = if ty == 1 { Value.Number(variable(index)) } else {
             if ty == 2 { Value.Boolean(Predicate.Variable(index)) } else {
                 return Result.Err("required proof currently needs scalar parameters")

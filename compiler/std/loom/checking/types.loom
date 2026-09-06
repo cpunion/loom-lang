@@ -23,6 +23,7 @@ fn initialize_types(env Environment) {
     push(env.types, simple_type(TypeKind.Bool, -1, new[Int]()))
     push(env.types, simple_type(TypeKind.Text, -1, new[Int]()))
     push(env.types, simple_type(TypeKind.Bytes, -1, new[Int]()))
+    push(env.types, simple_type(TypeKind.Float, -1, new[Int]()))
 }
 fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
     var index = 0
@@ -95,6 +96,7 @@ fn resolve(env Environment, owner Int, node Node, arguments List[Int], depth Int
     if node.value == "Bool" { builtin = 2 }
     if node.value == "Text" { builtin = 3 }
     if node.value == "Bytes" { builtin = 4 }
+    if node.value == "Float" { builtin = 5 }
     if node.value == "Unit" { return Result.Err(failure(env, owner, node, "omit Unit; it is not a source type")) }
     let parameters = group(symbol(env, owner).node, NodeKind.TypeParameters)
     var index = 0
@@ -227,7 +229,7 @@ fn concrete(env Environment, ty Int) Bool {
 }
 fn type_depth(env Environment, ty Int) Int {
     let source = get(env.types, ty)
-    if source.kind == TypeKind.Parameter || ty <= 4 { return 0 }
+    if source.kind == TypeKind.Parameter || ty <= 5 { return 0 }
     var deepest = 0
     var index = 0
     while index < length(source.arguments) {

@@ -46,7 +46,11 @@ pub fn link(
         windows,
     );
     if uses_runtime && cfg!(target_os = "linux") {
-        command.args(["-ldl", "-lpthread", "-lm"]);
+        command.args(["-ldl", "-lpthread"]);
+    }
+    if cfg!(target_os = "linux") {
+        // LLVM may lower scalar floating-point remainder to the host fmod.
+        command.arg("-lm");
     }
     let result = command
         .output()
