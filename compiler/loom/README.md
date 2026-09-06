@@ -8,19 +8,22 @@ LLVM lowering and host linking; it accepts checked IR, not Loom source.
 
 ## Bootstrap
 
-From the repository root, after building the [seed](../README.md):
+From the repository root, after [bootstrapping the compiler](../README.md):
 
 ```sh
-target/debug/loom build compiler/loom --output target/loom-stage1
-target/loom-stage1 build compiler/loom --output target/loom-stage2
-target/loom-stage2 build compiler/loom --output target/loom-stage3
-target/loom-stage3 check compiler/examples/scalar
-target/loom-stage3 run compiler/examples/data
-target/loom-stage3 test compiler/loom/checking
-target/loom-stage3 test compiler/std/text
+target/loom check compiler/examples/scalar
+target/loom run compiler/examples/data
+target/loom test compiler/loom/checking
+target/loom test compiler/std/text
 ```
 
-The stage names are development artifacts, not additional supported compilers.
+Stages 0 through 3 are [bootstrap generations](../../ROADMAP.md#n1--move-the-compiler-into-loom),
+not language versions or additional supported compilers. Stage 0 is an existing
+Loom compiler, recovered from frozen history only when needed. New language
+features do not require a parallel Rust implementation; only their use in the
+compiler's own source must wait until the selected bootstrap compiler supports
+them.
+
 The source CLI provides `check`, `build`, `test`, and `run` for one directory
 package. It defaults to `compiler/std` and `target/debug/loom-native` relative to
 the working directory; use `--std` and `--native-tool` elsewhere. `build` accepts
@@ -31,8 +34,8 @@ object, and production excludes test files and test declarations.
 counts or positioned diagnostics. For example:
 
 ```sh
-target/loom-stage3 parse compiler/loom/main.loom
-target/loom-stage3 test compiler/loom/proof
+target/loom parse compiler/loom/main.loom
+target/loom test compiler/loom/proof
 LOOM_GC_STRESS=1 compiler/loom/proof/target/tests
 ```
 

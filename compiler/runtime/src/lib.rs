@@ -1,4 +1,4 @@
-//! The native seed's single-threaded, nonmoving managed-memory boundary.
+//! Loom's single-threaded, nonmoving managed-memory and platform boundary.
 //! Generated code roots every live managed slot before an allocating call.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};

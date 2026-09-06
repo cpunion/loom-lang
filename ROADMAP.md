@@ -10,9 +10,9 @@ Current evidence stays in the
 
 ## Implementation approach
 
-Start a small replacement compiler with a Rust seed and an existing Rust LLVM
-binding. Keep one checked semantic model for native compilation and compile-time
-evaluation. An AST, a checked typed program, and LLVM lowering are the initial
+Maintain one Loom-written frontend over an existing Rust LLVM binding. Keep
+one checked semantic model for native compilation and compile-time evaluation.
+An AST, a checked typed program, and LLVM lowering are the initial
 boundaries; add another representation only for a demonstrated consumer.
 
 Compile ordinary scalar operations and calls directly. Carry GC, fault, or
@@ -25,7 +25,7 @@ structure or maintain an interpreter/native feature matrix as a goal. A bounded
 compile-time evaluator uses the same checked rules; it is not a second public
 runtime backend. Remove replaced paths instead of adding compatibility adapters.
 
-The [native seed](compiler/README.md) now passes the N0 vertical-slice gate on
+The [native compiler](compiler/README.md) now passes the N0 vertical-slice gate on
 macOS: real check/build/test/run, typed data, shared lists, source file I/O,
 constrained construction, and bounded required proofs. N1 now has a
 [Loom-written compiler](compiler/loom/README.md) producing successive native
@@ -62,27 +62,34 @@ retained Rust LLVM/platform bridge. Stage 3 passes compiler, `std`, and example
 tests; stages agree on selected type/proof failure diagnostics. The first
 bootstrap gate below is met for this subset, not all of N2.
 
-Use the N0 subset to implement compiler components in Loom, starting with source
-handling, lexer/parser, and diagnostics, then binding, typing, and checked
-program construction. Keep mutable drafts separate from validated program
-revisions; share unchanged storage only where the promised facts remain valid.
+Stages are generations of a bootstrap run, not language versions or permanent
+compiler tiers:
 
-The first self-hosting gate is concrete:
+1. Stage 0 is an existing, validated Loom compiler. Without one, build it from
+   a pinned historical commit and its frozen Rust seed in a bootstrap cache.
+2. Stage 0 compiles the current Loom compiler source into stage 1.
+3. Stage 1 compiles the same source into stage 2; stage 2 produces stage 3.
+4. Compare stage 2/3 artifacts and selected diagnostics; run compiler, `std`,
+   and application tests with the resulting compiler.
 
-1. The Rust seed builds a native Loom-written compiler, stage 1.
-2. Stage 1 builds the same compiler source, producing stage 2.
-3. Stage 2 builds the source again; the resulting compiler runs compiler and
-   `std` package tests.
-4. The stages agree on selected interfaces, diagnostics, and executable results;
-   compare reproducible artifacts where their representation is controlled.
+The minimum bootstrap language subset constrains the compiler's own source,
+not which features it can implement for user programs. Implement a new feature
+using the preceding stage's supported subset before adopting that feature in
+the compiler source itself. The selected seed must also support the library and
+checked-artifact interfaces used by that bootstrap; change those boundaries in
+verified steps, not through permanent compatibility adapters. Advance the seed
+after a verified bootstrap, using a pinned release/artifact when available.
+No release is required for the
+current historical-source fallback.
 
-A small documented LLVM/platform bridge may remain in Rust. A Loom lexer
-called by an otherwise Rust compiler is a useful intermediate step, not the
-self-hosting gate. Do not wait for the entire metaprogramming, deployment, or
-editor surface before making this transition. Bootstrap agreement is evidence,
-not a proof of compiler correctness. After transition validation, delete the
-replaced Rust parsing, binding, checking, and proof stages rather than extending
-both frontends with N2 features.
+Remove the replaced Rust parser, binder, checker, and prover from the active
+tree. The frozen history is a bootstrap input, not an old-language compatibility
+policy or another frontend to extend. Do not add a bulky checked-IR seed
+snapshot. The retained Rust LLVM binding, host linker, GC, and platform runtime
+are separate implementation boundaries, not a permanent basic language version.
+They may evolve for native code and platform facilities without duplicating
+source-language analysis. Bootstrap agreement is evidence, not a proof of
+compiler correctness.
 
 ## N2 — Complete the language and source library
 

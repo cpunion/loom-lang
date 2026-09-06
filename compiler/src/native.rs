@@ -1,4 +1,4 @@
-//! Direct native lowering for the checked seed language. No universal values or executor.
+//! Direct LLVM lowering of checked Loom programs. No source-language frontend.
 
 use crate::model::{Binary, Primitive, Type, Unary, checked};
 use inkwell::{
@@ -39,7 +39,7 @@ fn emit_checked(
     llvm_ir: Option<&Path>,
 ) -> NativeResult<bool> {
     if !cfg!(unix) {
-        return Err("seed native emission currently requires a Unix host".into());
+        return Err("native emission currently requires a Unix host".into());
     }
     let roots = if test_mode {
         program.tests.clone()
@@ -65,7 +65,7 @@ fn emit_checked(
         )
         .ok_or("LLVM could not create a native target machine")?;
     let context = Context::create();
-    let module = context.create_module("loom.seed");
+    let module = context.create_module("loom");
     module.set_triple(&triple);
     module.set_data_layout(&machine.get_target_data().get_data_layout());
     let builder = context.create_builder();

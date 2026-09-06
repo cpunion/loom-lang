@@ -20,19 +20,24 @@ The native gate uses macOS, Rust 1.88, and LLVM 19. Compiler, native integration
 and runtime tests cover real check/build/test/run, required-proof rejection,
 input-boundary failures, and allocation-free scalar/record paths.
 The [Loom-written compiler](../../compiler/loom/README.md) now compiles its own
-sources: the Rust seed produces stage 1, stage 1 produces stage 2, and stage 2
-produces stage 3. Stage 2 and stage 3 executables are byte-identical on the
+sources: an existing compiler (stage 0) produces stage 1, stage 1 produces
+stage 2, and stage 2 produces stage 3. These are build generations, not language
+versions. Stage 2 and stage 3 executables are byte-identical on the
 validated macOS development build. Stage 3 passes compiler, `std`, and example
 package tests and runs the data example. Stages 2 and 3 agree on selected
-type/proof failure diagnostics. This bootstrap gate is exercised by the
+type/proof failure diagnostics. This gate combines the
+[bootstrap script](../../scripts/bootstrap.sh) and
 [frontend integration test](../../compiler/tests/frontend.rs). The source
 checker also checks its complete package closure, selected `std` packages,
 and the scalar/data examples.
 
 The source frontend sends a checked artifact to one retained Rust LLVM/platform
 tool; that tool does not parse or type-check Loom source again. The Rust seed
-frontend remains during transition validation and is next to retire, not a
-second implementation to maintain. Public parser/AST imports and optional
+frontend is no longer active source. A pinned historical commit can build a
+cached stage 0 when no existing Loom compiler is supplied; this fallback is
+not a compatibility commitment or a second frontend to extend. Rust remains
+for the LLVM/platform boundary and runtime, not a permanent basic language.
+Public parser/AST imports and optional
 project/semantic APIs have a separate [roadmap gate](../../ROADMAP.md#n2--complete-the-language-and-source-library);
 the current internal packages are not a stable public API.
 

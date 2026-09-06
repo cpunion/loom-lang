@@ -1,26 +1,12 @@
-//! The Rust seed builds and exercises the Loom-written frontend as a native tool.
+//! Exercise the bootstrapped Loom compiler, not a host-language frontend.
 
 use std::{
     fs,
     path::Path,
     process::{Command, Output},
 };
-
-fn success(output: &Output) {
-    assert!(
-        output.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn loom(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_loom"))
-        .args(args)
-        .output()
-        .unwrap()
-}
+mod common;
+use common::{loom, success};
 
 fn source_files(directory: &Path, paths: &mut Vec<std::path::PathBuf>) {
     for entry in fs::read_dir(directory).unwrap() {
@@ -48,18 +34,12 @@ fn source_compiler(compiler: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-fn loom_compiler_bootstraps_and_reports_real_diagnostics() {
+fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
     let compiler = Path::new(env!("CARGO_MANIFEST_DIR"));
     let frontend = compiler.join("loom");
     let temp = tempfile::tempdir().unwrap();
-    let artifact = temp.path().join("loom-front");
+    let artifact = common::compiler();
     success(&loom(&["check", frontend.to_str().unwrap()]));
-    success(&loom(&[
-        "build",
-        frontend.to_str().unwrap(),
-        "--output",
-        artifact.to_str().unwrap(),
-    ]));
 
     // Exercise real command-line input and a corpus, without an all-program GC matrix.
     let mut sources = Vec::new();
@@ -81,22 +61,9 @@ fn loom_compiler_bootstraps_and_reports_real_diagnostics() {
         assert!(output.stderr.is_empty());
     }
 
-    // Only LLVM/platform lowering stays in Rust. Both following compilers are
-    // built from checked programs produced entirely by the previous Loom stage.
-    let stage2 = temp.path().join("stage2");
-    let stage3 = temp.path().join("stage3");
-    for (previous, next) in [(&artifact, &stage2), (&stage2, &stage3)] {
-        success(&source_compiler(
-            previous,
-            &[
-                "build",
-                frontend.to_str().unwrap(),
-                "--output",
-                next.to_str().unwrap(),
-            ],
-        ));
-    }
-    assert_eq!(fs::read(&stage2).unwrap(), fs::read(&stage3).unwrap());
+    // scripts/bootstrap.sh already builds and compares stage 2/3 once.
+    let stage2 = common::root().join("target/loom-stage2");
+    let stage3 = &artifact;
     for package in [
         "loom/source",
         "loom/lexer",
@@ -106,6 +73,7 @@ fn loom_compiler_bootstraps_and_reports_real_diagnostics() {
         "loom/loading",
         "loom/proof",
         "loom/checking",
+        "loom/artifact",
         "std/int",
         "std/text",
         "std/bytes",
@@ -118,12 +86,12 @@ fn loom_compiler_bootstraps_and_reports_real_diagnostics() {
         "examples/data",
     ] {
         success(&source_compiler(
-            &stage3,
+            stage3,
             &["test", compiler.join(package).to_str().unwrap()],
         ));
     }
     success(&source_compiler(
-        &stage3,
+        stage3,
         &["run", compiler.join("examples/data").to_str().unwrap()],
     ));
 
@@ -137,7 +105,7 @@ fn loom_compiler_bootstraps_and_reports_real_diagnostics() {
     ] {
         fs::write(rejected.join("main.loom"), source).unwrap();
         let first = source_compiler(&stage2, &["check", rejected.to_str().unwrap()]);
-        let second = source_compiler(&stage3, &["check", rejected.to_str().unwrap()]);
+        let second = source_compiler(stage3, &["check", rejected.to_str().unwrap()]);
         assert_eq!(first.status.code(), Some(1));
         assert_eq!(first.status.code(), second.status.code());
         assert!(!first.stderr.is_empty());

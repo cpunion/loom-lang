@@ -1,15 +1,15 @@
-use std::{fs, process::Command};
+use std::fs;
+mod common;
 
-use loom_seed::{check, model::PackageFile, parser};
-
-fn checked(source: &str) -> Result<loom_seed::model::checked::Program, String> {
-    let file = PackageFile {
-        package: String::new(),
-        trusted_std: false,
-        test_only: false,
-        syntax: parser::parse(0, source).map_err(|error| error.message)?,
-    };
-    check::check(&[file], "", false).map_err(|error| error.message)
+fn checked(source: &str) -> Result<(), String> {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("main.loom"), source).unwrap();
+    let output = common::loom(&["check", directory.path().to_str().unwrap()]);
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8(output.stderr).unwrap())
+    }
 }
 
 #[test]
@@ -104,12 +104,12 @@ test fn recursive_data() { exercise() }
     )
     .unwrap();
     for operation in ["check", "run", "test"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_loom"))
-            .arg(operation)
-            .arg(directory.path())
-            .env("LOOM_GC_STRESS", "1")
-            .output()
-            .unwrap();
+        let args = [operation, directory.path().to_str().unwrap()];
+        let output = if operation == "check" {
+            common::loom(&args)
+        } else {
+            common::managed(&args, directory.path())
+        };
         assert!(
             output.status.success(),
             "{operation}: {}{}",

@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Bootstrap the Loom-written package loader, binder, type checker, and bounded
+  prover through successive native stages, with stage agreement and source
+  compiler/`std` tests. Retire the active Rust source frontend; retain the
+  LLVM/platform tool and a pinned historical bootstrap fallback.
 - Parse the current syntax in Loom, including the frontend's own sources.
   Add recursive data through lists and postfix `Result` error propagation.
   Align surviving docs and issue templates with the accepted design and single

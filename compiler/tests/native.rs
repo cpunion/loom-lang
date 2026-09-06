@@ -1,31 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-
-fn loom(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_loom"))
-        .args(args)
-        .output()
-        .unwrap()
-}
-
-fn managed(args: &[&str], directory: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_loom"))
-        .args(args)
-        .env("LOOM_GC_STRESS", "1")
-        .current_dir(directory)
-        .output()
-        .unwrap()
-}
-
-fn success(output: &Output) {
-    assert!(
-        output.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
+use std::process::Command;
+mod common;
+use common::{loom, managed, success};
 
 fn source(text: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();

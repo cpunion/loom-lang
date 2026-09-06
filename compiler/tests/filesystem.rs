@@ -1,21 +1,13 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+mod common;
 
 fn run_fixture(directory: &Path, source: &str) {
     fs::write(directory.join("main.loom"), source).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_loom"))
-        .args(["run", "."])
-        .env("LOOM_GC_STRESS", "1")
-        .current_dir(directory)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    common::success(&common::managed(
+        &["run", directory.to_str().unwrap()],
+        directory,
+    ));
 }
 
 #[test]
