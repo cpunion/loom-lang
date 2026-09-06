@@ -143,7 +143,7 @@ macOS peak RSS for scalar, data, and compiler packages, with raw samples in
 select the binary, report, and sample count.
 
 Every sample starts a fresh process after one warmup; OS caches are warm.
-There is no incremental compiler cache yet. Native decode, LLVM, and linker
+There is no incremental compiler cache yet. Native decode, codegen, and linker
 timings separate backend costs; remaining build wall time also includes
 serialization and process/pipe overhead, not just frontend analysis. Peak RSS
 is the operating system's reported maximum, not summed concurrent process

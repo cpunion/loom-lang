@@ -111,7 +111,12 @@ fn emit_checked(
     trace_phase("target lookup");
     let target = Target::from_triple(&triple).map_err(|error| error.to_string())?;
     trace_phase("host cpu");
-    let cpu = TargetMachine::get_host_cpu_name().to_string();
+    let cpu_name = TargetMachine::get_host_cpu_name();
+    trace_phase("host cpu returned");
+    let cpu = cpu_name.to_string();
+    trace_phase("host cpu copied");
+    drop(cpu_name);
+    trace_phase("host cpu freed");
     trace_phase("host features");
     let features = TargetMachine::get_host_cpu_features().to_string();
     trace_phase("target machine");
