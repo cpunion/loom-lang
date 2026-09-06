@@ -26,7 +26,7 @@ compile-time evaluator uses the same checked rules; it is not a second public
 runtime backend. Remove replaced paths instead of adding compatibility adapters.
 
 The [native compiler](compiler/README.md) now passes the N0 vertical-slice gate on
-macOS: real check/build/test/run, typed data, shared lists, source file I/O,
+macOS and Linux: real check/build/test/run, typed data, shared lists, source file I/O,
 constrained construction, and bounded required proofs. N1 now has a
 [Loom-written compiler](compiler/loom/README.md) producing successive native
 compiler stages through the retained LLVM tool; later
@@ -57,7 +57,7 @@ or a host-language implementation masquerading as source `std`.
 
 Source handling, package loading, binding, typing, bounded required proofs,
 and checked program construction now run as native Loom code. Stage 1 builds
-stage 2, and stage 2 builds a byte-identical stage 3 on macOS, using the same
+stage 2, and stage 2 builds a byte-identical stage 3 on macOS and Linux, using the same
 retained Rust LLVM/platform bridge. Stage 3 passes compiler, `std`, and example
 tests; stages agree on selected type/proof failure diagnostics. The first
 bootstrap gate below is met for this subset, not all of N2.
@@ -71,6 +71,13 @@ compiler tiers:
 3. Stage 1 compiles the same source into stage 2; stage 2 produces stage 3.
 4. Compare stage 2/3 artifacts and selected diagnostics; run compiler, `std`,
    and application tests with the resulting compiler.
+
+The Windows bootstrap path builds its initial native compiler from a trusted
+checked export of the same source checkout, then follows stages 1/2/3 on Windows.
+CI transfers that temporary input from the validated macOS job in the same
+workflow; no checked-IR snapshot or second frontend is maintained. Native MSVC
+linking, Unicode/binary I/O, and Windows package paths are implemented; successful
+Windows CI evidence remains the platform gate, not an assumption.
 
 The minimum bootstrap language subset constrains the compiler's own source,
 not which features it can implement for user programs. Implement a new feature
@@ -88,7 +95,9 @@ policy or another frontend to extend. Do not add a bulky checked-IR seed
 snapshot. The retained Rust LLVM binding, host linker, GC, and platform runtime
 are separate implementation boundaries, not a permanent basic language version.
 They may evolve for native code and platform facilities without duplicating
-source-language analysis. Bootstrap agreement is evidence, not a proof of
+source-language analysis. Codegen consumes backend-neutral checked programs;
+LLVM is a replaceable implementation, not part of the source language or its
+proof rules. Bootstrap agreement is evidence, not a proof of
 compiler correctness.
 
 ## N2 — Complete the language and source library
@@ -169,8 +178,9 @@ not a replacement execution model for every function or Task.
 ## Delivery discipline
 
 Use focused PRs and tests proportional to the changed boundary. Start with the
-native macOS gate; expand Linux/Windows runtime and release evidence before
-claiming support. Do not recreate a large dual-backend differential suite.
+native macOS gate and retain the now-passing Linux bootstrap/test gate. Establish
+Windows runtime and release evidence before broader support claims. Do not
+recreate a large dual-backend differential suite.
 
 Fast compiler feedback is a core user-experience goal. Measure startup, check,
 build, and test-compilation latency plus peak memory on representative growing

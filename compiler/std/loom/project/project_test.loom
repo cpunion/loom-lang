@@ -4,12 +4,34 @@ test fn package_path_boundaries() {
     assert qualify("std.loom.parser", "parse") == "std.loom.parser.parse" && qualify("", "parse") == "parse"
     assert parent("/a/b") == "/a"
     assert parent("/a") == "/" && parent("/") == "/"
-    assert join("/", "a") == "/a"
+    assert join_path("/", "a") == "/a"
     assert inside("/std/text", "/std") && inside("/std", "/std")
     assert !inside("/std-copy/text", "/std")
     assert !ends("test.loom.bak", ".loom") && ends("unit_test.loom", "_test.loom")
     let values = parts("app.parser", 46)
     assert length(values) == 2 && get(values, 1) == "parser"
+}
+
+test fn windows_drive_and_unc_roots_preserve_canonical_spelling() {
+    assert is_windows_path("C:\\app") && is_windows_path("\\\\?\\C:\\app")
+    assert !is_windows_path("/tmp/a\\b")
+    assert join_path("/tmp/a\\b", "child") == "/tmp/a\\b/child"
+    assert parent("C:\\app\\pkg") == "C:\\app"
+    assert parent("C:\\app") == "C:\\" && parent("C:\\") == "C:\\"
+    assert parent("C:/app/pkg") == "C:/app" && parent("C:/app") == "C:/"
+    assert join_path("\\\\?\\C:\\", "app") == "\\\\?\\C:\\app"
+    assert parent("\\\\?\\C:\\app") == "\\\\?\\C:\\"
+    assert parent("\\\\?\\C:\\") == "\\\\?\\C:\\"
+    assert parent("\\\\server\\share\\app") == "\\\\server\\share\\"
+    assert parent("\\\\server\\share") == "\\\\server\\share"
+    assert parent("\\\\?\\UNC\\server\\share\\app") == "\\\\?\\UNC\\server\\share\\"
+    assert parent("\\\\?\\UNC\\server\\share\\") == "\\\\?\\UNC\\server\\share\\"
+    assert inside("\\\\?\\C:\\std\\text", "\\\\?\\C:\\std")
+    assert !inside("\\\\?\\C:\\std-copy\\text", "\\\\?\\C:\\std")
+    assert match package_name("\\\\?\\C:\\app\\parser\\ast", "\\\\?\\C:\\app", "app") {
+        Result.Ok(value) => value == "app.parser.ast"
+        Result.Err(_) => false
+    }
 }
 
 test fn imports_are_unique_and_deterministic() {

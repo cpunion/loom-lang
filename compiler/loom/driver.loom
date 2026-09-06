@@ -1,4 +1,7 @@
 import std.loom.project.load
+import std.loom.project.is_windows_path
+import std.loom.project.join_path
+import std.fs.canonicalize
 import std.loom.binding.bind
 import std.loom.binding.Failure
 import std.loom.project.SourceFile
@@ -56,7 +59,11 @@ fn options(args List[Text]) Result[Options, Text] {
         index = index + 1
     }
     if command != "build" && output != "" { return Result.Err("--output is only available with build") }
-    if command == "check" && ir != "" { return Result.Err("check does not emit LLVM IR") }
+    if (command == "check" || command == "emit-checked") && ir != "" { return Result.Err("this command does not emit LLVM IR") }
+    path = match canonicalize(path) {
+        Result.Ok(value) => value
+        Result.Err(_) => { return Result.Err(concat("cannot resolve package path ", path)) }
+    }
     Result.Ok(Options { command = command path = path std_root = standard output = output ir = ir native_tool = tool })
 }
 fn diagnostic(files List[SourceFile], failure Failure) Text {
@@ -100,12 +107,16 @@ fn execute(args List[Text]) Result[Text, Text] {
     let selected = options(args)?
     let program = prepared(selected)?
     if selected.command == "check" { return Result.Ok("checked package\n") }
+    if selected.command == "emit-checked" { return Result.Ok(encode(program)) }
     if selected.command == "run" && program.entry < 0 { return Result.Err("run requires fn main() in the selected package") }
     if selected.command == "test" && length(program.tests) == 0 { return Result.Ok("0 tests\n") }
-    let filename = if selected.command == "test" { "tests" } else {
-        if program.entry < 0 { "package.o" } else { "main" }
+    let windows = is_windows_path(selected.path)
+    let filename = if selected.command == "test" { if windows { "tests.exe" } else { "tests" } } else {
+        if program.entry < 0 { if windows { "package.obj" } else { "package.o" } } else {
+            if windows { "main.exe" } else { "main" }
+        }
     }
-    let output = if selected.output != "" { selected.output } else { concat(selected.path, concat("/target/", filename)) }
+    let output = if selected.output != "" { selected.output } else { join_path(join_path(selected.path, "target"), filename) }
     discard compile(selected, program, output)?
     if selected.command == "build" { return Result.Ok(concat("built ", concat(output, "\n"))) }
     let arguments = new[Text]()

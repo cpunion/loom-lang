@@ -1,4 +1,4 @@
-//! Decode the source compiler's private checked-IR stream for LLVM lowering.
+//! Decode the source compiler's private checked-IR stream for native codegen.
 //! This boundary checks encoding, references and finite layouts, never source
 //! names, overloads, contracts or proof. Schema: loom/artifact/artifact.loom.
 
@@ -712,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_references_and_by_value_cycles_reject_before_llvm() {
+    fn invalid_references_and_by_value_cycles_reject_before_codegen() {
         let cycle = "loom-checked-1\n1\n7\n1\n1\n4\nnext0\n0\n-1\n0\n0\n";
         assert!(decode(cycle).unwrap_err().contains("recursive by-value"));
         let invalid = "loom-checked-1\n1\n9\n0\n8\n0\n-1\n0\n0\n";

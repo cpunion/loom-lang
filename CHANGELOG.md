@@ -5,6 +5,18 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Upgrade the native bridge and frozen source seed to LLVM 22 through the existing
+  Inkwell 0.10 binding. Keep Rust 1.88 and avoid a second LLVM install for bootstrap.
+- Separate the backend-neutral codegen interface from the LLVM implementation;
+  bound LLVM scheduling search to avoid its large-block compile-time regression.
+- Pass the independent Linux / Rust 1.88 full bootstrap and native CI gate,
+  alongside macOS. Windows verification remains pending.
+- Protect source extensions and native/IR outputs against case aliases on
+  case-insensitive filesystems.
+- Implement the Windows MSVC native/runtime path, Unicode/binary I/O, canonical
+  package paths, and executable suffixes. Add checked compiler export and
+  same-workflow bootstrap transfer into a Windows CI gate; native Windows
+  verification is still pending.
 - Allow pure helper calls in `Int` type predicates, validating their operation
   closure even for unused declarations. Fold known predicates without weakening
   runtime construction or required proofs. Extend `comptime if` type guards to

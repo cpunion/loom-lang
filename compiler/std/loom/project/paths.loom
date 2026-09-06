@@ -28,26 +28,56 @@ pub fn qualify(package Text, name Text) Text {
     if package == "" { name } else { concat(package, concat(".", name)) }
 }
 
-// The bootstrap currently targets POSIX hosts. All filesystem boundaries use
-// std.fs canonical paths; these are spelling operations, not existence checks.
+// Filesystem spelling operations on absolute canonical paths. Keep Windows
+// verbatim prefixes and native separators; backslash remains an ordinary Unix
+// filename character rather than being globally rewritten.
 fn starts(value Text, prefix Text) Bool {
     length(value) >= length(prefix) && slice(value, 0, length(prefix)) == prefix
 }
 fn ends(value Text, suffix Text) Bool {
     length(value) >= length(suffix) && slice(value, length(value) - length(suffix), length(value)) == suffix
 }
-fn join(base Text, part Text) Text {
-    concat(base, concat(if ends(base, "/") { "" } else { "/" }, part))
+pub fn is_windows_path(path Text) Bool {
+    starts(path, "\\\\") || (length(path) >= 3 && byte(path, 1) == 58 &&
+        (byte(path, 2) == 92 || byte(path, 2) == 47))
+}
+fn separator(path Text) Int {
+    if starts(path, "\\\\") || (length(path) >= 3 && byte(path, 1) == 58 && byte(path, 2) == 92) { 92 } else { 47 }
+}
+pub fn join_path(base Text, part Text) Text {
+    let slash = if separator(base) == 92 { "\\" } else { "/" }
+    concat(base, concat(if ends(base, slash) { "" } else { slash }, part))
+}
+fn root_length(path Text) Int {
+    if is_windows_path(path) && byte(path, 1) == 58 { return 3 }
+    if separator(path) == 47 { return 1 }
+    var offset = 2
+    if starts(path, "\\\\?\\") {
+        if starts(path, "\\\\?\\UNC\\") { offset = 8 } else {
+            offset = 4
+            while offset < length(path) && byte(path, offset) != 92 { offset = offset + 1 }
+            return if offset < length(path) { offset + 1 } else { offset }
+        }
+    }
+    // UNC roots include both the server and share, never just the server.
+    var component = 0
+    while component < 2 {
+        while offset < length(path) && byte(path, offset) != 92 { offset = offset + 1 }
+        if offset < length(path) { offset = offset + 1 }
+        component = component + 1
+    }
+    offset
 }
 fn parent(path Text) Text {
+    let root = root_length(path)
     var offset = length(path)
-    while offset > 1 {
+    while offset > root {
         offset = offset - 1
-        if byte(path, offset) == 47 { return slice(path, 0, offset) }
+        if byte(path, offset) == separator(path) { return slice(path, 0, offset) }
     }
-    "/"
+    slice(path, 0, root)
 }
-fn inside(path Text, root Text) Bool { path == root || starts(path, join(root, "")) }
+fn inside(path Text, root Text) Bool { path == root || starts(path, join_path(root, "")) }
 fn parts(value Text, separator Int) List[Text] {
     let values = new[Text]()
     var start = 0

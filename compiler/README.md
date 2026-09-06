@@ -3,25 +3,38 @@
 The [Loom-written compiler](loom/README.md) implements package loading, parsing,
 binding, type checking, bounded required proofs, and checked program emission.
 It builds further compiler stages using one retained Rust LLVM/platform tool.
-The [roadmap](../ROADMAP.md) distinguishes this macOS bootstrap from completion
+The [roadmap](../ROADMAP.md) distinguishes the macOS/Linux bootstrap from completion
 of the accepted language. A previous Loom compiler is the bootstrap input;
 the frozen historical Rust seed is only a fallback for producing that input.
 
 The native tool consumes a checked program, not source that it parses or
-type-checks again. It uses LLVM 19 through Inkwell; there is no second language
+type-checks again. It uses LLVM 22 through Inkwell; there is no second language
 frontend or runtime interpreter. Scalar-only programs link only
 the host C library for fault reporting; managed programs also link the small
 Rust runtime. Ordinary arithmetic and calls lower
 directly; LLVM's O2 pipeline promotes local storage and removes unused code.
 
+The [codegen boundary](src/codegen.rs) consumes the checked program and emits a
+native object plus linking requirements. Its optimization levels and options do
+not expose Inkwell types. LLVM is the only implementation today; target-machine
+setup, passes, and tuning stay inside that backend. Another backend can reuse
+the source frontend, proofs, checked input, host linker, and runtime boundary
+without an alternate language implementation or a dispatch/plugin framework.
+
 ## Build and try it
 
-Use Rust 1.88, LLVM 19 development libraries, and Clang. macOS is the initial
-validation host. From the repository root:
+Use Rust 1.88, LLVM 22 development libraries, and Clang. macOS and Linux pass the
+LLVM 22 bootstrap and native gate. On Ubuntu 24.04 use the signed
+[LLVM apt repository](https://apt.llvm.org/) and install `llvm-22-dev`, `clang-22`,
+and `libpolly-22-dev`; set `LLVM_SYS_221_PREFIX=/usr/lib/llvm-22` and
+`LOOM_CC=/usr/bin/clang-22`. The [CI recipe](../.github/workflows/ci.yml) shows
+repository setup and runs the same full native/bootstrap gate.
+From the repository root on macOS:
 
 ```sh
-export LLVM_SYS_191_PREFIX="$(brew --prefix llvm@19)"
-export LOOM_CC="$LLVM_SYS_191_PREFIX/bin/clang"
+brew install llvm@22
+export LLVM_SYS_221_PREFIX="$(brew --prefix llvm@22)"
+export LOOM_CC="$LLVM_SYS_221_PREFIX/bin/clang"
 bash scripts/bootstrap.sh
 
 target/loom check compiler/examples/scalar
@@ -38,11 +51,15 @@ LOOM_GC_STRESS=1 compiler/std/list/target/tests
 
 The [bootstrap script](../scripts/bootstrap.sh) builds the current Rust tool
 and runtime, then Loom stages 1, 2, and 3. It compares stages 2/3 byte-for-byte
-and publishes `target/loom`. A cold build recovers stage 0 from the commit in
+and publishes `target/loom`. On macOS/Linux, a cold build recovers stage 0 from the commit in
 `compiler/bootstrap/seed`, using only that historical source and Rust seed in
 `target/bootstrap/<commit>/`. The pinned commit must be available in Git history;
 the script reports the exact fetch command when it is missing. The cache is
 disposable and is not a second source tree to maintain.
+
+The frozen source seed also uses LLVM 22. Its toolchain-only update changes the
+Inkwell feature and lockfile, not the historical compiler source. A cold build
+does not require LLVM 19, rewrite dependency files, or resolve an unlocked build.
 
 An existing compatible Loom compiler bypasses historical seed recovery:
 
@@ -59,7 +76,7 @@ bash scripts/bootstrap.sh --dev
 This builds the native tool/runtime, compiles one new Loom compiler, and
 publishes `target/loom`, using LLVM O1 for this development rebuild.
 `LOOM_BOOTSTRAP_COMPILER` overrides the preceding
-compiler; a missing installed compiler uses the historical fallback. This
+compiler; on macOS/Linux, a missing installed compiler uses the historical fallback. This
 short path does not compare stages. The no-argument command retains the full
 stage 1/2/3 verification at default O2 for CI and bootstrap-boundary changes.
 `LOOM_OPT_LEVEL=0..3` explicitly selects the native optimization level; this
@@ -73,6 +90,52 @@ public `loom` compiler. The source compiler defaults to `compiler/std` and
 `--native-tool` select explicit paths. These are development commands, not a
 relocatable release package or a stable compiler-artifact ABI. `--help` lists
 each tool's command surface.
+
+## Windows bootstrap
+
+The Windows implementation targets 64-bit MSVC; its CI gate is added but not yet
+verified. Use Rust 1.88, a Visual Studio developer environment, Git Bash, and an
+LLVM 22 development package with `llvm-config.exe`, LLVM libraries, and
+`clang-cl.exe`. The [CI recipe](../.github/workflows/ci.yml) provisions the 22.1.8
+archive and supplies its missing `xml2s.lib` from a real static libxml2 build
+using the static MSVC CRT, not a placeholder library. The Windows Cargo target
+configuration and emitted program linker use the same static CRT. This matches
+the LLVM package's allocator override; mixing dynamic-CRT allocation with its
+message deallocator can crash even before IR lowering.
+Bootstrap imports SDK library paths from the developer environment automatically.
+Before standalone Cargo commands in Git Bash, run `source scripts/windows-env.sh`
+to make those paths available to Rust's static-library packaging as well.
+Native executables reserve an 8 MiB main stack, with the default commit size,
+so bounded compiler recursion does not inherit MSVC's smaller 1 MiB default.
+
+Windows cannot use the frozen historical Unix seed directly. Use an existing
+compatible Windows compiler via `LOOM_BOOTSTRAP_COMPILER`, or export a trusted
+checked compiler from the same checkout using an already validated macOS Loom:
+
+```sh
+target/loom emit-checked compiler/loom > target/compiler.checked
+```
+
+Transfer that file to the matching Windows checkout, then in Git Bash with the
+Visual Studio environment inherited:
+
+```sh
+export LLVM_SYS_221_PREFIX='C:/llvm-22'
+export LOOM_CC="$LLVM_SYS_221_PREFIX/bin/clang-cl.exe"
+LOOM_BOOTSTRAP_INPUT=compiler.checked bash scripts/bootstrap.sh
+target/loom.exe test compiler/examples/scalar
+```
+
+The native Windows bridge builds stage 0 from this checked input, then Loom
+builds stages 1/2/3 and compares 2/3. The result is `target/loom.exe`; default
+program/test outputs use `.exe`, library objects `.obj`, and the runtime archive
+is `loom_runtime.lib`. Subsequent local edits use `bash scripts/bootstrap.sh --dev`.
+
+`emit-checked` runs normal type/proof checks and writes the private artifact to
+stdout without invoking LLVM. This is not a stable IR ABI, release artifact,
+or committed seed snapshot. Use only trusted input matching the source and
+native tool: CI transfers it between jobs in the same workflow after the macOS
+gate, not from an arbitrary other build. The active frontend remains Loom-only.
 
 ## Compiler latency
 
@@ -88,7 +151,7 @@ macOS peak RSS for scalar, data, and compiler packages, with raw samples in
 select the binary, report, and sample count.
 
 Every sample starts a fresh process after one warmup; OS caches are warm.
-There is no incremental compiler cache yet. Native decode, LLVM, and linker
+There is no incremental compiler cache yet. Native decode, codegen, and linker
 timings separate backend costs; remaining build wall time also includes
 serialization and process/pipe overhead, not just frontend analysis. Peak RSS
 is the operating system's reported maximum, not summed concurrent process
@@ -109,6 +172,14 @@ A separate same-source/runtime O1/O2 comparison reduced self-build time from
 159 ms. This motivates O1 for the single-stage developer rebuild. LLVM remains
 the largest self-build cost; these improvements do not substitute for future
 incremental compilation or larger-project measurements.
+
+On the LLVM 22 upgrade, the same-source O2 self-build measured 7.35 s with LLVM
+19, 10.62 s with LLVM 22's default scheduler, and 8.07 s with a 32-candidate
+scheduling budget (three warmed runs). The backend bounds this search without
+disabling optimization or checked operations. Generated compiler self-checks
+remained around 210 ms in a separate alternating comparison. This is evidence
+for the compiler workload, not a guarantee for every generated program. Recheck
+the budget on future LLVM upgrades; these tuning options are not a stable API.
 
 ## Implemented subset
 
@@ -279,7 +350,8 @@ The runtime currently uses single-threaded nonmoving mark/sweep GC. Native
 frames register managed locals and expression temporaries across allocation;
 transitively nonallocating functions need no root frames. `LOOM_GC_STRESS=1`
 collects before every allocation for focused testing. The LLVM tool links managed
-programs with `libloom_runtime.a` beside it, or at `LOOM_RUNTIME_LIBRARY`.
+programs with `libloom_runtime.a` (`loom_runtime.lib` on Windows) beside it, or at
+`LOOM_RUNTIME_LIBRARY`.
 No handles escape the file helpers; every recoverable branch closes the
 file explicitly. This is not general scoped cleanup or finalization.
 

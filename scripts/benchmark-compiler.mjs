@@ -73,16 +73,16 @@ function measure(mode, packagePath) {
   if (result.status !== 0) throw new Error(`${mode} ${packagePath} failed:\n${result.stdout}${result.stderr}`);
   const rss = result.stderr.match(/(\d+)\s+maximum resident set size/);
   if (!rss) throw new Error("missing macOS peak RSS measurement");
-  const native = result.stderr.match(/loom-native timings: decode_ms=([\d.]+) llvm_ms=([\d.]+) link_ms=([\d.]+)/);
+  const native = result.stderr.match(/loom-native timings: decode_ms=([\d.]+) codegen_ms=([\d.]+) link_ms=([\d.]+)/);
   if (mode === "build" && !native) throw new Error("rebuild loom-native to enable phase timings");
   return {
     wallMs, peakRssBytes: Number(rss[1]),
-    ...(native ? { decodeMs: Number(native[1]), llvmMs: Number(native[2]), linkMs: Number(native[3]) } : {}),
+    ...(native ? { decodeMs: Number(native[1]), codegenMs: Number(native[2]), linkMs: Number(native[3]) } : {}),
   };
 }
 
 try {
-  console.log("| Case | Command | Wall ms | RSS MiB | Decode ms | LLVM ms | Link ms |");
+  console.log("| Case | Command | Wall ms | RSS MiB | Decode ms | Codegen ms | Link ms |");
   console.log("| --- | --- | ---: | ---: | ---: | ---: | ---: |");
   for (const [name, packagePath] of [
     ["scalar", "compiler/examples/scalar"], ["data", "compiler/examples/data"], ["compiler", "compiler/loom"],
@@ -93,7 +93,7 @@ try {
       const summary = Object.fromEntries(Object.keys(samples[0]).map(key => [key, median(samples.map(sample => sample[key]))]));
       report.cases.push({ name, command: mode, package: packagePath, median: summary, samples });
       const number = value => value === undefined ? "—" : value.toFixed(2);
-      console.log(`| ${name} | ${mode} | ${number(summary.wallMs)} | ${number(summary.peakRssBytes / 1048576)} | ${number(summary.decodeMs)} | ${number(summary.llvmMs)} | ${number(summary.linkMs)} |`);
+      console.log(`| ${name} | ${mode} | ${number(summary.wallMs)} | ${number(summary.peakRssBytes / 1048576)} | ${number(summary.decodeMs)} | ${number(summary.codegenMs)} | ${number(summary.linkMs)} |`);
     }
   }
   mkdirSync(dirname(reportPath), { recursive: true });

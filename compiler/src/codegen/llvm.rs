@@ -1,5 +1,6 @@
 //! Direct LLVM lowering of checked Loom programs. No source-language frontend.
 
+use super::{Backend, EmissionResult, EmitOptions, Optimization};
 use crate::model::{Binary, Primitive, Type, Unary, checked};
 use inkwell::{
     AddressSpace, IntPredicate, OptimizationLevel,
@@ -16,22 +17,70 @@ use inkwell::{
 use std::{
     collections::{BTreeSet, HashMap},
     path::Path,
+    sync::Once,
 };
 
-#[path = "native_gc.rs"]
+#[path = "llvm_gc.rs"]
 mod gc;
 
 type NativeResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-pub fn emit(
-    program: &checked::Program,
-    test_mode: bool,
-    object: &Path,
-    llvm_ir: Option<&Path>,
-    optimization: OptimizationLevel,
-) -> Result<bool, String> {
-    emit_checked(program, test_mode, object, llvm_ir, optimization)
-        .map_err(|error| error.to_string())
+pub struct Llvm;
+
+impl Backend for Llvm {
+    fn emit(
+        &self,
+        program: &checked::Program,
+        options: EmitOptions<'_>,
+    ) -> Result<EmissionResult, String> {
+        trace_phase("configure");
+        configure_codegen();
+        let optimization = match options.optimization {
+            Optimization::O0 => OptimizationLevel::None,
+            Optimization::O1 => OptimizationLevel::Less,
+            Optimization::O2 => OptimizationLevel::Default,
+            Optimization::O3 => OptimizationLevel::Aggressive,
+        };
+        let uses_runtime = emit_checked(
+            program,
+            options.test_mode,
+            options.object,
+            options.ir,
+            optimization,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(EmissionResult {
+            library: !options.test_mode && program.entry.is_none(),
+            uses_runtime,
+        })
+    }
+}
+
+fn trace_phase(phase: &str) {
+    if std::env::var_os("LOOM_NATIVE_TIMINGS").is_some() {
+        eprintln!("llvm phase: {phase}");
+    }
+}
+
+fn configure_codegen() {
+    static CONFIGURE: Once = Once::new();
+    CONFIGURE.call_once(|| {
+        // Bound candidate pressure analysis in large blocks. LLVM 22's default
+        // of 256 regresses self-build latency; 32 retains scheduling dependencies.
+        let arguments = [c"loom-native".as_ptr(), c"--misched-limit=32".as_ptr()];
+        // SAFETY: fixed NUL-terminated literals live for the process; argv has
+        // exactly two entries and lives through this synchronous call. Once
+        // configures LLVM before any caller enters native emission. Inkwell
+        // exposes this binding but has no safe wrapper for the process options.
+        #[allow(unsafe_code)]
+        unsafe {
+            inkwell::llvm_sys::support::LLVMParseCommandLineOptions(
+                2,
+                arguments.as_ptr(),
+                c"".as_ptr(),
+            );
+        }
+    });
 }
 
 fn emit_checked(
@@ -41,8 +90,8 @@ fn emit_checked(
     llvm_ir: Option<&Path>,
     optimization: OptimizationLevel,
 ) -> NativeResult<bool> {
-    if !cfg!(unix) {
-        return Err("native emission currently requires a Unix host".into());
+    if !cfg!(any(unix, all(windows, target_env = "msvc"))) {
+        return Err("native emission requires a Unix or Windows MSVC host".into());
     }
     let roots = if test_mode {
         program.tests.clone()
@@ -52,18 +101,26 @@ fn emit_checked(
         program.exports.clone()
     };
     let library = !test_mode && program.entry.is_none();
+    trace_phase("reachability");
     let reachable = reachable_functions(program, &roots)?;
     let allocating = gc::allocating_functions(program, &reachable);
+    trace_phase("target");
     Target::initialize_native(&InitializationConfig::default())?;
     let triple = TargetMachine::get_default_triple();
-    let machine = Target::from_triple(&triple)
-        .map_err(|error| error.to_string())?
+    let target = Target::from_triple(&triple).map_err(|error| error.to_string())?;
+    let cpu = TargetMachine::get_host_cpu_name().to_string();
+    let features = TargetMachine::get_host_cpu_features().to_string();
+    let machine = target
         .create_target_machine(
             &triple,
-            &TargetMachine::get_host_cpu_name().to_string(),
-            &TargetMachine::get_host_cpu_features().to_string(),
+            &cpu,
+            &features,
             optimization,
-            RelocMode::PIC,
+            if cfg!(windows) {
+                RelocMode::Default
+            } else {
+                RelocMode::PIC
+            },
             CodeModel::Default,
         )
         .ok_or("LLVM could not create a native target machine")?;
@@ -74,6 +131,7 @@ fn emit_checked(
     let builder = context.create_builder();
     let mut tracers = HashMap::new();
     let mut functions = vec![None; program.functions.len()];
+    trace_phase("declarations");
     for &id in &reachable {
         let source = &program.functions[id];
         let params = source
@@ -92,6 +150,7 @@ fn emit_checked(
         };
         functions[id] = Some(module.add_function(&format!("loom.fn.{id}"), ty, Some(linkage)));
     }
+    trace_phase("lower");
     for &id in &reachable {
         let function = functions[id].ok_or("missing checked function")?;
         let entry = context.append_basic_block(function, "entry");
@@ -198,6 +257,7 @@ fn emit_checked(
         }
         builder.build_return(Some(&context.i32_type().const_zero()))?;
     }
+    trace_phase("optimize");
     module.verify().map_err(|error| error.to_string())?;
     let pipeline = match optimization {
         OptimizationLevel::None => "default<O0>",
@@ -214,6 +274,7 @@ fn emit_checked(
             .print_to_file(path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
     }
+    trace_phase("object");
     machine
         .write_to_file(&module, FileType::Object, object)
         .map_err(|error| format!("{}: {error}", object.display()))?;
@@ -1227,14 +1288,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .append_basic_block(self.function, "guard.fault");
         self.builder.build_conditional_branch(valid, good, bad)?;
         self.builder.position_at_end(bad);
-        // macOS/Linux C ABI. The host links libc; Loom needs no native support library.
+        // Fault-only programs use the host CRT, without the managed runtime.
         let i32_type = self.context.i32_type();
-        let size_type = self.size_type;
         let pointer = self.context.ptr_type(AddressSpace::default());
-        let write = self.module.get_function("write").unwrap_or_else(|| {
+        let (write_name, write_result, write_count) =
+            fault_write_abi(self.context, self.size_type, cfg!(windows));
+        let write = self.module.get_function(write_name).unwrap_or_else(|| {
             self.module.add_function(
-                "write",
-                size_type.fn_type(&[i32_type.into(), pointer.into(), size_type.into()], false),
+                write_name,
+                write_result.fn_type(
+                    &[i32_type.into(), pointer.into(), write_count.into()],
+                    false,
+                ),
                 None,
             )
         });
@@ -1254,7 +1319,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[
                 i32_type.const_int(2, false).into(),
                 bytes.as_pointer_value().into(),
-                size_type.const_int(text.len() as u64, false).into(),
+                write_count.const_int(text.len() as u64, false).into(),
             ],
             "",
         )?;
@@ -1263,6 +1328,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.build_unreachable()?;
         self.builder.position_at_end(good);
         Ok(())
+    }
+}
+
+fn fault_write_abi<'ctx>(
+    context: &'ctx Context,
+    size_type: IntType<'ctx>,
+    windows: bool,
+) -> (&'static str, IntType<'ctx>, IntType<'ctx>) {
+    if windows {
+        ("_write", context.i32_type(), context.i32_type())
+    } else {
+        ("write", size_type, size_type)
     }
 }
 
@@ -1362,6 +1439,17 @@ fn reachable_functions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fault_writes_follow_host_crt_integer_widths() {
+        let context = Context::create();
+        for (windows, name, width) in [(false, "write", 64), (true, "_write", 32)] {
+            let (symbol, result, count) = fault_write_abi(&context, context.i64_type(), windows);
+            assert_eq!(symbol, name);
+            assert_eq!(result.get_bit_width(), width);
+            assert_eq!(count.get_bit_width(), width);
+        }
+    }
 
     #[test]
     fn enum_layout_uses_largest_payload_and_rejects_unbound_types() {

@@ -36,14 +36,20 @@ fn main() {
     }
     let mode = get(args, 1)
     if mode == "--help" || mode == "-h" {
-        discard write_text("Loom source compiler\n  loom <check|build|test|run> [package] [--std path] [--output path] [--emit-ir path]\n  loom <lex|parse> <source files...>\n  --native-tool selects the development LLVM/platform tool.\n")
+        discard write_text("Loom source compiler\n  loom <check|build|test|run> [package] [--std path] [--output path] [--emit-ir path]\n  loom <lex|parse> <source files...>\n  loom emit-checked [package] [--std path]  (private bootstrap format, stdout)\n  --native-tool selects the development LLVM/platform tool.\n")
         return
     }
     if mode == "--version" { discard write_text("loom source compiler (development)\n")
         return }
-    if mode == "check" || mode == "build" || mode == "test" || mode == "run" {
+    if mode == "check" || mode == "build" || mode == "test" || mode == "run" || mode == "emit-checked" {
         match execute(args) {
-            Result.Ok(message) => { discard write_text(message) }
+            Result.Ok(message) => {
+                match write_text(message) {
+                    Result.Ok(_) => {}
+                    Result.Err(_) => { report("cannot write compiler output")
+                        exit_code(1) }
+                }
+            }
             Result.Err(message) => { report(message)
                 exit_code(1) }
         }

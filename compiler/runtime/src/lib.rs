@@ -2,10 +2,16 @@
 //! Generated code roots every live managed slot before an allocating call.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
-use std::cell::{Cell, RefCell};
+#[cfg(not(windows))]
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ffi::{CStr, c_char};
+#[cfg(not(windows))]
+use std::ffi::CStr;
+use std::ffi::c_char;
 use std::ptr::{self, NonNull};
+
+mod file_io;
 
 type Trace = unsafe extern "C" fn(*mut u8);
 
@@ -64,7 +70,10 @@ impl Drop for Heap {
 
 thread_local! {
     static HEAP: RefCell<Heap> = RefCell::new(Heap::default());
+    #[cfg(not(windows))]
     static PROCESS_ARGS: Cell<(i32, *const *const c_char)> = const { Cell::new((0, ptr::null())) };
+    #[cfg(windows)]
+    static PROCESS_ARGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 fn fault(message: &str) -> ! {
@@ -302,28 +311,61 @@ unsafe extern "C" fn loom_rt_process_init(argc: i32, argv: *const *const c_char)
     if argc < 0 || (argc != 0 && argv.is_null()) {
         fault("invalid process arguments");
     }
-    // The generated C entry point keeps argv and its strings live until exit.
-    // Retaining this descriptor neither allocates nor touches the managed heap.
+    // Unix argv preserves the original bytes. Windows C argv can use an ANSI
+    // code page; Rust reads the native wide command line instead.
+    #[cfg(not(windows))]
     PROCESS_ARGS.set((argc, argv));
+    #[cfg(windows)]
+    PROCESS_ARGS.with(|arguments| {
+        *arguments.borrow_mut() = std::env::args_os()
+            .map(|argument| {
+                argument
+                    .into_string()
+                    .unwrap_or_else(|_| fault("invalid Unicode process argument"))
+            })
+            .collect();
+    });
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn loom_rt_process_arg_count() -> i64 {
-    i64::from(PROCESS_ARGS.get().0)
+    #[cfg(not(windows))]
+    {
+        i64::from(PROCESS_ARGS.get().0)
+    }
+    #[cfg(windows)]
+    {
+        PROCESS_ARGS.with(|arguments| arguments.borrow().len() as i64)
+    }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_process_arg_text(index: i64) -> *mut u8 {
-    let (count, arguments) = PROCESS_ARGS.get();
-    let index = usize::try_from(index)
-        .ok()
-        .filter(|index| *index < count as usize)
-        .unwrap_or_else(|| fault("process argument index out of bounds"));
-    // SAFETY: process_init receives argc readable, NUL-terminated C arguments
-    // from main. Their storage is independent of GC and lives until exit.
-    unsafe {
-        let bytes = CStr::from_ptr(*arguments.add(index)).to_bytes();
-        loom_rt_text_new(bytes.as_ptr(), bytes.len())
+    #[cfg(not(windows))]
+    {
+        let (count, arguments) = PROCESS_ARGS.get();
+        let index = usize::try_from(index)
+            .ok()
+            .filter(|index| *index < count as usize)
+            .unwrap_or_else(|| fault("process argument index out of bounds"));
+        // SAFETY: process_init receives argc readable, NUL-terminated C arguments
+        // from main. Their storage is independent of GC and lives until exit.
+        unsafe {
+            let bytes = CStr::from_ptr(*arguments.add(index)).to_bytes();
+            loom_rt_text_new(bytes.as_ptr(), bytes.len())
+        }
+    }
+    #[cfg(windows)]
+    {
+        PROCESS_ARGS.with(|arguments| {
+            let arguments = arguments.borrow();
+            let argument = usize::try_from(index)
+                .ok()
+                .and_then(|index| arguments.get(index))
+                .unwrap_or_else(|| fault("process argument index out of bounds"));
+            // SAFETY: Rust-owned argument bytes outlive the managed allocation.
+            unsafe { loom_rt_text_new(argument.as_ptr(), argument.len()) }
+        })
     }
 }
 
@@ -570,34 +612,25 @@ unsafe extern "C" fn loom_rt_list_push(list: *mut u8, item: *const u8) {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_file_open(path: *const u8) -> i64 {
-    // SAFETY: path is a live Text value; CString rejects embedded NUL bytes.
-    let Ok(path) = std::ffi::CString::new(unsafe { text_bytes(path) }) else {
-        return -1;
-    };
-    // SAFETY: path is NUL terminated and open does not retain its pointer.
-    i64::from(unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) })
+    // SAFETY: Text is valid UTF-8; the platform operation does not retain it.
+    file_io::open(
+        unsafe { std::str::from_utf8_unchecked(text_bytes(path)) },
+        false,
+    )
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_file_create(path: *const u8) -> i64 {
-    // SAFETY: path is live UTF-8; CString rejects embedded NUL bytes.
-    let Ok(path) = std::ffi::CString::new(unsafe { text_bytes(path) }) else {
-        return -1;
-    };
-    // SAFETY: open consumes a NUL-terminated path and promoted mode argument.
-    // The process umask determines the final permissions of a new file.
-    i64::from(unsafe {
-        libc::open(
-            path.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
-            0o666 as libc::c_uint,
-        )
-    })
+    // SAFETY: Text is valid UTF-8; the platform operation does not retain it.
+    file_io::open(
+        unsafe { std::str::from_utf8_unchecked(text_bytes(path)) },
+        true,
+    )
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_file_write(fd: i64, text: *const u8, offset: i64) -> i64 {
-    let (Ok(fd), Ok(offset)) = (libc::c_int::try_from(fd), usize::try_from(offset)) else {
+    let Ok(offset) = usize::try_from(offset) else {
         return -1;
     };
     // SAFETY: text is live for this non-retaining, nonallocating call.
@@ -605,13 +638,12 @@ unsafe extern "C" fn loom_rt_file_write(fd: i64, text: *const u8, offset: i64) -
     let Some(bytes) = bytes.get(offset..) else {
         return -1;
     };
-    // SAFETY: write only reads the remaining initialized bytes and validates fd.
-    unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) as i64 }
+    file_io::write(fd, bytes)
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_file_read(fd: i64, bytes: *mut u8, limit: i64) -> i64 {
-    let (Ok(fd), Ok(limit)) = (libc::c_int::try_from(fd), usize::try_from(limit)) else {
+    let Ok(limit) = usize::try_from(limit) else {
         return -1;
     };
     if limit == 0 {
@@ -622,22 +654,18 @@ unsafe extern "C" fn loom_rt_file_read(fd: i64, bytes: *mut u8, limit: i64) -> i
     // len, and read initializes exactly its nonnegative result count.
     unsafe {
         reserve(buffer, limit, 1);
-        let count = libc::read(fd, (*buffer).data.add((*buffer).len).cast(), limit);
+        let tail = std::slice::from_raw_parts_mut((*buffer).data.add((*buffer).len), limit);
+        let count = file_io::read(fd, tail);
         if count > 0 {
             (*buffer).len += count as usize;
         }
-        count as i64
+        count
     }
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn loom_rt_file_close(fd: i64) -> i64 {
-    let Ok(fd) = libc::c_int::try_from(fd) else {
-        return -1;
-    };
-    // SAFETY: close validates the descriptor; the source library owns resource
-    // lifetime and never relies on collector reachability for closing a file.
-    i64::from(unsafe { libc::close(fd) })
+    file_io::close(fd)
 }
 
 #[unsafe(no_mangle)]
@@ -852,6 +880,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn process_arguments_are_copied_from_live_argv() {
         let previous = PROCESS_ARGS.get();
         let owned = [
@@ -875,6 +904,31 @@ mod tests {
         }
         assert_eq!(loom_rt_process_arg_count(), 0);
         PROCESS_ARGS.set(previous);
+        loom_rt_collect();
+        assert_eq!(live(), 0);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn process_arguments_use_native_unicode_not_narrow_argv() {
+        let previous = PROCESS_ARGS.with(|arguments| arguments.borrow().clone());
+        // SAFETY: Windows ignores the narrow argv after validating its shape.
+        unsafe { loom_rt_process_init(0, ptr::null()) };
+        assert_eq!(
+            loom_rt_process_arg_count(),
+            std::env::args_os().count() as i64
+        );
+        PROCESS_ARGS.with(|arguments| {
+            *arguments.borrow_mut() = vec!["loom".into(), "目录-é-🙂.loom".into()]
+        });
+        // SAFETY: The Unicode argument is owned independently of managed GC.
+        unsafe {
+            assert_eq!(
+                text_bytes(loom_rt_process_arg_text(1)),
+                "目录-é-🙂.loom".as_bytes()
+            )
+        };
+        PROCESS_ARGS.with(|arguments| *arguments.borrow_mut() = previous);
         loom_rt_collect();
         assert_eq!(live(), 0);
     }

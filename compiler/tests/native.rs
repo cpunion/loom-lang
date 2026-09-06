@@ -18,7 +18,7 @@ fn path(path: &Path) -> &str {
 fn native_cli_closure_and_source_library() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/scalar");
     let directory = tempfile::tempdir().unwrap();
-    let artifact = directory.path().join("app");
+    let artifact = common::executable(directory.path(), "app");
     let ir = directory.path().join("app.ll");
     success(&loom(&["check", path(&fixture)]));
     success(&loom(&[
@@ -54,7 +54,7 @@ fn native_cli_closure_and_source_library() {
 fn native_generic_data() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/data");
     let directory = tempfile::tempdir().unwrap();
-    let artifact = directory.path().join("data");
+    let artifact = common::executable(directory.path(), "data");
     let ir = directory.path().join("data.ll");
     success(&loom(&["check", path(&fixture)]));
     success(&loom(&[
@@ -118,9 +118,7 @@ fn source_process_run_preserves_arguments_and_nonzero_exit_codes() {
          discard write_text(concat(get(args, index), \"\\n\"))\nindex = index + 1\n}\n\
          exit_code(7)\n}",
     );
-    let artifact = child
-        .path()
-        .join(format!("child process{}", std::env::consts::EXE_SUFFIX));
+    let artifact = common::executable(child.path(), "child process");
     success(&loom(&[
         "build",
         path(child.path()),
@@ -512,4 +510,38 @@ fn output_aliases_cannot_overwrite_inputs_or_each_other() {
         fs::read_to_string(dir.path().join("main.loom")).unwrap(),
         "pub fn value() Int { 42 }"
     );
+}
+
+#[test]
+fn case_alias_outputs_preserve_source_and_native_artifacts() {
+    let text = "pub fn value() Int { 42 }";
+    let dir = source(text);
+    let output = loom(&[
+        "build",
+        path(dir.path()),
+        "--output",
+        path(&dir.path().join("MAIN.LOOM")),
+    ]);
+    assert!(!output.status.success());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("main.loom")).unwrap(),
+        text
+    );
+    // Only exercise aliases where this filesystem actually aliases case.
+    if !dir.path().join("MAIN.LOOM").exists() {
+        return;
+    }
+    let object = dir.path().join("artifact");
+    let ir = dir.path().join("ARTIFACT");
+    let output = loom(&[
+        "build",
+        path(dir.path()),
+        "--output",
+        path(&object),
+        "--emit-ir",
+        path(&ir),
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("aliases the native output"));
+    assert!(!fs::read(&object).unwrap().starts_with(b"; ModuleID"));
 }

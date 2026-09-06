@@ -1,4 +1,4 @@
-//! Private LLVM/platform bridge: accepts checked IR, never Loom source.
+//! Private backend/platform bridge: accepts checked IR, never Loom source.
 
 use std::ffi::OsStr;
 use std::io::Read;
@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use inkwell::OptimizationLevel;
+use loom_native::codegen::{Backend, EmitOptions, Llvm, Optimization};
+use loom_native::native_input;
 use loom_native::native_tool::{
     link, output_identity, prepare_parent, publish, reject_source_output,
 };
-use loom_native::{native, native_input};
 
 fn main() -> ExitCode {
     match execute() {
@@ -25,7 +25,7 @@ fn main() -> ExitCode {
 fn execute() -> Result<(), String> {
     let optimization = optimization_level(std::env::var_os("LOOM_OPT_LEVEL").as_deref())?;
     let mut arguments = std::env::args_os().skip(1);
-    let input = arguments.next().ok_or("usage: loom-native <checked-input|-> --output <artifact> [--test] [--emit-ir <path>] [--runtime <archive>] [--linker <clang>]")?;
+    let input = arguments.next().ok_or("usage: loom-native <checked-input|-> --output <artifact> [--test] [--emit-ir <path>] [--runtime <archive>] [--linker <driver>]")?;
     let mut output = None;
     let mut ir = None;
     let mut runtime = None;
@@ -73,6 +73,10 @@ fn execute() -> Result<(), String> {
             .map_err(|error| format!("{}: {error}", input.display()))?;
         vec![input]
     };
+    let timings = std::env::var_os("LOOM_NATIVE_TIMINGS").is_some();
+    if timings {
+        eprintln!("loom-native phase: decode");
+    }
     let decode_started = Instant::now();
     let program = native_input::decode(&text)?;
     let decode_time = decode_started.elapsed();
@@ -82,44 +86,71 @@ fn execute() -> Result<(), String> {
         reject_source_output(ir, &inputs)?;
         prepare_parent(ir)?;
         if output_identity(ir)? == output_identity(&output)? {
-            return Err("LLVM IR and native output paths must differ".into());
+            return Err("backend IR and native output paths must differ".into());
         }
     }
     let temporary = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let object = temporary.path().join("program.o");
-    let emitted_ir = ir.as_ref().map(|_| temporary.path().join("program.ll"));
-    let llvm_started = Instant::now();
-    let uses_runtime = native::emit(
+    let object = temporary.path().join(if cfg!(windows) {
+        "program.obj"
+    } else {
+        "program.o"
+    });
+    let emitted_ir = ir.as_ref().map(|_| temporary.path().join("program.ir"));
+    if timings {
+        eprintln!("loom-native phase: codegen");
+    }
+    let backend_started = Instant::now();
+    let emission = Llvm.emit(
         &program,
-        test_mode,
-        &object,
-        emitted_ir.as_deref(),
-        optimization,
+        EmitOptions {
+            object: &object,
+            ir: emitted_ir.as_deref(),
+            test_mode,
+            optimization,
+        },
     )?;
-    let llvm_time = llvm_started.elapsed();
-    let executable = temporary.path().join("program");
-    let library = !test_mode && program.entry.is_none();
+    let backend_time = backend_started.elapsed();
+    let executable = temporary.path().join(if cfg!(windows) {
+        "program.exe"
+    } else {
+        "program"
+    });
+    if timings {
+        eprintln!("loom-native phase: link");
+    }
     let link_started = Instant::now();
-    if !library {
+    if !emission.library {
         link(
             &object,
             &executable,
-            uses_runtime,
+            emission.uses_runtime,
             runtime.as_deref(),
             linker.as_deref().map(|path| path.as_os_str()),
         )?;
     }
     let link_time = link_started.elapsed();
-    publish(if library { &object } else { &executable }, &output)?;
+    publish(
+        if emission.library {
+            &object
+        } else {
+            &executable
+        },
+        &output,
+    )?;
     if let (Some(from), Some(to)) = (&emitted_ir, &ir) {
+        // Once the native file exists, canonicalization also resolves casing
+        // aliases on Windows and case-insensitive macOS volumes.
+        if output_identity(to)? == output_identity(&output)? {
+            return Err("backend IR aliases the native output; native artifact retained".into());
+        }
         publish(from, to)?;
     }
-    if std::env::var_os("LOOM_NATIVE_TIMINGS").is_some() {
+    if timings {
         eprintln!(
-            "loom-native timings: decode_ms={:.3} llvm_ms={:.3} link_ms={:.3}",
+            "loom-native timings: decode_ms={:.3} codegen_ms={:.3} link_ms={:.3}",
             decode_time.as_secs_f64() * 1000.0,
-            llvm_time.as_secs_f64() * 1000.0,
-            if library {
+            backend_time.as_secs_f64() * 1000.0,
+            if emission.library {
                 0.0
             } else {
                 link_time.as_secs_f64() * 1000.0
@@ -129,12 +160,12 @@ fn execute() -> Result<(), String> {
     Ok(())
 }
 
-fn optimization_level(value: Option<&OsStr>) -> Result<OptimizationLevel, String> {
+fn optimization_level(value: Option<&OsStr>) -> Result<Optimization, String> {
     match value.unwrap_or(OsStr::new("2")).to_str() {
-        Some("0") => Ok(OptimizationLevel::None),
-        Some("1") => Ok(OptimizationLevel::Less),
-        Some("2") => Ok(OptimizationLevel::Default),
-        Some("3") => Ok(OptimizationLevel::Aggressive),
+        Some("0") => Ok(Optimization::O0),
+        Some("1") => Ok(Optimization::O1),
+        Some("2") => Ok(Optimization::O2),
+        Some("3") => Ok(Optimization::O3),
         _ => Err("LOOM_OPT_LEVEL must be 0, 1, 2 or 3".into()),
     }
 }
@@ -145,15 +176,12 @@ mod tests {
 
     #[test]
     fn optimization_levels_are_explicit_and_default_to_two() {
-        assert_eq!(
-            optimization_level(None).unwrap(),
-            OptimizationLevel::Default
-        );
+        assert_eq!(optimization_level(None).unwrap(), Optimization::O2);
         for (value, expected) in [
-            ("0", OptimizationLevel::None),
-            ("1", OptimizationLevel::Less),
-            ("2", OptimizationLevel::Default),
-            ("3", OptimizationLevel::Aggressive),
+            ("0", Optimization::O0),
+            ("1", Optimization::O1),
+            ("2", Optimization::O2),
+            ("3", Optimization::O3),
         ] {
             assert_eq!(
                 optimization_level(Some(OsStr::new(value))).unwrap(),

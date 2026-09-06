@@ -54,7 +54,7 @@ fn read(path Text) Result[Text, Text] {
 fn module_root(directory Text) Result[ModuleRoot, Text] {
     var current = directory
     while true {
-        let path = join(current, "loom.toml")
+        let path = join_path(current, "loom.toml")
         if is_file(path) {
             let module = match std.loom.manifest.parse(read(path)?) {
                 Result.Ok(value) => value
@@ -70,8 +70,8 @@ fn module_root(directory Text) Result[ModuleRoot, Text] {
 }
 fn package_name(directory Text, base Text, name Text) Result[Text, Text] {
     if directory == base { return Result.Ok(name) }
-    let relative = slice(directory, length(join(base, "")), length(directory))
-    let segments = parts(relative, 47)
+    let relative = slice(directory, length(join_path(base, "")), length(directory))
+    let segments = parts(relative, separator(directory))
     var index = 0
     var qualified = name
     while index < length(segments) {
@@ -96,8 +96,8 @@ fn import_directory(loader Loader, package Text) Result[Text, Text] {
     while index < length(segments) {
         let part = get(segments, index)
         if !segment(part) { return Result.Err(concat("invalid package path ", package)) }
-        directory = join(directory, part)
-        if is_file(join(directory, "loom.toml")) {
+        directory = join_path(directory, part)
+        if is_file(join_path(directory, "loom.toml")) {
             return Result.Err(concat("import crosses a nested module boundary: ", package))
         }
         index = index + 1
@@ -135,7 +135,7 @@ fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Res
     var index = 0
     while index < length(names) {
         let name = get(names, index)
-        let path = join(directory, name)
+        let path = join_path(directory, name)
         let test_only = ends(name, "_test.loom")
         if ends(name, ".loom") && (!test_only || tests) && is_file(path) {
             let text = read(path)?

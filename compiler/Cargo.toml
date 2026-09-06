@@ -7,11 +7,11 @@ license = "MIT"
 publish = false
 
 [dependencies]
-inkwell = { version = "=0.10.0", default-features = false, features = ["llvm19-1-prefer-dynamic", "target-aarch64", "target-x86"] }
+inkwell = { version = "=0.10.0", default-features = false, features = ["llvm22-1-prefer-dynamic", "target-aarch64", "target-x86"] }
 tempfile = "3.20"
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [lints.clippy]
 all = "warn"

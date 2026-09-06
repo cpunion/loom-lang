@@ -9,7 +9,7 @@ fn compile_time_work_runs_natively_and_does_not_enter_runtime_reachability() {
     success(&loom(&["run", example.to_str().unwrap()]));
     success(&loom(&["test", example.to_str().unwrap()]));
     success(
-        &Command::new(example.join("target/tests"))
+        &Command::new(common::executable(&example.join("target"), "tests"))
             .env("LOOM_GC_STRESS", "1")
             .output()
             .unwrap(),
@@ -18,7 +18,7 @@ fn compile_time_work_runs_natively_and_does_not_enter_runtime_reachability() {
     let source = tempfile::tempdir().unwrap();
     fs::write(source.path().join("main.loom"),
         "fn fib(n Int) Int { if n < 2 { n } else { fib(n-1) + fib(n-2) } }\npub fn answer() Int ensures result == 55 { comptime { fib(10) } }\nfn main() { assert answer() == 55 }").unwrap();
-    let artifact = source.path().join("app");
+    let artifact = common::executable(source.path(), "app");
     let ir = source.path().join("app.ll");
     // Inspect unoptimized IR: compile-time-only functions are absent before LLVM DCE.
     success(
@@ -81,7 +81,7 @@ fn compile_time_cannot_hide_io_in_a_dead_runtime_branch() {
     let source = tempfile::tempdir().unwrap();
     let marker = source.path().join("must-not-exist");
     fs::write(source.path().join("main.loom"), format!(
-        "import std.file.write_text\nfn effect(flag Bool) Int {{ if flag {{ 1 }} else {{ discard write_text(\"{}\", \"bad\")\n2 }} }}\nfn main() {{ discard comptime {{ effect(true) }} }}", marker.display()
+        "import std.file.write_text\nfn effect(flag Bool) Int {{ if flag {{ 1 }} else {{ discard write_text({:?}, \"bad\")\n2 }} }}\nfn main() {{ discard comptime {{ effect(true) }} }}", marker.to_str().unwrap()
     )).unwrap();
     let output = loom(&["check", source.path().to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");

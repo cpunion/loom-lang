@@ -22,20 +22,33 @@ declarations. Known true/false predicates remove the check or reject; unknown
 inputs or unsuccessful optional evaluation retain normal runtime construction
 and fault behavior. Function contracts remain call-free and proofs mandatory.
 
-The native gate uses macOS, Rust 1.88, and LLVM 19. Compiler, native integration,
+The native toolchain uses Rust 1.88 and LLVM 22. macOS and Linux pass the full
+bootstrap and native gate.
+Compiler, native integration,
 and runtime tests cover real check/build/test/run, required-proof rejection,
 input-boundary failures, and allocation-free scalar/record paths.
 The [Loom-written compiler](../../compiler/loom/README.md) now compiles its own
 sources: an existing compiler (stage 0) produces stage 1, stage 1 produces
 stage 2, and stage 2 produces stage 3. These are build generations, not language
 versions. Stage 2 and stage 3 executables are byte-identical on the
-validated macOS development build. Stage 3 passes compiler, `std`, and example
+validated builds on each host. Stage 3 passes compiler, `std`, and example
 package tests and runs the data example. Stages 2 and 3 agree on selected
 type/proof failure diagnostics. This gate combines the
 [bootstrap script](../../scripts/bootstrap.sh) and
 [frontend integration test](../../compiler/tests/frontend.rs). The source
 checker also checks its complete package closure, selected `std` packages,
 and the scalar/data examples.
+Linux CI independently passes the full historical-seed bootstrap and workspace
+test gate; it does not rely on a compiler exported from the macOS job.
+
+The Windows x64/MSVC implementation now includes native linking, binary file
+I/O with Unicode paths/arguments, drive/UNC/verbatim package paths, and native
+artifact suffixes. Its [CI job](../../.github/workflows/ci.yml) is wired but has
+not yet established Windows support. Cold bootstrap consumes a trusted checked
+compiler export from the same workflow's validated macOS checkout, builds a
+native Windows stage 0, then runs the regular stage 1/2/3 gate. This temporary
+transfer is neither a committed IR snapshot nor a second language frontend;
+`emit-checked` still enforces source types and required proofs.
 
 The source frontend sends a checked artifact to one retained Rust LLVM/platform
 tool; that tool does not parse or type-check Loom source again. The Rust seed
