@@ -17,6 +17,7 @@ pub enum Optimization {
 
 pub struct EmitOptions<'a> {
     pub object: &'a Path,
+    /// Optional inspection output in the selected backend's own IR format.
     pub ir: Option<&'a Path>,
     pub test_mode: bool,
     pub optimization: Optimization,
@@ -27,6 +28,8 @@ pub struct EmissionResult {
     pub uses_runtime: bool,
 }
 
+/// Emit an object preserving checked operations, faults, and the runtime ABI.
+/// Linking and publication belong to the host tool, not the code generator.
 pub trait Backend {
     fn emit(
         &self,

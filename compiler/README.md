@@ -165,6 +165,14 @@ A separate same-source/runtime O1/O2 comparison reduced self-build time from
 the largest self-build cost; these improvements do not substitute for future
 incremental compilation or larger-project measurements.
 
+On the LLVM 22 upgrade, the same-source O2 self-build measured 7.35 s with LLVM
+19, 10.62 s with LLVM 22's default scheduler, and 8.07 s with a 32-candidate
+scheduling budget (three warmed runs). The backend bounds this search without
+disabling optimization or checked operations. Generated compiler self-checks
+remained around 210 ms in a separate alternating comparison. This is evidence
+for the compiler workload, not a guarantee for every generated program. Recheck
+the budget on future LLVM upgrades; these tuning options are not a stable API.
+
 ## Implemented subset
 
 - Signed, checked 64-bit `Int`, `Bool`, scalar parameters, calls and recursion.
