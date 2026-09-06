@@ -81,6 +81,9 @@ fn link_command(
         let mut destination = OsString::from("/OUT:");
         destination.push(output);
         command.args(["/link", "/SUBSYSTEM:CONSOLE", "/INCREMENTAL:NO", "/Brepro"]);
+        // Match the usual Unix main-stack capacity. Reserve virtual space;
+        // leave the commit size unchanged so small programs pay only for use.
+        command.arg("/STACK:8388608");
         command.arg(destination);
         // Native objects have no Clang-generated CRT .drectve section. Match
         // the runtime's static MSVC CRT, including scalar-only executables.
@@ -184,6 +187,7 @@ mod tests {
         for argument in [
             "/OUT:build files/program.exe",
             "/DEFAULTLIB:libcmt",
+            "/STACK:8388608",
             "/Brepro",
             "dbghelp.lib",
         ] {

@@ -105,6 +105,8 @@ message deallocator can crash even before IR lowering.
 Bootstrap imports SDK library paths from the developer environment automatically.
 Before standalone Cargo commands in Git Bash, run `source scripts/windows-env.sh`
 to make those paths available to Rust's static-library packaging as well.
+Native executables reserve an 8 MiB main stack, with the default commit size,
+so bounded compiler recursion does not inherit MSVC's smaller 1 MiB default.
 
 Windows cannot use the frozen historical Unix seed directly. Use an existing
 compatible Windows compiler via `LOOM_BOOTSTRAP_COMPILER`, or export a trusted
