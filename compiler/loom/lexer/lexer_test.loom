@@ -65,6 +65,7 @@ test fn punctuation_and_longest_operators() {
     symbol_is("]", Kind.RBracket)
     symbol_is(",", Kind.Comma)
     symbol_is(".", Kind.Dot)
+    symbol_is("?", Kind.Question)
     symbol_is("=", Kind.Assign)
     symbol_is("=>", Kind.Arrow)
     symbol_is("+", Kind.Plus)

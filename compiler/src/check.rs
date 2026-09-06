@@ -404,13 +404,6 @@ impl Environment<'_> {
                 "type specialization depth exceeded; generic expansion must be finite",
             ));
         }
-        // No references in this slice: every declared field is part of the value layout.
-        if self.building.contains(&declaration) || self.building.len() >= 64 {
-            return Err(Diagnostic::new(
-                span,
-                "recursive by-value data layout is not supported",
-            ));
-        }
         if let Some(id) = self
             .data_instances
             .iter()
@@ -418,9 +411,30 @@ impl Environment<'_> {
         {
             return Ok(Type::Data(id));
         }
+        if self.building.len() >= 64 {
+            return Err(Diagnostic::new(
+                span,
+                "type specialization depth exceeded; generic expansion must be finite",
+            ));
+        }
         if self.types.len() >= 4096 {
             return Err(Diagnostic::new(span, "type specialization budget exceeded"));
         }
+        // Intern the nominal identity before resolving its fields. References
+        // through List can return this identity without expanding its layout.
+        let id = self.types.len();
+        let mut name = qualified(&source.package, &item.name);
+        if !arguments.is_empty() {
+            name.push_str(&format!("{arguments:?}"));
+        }
+        self.types.push(c::Data {
+            name,
+            kind: c::DataKind::Record(Vec::new()),
+        });
+        self.data_instances.push(DataInstance {
+            declaration,
+            arguments: arguments.clone(),
+        });
         self.building.push(declaration);
         let params = item
             .parameters
@@ -482,17 +496,55 @@ impl Environment<'_> {
             }
         };
         self.building.pop();
-        let id = self.types.len();
-        let mut name = qualified(&source.package, &item.name);
-        if !arguments.is_empty() {
-            name.push_str(&format!("{arguments:?}"));
+        self.types[id].kind = kind;
+        if self.building.is_empty() {
+            self.validate_layouts(id)?;
         }
-        self.types.push(c::Data { name, kind });
-        self.data_instances.push(DataInstance {
-            declaration,
-            arguments,
-        });
         Ok(Type::Data(id))
+    }
+
+    fn validate_layouts(&self, first: usize) -> Result<(), Diagnostic> {
+        fn visit(env: &Environment<'_>, ty: Type, state: &mut [u8]) -> Result<(), Diagnostic> {
+            let Type::Data(id) = ty else {
+                // Lists contain their elements indirectly. The element's own
+                // layout is validated separately, not as part of this value.
+                return Ok(());
+            };
+            if state[id] == 2 {
+                return Ok(());
+            }
+            if state[id] == 1 {
+                let (file, index) = env.declarations[env.data_instances[id].declaration];
+                return Err(Diagnostic::new(
+                    env.files[file].syntax.data[index].span,
+                    "recursive by-value data layout needs an indirect List boundary",
+                ));
+            }
+            state[id] = 1;
+            match &env.types[id].kind {
+                c::DataKind::Refined(base) => visit(env, *base, state)?,
+                c::DataKind::Record(fields) => {
+                    for (_, field) in fields {
+                        visit(env, *field, state)?;
+                    }
+                }
+                c::DataKind::Enum(variants) => {
+                    for (_, fields) in variants {
+                        for field in fields {
+                            visit(env, *field, state)?;
+                        }
+                    }
+                }
+            }
+            state[id] = 2;
+            Ok(())
+        }
+
+        let mut state = vec![0; self.types.len()];
+        for id in first..self.types.len() {
+            visit(self, Type::Data(id), &mut state)?;
+        }
+        Ok(())
     }
 
     fn validate_refinement(&mut self, declaration: usize) -> Result<(), Diagnostic> {
@@ -531,7 +583,7 @@ impl Environment<'_> {
         value: Type,
         span: Span,
     ) -> Result<(Type, Type, usize, usize, usize), Diagnostic> {
-        let mut result = None;
+        let (result, ok, err) = self.result_definition(span)?;
         let mut error = None;
         for (id, &(file, index)) in self.declarations.iter().enumerate() {
             let source = &self.files[file];
@@ -542,13 +594,12 @@ impl Environment<'_> {
                 && !source.test_only
             {
                 match item.name.as_str() {
-                    "Result" if item.parameters.len() == 2 => result = Some(id),
                     "ConstraintError" if item.parameters.is_empty() => error = Some(id),
                     _ => (),
                 }
             }
         }
-        let (Some(result), Some(error)) = (result, error) else {
+        let Some(error) = error else {
             return Err(Diagnostic::new(
                 span,
                 "constrained construction requires trusted std.result.Result and ConstraintError declarations",
@@ -570,6 +621,27 @@ impl Environment<'_> {
                 "ConstraintError must contain only the empty Rejected variant",
             ));
         }
+        let result_ty = self.data(result, vec![value, error_ty], span)?;
+        Ok((result_ty, error_ty, ok, err, 0))
+    }
+
+    fn result_definition(&mut self, span: Span) -> Result<(usize, usize, usize), Diagnostic> {
+        let result = self
+            .declarations
+            .iter()
+            .position(|&(file, index)| {
+                let source = &self.files[file];
+                let item = &source.syntax.data[index];
+                source.trusted_std
+                    && source.package == "std.result"
+                    && !source.test_only
+                    && item.public
+                    && item.name == "Result"
+                    && item.parameters.len() == 2
+            })
+            .ok_or_else(|| {
+                Diagnostic::new(span, "this operation requires trusted std.result.Result")
+            })?;
         let template = self.data(result, vec![Type::Parameter(0), Type::Parameter(1)], span)?;
         let Type::Data(template) = template else {
             unreachable!()
@@ -598,8 +670,25 @@ impl Environment<'_> {
                 "Result must contain exactly Ok(T) and Err(E)",
             ));
         }
-        let result_ty = self.data(result, vec![value, error_ty], span)?;
-        Ok((result_ty, error_ty, ok, err, 0))
+        Ok((result, ok, err))
+    }
+
+    fn result_arguments(
+        &self,
+        ty: Type,
+        declaration: usize,
+        span: Span,
+    ) -> Result<(Type, Type), Diagnostic> {
+        if let Type::Data(id) = ty {
+            let instance = &self.data_instances[id];
+            if instance.declaration == declaration {
+                return Ok((instance.arguments[0], instance.arguments[1]));
+            }
+        }
+        Err(Diagnostic::new(
+            span,
+            "`?` requires a std.result.Result value and a Result-returning function",
+        ))
     }
 
     fn substitute(&mut self, ty: Type, arguments: &[Type], span: Span) -> Result<Type, Diagnostic> {
@@ -641,7 +730,11 @@ impl Environment<'_> {
                     && p.arguments
                         .iter()
                         .zip(&a.arguments)
-                        .all(|(p, a)| self.infer(*p, *a, arguments))
+                        // Visit each argument even after a mismatch: an output
+                        // hint can still supply other, undetermined parameters.
+                        .fold(true, |matched, (p, a)| {
+                            self.infer(*p, *a, arguments) && matched
+                        })
             }
             Type::List(p) => {
                 let Type::List(a) = actual else {
@@ -991,6 +1084,15 @@ impl Checker<'_, '_> {
         block: &ast::Block,
         expected: Option<Type>,
     ) -> Result<(c::Block, Type), Diagnostic> {
+        self.block_context(block, expected, true)
+    }
+
+    fn block_context(
+        &mut self,
+        block: &ast::Block,
+        expected: Option<Type>,
+        enforce: bool,
+    ) -> Result<(c::Block, Type), Diagnostic> {
         self.scopes.push(HashMap::new());
         let mut statements = Vec::new();
         let mut tail = None;
@@ -1001,7 +1103,7 @@ impl Checker<'_, '_> {
             use c::StmtKind as C;
             if let A::Expr(expr) = &stmt.kind {
                 if index + 1 == block.len() {
-                    let value = self.expr(expr, expected)?;
+                    let value = self.expr_context(expr, expected, enforce)?;
                     ty = value.ty;
                     falls_through &= expr_falls(&value);
                     tail = Some(Box::new(value));
@@ -1072,7 +1174,7 @@ impl Checker<'_, '_> {
             });
         }
         self.scopes.pop();
-        if falls_through && expected.is_some_and(|expected| ty != expected) {
+        if enforce && falls_through && expected.is_some_and(|expected| ty != expected) {
             return Err(Diagnostic::new(
                 block.last().map(|s| s.span).unwrap_or_default(),
                 format!(
@@ -1125,6 +1227,17 @@ impl Checker<'_, '_> {
     }
 
     fn expr(&mut self, expr: &ast::Expr, expected: Option<Type>) -> Result<c::Expr, Diagnostic> {
+        self.expr_context(expr, expected, true)
+    }
+
+    // A contextual hint can supply missing generic arguments without requiring
+    // the whole expression to coerce to that type (for example, before `?`).
+    fn expr_context(
+        &mut self,
+        expr: &ast::Expr,
+        expected: Option<Type>,
+        enforce: bool,
+    ) -> Result<c::Expr, Diagnostic> {
         use ast::ExprKind as A;
         use c::ExprKind as C;
         let (kind, ty) = match &expr.kind {
@@ -1180,7 +1293,7 @@ impl Checker<'_, '_> {
                     } else {
                         equal
                     };
-                    if expected.is_some_and(|t| t != Type::Bool) && expr_falls(&result) {
+                    if enforce && expected.is_some_and(|t| t != Type::Bool) && expr_falls(&result) {
                         return Err(Diagnostic::new(expr.span, "text comparison produces Bool"));
                     }
                     return Ok(result);
@@ -1219,9 +1332,12 @@ impl Checker<'_, '_> {
                 let value = self.field(value, name, expr.span)?;
                 (value.kind, value.ty)
             }
-            A::Match { value, arms } => self.match_expr(value, arms, expected, expr.span)?,
+            A::Try(value) => self.try_expr(value, expected, expr.span)?,
+            A::Match { value, arms } => {
+                self.match_expr(value, arms, expected, enforce, expr.span)?
+            }
             A::Block(body) => {
-                let (body, ty) = self.block(body, expected)?;
+                let (body, ty) = self.block_context(body, expected, enforce)?;
                 (C::Block(body), ty)
             }
             A::If {
@@ -1230,10 +1346,15 @@ impl Checker<'_, '_> {
                 else_body,
             } => {
                 let condition = self.expect(condition, Type::Bool)?;
-                let (then_body, then_ty) = self.block(then_body, expected)?;
-                let other_expect = expected.or(then_body.falls_through.then_some(then_ty));
+                let (then_body, then_ty) = self.block_context(then_body, expected, enforce)?;
+                let other_expect = if enforce {
+                    expected.or(then_body.falls_through.then_some(then_ty))
+                } else {
+                    then_body.falls_through.then_some(then_ty).or(expected)
+                };
                 let (else_body, else_ty) = if let Some(body) = else_body {
-                    let (body, ty) = self.block(body, other_expect)?;
+                    let (body, ty) =
+                        self.block_context(body, other_expect, enforce || then_body.falls_through)?;
                     (Some(body), ty)
                 } else {
                     (None, Type::Unit)
@@ -1264,11 +1385,83 @@ impl Checker<'_, '_> {
             ty,
             span: expr.span,
         };
-        if let Some(expected) = expected {
+        if let Some(expected) = expected.filter(|_| enforce) {
             self.coerce(checked, expected)
         } else {
             Ok(checked)
         }
+    }
+
+    // Propagation is ordinary enum control flow: evaluate once, unwrap Ok,
+    // or return Err from the enclosing function. It needs no runtime protocol.
+    fn try_expr(
+        &mut self,
+        value: &ast::Expr,
+        expected: Option<Type>,
+        span: Span,
+    ) -> Result<(c::ExprKind, Type), Diagnostic> {
+        let (declaration, ok, err) = self.env.result_definition(span)?;
+        let (_, error) = self
+            .env
+            .result_arguments(self.current.result, declaration, span)?;
+        let hint = expected
+            .map(|ty| self.env.data(declaration, vec![ty, error], span))
+            .transpose()?;
+        let value = self.expr_context(value, hint, false)?;
+        let (ty, actual_error) = self.env.result_arguments(value.ty, declaration, span)?;
+        if actual_error != error {
+            return Err(Diagnostic::new(
+                span,
+                "`?` error type must match the function's Result error type",
+            ));
+        }
+        let success = self.locals.len();
+        self.locals.extend([ty, error]);
+        let failure = success + 1;
+        let local = |id, ty| c::Expr {
+            kind: c::ExprKind::Local(id),
+            ty,
+            span,
+        };
+        let arms = vec![
+            c::MatchArm {
+                variant: Some(ok),
+                bindings: vec![Some(success)],
+                whole: None,
+                body: c::Block {
+                    statements: vec![],
+                    tail: Some(Box::new(local(success, ty))),
+                    falls_through: true,
+                },
+            },
+            c::MatchArm {
+                variant: Some(err),
+                bindings: vec![Some(failure)],
+                whole: None,
+                body: c::Block {
+                    statements: vec![c::Stmt {
+                        kind: c::StmtKind::Return(Some(c::Expr {
+                            kind: c::ExprKind::Variant {
+                                variant: err,
+                                fields: vec![local(failure, error)],
+                            },
+                            ty: self.current.result,
+                            span,
+                        })),
+                        span,
+                    }],
+                    tail: None,
+                    falls_through: false,
+                },
+            },
+        ];
+        Ok((
+            c::ExprKind::Match {
+                value: Box::new(value),
+                arms,
+            },
+            ty,
+        ))
     }
 
     fn arguments(
@@ -1741,6 +1934,7 @@ impl Checker<'_, '_> {
         value: &ast::Expr,
         arms: &[ast::MatchArm],
         expected: Option<Type>,
+        enforce: bool,
         span: Span,
     ) -> Result<(c::ExprKind, Type), Diagnostic> {
         let value = self.expr(value, None)?;
@@ -1756,7 +1950,7 @@ impl Checker<'_, '_> {
         };
         let mut covered = HashSet::new();
         let mut complete = false;
-        let mut result_type = expected;
+        let mut result_type = expected.filter(|_| enforce);
         let mut result = Vec::new();
         for arm in arms {
             if complete {
@@ -1832,7 +2026,11 @@ impl Checker<'_, '_> {
             } else {
                 complete = true;
             }
-            let (body, ty) = self.block(&arm.body, result_type)?;
+            let (body, ty) = self.block_context(
+                &arm.body,
+                result_type.or(expected),
+                enforce || result_type.is_some(),
+            )?;
             if body.falls_through {
                 result_type = Some(ty);
             }

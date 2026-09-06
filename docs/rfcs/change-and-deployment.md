@@ -136,7 +136,7 @@ migration, and blocking incompatible accesses are selectable policies.
 
 Failure handling is explicit and resolved before execution; tooling must not
 guess between continuing, stopping, or rolling back after a failure.
-Rollback is an expected capability backed by an executable strategy, including
+Rollback support is required, backed by an executable strategy including
 data retention and recovery, not merely a command or a relabeled status.
 
 Suppose v2 adds order notes and the service returns to v1. Keep the new table and

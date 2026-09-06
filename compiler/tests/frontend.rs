@@ -37,7 +37,7 @@ fn source_files(directory: &Path, paths: &mut Vec<std::path::PathBuf>) {
 }
 
 #[test]
-fn loom_frontend_lexes_its_sources_and_reports_real_diagnostics() {
+fn loom_frontend_parses_its_sources_and_reports_real_diagnostics() {
     let compiler = Path::new(env!("CARGO_MANIFEST_DIR"));
     let frontend = compiler.join("loom");
     let temp = tempfile::tempdir().unwrap();
@@ -56,19 +56,21 @@ fn loom_frontend_lexes_its_sources_and_reports_real_diagnostics() {
     source_files(&compiler.join("std"), &mut sources);
     source_files(&compiler.join("examples"), &mut sources);
     sources.sort();
-    let output = Command::new(&artifact)
-        .arg("lex")
-        .args(&sources)
-        .output()
-        .unwrap();
-    success(&output);
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).lines().count(),
-        sources.len()
-    );
-    assert!(output.stderr.is_empty());
+    for mode in ["lex", "parse"] {
+        let output = Command::new(&artifact)
+            .arg(mode)
+            .args(&sources)
+            .output()
+            .unwrap();
+        success(&output);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).lines().count(),
+            sources.len()
+        );
+        assert!(output.stderr.is_empty());
+    }
 
-    for package in ["loom/lexer", "loom/source"] {
+    for package in ["loom/lexer", "loom/source", "loom/parser"] {
         let output = Command::new(env!("CARGO_BIN_EXE_loom"))
             .arg("test")
             .arg(compiler.join(package))
@@ -79,7 +81,7 @@ fn loom_frontend_lexes_its_sources_and_reports_real_diagnostics() {
     }
 
     let good = temp.path().join("订单.loom");
-    fs::write(&good, "let 订单 = \"hé\\n\"\r\n").unwrap();
+    fs::write(&good, "fn main() { let 订单 = \"hé\\n\" }\r\n").unwrap();
     let bad = temp.path().join("invalid.loom");
     fs::write(&bad, "// comment\r\nlet 订单: Int\n").unwrap();
     let output = Command::new(&artifact)
@@ -93,6 +95,19 @@ fn loom_frontend_lexes_its_sources_and_reports_real_diagnostics() {
     assert!(
         String::from_utf8_lossy(&output.stderr)
             .contains("invalid.loom:2:7: write a type after its name without a colon")
+    );
+    fs::write(&bad, "// comment\r\nfn f() Unit {}\n").unwrap();
+    let output = Command::new(&artifact)
+        .arg("parse")
+        .args([&good, &bad])
+        .env("LOOM_GC_STRESS", "1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("订单.loom: 1 declarations"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("invalid.loom:2:8: omit the Unit return annotation")
     );
     assert_eq!(
         Command::new(&artifact).output().unwrap().status.code(),

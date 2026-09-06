@@ -1,0 +1,176 @@
+import frontend.lexer.Kind
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import frontend.source.Diagnostic
+import std.list.new
+import std.list.push
+import std.result.Result
+
+fn import_decl(cursor Cursor) Result[Step, Diagnostic] {
+    let imported = path(next(cursor))?
+    if !at(imported.rest, Kind.Newline) && !at(imported.rest, Kind.Eof) {
+        return Result.Err(error(imported.rest, "expected a newline after import"))
+    }
+    Result.Ok(done(cursor, imported.rest, NodeKind.Import, imported.node.value, new[Node]()))
+}
+fn declaration(cursor Cursor) Result[Step, Diagnostic] {
+    let public = word(cursor, "pub")
+    let rest = if public { next(cursor) } else { cursor }
+    let flags = new[Node]()
+    if public { push(flags, done(cursor, rest, NodeKind.Public, "", new[Node]()).node) }
+    if word(rest, "record") || word(rest, "enum") || word(rest, "type") {
+        return data_decl(cursor, rest, flags)
+    }
+    function(cursor, rest, flags, public)
+}
+fn data_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, Diagnostic] {
+    let named = name(next(cursor))?
+    let parameters = type_parameters(named.rest)?
+    push(children, parameters.node)
+    var rest = parameters.rest
+    if word(cursor, "type") {
+        rest = newlines(expect(rest, Kind.Assign, "'=' before the constrained base type")?)
+        let base = type_ref(rest)?
+        if !word(base.rest, "where") {
+            return Result.Err(error(base.rest, "expected 'where' before the type constraint"))
+        }
+        let predicate = expr(next(base.rest), 0, false, true)?
+        rest = predicate.rest
+        if !at(rest, Kind.Newline) && !at(rest, Kind.Eof) {
+            return Result.Err(error(rest, "expected a newline after the constrained type"))
+        }
+        push(children, base.node)
+        push(children, predicate.node)
+        return Result.Ok(done(start, rest, NodeKind.Refined, named.node.value, children))
+    }
+    let is_record = word(cursor, "record")
+    rest = newlines(expect(newlines(rest), Kind.LBrace, "'{'")?)
+    while !at(rest, Kind.RBrace) {
+        let field = name(rest)?
+        let parsed = if is_record {
+            let ty = type_ref(field.rest)?
+            done(rest, ty.rest, NodeKind.Field, field.node.value, one(ty.node))
+        } else {
+            let payload = if at(field.rest, Kind.LParen) {
+                sequence(field.rest, Kind.LParen, Kind.RParen, NodeKind.Variant, Items.Types, false)?
+            } else {
+                done(field.rest, field.rest, NodeKind.Variant, "", new[Node]())
+            }
+            done(rest, payload.rest, NodeKind.Variant, field.node.value, payload.node.children)
+        }
+        push(children, parsed.node)
+        rest = parsed.rest
+        if at(rest, Kind.Comma) { rest = next(rest) }
+        rest = newlines(rest)
+    }
+    Result.Ok(done(start, next(rest), if is_record { NodeKind.Record } else { NodeKind.Enum }, named.node.value, children))
+}
+fn function(start Cursor, cursor Cursor, children List[Node], public Bool) Result[Step, Diagnostic] {
+    var rest = cursor
+    let is_test = word(rest, "test")
+    if is_test {
+        push(children, done(rest, next(rest), NodeKind.Test, "", new[Node]()).node)
+        rest = next(rest)
+    }
+    let is_intrinsic = word(rest, "intrinsic")
+    if is_intrinsic {
+        push(children, done(rest, next(rest), NodeKind.Intrinsic, "", new[Node]()).node)
+        rest = next(rest)
+    }
+    if public && is_test { return Result.Err(error(rest, "test functions cannot be public")) }
+    if is_intrinsic && (public || is_test) {
+        return Result.Err(error(rest, "intrinsic declarations must be private and cannot be tests"))
+    }
+    if !word(rest, "fn") {
+        return Result.Err(error(rest, "expected a function, record, enum, type, or import declaration"))
+    }
+    let named = name(next(rest))?
+    let parameters = type_parameters(named.rest)?
+    push(children, parameters.node)
+    let params = sequence(parameters.rest, Kind.LParen, Kind.RParen, NodeKind.Parameters, Items.Parameters, false)?
+    push(children, params.node)
+    rest = params.rest
+    if !is_intrinsic { rest = newlines(rest) }
+    if at(rest, Kind.Name) && !word(rest, "requires") && !word(rest, "ensures") {
+        let ty = type_ref(rest)?
+        if ty.node.value == "Unit" { return Result.Err(error(rest, "omit the Unit return annotation")) }
+        push(children, done(rest, ty.rest, NodeKind.ReturnType, "", one(ty.node)).node)
+        rest = ty.rest
+    }
+    if is_intrinsic {
+        if !at(rest, Kind.Newline) && !at(rest, Kind.Eof) {
+            return Result.Err(error(rest, "intrinsic declarations have no body or contracts"))
+        }
+        return Result.Ok(done(start, rest, NodeKind.Function, named.node.value, children))
+    }
+    rest = newlines(rest)
+    while word(rest, "requires") || word(rest, "ensures") {
+        let condition = expr(next(rest), 0, false, false)?
+        let kind = if word(rest, "requires") { NodeKind.Requires } else { NodeKind.Ensures }
+        push(children, done(rest, condition.rest, kind, "", one(condition.node)).node)
+        rest = newlines(condition.rest)
+    }
+    let body = block(rest)?
+    push(children, body.node)
+    Result.Ok(done(start, body.rest, NodeKind.Function, named.node.value, children))
+}
+
+fn block(cursor Cursor) Result[Step, Diagnostic] {
+    let start = newlines(cursor)
+    var rest = newlines(expect(start, Kind.LBrace, "'{'")?)
+    let statements = new[Node]()
+    while !at(rest, Kind.RBrace) {
+        if at(rest, Kind.Eof) { return Result.Err(error(rest, "expected '}' to close the block")) }
+        let parsed = statement(rest)?
+        push(statements, parsed.node)
+        rest = parsed.rest
+        let kind = parsed.node.kind
+        let braced = kind == NodeKind.While || kind == NodeKind.If || kind == NodeKind.Match || kind == NodeKind.Block
+        if !braced && !at(rest, Kind.Newline) && !at(rest, Kind.RBrace) {
+            return Result.Err(error(rest, "expected a newline or '}' after the statement"))
+        }
+        rest = newlines(rest)
+    }
+    Result.Ok(done(start, next(rest), NodeKind.Block, "", statements))
+}
+fn statement(cursor Cursor) Result[Step, Diagnostic] {
+    var rest = cursor
+    if word(rest, "let") || word(rest, "var") {
+        let kind = if word(rest, "let") { NodeKind.Let } else { NodeKind.Var }
+        let named = name(next(rest))?
+        rest = named.rest
+        let children = new[Node]()
+        if at(rest, Kind.Name) {
+            let ty = type_ref(rest)?
+            push(children, ty.node)
+            rest = ty.rest
+        }
+        rest = expect(rest, Kind.Assign, "'='")?
+        let value = expr(rest, 0, false, true)?
+        push(children, value.node)
+        return Result.Ok(done(cursor, value.rest, kind, named.node.value, children))
+    }
+    if word(rest, "return") || word(rest, "assert") || word(rest, "discard") {
+        let kind = if word(rest, "return") { NodeKind.Return } else {
+            if word(rest, "assert") { NodeKind.Assert } else { NodeKind.Discard }
+        }
+        rest = next(rest)
+        let empty = at(rest, Kind.Newline) || at(rest, Kind.RBrace) || at(rest, Kind.Eof)
+        if kind == NodeKind.Return && empty {
+            return Result.Ok(done(cursor, rest, kind, "", new[Node]()))
+        }
+        let value = expr(rest, 0, false, true)?
+        return Result.Ok(done(cursor, value.rest, kind, "", one(value.node)))
+    }
+    if word(rest, "while") {
+        let condition = expr(next(rest), 0, false, false)?
+        let body = block(condition.rest)?
+        return Result.Ok(done(cursor, body.rest, NodeKind.While, "", two(condition.node, body.node)))
+    }
+    if at(rest, Kind.Name) && at(next(rest), Kind.Assign) {
+        let named = name(rest)?
+        let value = expr(next(named.rest), 0, false, true)?
+        return Result.Ok(done(cursor, value.rest, NodeKind.Assign, named.node.value, one(value.node)))
+    }
+    expr(cursor, 0, false, true)
+}

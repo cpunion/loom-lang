@@ -1,0 +1,149 @@
+import frontend.lexer.Kind
+import frontend.lexer.Token
+import frontend.lexer.lex
+import frontend.source.Span
+import frontend.source.Diagnostic
+import frontend.syntax.Node
+import frontend.syntax.NodeKind
+import std.list.new
+import std.list.get
+import std.list.push
+import std.result.Result
+import std.text.concat
+
+record Cursor { tokens List[Token] index Int }
+record Step { rest Cursor node Node }
+enum Items { Types Names Arguments Parameters }
+
+fn token(cursor Cursor) Token { get(cursor.tokens, cursor.index) }
+fn at(cursor Cursor, kind Kind) Bool { token(cursor).kind == kind }
+fn word(cursor Cursor, value Text) Bool {
+    at(cursor, Kind.Name) && token(cursor).value == value
+}
+fn next(cursor Cursor) Cursor {
+    Cursor { tokens = cursor.tokens index = cursor.index + 1 }
+}
+fn newlines(cursor Cursor) Cursor {
+    var rest = cursor
+    while at(rest, Kind.Newline) { rest = next(rest) }
+    rest
+}
+fn error(cursor Cursor, message Text) Diagnostic {
+    Diagnostic { span = token(cursor).span message = message }
+}
+fn expect(cursor Cursor, kind Kind, label Text) Result[Cursor, Diagnostic] {
+    if !at(cursor, kind) { return Result.Err(error(cursor, concat("expected ", label))) }
+    Result.Ok(next(cursor))
+}
+fn done(start Cursor, rest Cursor, kind NodeKind, value Text, children List[Node]) Step {
+    let begin = token(start).span.start
+    let end = if rest.index > start.index { get(rest.tokens, rest.index - 1).span.end } else { begin }
+    Step { rest = rest node = Node {
+        kind = kind value = value children = children span = Span { start = begin end = end }
+    } }
+}
+fn expression_end(value Step, end Int) Step {
+    Step { rest = value.rest node = Node {
+        kind = value.node.kind value = value.node.value children = value.node.children
+        span = Span { start = value.node.span.start end = end }
+    } }
+}
+fn one(value Node) List[Node] {
+    let nodes = new[Node]()
+    push(nodes, value)
+    nodes
+}
+fn two(first Node, second Node) List[Node] {
+    let nodes = one(first)
+    push(nodes, second)
+    nodes
+}
+fn reserved(value Text) Bool {
+    value == "fn" || value == "pub" || value == "intrinsic" || value == "type" ||
+    value == "where" || value == "record" || value == "enum" || value == "match" ||
+    value == "test" || value == "import" || value == "let" || value == "var" ||
+    value == "return" || value == "assert" || value == "discard" || value == "while" ||
+    value == "if" || value == "else" || value == "requires" || value == "ensures" ||
+    value == "true" || value == "false"
+}
+fn name(cursor Cursor) Result[Step, Diagnostic] {
+    if !at(cursor, Kind.Name) || reserved(token(cursor).value) {
+        return Result.Err(error(cursor, "expected a name"))
+    }
+    Result.Ok(done(cursor, next(cursor), NodeKind.Name, token(cursor).value, new[Node]()))
+}
+fn path(cursor Cursor) Result[Step, Diagnostic] {
+    let first = name(cursor)?
+    var rest = first.rest
+    var value = first.node.value
+    while at(rest, Kind.Dot) {
+        let part = name(next(rest))?
+        value = concat(value, concat(".", part.node.value))
+        rest = part.rest
+    }
+    Result.Ok(done(cursor, rest, NodeKind.Name, value, new[Node]()))
+}
+fn type_ref(cursor Cursor) Result[Step, Diagnostic] {
+    let named = path(cursor)?
+    let args = type_args(named.rest)?
+    Result.Ok(done(cursor, args.rest, NodeKind.Type, named.node.value, args.node.children))
+}
+fn parameter(cursor Cursor) Result[Step, Diagnostic] {
+    let named = name(cursor)?
+    let ty = type_ref(named.rest)?
+    Result.Ok(done(cursor, ty.rest, NodeKind.Parameter, named.node.value, one(ty.node)))
+}
+fn item(cursor Cursor, mode Items) Result[Step, Diagnostic] {
+    match mode {
+        Items.Types => type_ref(cursor)
+        Items.Names => name(cursor)
+        Items.Arguments => expr(cursor, 0, true, true)
+        Items.Parameters => parameter(cursor)
+    }
+}
+fn sequence(cursor Cursor, open Kind, close Kind, kind NodeKind, mode Items, nonempty Bool) Result[Step, Diagnostic] {
+    let opening = if open == Kind.LParen { "'('" } else { "'['" }
+    let closing = if close == Kind.RParen { "')'" } else { "']'" }
+    var rest = newlines(expect(cursor, open, opening)?)
+    let children = new[Node]()
+    if nonempty || !at(rest, close) {
+        var more = true
+        while more {
+            let value = item(rest, mode)?
+            push(children, value.node)
+            rest = newlines(value.rest)
+            more = at(rest, Kind.Comma)
+            if more {
+                rest = newlines(next(rest))
+                more = !at(rest, close)
+            }
+        }
+    }
+    rest = expect(rest, close, closing)?
+    Result.Ok(done(cursor, rest, kind, "", children))
+}
+fn type_args(cursor Cursor) Result[Step, Diagnostic] {
+    if at(cursor, Kind.LBracket) {
+        return sequence(cursor, Kind.LBracket, Kind.RBracket, NodeKind.TypeArguments, Items.Types, true)
+    }
+    Result.Ok(done(cursor, cursor, NodeKind.TypeArguments, "", new[Node]()))
+}
+fn type_parameters(cursor Cursor) Result[Step, Diagnostic] {
+    if at(cursor, Kind.LBracket) {
+        return sequence(cursor, Kind.LBracket, Kind.RBracket, NodeKind.TypeParameters, Items.Names, true)
+    }
+    Result.Ok(done(cursor, cursor, NodeKind.TypeParameters, "", new[Node]()))
+}
+
+pub fn parse(text Text) Result[Node, Diagnostic] {
+    let tokens = lex(text)?
+    let start = Cursor { tokens = tokens index = 0 }
+    var rest = newlines(start)
+    let declarations = new[Node]()
+    while !at(rest, Kind.Eof) {
+        let declaration = if word(rest, "import") { import_decl(rest)? } else { declaration(rest)? }
+        push(declarations, declaration.node)
+        rest = newlines(declaration.rest)
+    }
+    Result.Ok(done(start, rest, NodeKind.File, "", declarations).node)
+}

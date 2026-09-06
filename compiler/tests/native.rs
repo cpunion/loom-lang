@@ -129,6 +129,25 @@ fn source_std_under_forced_collection() {
 }
 
 #[test]
+fn propagation_requires_nominal_result_and_matching_error() {
+    for text in [
+        "import std.result.Result\nfn main() { discard Result.Ok[Int, Text](1)? }",
+        "import std.result.Result\nfn f(value Result[Int, Int]) Result[Int, Text] { Result.Ok(value?) }",
+        "import std.result.Result\nfn f() Result[Int, Text] { Result.Ok(42?) }",
+        "import std.result.Result\nenum Other[T, E] { Ok(T) Err(E) }\nfn f(value Other[Int, Text]) Result[Int, Text] { Result.Ok(value?) }",
+    ] {
+        let fixture = source(text);
+        let output = loom(&["check", path(fixture.path())]);
+        assert!(!output.status.success(), "accepted {text}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("`?`"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn source_file_library_reads_chunks_and_reports_boundaries() {
     let dir = source(
         r#"
@@ -265,6 +284,24 @@ fn production_library_excludes_both_test_forms() {
         1
     );
     assert!(!loom(&["test", path(dir.path())]).status.success());
+}
+
+#[test]
+fn manifest_does_not_silently_ignore_configuration() {
+    let fixture = source("fn main() {}");
+    let manifest = fixture.path().join("loom.toml");
+    fs::write(&manifest, "[module]\nname = 'demo'\nversion = '0.1.0'").unwrap();
+    success(&loom(&["check", path(fixture.path())]));
+    for field in ["target", "dependences"] {
+        fs::write(
+            &manifest,
+            format!("[module]\nname = 'demo'\n{field} = 'ignored'"),
+        )
+        .unwrap();
+        let output = loom(&["check", path(fixture.path())]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("module.{field}")));
+    }
 }
 
 #[test]

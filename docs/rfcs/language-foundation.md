@@ -34,24 +34,24 @@ without a separate `replace` table.
 
 ## Functions and polymorphism
 
-Parameters and fields use `name Type`. An omitted return type means `Unit`.
-Callable syntax omits bare `Unit` return annotations and explicit `Unit` tails.
+Parameters and fields use `name Type`. An omitted return type means no value
+result, called `Unit` internally; `Unit` is not a source type or expression.
 A matching tail expression returns its value; a final `return` is unnecessary.
-This does not silently discard a non-Unit expression in a Unit function.
+A no-result function needs neither an explicit tail nor a final `return`.
+This does not silently discard a value-producing expression in that function.
 
 Overloads may differ by parameter type or arity. A call must have a determined
 selection; unresolved ambiguity requires explicit selection by the programmer.
 Overloading does not replace generics or variadic parameters.
 
-Public generic requirements are explicit. Compile-time conditional branches
-introduce only their own local requirements; an unselected branch imposes none
-on that instance. **Design synopsis:**
+Public generic requirements are explicit: an unconditional `value.display()`
+requires a declared `Display` requirement. Compile-time conditional branches
+introduce only their own local
+requirements; an unselected branch imposes none on that instance. The following
+function does not require its argument type to implement `Display`.
+**Design synopsis:**
 
 ```loom
-pub fn render[T: Display](value T) Text {
-    value.display()
-}
-
 pub fn label[T](value T) Text {
     comptime if T implements Display {
         value.display()
@@ -195,11 +195,12 @@ OOM is an unrecoverable process-level fault. GC provides no finalizers or weak
 references. A future FFI uses copying or an explicit pin boundary.
 Loom introduces no Rust-style ownership, borrow, lifetime, or `Pin` syntax.
 
-`scoped` and `defer` clean up at every enclosing lexical block, in LIFO order,
-including error exits and task cancellation. `MustScope` resources cannot be
-discarded. A non-Unit temporary must be used or explicitly discarded; ordinary
-discardable values remain discardable. Live Task obligations likewise cannot
-be discarded. External resources do not rely on GC cleanup.
+`scoped` and `defer` register cleanup in their containing lexical block,
+including an `if` or `else` block. Its actions run once, in LIFO order when that
+block exits, including error exits and task cancellation. `MustScope` resources
+cannot be discarded. A non-Unit temporary must be used or explicitly discarded;
+ordinary discardable values remain discardable. Live Task obligations likewise
+cannot be discarded. External resources do not rely on GC cleanup.
 
 Stackless coroutines are lowered into state machines by Loom's own MIR.
 Suspension uses postfix `.await`, including chaining with result propagation.

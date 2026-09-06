@@ -28,6 +28,7 @@ pub enum Kind {
     RBracket
     Comma
     Dot
+    Question
     Assign
     Arrow
     Plus
@@ -139,10 +140,7 @@ fn string_literal(text Text, start Int) Result[Scan, Diagnostic] {
             return Result.Err(error(start, end, "escape newlines inside string literals"))
         }
         if current == 92 {
-            let scanned = match escape(text, end, start) {
-                Result.Ok(value) => value
-                Result.Err(failure) => { return Result.Err(failure) }
-            }
+            let scanned = escape(text, end, start)?
             append(buffer, scanned.value, 0, length(scanned.value))
             offset = scanned.end
         } else {
@@ -162,6 +160,7 @@ fn symbol(value Int) Kind {
     if value == 93 { return Kind.RBracket }
     if value == 44 { return Kind.Comma }
     if value == 46 { return Kind.Dot }
+    if value == 63 { return Kind.Question }
     if value == 43 { return Kind.Plus }
     if value == 45 { return Kind.Minus }
     if value == 42 { return Kind.Star }
@@ -240,10 +239,7 @@ fn next_token(text Text, start Int) Result[Token, Diagnostic] {
         return Result.Ok(trivia(start, offset))
     }
     if current == 34 {
-        let literal = match string_literal(text, start) {
-            Result.Ok(value) => value
-            Result.Err(failure) => { return Result.Err(failure) }
-        }
+        let literal = string_literal(text, start)?
         return Result.Ok(Token {
             kind = Kind.Text value = literal.value
             span = Span { start = start end = literal.end }
@@ -266,10 +262,7 @@ pub fn lex(text Text) Result[List[Token], Diagnostic] {
     let tokens = new[Token]()
     var offset = 0
     while offset < length(text) {
-        let token = match next_token(text, offset) {
-            Result.Ok(value) => value
-            Result.Err(failure) => { return Result.Err(failure) }
-        }
+        let token = next_token(text, offset)?
         offset = token.span.end
         if token.kind != Kind.Eof { push(tokens, token) }
     }

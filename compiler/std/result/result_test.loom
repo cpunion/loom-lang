@@ -1,3 +1,7 @@
+import std.list.new
+import std.list.push
+import std.list.length
+
 fn value_or_error(value Result[Int, Text]) Int {
     match value {
         Ok(number) => number
@@ -8,4 +12,64 @@ fn value_or_error(value Result[Int, Text]) Int {
 test fn result_variants() {
     assert value_or_error(Result.Ok[Int, Text](7)) == 7
     assert value_or_error(Result.Err[Int, Text]("failed")) == -1
+}
+
+fn counted[T](calls List[Int], input Result[T, Text]) Result[T, Text] {
+    push(calls, 1)
+    input
+}
+
+record Pair { left Int right Int }
+
+fn propagated(calls List[Int], input Result[Pair, Text]) Result[Int, Text] {
+    let number = counted(calls, input)?.left
+    push(calls, 2)
+    Result.Ok(number + 1)
+}
+
+test fn propagation_evaluates_once_and_returns_early() {
+    let calls = new[Int]()
+    assert value_or_error(propagated(calls, Result.Ok(Pair { left = 6 right = 9 }))) == 7
+    assert length(calls) == 2
+    match propagated(calls, Result.Err("错误")) {
+        Ok(_) => { assert false }
+        Err(message) => { assert message == "错误" }
+    }
+    assert length(calls) == 3
+}
+
+fn nested(input Result[Result[Int, Text], Text]) Result[Int, Text] {
+    Result.Ok(input??)
+}
+
+fn conditional(input Result[Int, Text]) Result[Bool, Text] {
+    Result.Ok(false && input? > 0)
+}
+
+type Positive = Int where self > 0
+
+fn success[T, E](value T) Result[T, E] { Result.Ok(value) }
+
+fn widen(input Result[Positive, Text], choose Bool) Result[Int, Text] {
+    let direct Int = input?
+    let branch Int = (if choose { input } else { Result.Ok[Positive, Text](Positive(2)) })?
+    let arm Int = (match choose { _ => input })?
+    let inferred Int = success(Positive(3))?
+    Result.Ok(direct + branch + arm + inferred)
+}
+
+test fn propagation_unwraps_before_safe_widening() {
+    assert value_or_error(widen(Result.Ok(Positive(4)), true)) == 15
+    assert value_or_error(widen(Result.Ok(Positive(4)), false)) == 13
+    assert value_or_error(widen(Result.Err("boundary"), false)) == -1
+}
+
+test fn nested_and_short_circuit_propagation() {
+    assert value_or_error(nested(Result.Ok(Result.Ok(42)))) == 42
+    assert value_or_error(nested(Result.Ok(Result.Err("inner")))) == -1
+    assert value_or_error(nested(Result.Err("outer"))) == -1
+    match conditional(Result.Err("not evaluated")) {
+        Ok(value) => { assert !value }
+        Err(_) => { assert false }
+    }
 }
