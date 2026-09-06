@@ -6,7 +6,7 @@ implementations or lower the accepted goals to match a temporary subset.
 
 ## Development
 
-Use Rust 1.88, LLVM 19, and Clang. See the
+Use Rust 1.88, LLVM 22, and Clang. See the
 [compiler guide](compiler/README.md) for setup and executable examples.
 The root Cargo workspace contains the LLVM/platform tool and small runtime;
 the language frontend is Loom source. The guide describes bootstrapping it

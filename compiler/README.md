@@ -8,7 +8,7 @@ of the accepted language. A previous Loom compiler is the bootstrap input;
 the frozen historical Rust seed is only a fallback for producing that input.
 
 The native tool consumes a checked program, not source that it parses or
-type-checks again. It uses LLVM 19 through Inkwell; there is no second language
+type-checks again. It uses LLVM 22 through Inkwell; there is no second language
 frontend or runtime interpreter. Scalar-only programs link only
 the host C library for fault reporting; managed programs also link the small
 Rust runtime. Ordinary arithmetic and calls lower
@@ -16,15 +16,19 @@ directly; LLVM's O2 pipeline promotes local storage and removes unused code.
 
 ## Build and try it
 
-Use Rust 1.88, LLVM 19 development libraries, and Clang. macOS and Linux have
-passed full native bootstrap and tests. On Ubuntu 24.04 install `llvm-19-dev`, `clang-19`, and
-`libpolly-19-dev`; set `LLVM_SYS_191_PREFIX=/usr/lib/llvm-19` and
-`LOOM_CC=/usr/bin/clang-19`. Linux CI runs the same full native/bootstrap gate.
+Use Rust 1.88, LLVM 22 development libraries, and Clang. macOS passes the LLVM 22
+bootstrap and native gate; Linux previously passed with LLVM 19 and is being
+revalidated on LLVM 22. On Ubuntu 24.04 use the signed
+[LLVM apt repository](https://apt.llvm.org/) and install `llvm-22-dev`, `clang-22`,
+and `libpolly-22-dev`; set `LLVM_SYS_221_PREFIX=/usr/lib/llvm-22` and
+`LOOM_CC=/usr/bin/clang-22`. The [CI recipe](../.github/workflows/ci.yml) shows
+repository setup and runs the same full native/bootstrap gate.
 From the repository root on macOS:
 
 ```sh
-export LLVM_SYS_191_PREFIX="$(brew --prefix llvm@19)"
-export LOOM_CC="$LLVM_SYS_191_PREFIX/bin/clang"
+brew install llvm@22
+export LLVM_SYS_221_PREFIX="$(brew --prefix llvm@22)"
+export LOOM_CC="$LLVM_SYS_221_PREFIX/bin/clang"
 bash scripts/bootstrap.sh
 
 target/loom check compiler/examples/scalar
@@ -46,6 +50,10 @@ and publishes `target/loom`. On macOS/Linux, a cold build recovers stage 0 from 
 `target/bootstrap/<commit>/`. The pinned commit must be available in Git history;
 the script reports the exact fetch command when it is missing. The cache is
 disposable and is not a second source tree to maintain.
+
+The frozen source seed also uses LLVM 22. Its toolchain-only update changes the
+Inkwell feature and lockfile, not the historical compiler source. A cold build
+does not require LLVM 19, rewrite dependency files, or resolve an unlocked build.
 
 An existing compatible Loom compiler bypasses historical seed recovery:
 
@@ -81,8 +89,8 @@ each tool's command surface.
 
 The Windows implementation targets 64-bit MSVC; its CI gate is added but not yet
 verified. Use Rust 1.88, a Visual Studio developer environment, Git Bash, and an
-LLVM 19 development package with `llvm-config.exe`, LLVM libraries, and
-`clang-cl.exe`. The [CI recipe](../.github/workflows/ci.yml) provisions the 19.1.7
+LLVM 22 development package with `llvm-config.exe`, LLVM libraries, and
+`clang-cl.exe`. The [CI recipe](../.github/workflows/ci.yml) provisions the 22.1.8
 archive and supplies its missing `libxml2s.lib` from a real static libxml2 build
 using the dynamic MSVC CRT, not a placeholder library.
 
@@ -98,8 +106,8 @@ Transfer that file to the matching Windows checkout, then in Git Bash with the
 Visual Studio environment inherited:
 
 ```sh
-export LLVM_SYS_191_PREFIX='C:/llvm-19'
-export LOOM_CC="$LLVM_SYS_191_PREFIX/bin/clang-cl.exe"
+export LLVM_SYS_221_PREFIX='C:/llvm-22'
+export LOOM_CC="$LLVM_SYS_221_PREFIX/bin/clang-cl.exe"
 LOOM_BOOTSTRAP_INPUT=compiler.checked bash scripts/bootstrap.sh
 target/loom.exe test compiler/examples/scalar
 ```
