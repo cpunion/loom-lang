@@ -8,7 +8,7 @@ implementations or lower the accepted goals to match a temporary subset.
 
 Use Rust 1.88, LLVM 19, and Clang. See the
 [compiler guide](compiler/README.md) for setup and executable examples.
-The root Cargo workspace contains the active compiler only.
+The root Cargo workspace contains the active compiler and its small runtime.
 
 Run the relevant local gate:
 
@@ -41,6 +41,7 @@ Write documentation in English. Current behavior belongs in the compiler guide
 or implementation status; accepted target decisions belong in the
 [design records](docs/rfcs/README.md). Label incomplete syntax examples. Keep
 links valid and update the [changelog](CHANGELOG.md) when behavior changes.
+Keep changing test totals in validation output, not duplicated across guides.
 
 Commits should have one purpose and a conventional subject, such as
 `feat(compiler): check generic records`. PRs state what changed, what remains

@@ -54,7 +54,7 @@ body:
     id: implementation
     attributes:
       label: Compiler and runtime impact
-      description: Cover parsing, typing, MIR, both backends, DCE, artifacts, caching, and tooling.
+      description: Identify affected parsing, checking, native code generation, source libraries, or runtime boundaries.
     validations:
       required: true
 
@@ -62,6 +62,6 @@ body:
     id: validation
     attributes:
       label: Validation plan
-      description: Specify conformance, differential, negative, fuzz, and performance evidence.
+      description: Give an end-to-end example and focused rejection cases; add performance evidence when relevant.
     validations:
       required: true

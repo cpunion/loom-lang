@@ -12,10 +12,10 @@ frontend reads real source and returns typed tokens; managed tests force
 collection before every allocation. Constants and safe scalar weakening avoid
 redundant checks; unknown construction returns an ordinary source `Result`.
 
-The native gate passes on macOS with Rust 1.88 and LLVM 19: 24 compiler
-unit tests, 12 native integration tests, and 6 runtime tests. This includes real
-check/build/test/run, required-proof rejection, input-boundary failures, and
-allocation-free scalar/record paths. The [roadmap](../../ROADMAP.md) puts
+The native gate uses macOS, Rust 1.88, and LLVM 19. Compiler, native integration,
+and runtime tests cover real check/build/test/run, required-proof rejection,
+input-boundary failures, and allocation-free scalar/record paths.
+The [roadmap](../../ROADMAP.md) puts
 syntax parsing next in N1. [Source handling, a complete seed lexer, and positioned
 diagnostics](../../compiler/loom/README.md) now run as native Loom code over the
 frontend's own sources, `std`, and examples. The Rust seed still builds the
