@@ -120,6 +120,7 @@ jobs:
 
       - name: Install the LLVM development archive
         shell: pwsh
+        timeout-minutes: 10
         run: |
           $archive = "$env:RUNNER_TEMP/llvm-dev.tar.xz"
           curl.exe -fL --retry 3 -o $archive 'https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz'
@@ -127,9 +128,15 @@ jobs:
           if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne 'd96c2cc1736f4eb7fa43cb9bbdf56d93551a9ae0a9aadb9c99c3c3b2b712a234') {
             throw 'LLVM 22.1.8 development archive checksum mismatch'
           }
-          New-Item -ItemType Directory -Force C:/llvm-22 | Out-Null
-          tar.exe -xf $archive --strip-components=1 -C C:/llvm-22
+          # Windows tar stalled on this xz archive. Decode both archive layers
+          # explicitly with 7-Zip; a single extraction only produces the tar.
+          $expanded = "$env:RUNNER_TEMP/llvm-expanded"
+          $sevenZip = "$env:ProgramFiles/7-Zip/7z.exe"
+          & $sevenZip x $archive "-o$expanded" -y -bsp0
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $sevenZip x "$expanded/llvm-dev.tar" "-o$expanded/tree" -y -bsp0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item "$expanded/tree/clang+llvm-22.1.8-x86_64-pc-windows-msvc" C:/llvm-22
           'LLVM_PATH=C:/llvm-22' >> $env:GITHUB_ENV
           'C:/llvm-22/bin' >> $env:GITHUB_PATH
 
