@@ -1,0 +1,67 @@
+test fn scalar_helpers_expand_values_locals_and_guarded_requirements() {
+    let definitions = "fn nonnegative(value Int) Bool { let minimum = 0\nreturn value >= minimum }\nfn nested(value Int) Bool { nonnegative(value) }\nfn not_positive(value Float) Bool { !(value > 0.0) }\nfn admitted(value Int) Bool requires value > 0 { true }\ntype Positive = Int where self > 0\ntype Wide = Int where nested(self)\ntype Floating = Float where !(self > 0.0) && self >= -10.0\ntype NotPositive = Float where not_positive(self)\ntype Admitted = Int where admitted(self)\ntype Whole = Int where true\ntype Guarded = Int where self <= 0 || admitted(self)\n"
+    let program = accepted(concat(definitions, "pub fn widen(value Positive) Wide { Wide(value) }\npub fn floating(value Floating) NotPositive { NotPositive(value) }\npub fn requirement(value Admitted) Positive { Positive(value) }\npub fn guarded(value Whole) Guarded { Guarded(value) }"))
+    assert length(program.functions) == 4
+    var index = 0
+    while index < 4 {
+        assert get(get(program.functions, index).body.children, 0).kind == ExprKind.Coerce
+        index = index + 1
+    }
+}
+
+test fn helper_predicates_resolve_private_calls_in_defining_packages() {
+    let files = source_files("import source.Left\nimport target.Right\nfn valid(value Int) Bool { false }\npub fn widen(value Left) Right { Right(value) }")
+    push(files, source_file("source", "pub type Left = Int where valid(self)\nfn valid(value Int) Bool { value > 0 }", false))
+    push(files, source_file("target", "pub type Right = Int where valid(self)\nfn valid(value Int) Bool { value >= 0 }", false))
+    match checked(files) {
+        Result.Ok(program) => {
+            assert length(program.functions) == 1
+            assert get(get(program.functions, 0).body.children, 0).kind == ExprKind.Coerce
+        }
+        Result.Err(failed) => {
+            show_failure(fixture_project(files), failed)
+            assert false
+        }
+    }
+}
+
+test fn helper_instances_preserve_static_constants_and_unused_calculations() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nfn touched(value Int, comptime extra Int) Bool { let unused = value + extra\ntrue }\nfn always(value Int) Bool { true }\ntype One = Int where touched(self, 1)\ntype Same = Int where touched(self, 1)\ntype Two = Int where touched(self, 2)\ntype Argument = Int where always(self + 1)\ntype Whole = Int where true\n"
+    let program = flow_program(concat(definitions, "pub fn same(value One) Same { Same(value) }\npub fn different(value One) Result[Two, ConstraintError] { Two(value) }\npub fn local(value Whole) Result[One, ConstraintError] { One(value) }\npub fn argument(value Whole) Result[Argument, ConstraintError] { Argument(value) }"))
+    assert get(get(program.functions, 0).body.children, 0).kind == ExprKind.Coerce
+    var index = 1
+    while index < 4 {
+        assert get(get(program.functions, index).body.children, 0).kind == ExprKind.Block
+        index = index + 1
+    }
+}
+
+test fn helper_proofs_do_not_assume_goal_requires_or_skip_eager_arguments() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nfn admitted(value Int) Bool requires value > 0 { true }\nfn either(a Bool, b Bool) Bool { a || b }\nfn nan_reject(value Float) Bool { let unused = 0.0 / 0.0\nfalse }\ntype Whole = Int where true\ntype Zero = Int where self == 0\ntype Positive = Int where self > 0\ntype Needs = Int where admitted(self)\ntype Guarded = Int where self <= 0 || admitted(self)\ntype Eager = Int where either(self == 0, 10 / self > 0)\ntype AnyFloat = Float where true\ntype Never = Float where nan_reject(self)\n"
+    let program = flow_program(concat(definitions, "pub fn requirement(value Whole) Result[Needs, ConstraintError] { Needs(value) }\npub fn skipped_requirement(value Guarded) Result[Positive, ConstraintError] { Positive(value) }\npub fn eager(value Zero) Result[Eager, ConstraintError] { Eager(value) }\npub fn nan(value AnyFloat) Result[Never, ConstraintError] { Never(value) }"))
+    var index = 0
+    while index < 4 {
+        assert get(get(program.functions, index).body.children, 0).kind == ExprKind.Block
+        index = index + 1
+    }
+}
+
+test fn unsupported_helper_control_flow_and_expansion_budgets_keep_checked_results() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nfn looping(value Int) Bool { var remaining = value\nwhile remaining > 0 { remaining = remaining - 1 }\ntrue }\nfn recursive(value Int) Bool { recursive(value) }\nfn square(value Int) Bool { value * value >= 0 }\nfn branch(value Int) Bool { if value >= 0 { true } else { false } }\ntype Whole = Int where true\ntype Loop = Int where looping(self)\ntype Recursive = Int where recursive(self)\ntype Square = Int where square(self)\ntype Branch = Int where branch(self)\n"
+    let program = flow_program(concat(definitions, "pub fn loops(value Whole) Result[Loop, ConstraintError] { Loop(value) }\npub fn recursion(value Whole) Result[Recursive, ConstraintError] { Recursive(value) }\npub fn nonlinear(value Whole) Result[Square, ConstraintError] { Square(value) }\npub fn conditional(value Whole) Result[Branch, ConstraintError] { Branch(value) }"))
+    var index = 0
+    while index < 4 {
+        assert get(get(program.functions, index).body.children, 0).kind == ExprKind.Block
+        index = index + 1
+    }
+    var duplicated = "self"
+    index = 0
+    while index < 12 {
+        duplicated = concat("duplicate(", concat(duplicated, ")"))
+        index = index + 1
+    }
+    let prefix = "import std.result.Result\nimport std.result.ConstraintError\nfn duplicate(value Int) Int { value + value }\ntype Whole = Int where true\ntype Huge = Int where "
+    let bounded = flow_program(concat(prefix, concat(duplicated, " >= 0\npub fn checked(value Whole) Result[Huge, ConstraintError] { Huge(value) }")))
+    assert get(get(bounded.functions, 0).body.children, 0).kind == ExprKind.Block
+    rejects("fn wrong(value Int) Bool ensures result { false }\ntype Invalid = Int where wrong(self)")
+}

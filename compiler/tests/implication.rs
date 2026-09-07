@@ -209,3 +209,101 @@ fn main() {
     assert_eq!(ir.matches("fcmp ole double").count(), 1);
     assert_eq!(ir.matches("icmp sgt i64").count(), 2);
 }
+
+#[test]
+fn scalar_helper_proofs_remove_calls_without_duplicating_input_evaluation() {
+    let (_directory, executable, ir) = build(
+        r#"
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+fn nonnegative(value Int) Bool { let minimum = 0
+    return value >= minimum }
+fn nested(value Int) Bool { nonnegative(value) }
+fn not_positive(value Float) Bool { !(value > 0.0) }
+type Positive = Int where self > 0
+type Wide = Int where nested(self)
+type Floating = Float where !(self > 0.0)
+type Target = Float where not_positive(self)
+fn input(count List[Int]) Positive {
+    set(count, 0, get(count, 0) + 1)
+    Positive(7)
+}
+fn widen(count List[Int]) Wide { Wide(input(count)) }
+fn floating(value Floating) Target { Target(value) }
+fn main() {
+    let count = new[Int]()
+    push(count, 0)
+    assert widen(count) == 7
+    assert get(count, 0) == 1
+    let value = floating(Floating(0.0 / 0.0))
+    assert value != value
+}
+"#,
+    );
+    success(
+        &Command::new(executable)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+    // These three predicates are the fixture's only Bool-returning functions.
+    // None enters runtime reachability; List.get/set still legitimately emit
+    // signed nonnegative-index comparisons in their separate bounds checks.
+    assert!(!ir.contains("define internal i1 @loom.fn."));
+    assert!(!ir.contains("fcmp ogt double"));
+}
+
+#[test]
+fn helper_proofs_preserve_static_instance_faults_and_eager_arguments() {
+    let (_directory, executable, ir) = build(
+        r#"
+import std.result.Result
+import std.result.ConstraintError
+import std.process.arguments
+import std.list.length
+import std.list.get
+fn touched(value Int, comptime extra Int) Bool { let unused = value + extra
+    true }
+fn always(value Int) Bool { true }
+fn admitted(value Int) Bool requires value > 0 { true }
+fn either(a Bool, b Bool) Bool { a || b }
+type Whole = Int where true
+type Zero = Int where self == 0
+type One = Int where touched(self, 1)
+type Two = Int where touched(self, 2)
+type Argument = Int where always(self + 1)
+type Needs = Int where admitted(self)
+type Eager = Int where either(self == 0, 10 / self > 0)
+fn different(value One) Result[Two, ConstraintError] { Two(value) }
+fn argument(value Whole) Result[Argument, ConstraintError] { Argument(value) }
+fn requirement(value Whole) Result[Needs, ConstraintError] { Needs(value) }
+fn eager(value Zero) Result[Eager, ConstraintError] { Eager(value) }
+fn main() {
+    let args = arguments()
+    let mode = if length(args) > 1 { get(args, 1) } else { "ok" }
+    if mode == "static" { discard different(One(9223372036854775806)) }
+    else { if mode == "argument" { discard argument(Whole(9223372036854775807)) }
+    else { if mode == "requires" { discard requirement(Whole(0)) }
+    else { if mode == "eager" { discard eager(Zero(0)) }
+    else { match different(One(40)) {
+        Result.Ok(value) => { assert value == 40 }
+        Result.Err(_) => { assert false }
+    } } } } }
+}
+"#,
+    );
+    success(&Command::new(&executable).output().unwrap());
+    assert!(ir.contains("llvm.sadd.with.overflow.i64") && ir.contains("sdiv i64"));
+    for (mode, message) in [
+        ("static", "overflow"),
+        ("argument", "overflow"),
+        ("requires", "precondition"),
+        ("eager", "zero"),
+    ] {
+        let fault = Command::new(&executable).arg(mode).output().unwrap();
+        assert_eq!(fault.status.code(), Some(1), "mode {mode}");
+        assert!(String::from_utf8_lossy(&fault.stderr).contains(message));
+    }
+}

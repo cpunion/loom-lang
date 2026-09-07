@@ -188,6 +188,11 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
             return Result.Ok(expression(ExprKind.Coerce, target, node, "", -1, expressions(value), value.falls))
         }
     }
+    if (base == 1 || base == 5) && source.kind == TypeKind.Refined && length(source.constraint) == 1 && length(destination.constraint) == 1 &&
+        (predicate_calls(get(source.constraint, 0), 0) || predicate_calls(get(destination.constraint, 0), 0)) &&
+        helpers_imply(context, node, source.symbol, declaration, base) {
+        return Result.Ok(expression(ExprKind.Coerce, target, node, "", -1, expressions(value), value.falls))
+    }
     let shape = result_shape(context, node)?
     let error_type = constraint_error(context, node)?
     let output = result_type(context, node, shape, target, error_type)?
@@ -204,7 +209,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     }
     // Guard expansion shares this function queue, unlike compile-time staging.
     let env = Environment { source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true
-        has_refinements = context.env.has_refinements signatures = context.env.signatures
+        has_refinements = context.env.has_refinements expanding_helpers = context.env.expanding_helpers signatures = context.env.signatures
         pending = context.env.pending stage_depth = context.env.stage_depth + 1 computations = context.env.computations validations = context.env.validations
         concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces
         associations = context.env.associations association_depth = context.env.association_depth

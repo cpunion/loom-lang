@@ -155,7 +155,9 @@ algebra must not stand in for IEEE floating-point proofs.
 
 Lexical immutable-scalar facts from preconditions, assertions and branch guards
 now also discharge construction checks. Mutable/alias facts, cross-local
-relations, helper expansion and branch-join inference remain later work.
+relations and branch-join inference remain later work. Bounded expansion of
+direct scalar helpers now supports refinement implication while retaining
+evaluation and precondition obligations; general helper control flow remains open.
 
 Structural tuples, numeric projection, and plain-name destructuring now use the
 native aggregate path, including generics, shared containers, and compile-time
