@@ -1,0 +1,1 @@
+test fn bit_patterns_and_compile_time_execution() { exercise() }

@@ -89,6 +89,30 @@ test fn control_flow_generics_records_and_propagation() {
     assert child(child(matched, 4), 0).kind == NodeKind.Wildcard
 }
 
+test fn bitwise_precedence_and_left_associative_shifts() {
+    let value = child(body(child(parsed("fn f() Bool { ~1 + 2 * 3 << 4 & 5 ^ 6 | 7 == 8 && true || false }"), 0)), 0)
+    assert value.value == "||"
+    let conjunction = child(value, 0)
+    assert conjunction.value == "&&"
+    let equality = child(conjunction, 0)
+    assert equality.value == "=="
+    let either = child(equality, 0)
+    assert either.value == "|"
+    let exclusive = child(either, 0)
+    assert exclusive.value == "^"
+    let both = child(exclusive, 0)
+    assert both.value == "&"
+    let shifted = child(both, 0)
+    assert shifted.value == "<<"
+    let sum = child(shifted, 0)
+    assert sum.value == "+" && child(sum, 1).value == "*"
+    assert child(sum, 0).kind == NodeKind.Unary && child(sum, 0).value == "~"
+    let shifts = child(body(child(parsed("fn f() Int { 8 >> 1 << 2 }"), 0)), 0)
+    assert shifts.value == "<<" && child(shifts, 0).value == ">>"
+    let comparison = child(body(child(parsed("fn f() Bool { 1 | 2 < 4 }"), 0)), 0)
+    assert comparison.value == "<" && child(comparison, 0).value == "|"
+}
+
 test fn comptime_preserves_branches_and_postfix_syntax() {
     let tree = parsed("fn fixed() Int { comptime { let n = 2\nn + 3 } }\nfn choose[T](value T) Int { comptime if T == Int { value } else { unresolved() } }\nfn other[T]() Int { comptime if T != Text { 1 } else { 2 } }")
     let fixed = child(body(child(tree, 0)), 0)

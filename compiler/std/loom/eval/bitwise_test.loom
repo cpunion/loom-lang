@@ -1,0 +1,38 @@
+test fn bitwise_twos_complement_and_shift_edges() {
+    let program = empty()
+    let low = -9223372036854775808
+    let high = 9223372036854775807
+    assert accepted(program, node(ExprKind.Unary, 1, "~", -1, one(literal(low))), 0).number == high
+    assert accepted(program, node(ExprKind.Unary, 1, "~", -1, one(literal(high))), 0).number == low
+    assert accepted(program, binary("&", 1, literal(low), literal(high)), 0).number == 0
+    assert accepted(program, binary("|", 1, literal(low), literal(high)), 0).number == -1
+    assert accepted(program, binary("^", 1, literal(low), literal(-1)), 0).number == high
+    assert accepted(program, binary("<<", 1, literal(high), literal(1)), 0).number == -2
+    assert accepted(program, binary("<<", 1, literal(low), literal(1)), 0).number == 0
+    assert accepted(program, binary("<<", 1, literal(1), literal(63)), 0).number == low
+    assert accepted(program, binary(">>", 1, literal(-3), literal(1)), 0).number == -2
+    assert accepted(program, binary(">>", 1, literal(low), literal(63)), 0).number == -1
+    assert accepted(program, binary(">>", 1, literal(high), literal(63)), 0).number == 0
+    assert accepted(program, binary("<<", 1, literal(low), literal(0)), 0).number == low
+    assert accepted(program, binary(">>", 1, literal(high), literal(0)), 0).number == high
+}
+
+test fn shift_count_faults_and_eager_bitwise_operands() {
+    let program = empty()
+    let shifts = new[Text]()
+    push(shifts, "<<")
+    push(shifts, ">>")
+    var index = 0
+    while index < length(shifts) {
+        let operator = get(shifts, index)
+        assert rejected(program, binary(operator, 1, literal(1), literal(-1)), 0).message == "compile-time shift count out of range"
+        assert rejected(program, binary(operator, 1, literal(1), literal(64)), 0).message == "compile-time shift count out of range"
+        index = index + 1
+    }
+    let zero = binary("/", 1, literal(1), literal(0))
+    assert rejected(program, binary("&", 1, literal(0), zero), 0).message == "compile-time division by zero"
+    assert rejected(program, binary("|", 1, literal(-1), zero), 0).message == "compile-time division by zero"
+    let condition = binary("==", 2, zero, literal(0))
+    assert accepted(program, binary("&&", 2, truth(false), condition), 0).number == 0
+    assert accepted(program, binary("||", 2, truth(true), condition), 0).number == 1
+}

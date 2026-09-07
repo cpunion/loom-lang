@@ -788,7 +788,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 }
                 let value = value.into_int_value();
                 match op {
-                    Unary::Not => self.builder.build_not(value, "not")?,
+                    Unary::Not | Unary::BitNot => self.builder.build_not(value, "not")?,
                     Unary::Neg => self.overflow(
                         "llvm.ssub.with.overflow",
                         self.context.i64_type().const_zero(),
@@ -1437,6 +1437,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Binary::Add => self.overflow("llvm.sadd.with.overflow", left, right)?,
             Binary::Sub => self.overflow("llvm.ssub.with.overflow", left, right)?,
             Binary::Mul => self.overflow("llvm.smul.with.overflow", left, right)?,
+            Binary::BitAnd => self.builder.build_and(left, right, "bit.and")?,
+            Binary::BitOr => self.builder.build_or(left, right, "bit.or")?,
+            Binary::BitXor => self.builder.build_xor(left, right, "bit.xor")?,
+            Binary::Shl | Binary::Shr => {
+                // Unsigned comparison rejects negative counts as well. Guard
+                // first: an unchecked LLVM shift by >= 64 produces poison.
+                let valid = self.builder.build_int_compare(
+                    IntPredicate::ULT,
+                    right,
+                    self.context.i64_type().const_int(64, false),
+                    "shift.valid",
+                )?;
+                self.guard(valid, "shift count must be between 0 and 63")?;
+                if op == Binary::Shl {
+                    self.builder.build_left_shift(left, right, "shift.left")?
+                } else {
+                    self.builder
+                        .build_right_shift(left, right, true, "shift.right")?
+                }
+            }
             Binary::Div | Binary::Rem => {
                 let ty = self.context.i64_type();
                 let nonzero = self.builder.build_int_compare(

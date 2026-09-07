@@ -142,6 +142,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/arguments",
         "examples/tuples",
         "examples/floats",
+        "examples/bitwise",
         "examples/concepts",
         "examples/dynamic",
         "examples/associated",

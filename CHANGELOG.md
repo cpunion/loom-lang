@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add native and compile-time Int bitwise operations and checked shift counts,
+  without additional runtime operations or changes to arithmetic overflow rules.
+
 - Separate module/package identity from display names. Same-named path modules
   coexist with importer-local visibility, distinct nominal types and test roots.
 

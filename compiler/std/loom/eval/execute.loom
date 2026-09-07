@@ -55,6 +55,7 @@ fn operation(state State, expr Expr, frame Frame, depth Int) Result[Step, Failur
         if a.ty < 0 { return Result.Ok(step(unknown())) }
         if expr.text == "!" { return Result.Ok(step(flag(!boolean(expr, a)?))) }
         if a.ty == 5 && expr.text == "-" { return Result.Ok(step(floating(-a.floating))) }
+        if a.ty == 1 && expr.text == "~" { return Result.Ok(step(number(-1 - a.number))) }
         if a.ty != 1 || expr.text != "-" { return Result.Err(failure(expr, "invalid compile-time unary operator")) }
         if a.number == -9223372036854775808 { return Result.Err(failure(expr, "compile-time integer overflow")) }
         return Result.Ok(step(number(-a.number)))

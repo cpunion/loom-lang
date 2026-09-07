@@ -1,0 +1,20 @@
+test fn bitwise_int_refinements_and_comptime_constants() {
+    let program = accepted_result("type Bits = Int where self >= 0\ntype Even = Int where (self & 1) == 0\nfn mask(value Bits) Int { value & 7 }\nfn main() { let value = Bits(6)\nlet even = Even(6)\nassert mask(value) == 6 && even == 6\ndiscard comptime { assert (((6 & 3) | 8) ^ 1) == 11\nassert ~0 == -1 && ((3 << 2) >> 1) == 6\ntrue } }")
+    assert length(program.functions) == 2
+    let masked = get(get(program.functions, 1).body.children, 0)
+    assert masked.kind == ExprKind.Binary && masked.ty == 1
+    rejects_result("type Even = Int where (self & 1) == 0\nfn main() { discard Even(7) }")
+}
+
+test fn bitwise_requires_int_operands_without_assuming_symbolic_proofs() {
+    rejects("fn main() { discard ~true }")
+    rejects("fn main() { discard true & false }")
+    rejects("fn main() { discard ~1.0 }")
+    rejects("fn main() { discard 1.0 ^ 2.0 }")
+    rejects("fn main() { discard 1 | true }")
+    rejects("fn main() { discard 1 << 2.0 }")
+    rejects("fn main() { discard comptime { 1 << -1 } }")
+    rejects("fn main() { discard comptime { 1 >> 64 } }")
+    rejects("fn hidden[T](value T) T { value & value }")
+    rejects("fn masked(value Int) Int ensures result >= 0 { value & 7 }")
+}
