@@ -62,6 +62,8 @@ fn arithmetic(expr Expr, a Int, b Int) Result[Value, Failure] {
     if operator == "<=" { return Result.Ok(flag(a <= b)) }
     if operator == ">" { return Result.Ok(flag(a > b)) }
     if operator == ">=" { return Result.Ok(flag(a >= b)) }
+    if operator == "&" || operator == "|" || operator == "^" { return Result.Ok(number(bitwise(operator, a, b))) }
+    if operator == "<<" || operator == ">>" { return shifted(expr, a, b) }
     let low = -9223372036854775808
     let high = 9223372036854775807
     let overflow = failure(expr, "compile-time integer overflow")

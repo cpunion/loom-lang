@@ -29,6 +29,7 @@ pub enum Type {
 pub enum Unary {
     Neg,
     Not,
+    BitNot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +47,11 @@ pub enum Binary {
     Ge,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 /// Irreducible private standard-library operations, not public API dispatch.

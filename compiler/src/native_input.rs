@@ -573,19 +573,32 @@ impl Converter<'_> {
             }),
             2 => E::Text(node.text.clone()),
             3 => E::Local(self.local(node.index)?),
-            4 => E::Unary(
-                match node.text.as_str() {
+            4 => {
+                let operation = match node.text.as_str() {
                     "-" => Unary::Neg,
                     "!" => Unary::Not,
+                    "~" => Unary::BitNot,
                     _ => return Err("unknown checked unary operation".into()),
-                },
-                Box::new(self.expr(self.child(node, 0, 1)?)?),
-            ),
-            5 => E::Binary(
-                binary(&node.text)?,
-                Box::new(self.expr(self.child(node, 0, 2)?)?),
-                Box::new(self.expr(self.child(node, 1, 2)?)?),
-            ),
+                };
+                let value = self.expr(self.child(node, 0, 1)?)?;
+                if operation == Unary::BitNot && (ty != Type::Int || value.ty != Type::Int) {
+                    return Err("checked bitwise operations require Int operands and result".into());
+                }
+                E::Unary(operation, Box::new(value))
+            }
+            5 => {
+                let operation = binary(&node.text)?;
+                let left = self.expr(self.child(node, 0, 2)?)?;
+                let right = self.expr(self.child(node, 1, 2)?)?;
+                if matches!(
+                    operation,
+                    Binary::BitAnd | Binary::BitOr | Binary::BitXor | Binary::Shl | Binary::Shr
+                ) && (ty != Type::Int || left.ty != Type::Int || right.ty != Type::Int)
+                {
+                    return Err("checked bitwise operations require Int operands and result".into());
+                }
+                E::Binary(operation, Box::new(left), Box::new(right))
+            }
             6 => {
                 let id = index(node.index)?;
                 let function = at(self.functions, id)?;
@@ -808,6 +821,11 @@ fn binary(value: &str) -> Result<Binary> {
         ">=" => B::Ge,
         "&&" => B::And,
         "||" => B::Or,
+        "&" => B::BitAnd,
+        "|" => B::BitOr,
+        "^" => B::BitXor,
+        "<<" => B::Shl,
+        ">>" => B::Shr,
         _ => return Err("unknown checked binary operation".into()),
     })
 }
@@ -901,6 +919,52 @@ mod tests {
             children.len(),
             children.concat()
         )
+    }
+
+    #[test]
+    fn bitwise_wire_operations_require_int_operands_and_result() {
+        let stream = |value: String, result| {
+            let body = node(11, result, "", -1, &[value]);
+            format!(
+                "loom-checked-1\n4\n0\n-1\n1\n-1\n2\n-1\n10\n-1\n1\n0\n0\n0\n0\n{result}\n0\n0\n{body}-1\n0\n1\n0\n"
+            )
+        };
+        let integer = node(0, 1, "7", -1, &[]);
+        for operation in ["~", "&", "|", "^", "<<", ">>"] {
+            let unary = operation == "~";
+            let tag = if unary { 4 } else { 5 };
+            let operands = if unary {
+                vec![integer.clone()]
+            } else {
+                vec![integer.clone(), integer.clone()]
+            };
+            let program = decode(&stream(node(tag, 1, operation, -1, &operands), 1)).unwrap();
+            let actual = &program.functions[0].body.tail.as_ref().unwrap().kind;
+            if unary {
+                assert!(matches!(actual, c::ExprKind::Unary(Unary::BitNot, _)));
+            } else {
+                let c::ExprKind::Binary(actual, _, _) = actual else {
+                    panic!("expected a binary operation")
+                };
+                assert_eq!(*actual, binary(operation).unwrap());
+            }
+            assert!(
+                decode(&stream(node(tag, 2, operation, -1, &operands), 2))
+                    .unwrap_err()
+                    .contains("require Int")
+            );
+            for replacement in [node(1, 2, "true", -1, &[]), node(21, 3, "1.0", -1, &[])] {
+                for index in 0..operands.len() {
+                    let mut invalid = operands.clone();
+                    invalid[index] = replacement.clone();
+                    assert!(
+                        decode(&stream(node(tag, 1, operation, -1, &invalid), 1))
+                            .unwrap_err()
+                            .contains("require Int")
+                    );
+                }
+            }
+        }
     }
 
     #[test]

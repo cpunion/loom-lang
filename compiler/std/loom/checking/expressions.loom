@@ -94,7 +94,7 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Select { member(context, node, expr(context, child(node, 0), -1)?, node.value)? } else {
     if kind == NodeKind.Unary {
         let operand = expr(context, child(node, 0), -1)?
-        let ty = if node.value == "!" { 2 } else { if base_type(context.env, operand.ty) == 5 { 5 } else { 1 } }
+        let ty = if node.value == "!" { 2 } else { if node.value == "-" && base_type(context.env, operand.ty) == 5 { 5 } else { 1 } }
         let value = typed(context, node, operand, ty)?
         expression(ExprKind.Unary, ty, node, node.value, -1, expressions(value), value.falls)
     } else {
@@ -103,16 +103,17 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
         if get(context.env.types, left.ty).kind == TypeKind.Refined { left = typed(context, node, left, base_type(context.env, left.ty))? }
         let logical = node.value == "&&" || node.value == "||"
         let equality = node.value == "==" || node.value == "!="
+        let bitwise = node.value == "&" || node.value == "|" || node.value == "^" || node.value == "<<" || node.value == ">>"
         if equality && get(context.env.types, left.ty).kind == TypeKind.Tuple {
             return Result.Err(error(context, node, "tuple equality is not supported"))
         }
-        let argument = if logical { 2 } else { if equality || left.ty == 5 { left.ty } else { 1 } }
+        let argument = if logical { 2 } else { if !bitwise && (equality || left.ty == 5) { left.ty } else { 1 } }
         if left.ty != argument || (left.ty != 1 && left.ty != 2 && left.ty != 5 && !(equality && (left.ty == 3 || enum_equality(context, left.ty)))) {
             return Result.Err(error(context, node, "invalid operator operand; generic operations need an explicit capability"))
         }
         let right = expr(context, child(node, 1), argument)?
         let arithmetic = node.value == "+" || node.value == "-" || node.value == "*" || node.value == "/" || node.value == "%"
-        expression(ExprKind.Binary, if arithmetic { argument } else { 2 }, node, node.value, -1, pair(left, right), left.falls && (logical || right.falls))
+        expression(ExprKind.Binary, if arithmetic || bitwise { argument } else { 2 }, node, node.value, -1, pair(left, right), left.falls && (logical || right.falls))
     } else {
     if kind == NodeKind.Block { block(context, node, expected, enforce)? } else {
     if kind == NodeKind.If { conditional(context, node, expected, enforce)? } else {

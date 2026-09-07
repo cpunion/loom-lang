@@ -15,8 +15,12 @@ fn precedence(kind Kind) Int {
     if kind == Kind.And { return 2 }
     if kind == Kind.Eq || kind == Kind.Ne { return 3 }
     if kind == Kind.Lt || kind == Kind.Le || kind == Kind.Gt || kind == Kind.Ge { return 4 }
-    if kind == Kind.Plus || kind == Kind.Minus { return 5 }
-    if kind == Kind.Star || kind == Kind.Slash || kind == Kind.Percent { return 6 }
+    if kind == Kind.BitOr { return 5 }
+    if kind == Kind.BitXor { return 6 }
+    if kind == Kind.BitAnd { return 7 }
+    if kind == Kind.Shl || kind == Kind.Shr { return 8 }
+    if kind == Kind.Plus || kind == Kind.Minus { return 9 }
+    if kind == Kind.Star || kind == Kind.Slash || kind == Kind.Percent { return 10 }
     -1
 }
 fn operator(kind Kind) Text {
@@ -33,6 +37,12 @@ fn operator(kind Kind) Text {
     if kind == Kind.Star { return "*" }
     if kind == Kind.Slash { return "/" }
     if kind == Kind.Percent { return "%" }
+    if kind == Kind.BitAnd { return "&" }
+    if kind == Kind.BitOr { return "|" }
+    if kind == Kind.BitXor { return "^" }
+    if kind == Kind.BitNot { return "~" }
+    if kind == Kind.Shl { return "<<" }
+    if kind == Kind.Shr { return ">>" }
     "!"
 }
 fn in_int_range(value Text, negative Bool) Bool {
@@ -100,7 +110,7 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
     if at(cursor, Kind.Name) && !reserved(current.value) {
         return fields(cursor, named_expr(cursor, records)?)
     }
-    if at(cursor, Kind.Minus) || at(cursor, Kind.Not) {
+    if at(cursor, Kind.Minus) || at(cursor, Kind.Not) || at(cursor, Kind.BitNot) {
         let rest = newlines(next(cursor))
         // Fold a bare negative literal so Int's minimum remains representable.
         // Postfix operations bind first, just as they do for Float and names.
@@ -110,7 +120,7 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
             }
             return fields(cursor, done(cursor, next(rest), NodeKind.Integer, concat("-", token(rest).value), new[Node]()))
         }
-        let value = expr(rest, 7, multiline, records)?
+        let value = expr(rest, 11, multiline, records)?
         return fields(cursor, expression_end(done(cursor, value.rest, NodeKind.Unary, operator(current.kind), one(value.node)), value.node.span.end))
     }
     if at(cursor, Kind.LParen) {

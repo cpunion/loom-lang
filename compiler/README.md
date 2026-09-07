@@ -209,6 +209,13 @@ timings; local variables remain conservatively rooted for the function.
 ## Implemented subset
 
 - Signed, checked 64-bit `Int`, `Bool`, scalar parameters, calls and recursion.
+- Int bitwise `~`, `&`, `|`, `^`, `<<` and `>>`, also at compile time. Binary
+  bitwise operands evaluate eagerly. Shifts require a count from 0 through 63;
+  other counts fault. Left shift discards high bits, right shift sign-extends.
+  Ordinary arithmetic still checks overflow. Bitwise operators bind more tightly
+  than comparisons; shifts bind less tightly than arithmetic. See the
+  [bitwise example](examples/bitwise/main.loom). Symbolic bitwise proofs remain
+  unsupported and cannot satisfy required postconditions.
 - IEEE binary64 `Float`, decimal/exponent literals, arithmetic and comparisons.
   Float division/remainder follow IEEE rules rather than integer faults; NaN,
   infinities and signed zero are retained. No implicit Int/Float conversion or

@@ -100,6 +100,11 @@ construction folds its predicate; dynamic inputs check once and return Result.
 Money weakens only to its declared Float base. Unsupported required Float proofs
 still reject rather than applying integer algebra.
 
+Int bitwise operations use direct native instructions and the bounded evaluator.
+Shift counts outside 0–63 fault; left shifts discard high bits and right shifts
+sign-extend. This supplies integer mechanisms for source binary/hash libraries,
+not those libraries themselves. Symbolic bitwise postconditions still reject.
+
 The native toolchain uses Rust 1.88 and LLVM 22. macOS, Linux, and Windows pass
 the [full bootstrap and native gate](https://github.com/cpunion/loom-lang/actions/runs/34022948294).
 Compiler, native integration,

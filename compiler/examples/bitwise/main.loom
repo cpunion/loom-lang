@@ -1,0 +1,27 @@
+fn operations(a Int, b Int, shift Int) (Int, Int, Int, Int, Int, Int) {
+    (~a, a & b, a | b, a ^ b, a << shift, a >> shift)
+}
+
+fn verify(value (Int, Int, Int, Int, Int, Int)) {
+    assert value.0 == 2 && value.1 == 4 && value.2 == -1
+    assert value.3 == -5 && value.4 == -6 && value.5 == -2
+}
+
+fn shift_left(value Int, count Int) Int { value << count }
+fn shift_right(value Int, count Int) Int { value >> count }
+
+fn exercise() {
+    verify(operations(-3, 6, 1))
+    verify(comptime { operations(-3, 6, 1) })
+    assert ~-9223372036854775808 == 9223372036854775807
+    assert ~9223372036854775807 == -9223372036854775808
+    assert shift_left(1, 63) == -9223372036854775808
+    assert shift_left(9223372036854775807, 1) == -2
+    assert shift_left(-9223372036854775808, 1) == 0
+    assert shift_right(-1, 63) == -1
+    assert shift_left(-3, 0) == -3 && shift_right(-3, 0) == -3
+    assert 1 | 2 ^ 3 & 1 == 3
+    assert 1 << 1 + 1 == 4 && ~1 & 3 == 2
+}
+
+fn main() { exercise() }

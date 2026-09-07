@@ -1,0 +1,41 @@
+import std.loom.typed.Expr
+import std.result.Result
+
+// Keep this evaluator in the predecessor's language subset for bootstrap.
+fn bit(operator Text, a Bool, b Bool) Bool {
+    if operator == "&" { a && b } else { if operator == "|" { a || b } else { a != b } }
+}
+fn bitwise(operator Text, a Int, b Int) Int {
+    let minimum = -9223372036854775808
+    var left = if a < 0 { a - minimum } else { a }
+    var right = if b < 0 { b - minimum } else { b }
+    var output = if bit(operator, a < 0, b < 0) { minimum } else { 0 }
+    var place = 1
+    var index = 0
+    while index < 63 {
+        if bit(operator, left % 2 == 1, right % 2 == 1) { output = output + place }
+        left = left / 2
+        right = right / 2
+        index = index + 1
+        if index < 63 { place = place * 2 }
+    }
+    output
+}
+fn shifted(expr Expr, value Int, count Int) Result[Value, Failure] {
+    if count < 0 || count >= 64 { return Result.Err(failure(expr, "compile-time shift count out of range")) }
+    var output = value
+    var index = 0
+    while index < count {
+        if expr.text == ">>" {
+            // Integer division truncates toward zero; arithmetic shift rounds down.
+            output = output / 2 - (if output < 0 && output % 2 != 0 { 1 } else { 0 })
+        } else {
+            let low = if output < 0 { output - -9223372036854775808 } else { output }
+            output = if low >= 4611686018427387904 {
+                (low - 4611686018427387904) * 2 + -9223372036854775808
+            } else { low * 2 }
+        }
+        index = index + 1
+    }
+    Result.Ok(number(output))
+}

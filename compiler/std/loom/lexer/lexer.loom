@@ -48,6 +48,12 @@ pub enum Kind {
     Newline
     Eof
     Float
+    BitAnd
+    BitOr
+    BitXor
+    BitNot
+    Shl
+    Shr
 }
 
 // Spans are UTF-8 byte offsets. Names/numbers retain their spelling and strings
@@ -172,6 +178,10 @@ fn symbol(value Int) Kind {
     if value == 33 { return Kind.Not }
     if value == 60 { return Kind.Lt }
     if value == 62 { return Kind.Gt }
+    if value == 38 { return Kind.BitAnd }
+    if value == 124 { return Kind.BitOr }
+    if value == 94 { return Kind.BitXor }
+    if value == 126 { return Kind.BitNot }
     Kind.Eof
 }
 
@@ -196,6 +206,11 @@ fn punctuation(text Text, start Int, end Int, value Int) Result[Token, Diagnosti
             if (value == 38 || value == 124) && starts(text, offset, value) {
                 kind = if value == 38 { Kind.And } else { Kind.Or }
                 offset = offset + 1
+            } else {
+                if (value == 60 || value == 62) && starts(text, offset, value) {
+                    kind = if value == 60 { Kind.Shl } else { Kind.Shr }
+                    offset = offset + 1
+                }
             }
         }
     }
