@@ -105,6 +105,13 @@ Shift counts outside 0–63 fault; left shifts discard high bits and right shift
 sign-extend. This supplies integer mechanisms for source binary/hash libraries,
 not those libraries themselves. Symbolic bitwise postconditions still reject.
 
+Shared Bytes now support checked direct native get/set and compile-time access.
+Source `std.file.read_bytes/write_bytes` preserve NUL and non-UTF-8 contents,
+handle chunked reads/partial writes and close explicitly. Text reading reuses
+the binary loop and then validates UTF-8. A pinned source checkpoint precedes
+the new intrinsic declarations; no frozen frontend or runtime policy layer is
+added. These file writes truncate their destination, not atomically publish it.
+
 The native toolchain uses Rust 1.88 and LLVM 22. macOS, Linux, and Windows pass
 the [full bootstrap and native gate](https://github.com/cpunion/loom-lang/actions/runs/34022948294).
 Compiler, native integration,

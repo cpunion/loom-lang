@@ -1,5 +1,7 @@
 intrinsic fn bytes_new() Bytes
 intrinsic fn bytes_len(value Bytes) Int
+intrinsic fn bytes_get(value Bytes, index Int) Int
+intrinsic fn bytes_set(value Bytes, index Int, byte Int)
 intrinsic fn bytes_push(value Bytes, byte Int)
 intrinsic fn bytes_text_copy(value Bytes) Text
 
@@ -7,6 +9,15 @@ intrinsic fn bytes_text_copy(value Bytes) Text
 pub fn new() Bytes { bytes_new() }
 
 pub fn length(value Bytes) Int { bytes_len(value) }
+
+// Indices count raw bytes, not characters. Invalid indices fault.
+pub fn get(value Bytes, index Int) Int { bytes_get(value, index) }
+
+pub fn set(value Bytes, index Int, byte Int)
+requires byte >= 0 && byte <= 255
+{
+    bytes_set(value, index, byte)
+}
 
 pub fn push(value Bytes, byte Int)
 requires byte >= 0 && byte <= 255
