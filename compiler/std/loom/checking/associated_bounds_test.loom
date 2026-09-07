@@ -1,0 +1,70 @@
+fn associated_bound_definitions() Text {
+    "concept Value { fn value(self Self) Int }\nimpl Value for Int { fn value(self Int) Int { self } }\nimpl Value for Bool { fn value(self Bool) Int { if self { 7 } else { 0 } } }\nconcept Source { type Item Value = Int\nfn first(self Self) Self.Item\nfn rank(self Self) Int { self.first().value() }\nfn echo(self Self, item Self.Item) Self.Item { item } }\nimpl Source for Int { fn first(self Int) Int { self } }\nimpl Source for Bool { type Item = Bool\nfn first(self Bool) Bool { self } }\nrecord Box[T] { value T }\nimpl[T Value] Value for Box[T] { fn value(self Box[T]) Int { self.value.value() } }\nimpl[T Value] Source for Box[T] { type Item = T\nfn first(self Box[T]) T { self.value } }\nfn read[S Source](source S) Int { source.first().value() }\nfn erase[S Source](source S) dyn Source[Item = S.Item] { source }\n"
+}
+
+test fn private_associated_evidence_does_not_filter_visible_overloads() {
+    let files = source_files("import api.Source\nconcept A { fn pick(self Self, value Int) Int }\nconcept B { fn pick(self Self, value Bool) Int }\nimpl A for Int { fn pick(self Int, value Int) Int { value } }\nimpl B for Int { fn pick(self Int, value Bool) Int { if value { self } else { 0 } } }\nimpl Source for Bool { fn work(self Bool) Int { 1.pick(2) } }\nfn main() { assert true.work() == 2 }")
+    push(files, source_file("api", "concept Hidden { fn pick(self Self, value Int) Int }\nimpl Hidden for Int { fn pick(self Int, value Int) Int { self } }\npub concept Source { type Item Hidden = Int\nfn work(self Self) Int }", false))
+    match checked(files) { Result.Ok(_) => {} Result.Err(failed) => { show_failure(fixture_project(files), failed)
+        assert false } }
+}
+
+test fn associated_bounds_flow_through_generic_methods_defaults_and_dyn() {
+    discard accepted(concat(associated_bound_definitions(), "fn main() { assert read(3) == 3 && read(true) == 7\nassert read(Box { value = Box { value = 9 } }) == 9\nassert true.rank() == 7\nlet erased = erase(Box { value = true })\nassert erased.rank() == 7 && erased.echo(false) == false\nlet constant = comptime { read(Box { value = 8 }) }\nassert constant == 8 }") )
+    discard accepted(concat(associated_bound_definitions(), "record Holder[T Value] { item T }\nfn hold[S Source](source S) Holder[S.Item] { Holder { item = source.first() } }\nfn selected[S](source S) Int { comptime if S implements Source { source.first().value() } else { 0 } }\nfn main() { assert hold(true).item == true && selected(2) == 2 }"))
+    rejects(concat(associated_bound_definitions(), "fn wrong(source dyn Source[Item = Text]) {}"))
+    rejects(concat(associated_bound_definitions(), "fn missing[T](source dyn Source[Item = T]) {}"))
+    rejects(concat(associated_bound_definitions(), "fn missing(source dyn Source) {}"))
+    rejects("concept C { type Item = Int\nfn first(self Self) Self.Item { 1 } }")
+    discard accepted("concept Chain { type Next Chain = Self\nfn next(self Self) Self.Next\nfn value(self Self) Int }\nimpl Chain for Int { fn next(self Int) Int { self }\nfn value(self Int) Int { self } }\nfn second[T Chain](value T) Int { value.next().next().value() }\nfn main() { assert second(9) == 9 }")
+}
+
+test fn associated_binding_establishment_cannot_assume_its_own_promise() {
+    let declarations = "concept D {}\nimpl D for Int {}\nconcept C { type Item D }\nrecord Box[T] { item T }\n"
+    rejects(concat(declarations, "impl[T] C for Box[T] { type Item = T }"))
+    rejects(concat(declarations, "impl[T] C for T { type Item = T }"))
+    rejects(concat(declarations, "impl C for Bool { type Item = Bool }"))
+    discard accepted(concat(declarations, "impl[T D] C for Box[T] { type Item = T }"))
+    discard accepted("concept C { type Item C = Self }\nimpl[T] C for T {}")
+    rejects("concept D {}\nconcept C { type Item D = Int }")
+    rejects("concept D {}\nconcept C { type Item D + D }")
+    rejects("concept C { type Item Missing }")
+    rejects("concept D {}\nconcept C { type Unused D }\nfn hidden(value dyn C[Unused = Int]) {}")
+    rejects("concept C { type Item = Unknown }")
+    discard accepted("concept D {}\nconcept E {}\nimpl D for Int {}\nimpl E for Int {}\nconcept C { type Item D + E = Int }\nimpl C for Bool {}")
+}
+
+test fn defaults_normalize_the_effective_map_including_blanket_overrides() {
+    discard accepted("concept C { type Item = Self.Other\ntype Other = Int\nfn copy(self Self, item Self.Item) Self.Item { item } }\nimpl[T] C for T { type Other = T }\nfn main() { assert true.copy(false) == false\nassert 1.copy(4) == 4 }")
+    // An explicit binding may break a fallback cycle; retaining it cannot.
+    discard accepted("concept C { type Item = Self.Other\ntype Other = Self.Item }\nimpl C for Int { type Other = Bool }")
+    rejects("concept C { type Item = Self.Other\ntype Other = Self.Item }\nimpl C for Int {}")
+    rejects("concept C { type Item = List[Self.Item] }\nimpl[T] C for T {}")
+    rejects("concept C { type Item = Int }\nimpl C for Int { type Unknown = Bool }")
+    rejects("concept C { type Item = Int\nfn take(self Self, value Self.Item) Int { 1 }\nfn take(self Self, value Int) Int { 2 } }\nimpl C for Bool {}")
+}
+
+test fn default_types_keep_the_concept_defining_scope() {
+    let files = source_files("import api.C\nimport api.create\nimport api.number\nrecord Hidden {}\nimpl C for Int {}\nfn main() { let value = 1.echo(create())\nassert number(value) == 5 }")
+    push(files, source_file("api", "record Hidden { number Int }\npub fn create() Hidden { Hidden { number = 5 } }\npub fn number(value Hidden) Int { value.number }\npub concept C { type Item = Hidden\nfn echo(self Self, item Self.Item) Self.Item { item } }", false))
+    match checked(files) { Result.Ok(_) => {} Result.Err(failed) => { show_failure(fixture_project(files), failed)
+        assert false } }
+}
+
+test fn associated_promises_forward_checked_test_evidence_without_leaking_it() {
+    let declarations = "concept Value { fn value(self Self) Int }\nrecord Item {}\nrecord Wrapped[T] { item T }\nimpl[T Value] Value for Wrapped[T] { fn value(self Wrapped[T]) Int { self.item.value() } }\nconcept Inner { type Value Value\nfn inner(self Self) Self.Value }\nconcept Source { type Next Source\ntype Item Inner\nfn first(self Self) Self.Item\nfn rank(self Self) Int { self.first().inner().value() } }\nfn read[S Source](source S) Int { source.first().inner().value() }\nfn wrapped[S Source](source S) Int { Wrapped { item = source.first().inner() }.value() }\nfn erase[S Source](source S) dyn Source[Next = S.Next, Item = S.Item] { source }\n"
+    let files = source_files(declarations)
+    let testing = source_file("app", "impl Value for Item { fn value(self Item) Int { 7 } }\nimpl Inner for Int { type Value = Item\nfn inner(self Int) Item { Item {} } }\nimpl[T] Source for List[T] { type Next = List[List[T]]\ntype Item = Int\nfn first(self List[T]) Int { 1 } }\nimpl Source for Bool { type Next = List[Int]\ntype Item = Int\nfn first(self Bool) Int { 1 } }\ntest fn check_bound() { assert read(true) == 7 && wrapped(true) == 7 && erase(true).rank() == 7 }", false)
+    push(files, TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(fixture_project(files), true) {
+        Result.Ok(bound) => match check(bound) { Result.Ok(_) => {} Result.Err(failed) => { show_failure(fixture_project(files), failed)
+            assert false } }
+        Result.Err(_) => { assert false }
+    }
+    let invalid = source_files(concat(declarations, "pub fn production(value dyn Source[Next = List[Int], Item = Int]) {}"))
+    push(invalid, TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(fixture_project(invalid), true) {
+        Result.Ok(bound) => match check(bound) { Result.Err(_) => {} Result.Ok(_) => { assert false } }
+        Result.Err(_) => { assert false }
+    }
+}

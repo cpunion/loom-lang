@@ -64,17 +64,17 @@ fn concrete_methods(env Environment, owner Int, ty Int, capability Int) Result[B
 fn admit(env Environment, owner Int, obligations List[Requirement], ty Int, capability Int, path List[Requirement], depth Int) Result[Bool, Failure] {
     // Whole-type evidence may have been supplied from a wider test scope. Its
     // prerequisite evidence was checked there, not rediscovered in this scope.
-    if required(obligations, ty, capability) { return concrete_methods(env, owner, ty, capability) }
+    if entailed(env, obligations, ty, capability) { return concrete_methods(env, owner, ty, capability) }
     if get(env.types, ty).kind == TypeKind.Dyn {
         return Result.Ok(get(env.interfaces, get(env.types, ty).symbol).symbol == capability)
     }
     if get(env.types, ty).kind == TypeKind.Parameter || get(env.types, ty).kind == TypeKind.Associated {
-        return Result.Ok(false)
+        return promised(env, owner, obligations, ty, capability)
     }
     let selected = conformance(env, ty, capability)
-    if selected.implementation < 0 { return Result.Ok(false) }
+    if selected.implementation < 0 { return promised(env, owner, obligations, ty, capability) }
     let header = get(env.implementations, selected.implementation)
-    if symbol(env, header.symbol).test_only && !symbol(env, owner).test_only { return Result.Ok(false) }
+    if symbol(env, header.symbol).test_only && !symbol(env, owner).test_only { return promised(env, owner, obligations, ty, capability) }
     let node = symbol(env, owner).node
     if depth >= 64 { return Result.Err(failure(env, owner, node, "conformance requirements must resolve finitely")) }
     var index = 0
@@ -91,7 +91,9 @@ fn admit(env Environment, owner Int, obligations List[Requirement], ty Int, capa
     index = 0
     while index < length(bounds) {
         let bound = get(bounds, index)
-        if !admit(env, owner, obligations, bound.ty, bound.capability, path, depth + 1)? { return Result.Ok(false) }
+        if !admit(env, owner, obligations, bound.ty, bound.capability, path, depth + 1)? {
+            return promised(env, owner, obligations, ty, capability)
+        }
         index = index + 1
     }
     concrete_methods(env, owner, ty, capability)

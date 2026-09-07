@@ -80,6 +80,13 @@ bindings participate in type/interface identity, normalize generic projections
 and check boxing exactly. They use the existing native witness ABI; compile-time
 dynamic execution and cross-dyn conversions remain unsupported.
 
+Associated member bounds and default bindings extend that same model. Explicit
+bindings override defaults; defaults keep their declaration's name scope and
+normalize against the effective implementation map. Generic callers and default
+methods use the declared member promises, but implementation establishment cannot
+assume an unproved promise. Required dyn bindings remain explicit, exact and
+bound-checked. Associated member type parameters are still unsupported.
+
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The
 [arguments example](../../compiler/examples/arguments/main.loom) combines it

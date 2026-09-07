@@ -1,0 +1,86 @@
+// Bounds carry evidence, not permission stored on interned types. A function
+// consuming Outer evidence may also use Outer.Item.Inner's promises after those
+// projections normalize. Declaration establishment must never use this walk.
+fn promise_concepts(env Environment, capability Int) List[Bool] {
+    let relevant = new[Bool]()
+    var index = 0
+    while index < length(env.concepts) { push(relevant, false)
+        index = index + 1 }
+    set(relevant, concept_index(env, capability), true)
+    var changed = true
+    while changed {
+        changed = false
+        index = 0
+        while index < length(env.concepts) {
+            if !get(relevant, index) {
+                let declaration = get(env.concepts, index)
+                var member = 0
+                while member < length(declaration.bounds) {
+                    let bounds = get(declaration.bounds, member)
+                    var bound = 0
+                    while bound < length(bounds) {
+                        if get(relevant, concept_index(env, get(bounds, bound))) {
+                            set(relevant, index, true)
+                            changed = true
+                        }
+                        bound = bound + 1
+                    }
+                    member = member + 1
+                }
+            }
+            index = index + 1
+        }
+    }
+    relevant
+}
+fn promised(env Environment, owner Int, obligations List[Requirement], ty Int, capability Int) Result[Bool, Failure] {
+    if symbol(env, owner).node.kind != NodeKind.Function || length(obligations) == 0 { return Result.Ok(false) }
+    let relevant = promise_concepts(env, capability)
+    let pending = new[Requirement]()
+    var index = 0
+    while index < length(obligations) {
+        let given = get(obligations, index)
+        if get(relevant, concept_index(env, given.capability)) && !required(pending, given.ty, given.capability) {
+            push(pending, given)
+        }
+        index = index + 1
+    }
+    // Breadth-first expansion finds finite evidence even if an earlier member
+    // generates an unbounded family. Repeated (type, concept) pairs stop cycles.
+    let node = symbol(env, owner).node
+    var exhausted = false
+    index = 0
+    while index < length(pending) {
+        let given = get(pending, index)
+        if given.ty == ty && given.capability == capability { return concrete_methods(env, owner, ty, capability) }
+        let shape = get(env.types, given.ty)
+        if shape.kind != TypeKind.Parameter && shape.kind != TypeKind.Associated {
+            if type_depth(env, given.ty) >= 64 || length(env.types) >= 4096 { exhausted = true } else {
+            let declaration = get(env.concepts, concept_index(env, given.capability))
+            var member = 0
+            while member < length(declaration.associated) {
+                let bounds = get(declaration.bounds, member)
+                var bound = 0
+                var resolved = -1
+                while bound < length(bounds) {
+                    let target = get(bounds, bound)
+                    if get(relevant, concept_index(env, target)) {
+                        if resolved < 0 {
+                            resolved = associated_type(env, owner, get(declaration.associated, member), given.ty, node, 0)?
+                        }
+                        if resolved == ty && target == capability { return concrete_methods(env, owner, ty, capability) }
+                        if !required(pending, resolved, target) {
+                            push(pending, Requirement { ty = resolved capability = target })
+                        }
+                    }
+                    bound = bound + 1
+                }
+                member = member + 1
+            }
+            }
+        }
+        index = index + 1
+    }
+    if exhausted { return Result.Err(failure(env, owner, node, "associated evidence exceeds the type specialization budget")) }
+    Result.Ok(false)
+}

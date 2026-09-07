@@ -13,7 +13,7 @@ pub enum NodeKind {
     Match Arm Pattern Bindings Wildcard If Comptime
     TupleType Tuple Destructure Float
     Concept Impl Implements MethodCall DynType AssociatedType FunctionType Invoke
-    Defer
+    Defer Bounds
 }
 
 // TupleType/Tuple children are ordered elements. Destructure stores "let" or
@@ -25,8 +25,9 @@ pub enum NodeKind {
 // children whose Type children are explicit bounds. Implements has [type,
 // concept Type]; MethodCall has [receiver, TypeArguments, Arguments].
 // DynType stores the concept path and source-ordered AssociatedType bindings.
-// AssociatedType stores its member name and has no children in a concept, or
-// one type child for an impl or dyn binding. Projections retain ordinary dotted Types.
+// AssociatedType stores its member name, optional Bounds(type nodes), and an
+// optional default type in a concept; impl/dyn bindings have one type child.
+// Projections retain ordinary dotted Types.
 // FunctionType has [Parameters(type nodes), ReturnType(empty or one type)].
 // A named Parameter has its type first, then an optional empty Comptime marker.
 // Invoke has [callee, Arguments]; named calls retain Call, and explicit generic

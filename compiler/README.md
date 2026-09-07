@@ -434,10 +434,32 @@ infer a receiver from its associated result alone. Inputs still evaluate once in
 source order. The [associated example](examples/associated/main.loom) covers
 managed sharing, qualified projections and compile-time materialization.
 
-Associated members with their own type parameters or defaults, and
-associated-member bounds, remain future work. Bindings in generic implementations
-can already use header parameters and their projections. Dynamic values require
-explicit bindings for all of their concept's associated types.
+Associated members may declare requirements and an optional default:
+
+```loom
+import std.display.Display
+
+concept Source {
+    type Item Display = Text
+    fn item(self Self) Self.Item
+    fn label(self Self) Text { self.item().display() }
+}
+```
+
+`S Source` provides `S.Item Display`; multiple requirements use `+`. Each
+implementation must establish those requirements for its effective bindings.
+For example, an implementation binding `type Item = T` needs a declared
+`T Display` bound; the promise being established cannot prove itself.
+Defaults supply omitted bindings, while explicit bindings override them.
+Abstract code cannot assume `Self.Item == Text` merely because Text is the
+default. Default names resolve in the concept's defining scope, and `Self.Other`
+uses the implementation's effective bindings. Cycles reject unless an explicit
+override breaks them. Missing bindings without defaults remain errors.
+
+Bindings in generic implementations can use header parameters and projections.
+Dynamic values still require explicit bindings for every associated member,
+including defaulted members; those bindings must satisfy the member requirements.
+Associated members with their own type parameters remain future work.
 
 ### Dynamic values
 

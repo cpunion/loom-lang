@@ -3,6 +3,64 @@ mod common;
 use common::success;
 
 #[test]
+fn associated_defaults_and_bounds_specialize_static_and_dynamic_calls() {
+    let source = tempfile::tempdir().unwrap();
+    fs::write(
+        source.path().join("main.loom"),
+        r#"
+import std.display.Display
+import std.text.concat
+concept Source {
+    type Item Display = Text
+    fn first(self Self) Self.Item
+    fn label(self Self) Text { self.first().display() }
+    fn unused(self Self) Int { 9001 }
+}
+record Named { text Text }
+impl Source for Named { fn first(self Named) Text { self.text } }
+record Box[T] { item T }
+impl[T Display] Source for Box[T] {
+    type Item = T
+    fn first(self Box[T]) T { self.item }
+}
+fn read[S Source](source S) Text { source.first().display() }
+fn erase[S Source](source S) dyn Source[Item = S.Item] { source }
+fn main() {
+    assert read(Named { text = concat("de", "fault") }) == "default"
+    assert read(Box { item = 42 }) == "42"
+    let erased = erase(Box { item = concat("dy", "namic") })
+    assert erased.label() == "dynamic"
+    let constant = comptime { read(Box { item = true }) }
+    assert constant == "true"
+}
+"#,
+    )
+    .unwrap();
+    let executable = common::executable(source.path(), "associated");
+    let ir = source.path().join("associated.ll");
+    success(
+        &common::command(&[
+            "build",
+            source.path().to_str().unwrap(),
+            "--output",
+            executable.to_str().unwrap(),
+            "--emit-ir",
+            ir.to_str().unwrap(),
+        ])
+        .env("LOOM_OPT_LEVEL", "0")
+        .output()
+        .unwrap(),
+    );
+    success(
+        &Command::new(executable)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+    assert!(!fs::read_to_string(ir).unwrap().contains("9001"));
+}
+
+#[test]
 fn generic_conformances_specialize_nested_receivers_without_runtime_evidence() {
     let source = tempfile::tempdir().unwrap();
     fs::write(

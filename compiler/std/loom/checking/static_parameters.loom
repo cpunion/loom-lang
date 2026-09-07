@@ -175,6 +175,7 @@ fn validate_static(env Environment, id Int, constants List[StaticValue], node No
     let validation = Environment { source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth + 1 computations = env.computations
         validations = env.validations concepts = env.concepts implementations = env.implementations interfaces = env.interfaces
+        associations = env.associations association_depth = env.association_depth
         witnesses = env.witnesses uses = env.uses }
     match function(validation, id, abstract_arguments(env, original.parameters), constants, false) {
         Result.Ok(_) => {}

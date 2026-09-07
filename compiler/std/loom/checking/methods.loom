@@ -20,27 +20,45 @@ fn visible_concept(context Context, capability Int) Bool {
     }
     false
 }
-fn bound_method(context Context, ty Int, member Text, arity Int) Bool {
+fn concept_method(env Environment, capability Concept, member Text, arity Int) Bool {
     var index = 0
-    while index < length(context.signature.requirements) {
-        let requirement = get(context.signature.requirements, index)
-        if requirement.ty == ty {
-            let methods = get(context.env.concepts, concept_index(context.env, requirement.capability)).methods
-            var method = 0
-            while method < length(methods) {
-                let current = get(context.env.signatures, get(methods, method))
-                if symbol(context.env, current.symbol).name == member && length(current.params) == arity { return true }
-                method = method + 1
-            }
-        }
+    while index < length(capability.methods) {
+        let current = get(env.signatures, get(capability.methods, index))
+        if symbol(env, current.symbol).name == member && length(current.params) == arity { return true }
         index = index + 1
     }
     false
 }
+fn bound_method(context Context, ty Int, member Text, arity Int) Result[Bool, Failure] {
+    // Evidence preference matters only when concepts compete. Do not search an
+    // unbounded associated family to classify an already unambiguous method.
+    var index = 0
+    var count = 0
+    while index < length(context.env.concepts) {
+        let capability = get(context.env.concepts, index)
+        if concept_method(context.env, capability, member, arity) && visible_concept(context, capability.symbol) { count = count + 1 }
+        index = index + 1
+    }
+    if count <= 1 { return Result.Ok(false) }
+    index = 0
+    while index < length(context.env.concepts) {
+        let requirement = get(context.env.concepts, index)
+        let methods = requirement.methods
+        var method = 0
+        while method < length(methods) {
+            let current = get(context.env.signatures, get(methods, method))
+            if visible_concept(context, requirement.symbol) && symbol(context.env, current.symbol).name == member && length(current.params) == arity &&
+                evidence(context, ty, requirement.symbol)? { return Result.Ok(true) }
+            method = method + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(false)
+}
 fn method_call(context Context, node Node, source Node, method_name Text, types List[Node], inputs List[Node], selected Int, expected Int) Result[Expr, Failure] {
     if length(types) != 0 { return Result.Err(error(context, node, "concept methods do not yet take type arguments")) }
     let receiver = expr(context, source, -1)?
-    let bound = bound_method(context, receiver.ty, method_name, length(inputs) + 1)
+    let bound = if selected >= 0 { false } else { bound_method(context, receiver.ty, method_name, length(inputs) + 1)? }
     let options = new[Int]()
     var index = 0
     let receiver_type = get(context.env.types, receiver.ty)
@@ -63,12 +81,13 @@ fn method_call(context Context, node Node, source Node, method_name Text, types 
     index = 0
     while index < length(context.env.concepts) {
         let capability = get(context.env.concepts, index)
-        if (selected < 0 && visible_concept(context, capability.symbol) &&
-            (!bound || evidence(context, receiver.ty, capability.symbol))) || selected == capability.symbol {
+        if concept_method(context.env, capability, method_name, length(inputs) + 1) &&
+            ((selected < 0 && visible_concept(context, capability.symbol) &&
+            (!bound || evidence(context, receiver.ty, capability.symbol)?)) || selected == capability.symbol) {
             let provided = if receiver_type.kind == TypeKind.Parameter || receiver_type.kind == TypeKind.Associated { -1 } else {
                 implementation(context, receiver.ty, capability.symbol)? }
             let methods = if provided >= 0 { get(context.env.implementations, provided).methods } else {
-                if !concrete(context.env, receiver.ty) && evidence(context, receiver.ty, capability.symbol) {
+                if !concrete(context.env, receiver.ty) && evidence(context, receiver.ty, capability.symbol)? {
                     capability.methods
                 } else { new[Int]() }
             }
