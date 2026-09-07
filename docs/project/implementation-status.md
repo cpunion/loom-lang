@@ -72,9 +72,10 @@ associated types, and dynamic defaults retain the same sparse-table reachability
 Generic implementations infer header parameters from receiver types, recursively
 check declared prerequisites and substitute associated bindings. They reuse
 ordinary method instances and dynamic witnesses; structurally overlapping
-implementations reject rather than selecting by order. Dynamic associated
-bindings remain open; compile-time
-dynamic execution and cross-dyn conversions are not supported by this slice.
+implementations reject rather than selecting by order. Explicit dynamic associated
+bindings participate in type/interface identity, normalize generic projections
+and check boxing exactly. They use the existing native witness ABI; compile-time
+dynamic execution and cross-dyn conversions remain unsupported.
 
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The

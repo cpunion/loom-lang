@@ -60,6 +60,22 @@ test fn inferred_local_types_and_qualified_generic_names() {
     assert length(expressions_at(analysis, 0, length(text))) == 0
 }
 
+test fn dynamic_binding_names_preserve_phantom_identity_and_snapshot_basis() {
+    let text = "concept Marker { type Item\ntype Tag }\nimpl Marker for Int { type Item = Int\ntype Tag = Bool }\nfn main() { let value dyn Marker[Tag = Bool, Item = Int] = 1\ndiscard value }"
+    let project = input(text)
+    let analysis = accepted(project)
+    let value = get(expressions_at(analysis, 0, offset(text, "discard value") + 8), 0).expression
+    assert type_name(analysis, value.ty) == "dyn app.Marker[Item = Int, Tag = Bool]"
+    let main = get(get(project.files, 0).tree.children, 2)
+    let body = get(main.children, length(main.children) - 1)
+    let annotation = get(get(body.children, 0).children, 0)
+    let binding = get(annotation.children, 0)
+    let original = get(binding.children, 0)
+    set(binding.children, 0, Node { kind = original.kind value = "Text" span = original.span children = original.children })
+    assert !is_current(analysis, project, false)
+    assert type_name(analysis, value.ty) == "dyn app.Marker[Item = Int, Tag = Bool]"
+}
+
 test fn snapshots_detect_metadata_text_and_nested_ast_edits() {
     let project = input("fn main() { let count = 3\nassert count == 3 }")
     let analysis = accepted(project)

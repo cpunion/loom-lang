@@ -1,4 +1,5 @@
 import std.loom.ast.Node
+import std.loom.ast.NodeKind
 import std.loom.ast.same
 import std.loom.project.Project
 import std.loom.project.SourceFile
@@ -82,7 +83,21 @@ pub fn type_name(analysis Analysis, ty Int) Text {
     if value.kind == TypeKind.Dyn {
         let interface = get(analysis.program.interfaces, value.symbol)
         let symbol = get(analysis.bindings.symbols, interface.symbol)
-        return concat("dyn ", qualify(get(analysis.bindings.files, symbol.file).package, symbol.name))
+        var label = concat("dyn ", qualify(get(analysis.bindings.files, symbol.file).package, symbol.name))
+        if length(value.arguments) == 0 { return label }
+        label = concat(label, "[")
+        var index = 0
+        var binding = 0
+        while index < length(analysis.bindings.symbols) {
+            let member = get(analysis.bindings.symbols, index)
+            if member.owner == interface.symbol && member.node.kind == NodeKind.AssociatedType {
+                if binding > 0 { label = concat(label, ", ") }
+                label = concat(label, concat(member.name, concat(" = ", type_name(analysis, get(value.arguments, binding)))))
+                binding = binding + 1
+            }
+            index = index + 1
+        }
+        return concat(label, "]")
     }
     if value.kind == TypeKind.Parameter { return concat("T", to_text(value.symbol)) }
     if value.kind == TypeKind.Function {

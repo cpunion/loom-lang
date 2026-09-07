@@ -19,13 +19,14 @@ pub enum NodeKind {
 // TupleType/Tuple children are ordered elements. Destructure stores "let" or
 // "var", with children [Bindings(Name...), initializer]. Numeric Select values
 // identify tuple positions; a parenthesized single item without a comma groups.
-// Concept children are flags and Function prototypes; Impl starts with concept
-// and target Types, followed by Function bodies. TypeParameters retain Name
+// Concept children include flags, associated types and functions with optional
+// default bodies. Impl starts with concept and target Types, TypeParameters,
+// then method bodies and associated bindings. TypeParameters retain Name
 // children whose Type children are explicit bounds. Implements has [type,
 // concept Type]; MethodCall has [receiver, TypeArguments, Arguments].
-// DynType stores the concept path in value and ordered type arguments as children.
+// DynType stores the concept path and source-ordered AssociatedType bindings.
 // AssociatedType stores its member name and has no children in a concept, or
-// one type child for an impl binding. Projections retain ordinary dotted Types.
+// one type child for an impl or dyn binding. Projections retain ordinary dotted Types.
 // FunctionType has [Parameters(type nodes), ReturnType(empty or one type)].
 // A named Parameter has its type first, then an optional empty Comptime marker.
 // Invoke has [callee, Arguments]; named calls retain Call, and explicit generic

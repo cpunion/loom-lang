@@ -131,7 +131,7 @@ fn overlap_types(env Environment, left Int, right Int, bindings List[Int]) Bool 
         return true
     }
     if second.kind == TypeKind.Parameter { return overlap_types(env, b, a, bindings) }
-    if first.kind != second.kind || first.symbol != second.symbol || length(first.arguments) != length(second.arguments) { return false }
+    if !same_constructor(env, first, second) { return false }
     var index = 0
     while index < length(first.arguments) {
         if !overlap_types(env, get(first.arguments, index), get(second.arguments, index), bindings) { return false }

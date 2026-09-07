@@ -1,0 +1,62 @@
+fn dynamic_associated_definitions() Text {
+    "concept Source { type Item\nfn first(self Self) Self.Item\nfn echo(self Self, value Self.Item) Self.Item { value }\nfn unused(self Self) Int { 99 } }\nimpl Source for Int { type Item = Int\nfn first(self Int) Int { self } }\nimpl Source for Bool { type Item = Text\nfn first(self Bool) Text { \"bool\" } }\nrecord Box[T] { value T }\nimpl[T] Source for Box[T] { type Item = T\nfn first(self Box[T]) T { self.value } }\nfn erase[S Source](value S) dyn Source[Item = S.Item] { value }\nfn read[T](value dyn Source[Item = T]) T { value.first() }\nfn first[S Source](value S) S.Item { value.first() }\n"
+}
+
+test fn dynamic_associated_types_substitute_through_generics_projections_and_defaults() {
+    let program = accepted(concat(dynamic_associated_definitions(), "fn main() { let value dyn Source[Item = Text] = true\nassert read(value) == \"bool\"\nassert first(value) == \"bool\"\nassert value.echo(\"echo\") == \"echo\"\nassert read(erase(Box { value = 7 })) == 7\nlet pair (dyn Source[Item = Text], Int) = (Box { value = \"box\" }, 1)\nassert pair.0.first() == \"box\" }"))
+    assert length(program.witnesses) == 3
+    var index = 0
+    while index < length(program.witnesses) {
+        let witness = get(program.witnesses, index)
+        let interface = get(program.interfaces, witness.interface)
+        assert get(interface.methods, 0).result == 1 || get(interface.methods, 0).result == 3
+        assert get(witness.methods, 0) >= 0 && get(witness.methods, 2) == -1
+        index = index + 1
+    }
+    rejects(concat(dynamic_associated_definitions(), "fn bad[S Source](value S) dyn Source[Item = Text] { value }"))
+    rejects(concat(dynamic_associated_definitions(), "fn main() { let value dyn Source[Item = Text] = 1\ndiscard value }"))
+    rejects(concat(dynamic_associated_definitions(), "fn main() { let value dyn Source[Item = Int] = 1\nlet wrong dyn Source[Item = Text] = value\ndiscard wrong }"))
+}
+
+test fn all_dynamic_bindings_are_exact_identity_even_when_methods_do_not_use_them() {
+    let definitions = "concept Marker { type First\ntype Second }\nimpl Marker for Int { type First = Int\ntype Second = Bool }\n"
+    let program = accepted(concat(definitions, "fn same(value dyn Marker[Second = Bool, First = Int]) dyn Marker[First = Int, Second = Bool] { value }\nfn other(value dyn Marker[First = Int, Second = Text]) {}\nfn main() { discard same(1)\ncomptime if dyn Marker[First = Int, Second = Bool] == dyn Marker[Second = Bool, First = Int] {} else { missing() }\ncomptime if dyn Marker[First = Int, Second = Bool] == dyn Marker[First = Int, Second = Text] { missing() } }"))
+    assert length(program.interfaces) == 2 && length(program.witnesses) == 1
+    rejects(concat(definitions, "fn bad(value dyn Marker[First = Int, Second = Bool]) dyn Marker[First = Int, Second = Text] { value }"))
+    rejects(concat(definitions, "fn main() { let wrong dyn Marker[First = Int, Second = Text] = 1\ndiscard wrong }"))
+    rejects(concat(definitions, "fn bad(value dyn Marker[First = Int]) {}"))
+    rejects(concat(definitions, "fn bad(value dyn Marker[First = Int, First = Int, Second = Bool]) {}"))
+    rejects(concat(definitions, "fn bad(value dyn Marker[First = Int, Second = Bool, Missing = Int]) {}"))
+}
+
+test fn dynamic_binding_instantiation_does_not_mix_sparse_slots_across_interfaces() {
+    let program = accepted(concat(dynamic_associated_definitions(), "fn main() { let text dyn Source[Item = Text] = true\nlet number dyn Source[Item = Int] = 3\nassert text.first() == \"bool\"\nassert number.echo(4) == 4 }"))
+    assert length(program.witnesses) == 2
+    let text = get(program.witnesses, 0)
+    let number = get(program.witnesses, 1)
+    assert text.interface != number.interface
+    assert get(text.methods, 0) >= 0 && get(text.methods, 1) == -1 && get(text.methods, 2) == -1
+    assert get(number.methods, 0) == -1 && get(number.methods, 1) >= 0 && get(number.methods, 2) == -1
+    let library = accepted(concat(dynamic_associated_definitions(), "pub fn exported() dyn Source[Item = Text] { true }"))
+    let slots = get(library.witnesses, 0).methods
+    assert get(slots, 0) >= 0 && get(slots, 1) >= 0 && get(slots, 2) >= 0
+}
+
+test fn nested_dynamic_bindings_share_generic_constructor_matching_and_overlap_rules() {
+    let definitions = "concept Source { type Item }\nconcept C {}\nrecord Box[T] { value T }\n"
+    rejects(concat(definitions, "impl[T] C for Box[dyn Source[Item = T]] {}\nimpl C for Box[dyn Source[Item = Int]] {}"))
+    discard accepted(concat(definitions, "impl C for Box[dyn Source[Item = Int]] {}\nimpl C for Box[dyn Source[Item = Text]] {}"))
+    discard accepted(concat(definitions, "impl[T] C for Box[dyn Source[Item = T]] {}\nfn take[T](value Box[dyn Source[Item = T]]) T { assert false\ntake(value) }\nfn generic[T](value Box[dyn Source[Item = T]]) T { take(value) }"))
+    rejects("concept Source { type Item\nfn same(self Self, other Self) Self.Item }\nfn bad(value dyn Source[Item = Int]) {}")
+    rejects("concept Source { type Item\nfn copy(self Self) Self }\nfn bad(value dyn Source[Item = Int]) {}")
+    rejects("concept Source { type Item\nfn pick(self Self, other Self.Item) Int\nfn pick(self Self, other Int) Int }\nfn bad(value dyn Source[Item = Int]) {}")
+    rejects("concept C { type Item\nfn value(self Self, x Self.Item) Int\nfn value(self Self, x Int) Int }\nfn loop[T]() dyn C[Item = T] { loop[T]() }\nfn main() { discard loop[Int]() }")
+    rejects("concept C { type Item\nfn value(self Self, x Self.Item) Int\nfn value(self Self, x Int) Int }\nrecord Holder[T] { value dyn C[Item = T] }\nfn loop[T]() Holder[T] { loop[T]() }\nfn main() { discard loop[Int]() }")
+}
+
+test fn dynamic_returned_interfaces_expand_only_along_finite_used_chains() {
+    let program = accepted("concept C { type Item\nfn next(self Self) dyn C[Item = List[Self.Item]] }\nrecord Chain[T] { following dyn C[Item = List[T]] }\nimpl[T] C for Chain[T] { type Item = T\nfn next(self Chain[T]) dyn C[Item = List[T]] { self.following } }\npub fn twice(value dyn C[Item = Int]) dyn C[Item = List[List[Int]]] { value.next().next() }")
+    assert length(program.functions) == 1 && length(program.witnesses) == 0
+    assert length(program.interfaces) < 16
+    discard accepted("concept C { type Item }\nrecord Tree { children List[Tree] value dyn C[Item = Int] }\npub fn identity(value Tree) Tree { value }")
+}

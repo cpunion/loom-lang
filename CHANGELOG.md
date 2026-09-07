@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add explicit dynamic associated-type bindings, exact boxing checks and generic
+  substitution. Reuse native witness representation and sparse reachability.
+
 - Add generic implementation headers with scoped prerequisite checking,
   associated-type substitution and native method/witness specialization.
   Reject overlapping templates and cyclic conformance requirements.

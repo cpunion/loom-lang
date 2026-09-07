@@ -162,6 +162,13 @@ fn function(env Environment, id Int, arguments List[Int], constants List[StaticV
     let item = symbol(env, original.symbol)
     let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
     let current = signature(env, id, arguments, item.node)?
+    if emit && length(env.interfaces) != 0 {
+        let seen = new[Int]()
+        var index = 0
+        while index < length(current.params) { discard emitted_type(env, current.symbol, get(current.params, index), item.node, seen)?
+            index = index + 1 }
+        discard emitted_type(env, current.symbol, current.result, item.node, seen)?
+    }
     var context = Context { env = env signature = current arguments = arguments
         constants = constants locals = new[Local]() bindings = new[Binding]() head = -1
         cleanups = new[Cleanup]() cleanup_head = -1 emit = emit }

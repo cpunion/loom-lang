@@ -13,7 +13,7 @@ import std.text.concat
 
 record Cursor { tokens List[Token] index Int }
 record Step { rest Cursor node Node }
-enum Items { Types Names Arguments Parameters }
+enum Items { Types Names Arguments Parameters Bindings }
 
 fn token(cursor Cursor) Token { get(cursor.tokens, cursor.index) }
 fn at(cursor Cursor, kind Kind) Bool { token(cursor).kind == kind }
@@ -89,7 +89,9 @@ fn type_ref(cursor Cursor) Result[Step, Diagnostic] {
     if at(cursor, Kind.LParen) { return parenthesized(cursor, Items.Types, NodeKind.TupleType) }
     let dynamic = word(cursor, "dyn")
     let named = path(if dynamic { next(cursor) } else { cursor })?
-    let args = type_args(named.rest)?
+    let args = if dynamic && at(named.rest, Kind.LBracket) {
+        sequence(named.rest, Kind.LBracket, Kind.RBracket, NodeKind.TypeArguments, Items.Bindings, true)?
+    } else { type_args(named.rest)? }
     Result.Ok(done(cursor, args.rest, if dynamic { NodeKind.DynType } else { NodeKind.Type }, named.node.value, args.node.children))
 }
 fn function_type(cursor Cursor) Result[Step, Diagnostic] {
@@ -138,7 +140,13 @@ fn item(cursor Cursor, mode Items) Result[Step, Diagnostic] {
         Items.Names => type_parameter(cursor)
         Items.Arguments => expr(cursor, 0, true, true)
         Items.Parameters => parameter(cursor)
+        Items.Bindings => type_binding(cursor)
     }
+}
+fn type_binding(cursor Cursor) Result[Step, Diagnostic] {
+    let named = name(cursor)?
+    let ty = type_ref(expect(named.rest, Kind.Assign, "'=' after the associated type name")?)?
+    Result.Ok(done(cursor, ty.rest, NodeKind.AssociatedType, named.node.value, one(ty.node)))
 }
 fn parenthesized(cursor Cursor, mode Items, tuple_kind NodeKind) Result[Step, Diagnostic] {
     let start = newlines(next(cursor))

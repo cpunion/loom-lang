@@ -417,9 +417,8 @@ managed sharing, qualified projections and compile-time materialization.
 
 Associated members with their own type parameters or defaults, and
 associated-member bounds, remain future work. Bindings in generic implementations
-can already use header parameters and their projections. Bare `dyn C` rejects
-concepts declaring associated types until explicit
-associated bindings can become part of its type identity.
+can already use header parameters and their projections. Dynamic values require
+explicit bindings for all of their concept's associated types.
 
 ### Dynamic values
 
@@ -433,6 +432,20 @@ assert display_later(value) == "item"
 assert render(value) == "item"
 ```
 
+Bind associated types by name, for example `dyn Source[Item = Text]`. Binding
+order does not change the type, but every member must be bound exactly once,
+including members unused by methods. Boxing checks exact associated-type equality;
+bindings are not covariant. Generic results may name dependent bindings:
+
+```loom
+fn erase[S Source](value S) dyn Source[Item = S.Item] { value }
+```
+
+Dynamic method parameters and results may use those bound associated types.
+Default methods and generic callers share the same statically checked bindings.
+The [binding example](examples/dynamic/bindings.loom) exercises managed results,
+generic erasure and shared Lists without runtime type discovery.
+
 The representation is a GC-owned concrete snapshot plus a read-only witness
 table; copying a dyn value does not allocate another box. Contained lists retain
 their ordinary sharing, while record value fields are copied. Static calls still
@@ -443,8 +456,8 @@ Closed native builds retain reachable witnesses and used method slots. Library
 exports retain complete callable tables. No runtime type lookup or `any`
 conversion supplies evidence. Cross-dyn conversion, concrete recovery, and
 compile-time dynamic execution currently reject. A dyn-compatible method can use
-`Self` only as its first receiver parameter; static-only concepts may also use it
-elsewhere. Dynamic associated bindings remain future work.
+bare `Self` only as its first receiver parameter; bound `Self.Item` projections
+are allowed elsewhere. Static-only concepts may also use bare `Self` elsewhere.
 
 ## Local module dependencies
 
