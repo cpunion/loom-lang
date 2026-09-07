@@ -623,13 +623,28 @@ impl Converter<'_> {
                     .iter()
                     .map(|child| self.expr(child))
                     .collect::<Result<Vec<_>>>()?;
-                if operation == Primitive::ProcessCapture
-                    && (ty != Type::Int
-                        || !matches!(arguments[0].ty, Type::List(id) if self.program.lists[id] == Type::Text)
-                        || arguments[1].ty != Type::Bytes
-                        || arguments[2].ty != Type::Bytes)
-                {
-                    return Err("checked process capture type mismatch".into());
+                if matches!(
+                    operation,
+                    Primitive::ProcessCapture | Primitive::ProcessCaptureConfigured
+                ) {
+                    let text_list =
+                        |ty| matches!(ty, Type::List(id) if self.program.lists[id] == Type::Text);
+                    let buffers = if operation == Primitive::ProcessCapture {
+                        1
+                    } else {
+                        4
+                    };
+                    if ty != Type::Int
+                        || !text_list(arguments[0].ty)
+                        || arguments[buffers].ty != Type::Bytes
+                        || arguments[buffers + 1].ty != Type::Bytes
+                        || (operation == Primitive::ProcessCaptureConfigured
+                            && (arguments[1].ty != Type::Text
+                                || arguments[2].ty != Type::Int
+                                || !text_list(arguments[3].ty)))
+                    {
+                        return Err("checked process capture type mismatch".into());
+                    }
                 }
                 let signature: Option<(&[Type], Type)> = match operation {
                     Primitive::BytesGet => Some((&[Type::Bytes, Type::Int], Type::Int)),
@@ -642,6 +657,7 @@ impl Converter<'_> {
                     | Primitive::DirectoryRemove
                     | Primitive::PathEntryKind => Some((&[Type::Text], Type::Int)),
                     Primitive::PathRename => Some((&[Type::Text, Type::Text], Type::Int)),
+                    Primitive::EnvGet => Some((&[Type::Text, Type::Bytes], Type::Int)),
                     _ => None,
                 };
                 if let Some((params, result)) = signature {
@@ -881,6 +897,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "process_run" => P::ProcessRun,
         "process_run_input" => P::ProcessRunInput,
         "process_capture" => P::ProcessCapture,
+        "process_capture_configured" => P::ProcessCaptureConfigured,
+        "env_get" => P::EnvGet,
         "bytes_new" => P::BytesNew,
         "bytes_len" => P::BytesLen,
         "bytes_get" => P::BytesGet,
@@ -948,6 +966,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::ListPush
         | P::DirectoryRead
         | P::PathCanonical
+        | P::EnvGet
         | P::PathRename => 2,
         P::TextSlice
         | P::BytesSet
@@ -956,6 +975,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::Write
         | P::WriteBytes
         | P::ProcessCapture => 3,
+        P::ProcessCaptureConfigured => 6,
     }
 }
 
@@ -1018,14 +1038,14 @@ mod tests {
     }
 
     #[test]
-    fn process_capture_wire_requires_text_arguments_and_two_byte_buffers() {
-        let stream = |params: &[usize], result| {
+    fn process_operations_have_exact_wire_types() {
+        let stream = |name: &str, params: &[usize], result| {
             let arguments = params
                 .iter()
                 .enumerate()
                 .map(|(index, ty)| node(3, *ty, "", index as i64, &[]))
                 .collect::<Vec<_>>();
-            let call = node(7, result, "process_capture", -1, &arguments);
+            let call = node(7, result, name, -1, &arguments);
             let body = node(11, result, "", -1, &[call]);
             let params = format!(
                 "{}\n{}",
@@ -1039,29 +1059,41 @@ mod tests {
                 "loom-checked-1\n6\n0\n-1\n1\n-1\n3\n-1\n4\n-1\n6\n-1\n2\n6\n-1\n1\n1\n0\n0\n0\n{params}{result}\n{params}0\n{body}-1\n0\n1\n0\n"
             )
         };
-        let program = decode(&stream(&[4, 3, 3], 1)).unwrap();
-        assert!(matches!(
-            program.functions[0].body.tail.as_ref().unwrap().kind,
-            c::ExprKind::Primitive(Primitive::ProcessCapture, _)
-        ));
-        for (params, result) in [
-            ([5, 3, 3], 1),
-            ([2, 3, 3], 1),
-            ([4, 2, 3], 1),
-            ([4, 3, 2], 1),
-            ([4, 3, 3], 0),
+        for (name, params) in [
+            ("process_capture", &[4, 3, 3][..]),
+            ("process_capture_configured", &[4, 2, 1, 4, 3, 3][..]),
+            ("env_get", &[2, 3][..]),
         ] {
+            let operation = primitive(name).unwrap();
+            let program = decode(&stream(name, params, 1)).unwrap();
+            assert!(matches!(
+                program.functions[0].body.tail.as_ref().unwrap().kind,
+                c::ExprKind::Primitive(actual, _) if actual == operation
+            ));
+            for index in 0..params.len() {
+                let mut invalid = params.to_vec();
+                invalid[index] = match params[index] {
+                    4 => 5,
+                    3 => 2,
+                    _ => 3,
+                };
+                assert!(
+                    decode(&stream(name, &invalid, 1))
+                        .unwrap_err()
+                        .contains("type mismatch")
+                );
+            }
             assert!(
-                decode(&stream(&params, result))
+                decode(&stream(name, params, 0))
                     .unwrap_err()
-                    .contains("process capture type mismatch")
+                    .contains("type mismatch")
+            );
+            assert!(
+                decode(&stream(name, &params[..params.len() - 1], 1))
+                    .unwrap_err()
+                    .contains("arity mismatch")
             );
         }
-        assert!(
-            decode(&stream(&[4, 3], 1))
-                .unwrap_err()
-                .contains("arity mismatch")
-        );
     }
 
     #[test]

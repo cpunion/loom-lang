@@ -72,6 +72,8 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TextSlice
         | Primitive::ArgText
         | Primitive::ProcessCapture
+        | Primitive::ProcessCaptureConfigured
+        | Primitive::EnvGet
         | Primitive::BytesNew
         | Primitive::BytesPush
         | Primitive::BytesTextCopy
@@ -881,18 +883,43 @@ mod tests {
     }
 
     #[test]
-    fn process_capture_roots_arguments_even_with_a_scalar_result() {
-        let value = expr(
-            checked::ExprKind::Primitive(
+    fn process_operations_root_arguments_even_with_a_scalar_result() {
+        for (operation, params) in [
+            (
                 Primitive::ProcessCapture,
-                vec![local(Type::List(0)), local(Type::Bytes), local(Type::Bytes)],
+                vec![Type::List(0), Type::Bytes, Type::Bytes],
             ),
-            Type::Int,
-        );
-        let mut slots = TemporarySlots::default();
-        slots.expression(&program(), &BTreeSet::new(), &value, false);
-        assert_eq!(slots.types, [Type::List(0), Type::Bytes, Type::Bytes]);
-        assert!(allocates(Primitive::ProcessCapture));
+            (
+                Primitive::ProcessCaptureConfigured,
+                vec![
+                    Type::List(0),
+                    Type::Text,
+                    Type::Int,
+                    Type::List(0),
+                    Type::Bytes,
+                    Type::Bytes,
+                ],
+            ),
+            (Primitive::EnvGet, vec![Type::Text, Type::Bytes]),
+        ] {
+            let value = expr(
+                checked::ExprKind::Primitive(
+                    operation,
+                    params.iter().map(|ty| local(*ty)).collect(),
+                ),
+                Type::Int,
+            );
+            let mut slots = TemporarySlots::default();
+            slots.expression(&program(), &BTreeSet::new(), &value, false);
+            assert_eq!(
+                slots.types,
+                params
+                    .into_iter()
+                    .filter(|ty| managed(&program(), *ty))
+                    .collect::<Vec<_>>()
+            );
+            assert!(allocates(operation));
+        }
     }
 
     #[test]

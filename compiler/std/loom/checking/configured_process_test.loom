@@ -1,0 +1,49 @@
+import std.text.concat
+
+test fn configured_capture_and_environment_lookup_have_exact_effectful_signatures() {
+    let declarations = "intrinsic fn process_capture_configured(arguments List[Text], directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int\nintrinsic fn env_get(name Text, output Bytes) Int\nintrinsic fn list_new[T]() List[T]\nintrinsic fn bytes_new() Bytes\npub fn capture_example() Int { process_capture_configured(list_new[Text](), \"\", 0, list_new[Text](), bytes_new(), bytes_new()) }\npub fn env_example() Int { env_get(\"NAME\", bytes_new()) }"
+    let files = source_files("import std.process.capture_example\nimport std.process.env_example\npub fn run() Int { capture_example() + env_example() }")
+    push(files, source_file("std.process", declarations, true))
+    match checked(files) {
+        Result.Ok(program) => {
+            var found = 0
+            var index = 0
+            while index < length(program.functions) {
+                let name = get(program.functions, index).runtime_name
+                if name == "process_capture_configured" || name == "env_get" { found = found + 1 }
+                index = index + 1
+            }
+            assert found == 2
+        }
+        Result.Err(_) => { assert false }
+    }
+    var index = 0
+    while index < 2 {
+        let example = if index == 0 { "capture_example" } else { "env_example" }
+        let runtime_name = if index == 0 { "process_capture_configured" } else { "env_get" }
+        let staged = source_files(concat(concat("import std.process.", example), concat("\nfn main() { discard comptime { if false { ", concat(example, "() } else { 0 } } }"))))
+        push(staged, source_file("std.process", declarations, true))
+        match checked(staged) {
+            Result.Err(failed) => { assert failed.diagnostic.message == concat("compile-time evaluation forbids intrinsic ", runtime_name) }
+            Result.Ok(_) => { assert false }
+        }
+        index = index + 1
+    }
+    let invalid = new[Text]()
+    push(invalid, "intrinsic fn process_capture_configured(arguments List[Text], directory Text, clear Bool, changes List[Text], stdout Bytes, stderr Bytes) Int")
+    push(invalid, "intrinsic fn process_capture_configured(arguments List[Text], directory Text, clear Int, changes List[Int], stdout Bytes, stderr Bytes) Int")
+    push(invalid, "intrinsic fn process_capture_configured(arguments List[Text], directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Bool")
+    push(invalid, "intrinsic fn env_get(name Bytes, output Bytes) Int")
+    push(invalid, "intrinsic fn env_get(name Text, output Text) Int")
+    push(invalid, "intrinsic fn env_get(name Text, output Bytes) Text")
+    index = 0
+    while index < length(invalid) {
+        let fixture = source_files("")
+        push(fixture, source_file("std.process", get(invalid, index), true))
+        match checked(fixture) {
+            Result.Err(failed) => { assert failed.diagnostic.message == "intrinsic declaration does not match its runtime signature" }
+            Result.Ok(_) => { assert false }
+        }
+        index = index + 1
+    }
+}

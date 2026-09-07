@@ -704,6 +704,44 @@ unsafe extern "C" fn loom_rt_process_capture(
         Ok(command) => command,
         Err(status) => return status,
     };
+    capture_process(command, stdout, stderr)
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_process_capture_configured(
+    arguments: *const u8,
+    directory: *const u8,
+    clear: i64,
+    changes: *const u8,
+    stdout: *mut u8,
+    stderr: *mut u8,
+) -> i64 {
+    // SAFETY: All inputs have their exact private signature. The builder copies
+    // paths and environment entries into Rust storage before any Loom allocation.
+    let command = unsafe {
+        let command = match process_command(arguments) {
+            Ok(command) => command,
+            Err(status) => return status,
+        };
+        let directory = std::str::from_utf8_unchecked(text_bytes(directory));
+        let changes = &*changes.cast::<List>();
+        let values = (0..changes.buffer.len).map(|index| {
+            let value = *changes
+                .buffer
+                .data
+                .add(index * changes.stride)
+                .cast::<*const u8>();
+            std::str::from_utf8_unchecked(text_bytes(value))
+        });
+        match process_io::configure(command, directory, clear, values) {
+            Ok(command) => command,
+            Err(status) => return status,
+        }
+    };
+    capture_process(command, stdout, stderr)
+}
+
+fn capture_process(command: std::process::Command, stdout: *mut u8, stderr: *mut u8) -> i64 {
     let output = match process_io::capture(command) {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => fault("out of memory"),
@@ -727,6 +765,39 @@ unsafe extern "C" fn loom_rt_process_capture(
         }
     });
     process_status(Ok(output.status))
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_env_get(name: *const u8, bytes: *mut u8) -> i64 {
+    let value = {
+        // SAFETY: Text is valid UTF-8. var returns an owned String before the
+        // managed output buffer can move; no environment value is logged.
+        let name = unsafe { std::str::from_utf8_unchecked(text_bytes(name)) };
+        if !process_io::valid_env_name(name) {
+            return -1;
+        }
+        match std::env::var(name) {
+            Ok(value) => value,
+            Err(std::env::VarError::NotPresent) => return 1,
+            Err(std::env::VarError::NotUnicode(_)) => return -2,
+        }
+    };
+    rooted([bytes], |slots| {
+        if !value.is_empty() {
+            // SAFETY: The header remains rooted, reserve reloads it after GC,
+            // and the UTF-8 input is independently owned by Rust.
+            unsafe {
+                let buffer = reserve(*slots, value.len(), 1);
+                ptr::copy_nonoverlapping(
+                    value.as_ptr(),
+                    (*buffer).data.add((*buffer).len),
+                    value.len(),
+                );
+                (*buffer).len += value.len();
+            }
+        }
+    });
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -1167,6 +1238,39 @@ mod tests {
             *(*buffer).data.add((*buffer).len) = byte;
             (*buffer).len += 1;
         });
+    }
+
+    #[test]
+    fn environment_lookup_appends_to_a_relocated_buffer() {
+        const KEY: &str = "LOOM_RUNTIME_ENV_VALUE";
+        let expected = "value=雪🙂".repeat(64);
+        if std::env::var_os("LOOM_RUNTIME_ENV_TEST_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::environment_lookup_appends_to_a_relocated_buffer",
+                ])
+                .env("LOOM_RUNTIME_ENV_TEST_CHILD", "1")
+                .env(KEY, &expected)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        // SAFETY: Synthetic child environment is owned by the OS; no global
+        // mutation is used, and both managed pointers have rewritable roots.
+        rooted([ptr::null_mut(); 2], |slots| unsafe {
+            *slots = text(KEY);
+            *slots.add(1) = loom_rt_bytes_new();
+            bytes_push(*slots.add(1), b'!');
+            let previous = *slots.add(1) as usize;
+            HEAP.with(|heap| heap.borrow_mut().threshold = 0);
+            assert_eq!(loom_rt_env_get(*slots, *slots.add(1)), 0);
+            assert_ne!(*slots.add(1) as usize, previous);
+            assert!(buffer_bytes(*slots.add(1)).strip_prefix(b"!") == Some(expected.as_bytes()));
+        });
+        loom_rt_collect();
+        assert_eq!(live(), 0);
     }
 
     #[test]

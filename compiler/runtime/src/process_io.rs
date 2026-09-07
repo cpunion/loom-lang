@@ -7,6 +7,44 @@ use std::thread::{self, JoinHandle};
 
 type Drain = fn(usize, &mut dyn Read) -> io::Result<Vec<u8>>;
 
+pub(super) fn valid_env_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['=', '\0'])
+}
+
+pub(super) fn configure<'a>(
+    mut command: Command,
+    directory: &str,
+    clear: i64,
+    changes: impl Iterator<Item = &'a str>,
+) -> Result<Command, i64> {
+    if directory.contains('\0') || !matches!(clear, 0 | 1) {
+        return Err(-4);
+    }
+    if !directory.is_empty() {
+        command.current_dir(directory);
+    }
+    if clear == 1 {
+        command.env_clear();
+    }
+    for change in changes {
+        if change.contains('\0') {
+            return Err(-4);
+        }
+        if let Some((name, value)) = change.split_once('=') {
+            if !valid_env_name(name) {
+                return Err(-4);
+            }
+            command.env(name, value);
+        } else {
+            if !valid_env_name(change) {
+                return Err(-4);
+            }
+            command.env_remove(change);
+        }
+    }
+    Ok(command)
+}
+
 struct Running<'a> {
     child: &'a mut Child,
     readers: Vec<JoinHandle<()>>,
@@ -109,6 +147,77 @@ pub(super) const TEST_BYTES: usize = 256 * 1024;
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn configuration_is_child_local_ordered_and_validated() {
+        let mut original = Command::new("unused");
+        original.env("OLD", "discarded");
+        let command = configure(
+            original,
+            "working directory 雪",
+            1,
+            [
+                "VALUE=first",
+                "VALUE",
+                "VALUE=last=part",
+                "EMPTY=",
+                "REMOVED",
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(
+            command.get_current_dir(),
+            Some(std::path::Path::new("working directory 雪"))
+        );
+        let values = command
+            .get_envs()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert!(!values.contains_key(std::ffi::OsStr::new("OLD")));
+        assert_eq!(
+            values[std::ffi::OsStr::new("VALUE")],
+            Some(std::ffi::OsStr::new("last=part"))
+        );
+        assert_eq!(
+            values[std::ffi::OsStr::new("EMPTY")],
+            Some(std::ffi::OsStr::new(""))
+        );
+        let removed = configure(Command::new("unused"), "", 0, ["REMOVED"].into_iter()).unwrap();
+        assert_eq!(
+            removed.get_envs().collect::<Vec<_>>(),
+            [(std::ffi::OsStr::new("REMOVED"), None)]
+        );
+        for (directory, clear, change) in [
+            ("bad\0dir", 0, "OK=yes"),
+            ("", 2, "OK=yes"),
+            ("", 0, ""),
+            ("", 0, "=value"),
+            ("", 0, "NAME=bad\0value"),
+        ] {
+            assert!(matches!(
+                configure(
+                    Command::new("unused"),
+                    directory,
+                    clear,
+                    [change].into_iter()
+                ),
+                Err(-4)
+            ));
+        }
+        #[cfg(windows)]
+        {
+            let command = configure(
+                Command::new("unused"),
+                "",
+                1,
+                ["Name=first", "NAME=last"].into_iter(),
+            )
+            .unwrap();
+            let values = command.get_envs().collect::<Vec<_>>();
+            assert_eq!(values.len(), 1);
+            assert_eq!(values[0].1, Some(std::ffi::OsStr::new("last")));
+        }
+    }
 
     #[test]
     #[ignore = "child fixture for process capture tests"]
