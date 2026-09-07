@@ -34,12 +34,12 @@ fn register_module(loader Loader, module ModuleRoot) Result[Int, Text] {
 
 fn dependency_directory(base Text, path Text) Result[Text, Text] {
     if !is_windows_path(base) {
-        return canonical(if starts(path, "/") { path } else { join_path(base, path) })
+        return canonical(if starts_with(path, "/") { path } else { join_path(base, path) })
     }
     // Canonical Windows roots use verbatim paths. Resolve relative dot segments
     // explicitly, retaining native separators and canonicalizing symlink steps.
-    if is_windows_path(path) || starts(path, "//") { return canonical(path) }
-    if starts(path, "/") || starts(path, "\\") || (length(path) >= 2 && byte(path, 1) == 58) {
+    if is_windows_path(path) || starts_with(path, "//") { return canonical(path) }
+    if starts_with(path, "/") || starts_with(path, "\\") || (length(path) >= 2 && byte(path, 1) == 58) {
         return Result.Err("dependency paths must be relative or fully absolute, not drive-relative or rooted on an implicit drive")
     }
     let forward = parts(path, 47)

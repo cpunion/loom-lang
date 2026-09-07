@@ -2,6 +2,8 @@ import std.text.byte
 import std.text.slice
 import std.text.length
 import std.text.concat
+import std.text.starts_with
+import std.text.ends_with
 import std.list.new
 import std.list.get
 import std.list.push
@@ -31,29 +33,23 @@ pub fn qualify(package Text, name Text) Text {
 // Filesystem spelling operations on absolute canonical paths. Keep Windows
 // verbatim prefixes and native separators; backslash remains an ordinary Unix
 // filename character rather than being globally rewritten.
-fn starts(value Text, prefix Text) Bool {
-    length(value) >= length(prefix) && slice(value, 0, length(prefix)) == prefix
-}
-fn ends(value Text, suffix Text) Bool {
-    length(value) >= length(suffix) && slice(value, length(value) - length(suffix), length(value)) == suffix
-}
 pub fn is_windows_path(path Text) Bool {
-    starts(path, "\\\\") || (length(path) >= 3 && byte(path, 1) == 58 &&
+    starts_with(path, "\\\\") || (length(path) >= 3 && byte(path, 1) == 58 &&
         (byte(path, 2) == 92 || byte(path, 2) == 47))
 }
 fn separator(path Text) Int {
-    if starts(path, "\\\\") || (length(path) >= 3 && byte(path, 1) == 58 && byte(path, 2) == 92) { 92 } else { 47 }
+    if starts_with(path, "\\\\") || (length(path) >= 3 && byte(path, 1) == 58 && byte(path, 2) == 92) { 92 } else { 47 }
 }
 pub fn join_path(base Text, part Text) Text {
     let slash = if separator(base) == 92 { "\\" } else { "/" }
-    concat(base, concat(if ends(base, slash) { "" } else { slash }, part))
+    concat(base, concat(if ends_with(base, slash) { "" } else { slash }, part))
 }
 fn root_length(path Text) Int {
     if is_windows_path(path) && byte(path, 1) == 58 { return 3 }
     if separator(path) == 47 { return 1 }
     var offset = 2
-    if starts(path, "\\\\?\\") {
-        if starts(path, "\\\\?\\UNC\\") { offset = 8 } else {
+    if starts_with(path, "\\\\?\\") {
+        if starts_with(path, "\\\\?\\UNC\\") { offset = 8 } else {
             offset = 4
             while offset < length(path) && byte(path, offset) != 92 { offset = offset + 1 }
             return if offset < length(path) { offset + 1 } else { offset }
@@ -77,7 +73,7 @@ fn parent(path Text) Text {
     }
     slice(path, 0, root)
 }
-fn inside(path Text, root Text) Bool { path == root || starts(path, join_path(root, "")) }
+fn inside(path Text, root Text) Bool { path == root || starts_with(path, join_path(root, "")) }
 fn parts(value Text, separator Int) List[Text] {
     let values = new[Text]()
     var start = 0

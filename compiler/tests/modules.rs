@@ -56,7 +56,7 @@ fn dependency_visibility_and_module_identity_follow_the_declaring_manifest() {
     );
     write(
         root,
-        "codec/main.loom",
+        "codec/漢漢.loom",
         "import seed.value\nimport seed.Token\npub fn answer() Int { value() }\npub fn token() Token { Token { value = 42 } }\ntest fn embedded() { assert false }",
     );
     write(

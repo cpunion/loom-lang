@@ -7,7 +7,12 @@ test fn package_path_boundaries() {
     assert join_path("/", "a") == "/a"
     assert inside("/std/text", "/std") && inside("/std", "/std")
     assert !inside("/std-copy/text", "/std")
-    assert !ends("test.loom.bak", ".loom") && ends("unit_test.loom", "_test.loom")
+    assert !ends_with("test.loom.bak", ".loom") && ends_with("unit_test.loom", "_test.loom")
+    // A nonmatch must not slice through a multi-byte scalar.
+    assert !ends_with("漢漢.loom", "_test.loom") && ends_with("漢漢.loom", ".loom")
+    assert !is_windows_path("/漢") && !is_windows_path("😀")
+    assert join_path("/漢", "子") == "/漢/子"
+    assert !inside("/漢", "/a")
     let values = parts("app.parser", 46)
     assert length(values) == 2 && get(values, 1) == "parser"
 }
