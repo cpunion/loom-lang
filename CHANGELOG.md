@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add concept default method bodies with explicit conformance, override selection,
+  abstract checking and associated types. Reuse direct specialization and sparse
+  dynamic witnesses without a new runtime dispatch mechanism.
+
 - Add function-valued `comptime` parameters with source-identity specialization,
   generic forwarding and direct native calls. Preserve abstract requirements,
   runtime capture isolation, preconditions and compile-time effect rejection.

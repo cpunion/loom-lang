@@ -7,7 +7,7 @@ fn static_concepts_emit_only_selected_calls_and_keep_native_value_layouts() {
     let source = tempfile::tempdir().unwrap();
     fs::write(
         source.path().join("main.loom"),
-        "concept Value { fn value(self Self) Int }\nrecord Used { n Int }\nrecord Unused { n Int }\nimpl Value for Used { fn value(self Used) Int { self.n } }\nimpl Value for Unused { fn value(self Unused) Int { self.n + 9000 } }\nfn forward[T Value](value T) Int { value.value() }\nfn main() { assert forward(Used { n = 42 }) == 42 }",
+        "concept Value { fn value(self Self) Int\nfn doubled(self Self) Int { self.value() + self.value() }\nfn unused(self Self) Int { 9001 } }\nrecord Used { n Int }\nrecord Unused { n Int }\nimpl Value for Used { fn value(self Used) Int { self.n } }\nimpl Value for Unused { fn value(self Unused) Int { self.n + 9000 } }\nfn forward[T Value](value T) Int { value.doubled() }\nfn main() { assert forward(Used { n = 42 }) == 84 }",
     )
     .unwrap();
     let executable = common::executable(source.path(), "static");
@@ -32,9 +32,10 @@ fn static_concepts_emit_only_selected_calls_and_keep_native_value_layouts() {
         ir.lines()
             .filter(|line| line.starts_with("define ") && line.contains("@loom.fn."))
             .count(),
-        3
+        4
     );
     assert!(!ir.contains("loom_rt_"));
+    assert!(!ir.contains("9000") && !ir.contains("9001"));
 
     let example = common::root().join("compiler/examples/concepts");
     let executable = common::executable(source.path(), "managed");

@@ -131,7 +131,9 @@ method qualification and source `std.display` use the same model. Native `dyn C`
 uses explicit conformance evidence, GC-owned receiver snapshots and sparse method
 tables, including generic calls and managed aggregate storage. Static associated
 types and bounded generic records/enums normalize under explicit declaration or
-branch evidence. Generic implementations and binding-aware dynamic associated
+branch evidence. Concept default methods use abstract Self checking and the same
+static/dynamic call paths; explicit overrides remain authoritative. Generic
+implementations and binding-aware dynamic associated
 types remain open; there is no runtime conformance registry or erased-value
 type discovery.
 
@@ -148,14 +150,16 @@ work; a tuple does not substitute for a dynamically sized List.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time
-invocation/reification. Capturing closures and compile-time function parameters
-remain separate steps; runtime callbacks are not template parameters.
+invocation/reification. Capturing closures remain open; runtime callbacks are
+distinct from compile-time parameters.
 
-Scalar compile-time parameters now specialize named calls with Int/Bool/Text
-values and leave only runtime arguments in the native ABI. Selected branches
+Compile-time parameters now specialize named calls with Int/Bool/Text values or
+known source-function identities and leave only runtime arguments in the native
+ABI. Static callbacks become direct calls; generic forwarding and pure selectors
+preserve target preconditions and reject compile-time effects. Selected branches
 retain explicit generic requirements and mandatory abstract proofs. Function
-references to partially specialized static declarations, static callback/closure
-parameters and heterogeneous packs remain open.
+references to partially specialized static declarations, capturing closures
+and heterogeneous packs remain open.
 
 Lexical `defer` now lowers block completion, return and `Result?` cleanup into
 ordinary checked code, preserving LIFO order and saved result values. Fault

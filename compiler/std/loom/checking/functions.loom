@@ -40,7 +40,9 @@ fn signature(env Environment, id Int, arguments List[Int], node Node) Result[Sig
 }
 fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticValue], node Node) Result[Int, Failure] {
     let current = get(env.signatures, id)
-    if prototype(env, current.symbol) { return Result.Err(failure(env, current.symbol, node, "concept evidence has no concrete implementation")) }
+    if prototype(env, current.symbol) && !has(symbol(env, current.symbol).node, NodeKind.Block) {
+        return Result.Err(failure(env, current.symbol, node, "concept evidence has no concrete implementation"))
+    }
     var index = 0
     while index < length(env.pending) {
         let previous = get(env.pending, index)

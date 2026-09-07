@@ -135,8 +135,10 @@ fn activate_witnesses(env Environment, retain Bool) Result[Bool, Failure] {
         while slot < length(witness.methods) {
             if get(witness.methods, slot) < 0 && (retain || slot_used(env, witness.interface, slot)) {
                 let method = get(implementation.methods, slot)
-                let declaration = symbol(env, get(env.signatures, method).symbol)
-                set(witness.methods, slot, schedule(env, method, new[Int](), new[StaticValue](), declaration.node)?)
+                let current = get(env.signatures, method)
+                let declaration = symbol(env, current.symbol)
+                let arguments = if prototype(env, current.symbol) { ints(witness.concrete) } else { new[Int]() }
+                set(witness.methods, slot, schedule(env, method, arguments, new[StaticValue](), declaration.node)?)
                 changed = true
             }
             slot = slot + 1

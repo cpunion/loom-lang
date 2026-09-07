@@ -154,8 +154,13 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool, proto
         rest = ty.rest
     }
     if prototype {
+        if at(newlines(rest), Kind.LBrace) {
+            let body = block(newlines(rest))?
+            push(children, body.node)
+            return Result.Ok(done(start, body.rest, NodeKind.Function, named.node.value, children))
+        }
         if !at(rest, Kind.Newline) && !at(rest, Kind.RBrace) {
-            return Result.Err(error(rest, "concept method prototypes have no body or contracts"))
+            return Result.Err(error(rest, "concept method contracts are not yet supported"))
         }
         return Result.Ok(done(start, rest, NodeKind.Function, named.node.value, children))
     }

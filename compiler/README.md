@@ -349,8 +349,16 @@ runtime registry. Methods retain source ownership in `std.loom.binding.Symbol`.
 Test-only implementations cannot change unbounded production code; tests may pass
 their explicit evidence to bounded generic functions.
 
+Concept methods may provide a default body. An explicit `impl` is still required;
+omitted methods use the default and matching methods override it. Defaults are
+checked with abstract `Self` and the concept's declared capabilities, including
+its associated types. They may call other methods, which select that type's
+override. Static calls specialize directly; `dyn` tables retain only used slots
+in closed executable builds. Method contracts on the concept declaration remain
+unsupported; ordinary implementation contracts retain their checks and proofs.
+
 This slice supports nongeneric concepts and concrete implementation targets.
-Generic/default implementations and concept-typed parameter shorthand remain
+Generic implementations and concept-typed parameter shorthand remain
 later work.
 Concept method contracts and extra implementation preconditions currently reject;
 implementation postconditions still require proof.
@@ -590,8 +598,8 @@ proofs reject. Specialization and pure evaluation remain bounded.
 
 The [static-parameter example](examples/comptime_parameters/main.loom) covers
 generic recursion, pure argument computation, static Text, shadowing, returned
-ordinary and static callbacks, shared results and runtime argument order. Static parameters are not yet
-supported on intrinsics or concept/implementation methods. Taking a reference
+ordinary and static callbacks, shared results and runtime argument order. Static
+parameters are not yet supported on intrinsics or concept/implementation methods. Taking a reference
 to a declaration with static parameters also rejects until explicit partial
 specialization can supply a complete function identity. Capturing closures,
 variadics and general type-valued computation remain later work.

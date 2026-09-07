@@ -1,0 +1,52 @@
+fn default_definitions() Text {
+    "concept Value { fn value(self Self) Int\nfn doubled(self Self) Int { self.value() + self.value() }\nfn unused(self Self) Int { 99 } }\nimpl Value for Int { fn value(self Int) Int { self } }\nimpl Value for Bool { fn value(self Bool) Int { 3 }\nfn doubled(self Bool) Int { 10 } }\nfn twice[T Value](value T) Int { value.doubled() }\n"
+}
+
+test fn default_methods_specialize_without_erasing_overrides_or_associated_types() {
+    let program = accepted(concat(default_definitions(), "fn main() { assert twice(4) == 8\nassert twice(true) == 10\nassert Value.doubled(5) == 10\nassert comptime { twice(6) } == 12 }"))
+    assert length(program.functions) == 6
+    var default_instances = 0
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        if length(function.arguments) == 1 && function.body.kind == ExprKind.Block &&
+            get(function.body.children, 0).kind == ExprKind.Binary { default_instances = default_instances + 1 }
+        index = index + 1
+    }
+    assert default_instances == 1
+    discard accepted(concat(default_definitions(), "concept Other { fn value(self Self) Int }\nimpl Other for Int { fn value(self Int) Int { 100 } }\nfn main() { assert comptime { 3.doubled() } == 6 }"))
+    discard accepted("concept Source { type Item\nfn first(self Self) Self.Item\nfn copied(self Self) Self.Item { self.first() } }\nimpl Source for Bool { type Item = Text\nfn first(self Bool) Text { \"ok\" } }\nfn main() { assert true.copied() == \"ok\"\nassert comptime { true.copied() } == \"ok\" }")
+    discard accepted("concept Copy { fn copy(self Self) Self { self } }\nimpl Copy for Int {}\nfn main() { assert 3.copy() == 3 }")
+}
+
+test fn default_bodies_need_declared_evidence_and_explicit_conformances() {
+    rejects("concept C { fn value(self Self, other Self) Int { 1 }\nfn value(self Self, other Int) Int { 2 } }\nimpl C for Int {}")
+    rejects("concept C { fn value(self Self, other Self) Int { 1 }\nfn value(self Self, other Int) Bool { true } }\nimpl C for Int {}")
+    rejects("concept C { fn value(self Self) Int { 1 } }\nfn main() { discard 1.value() }")
+    rejects("concept C { fn value(self Self) Int { self.missing() } }")
+    rejects("concept C { fn value(self Self) Int { self + 1 } }\nimpl C for Int {}")
+    rejects("concept Other { fn hidden(self Self) Int }\nimpl Other for Int { fn hidden(self Int) Int { 1 } }\nconcept C { fn value(self Self) Int { self.hidden() } }\nimpl C for Int {}")
+    rejects("concept C { fn value(self Self) Int { 1 } }\nimpl C for Int { fn value(self Int) Bool { true } }")
+    rejects("concept C { fn value(self Self) Int { 1 } }\nimpl C for Int { fn extra(self Int) {} }")
+    rejects("concept C { fn required(self Self) Int\nfn value(self Self) Int { 1 } }\nimpl C for Int {}")
+    rejects("concept C { fn value(self Self) Int { 1 } }\nimpl C for Int {}\nfn undeclared[T](value T) Int { value.value() }")
+    rejects("concept C { fn value(self Self) Int { 1 } }\nimpl C for Int { fn value(self Int) Int ensures false { 1 } }")
+    rejects("concept C { fn value(self Self, other Self) Int { 1 }\nfn value(self Self, other Int) Int { 2 } }\nimpl C for Int { fn value(self Int, other Int) Int { 3 }\nfn extra(self Int) {} }")
+}
+
+test fn dynamic_defaults_only_activate_used_slots_and_dispatch_override_calls() {
+    let program = accepted(concat(default_definitions(), "fn main() { let value dyn Value = 7\nlet other dyn Value = true\nassert value.doubled() == 14 && other.doubled() == 10 }"))
+    assert length(program.witnesses) == 2
+    assert length(program.functions) == 4
+    var index = 0
+    while index < length(program.witnesses) {
+        let witness = get(program.witnesses, index)
+        assert get(witness.methods, 0) == -1
+        assert get(witness.methods, 1) >= 0
+        assert get(witness.methods, 2) == -1
+        index = index + 1
+    }
+    let library = accepted(concat(default_definitions(), "pub fn exported() dyn Value { 1 }"))
+    let methods = get(library.witnesses, 0).methods
+    assert get(methods, 0) >= 0 && get(methods, 1) >= 0 && get(methods, 2) >= 0
+}
