@@ -59,7 +59,8 @@ fn staging(context Context, node Node) Result[Context, Failure] {
         return Result.Err(error(context, node, "compile-time staging depth exceeded; check for a dependency cycle"))
     }
     // Compile-time call targets never enter the runtime reachability queue.
-    let env = Environment { source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true signatures = context.env.signatures
+    let env = Environment { source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true
+        has_refinements = context.env.has_refinements signatures = context.env.signatures
         pending = new[Instance]() stage_depth = context.env.stage_depth + 1 computations = context.env.computations
         validations = context.env.validations
         concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces
@@ -75,7 +76,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
         index = index + 1 }
     Result.Ok(Context { env = env signature = context.signature arguments = context.arguments
         constants = context.constants locals = locals bindings = bindings head = context.head
-        cleanups = new[Cleanup]() cleanup_head = -1 emit = true })
+        cleanups = new[Cleanup]() cleanup_head = -1 facts = new[Fact]() fact_head = -1 emit = true })
 }
 fn isolated(context Context, node Node, value Expr, boundary Int) Result[Bool, Failure] {
     if value.kind == ExprKind.Local && value.index < boundary {
@@ -193,7 +194,8 @@ fn selected(context Context, node Node, source Node, expected Int, enforce Bool)
             let stage = staging(context, node)?
             let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
                 constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head
-                cleanups = stage.cleanups cleanup_head = stage.cleanup_head emit = false }
+                cleanups = stage.cleanups cleanup_head = stage.cleanup_head
+                facts = stage.facts fact_head = stage.fact_head emit = false }
             let value = expr(validation, condition, 2)?
             discard isolated(context, node, value, length(context.locals))?
             if type_dependent || contains_deferred(value) { return deferred(context, node, expected) }
@@ -212,7 +214,8 @@ fn compile_time(context Context, node Node, expected Int, enforce Bool) Result[E
         let stage = staging(context, node)?
         let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
             constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head
-            cleanups = stage.cleanups cleanup_head = stage.cleanup_head emit = false }
+            cleanups = stage.cleanups cleanup_head = stage.cleanup_head
+            facts = stage.facts fact_head = stage.fact_head emit = false }
         let value = block(validation, source, expected, enforce)?
         discard isolated(context, node, value, length(context.locals))?
         // Syntax may mention a shadowed static name. Only checked IR can show

@@ -43,6 +43,7 @@ record Environment {
     types List[Type]
     type_states List[Int]
     expand_data Bool
+    has_refinements Bool
     signatures List[Signature]
     pending List[Instance]
     stage_depth Int
@@ -58,6 +59,7 @@ record Environment {
 }
 record Binding { name Text local Int constant Int previous Int }
 record Cleanup { body Expr previous Int }
+record Fact { local Int predicate Expr previous Int }
 record Context {
     env Environment
     signature Signature
@@ -68,6 +70,8 @@ record Context {
     head Int
     cleanups List[Cleanup]
     cleanup_head Int
+    facts List[Fact]
+    fact_head Int
     emit Bool
 }
 record Step { context Context expression Expr }
@@ -151,7 +155,8 @@ fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Fail
 fn context_at(context Context, head Int) Context {
     Context { env = context.env signature = context.signature arguments = context.arguments
         constants = context.constants locals = context.locals bindings = context.bindings head = head
-        cleanups = context.cleanups cleanup_head = context.cleanup_head emit = context.emit }
+        cleanups = context.cleanups cleanup_head = context.cleanup_head
+        facts = context.facts fact_head = context.fact_head emit = context.emit }
 }
 fn lookup(context Context, value Text) Int {
     var head = context.head
@@ -185,7 +190,8 @@ fn bind_name(context Context, node Node, value Text, local Int, constant Int, bo
 }
 
 pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
-    let env = Environment { source = source types = new[Type]() type_states = new[Int]() expand_data = true signatures = new[Signature]() pending = new[Instance]()
+    let env = Environment { source = source types = new[Type]() type_states = new[Int]() expand_data = true
+        has_refinements = refinement_declarations(source) signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         associations = new[Association]() association_depth = 0
         interfaces = new[Interface]() witnesses = new[Witness]() uses = new[SlotUse]() }

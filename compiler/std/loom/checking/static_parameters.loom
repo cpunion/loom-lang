@@ -118,7 +118,8 @@ fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] 
     let stage = staging(context, node)?
     let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
         locals = stage.locals bindings = stage.bindings head = stage.head
-        cleanups = stage.cleanups cleanup_head = stage.cleanup_head emit = false }
+        cleanups = stage.cleanups cleanup_head = stage.cleanup_head
+        facts = stage.facts fact_head = stage.fact_head emit = false }
     expr(validation, node, expected)
 }
 fn static_argument(context Context, node Node, checked Expr, expected Int) Result[StaticValue, Failure] {
@@ -172,7 +173,7 @@ fn validate_static(env Environment, id Int, constants List[StaticValue], node No
     if length(env.validations) >= 1024 { return Result.Err(failure(env, original.symbol, node, "comptime specialization budget exceeded; expansion must be finite")) }
     let selected = length(env.validations)
     push(env.validations, Validation { signature = id constants = constants })
-    let validation = Environment { source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data
+    let validation = Environment { source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data has_refinements = env.has_refinements
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth + 1 computations = env.computations
         validations = env.validations concepts = env.concepts implementations = env.implementations interfaces = env.interfaces
         associations = env.associations association_depth = env.association_depth

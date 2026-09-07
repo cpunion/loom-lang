@@ -1,0 +1,71 @@
+fn flow_program(text Text) std.loom.typed.Program {
+    match with_result(text) {
+        Result.Ok(program) => program
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            discard write_error(text)
+            assert false
+            flow_program("")
+        }
+    }
+}
+
+test fn immutable_requires_assertions_and_branch_facts_remove_construction_checks() {
+    let definitions = "type Positive = Int where self > 0\ntype Bounded = Int where self >= 0 && self <= 100\n"
+    let program = accepted(concat(definitions,
+        "pub fn required(other Int, value Int) Positive requires other < 0 && value > 0 { discard other\nPositive(value) }\npub fn branch(value Int) Positive { if value > 0 { Positive(value) } else { Positive(1) } }\npub fn local(value Int) Bounded { let current = value\nassert current >= 0\nassert current <= 100\nBounded(current) }\npub fn negative_branch(value Int) Positive { if value <= 0 { Positive(1) } else { Positive(value) } }\npub fn outside(value Int) Bounded { if value < 0 || value > 100 { Bounded(0) } else { Bounded(value) } }"))
+    assert get(get(program.functions, 0).body.children, 1).kind == ExprKind.Coerce
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 1
+    assert get(get(program.functions, 2).body.children, 3).kind == ExprKind.Coerce
+    assert dynamic_count(get(program.functions, 3).body, ExprKind.If) == 1
+    assert dynamic_count(get(program.functions, 4).body, ExprKind.If) == 1
+    let extra = accepted("type Positive = Int where self > 0\npub fn checked(value Int) Positive { assert value > 10\nassert value % 2 == 0\nPositive(value) }")
+    assert get(get(extra.functions, 0).body.children, 2).kind == ExprKind.Coerce
+}
+
+test fn mutable_shared_and_unrelated_bindings_do_not_supply_flow_facts() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\ntype Positive = Int where self > 0\nrecord Box { value Int }\n"
+    let program = flow_program(concat(definitions,
+        "pub fn mutable(value Int) Result[Positive, ConstraintError] { var current = value\nassert current > 0\ncurrent = 0\nPositive(current) }\npub fn joined(value Int) Result[Positive, ConstraintError] { if value > 0 { discard Positive(value) }\nPositive(value) }\npub fn multiple(value Int, other Int) Result[Positive, ConstraintError] { assert value > other && other >= 0\nPositive(value) }\npub fn fields(box Box) Result[Positive, ConstraintError] { assert box.value > 0\nPositive(box.value) }\npub fn shadowed(value Int, other Int) Result[Positive, ConstraintError] { assert value > 0\nif true { let value = other\nPositive(value) } else { Positive(other) } }\npub fn sibling(value Int, flag Bool) Result[Positive, ConstraintError] { if flag { assert value > 0\nResult.Ok(Positive(value)) } else { Positive(value) } }\npub fn disjunction(value Int, other Int) Result[Positive, ConstraintError] { if value > 0 || other > 0 { Positive(value) } else { Positive(other) } }"))
+    var index = 0
+    while index < 4 {
+        let body = get(program.functions, index).body
+        assert get(body.children, length(body.children) - 1).kind == ExprKind.Block
+        index = index + 1
+    }
+    assert dynamic_count(get(program.functions, 4).body, ExprKind.If) == 3
+    assert dynamic_count(get(program.functions, 5).body, ExprKind.If) == 2
+    assert dynamic_count(get(program.functions, 6).body, ExprKind.If) == 3
+}
+
+test fn float_facts_reuse_exact_predicates_without_complement_arithmetic() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\ntype NotPositive = Float where !(self > 0.0)\ntype NonPositive = Float where self <= 0.0\ntype NotANumber = Float where self != self\n"
+    let program = flow_program(concat(definitions,
+        "pub fn exact(value Float) NotPositive { if value > 0.0 { NotPositive(0.0) } else { NotPositive(value) } }\npub fn nan(value Float) NotANumber { assert value != value\nNotANumber(value) }\npub fn complement(value Float) Result[NonPositive, ConstraintError] { assert !(value > 0.0)\nNonPositive(value) }"))
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 1
+    assert get(get(program.functions, 1).body.children, 1).kind == ExprKind.Coerce
+    assert get(get(program.functions, 2).body.children, 1).kind == ExprKind.Block
+    let compound = accepted("type Middle = Float where !(self > 0.0 || self < -10.0)\npub fn exact(value Float) Middle { assert !(value > 0.0 || value < -10.0)\nMiddle(value) }")
+    assert get(get(compound.functions, 0).body.children, 1).kind == ExprKind.Coerce
+}
+
+test fn flow_proofs_require_defined_goals_and_evaluated_short_circuit_terms() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\ntype Increment = Int where self + 1 > self\ntype Quotient = Int where 10 / self > 0\n"
+    let program = flow_program(concat(definitions,
+        "pub fn safe(value Int) Increment requires value < 9223372036854775807 { Increment(value) }\npub fn overflow(value Int) Result[Increment, ConstraintError] { assert value >= 0\nIncrement(value) }\npub fn skipped(value Int) Result[Quotient, ConstraintError] { assert value == 0 || 10 / value > 0\nQuotient(value) }"))
+    assert get(get(program.functions, 0).body.children, 0).kind == ExprKind.Coerce
+    assert get(get(program.functions, 1).body.children, 1).kind == ExprKind.Block
+    assert get(get(program.functions, 2).body.children, 1).kind == ExprKind.Block
+}
+
+test fn immutable_facts_remain_scoped_through_loops_defer_and_staging() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\ntype Positive = Int where self > 0\n"
+    let program = flow_program(concat(definitions,
+        "pub fn cleanup(value Int) { assert value > 0\ndefer { discard Positive(value) } }\npub fn changed(value Int) { var current = value\nassert current > 0\ndefer { discard Positive(current) }\ncurrent = 0 }\npub fn loop_scope(value Int) Result[Positive, ConstraintError] { var count = 0\nwhile count < 1 { assert value > 0\ndiscard Positive(value)\ncount = count + 1 }\nPositive(value) }\npub fn loop_guard(value Int) Positive { while value > 0 { return Positive(value) }\nPositive(1) }\npub fn future_assertion(value Int) Result[Positive, ConstraintError] { defer { assert value > 0 }\nPositive(value) }"))
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 1
+    assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 1
+    assert dynamic_count(get(program.functions, 3).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 4).body, ExprKind.If) == 1
+    rejects_result(concat(definitions, "fn invalid(value Int) { assert value > 0\ndiscard comptime { Positive(value) } }"))
+}

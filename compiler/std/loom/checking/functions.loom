@@ -175,7 +175,7 @@ fn function(env Environment, id Int, arguments List[Int], constants List[StaticV
     }
     var context = Context { env = env signature = current arguments = arguments
         constants = constants locals = new[Local]() bindings = new[Binding]() head = -1
-        cleanups = new[Cleanup]() cleanup_head = -1 emit = emit }
+        cleanups = new[Cleanup]() cleanup_head = -1 facts = new[Fact]() fact_head = -1 emit = emit }
     let parameters = group(item.node, NodeKind.Parameters)
     let filtered = has_static(current)
     let runtime_params = if filtered { new[Int]() } else { current.params }
@@ -193,6 +193,11 @@ fn function(env Environment, id Int, arguments List[Int], constants List[StaticV
         index = index + 1
     }
     let preconditions = contracts(context, item.node, NodeKind.Requires)?
+    index = 0
+    while index < length(preconditions) {
+        context = assuming(context, get(preconditions, index), true, 0)
+        index = index + 1
+    }
     let body = if runtime_name == "" {
         block(context, child(item.node, part(item.node, NodeKind.Block)), current.result, true)?
     } else {

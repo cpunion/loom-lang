@@ -1,0 +1,128 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.ast.NodeKind
+import std.loom.binding.Program
+import std.loom.proof.implies
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+
+record FactShape { local Int size Int }
+
+fn refinement_declarations(source std.loom.binding.Program) Bool {
+    var index = 0
+    while index < length(source.symbols) {
+        if get(source.symbols, index).node.kind == NodeKind.Refined { return true }
+        index = index + 1
+    }
+    false
+}
+
+// Facts mention one immutable scalar binding only. In particular, an immutable
+// binding of a shared container does not make its fields or elements stable.
+fn fact_shape(context Context, value Expr, depth Int) FactShape {
+    let invalid = FactShape { local = -2 size = 0 }
+    let ty = base_type(context.env, value.ty)
+    if depth >= 64 || (ty != 1 && ty != 2 && ty != 5) || length(value.arms) != 0 { return invalid }
+    if value.kind == ExprKind.Local {
+        if get(context.locals, value.index).mutable { return invalid }
+        return FactShape { local = value.index size = 1 }
+    }
+    if value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool {
+        return FactShape { local = -1 size = 1 }
+    }
+    let unary = value.kind == ExprKind.Unary || value.kind == ExprKind.Coerce
+    if !unary && value.kind != ExprKind.Binary { return invalid }
+    if length(value.children) != (if unary { 1 } else { 2 }) { return invalid }
+    var local = -1
+    var size = 1
+    var index = 0
+    while index < length(value.children) {
+        let found = fact_shape(context, get(value.children, index), depth + 1)
+        if found.local == -2 || (local >= 0 && found.local >= 0 && local != found.local) { return invalid }
+        if found.local >= 0 { local = found.local }
+        size = size + found.size
+        if size > 256 { return invalid }
+        index = index + 1
+    }
+    FactShape { local = local size = size }
+}
+
+// Normalize only after selecting the real local ID. These expressions are proof
+// inputs, never emitted execution; refinement erasure is representation-preserving.
+fn normalized_fact(context Context, value Expr) Expr {
+    if value.kind == ExprKind.Coerce { return normalized_fact(context, get(value.children, 0)) }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, normalized_fact(context, get(value.children, index)))
+        index = index + 1
+    }
+    let local = value.kind == ExprKind.Local
+    Expr { kind = value.kind ty = base_type(context.env, value.ty) span = value.span
+        text = if local { "self" } else { value.text } index = if local { 0 } else { value.index }
+        children = children arms = value.arms falls = value.falls }
+}
+fn fact_operator(value Expr, text Text, children List[Expr]) Expr {
+    Expr { kind = if length(children) == 1 { ExprKind.Unary } else { ExprKind.Binary }
+        ty = 2 span = value.span text = text index = -1 children = children arms = value.arms falls = true }
+}
+fn fact_context(context Context, head Int) Context {
+    Context { env = context.env signature = context.signature arguments = context.arguments
+        constants = context.constants locals = context.locals bindings = context.bindings head = context.head
+        cleanups = context.cleanups cleanup_head = context.cleanup_head
+        facts = context.facts fact_head = head emit = context.emit }
+}
+fn remembered_fact(context Context, value Expr, truth Bool) Context {
+    let shape = fact_shape(context, value, 0)
+    if shape.local < 0 { return context }
+    let normalized = normalized_fact(context, value)
+    let predicate = if truth { normalized } else { fact_operator(normalized, "!", expressions(normalized)) }
+    let head = length(context.facts)
+    push(context.facts, Fact { local = shape.local predicate = predicate previous = context.fact_head })
+    fact_context(context, head)
+}
+fn assuming(context Context, value Expr, truth Bool, depth Int) Context {
+    if !context.env.has_refinements || depth >= 64 { return context }
+    // Keep the original for exact reuse, including compound Float predicates.
+    let known = remembered_fact(context, value, truth)
+    // Only these short-circuit outcomes establish both operands. Negation stays
+    // literal: !(x > 0.0) is not x <= 0.0 in the presence of NaN.
+    if value.kind == ExprKind.Unary && value.text == "!" {
+        return assuming(known, get(value.children, 0), !truth, depth + 1)
+    }
+    if value.kind == ExprKind.Binary && ((truth && value.text == "&&") || (!truth && value.text == "||")) {
+        let left = assuming(known, get(value.children, 0), truth, depth + 1)
+        return assuming(left, get(value.children, 1), truth, depth + 1)
+    }
+    known
+}
+fn fact_reference(context Context, value Expr) Int {
+    if value.kind == ExprKind.Coerce { return fact_reference(context, get(value.children, 0)) }
+    if value.kind != ExprKind.Local || get(context.locals, value.index).mutable { return -1 }
+    let ty = base_type(context.env, value.ty)
+    if ty == 1 || ty == 5 { value.index } else { -1 }
+}
+fn facts_imply(context Context, value Expr, goal Expr) Bool {
+    if context.fact_head < 0 { return false }
+    let local = fact_reference(context, value)
+    if local < 0 { return false }
+    var premise = goal
+    var count = 0
+    var steps = 0
+    var head = context.fact_head
+    while head >= 0 && steps < 256 && count < 32 {
+        let fact = get(context.facts, head)
+        if fact.local == local {
+            // Unsupported additional facts must not hide individually sufficient
+            // evidence. Combining facts is still useful for separate bounds.
+            if implies(fact.predicate, goal) { return true }
+            premise = if count == 0 { fact.predicate } else { fact_operator(premise, "&&", pair(premise, fact.predicate)) }
+            count = count + 1
+        }
+        head = fact.previous
+        steps = steps + 1
+    }
+    count > 0 && implies(premise, goal)
+}

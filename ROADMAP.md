@@ -153,6 +153,10 @@ frontend. Exact held predicates/conjuncts now discharge redundant Float
 refinement checks. General required Float postconditions still reject; integer
 algebra must not stand in for IEEE floating-point proofs.
 
+Lexical immutable-scalar facts from preconditions, assertions and branch guards
+now also discharge construction checks. Mutable/alias facts, cross-local
+relations, helper expansion and branch-join inference remain later work.
+
 Structural tuples, numeric projection, and plain-name destructuring now use the
 native aggregate path, including generics, shared containers, and compile-time
 results. More general patterns and runtime-sized task composition remain later
