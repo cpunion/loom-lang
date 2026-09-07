@@ -224,7 +224,11 @@ The [native basic benchmark](../../benchmarks/basic/README.md#managed-memory-low
 also records the managed-memory lowering repair, including same-session baseline
 comparisons for native kernels and whole compiler checks. Those measurements
 describe the earlier nonmoving runtime; they do not establish the performance
-of copying GC or complete the remaining resource/async design.
+of copying GC or complete the remaining resource/async design. A separate
+[moving-collector comparison](../../benchmarks/basic/README.md#moving-collector)
+records faster compiler-check CPU time but higher peak RSS, with noisy native
+kernel samples. Memory efficiency and the remaining language work are not closed
+by those results.
 
 Accepted language and deployment decisions remain targets, not claims that the
 whole design is implemented. Bootstrap agreement is not a correctness proof.

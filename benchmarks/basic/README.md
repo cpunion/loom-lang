@@ -154,3 +154,39 @@ Median absolute deviations were 2.786/1.636 ms.
 cover this comparison. It measures the native frontend, not LLVM build throughput
 or incremental reuse. Full Rust 1.88 validation and byte-identical bootstrap
 stages 2/3 also pass locally; cross-platform CI remains a separate gate.
+
+## Moving collector
+
+Commit `2b2c04d` adds relocating roots, small-object copying arenas and traced
+large objects. Ten rotated rounds compare it with the archived nonmoving
+compiler/runtime, on the same host and unchanged basic inputs.
+[Raw results](results/2026-09-07-macos-arm64-moving-basic.json) retain both
+build manifests and all samples. This session had substantial host variation;
+small deltas below the reported MAD do not establish a regression or improvement.
+
+Milliseconds, median of ten:
+
+| Case | Nonmoving Loom O3 | Moving Loom O3 | C O3 | Go | Rust O3 | Zig ReleaseFast |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Integer LCG | 77.856 | 77.210 | 76.475 | 84.214 | 72.376 | 79.170 |
+| Recursive fib | 149.899 | 145.357 | 111.864 | 151.943 | 108.472 | 118.667 |
+| Record value | 84.086 | 85.960 | 89.927 | 79.475 | 89.790 | 101.275 |
+| List build + scan | 81.069 | 83.616 | 76.656 | 122.733 | 70.862 | 78.620 |
+| Function value | 146.091 | 139.225 | 131.026 | 176.245 | 122.497 | 162.966 |
+
+List is +3.1%, with before/after MADs of 4.621/4.852 ms. The other nontrivial
+kernels vary from -4.7% to +2.2%; fib, record and callback samples are especially
+noisy. The arithmetic-safety differences above still apply: checked C/Rust fib
+medians are 143.967/159.615 ms. This is not a whole-language performance ranking.
+
+A separate ten-pair alternating check uses the same archived `compiler/loom`
+and `std` sources at `778cfe1`, warm OS caches and no incremental cache.
+[Samples and source/compiler hashes](results/2026-09-07-macos-arm64-moving-check.json)
+record CPU, wall time and peak RSS. Median CPU time decreases from 950 to 695 ms
+(-26.8%), with MADs of 60/25 ms; macOS rounds these CPU counters. Wall medians
+are 1464.943/1036.224 ms, but their 402.433/137.204 ms MADs show host contention.
+Peak RSS increases from 149.2 to 197.4 MiB (+32.3%). Copying collection needs
+temporary old/new storage; this memory cost remains visible, not an achieved
+memory-efficiency target. Small allocations are batched, obsolete arena slices
+remain charged until collection, and private pointer-map entries avoid redundant
+metadata. Ordinary access still needs no read barrier or executor.
