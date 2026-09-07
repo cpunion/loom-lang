@@ -112,10 +112,8 @@ fn conformances(env Environment) Result[Bool, Failure] {
             let ty = header.ty
             let expected = get(env.concepts, concept_index(env, capability)).methods
             let actual = owned_signatures(env, owner)
-            if length(actual) != length(expected) {
-                return Result.Err(failure(env, owner, item.node, "an implementation must define each concept method exactly once"))
-            }
             let methods = new[Int]()
+            var supplied = 0
             var index = 0
             while index < length(expected) {
                 let requirement = signature(env, get(expected, index), ints(ty), item.node)?
@@ -129,9 +127,26 @@ fn conformances(env Environment) Result[Bool, Failure] {
                     }
                     candidate = candidate + 1
                 }
-                if found < 0 { return Result.Err(failure(env, owner, item.node, "implementation method signature does not match its concept")) }
+                if found >= 0 {
+                    var previous = 0
+                    while previous < length(methods) {
+                        if get(methods, previous) == found {
+                            return Result.Err(failure(env, owner, item.node, "concept method signatures overlap for this implementation"))
+                        }
+                        previous = previous + 1
+                    }
+                    supplied = supplied + 1
+                } else {
+                    if !has(symbol(env, requirement.symbol).node, NodeKind.Block) {
+                        return Result.Err(failure(env, owner, item.node, "implementation is missing a required concept method"))
+                    }
+                    found = get(expected, index)
+                }
                 push(methods, found)
                 index = index + 1
+            }
+            if supplied != length(actual) {
+                return Result.Err(failure(env, owner, item.node, "implementation method signature does not match its concept"))
             }
             set(env.implementations, position, Implementation { symbol = owner capability = capability ty = ty methods = methods associated = header.associated state = 2 })
         }

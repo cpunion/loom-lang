@@ -66,6 +66,9 @@ across allocating arguments under forced collection. Static associated types
 normalize method signatures, generic results and bounded record/enum fields into
 ordinary concrete types, including compile-time results. Constraint evidence is
 checked at each type use rather than stored as permission on an interned type.
+Concept default bodies share this checking and specialization; explicit
+implementations may override them. Defaults can call required methods and use
+associated types, and dynamic defaults retain the same sparse-table reachability.
 Generic conformances and dynamic associated bindings remain open; compile-time
 dynamic execution and cross-dyn conversions are not supported by this slice.
 

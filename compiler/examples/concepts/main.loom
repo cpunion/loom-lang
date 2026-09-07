@@ -13,9 +13,26 @@ impl Display for Person {
     fn display(self Person) Text { self.name }
 }
 
-concept Rank { fn rank(self Self, offset Int) Int }
+concept Rank {
+    fn rank(self Self, offset Int) Int
+    fn doubled(self Self) Int { self.rank(0) + self.rank(0) }
+}
 impl Rank for Person {
     fn rank(self Person, offset Int) Int { self.score + offset }
+}
+impl Rank for Bool {
+    fn rank(self Bool, offset Int) Int { offset }
+    fn doubled(self Bool) Int { 101 }
+}
+
+concept Source {
+    type Item
+    fn first(self Self) Self.Item
+    fn copy(self Self) Self.Item { self.first() }
+}
+impl Source for Person {
+    type Item = Text
+    fn first(self Person) Text { self.name }
 }
 
 fn forward[T Display](value T) Text { to_text(value) }
@@ -44,6 +61,12 @@ fn exercise() {
     assert forward(1.25) == "1.25" && forward(true) == "true"
     assert render_any(person) == "Ada" && render_any(Hidden { value = 7 }) == "<value>"
     assert ranked(person) == "Ada:10"
+    assert person.doubled() == 20 && true.doubled() == 101
+    assert person.copy() == "Ada"
+    let dynamic dyn Rank = person
+    let overridden dyn Rank = true
+    assert dynamic.doubled() == 20 && overridden.doubled() == 101
+    assert comptime { Person { name = "Loom" score = 3 }.doubled() } == 6
     let fixed = comptime { forward(Person { name = "Loom" score = 1 }) }
     assert fixed == "Loom"
 

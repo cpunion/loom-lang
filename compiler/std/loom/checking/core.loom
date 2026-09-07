@@ -253,7 +253,9 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
     index = 0
     while index < length(env.signatures) {
         let signature = get(env.signatures, index)
-        if !prototype(env, signature.symbol) { discard function(env, index, abstract_arguments(env, signature.parameters), unknown_constants(signature), false)? }
+        if !prototype(env, signature.symbol) || has(symbol(env, signature.symbol).node, NodeKind.Block) {
+            discard function(env, index, abstract_arguments(env, signature.parameters), unknown_constants(signature), false)?
+        }
         index = index + 1
     }
     var entry = -1
