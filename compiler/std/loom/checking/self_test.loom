@@ -19,7 +19,7 @@ fn self_check(path Text) {
     match load(path, "compiler/std", false) {
         Result.Err(message) => { discard write_error(concat(message, "\n"))
             assert false }
-        Result.Ok(loaded) => match bind(loaded.files, loaded.root, false) {
+        Result.Ok(loaded) => match bind(loaded, false) {
             Result.Err(failure) => { show_failure(loaded, failure)
                 assert false }
             Result.Ok(bound) => match check(bound) {

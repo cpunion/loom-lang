@@ -10,7 +10,8 @@ import std.result.Result
 fn visible_concept(context Context, capability Int) Bool {
     let target = symbol(context.env, capability)
     let here = symbol(context.env, context.signature.symbol)
-    let path = qualify(get(context.env.source.files, target.file).package, target.name)
+    let path = qualify(package_label(context.env.source.modules, context.env.source.packages,
+        get(context.env.source.files, target.file).package), target.name)
     let options = candidates(context.env.source, here.file, here.test_only, path)
     var index = 0
     while index < length(options) {

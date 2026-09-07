@@ -152,7 +152,7 @@ fn constraint_error(context Context, node Node) Result[Int, Failure] {
     while index < length(context.env.source.symbols) {
         let item = symbol(context.env, index)
         let file = get(context.env.source.files, item.file)
-        if file.package == "std.result" && file.trusted_std && item.public && !item.test_only && item.name == "ConstraintError" { declaration = index }
+        if package_label(context.env.source.modules, context.env.source.packages, file.package) == "std.result" && file.trusted_std && item.public && !item.test_only && item.name == "ConstraintError" { declaration = index }
         index = index + 1
     }
     if declaration < 0 { return Result.Err(error(context, node, "checked construction requires std.result.ConstraintError")) }

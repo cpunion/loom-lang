@@ -1,4 +1,7 @@
 import std.loom.project.SourceFile
+import std.loom.project.ModuleInstance
+import std.loom.project.Package
+import std.loom.project.PackageImport
 import std.loom.parser.parse
 import std.list.new
 import std.list.push
@@ -9,9 +12,13 @@ test fn bind_supplied_source_without_reading_a_project() {
         Result.Err(_) => { assert false }
         Result.Ok(tree) => {
             let files = new[SourceFile]()
-            push(files, SourceFile { package = "app" path = "memory.loom" text = text
+            push(files, SourceFile { package = 0 path = "memory.loom" text = text
                 tree = tree test_only = false trusted_std = false })
-            match analyze(Project { files = files root = "app" }, false) {
+            let modules = new[ModuleInstance]()
+            push(modules, ModuleInstance { name = "app" source = "memory:app" })
+            let packages = new[Package]()
+            push(packages, Package { instance = 0 relative = "" imports = new[PackageImport]() })
+            match analyze(Project { files = files modules = modules packages = packages root = 0 }, false) {
                 Result.Err(_) => { assert false }
                 Result.Ok(program) => {
                     assert length(program.symbols) == 2

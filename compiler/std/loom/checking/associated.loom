@@ -206,7 +206,7 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
         let declaration = symbol(env, capability.symbol)
         let bound = required(obligations, receiver, capability.symbol) || own == capability.symbol
         let visible = bound || concept_named(env, owner, node,
-            qualify(get(env.source.files, declaration.file).package, declaration.name))? == capability.symbol
+            qualify(package_label(env.source.modules, env.source.packages, get(env.source.files, declaration.file).package), declaration.name))? == capability.symbol
         if ((selected < 0 && (!bound_only || bound)) || selected == capability.symbol) && visible &&
             (bound || admitted(env, owner, obligations, receiver, capability.symbol)?) {
             var member = 0

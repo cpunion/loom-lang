@@ -1,0 +1,5 @@
+[module]
+name = "other"
+
+[dependencies.seed]
+path = "../alternate"

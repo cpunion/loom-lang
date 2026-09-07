@@ -11,32 +11,91 @@ import std.list.push
 import std.list.get
 import std.list.set
 import std.list.length
+import std.text.byte
+import std.text.length
+import std.text.slice
+import std.text.concat
 import std.result.Result
 
-fn source(package Text, path Text, text Text, test_only Bool, trusted Bool) SourceFile {
+record TestFile { package Text path Text text Text tree Node test_only Bool trusted_std Bool }
+
+fn source(package Text, path Text, text Text, test_only Bool, trusted Bool) TestFile {
     let tree = match parse(text) {
         Result.Ok(tree) => tree
         Result.Err(_) => { assert false
             source(package, path, "", test_only, trusted).tree }
     }
-    SourceFile { package = package path = path text = text tree = tree test_only = test_only trusted_std = trusted }
+    TestFile { package = package path = path text = text tree = tree test_only = test_only trusted_std = trusted }
 }
-fn bound(files List[SourceFile], tests Bool) Program {
-    match bind(files, "app", tests) {
+fn fixture_package(modules List[ModuleInstance], packages List[Package], spelling Text) Int {
+    var dot = 0
+    while dot < length(spelling) && byte(spelling, dot) != 46 { dot = dot + 1 }
+    let name = slice(spelling, 0, dot)
+    let relative = if dot == length(spelling) { "" } else { slice(spelling, dot + 1, length(spelling)) }
+    var owner = 0
+    while owner < length(modules) && get(modules, owner).name != name { owner = owner + 1 }
+    if owner == length(modules) { push(modules, ModuleInstance { name = name source = concat("/", name) }) }
+    var index = 0
+    while index < length(packages) {
+        let current = get(packages, index)
+        if current.instance == owner && current.relative == relative { return index }
+        index = index + 1
+    }
+    push(packages, Package { instance = owner relative = relative imports = new[PackageImport]() })
+    index
+}
+fn fixture_project(inputs List[TestFile]) Project {
+    let modules = new[ModuleInstance]()
+    let packages = new[Package]()
+    let root = fixture_package(modules, packages, "app")
+    let files = new[SourceFile]()
+    var index = 0
+    while index < length(inputs) {
+        let file = get(inputs, index)
+        let package_id = fixture_package(modules, packages, file.package)
+        push(files, SourceFile { package = package_id path = file.path text = file.text tree = file.tree
+            test_only = file.test_only trusted_std = file.trusted_std })
+        index = index + 1
+    }
+    index = 0
+    while index < length(files) {
+        let file = get(files, index)
+        let imports = get(packages, file.package).imports
+        var item = 0
+        while item < length(file.tree.children) {
+            let node = get(file.tree.children, item)
+            if node.kind == NodeKind.Import {
+                let spelling = package(node.value)
+                var target = 0
+                while target < length(packages) && package_label(modules, packages, target) != spelling {
+                    target = target + 1
+                }
+                if target < length(packages) && import_target(modules, packages, file.package, spelling) < 0 {
+                    push(imports, PackageImport { spelling = spelling target = target })
+                }
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    Project { files = files modules = modules packages = packages root = root }
+}
+fn bound(files List[TestFile], tests Bool) Program {
+    match bind(fixture_project(files), tests) {
         Result.Ok(program) => program
         Result.Err(_) => { assert false
-            bound(new[SourceFile](), tests) }
+            bound(new[TestFile](), tests) }
     }
 }
-fn rejected(files List[SourceFile]) Failure {
-    match bind(files, "app", false) {
+fn rejected(files List[TestFile]) Failure {
+    match bind(fixture_project(files), false) {
         Result.Err(failure) => failure
         Result.Ok(_) => { assert false
             rejected(files) }
     }
 }
-fn one_source(text Text) List[SourceFile] {
-    let files = new[SourceFile]()
+fn one_source(text Text) List[TestFile] {
+    let files = new[TestFile]()
     push(files, source("app", "app/main.loom", text, false, false))
     files
 }
@@ -102,6 +161,67 @@ test fn private_and_unimported_names_are_not_exported() {
     assert failure.diagnostic.message == "import does not name an accessible declaration"
 }
 
+test fn same_name_module_instances_keep_imports_privacy_and_tests_separate() {
+    let inputs = one_source("import left.read\nimport right.read\nfn main() {}")
+    push(inputs, source("left", "left/main.loom", "import seed.value\nimport seed.Token\npub fn read() Int { value() }", false, false))
+    push(inputs, source("right", "right/main.loom", "import seed.value\nimport seed.Token\npub fn read() Int { value() }", false, false))
+    push(inputs, source("seed", "seed-v1/main.loom", "pub record Token {}\npub fn value() Int { 42 }\nfn secret() {}\ntest fn dependency_test() {}", false, false))
+    push(inputs, source("seed", "seed-v2/main.loom", "pub record Token {}\npub fn value() Int { 99 }\nfn secret() {}\ntest fn dependency_test() {}", false, false))
+    let modules = new[ModuleInstance]()
+    push(modules, ModuleInstance { name = "app" source = "/app" })
+    push(modules, ModuleInstance { name = "left" source = "/left" })
+    push(modules, ModuleInstance { name = "right" source = "/right" })
+    push(modules, ModuleInstance { name = "seed" source = "/seed-v1" })
+    push(modules, ModuleInstance { name = "seed" source = "/seed-v2" })
+    let packages = new[Package]()
+    let files = new[SourceFile]()
+    var index = 0
+    while index < length(inputs) {
+        let file = get(inputs, index)
+        push(packages, Package { instance = index relative = "" imports = new[PackageImport]() })
+        push(files, SourceFile { package = index path = file.path text = file.text tree = file.tree
+            test_only = file.test_only trusted_std = file.trusted_std })
+        index = index + 1
+    }
+    push(get(packages, 0).imports, PackageImport { spelling = "left" target = 1 })
+    push(get(packages, 0).imports, PackageImport { spelling = "right" target = 2 })
+    push(get(packages, 1).imports, PackageImport { spelling = "seed" target = 3 })
+    push(get(packages, 2).imports, PackageImport { spelling = "seed" target = 4 })
+    let project = Project { files = files modules = modules packages = packages root = 0 }
+    let program = match bind(project, true) {
+        Result.Ok(program) => program
+        Result.Err(_) => { assert false
+            bound(new[TestFile](), false) }
+    }
+    assert package_label(modules, packages, 3) == package_label(modules, packages, 4)
+    assert length(candidates(program, 0, false, "read")) == 2
+    assert length(candidates(program, 0, false, "seed.value")) == 0
+    index = 1
+    while index <= 2 {
+        let values = candidates(program, index, false, "seed.value")
+        let tokens = candidates(program, index, false, "Token")
+        assert length(values) == 1 && length(tokens) == 1
+        assert get(program.symbols, get(values, 0)).file == index + 2
+        assert get(program.symbols, get(tokens, 0)).file == index + 2
+        assert length(candidates(program, index, false, "seed.secret")) == 0
+        let secrets = candidates(program, index + 2, false, "seed.secret")
+        assert length(secrets) == 1
+        assert get(program.symbols, get(secrets, 0)).file == index + 2
+        assert length(candidates(program, index + 2, true, "dependency_test")) == 0
+        index = index + 1
+    }
+    let private_file = source("left", "left/main.loom", "import seed.secret\npub fn read() Int { 0 }", false, false)
+    set(files, 1, SourceFile { package = 1 path = private_file.path text = private_file.text
+        tree = private_file.tree test_only = false trusted_std = false })
+    match bind(project, false) {
+        Result.Err(failure) => {
+            assert failure.source == 1
+            assert failure.diagnostic.message == "import does not name an accessible declaration"
+        }
+        Result.Ok(_) => { assert false }
+    }
+}
+
 test fn indexed_names_preserve_order_without_duplicates_or_shared_results() {
     let files = one_source("import tools.util.pick\nimport extra.pick\nfn pick(x Text) Text { x }")
     push(files, source("tools.util", "util/pick.loom", "pub fn pick(x Int) Int { x }", false, false))
@@ -142,7 +262,7 @@ test fn tests_cannot_extend_production_scope_or_select_dependency_tests() {
     assert length(candidates(tests, 0, true, "inline")) == 1
     assert length(candidates(tests, 2, true, "dependency_test")) == 0
     set(files, 0, source("app", "app/main.loom", "import app.helper\nfn main() {}", false, false))
-    match bind(files, "app", true) {
+    match bind(fixture_project(files), true) {
         Result.Err(_) => {}
         Result.Ok(_) => { assert false }
     }
@@ -159,7 +279,7 @@ test fn declaration_names_and_intrinsic_trust_are_checked() {
     assert rejected(one_source("fn f(x Int, x Bool) {}" )).diagnostic.message == "duplicate declaration member"
     assert rejected(one_source("enum Empty {}" )).diagnostic.message == "an enum needs at least one variant"
     assert rejected(one_source("intrinsic fn read() Int\n" )).diagnostic.message == "intrinsics are private declarations of the trusted standard library"
-    let files = new[SourceFile]()
+    let files = new[TestFile]()
     push(files, source("std.file", "std/file/file.loom", "intrinsic fn read() Int\n", false, true))
     let program = bound(files, false)
     assert has(get(program.symbols, 0).node, NodeKind.Intrinsic)

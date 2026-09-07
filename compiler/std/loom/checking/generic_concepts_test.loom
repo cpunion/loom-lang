@@ -64,15 +64,15 @@ test fn generic_test_only_evidence_can_be_forwarded_without_global_discovery() {
     let definitions = "concept Value { fn value(self Self) Int }\nconcept Inner { fn inner(self Self) Int }\nrecord Box[T] { value T }\nfn use[T Value](value T) Int { value.value() }\nfn visible[T](value T) Bool { comptime if T implements Value { true } else { false } }\n"
     let files = source_files(definitions)
     let testing = source_file("app", "impl Inner for Int { fn inner(self Int) Int { self } }\nimpl[T Inner] Value for Box[T] { fn value(self Box[T]) Int { self.value.inner() } }\ntest fn verify() { assert use(Box { value = 7 }) == 7\nassert !visible(Box { value = 7 }) }", false)
-    push(files, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
-    match bind(files, "app", true) {
+    push(files, TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(fixture_project(files), true) {
         Result.Ok(bound) => match check(bound) { Result.Ok(_) => {}
             Result.Err(_) => { assert false } }
         Result.Err(_) => { assert false }
     }
     let invalid = source_files(concat(definitions, "pub fn hidden() Int { use(Box { value = 7 }) }"))
-    push(invalid, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
-    match bind(invalid, "app", true) {
+    push(invalid, TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(fixture_project(invalid), true) {
         Result.Ok(bound) => match check(bound) { Result.Err(_) => {}
             Result.Ok(_) => { assert false } }
         Result.Err(_) => { assert false }
