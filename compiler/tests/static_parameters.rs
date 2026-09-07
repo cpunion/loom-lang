@@ -111,3 +111,84 @@ fn main() { discard render(3, true) }"#
         assert!(!String::from_utf8_lossy(&output.stdout).contains("unexpected-static-io"));
     }
 }
+
+#[test]
+fn static_function_arguments_are_direct_and_preserve_preconditions_and_effects() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("main.loom");
+    fs::write(
+        &source,
+        r#"
+fn first(value Int) Int requires value > 0 { value + 1 }
+fn second(value Int) Int { value + 2 }
+fn choose() fn(Int) Int { second }
+fn apply(value Int, comptime action fn(Int) Int) Int { action(value) }
+fn main() { assert apply(1, first) == 2
+    assert apply(1, choose()) == 3
+    assert apply(2, second) == 4 }
+"#,
+    )
+    .unwrap();
+    let artifact = common::executable(package.path(), "static-functions");
+    let ir = package.path().join("static-functions.ll");
+    success(
+        &common::command(&[
+            "build",
+            package.path().to_str().unwrap(),
+            "--output",
+            artifact.to_str().unwrap(),
+            "--emit-ir",
+            ir.to_str().unwrap(),
+        ])
+        .env("LOOM_OPT_LEVEL", "0")
+        .output()
+        .unwrap(),
+    );
+    success(&Command::new(&artifact).output().unwrap());
+    let ir = fs::read_to_string(ir).unwrap();
+    let functions: Vec<_> = ir
+        .lines()
+        .filter(|line| line.starts_with("define ") && line.contains("@loom.fn."))
+        .collect();
+    assert_eq!(functions.len(), 5, "{functions:?}");
+    assert!(
+        functions.iter().all(|line| !line.contains("ptr ")),
+        "callback ABI: {functions:?}"
+    );
+    assert!(
+        !ir.lines().any(|line| line.contains("call i64 %")),
+        "indirect callback: {ir}"
+    );
+
+    for invocation in ["apply(0, first)", "comptime { apply(0, first) }"] {
+        fs::write(&source, format!("fn first(value Int) Int requires value > 0 {{ value }}\nfn apply(value Int, comptime action fn(Int) Int) Int {{ action(value) }}\nfn main() {{ discard {invocation} }}")).unwrap();
+        let command = if invocation.starts_with("comptime") {
+            "check"
+        } else {
+            "run"
+        };
+        let output = loom(&[command, package.path().to_str().unwrap()]);
+        assert!(!output.status.success(), "ignored precondition: {output:?}");
+        assert!(!output.stderr.is_empty());
+    }
+    let declarations = "import std.io.write_text\nfn effect(value Int) Int { discard write_text(\"runtime-callback\")\nvalue }\nfn apply(value Int, comptime action fn(Int) Int) Int { action(value) }\n";
+    fs::write(
+        &source,
+        format!("{declarations}fn main() {{ assert apply(1, effect) == 1 }}"),
+    )
+    .unwrap();
+    let checked = loom(&["check", package.path().to_str().unwrap()]);
+    success(&checked);
+    assert!(!String::from_utf8_lossy(&checked.stdout).contains("runtime-callback"));
+    let ran = loom(&["run", package.path().to_str().unwrap()]);
+    success(&ran);
+    assert!(String::from_utf8_lossy(&ran.stdout).contains("runtime-callback"));
+    fs::write(
+        &source,
+        format!("{declarations}fn main() {{ discard comptime {{ apply(1, effect) }} }}"),
+    )
+    .unwrap();
+    let rejected = loom(&["check", package.path().to_str().unwrap()]);
+    assert!(!rejected.status.success());
+    assert!(!String::from_utf8_lossy(&rejected.stdout).contains("runtime-callback"));
+}

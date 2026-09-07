@@ -48,6 +48,14 @@ fn shadowed(comptime count Int) Int {
 }
 fn unchanged(value Int, comptime label Bool) Int ensures result == value { value }
 
+fn apply[T](value T, comptime action fn(T) T) T { action(value) }
+fn static_repeat[T](value T, comptime action fn(T) T, comptime count Int) T {
+    comptime if count <= 0 { value } else { static_repeat(action(value), action, count - 1) }
+}
+fn identity[T](value T) T { value }
+fn append(values List[Text]) List[Text] { push(values, "added")
+    values }
+
 fn exercise() {
     assert repeat(39, increment, 3) == 42
     assert repeat(9223372036854775807, increment, 0) == 9223372036854775807
@@ -65,6 +73,14 @@ fn exercise() {
     assert render(12, true) == "12" && render(12, false) == "quiet"
     assert render((1, 2), true) == "<value>"
     assert unchanged(6, false) == 6 && unchanged(7, true) == 7
+    assert apply(4, increment) == 5 && apply(4, double) == 8
+    assert apply(4, choose(true)) == 8
+    assert apply("text", identity) == "text" && apply(true, identity[Bool])
+    assert static_repeat(3, double, 4) == 48
+    assert comptime { static_repeat(39, increment, 3) } == 42
+    let shared = new[Text]()
+    let alias = static_repeat(shared, append, 3)
+    assert length(shared) == 3 && get(alias, 2) == "added"
     let trace = new[Int]()
     assert sum(observed(trace, 1), bias(), observed(trace, 2)) == 8
     assert sum(1, { let fresh = 2
