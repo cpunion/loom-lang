@@ -13,6 +13,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr::{self, NonNull};
 
 mod file_io;
+mod process_io;
 
 type Trace = unsafe extern "C" fn(*mut u8);
 
@@ -691,6 +692,43 @@ unsafe extern "C" fn loom_rt_process_run_input(arguments: *const u8, input: *con
 }
 
 #[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_process_capture(
+    arguments: *const u8,
+    stdout: *mut u8,
+    stderr: *mut u8,
+) -> i64 {
+    // SAFETY: Command copies literal argv before any managed allocation. Reader
+    // threads own only Rust storage; all Loom heap access stays on this thread.
+    let command = match unsafe { process_command(arguments) } {
+        Ok(command) => command,
+        Err(status) => return status,
+    };
+    let output = match process_io::capture(command) {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => fault("out of memory"),
+        Err(_) => return -1,
+    };
+    rooted([stdout, stderr], |slots| {
+        for (index, bytes) in [&output.stdout, &output.stderr].into_iter().enumerate() {
+            if !bytes.is_empty() {
+                // SAFETY: Both headers remain rooted across each reserve. Input
+                // bytes are Rust-owned; reserve returns the relocated header.
+                unsafe {
+                    let buffer = reserve(*slots.add(index), bytes.len(), 1);
+                    ptr::copy_nonoverlapping(
+                        bytes.as_ptr(),
+                        (*buffer).data.add((*buffer).len),
+                        bytes.len(),
+                    );
+                    (*buffer).len += bytes.len();
+                }
+            }
+        }
+    });
+    process_status(Ok(output.status))
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn loom_rt_process_exit(code: i64) -> ! {
     let code = u8::try_from(code).unwrap_or_else(|_| fault("exit code out of range"));
     std::process::exit(i32::from(code))
@@ -1091,6 +1129,64 @@ mod tests {
             *(*buffer).data.add((*buffer).len) = byte;
             (*buffer).len += 1;
         });
+    }
+
+    #[test]
+    fn process_capture_appends_binary_outputs_and_reloads_shared_buffers() {
+        use process_io::{TEST_BYTES, TEST_NAME, TEST_TOKEN};
+        let executable = std::env::current_exe().unwrap();
+        rooted([ptr::null_mut(); 4], |slots| unsafe {
+            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
+            *slots.add(1) = loom_rt_bytes_new();
+            *slots.add(2) = loom_rt_bytes_new();
+            bytes_push(*slots.add(1), b'!');
+            bytes_push(*slots.add(2), b'?');
+            assert_eq!(
+                loom_rt_process_capture(*slots, *slots.add(1), *slots.add(2)),
+                -2
+            );
+            *slots.add(3) = text("invalid\0executable");
+            list_push(*slots, slots.add(3).cast());
+            assert_eq!(
+                loom_rt_process_capture(*slots, *slots.add(1), *slots.add(2)),
+                -1
+            );
+            assert_eq!(buffer_bytes(*slots.add(1)), b"!");
+            assert_eq!(buffer_bytes(*slots.add(2)), b"?");
+            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
+            for argument in [
+                executable.to_str().unwrap(),
+                "--ignored",
+                "--exact",
+                TEST_NAME,
+                "--nocapture",
+                "--skip",
+                TEST_TOKEN,
+            ] {
+                *slots.add(3) = text(argument);
+                list_push(*slots, slots.add(3).cast());
+            }
+            *slots.add(3) = *slots.add(1);
+            let previous = *slots.add(1) as usize;
+            HEAP.with(|heap| heap.borrow_mut().threshold = 0);
+            assert_eq!(
+                loom_rt_process_capture(*slots, *slots.add(1), *slots.add(2)),
+                7
+            );
+            assert_ne!(*slots.add(1) as usize, previous);
+            assert_eq!(*slots.add(1), *slots.add(3));
+            let stdout = (0..TEST_BYTES)
+                .map(|index| (index % 256) as u8)
+                .collect::<Vec<_>>();
+            let stderr = (0..TEST_BYTES)
+                .map(|index| (255 - index % 256) as u8)
+                .collect::<Vec<_>>();
+            assert_eq!(buffer_bytes(*slots.add(1))[0], b'!');
+            assert!(buffer_bytes(*slots.add(1)).ends_with(&stdout));
+            assert_eq!(&buffer_bytes(*slots.add(2))[1..], stderr);
+        });
+        loom_rt_collect();
+        assert_eq!(live(), 0);
     }
 
     #[test]

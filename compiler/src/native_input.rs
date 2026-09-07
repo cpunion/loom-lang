@@ -623,6 +623,14 @@ impl Converter<'_> {
                     .iter()
                     .map(|child| self.expr(child))
                     .collect::<Result<Vec<_>>>()?;
+                if operation == Primitive::ProcessCapture
+                    && (ty != Type::Int
+                        || !matches!(arguments[0].ty, Type::List(id) if self.program.lists[id] == Type::Text)
+                        || arguments[1].ty != Type::Bytes
+                        || arguments[2].ty != Type::Bytes)
+                {
+                    return Err("checked process capture type mismatch".into());
+                }
                 let signature: Option<(&[Type], Type)> = match operation {
                     Primitive::BytesGet => Some((&[Type::Bytes, Type::Int], Type::Int)),
                     Primitive::BytesSet => Some((&[Type::Bytes, Type::Int, Type::Int], Type::Unit)),
@@ -867,6 +875,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "exit" => P::Exit,
         "process_run" => P::ProcessRun,
         "process_run_input" => P::ProcessRunInput,
+        "process_capture" => P::ProcessCapture,
         "bytes_new" => P::BytesNew,
         "bytes_len" => P::BytesLen,
         "bytes_get" => P::BytesGet,
@@ -925,7 +934,13 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::ListPush
         | P::DirectoryRead
         | P::PathCanonical => 2,
-        P::TextSlice | P::BytesSet | P::ListSet | P::Read | P::Write | P::WriteBytes => 3,
+        P::TextSlice
+        | P::BytesSet
+        | P::ListSet
+        | P::Read
+        | P::Write
+        | P::WriteBytes
+        | P::ProcessCapture => 3,
     }
 }
 
@@ -940,6 +955,53 @@ mod tests {
             children.len(),
             children.concat()
         )
+    }
+
+    #[test]
+    fn process_capture_wire_requires_text_arguments_and_two_byte_buffers() {
+        let stream = |params: &[usize], result| {
+            let arguments = params
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| node(3, *ty, "", index as i64, &[]))
+                .collect::<Vec<_>>();
+            let call = node(7, result, "process_capture", -1, &arguments);
+            let body = node(11, result, "", -1, &[call]);
+            let params = format!(
+                "{}\n{}",
+                params.len(),
+                params
+                    .iter()
+                    .map(|ty| format!("{ty}\n"))
+                    .collect::<String>()
+            );
+            format!(
+                "loom-checked-1\n6\n0\n-1\n1\n-1\n3\n-1\n4\n-1\n6\n-1\n2\n6\n-1\n1\n1\n0\n0\n0\n{params}{result}\n{params}0\n{body}-1\n0\n1\n0\n"
+            )
+        };
+        let program = decode(&stream(&[4, 3, 3], 1)).unwrap();
+        assert!(matches!(
+            program.functions[0].body.tail.as_ref().unwrap().kind,
+            c::ExprKind::Primitive(Primitive::ProcessCapture, _)
+        ));
+        for (params, result) in [
+            ([5, 3, 3], 1),
+            ([2, 3, 3], 1),
+            ([4, 2, 3], 1),
+            ([4, 3, 2], 1),
+            ([4, 3, 3], 0),
+        ] {
+            assert!(
+                decode(&stream(&params, result))
+                    .unwrap_err()
+                    .contains("process capture type mismatch")
+            );
+        }
+        assert!(
+            decode(&stream(&[4, 3], 1))
+                .unwrap_err()
+                .contains("arity mismatch")
+        );
     }
 
     #[test]
