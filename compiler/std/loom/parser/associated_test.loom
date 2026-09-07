@@ -5,7 +5,7 @@ test fn associated_members_and_projections_preserve_their_source_shape() {
     assert declaration.kind == NodeKind.AssociatedType && declaration.value == "Item"
     assert length(declaration.children) == 0 && declaration.span.end - declaration.span.start == 9
     assert child(child(child(capability, 2), 2), 0).value == "Self.Item"
-    let binding = child(child(tree, 1), 2)
+    let binding = child(child(tree, 1), 3)
     assert binding.kind == NodeKind.AssociatedType && binding.value == "Item"
     assert length(binding.children) == 1 && child(binding, 0).value == "Int"
     let holder = child(tree, 2)

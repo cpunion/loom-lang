@@ -133,8 +133,10 @@ tables, including generic calls and managed aggregate storage. Static associated
 types and bounded generic records/enums normalize under explicit declaration or
 branch evidence. Concept default methods use abstract Self checking and the same
 static/dynamic call paths; explicit overrides remain authoritative. Generic
-implementations and binding-aware dynamic associated
-types remain open; there is no runtime conformance registry or erased-value
+implementations infer target parameters and recursively check prerequisites,
+including associated bindings and dynamic witness calls. Potentially overlapping
+implementations reject. Binding-aware dynamic associated types remain open;
+there is no runtime conformance registry or erased-value
 type discovery.
 
 Native binary64 `Float`, source numeric parsing/conversion, compile-time execution

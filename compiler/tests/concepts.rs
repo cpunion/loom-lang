@@ -3,6 +3,47 @@ mod common;
 use common::success;
 
 #[test]
+fn generic_conformances_specialize_nested_receivers_without_runtime_evidence() {
+    let source = tempfile::tempdir().unwrap();
+    fs::write(
+        source.path().join("main.loom"),
+        r#"
+concept Value { fn value(self Self) Int }
+record Wrap[T] { inner T }
+impl Value for Int { fn value(self Int) Int { self } }
+impl[T Value] Value for Wrap[T] { fn value(self Wrap[T]) Int { self.inner.value() } }
+fn forward[T Value](value T) Int { value.value() }
+fn main() { assert forward(Wrap { inner = Wrap { inner = 42 } }) == 42 }
+"#,
+    )
+    .unwrap();
+    let executable = common::executable(source.path(), "generic");
+    let ir = source.path().join("generic.ll");
+    success(
+        &common::command(&[
+            "build",
+            source.path().to_str().unwrap(),
+            "--output",
+            executable.to_str().unwrap(),
+            "--emit-ir",
+            ir.to_str().unwrap(),
+        ])
+        .env("LOOM_OPT_LEVEL", "0")
+        .output()
+        .unwrap(),
+    );
+    success(&Command::new(executable).output().unwrap());
+    let ir = fs::read_to_string(ir).unwrap();
+    assert_eq!(
+        ir.lines()
+            .filter(|line| line.starts_with("define ") && line.contains("@loom.fn."))
+            .count(),
+        5
+    );
+    assert!(!ir.contains("loom_rt_") && !ir.contains("@loom.witness"));
+}
+
+#[test]
 fn static_concepts_emit_only_selected_calls_and_keep_native_value_layouts() {
     let source = tempfile::tempdir().unwrap();
     fs::write(

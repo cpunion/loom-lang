@@ -124,7 +124,7 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
         push(declarations, input)
         push(values, value)
         if field_matches {
-            if value.ty != get(shape, index) && !can_widen(context, value.ty, get(shape, index)) { field_matches = false }
+            if value.ty != get(shape, index) && !can_widen(context, value.ty, get(shape, index))? { field_matches = false }
         }
         index = index + 1
     }

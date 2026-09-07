@@ -198,7 +198,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
     while index < length(source.symbols) {
         let item = symbol(env, index)
         if item.node.kind == NodeKind.Function {
-            let count = if prototype(env, index) { 1 } else { length(group(item.node, NodeKind.TypeParameters)) }
+            let count = if prototype(env, index) { 1 } else { length(type_parameters(env, index)) }
             if item.owner >= 0 && length(group(item.node, NodeKind.TypeParameters)) != 0 {
                 return Result.Err(failure(env, index, item.node, "concept and implementation methods do not yet take type parameters"))
             }

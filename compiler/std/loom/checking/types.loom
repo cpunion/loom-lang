@@ -123,7 +123,7 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
     if node.value == "Bytes" { builtin = 4 }
     if node.value == "Float" { builtin = 5 }
     if node.value == "Unit" { return Result.Err(failure(env, owner, node, "omit Unit; it is not a source type")) }
-    let parameters = group(symbol(env, owner).node, NodeKind.TypeParameters)
+    let parameters = type_parameters(env, owner)
     var index = 0
     while index < length(parameters) {
         if node.value == get(parameters, index).value { builtin = get(arguments, index) }
