@@ -24,6 +24,10 @@ use std::{
 mod dynamic;
 #[path = "llvm_gc.rs"]
 mod gc;
+#[path = "llvm_gc_lower.rs"]
+mod gc_lower;
+#[path = "llvm_memory.rs"]
+mod memory;
 
 type NativeResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -186,9 +190,9 @@ fn emit_checked(
                 &module,
                 &builder,
                 program,
+                &allocating,
                 source,
                 &locals,
-                size_type,
                 &mut tracers,
             )?
         } else {
@@ -266,6 +270,18 @@ fn emit_checked(
     }
     trace_phase("optimize");
     module.verify().map_err(|error| error.to_string())?;
+    // Inline source abstractions before committing to physical root frames.
+    // These opaque markers preserve managed snapshots through the early pass.
+    if optimization != OptimizationLevel::None {
+        module
+            .run_passes(
+                "function(sroa,early-cse),cgscc(inline)",
+                &machine,
+                PassBuilderOptions::create(),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    gc_lower::lower(&context, &module, &machine)?;
     let pipeline = match optimization {
         OptimizationLevel::None => "default<O0>",
         OptimizationLevel::Less => "default<O1>",
@@ -443,8 +459,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     fn leave_roots(&self) -> NativeResult<()> {
-        if let Some(checkpoint) = self.roots.checkpoint {
-            self.runtime_call("roots_leave", None, &[checkpoint.into()])?;
+        for slot in &self.roots.slots {
+            gc_lower::end(self.context, self.module, self.builder, *slot)?;
         }
         Ok(())
     }
@@ -494,8 +510,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             Primitive::FloatParse => ("float_parse", Some(self.context.f64_type().into())),
             Primitive::FloatFormat => ("float_format", Some(pointer.into())),
-            Primitive::TextLen => ("text_len", Some(i64_type.into())),
-            Primitive::TextByte => ("text_byte", Some(i64_type.into())),
+            Primitive::TextLen | Primitive::BytesLen | Primitive::ListLen => {
+                return Ok(Some(
+                    self.memory_len(values[0].into_pointer_value())?.into(),
+                ));
+            }
+            Primitive::TextByte => {
+                return Ok(Some(
+                    self.text_byte(values[0].into_pointer_value(), values[1].into_int_value())?
+                        .into(),
+                ));
+            }
             Primitive::TextConcat => ("text_concat", Some(pointer.into())),
             Primitive::TextEqual => ("text_equal", Some(self.context.i32_type().into())),
             Primitive::TextSlice => ("text_slice", Some(pointer.into())),
@@ -514,8 +539,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::ProcessRunInput => ("process_run_input", Some(i64_type.into())),
             Primitive::Exit => ("process_exit", None),
             Primitive::BytesNew => ("bytes_new", Some(pointer.into())),
-            Primitive::BytesLen => ("bytes_len", Some(i64_type.into())),
-            Primitive::BytesPush => ("bytes_push", None),
+            Primitive::BytesPush | Primitive::ListPush => {
+                self.buffer_push(
+                    values[0].into_pointer_value(),
+                    values[1],
+                    operation == Primitive::BytesPush,
+                )?;
+                return Ok(None);
+            }
             Primitive::BytesUtf8 => ("bytes_utf8", Some(self.context.i32_type().into())),
             Primitive::BytesTextCopy => ("bytes_text_copy", Some(pointer.into())),
             Primitive::ListNew => {
@@ -546,39 +577,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ];
                 ("list_new", Some(pointer.into()))
             }
-            Primitive::ListLen => ("list_len", Some(i64_type.into())),
             Primitive::ListGet | Primitive::ListSet => {
-                let slot = self
-                    .runtime_call("list_get", Some(pointer.into()), &values[..2])?
-                    .ok_or("missing list element slot")?
-                    .into_pointer_value();
+                let element = if operation == Primitive::ListGet {
+                    native_type(self.context, self.program, result)?
+                } else {
+                    values[2].get_type()
+                };
+                let slot = self.list_slot(
+                    values[0].into_pointer_value(),
+                    values[1].into_int_value(),
+                    element,
+                )?;
                 if operation == Primitive::ListGet {
                     return Ok(Some(self.builder.build_load(
-                        native_type(self.context, self.program, result)?,
+                        element,
                         slot,
                         "list.element",
                     )?));
                 }
                 self.builder.build_store(slot, values[2])?;
                 return Ok(None);
-            }
-            Primitive::ListPush => {
-                // Runtime growth may collect, so the source value remains in
-                // its expression root while this ABI copy slot is consumed.
-                let entry = self
-                    .function
-                    .get_first_basic_block()
-                    .ok_or("missing entry")?;
-                let allocas = self.context.create_builder();
-                if let Some(first) = entry.get_first_instruction() {
-                    allocas.position_before(&first);
-                } else {
-                    allocas.position_at_end(entry);
-                }
-                let item = allocas.build_alloca(values[1].get_type(), "list.item")?;
-                self.builder.build_store(item, values[1])?;
-                values[1] = item.into();
-                ("list_push", None)
             }
             Primitive::Open => ("file_open", Some(i64_type.into())),
             Primitive::Create => ("file_create", Some(i64_type.into())),
@@ -611,6 +629,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .is_some_and(|block| block.get_terminator().is_none())
     }
 
+    fn store_local(&self, local: usize, value: BasicValueEnum<'ctx>) -> NativeResult<()> {
+        self.builder
+            .build_store(self.locals[local].ok_or("invalid checked local")?, value)?;
+        if let Some(slot) = self.roots.locals.get(&local) {
+            self.builder.build_store(*slot, value)?;
+        }
+        Ok(())
+    }
+
     fn block(&mut self, block: &checked::Block) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         for statement in &block.statements {
             if !self.live() {
@@ -620,10 +647,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 checked::StmtKind::Let { local, value }
                 | checked::StmtKind::Assign { local, value } => {
                     if let Some(value) = self.expr(value)? {
-                        self.builder.build_store(
-                            self.locals[*local].ok_or("invalid checked local")?,
-                            value,
-                        )?;
+                        self.store_local(*local, value)?;
                     }
                 }
                 checked::StmtKind::Return(value) => {
@@ -1038,10 +1062,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         for (arm, start) in arms.iter().zip(blocks) {
             self.builder.position_at_end(start);
             if let Some(local) = arm.whole {
-                self.builder.build_store(
-                    self.locals[local].ok_or("invalid whole-pattern local")?,
-                    scrutinee,
-                )?;
+                self.store_local(local, scrutinee)?;
             }
             if let Some(variant) = arm.variant {
                 let Type::Data(id) = value.ty else {
@@ -1073,10 +1094,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 for (ty, local) in fields.iter().zip(&arm.bindings) {
                     if let Some(local) = local {
                         let field = self.rebuild(*ty, &words, &mut offset)?;
-                        self.builder.build_store(
-                            self.locals[*local].ok_or("invalid pattern local")?,
-                            field,
-                        )?;
+                        self.store_local(*local, field)?;
                     } else {
                         offset += value_words(self.program, *ty)?;
                     }
@@ -1753,6 +1771,10 @@ mod float_tests;
 #[cfg(test)]
 #[path = "llvm_function_tests.rs"]
 mod function_tests;
+
+#[cfg(test)]
+#[path = "llvm_memory_tests.rs"]
+mod memory_tests;
 
 #[cfg(test)]
 mod tests {

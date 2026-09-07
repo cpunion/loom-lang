@@ -3,7 +3,7 @@ mod common;
 use common::success;
 
 #[test]
-fn reused_roots_preserve_snapshots_and_managed_control_flow_at_o0() {
+fn roots_preserve_snapshots_and_managed_control_flow_before_and_after_inlining() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(
         directory.path().join("main.loom"),
@@ -74,21 +74,35 @@ fn main() {
     )
     .unwrap();
     let executable = common::executable(directory.path(), "roots");
-    success(
-        &common::command(&[
-            "build",
-            directory.path().to_str().unwrap(),
-            "--output",
-            executable.to_str().unwrap(),
-        ])
-        .env("LOOM_OPT_LEVEL", "0")
-        .output()
-        .unwrap(),
-    );
-    success(
-        &Command::new(executable)
-            .env("LOOM_GC_STRESS", "1")
+    let ir = directory.path().join("roots.ll");
+    for optimization in ["0", "3"] {
+        success(
+            &common::command(&[
+                "build",
+                directory.path().to_str().unwrap(),
+                "--output",
+                executable.to_str().unwrap(),
+                "--emit-ir",
+                ir.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", optimization)
             .output()
             .unwrap(),
-    );
+        );
+        success(
+            &Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+        let ir = fs::read_to_string(&ir).unwrap();
+        assert!(!ir.contains("call void @loom.gc."), "unlowered GC region");
+        for function in ir.split("define ").skip(1) {
+            let body = function.split("\n}").next().unwrap();
+            assert!(
+                body.matches("call void @loom_rt_roots_enter").count() <= 1,
+                "one physical root frame per final native function"
+            );
+        }
+    }
 }

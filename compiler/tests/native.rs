@@ -100,7 +100,9 @@ fn source_std_under_forced_collection() {
         path(&ir),
     ]));
     let llvm = fs::read_to_string(ir).unwrap();
-    assert!(llvm.contains("loom_rt_text_byte"));
+    assert!(!llvm.contains("loom_rt_text_byte"));
+    assert!(llvm.contains("load i8") && llvm.contains("zext i8"));
+    assert!(llvm.contains("text byte index out of bounds"));
     assert!(
         !llvm.contains("loom_rt_roots_enter"),
         "nonallocating functions need no GC root frame"

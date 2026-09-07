@@ -1,7 +1,7 @@
 //! Loom's single-threaded, nonmoving managed-memory and platform boundary.
 //! Generated code roots every live managed slot before an allocating call.
 
-use std::alloc::{Layout, alloc_zeroed, dealloc};
+use std::alloc::{Layout, alloc, alloc_zeroed, dealloc, realloc};
 #[cfg(not(windows))]
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -22,6 +22,13 @@ struct Root {
     trace: Trace,
 }
 
+#[repr(C)]
+struct RootFrame {
+    previous: *mut RootFrame,
+    roots: *const Root,
+    count: usize,
+}
+
 unsafe extern "C" fn trace_pointer(address: *mut u8) {
     // SAFETY: Pointer roots and managed list elements are initialized slots.
     loom_rt_mark(unsafe { *address.cast::<*mut u8>() });
@@ -36,7 +43,7 @@ struct Allocation {
 
 struct Heap {
     objects: HashMap<usize, Allocation>,
-    roots: Vec<Root>,
+    roots: *mut RootFrame,
     work: Vec<(*mut u8, Trace)>,
     bytes: usize,
     threshold: usize,
@@ -49,7 +56,7 @@ impl Default for Heap {
     fn default() -> Self {
         Self {
             objects: HashMap::new(),
-            roots: Vec::new(),
+            roots: ptr::null_mut(),
             work: Vec::new(),
             bytes: 0,
             threshold: MIN_THRESHOLD,
@@ -82,6 +89,10 @@ fn fault(message: &str) -> ! {
 }
 
 fn allocate(size: usize, trace: Option<Trace>) -> *mut u8 {
+    allocate_storage(size, trace, true)
+}
+
+fn allocate_storage(size: usize, trace: Option<Trace>, zeroed: bool) -> *mut u8 {
     let layout = Layout::from_size_align(size.max(1), 16)
         .unwrap_or_else(|_| fault("allocation size overflow"));
     let collect = HEAP.with(|heap| {
@@ -92,9 +103,16 @@ fn allocate(size: usize, trace: Option<Trace>) -> *mut u8 {
         loom_rt_collect();
     }
     // SAFETY: The layout is valid and every allocation is eventually swept or
-    // freed by Heap::drop. Zero initialization also makes unused slots inert.
-    let pointer =
-        NonNull::new(unsafe { alloc_zeroed(layout) }).unwrap_or_else(|| fault("out of memory"));
+    // freed by Heap::drop. Headers/payloads start zeroed; raw buffer capacity is
+    // never traced/read beyond its published initialized length.
+    let pointer = NonNull::new(unsafe {
+        if zeroed {
+            alloc_zeroed(layout)
+        } else {
+            alloc(layout)
+        }
+    })
+    .unwrap_or_else(|| fault("out of memory"));
     HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
         heap.bytes += layout.size();
@@ -118,29 +136,38 @@ extern "C" fn loom_rt_box_new(size: usize, trace: Option<Trace>) -> *mut u8 {
     allocate(size, trace)
 }
 
+// Root entry/exit never trigger Loom GC; generated return snapshots remain
+// valid while their frame is detached and the caller receives the value.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_roots_enter(roots: *const Root, count: usize) -> usize {
+unsafe extern "C" fn loom_rt_roots_enter(frame: *mut RootFrame, roots: *const Root, count: usize) {
     HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
-        let checkpoint = heap.roots.len();
-        if count != 0 {
-            // SAFETY: The generated caller supplies count initialized entries;
-            // their addressed slots remain live until roots_leave(checkpoint).
-            heap.roots
-                .extend_from_slice(unsafe { std::slice::from_raw_parts(roots, count) });
+        // SAFETY: The caller provides writable frame storage and count live
+        // root entries. Their addresses stay fixed until the matching leave;
+        // initialize every field before publishing this single-threaded head.
+        unsafe {
+            ptr::write(
+                frame,
+                RootFrame {
+                    previous: heap.roots,
+                    roots,
+                    count,
+                },
+            );
         }
-        checkpoint
-    })
+        heap.roots = frame;
+    });
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn loom_rt_roots_leave(checkpoint: usize) {
+unsafe extern "C" fn loom_rt_roots_leave(frame: *mut RootFrame) {
     HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
-        if checkpoint > heap.roots.len() {
-            fault("invalid GC root checkpoint");
+        if heap.roots != frame {
+            fault("invalid GC root frame order");
         }
-        heap.roots.truncate(checkpoint);
+        // SAFETY: A matching enter initialized this still-live frame.
+        heap.roots = unsafe { (*frame).previous };
     });
 }
 
@@ -163,17 +190,26 @@ extern "C" fn loom_rt_mark(pointer: *mut u8) {
 
 #[unsafe(no_mangle)]
 extern "C" fn loom_rt_collect() {
-    let roots = HEAP.with(|heap| {
+    let mut frame = HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
         heap.work.clear();
         for object in heap.objects.values_mut() {
             object.marked = false;
         }
-        heap.roots.clone()
+        heap.roots
     });
-    for root in roots {
-        // SAFETY: Active root entries describe live generated stack slots.
-        unsafe { (root.trace)(root.address) };
+    while !frame.is_null() {
+        // SAFETY: This synchronous, nonmoving collector sees stable active
+        // frames and slots. Tracers only mark objects; they cannot allocate,
+        // collect or modify the root chain. No Heap borrow spans a callback.
+        unsafe {
+            let active = &*frame;
+            for index in 0..active.count {
+                let root = *active.roots.add(index);
+                (root.trace)(root.address);
+            }
+            frame = active.previous;
+        }
     }
     loop {
         let item = HEAP.with(|heap| heap.borrow_mut().work.pop());
@@ -248,23 +284,6 @@ extern "C" fn loom_rt_float_format(value: f64) -> *mut u8 {
     let text = value.to_string();
     // SAFETY: Rust owns these UTF-8 bytes across the managed allocation/copy.
     unsafe { loom_rt_text_new(text.as_ptr(), text.len()) }
-}
-
-#[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_text_len(text: *const u8) -> i64 {
-    // SAFETY: text denotes a live Text object or static literal.
-    unsafe { (*text.cast::<Text>()).len as i64 }
-}
-
-#[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_text_byte(text: *const u8, index: i64) -> i64 {
-    // SAFETY: text denotes a live Text object or static literal.
-    let bytes = unsafe { text_bytes(text) };
-    let index = usize::try_from(index)
-        .ok()
-        .filter(|index| *index < bytes.len())
-        .unwrap_or_else(|| fault("text byte index out of bounds"));
-    i64::from(bytes[index])
 }
 
 #[unsafe(no_mangle)]
@@ -519,13 +538,51 @@ unsafe fn reserve(buffer: *mut Buffer, additional: usize, stride: usize) {
     let size = capacity
         .checked_mul(stride)
         .unwrap_or_else(|| fault("buffer size overflow"));
-    let data = allocate(size, None);
-    // SAFETY: Old storage remains reachable through the header during allocate;
-    // no allocation/collection occurs between obtaining data and publishing it.
-    unsafe {
-        if old.len != 0 {
-            ptr::copy_nonoverlapping(old.data, data, old.len * stride);
+    let data = if old.data.is_null() {
+        allocate_storage(size, None, false)
+    } else {
+        let layout = Layout::from_size_align(size.max(1), 16)
+            .unwrap_or_else(|_| fault("allocation size overflow"));
+        let collect = HEAP.with(|heap| {
+            let heap = heap.borrow();
+            let previous = &heap.objects[&(old.data as usize)];
+            heap.stress
+                || heap
+                    .bytes
+                    .saturating_add(layout.size() - previous.layout.size())
+                    >= heap.threshold
+        });
+        if collect {
+            loom_rt_collect();
         }
+        HEAP.with(|heap| {
+            let mut heap = heap.borrow_mut();
+            let previous = heap
+                .objects
+                .remove(&(old.data as usize))
+                .expect("live buffer allocation");
+            // SAFETY: Only the rooted shared header owns this raw allocation;
+            // no source-visible interior pointer can survive a growth call.
+            // No collection occurs while the allocation is being relocated.
+            let pointer =
+                NonNull::new(unsafe { realloc(old.data, previous.layout, layout.size()) })
+                    .unwrap_or_else(|| fault("out of memory"));
+            heap.bytes += layout.size() - previous.layout.size();
+            heap.objects.insert(
+                pointer.as_ptr() as usize,
+                Allocation {
+                    pointer,
+                    layout,
+                    trace: None,
+                    marked: false,
+                },
+            );
+            pointer.as_ptr()
+        })
+    };
+    // SAFETY: Reallocation preserves initialized elements. The shared header is
+    // published before another allocation/collection; spare capacity stays raw.
+    unsafe {
         (*buffer).data = data;
         (*buffer).cap = capacity;
     }
@@ -537,21 +594,9 @@ extern "C" fn loom_rt_bytes_new() -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_bytes_len(bytes: *const u8) -> i64 {
-    // SAFETY: bytes is a live Bytes header.
-    unsafe { (*bytes.cast::<Buffer>()).len as i64 }
-}
-
-#[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_bytes_push(bytes: *mut u8, byte: i64) {
-    let byte = u8::try_from(byte).unwrap_or_else(|_| fault("byte value out of range"));
-    let buffer = bytes.cast::<Buffer>();
-    // SAFETY: Caller roots the header; reserve ensures one writable extra byte.
-    unsafe {
-        reserve(buffer, 1, 1);
-        *(*buffer).data.add((*buffer).len) = byte;
-        (*buffer).len += 1;
-    }
+unsafe extern "C" fn loom_rt_bytes_reserve_one(bytes: *mut u8) {
+    // SAFETY: Generated code roots the owning header across this slow path.
+    unsafe { reserve(bytes.cast::<Buffer>(), 1, 1) };
 }
 
 unsafe fn buffer_bytes<'a>(bytes: *const u8) -> &'a [u8] {
@@ -594,31 +639,10 @@ extern "C" fn loom_rt_list_new(stride: usize, trace_element: Option<Trace>) -> *
     list.cast()
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_list_len(list: *const u8) -> i64 {
-    // SAFETY: list is a live List header.
-    unsafe { (*list.cast::<List>()).buffer.len as i64 }
-}
-
-#[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_list_get(list: *mut u8, index: i64) -> *mut u8 {
-    // SAFETY: The pointer denotes a live List; generated code consumes the slot
-    // before a mutation can replace its backing storage.
-    unsafe {
-        let list = &*list.cast::<List>();
-        let index = usize::try_from(index)
-            .ok()
-            .filter(|index| *index < list.buffer.len)
-            .unwrap_or_else(|| fault("list index out of bounds"));
-        list.buffer.data.add(index * list.stride)
-    }
-}
-
-#[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_list_push(list: *mut u8, item: *const u8) {
+unsafe fn list_push(list: *mut u8, item: *const u8) {
     let list = list.cast::<List>();
-    // SAFETY: The caller roots list and managed references in item. Old storage
-    // stays live through growth even when item points into this same List.
+    // SAFETY: The caller roots list and managed references in item. This private
+    // helper takes an independent stack item, never a pointer into the buffer.
     unsafe {
         let stride = (*list).stride;
         reserve(ptr::addr_of_mut!((*list).buffer), 1, stride);
@@ -628,6 +652,16 @@ unsafe extern "C" fn loom_rt_list_push(list: *mut u8, item: *const u8) {
             stride,
         );
         (*list).buffer.len += 1;
+    }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_list_reserve_one(list: *mut u8) {
+    // SAFETY: Generated code roots the header and its pending typed item. The
+    // caller reloads the backing pointer and publishes length after storing it.
+    unsafe {
+        let list = list.cast::<List>();
+        reserve(ptr::addr_of_mut!((*list).buffer), 1, (*list).stride);
     }
 }
 
@@ -675,6 +709,9 @@ unsafe extern "C" fn loom_rt_file_read(fd: i64, bytes: *mut u8, limit: i64) -> i
     // len, and read initializes exactly its nonnegative result count.
     unsafe {
         reserve(buffer, limit, 1);
+        // The Rust Read boundary takes initialized bytes, unlike typed push.
+        // Initialize only this requested I/O range, not all spare capacity.
+        ptr::write_bytes((*buffer).data.add((*buffer).len), 0, limit);
         let tail = std::slice::from_raw_parts_mut((*buffer).data.add((*buffer).len), limit);
         let count = file_io::read(fd, tail);
         if count > 0 {
@@ -704,7 +741,8 @@ unsafe extern "C" fn loom_rt_directory_read(path: *const u8, names: *mut u8) -> 
     };
     // SAFETY: The slot stays live until roots_leave, including early failures
     // inside the closure. Growing names can collect the just-created Text.
-    let checkpoint = unsafe { loom_rt_roots_enter(&root, 1) };
+    let mut frame = std::mem::MaybeUninit::<RootFrame>::uninit();
+    unsafe { loom_rt_roots_enter(frame.as_mut_ptr(), &root, 1) };
     let status = (|| {
         for entry in entries {
             let Ok(entry) = entry else { return -1 };
@@ -716,12 +754,13 @@ unsafe extern "C" fn loom_rt_directory_read(path: *const u8, names: *mut u8) -> 
             // root protects its copy through any list backing-buffer growth.
             unsafe {
                 name = loom_rt_text_new(spelling.as_ptr(), spelling.len());
-                loom_rt_list_push(names, ptr::from_ref(&name).cast());
+                list_push(names, ptr::from_ref(&name).cast());
             }
         }
         0
     })();
-    loom_rt_roots_leave(checkpoint);
+    // SAFETY: The address-taken frame and its root are still live and on top.
+    unsafe { loom_rt_roots_leave(frame.as_mut_ptr()) };
     status
 }
 
@@ -775,18 +814,48 @@ mod tests {
         HEAP.with(|heap| heap.borrow().objects.len())
     }
 
-    fn root(address: &mut *mut u8) -> usize {
-        let root = Root {
-            address: ptr::from_mut(address).cast(),
-            trace: trace_pointer,
-        };
-        // SAFETY: The tests keep this stack slot live until their matching leave.
-        unsafe { loom_rt_roots_enter(&root, 1) }
+    struct TestRoot(Box<(RootFrame, Root)>);
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            // SAFETY: Box keeps the frame/entry stable; tests release guards in
+            // reverse registration order before the addressed slot expires.
+            unsafe { loom_rt_roots_leave(ptr::from_mut(&mut self.0.0)) };
+        }
+    }
+
+    fn root(address: &mut *mut u8) -> TestRoot {
+        let mut storage = Box::new((
+            RootFrame {
+                previous: ptr::null_mut(),
+                roots: ptr::null(),
+                count: 0,
+            },
+            Root {
+                address: ptr::from_mut(address).cast(),
+                trace: trace_pointer,
+            },
+        ));
+        // SAFETY: Box keeps both entries stable when this helper returns. The
+        // tests keep the addressed stack slot live until dropping the guard.
+        unsafe { loom_rt_roots_enter(ptr::from_mut(&mut storage.0), ptr::from_ref(&storage.1), 1) };
+        TestRoot(storage)
     }
 
     fn text(value: &str) -> *mut u8 {
         // SAFETY: The source bytes live throughout the non-retaining copy call.
         unsafe { loom_rt_text_new(value.as_ptr(), value.len()) }
+    }
+
+    unsafe fn bytes_push(bytes: *mut u8, byte: u8) {
+        // SAFETY: Tests root the header across reserve and initialize the new
+        // slot before publishing its length, just like generated typed stores.
+        unsafe {
+            loom_rt_bytes_reserve_one(bytes);
+            let buffer = bytes.cast::<Buffer>();
+            *(*buffer).data.add((*buffer).len) = byte;
+            (*buffer).len += 1;
+        }
     }
 
     #[test]
@@ -821,7 +890,7 @@ mod tests {
                 assert_eq!(unsafe { text_bytes(formatted) }, b"-0");
             }
         }
-        loom_rt_roots_leave(checkpoint);
+        drop(checkpoint);
         loom_rt_collect();
         assert_eq!(live(), 0);
     }
@@ -845,10 +914,10 @@ mod tests {
         assert_eq!(live(), 1);
         // SAFETY: kept is an active root and literal has the required Text layout.
         unsafe {
-            assert_eq!(loom_rt_text_len(kept), 4);
-            assert_eq!(loom_rt_text_byte(ptr::from_ref(&literal).cast(), 1), 98);
+            assert_eq!(text_bytes(kept).len(), 4);
+            assert_eq!(text_bytes(ptr::from_ref(&literal).cast())[1], 98);
         }
-        loom_rt_roots_leave(checkpoint);
+        drop(checkpoint);
         loom_rt_collect();
         assert_eq!(live(), 0);
     }
@@ -865,18 +934,19 @@ mod tests {
             item = text(&index.to_string());
             HEAP.with(|heap| heap.borrow_mut().threshold = 0);
             // SAFETY: Both the shared header and item slot are rooted.
-            unsafe { loom_rt_list_push(list, ptr::from_ref(&item).cast()) };
+            unsafe { list_push(list, ptr::from_ref(&item).cast()) };
         }
-        loom_rt_roots_leave(temporary);
+        drop(temporary);
         loom_rt_collect();
         assert_eq!(live(), 42); // One header, one buffer, forty Text objects.
         // SAFETY: alias refers to the same live header as list.
         unsafe {
-            assert_eq!(loom_rt_list_len(alias), 40);
-            let last = *loom_rt_list_get(alias, 39).cast::<*mut u8>();
+            let buffer = &(*alias.cast::<List>()).buffer;
+            assert_eq!(buffer.len, 40);
+            let last = *buffer.data.cast::<*mut u8>().add(39);
             assert_eq!(text_bytes(last), b"39");
         }
-        loom_rt_roots_leave(checkpoint);
+        drop(checkpoint);
         loom_rt_collect();
         assert_eq!(live(), 0);
     }
@@ -888,21 +958,21 @@ mod tests {
         // SAFETY: The root remains active for every allocation in this test.
         unsafe {
             for byte in "hé".bytes() {
-                loom_rt_bytes_push(bytes, i64::from(byte));
+                bytes_push(bytes, byte);
             }
-            assert_eq!(loom_rt_bytes_len(bytes), 3);
+            assert_eq!((*bytes.cast::<Buffer>()).len, 3);
             assert_eq!(loom_rt_bytes_utf8(bytes), 1);
             let mut copied = loom_rt_bytes_text_copy(bytes);
             let copied_root = root(&mut copied);
-            loom_rt_bytes_push(bytes, 255);
+            bytes_push(bytes, 255);
             assert_eq!(loom_rt_bytes_utf8(bytes), 0);
             assert_eq!(text_bytes(copied), "hé".as_bytes());
             let joined = loom_rt_text_concat(copied, copied);
             assert_eq!(text_bytes(joined), "héhé".as_bytes());
             assert_eq!(loom_rt_text_equal(copied, copied), 1);
-            loom_rt_roots_leave(copied_root);
+            drop(copied_root);
         }
-        loom_rt_roots_leave(checkpoint);
+        drop(checkpoint);
         loom_rt_collect();
         assert_eq!(live(), 0);
     }
@@ -921,7 +991,7 @@ mod tests {
             HEAP.with(|heap| heap.borrow_mut().threshold = 0);
             assert_eq!(text_bytes(loom_rt_text_slice(slice, 3, 7)), "🙂".as_bytes());
             assert_eq!(text_bytes(loom_rt_text_slice(source, 4, 4)), b"");
-            loom_rt_roots_leave(slice_root);
+            drop(slice_root);
         }
         assert_eq!(loom_rt_unicode_alphabetic(i64::from('界' as u32)), 1);
         assert_eq!(loom_rt_unicode_alphanumeric(i64::from('٣' as u32)), 1);
@@ -932,7 +1002,7 @@ mod tests {
             assert_eq!(loom_rt_unicode_alphanumeric(invalid), 0);
             assert_eq!(loom_rt_unicode_whitespace(invalid), 0);
         }
-        loom_rt_roots_leave(checkpoint);
+        drop(checkpoint);
         loom_rt_collect();
         assert_eq!(live(), 0);
     }
@@ -957,7 +1027,7 @@ mod tests {
             let argument = loom_rt_process_arg_text(1);
             assert_eq!(text_bytes(argument), "hé.loom".as_bytes());
             assert_eq!(text_bytes(executable), b"loom");
-            loom_rt_roots_leave(checkpoint);
+            drop(checkpoint);
             loom_rt_process_init(0, ptr::null());
         }
         assert_eq!(loom_rt_process_arg_count(), 0);
@@ -1028,14 +1098,14 @@ mod tests {
             assert_eq!(loom_rt_file_read(fd, bytes, 16), 2);
             assert_eq!(buffer_bytes(bytes), b"ok");
             assert_eq!(loom_rt_file_close(fd), 0);
-            loom_rt_roots_leave(output_root);
+            drop(output_root);
 
             let missing = file.path().with_extension("missing");
             path = text(missing.to_str().unwrap());
             assert_eq!(loom_rt_file_open(path), -1);
         }
-        loom_rt_roots_leave(bytes_root);
-        loom_rt_roots_leave(checkpoint);
+        drop(bytes_root);
+        drop(checkpoint);
         loom_rt_collect();
         assert_eq!(live(), 0);
     }

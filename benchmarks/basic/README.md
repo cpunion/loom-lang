@@ -88,13 +88,13 @@ are about 3% and 8% slower. Fib's apparent 36% gap against unchecked C disappear
 against the integer-checking C/Rust variants. None establishes whole-language
 performance equivalence.
 
-The main gap is List build/scan: about 4.4x C/Rust and 3.0x Go. Inspection of
-the actual optimized Loom IR identifies concrete remaining work:
+The baseline gap is List build/scan: about 4.4x C/Rust and 3.0x Go. Inspection of
+that baseline's optimized Loom IR identified these costs:
 
 - Each push retains two nested GC root entry/exit pairs after the source
   wrappers inline, despite the enclosing function already having a root frame.
-- Each scan element still crosses an opaque `list_get` runtime boundary, checks
-  its index and stride, and performs a checked scalar addition.
+- Each scan element crosses an opaque `list_get` runtime boundary, checks its
+  index, computes a dynamic-stride offset and performs a checked scalar addition.
 - Loom growth allocates zeroed storage and copies initialized elements;
   C `realloc` can extend in place. Old Loom buffers are reclaimed by GC later.
 
@@ -102,7 +102,7 @@ This is not an executor per element, collection on every push, or tracing of
 individual Int elements. The LCG checks in the build loop are already eliminated.
 IR inspection identifies costs but does not assign measured percentages to
 them. No compiler/runtime optimization was made during this baseline run.
-To reproduce the inspected IR:
+To inspect the current compiler's IR (not necessarily the archived baseline):
 
 ```sh
 LOOM_OPT_LEVEL=3 target/loom build benchmarks/basic \
