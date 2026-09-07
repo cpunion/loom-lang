@@ -42,8 +42,7 @@ callees and aggregate storage share the ordinary ABI and GC rules. Pure
 compile-time invocation and returned-reference reification use the same checked
 model. The [callback example](../../compiler/examples/callbacks/main.loom) runs
 under forced collection; O0 scalar callbacks have no Loom runtime dependency
-and retain only referenced targets. Capturing closures and compile-time function
-parameters are not yet implemented.
+and retain only referenced targets. Capturing closures are not yet implemented.
 
 Source `std.list.map/filter/fold` use those function values without new runtime
 operations. They traverse the initial index range in order, preserve shared
@@ -162,13 +161,15 @@ Stable schemas, lossless editing, variadics, typed macros, broader compile-time
 reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 
-Scalar `comptime` parameters specialize named calls using canonical Int/Bool/Text
-keys and disappear before the native ABI. Static-value branches are checked with
+`comptime` parameters specialize named calls using canonical Int/Bool/Text or
+source-function identities and disappear before the native ABI. Known functions
+use direct calls; generic references, pure selectors and forwarding preserve
+type checks and target preconditions. Static-value branches are checked with
 abstract type arguments and declared requirements, not incidental concrete
 conformances. Unknown runtime inputs and unproved abstract postconditions reject.
 The [static-parameter example](../../compiler/examples/comptime_parameters/main.loom)
-also exercises ordinary callbacks returned by specialized selectors. References
-to static-parameter declarations, static function/closure parameters and variadics
+also exercises callbacks returned by specialized selectors. References
+to static-parameter declarations, capturing closure parameters and variadics
 are not included in this slice.
 
 The [lexical cleanup example](../../compiler/examples/cleanup/main.loom) runs

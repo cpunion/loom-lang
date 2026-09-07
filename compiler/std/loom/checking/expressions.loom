@@ -52,7 +52,7 @@ fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
         return Result.Err(error(context, node, "unknown local value"))
     }
     let binding = get(context.bindings, local)
-    var value = if binding.constant >= 0 { static_expression(context, node, get(context.constants, binding.constant)) } else {
+    var value = if binding.constant >= 0 { static_expression(context, node, binding.constant)? } else {
         atom(ExprKind.Local, get(context.locals, binding.local).ty, node, binding.local)
     }
     var index = end

@@ -558,7 +558,7 @@ Mark a named parameter `comptime` when its value must be known during checking:
 
 ```loom
 fn increment(value Int) Int { value + 1 }
-fn repeat[T](value T, action fn(T) T, comptime count Int) T {
+fn repeat[T](value T, comptime action fn(T) T, comptime count Int) T {
     comptime if count <= 0 { value } else {
         repeat(action(value), action, count - 1)
     }
@@ -566,13 +566,21 @@ fn repeat[T](value T, action fn(T) T, comptime count Int) T {
 fn main() { assert repeat(39, increment, 3) == 42 }
 ```
 
-This slice accepts exact `Int`, `Bool`, and `Text` static parameter types.
+This slice accepts exact `Int`, `Bool`, `Text`, and function static parameter types.
 Literals, pure computed expressions and forwarded static parameters specialize
 the declaration; static values participate in instance and computation keys.
 Only ordinary parameters remain in the native ABI, with their original relative
 evaluation order. A runtime value is an error, not an implicit runtime overload
 or fallback. Ordinary surrounding `let` bindings are not automatically promoted
 to static bindings.
+
+Function parameters accept named references (including contextually selected
+overloads and generics), forwarded static references, and pure computed
+selectors. Instance keys contain the source function and its concrete type
+arguments; calls to a static target are direct even before LLVM optimization.
+Naming an effectful function does not execute it, but calling it during
+compile-time evaluation still rejects. Ordinary runtime callback parameters
+remain available when the target is not known during checking.
 
 Selected static branches are checked with abstract type arguments and declared
 requirements before concrete emission. A Boolean switch does not supply missing
@@ -582,11 +590,11 @@ proofs reject. Specialization and pure evaluation remain bounded.
 
 The [static-parameter example](examples/comptime_parameters/main.loom) covers
 generic recursion, pure argument computation, static Text, shadowing, returned
-ordinary callbacks and runtime argument order. Static parameters are not yet
+ordinary and static callbacks, shared results and runtime argument order. Static parameters are not yet
 supported on intrinsics or concept/implementation methods. Taking a reference
 to a declaration with static parameters also rejects until explicit partial
-specialization can supply a complete function identity. Static function/closure
-parameters, variadics and general type-valued computation remain later work.
+specialization can supply a complete function identity. Capturing closures,
+variadics and general type-valued computation remain later work.
 
 ## Compile-time execution
 

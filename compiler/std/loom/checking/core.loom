@@ -29,7 +29,9 @@ import std.list.length
 import std.result.Result
 
 record Requirement { ty Int capability Int }
-record StaticValue { ty Int known Bool number Int text Text }
+// Function constants use a source symbol plus concrete type arguments, never
+// an index into a transient emission/evaluation queue.
+record StaticValue { ty Int known Bool number Int text Text arguments List[Int] }
 // compile_time contains ordered source parameter positions, empty for ordinary functions.
 record Signature { symbol Int parameters Int params List[Int] compile_time List[Int] result Int requirements List[Requirement] }
 record Instance { signature Int arguments List[Int] constants List[StaticValue] }
@@ -216,8 +218,8 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
                 if constant && (item.owner >= 0 || has(item.node, NodeKind.Intrinsic)) {
                     return Result.Err(failure(env, index, declaration, "comptime parameters are not supported on concept, implementation or intrinsic methods"))
                 }
-                if constant && ty != 1 && ty != 2 && ty != 3 {
-                    return Result.Err(failure(env, index, declaration, "comptime parameters require exactly Int, Bool or Text"))
+                if constant && ty != 1 && ty != 2 && ty != 3 && get(env.types, ty).kind != TypeKind.Function {
+                    return Result.Err(failure(env, index, declaration, "comptime parameters require Int, Bool, Text or a function type"))
                 }
                 push(params, ty)
                 if constant { push(compile_time, parameter) }

@@ -92,6 +92,13 @@ fn call_value(context Context, node Node, callee Expr, types List[Node], inputs 
         push(values, expr(context, get(inputs, index), get(shape.arguments, index))?)
         index = index + 1
     }
+    if callee.kind == ExprKind.FunctionRef && callee.index >= 0 {
+        let arguments = new[Expr]()
+        index = 1
+        while index < length(values) { push(arguments, get(values, index))
+            index = index + 1 }
+        return Result.Ok(expression(ExprKind.Call, get(shape.arguments, count), node, "", callee.index, arguments, all_fall(arguments)))
+    }
     Result.Ok(expression(ExprKind.IndirectCall, get(shape.arguments, count), node, "", -1, values, all_fall(values)))
 }
 fn field_call(context Context, node Node, source Node, receiver Expr, callee Expr, inputs List[Node], options List[Int], expected Int) Result[Expr, Failure] {

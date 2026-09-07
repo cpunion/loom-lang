@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add function-valued `comptime` parameters with source-identity specialization,
+  generic forwarding and direct native calls. Preserve abstract requirements,
+  runtime capture isolation, preconditions and compile-time effect rejection.
+
 - Compile typed List/Text/Bytes accesses and buffer push fast paths directly.
   Finalize linked GC root frames after inlining, protect allocation-crossing
   snapshots, keep ordinary locals promotable, and reallocate private buffers.

@@ -32,3 +32,28 @@ test fn static_selection_preserves_abstract_generic_requirements_and_mandatory_p
     rejects("fn value(comptime number Int) Int { number }\nfn main() { let callback = value\ndiscard callback }")
     rejects("fn value(comptime number Int) Int { number = 1\nnumber }")
 }
+
+test fn static_functions_use_source_identity_and_erase_runtime_callback_slots() {
+    let program = accepted("fn first(value Int) Int { value + 1 }\nfn second(value Int) Int { value + 2 }\nfn unused(value Int) Int { value + 9001 }\nfn choose() fn(Int) Int { second }\nfn apply(value Int, comptime action fn(Int) Int) Int { action(value) }\nfn main() { assert apply(1, first) == 2\nassert apply(1, choose()) == 3\nassert apply(2, second) == 4 }")
+    // main, two apply instances, and their targets; choose is compile-time only.
+    assert length(program.functions) == 5
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        assert dynamic_count(function.body, ExprKind.IndirectCall) == 0
+        assert function.symbol != 2 && function.symbol != 3
+        if function.symbol == 4 { assert length(function.params) == 1 && length(function.locals) == 1 }
+        index = index + 1
+    }
+    discard accepted("fn identity[T](value T) T { value }\nfn pick(value Int) Int { value + 1 }\nfn pick(value Bool) Bool { !value }\nfn apply[T](value T, comptime action fn(T) T) T { action(value) }\nfn forward[T](value T, comptime action fn(T) T) T { apply(value, action) }\nfn by_name[T](value T) T { apply(value, identity) }\nfn main() { assert forward(3, identity) == 3\nassert forward(true, identity[Bool])\nassert by_name(7) == 7 && by_name(true)\nassert apply(4, pick) == 5\nassert !apply(true, pick)\nassert comptime { forward(6, identity[Int]) } == 6 }")
+}
+
+test fn static_functions_do_not_grant_runtime_captures_or_unwritten_proofs() {
+    let declarations = "fn identity(value Int) Int { value }\nfn apply(value Int, comptime action fn(Int) Int) Int { action(value) }\n"
+    rejects(concat(declarations, "fn runtime(action fn(Int) Int) Int { apply(1, action) }"))
+    rejects(concat(declarations, "fn main() { let action = identity\ndiscard apply(1, action) }"))
+    rejects(concat(declarations, "fn invalid(comptime action fn(Int) Int) Int { action = identity\naction(1) }"))
+    rejects("fn wrong(value Bool) Bool { value }\nfn apply(value Int, comptime action fn(Int) Int) Int { action(value) }\nfn main() { discard apply(1, wrong) }")
+    rejects("fn identity(value Int) Int { value }\nfn unproved(value Int, comptime action fn(Int) Int) Int ensures result == value { action(value) }\nfn main() { discard unproved(1, identity) }")
+    rejects("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\nfn identity(value Int) Int { value }\nfn hidden[T](value T, comptime action fn(T) T) Int { action(value).value() }\nfn main() { discard hidden(1, identity) }")
+}

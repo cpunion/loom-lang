@@ -74,19 +74,11 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
     }
     if kind == TypeKind.Unit { return Result.Ok(expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true)) }
     if kind == TypeKind.Function {
-        var target = -1
-        var index = 0
-        while index < length(state.context.env.signatures) {
-            if get(state.context.env.signatures, index).symbol == value.number { target = index }
-            index = index + 1
-        }
-        if target < 0 { return Result.Err(error(state.context, node, "comptime function result has no source declaration")) }
         let arguments = new[Int]()
-        index = 0
+        var index = 0
         while index < length(value.items) { push(arguments, get(value.items, index).number)
             index = index + 1 }
-        let function = if state.context.emit { schedule(state.context.env, target, arguments, new[StaticValue](), node)? } else { -1 }
-        return Result.Ok(expression(ExprKind.FunctionRef, value.ty, node, "", function, new[Expr](), true))
+        return reify_function(state.context, node, value.ty, value.number, arguments)
     }
     if kind == TypeKind.Int || kind == TypeKind.Float || kind == TypeKind.Refined {
         let base = base_type(state.context.env, value.ty)
@@ -122,6 +114,18 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
             value.ty, node, "", if positional { -1 } else { value.number }, fields, true))
     }
     Result.Err(error(state.context, node, "comptime result has no concrete representation"))
+}
+
+fn reify_function(context Context, node Node, ty Int, source Int, arguments List[Int]) Result[Expr, Failure] {
+    var target = -1
+    var index = 0
+    while index < length(context.env.signatures) {
+        if get(context.env.signatures, index).symbol == source { target = index }
+        index = index + 1
+    }
+    if target < 0 { return Result.Err(error(context, node, "comptime function result has no source declaration")) }
+    let function = if context.emit { schedule(context.env, target, arguments, new[StaticValue](), node)? } else { -1 }
+    Result.Ok(expression(ExprKind.FunctionRef, ty, node, "", function, new[Expr](), true))
 }
 
 fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
