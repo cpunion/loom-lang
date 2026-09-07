@@ -71,7 +71,6 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TextConcat
         | Primitive::TextSlice
         | Primitive::ArgText
-        | Primitive::ProcessCapture
         | Primitive::ProcessCaptureConfigured
         | Primitive::EnvGet
         | Primitive::BytesNew
@@ -885,10 +884,6 @@ mod tests {
     #[test]
     fn process_operations_root_arguments_even_with_a_scalar_result() {
         for (operation, params) in [
-            (
-                Primitive::ProcessCapture,
-                vec![Type::List(0), Type::Bytes, Type::Bytes],
-            ),
             (
                 Primitive::ProcessCaptureConfigured,
                 vec![

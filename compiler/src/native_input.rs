@@ -623,25 +623,16 @@ impl Converter<'_> {
                     .iter()
                     .map(|child| self.expr(child))
                     .collect::<Result<Vec<_>>>()?;
-                if matches!(
-                    operation,
-                    Primitive::ProcessCapture | Primitive::ProcessCaptureConfigured
-                ) {
+                if operation == Primitive::ProcessCaptureConfigured {
                     let text_list =
                         |ty| matches!(ty, Type::List(id) if self.program.lists[id] == Type::Text);
-                    let buffers = if operation == Primitive::ProcessCapture {
-                        1
-                    } else {
-                        4
-                    };
                     if ty != Type::Int
                         || !text_list(arguments[0].ty)
-                        || arguments[buffers].ty != Type::Bytes
-                        || arguments[buffers + 1].ty != Type::Bytes
-                        || (operation == Primitive::ProcessCaptureConfigured
-                            && (arguments[1].ty != Type::Text
-                                || arguments[2].ty != Type::Int
-                                || !text_list(arguments[3].ty)))
+                        || arguments[1].ty != Type::Text
+                        || arguments[2].ty != Type::Int
+                        || !text_list(arguments[3].ty)
+                        || arguments[4].ty != Type::Bytes
+                        || arguments[5].ty != Type::Bytes
                     {
                         return Err("checked process capture type mismatch".into());
                     }
@@ -896,7 +887,6 @@ fn primitive(value: &str) -> Result<Primitive> {
         "exit" => P::Exit,
         "process_run" => P::ProcessRun,
         "process_run_input" => P::ProcessRunInput,
-        "process_capture" => P::ProcessCapture,
         "process_capture_configured" => P::ProcessCaptureConfigured,
         "env_get" => P::EnvGet,
         "bytes_new" => P::BytesNew,
@@ -968,13 +958,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::PathCanonical
         | P::EnvGet
         | P::PathRename => 2,
-        P::TextSlice
-        | P::BytesSet
-        | P::ListSet
-        | P::Read
-        | P::Write
-        | P::WriteBytes
-        | P::ProcessCapture => 3,
+        P::TextSlice | P::BytesSet | P::ListSet | P::Read | P::Write | P::WriteBytes => 3,
         P::ProcessCaptureConfigured => 6,
     }
 }
@@ -1060,7 +1044,6 @@ mod tests {
             )
         };
         for (name, params) in [
-            ("process_capture", &[4, 3, 3][..]),
             ("process_capture_configured", &[4, 2, 1, 4, 3, 3][..]),
             ("env_get", &[2, 3][..]),
         ] {

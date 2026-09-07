@@ -693,21 +693,6 @@ unsafe extern "C" fn loom_rt_process_run_input(arguments: *const u8, input: *con
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_process_capture(
-    arguments: *const u8,
-    stdout: *mut u8,
-    stderr: *mut u8,
-) -> i64 {
-    // SAFETY: Command copies literal argv before any managed allocation. Reader
-    // threads own only Rust storage; all Loom heap access stays on this thread.
-    let command = match unsafe { process_command(arguments) } {
-        Ok(command) => command,
-        Err(status) => return status,
-    };
-    capture_process(command, stdout, stderr)
-}
-
-#[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_process_capture_configured(
     arguments: *const u8,
     directory: *const u8,
@@ -738,10 +723,6 @@ unsafe extern "C" fn loom_rt_process_capture_configured(
             Err(status) => return status,
         }
     };
-    capture_process(command, stdout, stderr)
-}
-
-fn capture_process(command: std::process::Command, stdout: *mut u8, stderr: *mut u8) -> i64 {
     let output = match process_io::capture(command) {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => fault("out of memory"),
@@ -1277,20 +1258,36 @@ mod tests {
     fn process_capture_appends_binary_outputs_and_reloads_shared_buffers() {
         use process_io::{TEST_BYTES, TEST_NAME, TEST_TOKEN};
         let executable = std::env::current_exe().unwrap();
-        rooted([ptr::null_mut(); 4], |slots| unsafe {
+        rooted([ptr::null_mut(); 6], |slots| unsafe {
             *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
             *slots.add(1) = loom_rt_bytes_new();
             *slots.add(2) = loom_rt_bytes_new();
+            *slots.add(4) = text("");
+            *slots.add(5) = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
             bytes_push(*slots.add(1), b'!');
             bytes_push(*slots.add(2), b'?');
             assert_eq!(
-                loom_rt_process_capture(*slots, *slots.add(1), *slots.add(2)),
+                loom_rt_process_capture_configured(
+                    *slots,
+                    *slots.add(4),
+                    0,
+                    *slots.add(5),
+                    *slots.add(1),
+                    *slots.add(2)
+                ),
                 -2
             );
             *slots.add(3) = text("invalid\0executable");
             list_push(*slots, slots.add(3).cast());
             assert_eq!(
-                loom_rt_process_capture(*slots, *slots.add(1), *slots.add(2)),
+                loom_rt_process_capture_configured(
+                    *slots,
+                    *slots.add(4),
+                    0,
+                    *slots.add(5),
+                    *slots.add(1),
+                    *slots.add(2)
+                ),
                 -1
             );
             assert_eq!(buffer_bytes(*slots.add(1)), b"!");
@@ -1312,7 +1309,14 @@ mod tests {
             let previous = *slots.add(1) as usize;
             HEAP.with(|heap| heap.borrow_mut().threshold = 0);
             assert_eq!(
-                loom_rt_process_capture(*slots, *slots.add(1), *slots.add(2)),
+                loom_rt_process_capture_configured(
+                    *slots,
+                    *slots.add(4),
+                    0,
+                    *slots.add(5),
+                    *slots.add(1),
+                    *slots.add(2)
+                ),
                 7
             );
             assert_ne!(*slots.add(1) as usize, previous);

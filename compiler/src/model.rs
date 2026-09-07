@@ -73,7 +73,6 @@ pub enum Primitive {
     ArgText,
     ProcessRun,
     ProcessRunInput,
-    ProcessCapture,
     ProcessCaptureConfigured,
     EnvGet,
     Exit,

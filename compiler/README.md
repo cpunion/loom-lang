@@ -313,6 +313,20 @@ timings; local variables remain conservatively rooted for the function.
   ordering between streams. It buffers complete output, not a streaming API.
   `run`/`run_input` retain inherited output and report no-exit-code termination
   as `SpawnError.Terminated`.
+- `capture(arguments, Options)` configures only that child: `directory Option[Text]`,
+  `clear_environment Bool`, and ordered `environment List[EnvChange]`, with
+  `Set(name, value)` or `Remove(name)`. The one-argument form uses defaults through
+  the same implementation. Invalid options return `SpawnError.InvalidOptions`;
+  an empty working directory is invalid, not the same as `None`. Clearing happens
+  before edits; repeated keys follow host name rules (case-insensitive on Windows).
+  Neither the parent environment nor working directory changes. Use an absolute
+  executable path for deterministic selection with a changed cwd/environment;
+  this API is not a process sandbox or a credential policy.
+- `std.env.get(name)` returns `Result[Option[Text], EnvError]`: `None` means absent,
+  while `Some("")` preserves an empty value. Each successful read is a fresh UTF-8
+  copy. Empty names or names containing '=' or NUL return `InvalidName`; values
+  not representable as UTF-8 return `Utf8`. Errors contain no values. This
+  external read cannot execute at compile time and does not add global mutation.
 - `std.bytes.get/set` index shared buffers with bounds checks and unsigned
   byte values (0–255). Both work at compile time; `to_text` still takes an
   isolated, validated UTF-8 copy. `std.file.read_bytes/write_bytes` preserve

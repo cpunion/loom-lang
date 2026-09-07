@@ -595,7 +595,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::ArgText => ("process_arg_text", Some(pointer.into())),
             Primitive::ProcessRun => ("process_run", Some(i64_type.into())),
             Primitive::ProcessRunInput => ("process_run_input", Some(i64_type.into())),
-            Primitive::ProcessCapture => ("process_capture", Some(i64_type.into())),
             Primitive::ProcessCaptureConfigured => {
                 ("process_capture_configured", Some(i64_type.into()))
             }
