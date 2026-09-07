@@ -296,6 +296,12 @@ timings; local variables remain conservatively rooted for the function.
   arbitrary binary contents and use the same source-owned read/write loops
   and explicit closure as text I/O. Both write APIs create or truncate a file;
   neither promises atomic publication or crash durability.
+- Source `std.hash.sha256.digest(Bytes) Bytes` produces a fresh 32-byte digest;
+  `hex(Bytes) Text` hashes input and returns its 64 lowercase hexadecimal digits.
+  The one-shot implementation uses fixed scratch storage and virtual padding,
+  leaves the input unchanged, and also works at compile time within evaluator
+  limits. Inputs must be shorter than 2^61 bytes. No hashing runtime operation
+  is added; the library is neither a password hash nor an authentication scheme.
 - Native executable builds when the selected package has `main`; otherwise,
   an object containing its public functions and their dependencies. Object
   symbols are private compiler conventions, not a supported foreign ABI.

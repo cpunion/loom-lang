@@ -127,6 +127,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/display",
         "std/text",
         "std/bytes",
+        "std/hash/sha256",
         "std/list",
         "std/option",
         "std/result",

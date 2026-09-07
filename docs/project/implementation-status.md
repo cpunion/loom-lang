@@ -114,6 +114,12 @@ the binary loop and then validates UTF-8. A pinned source checkpoint precedes
 the new intrinsic declarations; no frozen frontend or runtime policy layer is
 added. These file writes truncate their destination, not atomically publish it.
 
+Source `std.hash.sha256` now supplies one-shot binary digests and lowercase hex
+encoding using ordinary Int bitwise operations and Bytes. Fixed scratch storage
+and virtual padding avoid copying the input. Known vectors, compile-time results
+and native execution under forced collection agree. This is a hashing library,
+not yet package-lock anchoring or persistent cache verification.
+
 The native toolchain uses Rust 1.88 and LLVM 22. macOS, Linux, and Windows pass
 the [full bootstrap and native gate](https://github.com/cpunion/loom-lang/actions/runs/34022948294).
 Compiler, native integration,

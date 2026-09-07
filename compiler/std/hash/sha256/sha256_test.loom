@@ -1,0 +1,58 @@
+import std.bytes.new
+import std.bytes.length
+import std.bytes.get
+import std.bytes.set
+import std.bytes.push
+import std.text.byte
+import std.text.length
+
+fn input(text Text) Bytes {
+    let bytes = new()
+    var index = 0
+    while index < length(text) {
+        push(bytes, byte(text, index))
+        index = index + 1
+    }
+    bytes
+}
+
+test fn empty_and_nist_message_vectors() {
+    assert hex(new()) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    let abc = input("abc")
+    assert hex(abc) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    // NIST's two-block example, including the padding block:
+    // https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Standards-and-Guidelines/documents/examples/SHA256.pdf
+    assert hex(input("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")) ==
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+    let folded = comptime { digest(input("abc")) }
+    assert length(folded) == 32 && get(folded, 0) == 186 && get(folded, 31) == 173
+    let runtime = digest(abc)
+    var index = 0
+    while index < 32 {
+        assert get(folded, index) == get(runtime, index)
+        index = index + 1
+    }
+    set(runtime, 0, 0)
+    assert get(folded, 0) == 186 && get(abc, 0) == 97 && length(abc) == 3
+}
+
+test fn padding_boundary_and_complete_binary_range() {
+    let repeated = new()
+    var index = 0
+    while index < 55 {
+        push(repeated, 97)
+        index = index + 1
+    }
+    assert hex(repeated) == "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"
+    push(repeated, 97)
+    assert hex(repeated) == "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"
+    while length(repeated) < 64 { push(repeated, 97) }
+    assert hex(repeated) == "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"
+    let binary = new()
+    index = 0
+    while index < 256 {
+        push(binary, index)
+        index = index + 1
+    }
+    assert hex(binary) == "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880"
+}

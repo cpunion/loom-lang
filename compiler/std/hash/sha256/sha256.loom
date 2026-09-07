@@ -1,0 +1,142 @@
+import std.bytes.new
+import std.bytes.length
+import std.bytes.get
+import std.bytes.set
+import std.bytes.push
+import std.bytes.to_text
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.text.byte
+
+// Words stay in 0..2^32-1. Masking makes additions modulo 2^32 explicit;
+// even the five-word round sum fits Int before masking.
+fn rotate(value Int, count Int) Int {
+    ((value >> count) | (value << (32 - count))) & 4294967295
+}
+
+fn padded_byte(value Bytes, index Int, size Int, end Int) Int {
+    if index < size { return get(value, index) }
+    if index == size { return 128 }
+    if index < end - 8 { return 0 }
+    // Shift rather than multiply: the 64-bit length may have its high bit set.
+    ((size << 3) >> ((end - 1 - index) * 8)) & 255
+}
+
+fn write_word(output Bytes, index Int, value Int) {
+    set(output, index, (value >> 24) & 255)
+    set(output, index + 1, (value >> 16) & 255)
+    set(output, index + 2, (value >> 8) & 255)
+    set(output, index + 3, value & 255)
+}
+
+// Returns a fresh 32-byte digest without modifying input. Padding is read
+// virtually; scratch storage stays fixed-size regardless of message length.
+// SHA-256 accepts fewer than 2^61 bytes; a larger input faults.
+pub fn digest(value Bytes) Bytes {
+    let size = length(value)
+    assert size < 2305843009213693952
+    let end = (size / 64 + if size % 64 < 56 { 1 } else { 2 }) * 64
+    let k = constants()
+    let words = new[Int]()
+    var index = 0
+    while index < 64 {
+        push(words, 0)
+        index = index + 1
+    }
+    var h0 = 1779033703
+    var h1 = 3144134277
+    var h2 = 1013904242
+    var h3 = 2773480762
+    var h4 = 1359893119
+    var h5 = 2600822924
+    var h6 = 528734635
+    var h7 = 1541459225
+    var offset = 0
+    while offset < end {
+        index = 0
+        while index < 16 {
+            var word = 0
+            var part = 0
+            while part < 4 {
+                word = (word << 8) | padded_byte(value, offset + index * 4 + part, size, end)
+                part = part + 1
+            }
+            set(words, index, word)
+            index = index + 1
+        }
+        while index < 64 {
+            let x = get(words, index - 15)
+            let y = get(words, index - 2)
+            let sigma0 = rotate(x, 7) ^ rotate(x, 18) ^ (x >> 3)
+            let sigma1 = rotate(y, 17) ^ rotate(y, 19) ^ (y >> 10)
+            set(words, index, (get(words, index - 16) + sigma0 + get(words, index - 7) + sigma1) & 4294967295)
+            index = index + 1
+        }
+        var a = h0
+        var b = h1
+        var c = h2
+        var d = h3
+        var e = h4
+        var f = h5
+        var g = h6
+        var h = h7
+        index = 0
+        while index < 64 {
+            let sum1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25)
+            let choose = (e & f) ^ (~e & g)
+            let first = (h + sum1 + choose + get(k, index) + get(words, index)) & 4294967295
+            let sum0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22)
+            let majority = (a & b) ^ (a & c) ^ (b & c)
+            let second = (sum0 + majority) & 4294967295
+            h = g
+            g = f
+            f = e
+            e = (d + first) & 4294967295
+            d = c
+            c = b
+            b = a
+            a = (first + second) & 4294967295
+            index = index + 1
+        }
+        h0 = (h0 + a) & 4294967295
+        h1 = (h1 + b) & 4294967295
+        h2 = (h2 + c) & 4294967295
+        h3 = (h3 + d) & 4294967295
+        h4 = (h4 + e) & 4294967295
+        h5 = (h5 + f) & 4294967295
+        h6 = (h6 + g) & 4294967295
+        h7 = (h7 + h) & 4294967295
+        offset = offset + 64
+    }
+    let output = std.bytes.new()
+    index = 0
+    while index < 32 {
+        push(output, 0)
+        index = index + 1
+    }
+    write_word(output, 0, h0)
+    write_word(output, 4, h1)
+    write_word(output, 8, h2)
+    write_word(output, 12, h3)
+    write_word(output, 16, h4)
+    write_word(output, 20, h5)
+    write_word(output, 24, h6)
+    write_word(output, 28, h7)
+    output
+}
+
+// Hashes the input, then encodes its digest as 64 lowercase hexadecimal digits.
+pub fn hex(value Bytes) Text {
+    let hashed = digest(value)
+    let output = std.bytes.new()
+    var index = 0
+    while index < 32 {
+        let current = get(hashed, index)
+        push(output, byte("0123456789abcdef", current >> 4))
+        push(output, byte("0123456789abcdef", current & 15))
+        index = index + 1
+    }
+    to_text(output)
+}

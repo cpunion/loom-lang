@@ -82,7 +82,15 @@ fn source_std_under_forced_collection() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo = root.parent().unwrap();
     for package in [
-        "bytes", "int", "text", "list", "option", "result", "unicode", "process",
+        "bytes",
+        "int",
+        "text",
+        "list",
+        "option",
+        "result",
+        "unicode",
+        "process",
+        "hash/sha256",
     ] {
         success(&managed(
             &["test", path(&root.join("std").join(package))],
