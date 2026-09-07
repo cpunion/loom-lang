@@ -139,6 +139,13 @@ the binary loop and then validates UTF-8. A pinned source checkpoint precedes
 the new intrinsic declarations; no frozen frontend or runtime policy layer is
 added. These file writes truncate their destination, not atomically publish it.
 
+Source `std.fs` now exposes exclusive directory creation, native rename/replacement,
+nonrecursive removal and no-follow entry classification. Native rename never
+falls back to delete/copy. Missing paths and creation collisions are distinct
+source errors; links and unknown Windows reparse points are not traversable
+directories. This supplies namespace primitives, not a transactional cache,
+hostile-path sandbox or durable publication protocol.
+
 Source `std.hash.sha256` now supplies one-shot binary digests and lowercase hex
 encoding using ordinary Int bitwise operations and Bytes. Fixed scratch storage
 and virtual padding avoid copying the input. Known vectors, compile-time results
