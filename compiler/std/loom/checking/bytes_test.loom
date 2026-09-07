@@ -1,0 +1,32 @@
+test fn binary_buffer_intrinsics_have_exact_native_signatures() {
+    let files = source_files("import std.bytes.edit\nimport std.file.send\npub fn exercise(value Bytes) Int { edit(value) + send(value) }")
+    push(files, source_file("std.bytes", "intrinsic fn bytes_get(value Bytes, index Int) Int\nintrinsic fn bytes_set(value Bytes, index Int, byte Int)\npub fn edit(value Bytes) Int { bytes_set(value, 0, 255)\nbytes_get(value, 0) }", true))
+    push(files, source_file("std.file", "intrinsic fn write_bytes(handle Int, value Bytes, offset Int) Int\npub fn send(value Bytes) Int { write_bytes(1, value, 0) }", true))
+    match checked(files) {
+        Result.Ok(program) => {
+            var intrinsics = 0
+            var index = 0
+            while index < length(program.functions) {
+                let function = get(program.functions, index)
+                if function.runtime_name != "" { intrinsics = intrinsics + 1 }
+                index = index + 1
+            }
+            assert intrinsics == 3
+        }
+        Result.Err(_) => { assert false }
+    }
+    let invalid = new[TestFile]()
+    push(invalid, source_file("std.bytes", "intrinsic fn bytes_get(value Int, index Int) Int", true))
+    push(invalid, source_file("std.bytes", "intrinsic fn bytes_set(value Bytes, index Int, byte Int) Int", true))
+    push(invalid, source_file("std.file", "intrinsic fn write_bytes(handle Int, value Bytes, offset Float) Int", true))
+    var index = 0
+    while index < length(invalid) {
+        let fixture = new[TestFile]()
+        push(fixture, get(invalid, index))
+        match checked(fixture) {
+            Result.Err(failure) => { assert failure.diagnostic.message == "intrinsic declaration does not match its runtime signature" }
+            Result.Ok(_) => { assert false }
+        }
+        index = index + 1
+    }
+}

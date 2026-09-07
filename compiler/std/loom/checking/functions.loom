@@ -99,11 +99,14 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "exit" { return runtime(0, ints(1), 0) }
     if name == "bytes_new" { return runtime(0, new[Int](), 4) }
     if name == "bytes_len" { return runtime(0, ints(4), 1) }
+    if name == "bytes_get" { return runtime(0, two_types(4, 1), 1) }
+    if name == "bytes_set" { return runtime(0, three_types(4, 1, 1), 0) }
     if name == "bytes_push" { return runtime(0, two_types(4, 1), 0) }
     if name == "bytes_utf8" { return runtime(0, ints(4), 2) }
     if name == "bytes_text_copy" { return runtime(0, ints(4), 3) }
     if name == "read" { return runtime(0, three_types(1, 4, 1), 1) }
     if name == "write" { return runtime(0, three_types(1, 3, 1), 1) }
+    if name == "write_bytes" { return runtime(0, three_types(1, 4, 1), 1) }
     if name == "close" { return runtime(0, ints(1), 1) }
     if name == "directory_read" { return runtime(0, two_types(3, intern(env, TypeKind.List, -1, ints(3))), 1) }
     if name == "path_canonical" { return runtime(0, two_types(3, 4), 1) }

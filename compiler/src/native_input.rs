@@ -618,13 +618,30 @@ impl Converter<'_> {
                 if node.children.len() != primitive_arity(operation) {
                     return Err("checked runtime operation arity mismatch".into());
                 }
-                E::Primitive(
-                    operation,
-                    node.children
-                        .iter()
-                        .map(|child| self.expr(child))
-                        .collect::<Result<_>>()?,
-                )
+                let arguments = node
+                    .children
+                    .iter()
+                    .map(|child| self.expr(child))
+                    .collect::<Result<Vec<_>>>()?;
+                let signature: Option<(&[Type], Type)> = match operation {
+                    Primitive::BytesGet => Some((&[Type::Bytes, Type::Int], Type::Int)),
+                    Primitive::BytesSet => Some((&[Type::Bytes, Type::Int, Type::Int], Type::Unit)),
+                    Primitive::WriteBytes => {
+                        Some((&[Type::Int, Type::Bytes, Type::Int], Type::Int))
+                    }
+                    _ => None,
+                };
+                if let Some((params, result)) = signature {
+                    if ty != result
+                        || !arguments
+                            .iter()
+                            .map(|arg| arg.ty)
+                            .eq(params.iter().copied())
+                    {
+                        return Err("checked byte operation type mismatch".into());
+                    }
+                }
+                E::Primitive(operation, arguments)
             }
             8 => {
                 let fields = self.record(ty)?;
@@ -852,7 +869,9 @@ fn primitive(value: &str) -> Result<Primitive> {
         "process_run_input" => P::ProcessRunInput,
         "bytes_new" => P::BytesNew,
         "bytes_len" => P::BytesLen,
+        "bytes_get" => P::BytesGet,
         "bytes_push" => P::BytesPush,
+        "bytes_set" => P::BytesSet,
         "bytes_utf8" => P::BytesUtf8,
         "bytes_text_copy" => P::BytesTextCopy,
         "list_new" => P::ListNew,
@@ -864,6 +883,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "create" => P::Create,
         "read" => P::Read,
         "write" => P::Write,
+        "write_bytes" => P::WriteBytes,
         "close" => P::Close,
         "directory_read" => P::DirectoryRead,
         "path_kind" => P::PathKind,
@@ -899,12 +919,13 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TextConcat
         | P::TextEqual
         | P::ProcessRunInput
+        | P::BytesGet
         | P::BytesPush
         | P::ListGet
         | P::ListPush
         | P::DirectoryRead
         | P::PathCanonical => 2,
-        P::TextSlice | P::ListSet | P::Read | P::Write => 3,
+        P::TextSlice | P::BytesSet | P::ListSet | P::Read | P::Write | P::WriteBytes => 3,
     }
 }
 

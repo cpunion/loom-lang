@@ -697,6 +697,20 @@ unsafe extern "C" fn loom_rt_file_write(fd: i64, text: *const u8, offset: i64) -
 }
 
 #[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_file_write_bytes(fd: i64, bytes: *const u8, offset: i64) -> i64 {
+    let Ok(offset) = usize::try_from(offset) else {
+        return -1;
+    };
+    // SAFETY: The Bytes header and storage remain live for this non-retaining,
+    // nonallocating call. Binary contents do not require UTF-8 validation.
+    let bytes = unsafe { buffer_bytes(bytes) };
+    let Some(bytes) = bytes.get(offset..) else {
+        return -1;
+    };
+    file_io::write(fd, bytes)
+}
+
+#[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_file_read(fd: i64, bytes: *mut u8, limit: i64) -> i64 {
     let Ok(limit) = usize::try_from(limit) else {
         return -1;
@@ -1099,6 +1113,20 @@ mod tests {
             assert_eq!(buffer_bytes(bytes), b"ok");
             assert_eq!(loom_rt_file_close(fd), 0);
             drop(output_root);
+
+            bytes = loom_rt_bytes_new();
+            for byte in [b'x', 0, 255, 128, b'\n'] {
+                bytes_push(bytes, byte);
+            }
+            let fd = loom_rt_file_create(path);
+            assert!(fd >= 0);
+            assert_eq!(loom_rt_file_write_bytes(fd, bytes, -1), -1);
+            assert_eq!(loom_rt_file_write_bytes(fd, bytes, 6), -1);
+            assert_eq!(loom_rt_file_write_bytes(-1, bytes, 0), -1);
+            assert_eq!(loom_rt_file_write_bytes(fd, bytes, 1), 4);
+            assert_eq!(loom_rt_file_write_bytes(fd, bytes, 5), 0);
+            assert_eq!(loom_rt_file_close(fd), 0);
+            assert_eq!(std::fs::read(file.path()).unwrap(), [0, 255, 128, b'\n']);
 
             let missing = file.path().with_extension("missing");
             path = text(missing.to_str().unwrap());
