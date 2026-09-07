@@ -3,14 +3,16 @@
 use super::*;
 
 pub(super) struct RootFrame<'ctx> {
-    pub checkpoint: Option<IntValue<'ctx>>,
+    pub slots: Vec<PointerValue<'ctx>>,
+    pub locals: HashMap<usize, PointerValue<'ctx>>,
     pub expressions: HashMap<*const checked::Expr, PointerValue<'ctx>>,
 }
 
 impl RootFrame<'_> {
     pub fn empty() -> Self {
         Self {
-            checkpoint: None,
+            slots: Vec::new(),
+            locals: HashMap::new(),
             expressions: HashMap::new(),
         }
     }
@@ -136,7 +138,33 @@ pub(super) fn runtime_function<'ctx>(
             Some(ty) => ty.fn_type(&params, false),
             None => context.void_type().fn_type(&params, false),
         };
-        module.add_function(&name, ty, None)
+        let function = module.add_function(&name, ty, None);
+        if matches!(
+            name.as_str(),
+            "loom_rt_box_new"
+                | "loom_rt_list_new"
+                | "loom_rt_bytes_new"
+                | "loom_rt_text_new"
+                | "loom_rt_text_concat"
+                | "loom_rt_text_slice"
+                | "loom_rt_bytes_text_copy"
+                | "loom_rt_float_format"
+                | "loom_rt_process_arg_text"
+        ) {
+            // These private allocation boundaries return fresh storage or
+            // terminate. In particular, it cannot alias a generated root slot.
+            // Do not apply this promise to accessors or shared input values.
+            for attribute in ["noalias", "nonnull"] {
+                function.add_attribute(
+                    inkwell::attributes::AttributeLoc::Return,
+                    context.create_enum_attribute(
+                        inkwell::attributes::Attribute::get_named_enum_kind_id(attribute),
+                        0,
+                    ),
+                );
+            }
+        }
+        function
     })
 }
 
@@ -147,11 +175,109 @@ struct TemporarySlots {
     pools: HashMap<Type, Vec<usize>>,
     used: HashMap<Type, usize>,
     expressions: HashMap<*const checked::Expr, usize>,
+    allocation: HashMap<*const checked::Expr, bool>,
 }
 
 impl TemporarySlots {
-    fn expression(&mut self, program: &checked::Program, value: &checked::Expr) {
-        if managed(program, value.ty) {
+    fn may_allocate(&mut self, allocating: &BTreeSet<usize>, value: &checked::Expr) -> bool {
+        if let Some(result) = self.allocation.get(&(value as *const checked::Expr)) {
+            return *result;
+        }
+        let result = match &value.kind {
+            checked::ExprKind::DynBox { .. }
+            | checked::ExprKind::DynCall { .. }
+            | checked::ExprKind::IndirectCall { .. } => true,
+            checked::ExprKind::Unary(_, value)
+            | checked::ExprKind::Field(value, _)
+            | checked::ExprKind::Coerce(value) => self.may_allocate(allocating, value),
+            checked::ExprKind::Binary(_, left, right) => {
+                self.may_allocate(allocating, left) || self.may_allocate(allocating, right)
+            }
+            checked::ExprKind::Call(target, args) => {
+                allocating.contains(target)
+                    || args.iter().any(|arg| self.may_allocate(allocating, arg))
+            }
+            checked::ExprKind::Primitive(operation, args) => {
+                allocates(*operation) || args.iter().any(|arg| self.may_allocate(allocating, arg))
+            }
+            checked::ExprKind::Variant { fields, .. } => fields
+                .iter()
+                .any(|field| self.may_allocate(allocating, field)),
+            checked::ExprKind::Record(fields) => fields
+                .iter()
+                .any(|(_, field)| self.may_allocate(allocating, field)),
+            checked::ExprKind::Block(body) => self.block_allocates(allocating, body),
+            checked::ExprKind::Match { value, arms } => {
+                self.may_allocate(allocating, value)
+                    || arms
+                        .iter()
+                        .any(|arm| self.block_allocates(allocating, &arm.body))
+            }
+            checked::ExprKind::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                self.may_allocate(allocating, condition)
+                    || self.block_allocates(allocating, then_body)
+                    || else_body
+                        .as_ref()
+                        .is_some_and(|body| self.block_allocates(allocating, body))
+            }
+            _ => false,
+        };
+        self.allocation.insert(value, result);
+        result
+    }
+
+    fn block_allocates(&mut self, allocating: &BTreeSet<usize>, body: &checked::Block) -> bool {
+        body.statements
+            .iter()
+            .any(|statement| match &statement.kind {
+                checked::StmtKind::Let { value, .. }
+                | checked::StmtKind::Assign { value, .. }
+                | checked::StmtKind::Assert(value)
+                | checked::StmtKind::Discard(value)
+                | checked::StmtKind::Expr(value)
+                | checked::StmtKind::Return(Some(value)) => self.may_allocate(allocating, value),
+                checked::StmtKind::While { condition, body } => {
+                    self.may_allocate(allocating, condition)
+                        || self.block_allocates(allocating, body)
+                }
+                checked::StmtKind::Return(None) => false,
+            })
+            || body
+                .tail
+                .as_ref()
+                .is_some_and(|tail| self.may_allocate(allocating, tail))
+    }
+
+    fn siblings<'a>(
+        &mut self,
+        program: &checked::Program,
+        allocating: &BTreeSet<usize>,
+        values: impl IntoIterator<Item = &'a checked::Expr>,
+        mut later_allocation: bool,
+    ) {
+        let values = values.into_iter().collect::<Vec<_>>();
+        let mut protect = vec![false; values.len()];
+        for index in (0..values.len()).rev() {
+            protect[index] = later_allocation;
+            later_allocation |= self.may_allocate(allocating, values[index]);
+        }
+        for (value, protect) in values.into_iter().zip(protect) {
+            self.expression(program, allocating, value, protect);
+        }
+    }
+
+    fn expression(
+        &mut self,
+        program: &checked::Program,
+        allocating: &BTreeSet<usize>,
+        value: &checked::Expr,
+        protect: bool,
+    ) {
+        if protect && managed(program, value.ty) {
             let used = self.used.entry(value.ty).or_default();
             let pool = self.pools.entry(value.ty).or_default();
             if *used == pool.len() {
@@ -161,13 +287,19 @@ impl TemporarySlots {
             self.expressions.insert(value, pool[*used]);
             *used += 1;
         }
-        // Reserve the result before its children. Previously evaluated sibling
-        // arguments/fields and enclosing results remain outside nested scopes.
+        // Only a result crossing a later allocation needs a snapshot. Reserve
+        // it before children, then release child slots after the result is
+        // copied; earlier arguments and enclosing results stay outside this scope.
+        let base = self.used.clone();
         match &value.kind {
             checked::ExprKind::Unary(_, value)
             | checked::ExprKind::Field(value, _)
-            | checked::ExprKind::Coerce(value)
-            | checked::ExprKind::DynBox { value, .. } => self.expression(program, value),
+            | checked::ExprKind::Coerce(value) => {
+                self.expression(program, allocating, value, false)
+            }
+            checked::ExprKind::DynBox { value, .. } => {
+                self.expression(program, allocating, value, true)
+            }
             checked::ExprKind::DynCall {
                 receiver,
                 arguments,
@@ -177,54 +309,68 @@ impl TemporarySlots {
                 callee: receiver,
                 arguments,
             } => {
-                self.expression(program, receiver);
-                for argument in arguments {
-                    self.expression(program, argument);
-                }
+                self.siblings(
+                    program,
+                    allocating,
+                    std::iter::once(receiver.as_ref()).chain(arguments),
+                    true,
+                );
             }
             checked::ExprKind::Binary(_, left, right) => {
-                self.expression(program, left);
-                self.expression(program, right);
+                self.siblings(program, allocating, [left.as_ref(), right.as_ref()], false);
             }
-            checked::ExprKind::Call(_, args)
-            | checked::ExprKind::Primitive(_, args)
-            | checked::ExprKind::Variant { fields: args, .. } => {
-                for arg in args {
-                    self.expression(program, arg);
-                }
+            checked::ExprKind::Call(target, args) => {
+                self.siblings(program, allocating, args, allocating.contains(target));
+            }
+            checked::ExprKind::Primitive(operation, args) => {
+                self.siblings(program, allocating, args, allocates(*operation));
+            }
+            checked::ExprKind::Variant { fields, .. } => {
+                self.siblings(program, allocating, fields, false);
             }
             checked::ExprKind::Record(fields) => {
-                for (_, field) in fields {
-                    self.expression(program, field);
-                }
+                self.siblings(
+                    program,
+                    allocating,
+                    fields.iter().map(|(_, field)| field),
+                    false,
+                );
             }
-            checked::ExprKind::Block(body) => self.block(program, body),
+            checked::ExprKind::Block(body) => self.block(program, allocating, body),
             checked::ExprKind::Match { value, arms } => {
-                self.expression(program, value);
-                self.branches(program, arms.iter().map(|arm| &arm.body));
+                // The emitter copies pattern bindings into permanent local
+                // roots before entering an arm; matching itself cannot collect.
+                self.expression(program, allocating, value, false);
+                self.branches(program, allocating, arms.iter().map(|arm| &arm.body));
             }
             checked::ExprKind::If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                self.expression(program, condition);
-                self.branches(program, std::iter::once(then_body).chain(else_body));
+                self.expression(program, allocating, condition, false);
+                self.branches(
+                    program,
+                    allocating,
+                    std::iter::once(then_body).chain(else_body),
+                );
             }
             _ => {}
         }
+        self.used = base;
     }
 
     fn branches<'a>(
         &mut self,
         program: &checked::Program,
+        allocating: &BTreeSet<usize>,
         bodies: impl IntoIterator<Item = &'a checked::Block>,
     ) {
         let base = self.used.clone();
         let mut peak = base.clone();
         for body in bodies {
             self.used.clone_from(&base);
-            self.block(program, body);
+            self.block(program, allocating, body);
             for (ty, used) in &self.used {
                 let maximum = peak.entry(*ty).or_default();
                 *maximum = (*maximum).max(*used);
@@ -233,7 +379,12 @@ impl TemporarySlots {
         self.used = peak;
     }
 
-    fn block(&mut self, program: &checked::Program, body: &checked::Block) {
+    fn block(
+        &mut self,
+        program: &checked::Program,
+        allocating: &BTreeSet<usize>,
+        body: &checked::Block,
+    ) {
         let base = self.used.clone();
         for statement in &body.statements {
             match &statement.kind {
@@ -242,10 +393,12 @@ impl TemporarySlots {
                 | checked::StmtKind::Assert(value)
                 | checked::StmtKind::Discard(value)
                 | checked::StmtKind::Expr(value)
-                | checked::StmtKind::Return(Some(value)) => self.expression(program, value),
+                | checked::StmtKind::Return(Some(value)) => {
+                    self.expression(program, allocating, value, false)
+                }
                 checked::StmtKind::While { condition, body } => {
-                    self.expression(program, condition);
-                    self.block(program, body);
+                    self.expression(program, allocating, condition, false);
+                    self.block(program, allocating, body);
                 }
                 checked::StmtKind::Return(None) => {}
             }
@@ -254,7 +407,7 @@ impl TemporarySlots {
             self.used.clone_from(&base);
         }
         if let Some(tail) = &body.tail {
-            self.expression(program, tail);
+            self.expression(program, allocating, tail, false);
         }
     }
 }
@@ -265,27 +418,40 @@ pub(super) fn root_function<'ctx>(
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     program: &checked::Program,
+    allocating: &BTreeSet<usize>,
     source: &checked::Function,
     locals: &[Option<PointerValue<'ctx>>],
-    size_type: IntType<'ctx>,
     tracers: &mut HashMap<Type, FunctionValue<'ctx>>,
 ) -> NativeResult<RootFrame<'ctx>> {
     let mut slots = Vec::new();
+    let mut rooted_locals = HashMap::new();
     for (index, ty) in source.locals.iter().enumerate() {
         if managed(program, *ty) {
-            let slot = locals[index].ok_or("missing managed local")?;
-            if index >= source.params.len() {
-                builder.build_store(slot, native_type(context, program, *ty)?.const_zero())?;
-            }
+            // Keep normal locals nonescaping so LLVM can promote them to SSA.
+            // The collector observes a separate shadow slot, updated only on
+            // source writes. The current collector never relocates objects.
+            let native = native_type(context, program, *ty)?;
+            let slot = builder.build_alloca(native, "gc.local")?;
+            let initial = if index < source.params.len() {
+                builder.build_load(
+                    native,
+                    locals[index].ok_or("missing managed parameter")?,
+                    "gc.parameter",
+                )?
+            } else {
+                native.const_zero()
+            };
+            builder.build_store(slot, initial)?;
+            rooted_locals.insert(index, slot);
             slots.push((slot, *ty));
         }
     }
     let mut temporary = TemporarySlots::default();
     for value in &source.requires {
-        temporary.expression(program, value);
+        temporary.expression(program, allocating, value, false);
         temporary.used.clear();
     }
-    temporary.block(program, &source.body);
+    temporary.block(program, allocating, &source.body);
     let mut storage = Vec::new();
     for ty in temporary.types {
         let native = native_type(context, program, ty)?;
@@ -299,55 +465,15 @@ pub(super) fn root_function<'ctx>(
         .into_iter()
         .map(|(value, slot)| (value, storage[slot]))
         .collect();
-    if slots.is_empty() {
-        return Ok(RootFrame {
-            checkpoint: None,
-            expressions,
-        });
-    }
-    let pointer = context.ptr_type(AddressSpace::default());
-    let root_type = context.struct_type(&[pointer.into(), pointer.into()], false);
-    let table_type =
-        root_type.array_type(u32::try_from(slots.len()).map_err(|_| "too many root slots")?);
-    let table = builder.build_alloca(table_type, "gc.roots")?;
-    let mut entries = table_type.const_zero();
-    for (index, (slot, ty)) in slots.iter().enumerate() {
+    for (slot, ty) in &slots {
         let trace = tracer(context, module, program, *ty, tracers)?
             .as_global_value()
             .as_pointer_value();
-        let entry = builder
-            .build_insert_value(root_type.const_zero(), *slot, 0, "gc.address")?
-            .into_struct_value();
-        let entry = builder
-            .build_insert_value(entry, trace, 1, "gc.trace")?
-            .into_struct_value();
-        entries = builder
-            .build_insert_value(entries, entry, index as u32, "gc.entry")?
-            .into_array_value();
+        super::gc_lower::begin(context, module, builder, *slot, trace)?;
     }
-    builder.build_store(table, entries)?;
-    let enter = runtime_function(
-        context,
-        module,
-        "roots_enter",
-        Some(size_type.into()),
-        &[pointer.into(), size_type.into()],
-    );
-    let checkpoint = builder
-        .build_call(
-            enter,
-            &[
-                table.into(),
-                size_type.const_int(slots.len() as u64, false).into(),
-            ],
-            "gc.checkpoint",
-        )?
-        .try_as_basic_value()
-        .basic()
-        .ok_or("missing root checkpoint")?
-        .into_int_value();
     Ok(RootFrame {
-        checkpoint: Some(checkpoint),
+        slots: slots.into_iter().map(|(slot, _)| slot).collect(),
+        locals: rooted_locals,
         expressions,
     })
 }
@@ -679,17 +805,35 @@ mod tests {
         slots.expressions[&(value as *const checked::Expr)]
     }
 
+    fn allocating_call(ty: Type) -> checked::Expr {
+        expr(checked::ExprKind::Call(0, vec![local(ty)]), ty)
+    }
+
+    fn concat() -> checked::Expr {
+        expr(
+            checked::ExprKind::Primitive(
+                Primitive::TextConcat,
+                vec![local(Type::Text), local(Type::Text)],
+            ),
+            Type::Text,
+        )
+    }
+
     #[test]
     fn statement_temporaries_reuse_exact_types_but_not_enclosing_results() {
         let value = expr(
             checked::ExprKind::Block(block(
-                vec![local(Type::Text), local(Type::Bytes), local(Type::Text)],
+                vec![
+                    allocating_call(Type::Text),
+                    allocating_call(Type::Bytes),
+                    allocating_call(Type::Text),
+                ],
                 local(Type::Text),
             )),
             Type::Text,
         );
         let mut slots = TemporarySlots::default();
-        slots.expression(&program(), &value);
+        slots.expression(&program(), &BTreeSet::from([0]), &value, true);
         assert_eq!(slots.types, [Type::Text, Type::Text, Type::Bytes]);
         let checked::ExprKind::Block(body) = &value.kind else {
             panic!();
@@ -698,14 +842,32 @@ mod tests {
             let checked::StmtKind::Discard(value) = &statement.kind else {
                 panic!();
             };
-            assert_eq!(slot(&slots, value), if index == 1 { 2 } else { 1 });
+            let checked::ExprKind::Call(_, args) = &value.kind else {
+                panic!();
+            };
+            assert_eq!(slot(&slots, &args[0]), if index == 1 { 2 } else { 1 });
+            assert!(
+                !slots
+                    .expressions
+                    .contains_key(&(value as *const checked::Expr))
+            );
         }
-        assert_eq!(slot(&slots, body.tail.as_ref().unwrap()), 1);
+        assert!(
+            !slots
+                .expressions
+                .contains_key(&(body.tail.as_ref().unwrap().as_ref() as *const checked::Expr))
+        );
         assert_eq!(slot(&slots, &value), 0);
+
+        // Reads, discarded calls with a nonallocating target, and immediate
+        // local/return handoffs need no temporary roots.
+        let mut slots = TemporarySlots::default();
+        slots.expression(&program(), &BTreeSet::new(), &value, false);
+        assert!(slots.types.is_empty());
     }
 
     #[test]
-    fn branch_pools_preserve_argument_condition_and_scrutinee_prefixes() {
+    fn branch_pools_preserve_pending_arguments_without_rooting_pure_reads() {
         let conditional = expr(
             checked::ExprKind::If {
                 condition: Box::new(expr(
@@ -715,15 +877,15 @@ mod tests {
                     ),
                     Type::Bool,
                 )),
-                then_body: block(vec![], local(Type::Text)),
-                else_body: Some(block(vec![], local(Type::Text))),
+                then_body: block(vec![], concat()),
+                else_body: Some(block(vec![], concat())),
             },
             Type::Text,
         );
         let matched = expr(
             checked::ExprKind::Match {
                 value: Box::new(local(Type::Data(0))),
-                arms: vec![conditional, local(Type::Text)]
+                arms: vec![conditional, concat()]
                     .into_iter()
                     .enumerate()
                     .map(|(variant, tail)| checked::MatchArm {
@@ -741,7 +903,8 @@ mod tests {
             Type::Text,
         );
         let mut slots = TemporarySlots::default();
-        slots.expression(&program(), &call);
+        slots.expression(&program(), &BTreeSet::from([0]), &call, false);
+        assert_eq!(slots.types, [Type::Text; 4]);
         let checked::ExprKind::Call(_, arguments) = &call.kind else {
             panic!();
         };
@@ -750,13 +913,20 @@ mod tests {
         };
         let first = arms[0].body.tail.as_ref().unwrap();
         let second = arms[1].body.tail.as_ref().unwrap();
-        assert_eq!(slot(&slots, first), slot(&slots, second));
-        assert_ne!(slot(&slots, first), slot(&slots, &arguments[0]));
-        assert_ne!(slot(&slots, first), slot(&slots, &arguments[1]));
+        assert_ne!(slot(&slots, &arguments[0]), slot(&slots, &arguments[1]));
         let checked::StmtKind::Discard(inner) = &arms[0].body.statements[0].kind else {
             panic!();
         };
-        assert_ne!(slot(&slots, value), slot(&slots, inner));
+        assert!(
+            !slots
+                .expressions
+                .contains_key(&(value.as_ref() as *const checked::Expr))
+        );
+        assert!(
+            !slots
+                .expressions
+                .contains_key(&(inner as *const checked::Expr))
+        );
         let checked::ExprKind::If {
             condition,
             then_body,
@@ -765,14 +935,64 @@ mod tests {
         else {
             panic!();
         };
-        let yes = then_body.tail.as_ref().unwrap();
-        let no = else_body.as_ref().unwrap().tail.as_ref().unwrap();
-        assert_eq!(slot(&slots, yes), slot(&slots, no));
+        let checked::ExprKind::Primitive(_, yes) = &then_body.tail.as_ref().unwrap().kind else {
+            panic!();
+        };
+        let checked::ExprKind::Primitive(_, no) =
+            &else_body.as_ref().unwrap().tail.as_ref().unwrap().kind
+        else {
+            panic!();
+        };
+        let checked::ExprKind::Primitive(_, other) = &second.kind else {
+            panic!();
+        };
+        for index in 0..2 {
+            assert_eq!(slot(&slots, &yes[index]), slot(&slots, &no[index]));
+            assert_eq!(slot(&slots, &yes[index]), slot(&slots, &other[index]));
+            assert_ne!(slot(&slots, &yes[index]), slot(&slots, &arguments[0]));
+            assert_ne!(slot(&slots, &yes[index]), slot(&slots, &arguments[1]));
+        }
         let checked::ExprKind::Primitive(_, values) = &condition.kind else {
             panic!();
         };
         for condition in values {
-            assert_ne!(slot(&slots, condition), slot(&slots, yes));
+            assert!(
+                !slots
+                    .expressions
+                    .contains_key(&(condition as *const checked::Expr))
+            );
         }
+    }
+
+    #[test]
+    fn earlier_fields_survive_allocating_siblings_without_rooting_the_result() {
+        let value = expr(
+            checked::ExprKind::Variant {
+                variant: 0,
+                fields: vec![local(Type::Text), concat()],
+            },
+            Type::Data(0),
+        );
+        let mut slots = TemporarySlots::default();
+        slots.expression(&program(), &BTreeSet::new(), &value, false);
+        let checked::ExprKind::Variant { fields, .. } = &value.kind else {
+            panic!();
+        };
+        let checked::ExprKind::Primitive(_, args) = &fields[1].kind else {
+            panic!();
+        };
+        assert_eq!(slots.types, [Type::Text; 3]);
+        assert_ne!(slot(&slots, &fields[0]), slot(&slots, &args[0]));
+        assert_ne!(slot(&slots, &fields[0]), slot(&slots, &args[1]));
+        assert!(
+            !slots
+                .expressions
+                .contains_key(&(&fields[1] as *const checked::Expr))
+        );
+        assert!(
+            !slots
+                .expressions
+                .contains_key(&(&value as *const checked::Expr))
+        );
     }
 }

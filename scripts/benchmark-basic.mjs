@@ -11,6 +11,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let runs = 7;
 let quick = false;
 let reuse = false;
+let baseline;
 let output = join(root, "target/performance/basic.json");
 const compiler = resolve(process.env.BENCH_LOOM ?? join(root, "target/loom"));
 const cc = process.env.BENCH_CC ?? process.env.LOOM_CC ?? "clang";
@@ -24,11 +25,13 @@ for (let index = 0; index < args.length; index += 1) {
   else if (arg === "--reuse-build") reuse = true;
   else if (arg === "--runs") runs = Number(args[++index]);
   else if (arg === "--output") output = resolve(args[++index]);
+  else if (arg === "--baseline") baseline = resolve(args[++index]);
   else if (arg === "--help") {
-    console.log(`Usage: node scripts/benchmark-basic.mjs [--runs 7] [--quick] [--reuse-build] [--output path]
+    console.log(`Usage: node scripts/benchmark-basic.mjs [--runs 7] [--quick] [--reuse-build] [--output path] [--baseline directory]
 Tools: BENCH_LOOM, BENCH_CC, BENCH_RUSTC, BENCH_GO, BENCH_ZIG.
 Native runtime comparison, not interpreter or compiler throughput. --quick only checks the harness.
---reuse-build reruns existing binaries; provenance is retained from their build manifest.`);
+--reuse-build reruns existing binaries; provenance is retained from their build manifest.
+--baseline adds the archived Loom O3 binary and build.json for a same-session comparison.`);
     process.exit(0);
   } else throw new Error(`unknown option: ${arg}`);
 }
@@ -102,6 +105,17 @@ if (reuse) {
   writeFileSync(manifestPath, `${JSON.stringify(build, null, 2)}\n`);
 }
 
+let baselineBuild;
+if (baseline) {
+  baselineBuild = JSON.parse(readFileSync(join(baseline, "build.json"), "utf8"));
+  const old = baselineBuild.variants.find(item => item.id === "loom-o3");
+  const executable = join(baseline, "loom-o3" + (platform() === "win32" ? ".exe" : ""));
+  if (hash(readFileSync(executable)) !== old?.sha256 || baselineBuild.sources.loom !== build.sources.loom) {
+    throw new Error("baseline executable or Loom source does not match its build manifest");
+  }
+  variants.push({ id: "loom-before", label: "Loom before", executable });
+}
+
 const cases = [
   { name: "startup", kernel: "int_lcg", count: 0, seed: 17 },
   { name: "int_lcg", count: quick ? 10000 : 20000000, seed: 17 },
@@ -133,14 +147,14 @@ const report = {
   schema: 1, at: new Date().toISOString(), host: { os: platform(), release: release(), arch: arch(), cpu: cpus()[0]?.model },
   method: "fresh native processes; one warmup per case/variant; rotated variant order per measured round; median and MAD; includes startup, argv parsing, allocation, stdout and process exit; no baseline subtraction",
   buildMethod: "one observed build invocation per variant, with existing tool caches; not comparable compiler-throughput measurements",
-  quick, runs, build, cases: [],
+  quick, runs, build, ...(baselineBuild ? { baselineBuild } : {}), cases: [],
 };
 for (const item of cases) {
   const kernel = item.kernel ?? item.name;
   const expected = String(reference(kernel, item.count, item.seed));
   const samples = new Map(variants.map(variant => [variant.id, []]));
   const measure = variant => {
-    const result = execute(binary(variant.id), [kernel, String(item.count), String(item.seed)]);
+    const result = execute(variant.executable ?? binary(variant.id), [kernel, String(item.count), String(item.seed)]);
     if (result.stdout !== expected || result.stderr !== "") throw new Error(`${variant.label}/${item.name} checksum mismatch: ${result.stdout} expected ${expected}; ${result.stderr}`);
     return result.wallMs;
   };

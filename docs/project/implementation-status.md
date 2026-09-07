@@ -181,6 +181,10 @@ CI retains full bootstrap generation checks. The initial
 [latency harness](../../compiler/README.md#compiler-latency) measures fresh-process
 check/build runs with warm OS caches and backend phase timings. It does not
 implement incremental reuse or establish a performance target as achieved.
+The [native basic benchmark](../../benchmarks/basic/README.md#managed-memory-lowering-repair)
+also records the managed-memory lowering repair, including same-session baseline
+comparisons for native kernels and whole compiler checks. This is measured local
+evidence, not completion of moving GC or the remaining resource/async design.
 
 Accepted language and deployment decisions remain targets, not claims that the
 whole design is implemented. Bootstrap agreement is not a correctness proof.
