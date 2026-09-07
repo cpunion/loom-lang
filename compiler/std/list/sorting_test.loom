@@ -1,0 +1,105 @@
+import std.int.to_text
+import std.text.concat
+import std.text.length
+
+fn sorting_less(left Int, right Int) Bool { left < right }
+fn unexpected_comparison(left Int, right Int) Bool { assert false
+    left < right
+}
+
+test fn sorting_empty_singleton_and_reverse_leave_input_unchanged() {
+    let empty = new[Int]()
+    let empty_sorted = sorted(empty, unexpected_comparison)
+    push(empty_sorted, 7)
+    assert length(empty) == 0
+    let single = sorted(empty_sorted, unexpected_comparison)
+    set(single, 0, 9)
+    assert get(empty_sorted, 0) == 7
+
+    let reverse = new[Int]()
+    var index = 0
+    while index < 7 { push(reverse, 6 - index)
+        index = index + 1
+    }
+    let ordered = sorted(reverse, sorting_less)
+    index = 0
+    while index < 7 {
+        assert get(ordered, index) == index && get(reverse, index) == 6 - index
+        index = index + 1
+    }
+}
+
+record SortingEntry { key Int order Int shared List[Int] }
+
+fn allocating_less(left SortingEntry, right SortingEntry) Bool {
+    let description = concat(to_text(left.order), to_text(right.order))
+    assert std.text.length(description) > 0
+    assert length(left.shared) == 1 && length(right.shared) == 1
+    left.key < right.key
+}
+
+fn sorting_fixture() (List[SortingEntry], List[SortingEntry]) {
+    let shared = new[Int]()
+    push(shared, 7)
+    let values = new[SortingEntry]()
+    var index = 0
+    while index < 5 {
+        let key = if index == 4 { 3 } else { 2 - index % 2 }
+        push(values, SortingEntry { key = key order = index shared = shared })
+        index = index + 1
+    }
+    (values, sorted(values, allocating_less))
+}
+
+fn sorting_order(values List[SortingEntry]) Text {
+    var text = ""
+    var index = 0
+    while index < length(values) {
+        text = concat(text, to_text(get(values, index).order))
+        index = index + 1
+    }
+    text
+}
+
+test fn stable_sorting_and_allocating_comparisons_agree_at_compile_time() {
+    let original, ordered = sorting_fixture()
+    let staged_original, staged = comptime { sorting_fixture() }
+    assert sorting_order(ordered) == "13024"
+    assert sorting_order(staged) == sorting_order(ordered)
+    assert sorting_order(original) == "01234" && sorting_order(staged_original) == "01234"
+    set(get(ordered, 0).shared, 0, 99)
+    assert get(get(original, 1).shared, 0) == 99
+    set(ordered, 0, get(ordered, 4))
+    assert get(original, 1).order == 1
+}
+
+record SortingSnapshot { key Int source List[SortingSnapshot] comparisons List[Int] }
+
+fn snapshot_less(left SortingSnapshot, right SortingSnapshot) Bool {
+    if length(left.comparisons) == 0 {
+        push(left.comparisons, 1)
+        let changed = SortingSnapshot { key = 99 source = left.source comparisons = left.comparisons }
+        set(left.source, 0, changed)
+        set(left.source, 2, changed)
+        push(left.source, changed)
+    }
+    left.key < right.key
+}
+
+test fn sorting_snapshots_all_elements_before_the_first_comparison() {
+    let source = new[SortingSnapshot]()
+    let comparisons = new[Int]()
+    var index = 0
+    while index < 3 {
+        push(source, SortingSnapshot { key = 3 - index source = source comparisons = comparisons })
+        index = index + 1
+    }
+    let ordered = sorted(source, snapshot_less)
+    assert length(ordered) == 3 && length(source) == 4
+    assert get(source, 0).key == 99 && get(source, 2).key == 99
+    index = 0
+    while index < 3 {
+        assert get(ordered, index).key == index + 1
+        index = index + 1
+    }
+}

@@ -56,6 +56,11 @@ fallible chaining and conditional fallback; Result also maps errors. Only the
 selected callback is invoked, and payload sharing is preserved. Colocated source
 tests exercise native, compile-time and forced-GC execution.
 
+`std.list.sorted` provides source-written stable merge sorting with an initial
+snapshot and shared elements. It works with pure compile-time and allocating
+native comparators. `std.fs.entries` reuses it for deterministic byte ordering;
+comparator ordering laws remain a caller obligation, not a completed proof gate.
+
 Static concepts use explicit nominal `impl` declarations, generic bounds and
 ordinary direct-call specialization. Conditional `T implements C` tests select
 only that instance's branch; they do not add a public generic requirement.

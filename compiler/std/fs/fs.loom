@@ -1,8 +1,6 @@
 import std.result.Result
 import std.list.new
-import std.list.get
-import std.list.set
-import std.list.length
+import std.list.sorted
 import std.text.byte
 import std.text.length
 import std.bytes.new
@@ -36,20 +34,6 @@ fn before(left Text, right Text) Bool {
     std.text.length(left) < std.text.length(right)
 }
 
-fn sort(names List[Text]) {
-    var index = 1
-    while index < std.list.length(names) {
-        let value = get(names, index)
-        var position = index
-        while position > 0 && before(value, get(names, position - 1)) {
-            set(names, position, get(names, position - 1))
-            position = position - 1
-        }
-        set(names, position, value)
-        index = index + 1
-    }
-}
-
 // Entry names only, ordered by UTF-8 bytes. A failed enumeration returns no
 // partial list. Non-UTF-8 names are errors, never silently rewritten.
 pub fn entries(path Text) Result[List[Text], FsError] {
@@ -57,8 +41,7 @@ pub fn entries(path Text) Result[List[Text], FsError] {
     let status = directory_read(path, names)
     if status == -2 { return Result.Err(FsError.Utf8) }
     if status < 0 { return Result.Err(FsError.Read) }
-    sort(names)
-    Result.Ok(names)
+    Result.Ok(sorted(names, before))
 }
 
 // Follows symlinks. Missing paths and broken symlinks return an error.

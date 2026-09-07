@@ -1,0 +1,37 @@
+// Stable ordering of an initial snapshot, with a fresh outer List and shared
+// elements. less must remain a consistent strict weak order; this is not proved.
+// Iterative merge sort uses O(n log n) comparisons and O(n) scratch storage.
+pub fn sorted[T](values List[T], less fn(T, T) Bool) List[T] {
+    var source = clone(values)
+    let count = length(source)
+    if count < 2 { return source }
+    var output = clone(source)
+    var width = 1
+    while width < count {
+        var start = 0
+        while start < count {
+            let middle = if width < count - start { start + width } else { count }
+            let end = if width < count - middle { middle + width } else { count }
+            var left = start
+            var right = middle
+            var index = start
+            while index < end {
+                // Pick the left entry on a tie, preserving its original order.
+                if left < middle && (right >= end || !less(get(source, right), get(source, left))) {
+                    set(output, index, get(source, left))
+                    left = left + 1
+                } else {
+                    set(output, index, get(source, right))
+                    right = right + 1
+                }
+                index = index + 1
+            }
+            start = end
+        }
+        let previous = source
+        source = output
+        output = previous
+        width = if width >= count - width { count } else { width * 2 }
+    }
+    source
+}
