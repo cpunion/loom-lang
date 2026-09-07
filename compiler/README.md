@@ -57,9 +57,9 @@ and runtime, then Loom stages 1, 2, and 3. It compares stages 2/3 byte-for-byte
 and publishes `target/loom`. On macOS/Linux, a cold build starts with the frozen
 Rust seed in `compiler/bootstrap/seed`, then builds the ordered Loom source
 commits in `compiler/bootstrap/checkpoints`. Each checkpoint implements a
-capability before the next compiler uses it: the first enables native Float
-before the current evaluator stores Float values; the second enables function
-values before source `std.list` adopts higher-order functions. These immutable inputs are
+capability before the next compiler uses it: native Float before evaluator
+storage, function values before higher-order `std.list`, and byte primitives
+before the public binary I/O wrappers. These immutable inputs are
 cached in `target/bootstrap/<commit>/`; no preinstalled Loom compiler is required.
 Pinned commits must be available in Git history; the script reports an exact
 fetch command when one is missing. The cache is disposable, not another
@@ -570,10 +570,21 @@ type NonNegative = Int where self >= 0
 fn widen(value Positive) NonNegative { NonNegative(value) }
 ```
 
-The input still evaluates once. Reverse conversions, helper-call predicates,
-Float predicates, and exhausted or unsupported proofs retain ordinary checked
-`Result` construction. This bounded implication uses the existing integer prover;
-it does not infer new facts from arbitrary preceding statements.
+The input still evaluates once. Call-free Int and Float refinements also reuse
+identical predicates or conjuncts of an already true `&&` expression:
+
+```loom
+type Bounded = Float where self >= 0.0 && self <= 100.0
+type NonNegative = Float where self >= 0.0
+fn widen(value Bounded) NonNegative { NonNegative(value) }
+```
+
+The latter rule matches typed expressions exactly, permits regrouping/reordering
+conjuncts, and does not apply integer algebra to IEEE values. It cannot extract
+a condition hidden behind `||`. Helper calls, unproved narrowing, and exhausted
+or unsupported proofs retain ordinary checked `Result` construction. Neither
+rule infers new facts from arbitrary preceding statements; general Float
+postcondition reasoning remains unsupported.
 
 Predicates over `Int` or `Float` may call ordinary pure helpers, including helpers with
 loops, recursion, and freshly allocated data:

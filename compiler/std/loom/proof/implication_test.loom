@@ -20,3 +20,39 @@ test fn refinement_implication_requires_truth_and_definedness() {
     }
     assert !implies(positive, deep)
 }
+
+test fn exact_conjunctions_preserve_float_and_short_circuit_semantics() {
+    let self = expression(ExprKind.Local, 5, "", 0, new[Expr]())
+    let zero = expression(ExprKind.Float, 5, "0.0", -1, new[Expr]())
+    let limit = expression(ExprKind.Float, 5, "100.0", -1, new[Expr]())
+    let lower = operation(">=", self, zero)
+    let upper = operation("<=", self, limit)
+    let bounded = operation("&&", lower, upper)
+    assert implies(bounded, lower)
+    assert implies(bounded, operation("&&", upper, lower))
+    assert !implies(lower, bounded)
+    let nan = operation("!=", self, self)
+    let reflexive = operation("==", self, self)
+    assert !implies(nan, reflexive)
+    assert !implies(nan, expression(ExprKind.Unary, 2, "!", -1, nodes(reflexive)))
+    let nonzero = operation("!=", local(0), literal("0"))
+    let divided = operation(">", operation("/", literal("10"), local(0)), literal("0"))
+    assert implies(operation("&&", nonzero, divided), operation("&&", divided, nonzero))
+    assert !implies(operation("||", operation("==", local(0), literal("0")), divided), divided)
+}
+
+test fn structural_proofs_require_checked_scalar_identity_without_helpers() {
+    let self = expression(ExprKind.Local, 5, "", 0, new[Expr]())
+    let zero = expression(ExprKind.Float, 5, "0.0", -1, new[Expr]())
+    let positive = operation(">", self, zero)
+    let relocated = Expr { kind = positive.kind ty = positive.ty text = positive.text index = positive.index
+        children = positive.children arms = positive.arms span = Span { start = 20 end = 30 } falls = positive.falls }
+    assert implies(positive, relocated)
+    assert !implies(positive, operation(">", expression(ExprKind.Local, 5, "", 1, new[Expr]()), zero))
+    assert !implies(positive, operation(">", local(0), literal("0")))
+    assert !implies(self, self)
+    // Abstract call templates have no emitted index; spelling is not identity.
+    let helper = expression(ExprKind.Call, 2, "accepts", -1, nodes(self))
+    assert !implies(helper, helper)
+    assert !implies(operation("&&", positive, helper), positive)
+}

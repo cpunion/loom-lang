@@ -28,8 +28,10 @@ normalization and lockfiles are still open, not supplied by local path loading.
 Explicit Int refinement conversions also remove a destination check when the
 source predicate proves its truth and arithmetic definedness. The bounded,
 call-free implication proof preserves one evaluation of the input; unknown
-cases retain `Result` construction. It does not yet propagate local branch facts
-or prove implications involving Float or helper calls.
+cases retain `Result` construction. Exact call-free predicates and already true
+`&&` conjuncts also discharge Int/Float refinement boundaries without IEEE
+algebra. Conjuncts may regroup or reorder; `||` branches are not assumed true.
+Local-flow facts, helper-call implications and general Float reasoning remain open.
 
 Structural tuples support positional access and plain-name `let`/`var`
 destructuring, including nested types and `List`/`Result` elements. Native layout,

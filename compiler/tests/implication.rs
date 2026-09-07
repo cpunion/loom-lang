@@ -37,6 +37,31 @@ fn stronger_int_refinements_need_no_second_check_before_llvm_optimization() {
 }
 
 #[test]
+fn float_conjunction_weakening_reuses_checks_without_ieee_algebra() {
+    let (_directory, executable, ir) = build(
+        r#"
+type Bounded = Float where self >= 0.0 && self <= 100.0
+type NonNegative = Float where self >= 0.0
+type Reordered = Float where self <= 100.0 && self >= 0.0
+type SelectedNaN = Float where self != self && self != 0.0
+type NotANumber = Float where self != self
+fn wider(value Bounded) NonNegative { NonNegative(value) }
+fn reordered(value Bounded) Reordered { Reordered(value) }
+fn keep_nan(value SelectedNaN) NotANumber { NotANumber(value) }
+fn main() {
+    assert wider(Bounded(12.5)) == 12.5
+    assert reordered(Bounded(100.0)) == 100.0
+    let value = keep_nan(SelectedNaN(0.0 / 0.0))
+    assert value != value
+}
+"#,
+    );
+    success(&Command::new(executable).output().unwrap());
+    assert!(!ir.contains("fcmp oge") && !ir.contains("fcmp ole"));
+    assert!(!ir.contains("loom_rt_"));
+}
+
+#[test]
 fn checked_narrowing_remains_and_widening_evaluates_its_input_once() {
     let (_directory, executable, ir) = build(
         "import std.result.Result\nimport std.result.ConstraintError\n\

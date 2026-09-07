@@ -144,8 +144,9 @@ type discovery.
 Native binary64 `Float`, source numeric parsing/conversion, compile-time execution
 and Float-based constrained types now share the checked/native path. The compiler
 adopts Float through a pinned source checkpoint without extending the frozen Rust
-frontend. Required Float proofs still reject; integer algebra must not stand in
-for IEEE floating-point proofs.
+frontend. Exact held predicates/conjuncts now discharge redundant Float
+refinement checks. General required Float postconditions still reject; integer
+algebra must not stand in for IEEE floating-point proofs.
 
 Structural tuples, numeric projection, and plain-name destructuring now use the
 native aggregate path, including generics, shared containers, and compile-time
@@ -207,7 +208,8 @@ construction boundary. Execution never substitutes for a required proof:
 function contracts still use the documented call-free proof fragment.
 Explicit Int refinement conversion now reuses that fragment to eliminate a
 destination check only when both truth and definedness follow from the source
-predicate. Local-flow facts and helper-call summaries remain later work.
+predicate. Exact call-free conjunction reuse also handles Float without
+arithmetic rewriting. Local-flow facts and helper-call summaries remain later work.
 
 Typed metaprogramming later reuses this infrastructure. Public analysis does not
 freeze the schemas or complete

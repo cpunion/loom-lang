@@ -18,13 +18,40 @@ test fn implication_templates_are_ready_before_helper_validation() {
 
 test fn unproved_or_faulting_refinements_keep_checked_construction() {
     let imports = "import std.result.Result\nimport std.result.ConstraintError\n"
-    let definitions = "type Whole = Int where true\ntype Increment = Int where self + 1 > self\ntype Hidden = Int where accepts(self)\nfn accepts(value Int) Bool { value >= 0 }\ntype Finite = Float where self >= 0.0 && self <= 100.0\ntype Wide = Float where self >= 0.0\n"
-    let functions = "pub fn overflow(value Whole) Result[Increment, ConstraintError] { Increment(value) }\npub fn opaque(value Whole) Result[Hidden, ConstraintError] { Hidden(value) }\npub fn floating(value Finite) Result[Wide, ConstraintError] { Wide(value) }\n"
+    let definitions = "type Whole = Int where true\ntype Increment = Int where self + 1 > self\ntype Hidden = Int where accepts(self)\nfn accepts(value Int) Bool { value >= 0 }\ntype Finite = Float where self >= 0.0 && self <= 100.0\ntype Wide = Float where self >= 0.0\ntype AnyFloat = Float where true\ntype Reflexive = Float where self == self\ntype Guarded = Int where self == 0 || 10 / self > 0\ntype Quotient = Int where 10 / self > 0\n"
+    let functions = "pub fn overflow(value Whole) Result[Increment, ConstraintError] { Increment(value) }\npub fn opaque(value Whole) Result[Hidden, ConstraintError] { Hidden(value) }\npub fn floating(value Wide) Result[Finite, ConstraintError] { Finite(value) }\npub fn nan_sensitive(value AnyFloat) Result[Reflexive, ConstraintError] { Reflexive(value) }\npub fn guarded(value Guarded) Result[Quotient, ConstraintError] { Quotient(value) }\n"
     let program = accepted_result(concat(imports, concat(definitions, functions)))
     var index = 0
-    while index < 3 {
+    while index < 5 {
         let boundary = get(get(program.functions, index).body.children, 0)
         assert boundary.kind == ExprKind.Block && dynamic_count(boundary, ExprKind.If) == 1
         index = index + 1
+    }
+}
+
+test fn exact_conjunction_subsets_remove_float_and_bitwise_rechecks() {
+    let definitions = "type Finite = Float where self >= 0.0 && self <= 100.0\ntype Wide = Float where self >= 0.0\ntype Reordered = Float where self <= 100.0 && self >= 0.0\ntype Flags = Int where (self & 1) == 0 && self >= 0\ntype Even = Int where (self & 1) == 0\n"
+    let program = accepted(concat(definitions, "pub fn wider(value Finite) Wide { Wide(value) }\npub fn reordered(value Finite) Reordered { Reordered(value) }\npub fn bits(value Flags) Even { Even(value) }"))
+    assert length(program.functions) == 3
+    var index = 0
+    while index < length(program.functions) {
+        let boundary = get(get(program.functions, index).body.children, 0)
+        assert boundary.kind == ExprKind.Coerce && dynamic_count(boundary, ExprKind.If) == 0
+        index = index + 1
+    }
+    rejects(concat(definitions, "fn implicit(value Finite) Wide { value }"))
+}
+
+test fn identical_helper_spellings_do_not_prove_cross_package_refinements() {
+    let files = source_files("import std.result.Result\nimport std.result.ConstraintError\nimport source.Left\nimport target.Right\npub fn convert(value Left) Result[Right, ConstraintError] { Right(value) }")
+    push(files, source_file("std.result", "pub enum Result[T, E] { Ok(T) Err(E) }\npub enum ConstraintError { Rejected }", true))
+    push(files, source_file("source", "pub type Left = Int where valid(self)\nfn valid(value Int) Bool { value >= 0 }", false))
+    push(files, source_file("target", "pub type Right = Int where valid(self)\nfn valid(value Int) Bool { value > 0 }", false))
+    match checked(files) {
+        Result.Ok(program) => {
+            let boundary = get(get(program.functions, 0).body.children, 0)
+            assert boundary.kind == ExprKind.Block && dynamic_count(boundary, ExprKind.If) == 1
+        }
+        Result.Err(_) => { assert false }
     }
 }
