@@ -273,6 +273,11 @@ timings; local variables remain conservatively rooted for the function.
   not visited, while changes to unread elements are observed. Map/filter return
   a new outer List and retain element sharing. Fold accepts a distinct accumulator
   type and returns its initial value for an empty List.
+- Source `std.list.sorted(values, less)` uses stable merge sort over an initial
+  snapshot, returning a fresh outer List with shared elements. It uses O(n log n)
+  comparisons and O(n) scratch storage. The comparator must remain a consistent
+  strict weak order; the compiler does not prove this requirement. Directory
+  enumeration reuses this sorter instead of maintaining a separate algorithm.
 - Source `std.option` and `std.result` provide `map`, `and_then`, and
   `unwrap_or_else`; Result also provides `map_err`. The selected branch invokes
   its callback once, while the other branch preserves its payload without
