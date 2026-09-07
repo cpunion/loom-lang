@@ -539,6 +539,24 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::ProcessRunInput => ("process_run_input", Some(i64_type.into())),
             Primitive::Exit => ("process_exit", None),
             Primitive::BytesNew => ("bytes_new", Some(pointer.into())),
+            Primitive::BytesGet | Primitive::BytesSet => {
+                let slot =
+                    self.bytes_slot(values[0].into_pointer_value(), values[1].into_int_value())?;
+                if operation == Primitive::BytesGet {
+                    let byte = self
+                        .builder
+                        .build_load(self.context.i8_type(), slot, "bytes.element")?
+                        .into_int_value();
+                    return Ok(Some(
+                        self.builder
+                            .build_int_z_extend(byte, i64_type, "bytes.element.int")?
+                            .into(),
+                    ));
+                }
+                let byte = self.checked_byte(values[2].into_int_value())?;
+                self.builder.build_store(slot, byte)?;
+                return Ok(None);
+            }
             Primitive::BytesPush | Primitive::ListPush => {
                 self.buffer_push(
                     values[0].into_pointer_value(),
@@ -602,6 +620,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::Create => ("file_create", Some(i64_type.into())),
             Primitive::Read => ("file_read", Some(i64_type.into())),
             Primitive::Write => ("file_write", Some(i64_type.into())),
+            Primitive::WriteBytes => ("file_write_bytes", Some(i64_type.into())),
             Primitive::Close => ("file_close", Some(i64_type.into())),
             Primitive::DirectoryRead => ("directory_read", Some(i64_type.into())),
             Primitive::PathKind => ("path_kind", Some(i64_type.into())),

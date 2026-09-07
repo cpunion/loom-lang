@@ -1,0 +1,48 @@
+test fn byte_access_preserves_aliases_and_rejects_faults_and_output_effects() {
+    let program = empty()
+    let state = state(program, false)
+    let buffer = fresh(state, 4)
+    let alias = buffer
+    push(buffer.items, number(0))
+    push(buffer.items, number(255))
+    assert buffer.number == alias.number && buffer.number > 0
+    let read = node(ExprKind.Intrinsic, 1, "bytes_get", -1, new[Expr]())
+    let write = node(ExprKind.Intrinsic, 0, "bytes_set", -1, new[Expr]())
+    let reader = new[Value]()
+    push(reader, alias)
+    push(reader, number(0))
+    let writer = new[Value]()
+    push(writer, buffer)
+    push(writer, number(0))
+    push(writer, number(255))
+    var index = 0
+    while index < 2 {
+        let byte = if index == 0 { 255 } else { 0 }
+        set(reader, 1, number(index))
+        set(writer, 1, number(index))
+        set(writer, 2, number(byte))
+        assert match primitive(state, write, writer) { Result.Ok(value) => value.ty == 0, _ => false }
+        assert match primitive(state, read, reader) { Result.Ok(value) => value.ty == 1 && value.number == byte, _ => false }
+        assert get(alias.items, index).number == byte
+        index = index + 1
+    }
+    index = 0
+    while index < 2 {
+        let outside = if index == 0 { -1 } else { 2 }
+        set(reader, 1, number(outside))
+        set(writer, 1, number(outside))
+        assert match primitive(state, read, reader) { Result.Err(error) => error.message == "compile-time Bytes index out of bounds", _ => false }
+        assert match primitive(state, write, writer) { Result.Err(error) => error.message == "compile-time Bytes index out of bounds", _ => false }
+        set(writer, 1, number(0))
+        set(writer, 2, number(if index == 0 { -1 } else { 256 }))
+        assert match primitive(state, write, writer) { Result.Err(error) => error.message == "compile-time byte out of range", _ => false }
+        assert get(alias.items, 0).number == 255
+        set(writer, 2, number(0))
+        index = index + 1
+    }
+    let arguments = two(literal(1), node(ExprKind.Intrinsic, 4, "bytes_new", -1, new[Expr]()))
+    push(arguments, literal(0))
+    let branches = two(truth(false), node(ExprKind.Intrinsic, 1, "write_bytes", -1, arguments))
+    push(branches, literal(0))
+    assert rejected(program, node(ExprKind.If, 1, "", -1, branches), 0).message == "compile-time evaluation forbids intrinsic write_bytes"
+}

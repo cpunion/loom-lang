@@ -290,6 +290,12 @@ timings; local variables remain conservatively rooted for the function.
   process invocation without a shell, with optional stdin input. Filesystem
   path and directory operations support source package loading. Native entry
   initializes argument access only when the emitted program needs it.
+- `std.bytes.get/set` index shared buffers with bounds checks and unsigned
+  byte values (0–255). Both work at compile time; `to_text` still takes an
+  isolated, validated UTF-8 copy. `std.file.read_bytes/write_bytes` preserve
+  arbitrary binary contents and use the same source-owned read/write loops
+  and explicit closure as text I/O. Both write APIs create or truncate a file;
+  neither promises atomic publication or crash durability.
 - Native executable builds when the selected package has `main`; otherwise,
   an object containing its public functions and their dependencies. Object
   symbols are private compiler conventions, not a supported foreign ABI.
@@ -382,7 +388,7 @@ implementations distinguished only by positive bounds; there is no implicit
 specialization. Cyclic or exhausted conformance resolution reports an error,
 not a negative `implements` answer. Test-only evidence retains its normal scope.
 
-This slice supports nongeneric concepts and concrete implementation targets.
+This slice supports nongeneric concepts and generic implementation targets.
 Concept-typed parameter shorthand remains
 later work.
 Concept method contracts and extra implementation preconditions currently reject;

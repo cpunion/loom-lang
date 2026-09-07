@@ -82,6 +82,28 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_z_extend(byte, self.context.i64_type(), "text.byte.int")?)
     }
 
+    pub(super) fn bytes_slot(
+        &self,
+        bytes: PointerValue<'ctx>,
+        index: IntValue<'ctx>,
+    ) -> NativeResult<PointerValue<'ctx>> {
+        let index = self.memory_index(bytes, index, "bytes index out of bounds")?;
+        self.buffer_slot(bytes, index, self.context.i8_type().into())
+    }
+
+    pub(super) fn checked_byte(&self, byte: IntValue<'ctx>) -> NativeResult<IntValue<'ctx>> {
+        let valid = self.builder.build_int_compare(
+            IntPredicate::ULE,
+            byte,
+            self.context.i64_type().const_int(255, false),
+            "byte.valid",
+        )?;
+        self.guard(valid, "byte value out of range")?;
+        Ok(self
+            .builder
+            .build_int_truncate(byte, self.context.i8_type(), "byte")?)
+    }
+
     pub(super) fn list_slot(
         &self,
         list: PointerValue<'ctx>,
@@ -137,18 +159,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         bytes: bool,
     ) -> NativeResult<()> {
         if bytes {
-            let byte = item.into_int_value();
-            let valid = self.builder.build_int_compare(
-                IntPredicate::ULE,
-                byte,
-                self.context.i64_type().const_int(255, false),
-                "byte.valid",
-            )?;
-            self.guard(valid, "byte value out of range")?;
-            item = self
-                .builder
-                .build_int_truncate(byte, self.context.i8_type(), "byte")?
-                .into();
+            item = self.checked_byte(item.into_int_value())?.into();
         }
         let length = self
             .builder

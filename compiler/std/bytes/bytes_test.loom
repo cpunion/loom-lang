@@ -10,3 +10,21 @@ test fn shared_growth_and_isolated_text() {
     assert to_text(buffer) == "é!"
     assert to_text(new()) == ""
 }
+
+test fn indexed_bytes_share_mutation_but_not_text_snapshots() {
+    let buffer = new()
+    push(buffer, 65)
+    let alias = buffer
+    let saved = to_text(buffer)
+    set(alias, 0, 0)
+    assert get(buffer, 0) == 0 && length(buffer) == 1
+    set(buffer, 0, 255)
+    assert get(alias, 0) == 255 && saved == "A"
+    let found = comptime {
+        let bytes = new()
+        push(bytes, 0)
+        set(bytes, 0, 128)
+        get(bytes, 0)
+    }
+    assert found == 128
+}

@@ -93,6 +93,8 @@ fn allocates(operation: Primitive) -> bool {
         | Primitive::TextByte
         | Primitive::TextEqual
         | Primitive::BytesLen
+        | Primitive::BytesGet
+        | Primitive::BytesSet
         | Primitive::BytesUtf8
         | Primitive::ListLen
         | Primitive::ListGet
@@ -100,6 +102,7 @@ fn allocates(operation: Primitive) -> bool {
         | Primitive::Open
         | Primitive::Create
         | Primitive::Write
+        | Primitive::WriteBytes
         | Primitive::Close
         | Primitive::PathKind => false,
     }

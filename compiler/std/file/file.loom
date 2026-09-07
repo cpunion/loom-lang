@@ -1,5 +1,6 @@
 import std.result.Result
 import std.text.length
+import std.bytes.length
 
 pub enum FileError {
     Open
@@ -13,6 +14,7 @@ intrinsic fn open(path Text) Int
 intrinsic fn create(path Text) Int
 intrinsic fn read(handle Int, buffer Bytes, limit Int) Int
 intrinsic fn write(handle Int, value Text, offset Int) Int
+intrinsic fn write_bytes(handle Int, value Bytes, offset Int) Int
 intrinsic fn close(handle Int) Int
 intrinsic fn bytes_new() Bytes
 intrinsic fn bytes_utf8(buffer Bytes) Bool
@@ -20,7 +22,7 @@ intrinsic fn bytes_text_copy(buffer Bytes) Text
 
 // The source library owns the read loop, UTF-8 policy, and explicit close.
 // No file handle escapes and no GC finalizer owns an external resource.
-pub fn read_text(path Text) Result[Text, FileError] {
+pub fn read_bytes(path Text) Result[Bytes, FileError] {
     let handle = open(path)
     if handle < 0 { return Result.Err(FileError.Open) }
     let buffer = bytes_new()
@@ -31,6 +33,11 @@ pub fn read_text(path Text) Result[Text, FileError] {
     let closed = close(handle)
     if count < 0 { return Result.Err(FileError.Read) }
     if closed < 0 { return Result.Err(FileError.Close) }
+    Result.Ok(buffer)
+}
+
+pub fn read_text(path Text) Result[Text, FileError] {
+    let buffer = read_bytes(path)?
     if !bytes_utf8(buffer) { return Result.Err(FileError.Utf8) }
     Result.Ok(bytes_text_copy(buffer))
 }
@@ -43,6 +50,25 @@ pub fn write_text(path Text, value Text) Result[Int, FileError] {
     var offset = 0
     while offset < size {
         let count = write(handle, value, offset)
+        if count <= 0 {
+            discard close(handle)
+            return Result.Err(FileError.Write)
+        }
+        offset = offset + count
+    }
+    let closed = close(handle)
+    if closed < 0 { return Result.Err(FileError.Close) }
+    Result.Ok(offset)
+}
+
+// Binary contents are preserved without UTF-8 validation or text conversion.
+pub fn write_bytes(path Text, value Bytes) Result[Int, FileError] {
+    let handle = create(path)
+    if handle < 0 { return Result.Err(FileError.Open) }
+    let size = std.bytes.length(value)
+    var offset = 0
+    while offset < size {
+        let count = write_bytes(handle, value, offset)
         if count <= 0 {
             discard close(handle)
             return Result.Err(FileError.Write)
