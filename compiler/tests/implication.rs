@@ -104,3 +104,108 @@ fn mathematical_truth_does_not_remove_a_potentially_overflowing_guard() {
     assert_eq!(overflow.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&overflow.stderr).contains("overflow"));
 }
+
+#[test]
+fn immutable_flow_facts_remove_only_repeated_checks_at_o0() {
+    let (_directory, executable, ir) = build(
+        r#"
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+type Positive = Int where self > 0
+fn required(value Int) Positive requires value > 0 { Positive(value) }
+fn branch(value Int) Positive {
+    if value > 0 { Positive(value) } else { Positive(1) }
+}
+fn source(count List[Int]) Int {
+    set(count, 0, get(count, 0) + 1)
+    7
+}
+fn asserted(count List[Int]) Positive {
+    let value = source(count)
+    assert value > 0
+    defer { discard Positive(value) }
+    Positive(value)
+}
+fn main() {
+    let count = new[Int]()
+    push(count, 0)
+    assert required(5) == 5
+    assert branch(8) == 8
+    assert branch(0) == 1
+    assert asserted(count) == 7
+    assert get(count, 0) == 1
+}
+"#,
+    );
+    success(
+        &Command::new(executable)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+    // One precondition, one branch condition and one assertion. Constructors,
+    // including the deferred one, add no comparison before LLVM optimization.
+    assert_eq!(ir.matches("icmp sgt i64").count(), 3);
+}
+
+#[test]
+fn flow_boundaries_keep_nan_and_mutable_cleanup_checks() {
+    let (_directory, executable, ir) = build(
+        r#"
+import std.result.Result
+import std.result.ConstraintError
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+type Positive = Int where self > 0
+type NonPositive = Float where self <= 0.0
+type NotPositive = Float where !(self > 0.0)
+fn floating(value Float) Result[NonPositive, ConstraintError] {
+    assert !(value > 0.0)
+    NonPositive(value)
+}
+fn exact(value Float) NotPositive {
+    if value > 0.0 { NotPositive(0.0) } else { NotPositive(value) }
+}
+fn cleanup(count List[Int], value Int) {
+    var current = value
+    assert current > 0
+    defer {
+        match Positive(current) {
+            Result.Ok(_) => { set(count, 0, 1) }
+            Result.Err(_) => { set(count, 0, 2) }
+        }
+    }
+    current = 0
+}
+fn main() {
+    let nan = 0.0 / 0.0
+    match floating(nan) {
+        Result.Ok(_) => { assert false }
+        Result.Err(_) => {}
+    }
+    match floating(0.0) {
+        Result.Ok(value) => { assert value == 0.0 }
+        Result.Err(_) => { assert false }
+    }
+    let preserved = exact(nan)
+    assert preserved != preserved
+    let count = new[Int]()
+    push(count, 0)
+    cleanup(count, 1)
+    assert get(count, 0) == 2
+}
+"#,
+    );
+    success(
+        &Command::new(executable)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(ir.matches("fcmp ole double").count(), 1);
+    assert_eq!(ir.matches("icmp sgt i64").count(), 2);
+}

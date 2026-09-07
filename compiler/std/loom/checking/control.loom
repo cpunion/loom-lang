@@ -48,7 +48,8 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
     } else {
     if kind == NodeKind.Assert {
         let value = expr(context, child(node, 0), 2)?
-        expression(ExprKind.Assert, 0, node, "", -1, expressions(value), value.falls)
+        return Result.Ok(Step { context = assuming(context, value, true, 0)
+            expression = expression(ExprKind.Assert, 0, node, "", -1, expressions(value), value.falls) })
     } else {
     if kind == NodeKind.Discard {
         let value = expr(context, child(node, 0), -1)?
@@ -56,7 +57,7 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
     } else {
     if kind == NodeKind.While {
         let condition = expr(context, child(node, 0), 2)?
-        let body = block(context, child(node, 1), 0, true)?
+        let body = block(assuming(context, condition, true, 0), child(node, 1), 0, true)?
         expression(ExprKind.While, 0, node, "", -1, pair(condition, body), condition.falls)
     } else { return Result.Err(error(context, node, "unknown statement")) }
     } } } }
@@ -90,13 +91,13 @@ fn block(context Context, node Node, expected Int, enforce Bool) Result[Expr, Fa
 }
 fn conditional(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let condition = expr(context, child(node, 0), 2)?
-    let yes = block(context, child(node, 1), expected, enforce)?
+    let yes = block(assuming(context, condition, true, 0), child(node, 1), expected, enforce)?
     let values = pair(condition, yes)
     let hint = if enforce && expected >= 0 { expected } else { if yes.falls { yes.ty } else { expected } }
     var other_type = 0
     var other_falls = true
     if length(node.children) == 3 {
-        let no = block(context, child(node, 2), hint, enforce || yes.falls)?
+        let no = block(assuming(context, condition, false, 0), child(node, 2), hint, enforce || yes.falls)?
         push(values, no)
         other_type = no.ty
         other_falls = no.falls

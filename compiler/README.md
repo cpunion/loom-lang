@@ -624,9 +624,27 @@ fn widen(value Bounded) NonNegative { NonNegative(value) }
 The latter rule matches typed expressions exactly, permits regrouping/reordering
 conjuncts, and does not apply integer algebra to IEEE values. It cannot extract
 a condition hidden behind `||`. Helper calls, unproved narrowing, and exhausted
-or unsupported proofs retain ordinary checked `Result` construction. Neither
-rule infers new facts from arbitrary preceding statements; general Float
-postcondition reasoning remains unsupported.
+or unsupported proofs retain ordinary checked `Result` construction. General
+Float postcondition reasoning remains unsupported.
+
+Construction also consumes already established facts about an immutable scalar
+local or parameter, from `requires`, a successful `assert`, or the current
+`if`/`while` branch:
+
+```loom
+type Positive = Int where self > 0
+fn checked(value Int) Positive requires value > 0 { Positive(value) }
+fn selected(value Int) Positive {
+    if value > 0 { Positive(value) } else { Positive(1) }
+}
+```
+
+The original boundary condition remains; these constructors add no second check,
+even before LLVM optimization. Facts use binding identities, not names. This
+slice excludes `var`, heap reads, relationships between different locals, and
+facts inferred after branch joins. Literal Float predicates can be reused, but
+`!(x > 0.0)` does not prove `x <= 0.0` because of NaN. Unknown cases still return
+`Result`; calls and input expressions are never duplicated to seek a proof.
 
 Predicates over `Int` or `Float` may call ordinary pure helpers, including helpers with
 loops, recursion, and freshly allocated data:
@@ -645,8 +663,8 @@ optional evaluation retain the single runtime construction boundary. A fault
 during optional folding is not proof of validity or rejection; ordinary runtime
 fault behavior remains. Explicit `comptime` faults still reject compilation.
 
-Propagating local/branch facts into construction, shared-container constraints,
-and invariant-aware proofs over refined parameters are not implemented yet.
+Shared-container constraints, mutable flow facts, helper-call implications and
+invariant-aware proofs over refined parameters remain open.
 
 `requires` is checked before the callee body. Every declared `ensures` must be
 proved; unknown or unsupported proofs reject the build, including for functions
