@@ -172,7 +172,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     let value = typed(context, node, input, base)?
     let source = get(context.env.types, input.ty)
     let destination = get(context.env.types, target)
-    if base == 1 && source.kind == TypeKind.Refined && base_type(context.env, input.ty) == 1 &&
+    if (base == 1 || base == 5) && source.kind == TypeKind.Refined && base_type(context.env, input.ty) == base &&
         length(source.constraint) == 1 && length(destination.constraint) == 1 &&
         implies(get(source.constraint, 0), get(destination.constraint, 0)) {
         return Result.Ok(expression(ExprKind.Coerce, target, node, "", -1, expressions(value), value.falls))

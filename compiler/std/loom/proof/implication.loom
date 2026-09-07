@@ -33,10 +33,11 @@ fn implication(premise Expr, conclusion Expr) Result[Bool, Text] {
     Result.Ok(holds(boolean(pure(conclusion, state)?)?, state.facts))
 }
 
-// Checked Int predicates share self local 0. The caller establishes that the
+// Checked scalar predicates share self local 0. The caller establishes that the
 // premise already holds. True proves the goal both defined and true; false also
 // covers unsupported forms or exhausted limits, and never authorizes removal.
 pub fn implies(premise Expr, conclusion Expr) Bool {
+    if conjunction_implies(premise, conclusion) { return true }
     let budget = new[Int]()
     push(budget, 256)
     if !implication_form(premise, budget, 0) || !implication_form(conclusion, budget, 0) { return false }
