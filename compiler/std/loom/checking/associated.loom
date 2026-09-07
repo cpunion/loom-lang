@@ -45,9 +45,19 @@ fn implementation_type(env Environment, index Int, depth Int) Result[Int, Failur
     if header.state == 1 || depth > 64 { return Result.Err(failure(env, header.symbol, item.node, "cyclic implementation target")) }
     set(env.implementations, index, Implementation { symbol = header.symbol capability = header.capability ty = -1
         methods = header.methods associated = header.associated state = 1 })
-    let ty = resolve(header_environment(env), header.symbol, child(item.node, 1), new[Int](), depth + 1)?
-    if !concrete(env, ty) || get(env.types, ty).kind == TypeKind.Dyn {
-        return Result.Err(failure(env, header.symbol, item.node, "an implementation needs a concrete, non-dynamic target type"))
+    let parameters = abstract_arguments(env, length(type_parameters(env, header.symbol)))
+    let ty = resolve(header_environment(env), header.symbol, child(item.node, 1), parameters, depth + 1)?
+    let seen = new[Bool]()
+    var parameter = 0
+    while parameter < length(parameters) { push(seen, false)
+        parameter = parameter + 1 }
+    if get(env.types, ty).kind == TypeKind.Dyn || !target_parameters(env, ty, seen) {
+        return Result.Err(failure(env, header.symbol, item.node, "implementation targets cannot be dynamic or contain associated projections"))
+    }
+    parameter = 0
+    while parameter < length(seen) {
+        if !get(seen, parameter) { return Result.Err(failure(env, header.symbol, item.node, "every implementation parameter must occur in its target type")) }
+        parameter = parameter + 1
     }
     set(env.implementations, index, Implementation { symbol = header.symbol capability = header.capability ty = ty
         methods = header.methods associated = header.associated state = 2 })
@@ -91,13 +101,13 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
     }
     var index = 0
     while index < length(env.implementations) {
-        let ty = implementation_type(env, index, 0)?
+        discard implementation_type(env, index, 0)?
         let header = get(env.implementations, index)
         var previous = 0
         while previous < index {
             let other = get(env.implementations, previous)
-            if other.ty == ty && other.capability == header.capability {
-                return Result.Err(failure(env, header.symbol, symbol(env, header.symbol).node, "duplicate explicit implementation for this concept and type"))
+            if other.capability == header.capability && overlapping(env, other, header)? {
+                return Result.Err(failure(env, header.symbol, symbol(env, header.symbol).node, "overlapping implementations for this concept"))
             }
             previous = previous + 1
         }
@@ -109,7 +119,10 @@ fn self_type(env Environment, owner Int, arguments List[Int], depth Int) Result[
     let parent = enclosing(env, owner)
     if parent < 0 { return Result.Ok(-1) }
     if symbol(env, parent).node.kind == NodeKind.Concept { return Result.Ok(get(arguments, 0)) }
-    if symbol(env, parent).node.kind == NodeKind.Impl { return implementation_type(env, implementation_owner(env, parent), depth + 1) }
+    if symbol(env, parent).node.kind == NodeKind.Impl {
+        let target = implementation_type(env, implementation_owner(env, parent), depth + 1)?
+        return substitute(header_environment(env), owner, target, arguments, symbol(env, owner).node)
+    }
     Result.Ok(-1)
 }
 fn required(obligations List[Requirement], ty Int, capability Int) Bool {
@@ -121,38 +134,24 @@ fn required(obligations List[Requirement], ty Int, capability Int) Bool {
     }
     false
 }
-fn admitted(env Environment, owner Int, obligations List[Requirement], ty Int, capability Int) Bool {
-    if required(obligations, ty, capability) { return true }
-    if get(env.types, ty).kind == TypeKind.Dyn {
-        return get(env.interfaces, get(env.types, ty).symbol).symbol == capability
-    }
-    var index = 0
-    while index < length(env.implementations) {
-        let header = get(env.implementations, index)
-        if header.ty == ty && header.capability == capability &&
-            (!symbol(env, header.symbol).test_only || symbol(env, owner).test_only) { return true }
-        index = index + 1
-    }
-    false
-}
 fn associated_type(env Environment, owner Int, member Int, receiver Int, node Node, depth Int) Result[Int, Failure] {
     if depth > 64 { return Result.Err(failure(env, owner, node, "associated type expansion must be finite")) }
-    if !concrete(env, receiver) { return Result.Ok(intern(env, TypeKind.Associated, member, ints(receiver))) }
+    let shape = get(env.types, receiver)
     let capability = symbol(env, member).owner
-    var selected = -1
-    var index = 0
-    while index < length(env.implementations) {
-        let header = get(env.implementations, index)
-        if header.ty == receiver && header.capability == capability { selected = index }
-        index = index + 1
+    let selected = conformance(env, receiver, capability)
+    let parent = enclosing(env, owner)
+    let own = selected.implementation >= 0 && parent >= 0 && symbol(env, parent).node.kind == NodeKind.Impl &&
+        get(env.implementations, selected.implementation).symbol == parent
+    if (shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated) && !own {
+        return Result.Ok(intern(env, TypeKind.Associated, member, ints(receiver)))
     }
-    if selected < 0 { return Result.Err(failure(env, owner, node, "associated type requires an explicit conformance")) }
-    let header = get(env.implementations, selected)
+    if selected.implementation < 0 { return Result.Err(failure(env, owner, node, "associated type requires an explicit conformance")) }
+    let header = get(env.implementations, selected.implementation)
     let members = get(env.concepts, concept_index(env, capability)).associated
-    index = 0
+    var index = 0
     while get(members, index) != member { index = index + 1 }
     let binding = get(header.associated, index)
-    resolve(env, binding, child(symbol(env, binding).node, 0), new[Int](), depth + 1)
+    resolve(env, binding, child(symbol(env, binding).node, 0), selected.arguments, depth + 1)
 }
 fn projection(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
     let split = first_dot(node.value)
@@ -160,7 +159,7 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
     let first = slice(node.value, 0, split)
     var receiver = -1
     if first == "Self" { receiver = self_type(env, owner, arguments, depth)? }
-    let parameters = group(symbol(env, owner).node, NodeKind.TypeParameters)
+    let parameters = type_parameters(env, owner)
     var index = 0
     while index < length(parameters) {
         if get(parameters, index).value == first { receiver = get(arguments, index) }
@@ -200,7 +199,7 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
         let visible = bound || concept_named(env, owner, node,
             qualify(get(env.source.files, declaration.file).package, declaration.name))? == capability.symbol
         if ((selected < 0 && (!bound_only || bound)) || selected == capability.symbol) && visible &&
-            (bound || admitted(env, owner, obligations, receiver, capability.symbol)) {
+            (bound || admitted(env, owner, obligations, receiver, capability.symbol)?) {
             var member = 0
             while member < length(capability.associated) {
                 let id = get(capability.associated, member)

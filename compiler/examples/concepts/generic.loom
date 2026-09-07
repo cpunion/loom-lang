@@ -1,0 +1,25 @@
+record Wrapped[T] { value T }
+
+impl[T Display] Display for Wrapped[T] {
+    fn display(self Wrapped[T]) Text { self.value.display() }
+}
+impl[T Rank] Rank for Wrapped[T] {
+    fn rank(self Wrapped[T], offset Int) Int { self.value.rank(offset) }
+}
+impl[T] Source for Wrapped[T] {
+    type Item = T
+    fn first(self Wrapped[T]) T { self.value }
+}
+
+fn exercise_generic_conformances() {
+    assert forward(Wrapped { value = 42 }) == "42"
+    assert forward(Wrapped { value = Wrapped { value = "nested" } }) == "nested"
+    assert (Wrapped { value = true }).copy()
+    let person = Wrapped { value = Person { name = "Ada" score = 10 } }
+    assert person.doubled() == 20 && person.copy().name == "Ada"
+    let displayed dyn Display = person
+    let ranked dyn Rank = person
+    assert displayed.display() == "Ada" && ranked.doubled() == 20
+    assert comptime { forward(Wrapped { value = 7 }) } == "7"
+    assert render_any(Wrapped { value = Hidden { value = 1 } }) == "<value>"
+}

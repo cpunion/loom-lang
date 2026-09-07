@@ -355,10 +355,28 @@ checked with abstract `Self` and the concept's declared capabilities, including
 its associated types. They may call other methods, which select that type's
 override. Static calls specialize directly; `dyn` tables retain only used slots
 in closed executable builds. Method contracts on the concept declaration remain
-unsupported; ordinary implementation contracts retain their checks and proofs.
+unsupported. Implementation postconditions still require proofs; an implementation
+cannot add an undeclared precondition.
+
+Implementation headers can declare type parameters and prerequisites:
+
+```loom
+record Wrapped[T] { value T }
+impl[T Display] Display for Wrapped[T] {
+    fn display(self Wrapped[T]) Text { self.value.display() }
+}
+```
+
+All parameters must occur in the target type. Methods and associated-type
+bindings inherit those parameters and bounds; concrete receiver types determine
+the instance. Nested prerequisites, default methods and `dyn` use the same
+conformance. Possible overlaps reject, including generic/concrete pairs and
+implementations distinguished only by positive bounds; there is no implicit
+specialization. Cyclic or exhausted conformance resolution reports an error,
+not a negative `implements` answer. Test-only evidence retains its normal scope.
 
 This slice supports nongeneric concepts and concrete implementation targets.
-Generic implementations and concept-typed parameter shorthand remain
+Concept-typed parameter shorthand remains
 later work.
 Concept method contracts and extra implementation preconditions currently reject;
 implementation postconditions still require proof.
@@ -397,8 +415,10 @@ infer a receiver from its associated result alone. Inputs still evaluate once in
 source order. The [associated example](examples/associated/main.loom) covers
 managed sharing, qualified projections and compile-time materialization.
 
-Generic associated types, defaults and associated-member bounds remain future
-work. Bare `dyn C` rejects concepts declaring associated types until explicit
+Associated members with their own type parameters or defaults, and
+associated-member bounds, remain future work. Bindings in generic implementations
+can already use header parameters and their projections. Bare `dyn C` rejects
+concepts declaring associated types until explicit
 associated bindings can become part of its type identity.
 
 ### Dynamic values

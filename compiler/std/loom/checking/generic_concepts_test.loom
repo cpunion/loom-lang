@@ -1,0 +1,80 @@
+fn generic_concept_definitions() Text {
+    "concept Value { fn value(self Self) Int\nfn doubled(self Self) Int { self.value() + self.value() }\nfn unused(self Self) Int { 99 } }\nimpl Value for Int { fn value(self Int) Int { self } }\nrecord Box[T] { value T }\nimpl[T Value] Value for Box[T] { fn value(self Box[T]) Int { self.value.value() } }\nfn use[T Value](value T) Int { value.doubled() }\n"
+}
+
+test fn generic_conformances_infer_nested_targets_and_specialize_defaults() {
+    let program = accepted(concat(generic_concept_definitions(), "fn selected[T](value T) Int { comptime if T implements Value { value.value() } else { 0 } }\nfn main() { assert use(Box { value = 3 }) == 6\nassert use(Box { value = Box { value = 4 } }) == 8\nassert selected(Box { value = true }) == 0\nassert comptime { use(Box { value = 5 }) } == 10 }"))
+    var generic_methods = 0
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        if length(function.arguments) == 1 && get(function.body.children, 0).kind == ExprKind.Call {
+            generic_methods = generic_methods + 1
+        }
+        index = index + 1
+    }
+    assert generic_methods >= 4
+    rejects(concat(generic_concept_definitions(), "fn main() { discard use(Box { value = true }) }"))
+    rejects("concept C { fn value(self Self) Int }\nrecord Box[T] { value T }\nimpl[T] C for Box[T] { fn value(self Box[T]) Int { self.value.missing() } }")
+    rejects("concept C {}\nrecord Box[T] { value T }\nimpl[T, U] C for Box[T] {}")
+    rejects("concept C { fn value(self Self) Int }\nrecord Box[T] { value T }\nimpl[T] C for Box[T] { fn value[U](self Box[T]) Int { 1 } }")
+}
+
+test fn generic_associated_bindings_normalize_with_the_implementation_arguments() {
+    let definitions = "concept Source { type Item\nfn first(self Self) Self.Item\nfn copied(self Self) Self.Item { self.first() } }\nimpl Source for Bool { type Item = Text\nfn first(self Bool) Text { \"ok\" } }\nrecord Box[T] { value T }\nimpl[T Source] Source for Box[T] { type Item = T.Item\nfn first(self Box[T]) T.Item { self.value.first() } }\nrecord Cache[S Source] { source S value S.Item }\nfn cache[S Source](source S) Cache[S] { Cache { source = source value = source.copied() } }\n"
+    discard accepted(concat(definitions, "fn main() { let value = cache(Box { value = Box { value = true } })\nassert value.value == \"ok\"\nassert comptime { cache(Box { value = true }).value } == \"ok\" }"))
+    rejects(concat(definitions, "fn hidden[T](value Cache[Box[T]]) {}"))
+    rejects(concat(definitions, "fn main() { discard cache(Box { value = 1 }) }"))
+    rejects("concept C { type Item }\nrecord Box[T] { value T }\nimpl[T] C for Box[T] { type Item = Self.Item }")
+    rejects("concept Source { type Item }\nconcept C {}\nimpl[T Source] C for T.Item {}")
+}
+
+test fn generic_conformance_overlap_uses_two_sided_unification_not_bound_ranking() {
+    let definitions = "concept C {}\nconcept D {}\nconcept E {}\nrecord Pair[A, B] { first A second B }\n"
+    rejects(concat(definitions, "impl[T] C for Pair[T, Int] {}\nimpl[U] C for Pair[Bool, U] {}"))
+    rejects(concat(definitions, "impl[T D] C for Pair[T, T] {}\nimpl[U E] C for Pair[U, U] {}"))
+    rejects(concat(definitions, "impl[T] C for Pair[T, T] {}\nimpl C for Pair[Int, Int] {}"))
+    rejects(concat(definitions, "impl[T] C for T {}\nimpl C for Int {}"))
+    discard accepted(concat(definitions, "impl[T] C for Pair[T, T] {}\nimpl C for Pair[Int, Bool] {}\nimpl[T] D for Pair[T, List[T]] {}\nimpl[U] D for Pair[List[U], U] {}"))
+    rejects("concept C { fn value(self Self, other Self) Int { 1 }\nfn value(self Self, other Int) Int { 2 } }\nimpl[T] C for T {}\nfn main() { comptime if Int implements C {} }")
+    rejects("concept C {}\nconcept D {}\nimpl[T D] C for T {}\nimpl[T C] D for T {}\nfn main() { comptime if Int implements C {} }")
+}
+
+test fn generic_dynamic_witnesses_schedule_the_selected_template_arguments_only() {
+    let program = accepted(concat(generic_concept_definitions(), "fn main() { let value dyn Value = Box { value = Box { value = 7 } }\nassert value.doubled() == 14 }"))
+    assert length(program.witnesses) == 1
+    let methods = get(program.witnesses, 0).methods
+    assert get(methods, 0) == -1 && get(methods, 1) >= 0 && get(methods, 2) == -1
+    assert length(program.functions) == 5
+    let library = accepted(concat(generic_concept_definitions(), "pub fn exported() dyn Value { Box { value = 8 } }"))
+    let exported = get(library.witnesses, 0).methods
+    assert get(exported, 0) >= 0 && get(exported, 1) >= 0 && get(exported, 2) >= 0
+}
+
+test fn blanket_templates_keep_abstract_requirements_explicit_and_know_their_own_conformance() {
+    let definitions = "concept C { fn first(self Self) Int\nfn second(self Self) Int }\nimpl[T] C for T { fn first(self T) Int { 1 }\nfn second(self T) Int { self.first() } }\n"
+    rejects(concat(definitions, "pub fn hidden[T](value T) Int { value.second() }"))
+    discard accepted(concat(definitions, "fn bounded[T C](value T) Int { value.second() }\nfn optional[T](value T) Int { comptime if T implements C { value.second() } else { 0 } }\nfn main() { assert bounded(3) == 1\nassert optional(true) == 1\nassert comptime { bounded(4) } == 1 }"))
+    discard accepted("concept Source { type Item\ntype Other\nfn first(self Self) Self.Other }\nimpl[T] Source for T { type Item = Int\ntype Other = Self.Item\nfn first(self T) Self.Other { 1 } }\nfn main() { assert true.first() == 1 }")
+    discard accepted("concept C { type Item }\nrecord Need[T C] { value T }\nimpl[T] C for T { type Item = Need[Self] }\nfn main() { discard Need { value = 1 } }")
+    discard accepted("concept Source { type Item\nfn first(self Self) Self.Item }\nconcept C { type Item\nfn item(self Self) Self.Item }\nimpl Source for Int { type Item = Text\nfn first(self Int) Text { \"ok\" } }\nimpl[T Source] C for T { type Item = T.Source.Item\nfn item(self T) T.Source.Item { Source.first(self) } }\nfn use[T C](value T) T.C.Item { value.item() }\nfn main() { assert use(1) == \"ok\" }")
+}
+
+test fn generic_test_only_evidence_can_be_forwarded_without_global_discovery() {
+    let definitions = "concept Value { fn value(self Self) Int }\nconcept Inner { fn inner(self Self) Int }\nrecord Box[T] { value T }\nfn use[T Value](value T) Int { value.value() }\nfn visible[T](value T) Bool { comptime if T implements Value { true } else { false } }\n"
+    let files = source_files(definitions)
+    let testing = source_file("app", "impl Inner for Int { fn inner(self Int) Int { self } }\nimpl[T Inner] Value for Box[T] { fn value(self Box[T]) Int { self.value.inner() } }\ntest fn verify() { assert use(Box { value = 7 }) == 7\nassert !visible(Box { value = 7 }) }", false)
+    push(files, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(files, "app", true) {
+        Result.Ok(bound) => match check(bound) { Result.Ok(_) => {}
+            Result.Err(_) => { assert false } }
+        Result.Err(_) => { assert false }
+    }
+    let invalid = source_files(concat(definitions, "pub fn hidden() Int { use(Box { value = 7 }) }"))
+    push(invalid, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(invalid, "app", true) {
+        Result.Ok(bound) => match check(bound) { Result.Err(_) => {}
+            Result.Ok(_) => { assert false } }
+        Result.Err(_) => { assert false }
+    }
+}

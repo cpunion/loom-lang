@@ -10,6 +10,12 @@ import std.result.Result
 record Concept { symbol Int methods List[Int] associated List[Int] }
 record Implementation { symbol Int capability Int ty Int methods List[Int] associated List[Int] state Int }
 
+fn type_parameters(env Environment, owner Int) List[Node] {
+    let item = symbol(env, owner)
+    let declaration = if item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl { item.owner } else { owner }
+    group(symbol(env, declaration).node, NodeKind.TypeParameters)
+}
+
 fn prototype(env Environment, owner Int) Bool {
     let parent = symbol(env, owner).owner
     parent >= 0 && symbol(env, parent).node.kind == NodeKind.Concept
@@ -43,7 +49,7 @@ fn requirements(env Environment, owner Int, arguments List[Int]) Result[List[Req
         push(obligations, Requirement { ty = get(arguments, 0) capability = symbol(env, owner).owner })
         return Result.Ok(obligations)
     }
-    let parameters = group(symbol(env, owner).node, NodeKind.TypeParameters)
+    let parameters = type_parameters(env, owner)
     var index = 0
     while index < length(parameters) {
         let parameter = get(parameters, index)
@@ -63,6 +69,12 @@ fn requirements(env Environment, owner Int, arguments List[Int]) Result[List[Req
             bound = bound + 1
         }
         index = index + 1
+    }
+    let item = symbol(env, owner)
+    if (item.node.kind == NodeKind.Function || item.node.kind == NodeKind.AssociatedType) &&
+        item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl {
+        let header = get(env.implementations, implementation_owner(env, item.owner))
+        push(obligations, Requirement { ty = self_type(env, owner, arguments, 0)? capability = header.capability })
     }
     Result.Ok(obligations)
 }
@@ -116,10 +128,10 @@ fn conformances(env Environment) Result[Bool, Failure] {
             var supplied = 0
             var index = 0
             while index < length(expected) {
-                let requirement = signature(env, get(expected, index), ints(ty), item.node)?
+                let requirement = signature_in(env, get(expected, index), ints(ty), item.node, owner)?
                 var previous = 0
                 while previous < index {
-                    let other = signature(env, get(expected, previous), ints(ty), item.node)?
+                    let other = signature_in(env, get(expected, previous), ints(ty), item.node, owner)?
                     if symbol(env, requirement.symbol).name == symbol(env, other.symbol).name && same(requirement.params, other.params) {
                         return Result.Err(failure(env, owner, item.node, "concept method signatures overlap for this implementation"))
                     }
@@ -176,30 +188,25 @@ fn with_evidence(context Context, ty Int, capability Int) Context {
         constants = context.constants bindings = context.bindings head = context.head
         cleanups = context.cleanups cleanup_head = context.cleanup_head emit = context.emit }
 }
-fn implementation(context Context, ty Int, capability Int) Int {
-    var index = 0
-    while index < length(context.env.implementations) {
-        let item = get(context.env.implementations, index)
-        if item.ty == ty && item.capability == capability &&
-            (!symbol(context.env, item.symbol).test_only || symbol(context.env, context.signature.symbol).test_only || evidence(context, ty, capability)) {
-            return index
-        }
-        index = index + 1
-    }
-    -1
+fn implementation(context Context, ty Int, capability Int) Result[Int, Failure] {
+    if !satisfies(context, ty, capability)? { return Result.Ok(-1) }
+    Result.Ok(conformance(context.env, ty, capability).implementation)
 }
-fn satisfies(context Context, ty Int, capability Int) Bool {
-    if get(context.env.types, ty).kind == TypeKind.Dyn {
-        return get(context.env.interfaces, get(context.env.types, ty).symbol).symbol == capability
-    }
-    evidence(context, ty, capability) || implementation(context, ty, capability) >= 0
+fn satisfies(context Context, ty Int, capability Int) Result[Bool, Failure] {
+    admitted(context.env, context.signature.symbol, context.signature.requirements, ty, capability)
 }
 fn satisfies_arguments(context Context, current Signature, arguments List[Int], node Node) Result[Bool, Failure] {
+    let parent = symbol(context.env, current.symbol).owner
+    if parent >= 0 && symbol(context.env, parent).node.kind == NodeKind.Impl {
+        let header = get(context.env.implementations, implementation_owner(context.env, parent))
+        let receiver = substitute(context.env, current.symbol, header.ty, arguments, node)?
+        if evidence(context, receiver, header.capability) { return Result.Ok(true) }
+    }
     var index = 0
     while index < length(current.requirements) {
         let requirement = get(current.requirements, index)
         let ty = substitute(context.env, current.symbol, requirement.ty, arguments, node)?
-        if !satisfies(context, ty, requirement.capability) { return Result.Ok(false) }
+        if !satisfies(context, ty, requirement.capability)? { return Result.Ok(false) }
         index = index + 1
     }
     Result.Ok(true)

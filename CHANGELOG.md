@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add generic implementation headers with scoped prerequisite checking,
+  associated-type substitution and native method/witness specialization.
+  Reject overlapping templates and cyclic conformance requirements.
+
 - Add concept default method bodies with explicit conformance, override selection,
   abstract checking and associated types. Reuse direct specialization and sparse
   dynamic witnesses without a new runtime dispatch mechanism.

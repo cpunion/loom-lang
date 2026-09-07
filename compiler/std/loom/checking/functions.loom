@@ -18,6 +18,9 @@ import std.result.Result
 record RuntimeSignature { parameters Int params List[Int] result Int }
 
 fn signature(env Environment, id Int, arguments List[Int], node Node) Result[Signature, Failure] {
+    signature_in(env, id, arguments, node, get(env.signatures, id).symbol)
+}
+fn signature_in(env Environment, id Int, arguments List[Int], node Node, owner Int) Result[Signature, Failure] {
     let original = get(env.signatures, id)
     if length(arguments) != original.parameters {
         return Result.Err(failure(env, original.symbol, node, "wrong number of function type arguments"))
@@ -25,18 +28,18 @@ fn signature(env Environment, id Int, arguments List[Int], node Node) Result[Sig
     let params = new[Int]()
     var index = 0
     while index < length(original.params) {
-        push(params, substitute(env, original.symbol, get(original.params, index), arguments, node)?)
+        push(params, substitute(env, owner, get(original.params, index), arguments, node)?)
         index = index + 1
     }
     let obligations = new[Requirement]()
     index = 0
     while index < length(original.requirements) {
         let obligation = get(original.requirements, index)
-        push(obligations, Requirement { ty = substitute(env, original.symbol, obligation.ty, arguments, node)? capability = obligation.capability })
+        push(obligations, Requirement { ty = substitute(env, owner, obligation.ty, arguments, node)? capability = obligation.capability })
         index = index + 1
     }
     Result.Ok(Signature { symbol = original.symbol parameters = original.parameters params = params
-        compile_time = original.compile_time result = substitute(env, original.symbol, original.result, arguments, node)? requirements = obligations })
+        compile_time = original.compile_time result = substitute(env, owner, original.result, arguments, node)? requirements = obligations })
 }
 fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticValue], node Node) Result[Int, Failure] {
     let current = get(env.signatures, id)

@@ -16,7 +16,7 @@ fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement]
         index = index + 1
     }
     if shape.kind == TypeKind.Associated {
-        if !admitted(env, owner, obligations, get(shape.arguments, 0), symbol(env, shape.symbol).owner) {
+        if !admitted(env, owner, obligations, get(shape.arguments, 0), symbol(env, shape.symbol).owner)? {
             return Result.Err(failure(env, owner, node, "associated type needs its declared concept requirement"))
         }
     }
@@ -25,7 +25,7 @@ fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement]
         index = 0
         while index < length(bounds) {
             let bound = get(bounds, index)
-            if !admitted(env, owner, obligations, bound.ty, bound.capability) {
+            if !admitted(env, owner, obligations, bound.ty, bound.capability)? {
                 return Result.Err(failure(env, owner, node, "data type argument needs an explicit implementation or declared concept requirement"))
             }
             index = index + 1
@@ -74,9 +74,9 @@ fn declaration_types(env Environment) Result[Bool, Failure] {
             }
         }
         if item.node.kind == NodeKind.AssociatedType && symbol(env, item.owner).node.kind == NodeKind.Impl {
-            let ty = resolve(env, owner, child(item.node, 0), new[Int](), 0)?
-            if !concrete(env, ty) { return Result.Err(failure(env, owner, item.node, "associated type binding must resolve to a concrete type")) }
-            discard well_formed(env, owner, ty, new[Requirement](), item.node, 0)?
+            let arguments = abstract_arguments(env, length(type_parameters(env, owner)))
+            let ty = resolve(env, owner, child(item.node, 0), arguments, 0)?
+            discard well_formed(env, owner, ty, requirements(env, owner, arguments)?, item.node, 0)?
         }
         owner = owner + 1
     }
@@ -95,7 +95,8 @@ fn declaration_types(env Environment) Result[Bool, Failure] {
     index = 0
     while index < length(env.implementations) {
         let header = get(env.implementations, index)
-        discard well_formed(env, header.symbol, header.ty, new[Requirement](), symbol(env, header.symbol).node, 0)?
+        let arguments = abstract_arguments(env, length(type_parameters(env, header.symbol)))
+        discard well_formed(env, header.symbol, header.ty, requirements(env, header.symbol, arguments)?, symbol(env, header.symbol).node, 0)?
         index = index + 1
     }
     Result.Ok(true)

@@ -44,11 +44,13 @@ fn concept_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, D
     Result.Ok(done(start, next(rest), NodeKind.Concept, named.node.value, children))
 }
 fn impl_decl(cursor Cursor) Result[Step, Diagnostic] {
-    let concept_type = type_ref(next(cursor))?
+    let parameters = type_parameters(next(cursor))?
+    let concept_type = type_ref(parameters.rest)?
     let separator = newlines(concept_type.rest)
     if !word(separator, "for") { return Result.Err(error(separator, "expected 'for' after the implemented concept")) }
     let target = type_ref(newlines(next(separator)))?
     let children = two(concept_type.node, target.node)
+    push(children, parameters.node)
     var rest = newlines(expect(newlines(target.rest), Kind.LBrace, "'{' after the implementation target")?)
     while !at(rest, Kind.RBrace) {
         let public = word(rest, "pub")

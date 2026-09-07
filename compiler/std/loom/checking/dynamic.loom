@@ -59,23 +59,23 @@ fn dynamic_type(env Environment, owner Int, node Node) Result[Int, Failure] {
     }
     Result.Ok(intern(env, TypeKind.Dyn, index, new[Int]()))
 }
-fn can_widen(context Context, source Int, target Int) Bool {
-    if target < 0 { return false }
+fn can_widen(context Context, source Int, target Int) Result[Bool, Failure] {
+    if target < 0 { return Result.Ok(false) }
     let original = get(context.env.types, source)
     let desired = get(context.env.types, target)
-    if original.kind == TypeKind.Refined && target == base_type(context.env, source) { return true }
-    desired.kind == TypeKind.Dyn && original.kind != TypeKind.Dyn &&
-        satisfies(context, source, get(context.env.interfaces, desired.symbol).symbol)
+    if original.kind == TypeKind.Refined && target == base_type(context.env, source) { return Result.Ok(true) }
+    Result.Ok(desired.kind == TypeKind.Dyn && original.kind != TypeKind.Dyn &&
+        satisfies(context, source, get(context.env.interfaces, desired.symbol).symbol)?)
 }
 fn boxed(context Context, node Node, value Expr, target Int) Result[Expr, Failure] {
-    if !can_widen(context, value.ty, target) {
+    if !can_widen(context, value.ty, target)? {
         return Result.Err(error(context, node, "dyn conversion needs an explicit conformance; conversions between different dyn concepts are not supported"))
     }
     var witness = -1
     if context.emit {
         let interface = get(context.env.types, target).symbol
         let capability = get(context.env.interfaces, interface)
-        if implementation(context, value.ty, capability.symbol) < 0 {
+        if implementation(context, value.ty, capability.symbol)? < 0 {
             return Result.Err(error(context, node, "dynamic construction has no concrete implementation"))
         }
         witness = 0
@@ -125,19 +125,15 @@ fn activate_witnesses(env Environment, retain Bool) Result[Bool, Failure] {
         let witness = get(env.witnesses, index)
         let capability = get(env.interfaces, witness.interface).symbol
         // Witness creation already admitted this exact conformance in its scope.
-        var provided = 0
-        while provided < length(env.implementations) &&
-            (get(env.implementations, provided).ty != witness.concrete || get(env.implementations, provided).capability != capability) {
-            provided = provided + 1
-        }
-        let implementation = get(env.implementations, provided)
+        let provided = conformance(env, witness.concrete, capability)
+        let implementation = get(env.implementations, provided.implementation)
         var slot = 0
         while slot < length(witness.methods) {
             if get(witness.methods, slot) < 0 && (retain || slot_used(env, witness.interface, slot)) {
                 let method = get(implementation.methods, slot)
                 let current = get(env.signatures, method)
                 let declaration = symbol(env, current.symbol)
-                let arguments = if prototype(env, current.symbol) { ints(witness.concrete) } else { new[Int]() }
+                let arguments = if prototype(env, current.symbol) { ints(witness.concrete) } else { provided.arguments }
                 set(witness.methods, slot, schedule(env, method, arguments, new[StaticValue](), declaration.node)?)
                 changed = true
             }

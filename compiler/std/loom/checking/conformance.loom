@@ -1,0 +1,155 @@
+// A conformance is a source template plus its inferred type arguments. It is
+// not a new runtime value, nor permission cached on an interned type.
+record Conformance { implementation Int arguments List[Int] }
+
+fn target_parameters(env Environment, ty Int, seen List[Bool]) Bool {
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Associated { return false }
+    if shape.kind == TypeKind.Parameter { set(seen, shape.symbol, true) }
+    var index = 0
+    while index < length(shape.arguments) {
+        if !target_parameters(env, get(shape.arguments, index), seen) { return false }
+        index = index + 1
+    }
+    true
+}
+fn conformance(env Environment, ty Int, capability Int) Conformance {
+    var index = 0
+    while index < length(env.implementations) {
+        let header = get(env.implementations, index)
+        if header.state == 2 && header.capability == capability {
+            let count = length(type_parameters(env, header.symbol))
+            // Ordinary exact implementations need no inference scratch space
+            // for each nonmatching candidate.
+            if count != 0 || header.ty == ty {
+            let arguments = new[Int]()
+            var parameter = 0
+            while parameter < count {
+                push(arguments, -1)
+                parameter = parameter + 1
+            }
+            if (count == 0 || infer(env, header.ty, ty, arguments)) && complete(arguments) {
+                return Conformance { implementation = index arguments = arguments }
+            }
+            }
+        }
+        index = index + 1
+    }
+    Conformance { implementation = -1 arguments = new[Int]() }
+}
+fn admitted(env Environment, owner Int, obligations List[Requirement], ty Int, capability Int) Result[Bool, Failure] {
+    admit(env, owner, obligations, ty, capability, new[Requirement](), 0)
+}
+fn concrete_methods(env Environment, owner Int, ty Int, capability Int) Result[Bool, Failure] {
+    if !concrete(env, ty) { return Result.Ok(true) }
+    let selected = conformance(env, ty, capability)
+    if selected.implementation < 0 || length(type_parameters(env, get(env.implementations, selected.implementation).symbol)) == 0 { return Result.Ok(true) }
+    let methods = get(env.concepts, concept_index(env, capability)).methods
+    let node = symbol(env, owner).node
+    var index = 0
+    while index < length(methods) {
+        let method = signature(env, get(methods, index), ints(ty), node)?
+        var previous = 0
+        while previous < index {
+            let other = signature(env, get(methods, previous), ints(ty), node)?
+            if symbol(env, method.symbol).name == symbol(env, other.symbol).name && same(method.params, other.params) {
+                return Result.Err(failure(env, owner, node, "concept method signatures overlap for this implementation"))
+            }
+            previous = previous + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn admit(env Environment, owner Int, obligations List[Requirement], ty Int, capability Int, path List[Requirement], depth Int) Result[Bool, Failure] {
+    // Whole-type evidence may have been supplied from a wider test scope. Its
+    // prerequisite evidence was checked there, not rediscovered in this scope.
+    if required(obligations, ty, capability) { return concrete_methods(env, owner, ty, capability) }
+    if get(env.types, ty).kind == TypeKind.Dyn {
+        return Result.Ok(get(env.interfaces, get(env.types, ty).symbol).symbol == capability)
+    }
+    if get(env.types, ty).kind == TypeKind.Parameter || get(env.types, ty).kind == TypeKind.Associated {
+        return Result.Ok(false)
+    }
+    let selected = conformance(env, ty, capability)
+    if selected.implementation < 0 { return Result.Ok(false) }
+    let header = get(env.implementations, selected.implementation)
+    if symbol(env, header.symbol).test_only && !symbol(env, owner).test_only { return Result.Ok(false) }
+    let node = symbol(env, owner).node
+    if depth >= 64 { return Result.Err(failure(env, owner, node, "conformance requirements must resolve finitely")) }
+    var index = 0
+    while index < depth {
+        let earlier = get(path, index)
+        if earlier.ty == ty && earlier.capability == capability {
+            return Result.Err(failure(env, owner, node, "cyclic conformance requirements"))
+        }
+        index = index + 1
+    }
+    let here = Requirement { ty = ty capability = capability }
+    if depth == length(path) { push(path, here) } else { set(path, depth, here) }
+    let bounds = requirements(env, header.symbol, selected.arguments)?
+    index = 0
+    while index < length(bounds) {
+        let bound = get(bounds, index)
+        if !admit(env, owner, obligations, bound.ty, bound.capability, path, depth + 1)? { return Result.Ok(false) }
+        index = index + 1
+    }
+    concrete_methods(env, owner, ty, capability)
+}
+
+// Unlike one-way call inference, overlap is two-sided unification: either
+// template can constrain the other's variables. Positive bounds do not prove
+// disjointness. Rename the second template's parameters before unifying.
+fn overlap_value(env Environment, ty Int, bindings List[Int]) Int {
+    var value = ty
+    while get(env.types, value).kind == TypeKind.Parameter {
+        let bound = get(bindings, get(env.types, value).symbol)
+        if bound < 0 { return value }
+        value = bound
+    }
+    value
+}
+fn overlap_occurs(env Environment, parameter Int, ty Int, bindings List[Int]) Bool {
+    let shape = get(env.types, overlap_value(env, ty, bindings))
+    if shape.kind == TypeKind.Parameter { return shape.symbol == parameter }
+    var index = 0
+    while index < length(shape.arguments) {
+        if overlap_occurs(env, parameter, get(shape.arguments, index), bindings) { return true }
+        index = index + 1
+    }
+    false
+}
+fn overlap_types(env Environment, left Int, right Int, bindings List[Int]) Bool {
+    let a = overlap_value(env, left, bindings)
+    let b = overlap_value(env, right, bindings)
+    if a == b { return true }
+    let first = get(env.types, a)
+    let second = get(env.types, b)
+    if first.kind == TypeKind.Parameter {
+        if overlap_occurs(env, first.symbol, b, bindings) { return false }
+        set(bindings, first.symbol, b)
+        return true
+    }
+    if second.kind == TypeKind.Parameter { return overlap_types(env, b, a, bindings) }
+    if first.kind != second.kind || first.symbol != second.symbol || length(first.arguments) != length(second.arguments) { return false }
+    var index = 0
+    while index < length(first.arguments) {
+        if !overlap_types(env, get(first.arguments, index), get(second.arguments, index), bindings) { return false }
+        index = index + 1
+    }
+    true
+}
+fn overlapping(env Environment, first Implementation, second Implementation) Result[Bool, Failure] {
+    let offset = length(type_parameters(env, first.symbol))
+    let count = length(type_parameters(env, second.symbol))
+    let arguments = new[Int]()
+    let bindings = new[Int]()
+    var index = 0
+    while index < offset + count {
+        push(bindings, -1)
+        if index >= offset { push(arguments, intern(env, TypeKind.Parameter, index, new[Int]())) }
+        index = index + 1
+    }
+    let target = substitute(header_environment(env), second.symbol, second.ty, arguments, symbol(env, second.symbol).node)?
+    Result.Ok(overlap_types(env, first.ty, target, bindings))
+}

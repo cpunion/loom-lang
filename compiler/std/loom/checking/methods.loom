@@ -64,7 +64,8 @@ fn method_call(context Context, node Node, source Node, method_name Text, types 
         let capability = get(context.env.concepts, index)
         if (selected < 0 && visible_concept(context, capability.symbol) &&
             (!bound || evidence(context, receiver.ty, capability.symbol))) || selected == capability.symbol {
-            let provided = implementation(context, receiver.ty, capability.symbol)
+            let provided = if receiver_type.kind == TypeKind.Parameter || receiver_type.kind == TypeKind.Associated { -1 } else {
+                implementation(context, receiver.ty, capability.symbol)? }
             let methods = if provided >= 0 { get(context.env.implementations, provided).methods } else {
                 if !concrete(context.env, receiver.ty) && evidence(context, receiver.ty, capability.symbol) {
                     capability.methods

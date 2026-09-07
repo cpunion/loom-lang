@@ -245,7 +245,7 @@ fn matching_overloads(context Context, node Node, options List[Int], types List[
                     let target = substitute(context.env, candidate_signature.symbol, get(candidate_signature.params, argument), args, node)?
                     let value = get(values, argument)
                     if value.ty != target {
-                        if can_widen(context, value.ty, target) { widened = true } else { matched = false }
+                        if can_widen(context, value.ty, target)? { widened = true } else { matched = false }
                     }
                     argument = argument + 1
                 }

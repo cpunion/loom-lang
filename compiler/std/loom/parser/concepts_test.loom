@@ -17,7 +17,8 @@ test fn concepts_implementations_and_bounds_have_explicit_structure() {
     assert implementation.kind == NodeKind.Impl
     assert child(implementation, 0).kind == NodeKind.Type && child(implementation, 0).value == "Display"
     assert child(implementation, 1).kind == NodeKind.Type && child(implementation, 1).value == "Person"
-    assert body(child(implementation, 2)).kind == NodeKind.Block
+    assert child(implementation, 2).kind == NodeKind.TypeParameters
+    assert body(child(implementation, 3)).kind == NodeKind.Block
     let parameters = child(child(tree, 2), 0)
     assert child(parameters, 0).kind == NodeKind.Name && child(parameters, 0).value == "T"
     assert child(child(parameters, 0), 0).kind == NodeKind.Type
@@ -76,4 +77,9 @@ test fn concept_syntax_reports_incomplete_and_reserved_forms() {
     assert body(child(child(defaults, 0), 0)).kind == NodeKind.Block
     assert body(child(child(defaults, 0), 1)).kind == NodeKind.Block
     assert length(child(child(defaults, 0), 2).children) == 3
+    let generic = child(parsed("impl[T Display, U] Convert for Pair[T, U] {}"), 0)
+    assert child(generic, 0).value == "Convert" && child(generic, 1).value == "Pair"
+    assert child(child(generic, 2), 0).value == "T"
+    assert child(child(child(generic, 2), 0), 0).value == "Display"
+    assert child(child(generic, 2), 1).value == "U"
 }

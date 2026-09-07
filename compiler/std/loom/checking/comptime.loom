@@ -24,7 +24,8 @@ fn abstract_context(context Context) Bool {
     !known_constants(context.constants)
 }
 fn parameter_name(context Context, name Text) Bool {
-    let parameters = group(symbol(context.env, context.signature.symbol).node, NodeKind.TypeParameters)
+    if name == "Self" && enclosing(context.env, context.signature.symbol) >= 0 { return true }
+    let parameters = type_parameters(context.env, context.signature.symbol)
     var index = 0
     while index < length(parameters) {
         if name == get(parameters, index).value { return true }
@@ -167,7 +168,7 @@ fn selected(context Context, node Node, source Node, expected Int, enforce Bool)
         }
         let ty = context_type(context, child(condition, 0))?
         let capability = required_concept(context.env, context.signature.symbol, child(condition, 1))?
-        yes = satisfies(context, ty, capability)
+        yes = satisfies(context, ty, capability)?
         if !yes && !concrete(context.env, ty) { return deferred(context, node, expected) }
         if yes { chosen = with_evidence(context, ty, capability) }
     } else { if condition.kind == NodeKind.Binary && (condition.value == "==" || condition.value == "!=") &&

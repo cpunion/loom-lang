@@ -69,7 +69,11 @@ checked at each type use rather than stored as permission on an interned type.
 Concept default bodies share this checking and specialization; explicit
 implementations may override them. Defaults can call required methods and use
 associated types, and dynamic defaults retain the same sparse-table reachability.
-Generic conformances and dynamic associated bindings remain open; compile-time
+Generic implementations infer header parameters from receiver types, recursively
+check declared prerequisites and substitute associated bindings. They reuse
+ordinary method instances and dynamic witnesses; structurally overlapping
+implementations reject rather than selecting by order. Dynamic associated
+bindings remain open; compile-time
 dynamic execution and cross-dyn conversions are not supported by this slice.
 
 Source `std.int.parse` handles signed decimal input and range errors without

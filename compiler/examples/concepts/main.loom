@@ -56,6 +56,7 @@ fn next_offset(trace List[Int]) Int {
 }
 
 fn exercise() {
+    exercise_generic_conformances()
     let person = Person { name = "Ada" score = 10 }
     assert forward(person) == "Ada" && forward(42) == "42"
     assert forward(1.25) == "1.25" && forward(true) == "true"
