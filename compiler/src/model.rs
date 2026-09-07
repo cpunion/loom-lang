@@ -96,6 +96,11 @@ pub enum Primitive {
     DirectoryRead,
     PathKind,
     PathCanonical,
+    DirectoryCreate,
+    PathRename,
+    FileRemove,
+    DirectoryRemove,
+    PathEntryKind,
 }
 
 pub mod checked {
