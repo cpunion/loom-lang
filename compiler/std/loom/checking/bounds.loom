@@ -2,6 +2,7 @@ import std.loom.ast.Node
 import std.loom.typed.TypeKind
 import std.list.new
 import std.list.get
+import std.list.push
 import std.list.length
 import std.result.Result
 
@@ -19,6 +20,9 @@ fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement]
         if !admitted(env, owner, obligations, get(shape.arguments, 0), symbol(env, shape.symbol).owner)? {
             return Result.Err(failure(env, owner, node, "associated type needs its declared concept requirement"))
         }
+    }
+    if shape.kind == TypeKind.Dyn {
+        discard associated_bounds(env, owner, get(env.interfaces, shape.symbol).symbol, shape.arguments, obligations, node)?
     }
     if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
         let bounds = requirements(env, shape.symbol, shape.arguments)?
@@ -73,10 +77,12 @@ fn declaration_types(env Environment) Result[Bool, Failure] {
                 index = index + 1
             }
         }
-        if item.node.kind == NodeKind.AssociatedType && symbol(env, item.owner).node.kind == NodeKind.Impl {
-            let arguments = abstract_arguments(env, length(type_parameters(env, owner)))
-            let ty = resolve(env, owner, child(item.node, 0), arguments, 0)?
-            discard well_formed(env, owner, ty, requirements(env, owner, arguments)?, item.node, 0)?
+        if item.node.kind == NodeKind.AssociatedType && prototype(env, owner) && type_part(item.node) >= 0 {
+            let arguments = abstract_arguments(env, 1)
+            let obligations = requirements(env, owner, arguments)?
+            let ty = resolve(env, owner, child(item.node, type_part(item.node)), arguments, 0)?
+            discard well_formed(env, owner, ty, obligations, item.node, 0)?
+            discard member_requirements(env, owner, ty, member_bounds(env, owner), obligations, item.node)?
         }
         owner = owner + 1
     }
@@ -96,8 +102,42 @@ fn declaration_types(env Environment) Result[Bool, Failure] {
     while index < length(env.implementations) {
         let header = get(env.implementations, index)
         let arguments = abstract_arguments(env, length(type_parameters(env, header.symbol)))
-        discard well_formed(env, header.symbol, header.ty, requirements(env, header.symbol, arguments)?, symbol(env, header.symbol).node, 0)?
+        let node = symbol(env, header.symbol).node
+        let obligations = requirements(env, header.symbol, arguments)?
+        discard well_formed(env, header.symbol, header.ty, obligations, node, 0)?
+        // Self implements this concept, but its associated promises cannot be
+        // assumed while proving those same bindings.
+        push(obligations, Requirement { ty = header.ty capability = header.capability })
+        let members = get(env.concepts, concept_index(env, header.capability)).associated
+        let bindings = new[Int]()
+        var member = 0
+        while member < length(members) {
+            let ty = associated_type(env, header.symbol, get(members, member), header.ty, node, 0)?
+            discard well_formed(env, header.symbol, ty, obligations, node, 0)?
+            push(bindings, ty)
+            member = member + 1
+        }
+        discard associated_bounds(env, header.symbol, header.capability, bindings, obligations, node)?
         index = index + 1
+    }
+    Result.Ok(true)
+}
+fn member_requirements(env Environment, owner Int, ty Int, bounds List[Int], obligations List[Requirement], node Node) Result[Bool, Failure] {
+    var bound = 0
+    while bound < length(bounds) {
+        if !admitted(env, owner, obligations, ty, get(bounds, bound))? {
+            return Result.Err(failure(env, owner, node, "associated type binding does not satisfy its declared concept requirement"))
+        }
+        bound = bound + 1
+    }
+    Result.Ok(true)
+}
+fn associated_bounds(env Environment, owner Int, capability Int, bindings List[Int], obligations List[Requirement], node Node) Result[Bool, Failure] {
+    let declaration = get(env.concepts, concept_index(env, capability))
+    var member = 0
+    while member < length(bindings) {
+        discard member_requirements(env, owner, get(bindings, member), get(declaration.bounds, member), obligations, node)?
+        member = member + 1
     }
     Result.Ok(true)
 }

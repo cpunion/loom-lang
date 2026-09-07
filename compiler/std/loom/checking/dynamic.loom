@@ -145,6 +145,7 @@ fn dynamic_type(env Environment, owner Int, node Node, arguments List[Int], obli
         index = index + 1
     }
     if !complete(bindings) { return Result.Err(failure(env, owner, node, "dyn requires an explicit binding for every associated type")) }
+    discard associated_bounds(env, owner, capability, bindings, obligations, node)?
     let ty = dynamic_instance(env, owner, capability, bindings, node)?
     discard fill_interface(env, ty)?
     Result.Ok(ty)

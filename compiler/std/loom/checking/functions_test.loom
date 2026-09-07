@@ -15,13 +15,16 @@ import std.list.push
 import std.list.get
 import std.list.length
 import std.result.Result
+import std.io.write_error
 
 record TestFile { package Text path Text text Text tree Node test_only Bool trusted_std Bool }
 
 fn source_file(package Text, text Text, trusted Bool) TestFile {
     let tree = match parse(text) {
         Result.Ok(tree) => tree
-        Result.Err(_) => { assert false
+        Result.Err(failed) => { discard write_error(failed.message)
+            discard write_error(text)
+            assert false
             source_file(package, "", trusted).tree }
     }
     TestFile { package = package path = package text = text tree = tree test_only = false trusted_std = trusted }
@@ -83,14 +86,16 @@ fn checked(files List[TestFile]) Result[std.loom.typed.Program, Failure] { check
 fn accepted(text Text) std.loom.typed.Program {
     match checked(source_files(text)) {
         Result.Ok(program) => program
-        Result.Err(_) => { assert false
+        Result.Err(failed) => { show_failure(fixture_project(source_files(text)), failed)
+            assert false
             accepted("") }
     }
 }
 fn rejects(text Text) {
     match checked(source_files(text)) {
         Result.Err(_) => {}
-        Result.Ok(_) => { assert false }
+        Result.Ok(_) => { discard write_error(text)
+            assert false }
     }
 }
 

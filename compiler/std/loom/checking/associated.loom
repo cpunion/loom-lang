@@ -36,7 +36,26 @@ fn enclosing(env Environment, owner Int) Int {
 fn header_environment(env Environment) Environment {
     Environment { source = env.source types = env.types type_states = env.type_states expand_data = false
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
-        concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses }
+        concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses
+        associations = env.associations association_depth = env.association_depth }
+}
+fn association_environment(env Environment, member Int, receiver Int) Result[Environment, Failure] {
+    let node = symbol(env, member).node
+    if env.association_depth >= 64 { return Result.Err(failure(env, member, node, "associated type expansion must be finite")) }
+    var index = 0
+    while index < env.association_depth {
+        let earlier = get(env.associations, index)
+        if earlier.member == member && earlier.receiver == receiver {
+            return Result.Err(failure(env, member, node, "cyclic associated type binding or default"))
+        }
+        index = index + 1
+    }
+    let current = Association { member = member receiver = receiver }
+    if index == length(env.associations) { push(env.associations, current) } else { set(env.associations, index, current) }
+    Result.Ok(Environment { source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data
+        signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
+        concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses
+        associations = env.associations association_depth = env.association_depth + 1 })
 }
 fn implementation_type(env Environment, index Int, depth Int) Result[Int, Failure] {
     let header = get(env.implementations, index)
@@ -67,7 +86,30 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
     var owner = 0
     while owner < length(env.source.symbols) {
         if symbol(env, owner).node.kind == NodeKind.Concept {
-            push(env.concepts, Concept { symbol = owner methods = new[Int]() associated = owned_associations(env, owner) })
+            let members = owned_associations(env, owner)
+            let bounds = new[List[Int]]()
+            var member = 0
+            while member < length(members) {
+                let declaration = get(members, member)
+                let nodes = group(symbol(env, declaration).node, NodeKind.Bounds)
+                let required = new[Int]()
+                var bound = 0
+                while bound < length(nodes) {
+                    let capability = required_concept(env, declaration, get(nodes, bound))?
+                    var previous = 0
+                    while previous < length(required) {
+                        if get(required, previous) == capability {
+                            return Result.Err(failure(env, declaration, get(nodes, bound), "duplicate associated type requirement"))
+                        }
+                        previous = previous + 1
+                    }
+                    push(required, capability)
+                    bound = bound + 1
+                }
+                push(bounds, required)
+                member = member + 1
+            }
+            push(env.concepts, Concept { symbol = owner methods = new[Int]() associated = members bounds = bounds })
         }
         owner = owner + 1
     }
@@ -78,10 +120,8 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
             let capability = required_concept(env, owner, child(item.node, 0))?
             let expected = get(env.concepts, concept_index(env, capability)).associated
             let actual = owned_associations(env, owner)
-            if length(actual) != length(expected) {
-                return Result.Err(failure(env, owner, item.node, "an implementation must bind every associated type exactly once"))
-            }
             let bindings = new[Int]()
+            var supplied = 0
             var index = 0
             while index < length(expected) {
                 var found = -1
@@ -90,10 +130,17 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
                     if symbol(env, get(actual, candidate)).name == symbol(env, get(expected, index)).name { found = get(actual, candidate) }
                     candidate = candidate + 1
                 }
-                if found < 0 { return Result.Err(failure(env, owner, item.node, "unknown or missing associated type binding")) }
+                if found >= 0 { supplied = supplied + 1 } else {
+                    let fallback = get(expected, index)
+                    if type_part(symbol(env, fallback).node) < 0 {
+                        return Result.Err(failure(env, owner, item.node, "missing associated type binding without a default"))
+                    }
+                    found = fallback
+                }
                 push(bindings, found)
                 index = index + 1
             }
+            if supplied != length(actual) { return Result.Err(failure(env, owner, item.node, "unknown associated type binding")) }
             push(env.implementations, Implementation { symbol = owner capability = capability ty = -1
                 methods = new[Int]() associated = bindings state = 0 })
         }
@@ -134,6 +181,28 @@ fn required(obligations List[Requirement], ty Int, capability Int) Bool {
     }
     false
 }
+fn member_bounds(env Environment, member Int) List[Int] {
+    let declaration = get(env.concepts, concept_index(env, symbol(env, member).owner))
+    var index = 0
+    while get(declaration.associated, index) != member { index = index + 1 }
+    get(declaration.bounds, index)
+}
+// Derive promises only from opaque projections. Flattening them onto an impl's
+// normalized parameter would let that impl use its own promise as its proof.
+fn entailed(env Environment, obligations List[Requirement], ty Int, capability Int) Bool {
+    if required(obligations, ty, capability) { return true }
+    let shape = get(env.types, ty)
+    if shape.kind != TypeKind.Associated { return false }
+    let bounds = member_bounds(env, shape.symbol)
+    var index = 0
+    while index < length(bounds) {
+        if get(bounds, index) == capability {
+            return entailed(env, obligations, get(shape.arguments, 0), symbol(env, shape.symbol).owner)
+        }
+        index = index + 1
+    }
+    false
+}
 fn associated_type(env Environment, owner Int, member Int, receiver Int, node Node, depth Int) Result[Int, Failure] {
     if depth > 64 { return Result.Err(failure(env, owner, node, "associated type expansion must be finite")) }
     let shape = get(env.types, receiver)
@@ -149,8 +218,12 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, node No
     }
     let selected = conformance(env, receiver, capability)
     let parent = enclosing(env, owner)
-    let own = selected.implementation >= 0 && parent >= 0 && symbol(env, parent).node.kind == NodeKind.Impl &&
+    var own = selected.implementation >= 0 && parent >= 0 && symbol(env, parent).node.kind == NodeKind.Impl &&
         get(env.implementations, selected.implementation).symbol == parent
+    if env.association_depth > 0 {
+        let active = get(env.associations, env.association_depth - 1)
+        if active.receiver == receiver && symbol(env, active.member).owner == capability { own = true }
+    }
     if (shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated) && !own {
         return Result.Ok(intern(env, TypeKind.Associated, member, ints(receiver)))
     }
@@ -160,7 +233,12 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, node No
     var index = 0
     while get(members, index) != member { index = index + 1 }
     let binding = get(header.associated, index)
-    resolve(env, binding, child(symbol(env, binding).node, 0), selected.arguments, depth + 1)
+    let definition = symbol(env, binding).node
+    let scoped = association_environment(env, member, receiver)?
+    // Defaults retain their defining package/import scope, but Self projections
+    // use this implementation's effective map, including explicit overrides.
+    resolve(scoped, binding, child(definition, type_part(definition)),
+        if prototype(env, binding) { ints(receiver) } else { selected.arguments }, depth + 1)
 }
 fn projection(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
     let split = first_dot(node.value)
@@ -191,7 +269,7 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
     index = 0
     while index < length(env.concepts) {
         let capability = get(env.concepts, index)
-        if required(obligations, receiver, capability.symbol) || own == capability.symbol {
+        if entailed(env, obligations, receiver, capability.symbol) || own == capability.symbol {
             var member = 0
             while member < length(capability.associated) {
                 if symbol(env, get(capability.associated, member)).name == name(rest) { bound_only = true }
@@ -204,7 +282,7 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
     while index < length(env.concepts) {
         let capability = get(env.concepts, index)
         let declaration = symbol(env, capability.symbol)
-        let bound = required(obligations, receiver, capability.symbol) || own == capability.symbol
+        let bound = entailed(env, obligations, receiver, capability.symbol) || own == capability.symbol
         let visible = bound || concept_named(env, owner, node,
             qualify(package_label(env.source.modules, env.source.packages, get(env.source.files, declaration.file).package), declaration.name))? == capability.symbol
         if ((selected < 0 && (!bound_only || bound)) || selected == capability.symbol) && visible &&

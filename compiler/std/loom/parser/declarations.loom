@@ -4,6 +4,7 @@ import std.loom.ast.NodeKind
 import std.loom.source.Diagnostic
 import std.list.new
 import std.list.push
+import std.list.length
 import std.result.Result
 
 fn import_decl(cursor Cursor) Result[Step, Diagnostic] {
@@ -68,10 +69,13 @@ fn impl_decl(cursor Cursor) Result[Step, Diagnostic] {
     Result.Ok(done(cursor, next(rest), NodeKind.Impl, "", children))
 }
 fn associated_type(cursor Cursor, implementation Bool) Result[Step, Diagnostic] {
-    let named = name(next(cursor))?
+    let named = if implementation { name(next(cursor))? } else { type_parameter(next(cursor))? }
     var rest = named.rest
     let children = new[Node]()
-    if implementation {
+    if length(named.node.children) != 0 {
+        push(children, done(next(next(cursor)), rest, NodeKind.Bounds, "", named.node.children).node)
+    }
+    if implementation || at(rest, Kind.Assign) {
         let value = type_ref(expect(rest, Kind.Assign, "'=' after the associated type name")?)?
         push(children, value.node)
         rest = value.rest

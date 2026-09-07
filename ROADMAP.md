@@ -141,6 +141,11 @@ identity through generic substitution, boxing and sparse witnesses;
 there is no runtime conformance registry or erased-value
 type discovery.
 
+Associated members also accept explicit concept requirements and default type
+bindings. Implementations establish the requirements; generic/default method
+bodies consume those promises without assuming an overridable default's equality.
+Effective binding cycles reject. Member type parameters remain open.
+
 Native binary64 `Float`, source numeric parsing/conversion, compile-time execution
 and Float-based constrained types now share the checked/native path. The compiler
 adopts Float through a pinned source checkpoint without extending the frozen Rust
