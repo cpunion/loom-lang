@@ -105,7 +105,12 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::Write
         | Primitive::WriteBytes
         | Primitive::Close
-        | Primitive::PathKind => false,
+        | Primitive::PathKind
+        | Primitive::DirectoryCreate
+        | Primitive::PathRename
+        | Primitive::FileRemove
+        | Primitive::DirectoryRemove
+        | Primitive::PathEntryKind => false,
     }
 }
 

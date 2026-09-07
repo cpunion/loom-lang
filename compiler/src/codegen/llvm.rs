@@ -680,6 +680,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::DirectoryRead => ("directory_read", Some(i64_type.into())),
             Primitive::PathKind => ("path_kind", Some(i64_type.into())),
             Primitive::PathCanonical => ("path_canonical", Some(i64_type.into())),
+            Primitive::DirectoryCreate => ("directory_create", Some(i64_type.into())),
+            Primitive::PathRename => ("path_rename", Some(i64_type.into())),
+            Primitive::FileRemove => ("file_remove", Some(i64_type.into())),
+            Primitive::DirectoryRemove => ("directory_remove", Some(i64_type.into())),
+            Primitive::PathEntryKind => ("path_entry_kind", Some(i64_type.into())),
         };
         let value = self.runtime_call(name, result_type, &values)?;
         if gc::allocates(operation) {

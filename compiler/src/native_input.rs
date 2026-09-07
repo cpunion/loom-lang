@@ -637,6 +637,11 @@ impl Converter<'_> {
                     Primitive::WriteBytes => {
                         Some((&[Type::Int, Type::Bytes, Type::Int], Type::Int))
                     }
+                    Primitive::DirectoryCreate
+                    | Primitive::FileRemove
+                    | Primitive::DirectoryRemove
+                    | Primitive::PathEntryKind => Some((&[Type::Text], Type::Int)),
+                    Primitive::PathRename => Some((&[Type::Text, Type::Text], Type::Int)),
                     _ => None,
                 };
                 if let Some((params, result)) = signature {
@@ -646,7 +651,7 @@ impl Converter<'_> {
                             .map(|arg| arg.ty)
                             .eq(params.iter().copied())
                     {
-                        return Err("checked byte operation type mismatch".into());
+                        return Err("checked runtime operation type mismatch".into());
                     }
                 }
                 E::Primitive(operation, arguments)
@@ -897,6 +902,11 @@ fn primitive(value: &str) -> Result<Primitive> {
         "directory_read" => P::DirectoryRead,
         "path_kind" => P::PathKind,
         "path_canonical" => P::PathCanonical,
+        "directory_create" => P::DirectoryCreate,
+        "path_rename" => P::PathRename,
+        "file_remove" => P::FileRemove,
+        "directory_remove" => P::DirectoryRemove,
+        "path_entry_kind" => P::PathEntryKind,
         _ => return Err("unknown private checked runtime operation".into()),
     })
 }
@@ -923,7 +933,11 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::Open
         | P::Create
         | P::Close
-        | P::PathKind => 1,
+        | P::PathKind
+        | P::DirectoryCreate
+        | P::FileRemove
+        | P::DirectoryRemove
+        | P::PathEntryKind => 1,
         P::TextByte
         | P::TextConcat
         | P::TextEqual
@@ -933,7 +947,8 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::ListGet
         | P::ListPush
         | P::DirectoryRead
-        | P::PathCanonical => 2,
+        | P::PathCanonical
+        | P::PathRename => 2,
         P::TextSlice
         | P::BytesSet
         | P::ListSet
@@ -955,6 +970,51 @@ mod tests {
             children.len(),
             children.concat()
         )
+    }
+
+    #[test]
+    fn filesystem_wire_operations_require_text_paths_and_int_status() {
+        let stream = |operation: &str, arguments: &[String], result| {
+            let call = node(7, result, operation, -1, arguments);
+            let body = node(11, result, "", -1, &[call]);
+            format!(
+                "loom-checked-1\n3\n0\n-1\n1\n-1\n3\n-1\n1\n0\n0\n0\n0\n{result}\n0\n0\n{body}-1\n0\n1\n0\n"
+            )
+        };
+        for name in [
+            "directory_create",
+            "path_rename",
+            "file_remove",
+            "directory_remove",
+            "path_entry_kind",
+        ] {
+            let operation = primitive(name).unwrap();
+            let arguments = vec![node(2, 2, "path", -1, &[]); primitive_arity(operation)];
+            let program = decode(&stream(name, &arguments, 1)).unwrap();
+            assert!(matches!(
+                program.functions[0].body.tail.as_ref().unwrap().kind,
+                c::ExprKind::Primitive(actual, _) if actual == operation
+            ));
+            assert!(
+                decode(&stream(name, &arguments, 2))
+                    .unwrap_err()
+                    .contains("runtime operation type mismatch")
+            );
+            for index in 0..arguments.len() {
+                let mut invalid = arguments.clone();
+                invalid[index] = node(0, 1, "0", -1, &[]);
+                assert!(
+                    decode(&stream(name, &invalid, 1))
+                        .unwrap_err()
+                        .contains("runtime operation type mismatch")
+                );
+            }
+            assert!(
+                decode(&stream(name, &[], 1))
+                    .unwrap_err()
+                    .contains("arity mismatch")
+            );
+        }
     }
 
     #[test]

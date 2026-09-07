@@ -388,6 +388,73 @@ fn main() {
 }
 
 #[test]
+fn source_filesystem_operations_publish_and_remove_only_requested_entries() {
+    let dir = source(
+        r#"
+import std.fs.create_dir
+import std.fs.rename
+import std.fs.remove_file
+import std.fs.remove_empty_dir
+import std.fs.entry_kind
+import std.fs.kind
+import std.fs.FileKind
+import std.fs.FsError
+import std.file.write_text
+import std.file.read_text
+import std.result.Result
+fn done(value Result[Bool, FsError]) {
+    assert match value { Result.Ok(changed) => changed, Result.Err(_) => false }
+}
+fn failed(value Result[Bool, FsError], expected FsError) {
+    assert match value { Result.Err(error) => error == expected, Result.Ok(_) => false }
+}
+fn main() {
+    done(create_dir("stage 雪"))
+    failed(create_dir("stage 雪"), FsError.AlreadyExists)
+    failed(create_dir("absent/child"), FsError.NotFound)
+    assert match entry_kind("stage 雪") { Result.Ok(value) => value == FileKind.Directory, _ => false }
+    discard write_text("stage 雪/source", "first\0bytes")
+    failed(create_dir("stage 雪/source"), FsError.AlreadyExists)
+    failed(remove_empty_dir("stage 雪"), FsError.Failed)
+    done(rename("stage 雪/source", "published"))
+    assert match entry_kind("published") { Result.Ok(value) => value == FileKind.File, _ => false }
+    assert match read_text("published") { Result.Ok(value) => value == "first\0bytes", _ => false }
+    discard write_text("stage 雪/source", "replacement")
+    done(rename("stage 雪/source", "published"))
+    failed(rename("stage 雪/source", "published"), FsError.NotFound)
+    assert match read_text("published") { Result.Ok(value) => value == "replacement", _ => false }
+    done(remove_file("published"))
+    failed(remove_file("published"), FsError.NotFound)
+    assert match entry_kind("published") { Result.Err(error) => error == FsError.NotFound, _ => false }
+    done(remove_empty_dir("stage 雪"))
+    failed(remove_empty_dir("stage 雪"), FsError.NotFound)
+    match entry_kind("link") {
+        Result.Err(error) => { assert error == FsError.NotFound }
+        Result.Ok(value) => {
+            assert value == FileKind.Symlink
+            assert match kind("link") { Result.Ok(value) => value == FileKind.Directory, _ => false }
+            done(remove_file("link"))
+        }
+    }
+    assert match read_text("kept") { Result.Ok(value) => value == "keep", _ => false }
+}
+"#,
+    );
+    fs::write(dir.path().join("kept"), b"keep").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(".", dir.path().join("link")).unwrap();
+    #[cfg(windows)]
+    if let Err(error) = std::os::windows::fs::symlink_dir(".", dir.path().join("link")) {
+        assert_eq!(error.raw_os_error(), Some(1314));
+    }
+    success(&managed(&["run", path(dir.path())], dir.path()));
+    for removed in ["stage 雪", "published", "link"] {
+        assert!(fs::symlink_metadata(dir.path().join(removed)).is_err());
+    }
+    assert_eq!(fs::read(dir.path().join("kept")).unwrap(), b"keep");
+}
+
+#[test]
 fn constrained_values_keep_native_scalar_boundaries() {
     let library = source(
         "type Positive = Int where positive(self)\n\

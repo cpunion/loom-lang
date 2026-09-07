@@ -111,6 +111,8 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "close" { return runtime(0, ints(1), 1) }
     if name == "directory_read" { return runtime(0, two_types(3, intern(env, TypeKind.List, -1, ints(3))), 1) }
     if name == "path_canonical" { return runtime(0, two_types(3, 4), 1) }
+    if name == "directory_create" || name == "file_remove" || name == "directory_remove" || name == "path_entry_kind" { return runtime(0, ints(3), 1) }
+    if name == "path_rename" { return runtime(0, two_types(3, 3), 1) }
     let parameter = get(abstract_arguments(env, 1), 0)
     let list = intern(env, TypeKind.List, -1, ints(parameter))
     if name == "list_new" { return runtime(1, new[Int](), list) }

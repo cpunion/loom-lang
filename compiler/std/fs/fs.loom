@@ -10,6 +10,7 @@ pub enum FileKind {
     File
     Directory
     Other
+    Symlink
 }
 
 pub enum FsError {
@@ -17,11 +18,57 @@ pub enum FsError {
     Metadata
     Canonical
     Utf8
+    AlreadyExists
+    NotFound
+    Failed
 }
 
 intrinsic fn directory_read(path Text, names List[Text]) Int
 intrinsic fn path_kind(path Text) Int
 intrinsic fn path_canonical(path Text, buffer Bytes) Int
+intrinsic fn directory_create(path Text) Int
+intrinsic fn path_rename(from Text, to Text) Int
+intrinsic fn file_remove(path Text) Int
+intrinsic fn directory_remove(path Text) Int
+intrinsic fn path_entry_kind(path Text) Int
+
+fn status_error(status Int) FsError {
+    if status == -2 { FsError.AlreadyExists } else {
+        if status == -3 { FsError.NotFound } else { FsError.Failed }
+    }
+}
+fn changed(status Int) Result[Bool, FsError] {
+    if status < 0 { Result.Err(status_error(status)) } else { Result.Ok(true) }
+}
+fn file_kind(value Int) FileKind {
+    if value == 0 { return FileKind.File }
+    if value == 1 { return FileKind.Directory }
+    if value == 3 { return FileKind.Symlink }
+    FileKind.Other
+}
+
+// Creates one new directory. An existing entry is AlreadyExists, not success.
+pub fn create_dir(path Text) Result[Bool, FsError] { changed(directory_create(path)) }
+
+// Native same-filesystem replacement, without copy/delete fallback. This is
+// neither a no-clobber operation nor a promise of crash-durable publication.
+pub fn rename(from Text, to Text) Result[Bool, FsError] { changed(path_rename(from, to)) }
+
+// Removes a file or symlink entry, including a link to a directory, not its target.
+pub fn remove_file(path Text) Result[Bool, FsError] { changed(file_remove(path)) }
+
+// Nonrecursive. Windows may remove a directory-link entry; Unix rejects it.
+// For portable cleanup, use entry_kind: Symlink -> remove_file, Directory ->
+// remove_empty_dir, Other -> decline traversal. Metadata is only a snapshot.
+pub fn remove_empty_dir(path Text) Result[Bool, FsError] { changed(directory_remove(path)) }
+
+// Does not follow the final symlink; unknown Windows reparse points are Other.
+// Ancestors may still contain links: this is not a path sandbox or race proof.
+pub fn entry_kind(path Text) Result[FileKind, FsError] {
+    let value = path_entry_kind(path)
+    if value < 0 { return Result.Err(status_error(value)) }
+    Result.Ok(file_kind(value))
+}
 
 fn before(left Text, right Text) Bool {
     var index = 0
@@ -48,9 +95,7 @@ pub fn entries(path Text) Result[List[Text], FsError] {
 pub fn kind(path Text) Result[FileKind, FsError] {
     let value = path_kind(path)
     if value < 0 { return Result.Err(FsError.Metadata) }
-    if value == 0 { return Result.Ok(FileKind.File) }
-    if value == 1 { return Result.Ok(FileKind.Directory) }
-    Result.Ok(FileKind.Other)
+    Result.Ok(file_kind(value))
 }
 
 // Resolves an existing path, including symlinks, to an absolute spelling.

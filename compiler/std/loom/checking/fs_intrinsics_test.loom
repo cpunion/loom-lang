@@ -1,0 +1,53 @@
+import std.text.concat
+
+test fn filesystem_intrinsics_have_exact_signatures_and_cannot_run_at_compile_time() {
+    let names = new[Text]()
+    push(names, "directory_create")
+    push(names, "path_rename")
+    push(names, "file_remove")
+    push(names, "directory_remove")
+    push(names, "path_entry_kind")
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        let params = if name == "path_rename" { "(from Text, to Text)" } else { "(path Text)" }
+        let arguments = if name == "path_rename" { "(\"from\", \"to\")" } else { "(\"path\")" }
+        let signature = concat(concat("intrinsic fn ", name), params)
+        let declarations = concat(concat(signature, " Int\npub fn exercise() Int { "), concat(concat(name, arguments), " }"))
+        let files = source_files("import std.fs.exercise\npub fn run() Int { exercise() }")
+        push(files, source_file("std.fs", declarations, true))
+        match checked(files) {
+            Result.Ok(program) => {
+                var found = false
+                var function = 0
+                while function < length(program.functions) {
+                    if get(program.functions, function).runtime_name == name { found = true }
+                    function = function + 1
+                }
+                assert found
+            }
+            Result.Err(_) => { assert false }
+        }
+        let staged = source_files("import std.fs.exercise\nfn main() { discard comptime { if false { exercise() } else { 0 } } }")
+        push(staged, source_file("std.fs", declarations, true))
+        match checked(staged) {
+            Result.Err(failed) => { assert failed.diagnostic.message == concat("compile-time evaluation forbids intrinsic ", name) }
+            Result.Ok(_) => { assert false }
+        }
+        let invalid = new[Text]()
+        push(invalid, concat(signature, " Bool"))
+        let wrong = if name == "path_rename" { "(from Text, to Bool) Int" } else { "(path Bool) Int" }
+        push(invalid, concat(concat("intrinsic fn ", name), wrong))
+        var item = 0
+        while item < length(invalid) {
+            let fixture = source_files("")
+            push(fixture, source_file("std.fs", get(invalid, item), true))
+            match checked(fixture) {
+                Result.Err(failed) => { assert failed.diagnostic.message == "intrinsic declaration does not match its runtime signature" }
+                Result.Ok(_) => { assert false }
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+}

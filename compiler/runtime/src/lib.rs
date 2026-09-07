@@ -13,6 +13,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr::{self, NonNull};
 
 mod file_io;
+mod fs_ops;
 mod process_io;
 
 type Trace = unsafe extern "C" fn(*mut u8);
@@ -1050,6 +1051,43 @@ unsafe extern "C" fn loom_rt_path_kind(path: *const u8) -> i64 {
     } else {
         2
     }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_directory_create(path: *const u8) -> i64 {
+    // SAFETY: Text is valid UTF-8 and stays live throughout this nonallocating call.
+    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
+    fs_ops::create_dir(std::path::Path::new(path))
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_path_rename(from: *const u8, to: *const u8) -> i64 {
+    // SAFETY: Both Text values stay live; namespace operations neither retain
+    // managed pointers nor allocate through the Loom heap.
+    let from = unsafe { std::str::from_utf8_unchecked(text_bytes(from)) };
+    let to = unsafe { std::str::from_utf8_unchecked(text_bytes(to)) };
+    fs_ops::rename(std::path::Path::new(from), std::path::Path::new(to))
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_file_remove(path: *const u8) -> i64 {
+    // SAFETY: Text is valid UTF-8 and stays live throughout this nonallocating call.
+    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
+    fs_ops::remove_file(std::path::Path::new(path))
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_directory_remove(path: *const u8) -> i64 {
+    // SAFETY: Text is valid UTF-8 and stays live throughout this nonallocating call.
+    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
+    fs_ops::remove_empty_dir(std::path::Path::new(path))
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_path_entry_kind(path: *const u8) -> i64 {
+    // SAFETY: Text is valid UTF-8 and stays live throughout this nonallocating call.
+    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
+    fs_ops::entry_kind(std::path::Path::new(path))
 }
 
 #[unsafe(no_mangle)]
