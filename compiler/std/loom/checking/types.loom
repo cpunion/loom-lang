@@ -93,7 +93,7 @@ fn resolve(env Environment, owner Int, node Node, arguments List[Int], depth Int
 }
 fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
     if depth > 64 { return Result.Err(failure(env, owner, node, "type specialization depth exceeded")) }
-    if node.kind == NodeKind.DynType { return dynamic_type(env, owner, node) }
+    if node.kind == NodeKind.DynType { return dynamic_type(env, owner, node, arguments, obligations, depth + 1) }
     if node.kind == NodeKind.FunctionType {
         let shape = new[Int]()
         let parameters = group(node, NodeKind.Parameters)
@@ -240,12 +240,20 @@ fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node
     }
     if source.kind == TypeKind.List { return Result.Ok(intern(env, TypeKind.List, -1, args)) }
     if source.kind == TypeKind.Function { return Result.Ok(intern(env, TypeKind.Function, -1, args)) }
+    if source.kind == TypeKind.Dyn { return dynamic_instance(env, owner, get(env.interfaces, source.symbol).symbol, args, node) }
     if source.kind == TypeKind.Associated { return associated_type(env, owner, source.symbol, get(args, 0), node, 0) }
     if source.kind == TypeKind.Tuple { return tuple_type(env, owner, node, args) }
     if source.kind == TypeKind.Record || source.kind == TypeKind.Enum || source.kind == TypeKind.Refined {
         return data_type(env, source.symbol, args, 0)
     }
     Result.Ok(ty)
+}
+fn same_constructor(env Environment, first Type, second Type) Bool {
+    if first.kind != second.kind || length(first.arguments) != length(second.arguments) { return false }
+    if first.kind == TypeKind.Dyn {
+        return get(env.interfaces, first.symbol).symbol == get(env.interfaces, second.symbol).symbol
+    }
+    first.symbol == second.symbol
 }
 fn infer(env Environment, pattern Int, actual Int, arguments List[Int]) Bool {
     let source = get(env.types, pattern)
@@ -259,7 +267,7 @@ fn infer(env Environment, pattern Int, actual Int, arguments List[Int]) Bool {
         return true
     }
     let value = get(env.types, actual)
-    if source.kind != value.kind || source.symbol != value.symbol || length(source.arguments) != length(value.arguments) { return false }
+    if !same_constructor(env, source, value) { return false }
     var index = 0
     var matched = true
     while index < length(source.arguments) {

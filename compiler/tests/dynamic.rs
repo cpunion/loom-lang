@@ -26,7 +26,7 @@ fn dynamic_values_keep_gc_snapshots_and_only_retain_called_witness_slots() {
     );
 
     fs::write(temporary.path().join("main.loom"),
-        "concept Read { fn read(self Self) Int\nfn unused(self Self) Int }\nrecord A {}\nrecord B {}\nimpl Read for A { fn read(self A) Int { 7 }\nfn unused(self A) Int { 9001 } }\nimpl Read for B { fn read(self B) Int { 9002 }\nfn unused(self B) Int { 9003 } }\npub fn library_receiver() dyn Read { B {} }\nfn main() { let value dyn Read = A {}\nassert value.read() == 7 }").unwrap();
+        "concept Read { type Item\nfn read(self Self) Self.Item\nfn unused(self Self) Int }\nrecord A {}\nrecord B {}\nimpl Read for A { type Item = Int\nfn read(self A) Int { 7 }\nfn unused(self A) Int { 9001 } }\nimpl Read for B { type Item = Bool\nfn read(self B) Bool { 9002 == 0 }\nfn unused(self B) Int { 9003 } }\npub fn library_receiver() dyn Read[Item = Bool] { B {} }\nfn main() { let value dyn Read[Item = Int] = A {}\nassert value.read() == 7 }").unwrap();
     let executable = common::executable(temporary.path(), "reachability");
     let ir = temporary.path().join("reachability.ll");
     success(
@@ -58,6 +58,8 @@ fn erased_values_require_explicit_evidence_and_do_not_enable_type_discovery() {
         "concept C {}\nimpl C for Int {}\nfn recover(value dyn C) Int { value }",
         "concept C { fn copy(self Self) Self }\nfn erased(value dyn C) {}",
         "concept C {}\nimpl C for Int {}\nfn main() { discard comptime { let value dyn C = 1\nvalue } }",
+        "concept C { type Item }\nimpl C for Int { type Item = Int }\nfn main() { let value dyn C[Item = Bool] = 1 }",
+        "concept C { type Item }\nfn change(value dyn C[Item = Int]) dyn C[Item = Bool] { value }",
     ] {
         fs::write(source.path().join("main.loom"), text).unwrap();
         let output = loom(&["check", source.path().to_str().unwrap()]);

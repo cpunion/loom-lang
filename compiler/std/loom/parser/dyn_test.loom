@@ -17,11 +17,14 @@ test fn dynamic_types_cover_annotations_and_nested_type_arguments() {
     assert plain.span.start == 11 && plain.span.end == 16
 }
 
-test fn dyn_is_reserved_and_keeps_semantic_arguments_for_the_checker() {
+test fn dyn_is_reserved_and_preserves_named_associated_bindings() {
     discard rejected("fn dyn() {}")
     discard rejected("fn f() { let dyn = 1 }")
     discard rejected("fn f(value dyn) {}")
     discard rejected("fn f(value dyn dyn C) {}")
-    let ty = child(child(child(child(parsed("fn f(value dyn C[Int]) {}"), 0), 1), 0), 0)
-    assert ty.kind == NodeKind.DynType && child(ty, 0).value == "Int"
+    discard rejected("fn f(value dyn C[Int]) {}")
+    let ty = child(child(child(child(parsed("fn f(value dyn C[Item = Int, Other = List[Text]]) {}"), 0), 1), 0), 0)
+    assert ty.kind == NodeKind.DynType && child(ty, 0).kind == NodeKind.AssociatedType
+    assert child(ty, 0).value == "Item" && child(child(ty, 0), 0).value == "Int"
+    assert child(ty, 1).value == "Other" && child(child(ty, 1), 0).value == "List"
 }

@@ -135,7 +135,8 @@ branch evidence. Concept default methods use abstract Self checking and the same
 static/dynamic call paths; explicit overrides remain authoritative. Generic
 implementations infer target parameters and recursively check prerequisites,
 including associated bindings and dynamic witness calls. Potentially overlapping
-implementations reject. Binding-aware dynamic associated types remain open;
+implementations reject. Dynamic associated bindings now retain exact type
+identity through generic substitution, boxing and sparse witnesses;
 there is no runtime conformance registry or erased-value
 type discovery.
 

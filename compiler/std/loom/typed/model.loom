@@ -9,6 +9,8 @@ pub record Type {
     // Associated uses the concept member's source symbol and [receiver] arguments.
     // Concrete projections normalize before executable IR reaches the backend.
     // Function has symbol -1 and arguments [parameter types..., result type].
+    // Dyn arguments are all associated bindings in concept declaration order;
+    // its symbol identifies the exact concept-and-bindings interface instance.
     symbol Int
     arguments List[Int]
     fields List[Field]
@@ -50,7 +52,8 @@ pub record Function {
     span Span
 }
 // Interface.symbol is a source concept ID; TypeKind.Dyn.symbol indexes this
-// program's interfaces. Method parameters exclude the erased receiver.
+// program's interfaces. Even unused associated bindings distinguish interface
+// instances. Method parameters exclude the erased receiver.
 pub record Method { name Text params List[Int] result Int }
 pub record Interface { symbol Int methods List[Method] }
 // Method entries are concrete function IDs, or -1 for unused slots.

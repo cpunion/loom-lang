@@ -1,0 +1,31 @@
+concept Source {
+    type Item
+    fn read(self Self) Self.Item
+    fn echo(self Self, value Self.Item) Self.Item { value }
+}
+record Payload[T] { value T }
+impl[T] Source for Payload[T] {
+    type Item = T
+    fn read(self Payload[T]) T { self.value }
+}
+
+fn erase[S Source](value S) dyn Source[Item = S.Item] { value }
+fn read[T](source dyn Source[Item = T]) T { source.read() }
+fn associated[S Source](source S) S.Item { source.read() }
+
+fn exercise_bindings() {
+    let text = erase(Payload { value = concat("Loom", "!") })
+    assert read(text) == "Loom!" && associated(text) == "Loom!"
+    assert text.echo(concat("new", " text")) == "new text"
+    let number dyn Source[Item = Int] = Payload { value = 42 }
+    assert read(number) == 42 && number.echo(3) == 3
+    let values = new[Text]()
+    push(values, "shared")
+    let source = erase(Payload { value = values })
+    let alias = read(source)
+    set(values, 0, concat("updated", "!"))
+    assert get(alias, 0) == "updated!"
+    let stored = new[dyn Source[Item = Text]]()
+    push(stored, Payload { value = concat("managed", " result") })
+    assert get(stored, 0).read() == "managed result"
+}

@@ -32,6 +32,7 @@ fn replace(values List[dyn Join]) Text {
 }
 
 fn exercise() {
+    exercise_bindings()
     let shared = label("old")
     let value dyn Display = shared
     set(shared.parts, 0, "shared")

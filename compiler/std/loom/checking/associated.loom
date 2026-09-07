@@ -138,6 +138,15 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, node No
     if depth > 64 { return Result.Err(failure(env, owner, node, "associated type expansion must be finite")) }
     let shape = get(env.types, receiver)
     let capability = symbol(env, member).owner
+    if shape.kind == TypeKind.Dyn {
+        if get(env.interfaces, shape.symbol).symbol != capability {
+            return Result.Err(failure(env, owner, node, "dynamic receiver does not expose this associated type"))
+        }
+        let members = get(env.concepts, concept_index(env, capability)).associated
+        var index = 0
+        while get(members, index) != member { index = index + 1 }
+        return Result.Ok(get(shape.arguments, index))
+    }
     let selected = conformance(env, receiver, capability)
     let parent = enclosing(env, owner)
     let own = selected.implementation >= 0 && parent >= 0 && symbol(env, parent).node.kind == NodeKind.Impl &&
