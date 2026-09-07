@@ -65,7 +65,7 @@ pub(super) fn allocating_functions(
     }
 }
 
-fn allocates(operation: Primitive) -> bool {
+pub(super) fn allocates(operation: Primitive) -> bool {
     match operation {
         Primitive::FloatFormat
         | Primitive::TextConcat
@@ -431,8 +431,8 @@ pub(super) fn root_function<'ctx>(
     for (index, ty) in source.locals.iter().enumerate() {
         if managed(program, *ty) {
             // Keep normal locals nonescaping so LLVM can promote them to SSA.
-            // The collector observes a separate shadow slot, updated only on
-            // source writes. The current collector never relocates objects.
+            // The collector rewrites a separate shadow slot; allocating calls
+            // restore ordinary locals from it before source execution resumes.
             let native = native_type(context, program, *ty)?;
             let slot = builder.build_alloca(native, "gc.local")?;
             let initial = if index < source.params.len() {
@@ -580,14 +580,11 @@ pub(super) fn tracer<'ctx>(
     tracers.insert(ty, function);
     let builder = context.create_builder();
     builder.position_at_end(context.append_basic_block(function, "entry"));
-    let value = builder.build_load(
-        native_type(context, program, ty)?,
-        function
-            .get_first_param()
-            .ok_or("missing trace parameter")?
-            .into_pointer_value(),
-        "root.value",
-    )?;
+    let address = function
+        .get_first_param()
+        .ok_or("missing trace parameter")?
+        .into_pointer_value();
+    let value = builder.build_load(native_type(context, program, ty)?, address, "root.value")?;
     let trace = TraceEmitter {
         context,
         module,
@@ -595,7 +592,7 @@ pub(super) fn tracer<'ctx>(
         function,
         builder: &builder,
     };
-    trace.value(ty, value)?;
+    builder.build_store(address, trace.value(ty, value)?)?;
     builder.build_return(None)?;
     Ok(function)
 }
@@ -609,44 +606,65 @@ struct TraceEmitter<'a, 'ctx> {
 }
 
 impl<'ctx> TraceEmitter<'_, 'ctx> {
-    fn mark(&self, pointer: PointerValue<'ctx>) -> NativeResult<()> {
-        let mark = runtime_function(
+    fn visit(&self, pointer: PointerValue<'ctx>) -> NativeResult<PointerValue<'ctx>> {
+        let visit = runtime_function(
             self.context,
             self.module,
-            "mark",
-            None,
+            "visit",
+            Some(pointer.get_type().into()),
             &[pointer.get_type().into()],
         );
-        self.builder.build_call(mark, &[pointer.into()], "")?;
-        Ok(())
+        Ok(self
+            .builder
+            .build_call(visit, &[pointer.into()], "trace.visited")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or("missing relocated pointer")?
+            .into_pointer_value())
     }
 
-    fn value(&self, ty: Type, value: BasicValueEnum<'ctx>) -> NativeResult<()> {
-        match ty {
-            Type::Text | Type::Bytes | Type::List(_) => self.mark(value.into_pointer_value())?,
+    fn value(&self, ty: Type, value: BasicValueEnum<'ctx>) -> NativeResult<BasicValueEnum<'ctx>> {
+        Ok(match ty {
+            Type::Text | Type::Bytes | Type::List(_) => {
+                self.visit(value.into_pointer_value())?.into()
+            }
             Type::Dyn(_) => {
                 let data = self.builder.build_extract_value(
                     value.into_struct_value(),
                     0,
                     "trace.dyn.data",
                 )?;
-                self.mark(data.into_pointer_value())?;
+                self.builder
+                    .build_insert_value(
+                        value.into_struct_value(),
+                        self.visit(data.into_pointer_value())?,
+                        0,
+                        "trace.dyn",
+                    )?
+                    .into_struct_value()
+                    .into()
             }
             Type::Data(id) => match &self.program.types[id].kind {
                 checked::DataKind::Refined(base) => self.value(*base, value)?,
                 checked::DataKind::Record(fields) => {
+                    let mut updated = value.into_struct_value();
                     for (index, (_, ty)) in fields.iter().enumerate() {
                         if managed(self.program, *ty) {
-                            self.value(
+                            let field = self.value(
                                 *ty,
                                 self.builder.build_extract_value(
-                                    value.into_struct_value(),
+                                    updated,
                                     index as u32,
                                     "trace.field",
                                 )?,
                             )?;
+                            updated = self
+                                .builder
+                                .build_insert_value(updated, field, index as u32, "trace.record")?
+                                .into_struct_value();
                         }
                     }
+                    updated.into()
                 }
                 checked::DataKind::Enum(variants) => {
                     let tag = self
@@ -657,12 +675,19 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
                         .builder
                         .build_extract_value(value.into_struct_value(), 1, "trace.payload")?
                         .into_array_value();
-                    self.enum_words(tag, payload, variants, 0)?;
+                    self.builder
+                        .build_insert_value(
+                            value.into_struct_value(),
+                            self.enum_words(tag, payload, variants, 0)?,
+                            1,
+                            "trace.enum",
+                        )?
+                        .into_struct_value()
+                        .into()
                 }
             },
-            _ => {}
-        }
-        Ok(())
+            _ => value,
+        })
     }
 
     fn enum_words(
@@ -671,7 +696,7 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
         payload: inkwell::values::ArrayValue<'ctx>,
         variants: &[(String, Vec<Type>)],
         offset: usize,
-    ) -> NativeResult<()> {
+    ) -> NativeResult<inkwell::values::ArrayValue<'ctx>> {
         let done = self.context.append_basic_block(self.function, "trace.done");
         let cases = variants
             .iter()
@@ -686,6 +711,10 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
                 )
             })
             .collect::<Vec<_>>();
+        let origin = self
+            .builder
+            .get_insert_block()
+            .ok_or("missing trace block")?;
         self.builder.build_switch(
             tag,
             done,
@@ -699,17 +728,31 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
                 })
                 .collect::<Vec<_>>(),
         )?;
+        let mut incoming = vec![(payload, origin)];
         for (_, fields, block) in cases {
             self.builder.position_at_end(block);
             let mut field_offset = offset;
+            let mut updated = payload;
             for ty in fields {
-                self.words(*ty, payload, field_offset)?;
+                updated = self.words(*ty, updated, field_offset)?;
                 field_offset += value_words(self.program, *ty)?;
             }
+            incoming.push((
+                updated,
+                self.builder
+                    .get_insert_block()
+                    .ok_or("missing trace block")?,
+            ));
             self.builder.build_unconditional_branch(done)?;
         }
         self.builder.position_at_end(done);
-        Ok(())
+        let phi = self
+            .builder
+            .build_phi(payload.get_type(), "trace.payload.updated")?;
+        for (value, block) in &incoming {
+            phi.add_incoming(&[(value, *block)]);
+        }
+        Ok(phi.as_basic_value().into_array_value())
     }
 
     fn words(
@@ -717,39 +760,48 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
         ty: Type,
         payload: inkwell::values::ArrayValue<'ctx>,
         offset: usize,
-    ) -> NativeResult<()> {
-        match ty {
+    ) -> NativeResult<inkwell::values::ArrayValue<'ctx>> {
+        Ok(match ty {
             Type::Text | Type::Bytes | Type::List(_) | Type::Dyn(_) => {
                 let word = self
                     .builder
                     .build_extract_value(payload, offset as u32, "trace.word")?
                     .into_int_value();
-                self.mark(self.builder.build_int_to_ptr(
+                let pointer = self.visit(self.builder.build_int_to_ptr(
                     word,
                     self.context.ptr_type(AddressSpace::default()),
                     "trace.pointer",
                 )?)?;
+                let word = self.builder.build_ptr_to_int(
+                    pointer,
+                    self.context.i64_type(),
+                    "trace.word.updated",
+                )?;
+                self.builder
+                    .build_insert_value(payload, word, offset as u32, "trace.payload.word")?
+                    .into_array_value()
             }
             Type::Data(id) => match &self.program.types[id].kind {
                 checked::DataKind::Refined(base) => self.words(*base, payload, offset)?,
                 checked::DataKind::Record(fields) => {
                     let mut offset = offset;
+                    let mut updated = payload;
                     for (_, ty) in fields {
-                        self.words(*ty, payload, offset)?;
+                        updated = self.words(*ty, updated, offset)?;
                         offset += value_words(self.program, *ty)?;
                     }
+                    updated
                 }
                 checked::DataKind::Enum(variants) => {
                     let tag = self
                         .builder
                         .build_extract_value(payload, offset as u32, "trace.nested.tag")?
                         .into_int_value();
-                    self.enum_words(tag, payload, variants, offset + 1)?;
+                    self.enum_words(tag, payload, variants, offset + 1)?
                 }
             },
-            _ => {}
-        }
-        Ok(())
+            _ => payload,
+        })
     }
 }
 

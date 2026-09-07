@@ -171,6 +171,12 @@ ordinary checked code, preserving LIFO order and saved result values. Fault
 unwinding, `scoped`/`MustScope` and async cancellation still require implementation;
 this is not the complete resource-cleanup gate.
 
+Stop-the-world copying GC now rewrites precise typed roots and object fields,
+preserving shared aliases, cycles and allocation-crossing expression snapshots.
+Nonallocating functions remain root-free and collection adds no per-access
+barrier. This completes moving-memory support for the current native layouts,
+not precise local liveness, concurrent execution, Tasks or resource unwinding.
+
 The early syntax portion of the
 [compiler-library gate](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)
 now has native evidence: an independent [user package](compiler/examples/syntax/main.loom)
