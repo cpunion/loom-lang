@@ -58,8 +58,8 @@ and publishes `target/loom`. On macOS/Linux, a cold build starts with the frozen
 Rust seed in `compiler/bootstrap/seed`, then builds the ordered Loom source
 commits in `compiler/bootstrap/checkpoints`. Each checkpoint implements a
 capability before the next compiler uses it: native Float before evaluator
-storage, function values before higher-order `std.list`, and byte primitives
-before the public binary I/O wrappers. These immutable inputs are
+storage, function values before higher-order `std.list`, and native byte/process
+primitives before their public I/O wrappers. These immutable inputs are
 cached in `target/bootstrap/<commit>/`; no preinstalled Loom compiler is required.
 Pinned commits must be available in Git history; the script reports an exact
 fetch command when one is missing. The cache is disposable, not another
@@ -295,6 +295,15 @@ timings; local variables remain conservatively rooted for the function.
   process invocation without a shell, with optional stdin input. Filesystem
   path and directory operations support source package loading. Native entry
   initializes argument access only when the emitted program needs it.
+- `std.process.capture(arguments)` supplies stdin EOF and concurrently buffers
+  binary stdout/stderr. `Result.Ok(Output)` preserves both streams for nonzero
+  exits too; `Output.status` is `ExitStatus.Exited(code)` or `Terminated` when
+  the platform supplies no exit code (for example, a Unix signal). Empty argv
+  and spawn/read failures return `SpawnError`. Each result owns fresh buffers;
+  capture does not echo them into diagnostics, impose a timeout, or define an
+  ordering between streams. It buffers complete output, not a streaming API.
+  `run`/`run_input` retain inherited output and report no-exit-code termination
+  as `SpawnError.Terminated`.
 - `std.bytes.get/set` index shared buffers with bounds checks and unsigned
   byte values (0–255). Both work at compile time; `to_text` still takes an
   isolated, validated UTF-8 copy. `std.file.read_bytes/write_bytes` preserve

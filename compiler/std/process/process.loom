@@ -1,14 +1,18 @@
 import std.list.new
 import std.list.push
 import std.result.Result
+import std.bytes.new
 
 intrinsic fn arg_count() Int
 intrinsic fn arg_text(index Int) Text
 intrinsic fn process_run(arguments List[Text]) Int
 intrinsic fn process_run_input(arguments List[Text], input Text) Int
+intrinsic fn process_capture(arguments List[Text], stdout Bytes, stderr Bytes) Int
 intrinsic fn exit(code Int)
 
 pub enum SpawnError { EmptyArguments Failed Terminated }
+pub enum ExitStatus { Exited(Int) Terminated }
+pub record Output { status ExitStatus stdout Bytes stderr Bytes }
 
 fn outcome(status Int) Result[Int, SpawnError] {
     if status == -2 { return Result.Err(SpawnError.EmptyArguments) }
@@ -24,6 +28,16 @@ pub fn run(arguments List[Text]) Result[Int, SpawnError] { outcome(process_run(a
 // Writes input to the child's stdin, closes it, then waits for the exit status.
 pub fn run_input(arguments List[Text], input Text) Result[Int, SpawnError] {
     outcome(process_run_input(arguments, input))
+}
+
+// Stdin is closed. Both streams are drained concurrently into fresh binary
+// buffers; nonzero exits and termination without an exit code preserve output.
+pub fn capture(arguments List[Text]) Result[Output, SpawnError] {
+    let stdout = std.bytes.new()
+    let stderr = std.bytes.new()
+    let code = process_capture(arguments, stdout, stderr)
+    let status = if code == -3 { ExitStatus.Terminated } else { ExitStatus.Exited(outcome(code)?) }
+    Result.Ok(Output { status = status stdout = stdout stderr = stderr })
 }
 
 // Includes the executable at index 0; values are immutable UTF-8 copies.

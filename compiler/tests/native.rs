@@ -153,6 +153,154 @@ fn source_process_run_preserves_arguments_and_nonzero_exit_codes() {
     assert!(!parent.path().join("MUST_NOT_EXIST").exists());
 }
 
+#[test]
+fn source_process_capture_preserves_binary_streams_and_exit_status() {
+    let literal = "spaces ; $HOME $(touch MUST_NOT_EXIST) \"quotes\" \\backslash 🧵";
+    let child = source(&format!(
+        r#"
+import std.process.arguments
+import std.process.exit_code
+import std.list.get
+import std.list.length
+import std.text.concat
+import std.io.write_text
+import std.io.write_error
+fn main() {{
+    let args = arguments()
+    assert length(args) == 3
+    assert get(args, 1) == {literal:?}
+    if get(args, 2) == "empty" {{ exit_code(0) }}
+    assert get(args, 2) == "full"
+    var stdout = "out\0雪🙂"
+    var stderr = "err\0雪🙂"
+    var count = 0
+    while count < 15 {{
+        stdout = concat(stdout, stdout)
+        stderr = concat(stderr, stderr)
+        count = count + 1
+    }}
+    discard write_text(stdout)
+    discard write_error(stderr)
+    exit_code(7)
+}}
+"#,
+    ));
+    let artifact = common::executable(child.path(), "captured child");
+    success(&loom(&[
+        "build",
+        path(child.path()),
+        "--output",
+        path(&artifact),
+    ]));
+    let parent = source(&format!(
+        r#"
+import std.process.capture
+import std.process.ExitStatus
+import std.list.new
+import std.list.push
+import std.list.set
+import std.bytes.length
+import std.bytes.push
+import std.bytes.to_text
+import std.text.concat
+import std.result.Result
+fn repeated(value Text) Text {{
+    var text = value
+    var count = 0
+    while count < 15 {{ text = concat(text, text)
+        count = count + 1 }}
+    text
+}}
+fn main() {{
+    let args = new[Text]()
+    std.list.push(args, {:?})
+    std.list.push(args, {literal:?})
+    std.list.push(args, "full")
+    match capture(args) {{
+        Result.Err(_) => {{ assert false }}
+        Result.Ok(output) => {{
+            assert match output.status {{ ExitStatus.Exited(code) => code == 7, _ => false }}
+            assert to_text(output.stdout) == repeated("out\0雪🙂")
+            assert to_text(output.stderr) == repeated("err\0雪🙂")
+            let size = length(output.stdout)
+            set(args, 2, "empty")
+            match capture(args) {{
+                Result.Err(_) => {{ assert false }}
+                Result.Ok(empty) => {{
+                    assert match empty.status {{ ExitStatus.Exited(code) => code == 0, _ => false }}
+                    assert length(empty.stdout) == 0 && length(empty.stderr) == 0
+                    std.bytes.push(empty.stdout, 42)
+                    assert length(empty.stderr) == 0
+                    assert length(output.stdout) == size
+                }}
+            }}
+        }}
+    }}
+}}
+"#,
+        path(&artifact),
+    ));
+    let output = managed(&["run", path(parent.path())], parent.path());
+    success(&output);
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    assert!(!parent.path().join("MUST_NOT_EXIST").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn source_process_capture_keeps_output_when_child_has_no_exit_code() {
+    let child = source(
+        r#"
+import std.io.write_text
+import std.io.write_error
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+fn main() {
+    discard write_text("before out\0🧵")
+    discard write_error("before err\0🧵")
+    let invalid = new()
+    push(invalid, 255)
+    discard to_text(invalid)
+}
+"#,
+    );
+    let artifact = common::executable(child.path(), "terminated child");
+    success(&loom(&[
+        "build",
+        path(child.path()),
+        "--output",
+        path(&artifact),
+    ]));
+    let parent = source(&format!(
+        r#"
+import std.process.capture
+import std.process.ExitStatus
+import std.list.new
+import std.list.push
+import std.bytes.to_text
+import std.text.starts_with
+import std.result.Result
+fn main() {{
+    let args = new[Text]()
+    push(args, {:?})
+    match capture(args) {{
+        Result.Err(_) => {{ assert false }}
+        Result.Ok(output) => {{
+            assert match output.status {{ ExitStatus.Terminated => true, _ => false }}
+            assert to_text(output.stdout) == "before out\0🧵"
+            assert starts_with(to_text(output.stderr), "before err\0🧵")
+        }}
+    }}
+}}
+"#,
+        path(&artifact),
+    ));
+    let output = managed(&["run", path(parent.path())], parent.path());
+    success(&output);
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+}
+
 #[cfg(unix)]
 #[test]
 fn source_process_run_input_closes_stdin_before_waiting() {

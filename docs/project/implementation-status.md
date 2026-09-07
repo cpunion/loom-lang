@@ -141,6 +141,14 @@ and virtual padding avoid copying the input. Known vectors, compile-time results
 and native execution under forced collection agree. This is a hashing library,
 not yet package-lock anchoring or persistent cache verification.
 
+Source `std.process.capture` exposes concurrent binary stdout/stderr capture
+with stdin EOF, literal arguments and preserved output for nonzero or signal
+termination. Worker threads touch only OS pipes and Rust buffers; output copies
+back into precisely rooted Loom Bytes after the child is reaped. Failure cleanup
+handles the direct child, not a process tree. A support checkpoint precedes the
+public intrinsic declaration. This is synchronous tooling groundwork, not an
+async executor, streaming process API or completed Git dependency resolver.
+
 The native toolchain uses Rust 1.88 and LLVM 22. macOS, Linux, and Windows pass
 the [full bootstrap and native gate](https://github.com/cpunion/loom-lang/actions/runs/34022948294).
 Compiler, native integration,
