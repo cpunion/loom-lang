@@ -6,6 +6,9 @@ import std.loom.analysis.expressions_at
 import std.loom.parser.parse
 import std.loom.project.Project
 import std.loom.project.SourceFile
+import std.loom.project.ModuleInstance
+import std.loom.project.Package
+import std.loom.project.PackageImport
 import std.loom.typed.Expr
 import std.loom.source.render
 import std.list.new
@@ -40,9 +43,13 @@ fn inspect() Result[Text, Text] {
         Result.Err(error) => { return Result.Err(render("memory.loom", text, error)) }
     }
     let files = new[SourceFile]()
-    push(files, SourceFile { package = "app" path = "memory.loom" text = text tree = tree
+    push(files, SourceFile { package = 0 path = "memory.loom" text = text tree = tree
         test_only = false trusted_std = false })
-    let project = Project { files = files root = "app" }
+    let modules = new[ModuleInstance]()
+    push(modules, ModuleInstance { name = "app" source = "memory:app" })
+    let packages = new[Package]()
+    push(packages, Package { instance = 0 relative = "" imports = new[PackageImport]() })
+    let project = Project { files = files modules = modules packages = packages root = 0 }
     let analysis = match analyze(project, false) {
         Result.Ok(analysis) => analysis
         Result.Err(failure) => { return Result.Err(render("memory.loom", text, failure.diagnostic)) }
@@ -54,7 +61,7 @@ fn inspect() Result[Text, Text] {
     let generic = get(analysis.program.functions, expression(analysis, text, "identity(7)").index)
     let selected = concat("pick(", concat(type_name(analysis, get(overload.params, 0)), ")"))
     let instance = concat("identity[", concat(type_name(analysis, get(generic.arguments, 0)), "]"))
-    set(files, 0, SourceFile { package = "app" path = "memory.loom" text = concat(text, "\n") tree = tree
+    set(files, 0, SourceFile { package = 0 path = "memory.loom" text = concat(text, "\n") tree = tree
         test_only = false trusted_std = false })
     let stale = if is_current(analysis, project, false) { "false" } else { "true" }
     Result.Ok(concat("local ", concat(type_name(analysis, local.ty), concat("\noverload ", concat(selected,

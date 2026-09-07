@@ -479,16 +479,22 @@ loaded, and only the selected root package contributes tests. Unused dependency
 paths are not opened. Canonical roots are reused, without permitting imported
 directory aliases to rename a package or cross nested module boundaries.
 
-The [module example](examples/modules/app/main.loom) traverses three modules:
+Package identity includes the module instance, not just its declared name.
+Distinct roots with the same name can coexist through separate dependency
+edges, and their nominal types remain distinct. Paths resolving to the same
+canonical root reuse one instance. Display names do not grant access to another
+instance's declarations or make its entry point/tests part of the selected root.
+
+The [module example](examples/modules/app/main.loom) uses two independent `seed`
+instances through separate dependency chains:
 
 ```sh
 target/loom run compiler/examples/modules/app
 target/loom test compiler/examples/modules/app
 ```
 
-This offline slice rejects different roots declaring the same module name until
-instance-qualified identities support multiversion builds. Git/fork sources,
-version resolution, lockfiles and persistent build caching remain later work.
+Git/fork sources, version resolution, lockfiles and persistent build caching
+remain later work.
 Path dependencies are editable source, not content frozen by a lockfile.
 
 ## Function values
@@ -525,8 +531,8 @@ signatures and contracts. Reification schedules the source declaration and its
 type arguments in the destination program, not an evaluation-local function ID.
 The [callback example](examples/callbacks/main.loom) uses source `std.list.map`,
 overloaded callbacks, returned functions, and GC-stressed argument
-ordering. Capturing closures, bound method values and compile-time function
-parameters remain later work.
+ordering. Named compile-time function parameters are also supported; capturing
+closures and bound method values remain later work.
 
 ## Contract boundary
 

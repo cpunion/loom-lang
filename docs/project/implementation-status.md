@@ -18,11 +18,12 @@ specializations reject.
 
 Offline path dependencies now resolve through each module's direct manifest
 entries, including transitive package loading and isolated root tests. The
-[module example](../../compiler/examples/modules/app/main.loom) uses three
-modules without compiler or runtime special cases. Canonical source roots are
-reused; same-name/different-root modules reject until instance-qualified
-multiversion identities are implemented. Git/fork resolution and lockfiles are
-still open, not implicitly supplied by local path loading.
+[module example](../../compiler/examples/modules/app/main.loom) uses separate
+instances of the same-named dependency without compiler or runtime special cases.
+Canonical source roots are reused; distinct roots retain separate package/type
+identities and importer-local visibility. Entry points, test roots and import
+cycles use these identities, not display names. Git/fork resolution, version
+normalization and lockfiles are still open, not supplied by local path loading.
 
 Explicit Int refinement conversions also remove a destination check when the
 source predicate proves its truth and arithmetic definedness. The bounded,

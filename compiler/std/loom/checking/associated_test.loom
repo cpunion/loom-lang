@@ -51,15 +51,15 @@ test fn associated_data_test_evidence_does_not_leak_into_production() {
     let declarations = "concept C { type Item\nfn value(self Self) Self.Item }\nrecord Item {}\nrecord Box[T C] { value T result T.Item }\nfn box[T C](value T) Box[T] { Box { result = value.value() value = value } }\n"
     let files = source_files(declarations)
     let testing = source_file("app", "impl C for Item { type Item = Int\nfn value(self Item) Int { 7 } }\ntest fn check_bound() { let value = box(Item {})\nassert value.result == 7 }", false)
-    push(files, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
-    match bind(files, "app", true) {
+    push(files, TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(fixture_project(files), true) {
         Result.Ok(bound) => match check(bound) { Result.Ok(_) => {}
             Result.Err(_) => { assert false } }
         Result.Err(_) => { assert false }
     }
     let invalid = source_files(concat(declarations, "pub fn production(value Box[Item]) {}"))
-    push(invalid, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
-    match bind(invalid, "app", true) {
+    push(invalid, TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(fixture_project(invalid), true) {
         Result.Ok(bound) => match check(bound) { Result.Err(_) => {}
             Result.Ok(_) => { assert false } }
         Result.Err(_) => { assert false }

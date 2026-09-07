@@ -3,6 +3,10 @@ import std.loom.ast.NodeKind
 import std.loom.ast.same
 import std.loom.project.Project
 import std.loom.project.SourceFile
+import std.loom.project.ModuleInstance
+import std.loom.project.Package
+import std.loom.project.PackageImport
+import std.loom.project.package_label
 import std.loom.project.qualify
 import std.loom.binding.Program
 import std.loom.binding.Failure
@@ -20,7 +24,7 @@ import std.text.concat
 import std.int.to_text
 import std.result.Result
 
-// Results own a detached source/AST snapshot. Treat all result lists as read-only;
+// Results own a detached project/AST snapshot. Treat all result lists as read-only;
 // IDs belong to this analysis, not to later analyses or persistent declarations.
 pub record Analysis { bindings std.loom.binding.Program program std.loom.typed.Program }
 pub record Expression { function Int expression Expr }
@@ -34,31 +38,75 @@ fn copy_node(node Node) Node {
     }
     Node { kind = node.kind value = node.value span = node.span children = children }
 }
-fn snapshot(project Project) List[SourceFile] {
-    let files = new[SourceFile]()
+fn snapshot(project Project) Project {
+    let modules = new[ModuleInstance]()
     var index = 0
+    while index < length(project.modules) {
+        push(modules, get(project.modules, index))
+        index = index + 1
+    }
+    let packages = new[Package]()
+    index = 0
+    while index < length(project.packages) {
+        let package = get(project.packages, index)
+        let imports = new[PackageImport]()
+        var edge = 0
+        while edge < length(package.imports) {
+            push(imports, get(package.imports, edge))
+            edge = edge + 1
+        }
+        push(packages, Package { instance = package.instance relative = package.relative imports = imports })
+        index = index + 1
+    }
+    let files = new[SourceFile]()
+    index = 0
     while index < length(project.files) {
         let file = get(project.files, index)
         push(files, SourceFile { package = file.package path = file.path text = file.text
             tree = copy_node(file.tree) test_only = file.test_only trusted_std = file.trusted_std })
         index = index + 1
     }
-    files
+    Project { files = files modules = modules packages = packages root = project.root }
 }
 
 // Uses the compiler's binding, typing and proof checks, without a CLI or backend.
 pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
-    let bindings = bind(snapshot(project), project.root, tests)?
+    let bindings = bind(snapshot(project), tests)?
     Result.Ok(Analysis { bindings = bindings program = check(bindings)? })
 }
 
 // This checks the supplied project, not the filesystem. Reload first to detect
-// disk edits. Comparing ASTs as well as text also detects in-memory tree edits.
+// disk edits. Module origins and resolved edges are part of the basis, as are
+// in-memory AST edits even when the source text is unchanged.
 pub fn is_current(analysis Analysis, project Project, tests Bool) Bool {
     let saved = analysis.bindings
     if saved.root != project.root || saved.tests != tests ||
+        length(saved.modules) != length(project.modules) ||
+        length(saved.packages) != length(project.packages) ||
         length(saved.files) != length(project.files) { return false }
     var index = 0
+    while index < length(saved.modules) {
+        let left = get(saved.modules, index)
+        let right = get(project.modules, index)
+        if left.name != right.name || left.source != right.source { return false }
+        index = index + 1
+    }
+    index = 0
+    while index < length(saved.packages) {
+        let left = get(saved.packages, index)
+        let right = get(project.packages, index)
+        if left.instance != right.instance || left.relative != right.relative ||
+            length(left.imports) != length(right.imports) { return false }
+        var edge = 0
+        while edge < length(left.imports) {
+            let left_edge = get(left.imports, edge)
+            let right_edge = get(right.imports, edge)
+            if left_edge.spelling != right_edge.spelling || left_edge.target != right_edge.target { return false }
+            edge = edge + 1
+        }
+        index = index + 1
+    }
+    index = 0
     while index < length(saved.files) {
         let left = get(saved.files, index)
         let right = get(project.files, index)
@@ -83,7 +131,9 @@ pub fn type_name(analysis Analysis, ty Int) Text {
     if value.kind == TypeKind.Dyn {
         let interface = get(analysis.program.interfaces, value.symbol)
         let symbol = get(analysis.bindings.symbols, interface.symbol)
-        var label = concat("dyn ", qualify(get(analysis.bindings.files, symbol.file).package, symbol.name))
+        let package = package_label(analysis.bindings.modules, analysis.bindings.packages,
+            get(analysis.bindings.files, symbol.file).package)
+        var label = concat("dyn ", qualify(package, symbol.name))
         if length(value.arguments) == 0 { return label }
         label = concat(label, "[")
         var index = 0
@@ -116,7 +166,9 @@ pub fn type_name(analysis Analysis, ty Int) Text {
     if value.kind == TypeKind.Associated {
         let member = get(analysis.bindings.symbols, value.symbol)
         let capability = get(analysis.bindings.symbols, member.owner)
-        let owner = qualify(get(analysis.bindings.files, capability.file).package, capability.name)
+        let package = package_label(analysis.bindings.modules, analysis.bindings.packages,
+            get(analysis.bindings.files, capability.file).package)
+        let owner = qualify(package, capability.name)
         return concat(type_name(analysis, get(value.arguments, 0)), concat(".", qualify(owner, member.name)))
     }
     if value.kind == TypeKind.Tuple {
@@ -133,7 +185,9 @@ pub fn type_name(analysis Analysis, ty Int) Text {
     var label = "List"
     if value.kind != TypeKind.List {
         let symbol = get(analysis.bindings.symbols, value.symbol)
-        label = qualify(get(analysis.bindings.files, symbol.file).package, symbol.name)
+        let package = package_label(analysis.bindings.modules, analysis.bindings.packages,
+            get(analysis.bindings.files, symbol.file).package)
+        label = qualify(package, symbol.name)
     }
     if length(value.arguments) > 0 {
         label = concat(label, "[")

@@ -46,7 +46,7 @@ fn dependency_visibility_and_module_identity_follow_the_declaring_manifest() {
         "app/loom.toml",
         "[module]\nname='app'\n[dependencies.codec]\npath='../codec'\n[dependencies.other]\npath='../other'\n[dependencies.unused]\npath='../not-present'\n",
     );
-    let main = "import codec.answer\nimport other.answer\nfn main() { assert codec.answer() == 42 && other.answer() == 42 }";
+    let main = "import codec.answer\nimport codec.token\nimport other.answer\nimport other.consume\nfn main() { assert codec.answer() == 42 && other.answer() == 42\nassert consume(token()) == 42 }";
     write(root, "app/main.loom", main);
     write(root, "app/main_test.loom", "test fn app_test() { main() }");
     write(
@@ -57,7 +57,7 @@ fn dependency_visibility_and_module_identity_follow_the_declaring_manifest() {
     write(
         root,
         "codec/main.loom",
-        "import seed.value\npub fn answer() Int { value() }\ntest fn embedded() { assert false }",
+        "import seed.value\nimport seed.Token\npub fn answer() Int { value() }\npub fn token() Token { Token { value = 42 } }\ntest fn embedded() { assert false }",
     );
     write(
         root,
@@ -72,10 +72,14 @@ fn dependency_visibility_and_module_identity_follow_the_declaring_manifest() {
     write(
         root,
         "other/main.loom",
-        "import seed.value\npub fn answer() Int { value() }",
+        "import seed.value\nimport seed.Token\npub fn answer() Int { value() }\npub fn consume(value Token) Int { value.value }",
     );
     write(root, "seed/loom.toml", "[module]\nname='seed'\n");
-    write(root, "seed/main.loom", "pub fn value() Int { 42 }");
+    write(
+        root,
+        "seed/main.loom",
+        "pub record Token { value Int }\npub fn value() Int { 42 }",
+    );
     let package = root.join("app");
     let package = package.to_str().unwrap();
     success(&loom(&["run", package]));
@@ -93,16 +97,87 @@ fn dependency_visibility_and_module_identity_follow_the_declaring_manifest() {
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("seed"));
 
-    // Distinct roots with the same declared name must not silently share scope.
-    write(root, "app/main.loom", main);
+    // Distinct instances coexist, but equal names/layouts do not unify types.
+    write(
+        root,
+        "app/main.loom",
+        "import codec.answer\nimport other.answer\nfn main() { assert codec.answer() == 42 && other.answer() == 99 }",
+    );
     write(
         root,
         "other/loom.toml",
         "[module]\nname='other'\n[dependencies.seed]\npath='../alternate'\n",
     );
     write(root, "alternate/loom.toml", "[module]\nname='seed'\n");
-    write(root, "alternate/main.loom", "pub fn value() Int { 99 }");
+    write(
+        root,
+        "alternate/main.loom",
+        "pub record Token { value Int }\npub fn value() Int { 99 }",
+    );
+    success(&loom(&["run", package]));
+    write(root, "app/main.loom", main);
     let output = loom(&["check", package]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("seed"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("type does not match"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn selected_root_identity_does_not_leak_through_a_same_named_dependency() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    write(
+        root,
+        "app/loom.toml",
+        "[module]\nname='app'\n[dependencies.other]\npath='../other'\n",
+    );
+    write(
+        root,
+        "app/main.loom",
+        "import other.answer\nfn main() { assert answer() == 7 }\ntest fn selected() { main() }",
+    );
+    write(
+        root,
+        "other/loom.toml",
+        "[module]\nname='other'\n[dependencies.app]\npath='../nested'\n",
+    );
+    write(
+        root,
+        "other/main.loom",
+        "import app.value\npub fn answer() Int { value() }",
+    );
+    write(root, "nested/loom.toml", "[module]\nname='app'\n");
+    write(
+        root,
+        "nested/main.loom",
+        "pub fn value() Int { 7 }\nfn main() { assert false }\ntest fn excluded() { assert false }",
+    );
+    write(
+        root,
+        "nested/main_test.loom",
+        "test fn excluded_file() { assert false }",
+    );
+    let package = root.join("app");
+    let package = package.to_str().unwrap();
+    success(&loom(&["run", package]));
+    let output = loom(&["test", package]);
+    success(&output);
+    assert_eq!(output.stdout, b"1 tests passed\n");
+
+    // Only the nested app imports other, producing a real instance cycle.
+    write(
+        root,
+        "nested/loom.toml",
+        "[module]\nname='app'\n[dependencies.other]\npath='../other'\n",
+    );
+    write(
+        root,
+        "nested/main.loom",
+        "import other.answer\npub fn value() Int { answer() }",
+    );
+    let output = loom(&["check", package]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cycle"));
 }

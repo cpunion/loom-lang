@@ -14,23 +14,76 @@ import std.file.read_text
 import std.result.Result
 
 pub record SourceFile {
-    package Text
+    package Int
     path Text
     text Text
     tree Node
     test_only Bool
     trusted_std Bool
 }
-// A deterministic selected-package/import closure, not the entire repository.
-// File indices belong to this result and may change after a new load.
-pub record Project { files List[SourceFile] root Text }
+pub record ModuleInstance { name Text source Text }
+pub record PackageImport { spelling Text target Int }
+pub record Package { instance Int relative Text imports List[PackageImport] }
+// IDs belong to this selected-package closure, not to persistent source history.
+// A package is an instance plus a relative directory; names are display syntax.
+pub record Project { files List[SourceFile] modules List[ModuleInstance] packages List[Package] root Int }
 record ModuleRoot { name Text base Text dependencies List[Dependency] }
 record Loader {
     files List[SourceFile]
     modules List[ModuleRoot]
+    packages List[Package]
     std_root Text
-    active List[Text]
-    complete List[Text]
+    active List[Int]
+    complete List[Int]
+}
+
+pub fn package_label(modules List[ModuleInstance], packages List[Package], id Int) Text {
+    let current = get(packages, id)
+    let name = get(modules, current.instance).name
+    if current.relative == "" { name } else { qualify(name, current.relative) }
+}
+pub fn import_target(modules List[ModuleInstance], packages List[Package], owner Int, spelling Text) Int {
+    if package_label(modules, packages, owner) == spelling { return owner }
+    let imports = get(packages, owner).imports
+    var index = 0
+    while index < length(imports) {
+        let edge = get(imports, index)
+        if edge.spelling == spelling { return edge.target }
+        index = index + 1
+    }
+    -1
+}
+fn registered_package(loader Loader, owner Int, directory Text) Result[Int, Text] {
+    let relative = package_name(directory, get(loader.modules, owner).base, "")?
+    var index = 0
+    while index < length(loader.packages) {
+        let current = get(loader.packages, index)
+        if current.instance == owner && current.relative == relative { return Result.Ok(index) }
+        index = index + 1
+    }
+    push(loader.packages, Package { instance = owner relative = relative imports = new[PackageImport]() })
+    Result.Ok(index)
+}
+fn package_seen(values List[Int], id Int, limit Int) Bool {
+    var index = 0
+    while index < limit {
+        if get(values, index) == id { return true }
+        index = index + 1
+    }
+    false
+}
+fn imported_package(loader Loader, source Int, spelling Text) Result[(Int, Text), Text] {
+    let current = get(loader.packages, source)
+    let owner = imported_module(loader, current.instance, get(parts(spelling, 46), 0))?
+    let directory = import_directory(loader, owner, spelling)?
+    let target = registered_package(loader, owner, directory)?
+    var index = 0
+    while index < length(current.imports) {
+        if get(current.imports, index).spelling == spelling { return Result.Ok((target, directory)) }
+        index = index + 1
+    }
+    push(current.imports, PackageImport { spelling = spelling target = target })
+    Result.Ok((target, directory))
 }
 
 fn is_file(path Text) Bool {
@@ -113,12 +166,16 @@ fn production(tree Node, tests Bool) Node {
     }
     Node { kind = tree.kind value = tree.value span = tree.span children = children }
 }
-fn visit(loader Loader, owner Int, package Text, directory Text, tests Bool, depth Int) Result[Bool, Text] {
-    if contains(loader.active, package, depth) {
+fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int) Result[Bool, Text] {
+    let current = get(loader.packages, id)
+    let owner = current.instance
+    let module_name = get(loader.modules, owner).name
+    let package = if current.relative == "" { module_name } else { qualify(module_name, current.relative) }
+    if package_seen(loader.active, id, depth) {
         return Result.Err(concat("package import cycle through ", package))
     }
-    if contains(loader.complete, package, length(loader.complete)) { return Result.Ok(true) }
-    if depth == length(loader.active) { push(loader.active, package) } else { set(loader.active, depth, package) }
+    if package_seen(loader.complete, id, length(loader.complete)) { return Result.Ok(true) }
+    if depth == length(loader.active) { push(loader.active, id) } else { set(loader.active, depth, id) }
     let names = match entries(directory) {
         Result.Ok(value) => value
         Result.Err(_) => { return Result.Err(concat(directory, ": cannot read directory")) }
@@ -153,7 +210,7 @@ fn visit(loader Loader, owner Int, package Text, directory Text, tests Bool, dep
             }
             let resolved = canonical(path)?
             push(loader.files, SourceFile {
-                package = package path = path text = text tree = tree
+                package = id path = path text = text tree = tree
                 test_only = test_only trusted_std = inside(resolved, loader.std_root)
             })
             count = count + 1
@@ -164,18 +221,18 @@ fn visit(loader Loader, owner Int, package Text, directory Text, tests Bool, dep
     index = 0
     while index < length(imports) {
         let target = get(imports, index)
-        let module = imported_module(loader, owner, get(parts(target, 46), 0))?
-        discard visit(loader, module, target, import_directory(loader, module, target)?, false, depth + 1)?
+        let target_id, target_directory = imported_package(loader, id, target)?
+        discard visit(loader, target_id, target_directory, false, depth + 1)?
         index = index + 1
     }
-    push(loader.complete, package)
+    push(loader.complete, id)
     // Tests extend a completed production package, not its import graph. Their
     // dependencies may import that package, but still cannot cycle themselves.
     index = 0
     while index < length(test_imports) {
         let target = get(test_imports, index)
-        let module = imported_module(loader, owner, get(parts(target, 46), 0))?
-        discard visit(loader, module, target, import_directory(loader, module, target)?, false, 0)?
+        let target_id, target_directory = imported_package(loader, id, target)?
+        discard visit(loader, target_id, target_directory, false, 0)?
         index = index + 1
     }
     Result.Ok(true)
@@ -195,14 +252,21 @@ pub fn load(path Text, std_root Text, tests Bool) Result[Project, Text] {
     let module = if discovered.name == "" && inside(directory, standard) {
         ModuleRoot { name = "std" base = standard dependencies = new[Dependency]() }
     } else { discovered }
-    let root = if module.name != "" { package_name(directory, module.base, module.name)? } else { "" }
     let files = new[SourceFile]()
     let loader = Loader {
-        files = files modules = new[ModuleRoot]() std_root = standard
-        active = new[Text]() complete = new[Text]()
+        files = files modules = new[ModuleRoot]() packages = new[Package]() std_root = standard
+        active = new[Int]() complete = new[Int]()
     }
     discard register_module(loader, ModuleRoot { name = "std" base = standard dependencies = new[Dependency]() })?
     let owner = register_module(loader, module)?
-    discard visit(loader, owner, root, directory, tests, 0)?
-    Result.Ok(Project { files = files root = root })
+    let root = registered_package(loader, owner, directory)?
+    discard visit(loader, root, directory, tests, 0)?
+    let modules = new[ModuleInstance]()
+    var index = 0
+    while index < length(loader.modules) {
+        let module = get(loader.modules, index)
+        push(modules, ModuleInstance { name = module.name source = module.base })
+        index = index + 1
+    }
+    Result.Ok(Project { files = files modules = modules packages = loader.packages root = root })
 }

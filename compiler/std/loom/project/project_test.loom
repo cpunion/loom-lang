@@ -62,9 +62,9 @@ test fn test_dependencies_can_import_the_completed_production_package() {
     let project = match load("compiler/std/list", "compiler/std", true) {
         Result.Ok(value) => value
         Result.Err(_) => { assert false
-            Project { files = new[SourceFile]() root = "" } }
+            Project { files = new[SourceFile]() modules = new[ModuleInstance]() packages = new[Package]() root = -1 } }
     }
-    assert project.root == "std.list"
+    assert package_label(project.modules, project.packages, project.root) == "std.list"
     var root_tests = false
     var text_loaded = false
     var index = 0
@@ -80,7 +80,7 @@ test fn test_dependencies_can_import_the_completed_production_package() {
                 item = item + 1
             }
         }
-        if file.package == "std.text" { text_loaded = true }
+        if package_label(project.modules, project.packages, file.package) == "std.text" { text_loaded = true }
         index = index + 1
     }
     assert root_tests && text_loaded
@@ -88,24 +88,26 @@ test fn test_dependencies_can_import_the_completed_production_package() {
 
 test fn production_cycles_still_reject_before_loading_files() {
     let loader = Loader {
-        files = new[SourceFile]() modules = new[ModuleRoot]()
-        std_root = "" active = new[Text]() complete = new[Text]()
+        files = new[SourceFile]() modules = new[ModuleRoot]() packages = new[Package]()
+        std_root = "" active = new[Int]() complete = new[Int]()
     }
-    push(loader.active, "app")
-    assert match visit(loader, 0, "app", "not-read", false, 1) {
+    push(loader.modules, ModuleRoot { name = "app" base = "/app" dependencies = new[Dependency]() })
+    push(loader.packages, Package { instance = 0 relative = "" imports = new[PackageImport]() })
+    push(loader.active, 0)
+    assert match visit(loader, 0, "not-read", false, 1) {
         Result.Err(message) => message == "package import cycle through app"
         Result.Ok(_) => false
     }
-    push(loader.complete, "app")
-    assert match visit(loader, 0, "app", "not-read", false, 0) {
+    push(loader.complete, 0)
+    assert match visit(loader, 0, "not-read", false, 0) {
         Result.Ok(_) => true
         Result.Err(_) => false
     }
 }
 
-test fn module_roots_reuse_identity_and_reject_name_collisions() {
-    let loader = Loader { files = new[SourceFile]() modules = new[ModuleRoot]()
-        std_root = "/std" active = new[Text]() complete = new[Text]() }
+test fn module_roots_reuse_identity_independently_of_display_names() {
+    let loader = Loader { files = new[SourceFile]() modules = new[ModuleRoot]() packages = new[Package]()
+        std_root = "/std" active = new[Int]() complete = new[Int]() }
     let standard = ModuleRoot { name = "std" base = "/std" dependencies = new[Dependency]() }
     let app = ModuleRoot { name = "app" base = "/app" dependencies = new[Dependency]() }
     let codec = ModuleRoot { name = "codec" base = "/codec" dependencies = new[Dependency]() }
@@ -115,7 +117,7 @@ test fn module_roots_reuse_identity_and_reject_name_collisions() {
     assert match register_module(loader, codec) { Result.Ok(index) => index == 2, Result.Err(_) => false }
     assert length(loader.modules) == 3
     assert match register_module(loader, ModuleRoot { name = "codec" base = "/fork" dependencies = new[Dependency]() }) {
-        Result.Err(_) => true, Result.Ok(_) => false }
+        Result.Ok(index) => index == 3, Result.Err(_) => false }
     assert match register_module(loader, ModuleRoot { name = "renamed" base = "/codec" dependencies = new[Dependency]() }) {
         Result.Err(_) => true, Result.Ok(_) => false }
     assert match imported_module(loader, 1, "app") { Result.Ok(index) => index == 1, Result.Err(_) => false }
@@ -124,4 +126,10 @@ test fn module_roots_reuse_identity_and_reject_name_collisions() {
     assert match imported_module(loader, 1, "codec") {
         Result.Err(message) => message == "module is not a declared direct dependency: codec"
         Result.Ok(_) => false }
+    let first = match registered_package(loader, 2, "/codec/parser") { Result.Ok(index) => index, Result.Err(_) => -1 }
+    let second = match registered_package(loader, 3, "/fork/parser") { Result.Ok(index) => index, Result.Err(_) => -1 }
+    assert first >= 0 && second >= 0 && first != second
+    assert match registered_package(loader, 2, "/codec/parser") { Result.Ok(index) => index == first, Result.Err(_) => false }
+    push(loader.active, first)
+    assert !package_seen(loader.active, second, 1)
 }

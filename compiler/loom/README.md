@@ -96,15 +96,21 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
   name/version metadata and `dependencies List[Dependency]` (`name`, `path`). It
   parses the supported manifest subset, not general TOML or source resolution.
 - `std.loom.project.load(path, std_root, tests)` returns `Result[Project, Text]`.
-  `Project` contains `files List[SourceFile]` and a root package name. It reads
+  `Project` contains files, module instances, packages and a root package ID. It reads
   the selected directory package and its import closure, not the whole
   repository. Only the selected root contributes tests when requested.
   Manifest-relative path dependencies resolve from each importing module's
   direct entries. Canonical roots are reused; distinct roots with the same name
-  reject until module-instance identities support multiversion builds.
-- `std.loom.binding.bind(files, root, tests)` returns `Result[Program, Failure]`
+  keep separate package and nominal type identities.
+- `std.loom.binding.bind(project, tests)` returns `Result[Program, Failure]`
   after declaration/import validation. Inspect `Program.symbols` for
   declarations; `Failure.source` identifies the input file for its diagnostic.
+
+`SourceFile.package` indexes the project's package table. Each package records
+its module instance, relative directory and resolved import edges. Module source
+identities are canonical roots for path dependencies. `package_label` provides
+display names, not unique identifiers. In-memory consumers can construct the
+same graph without loading files; these IDs belong to that project basis.
 
 Package identities follow directories. Root and `std` paths are canonicalized;
 imported directory symlink aliases that change package identity are rejected.
@@ -158,10 +164,10 @@ target/loom test compiler/examples/semantic
 target/loom run compiler/examples/semantic
 ```
 
-`Analysis` owns a detached source/AST snapshot; treat its returned lists as
-read-only. `is_current` compares the supplied project's metadata, text, and AST,
-not the disk: reload first to detect filesystem changes. These are result-local
-indices, not persistent identities or an incremental cache.
+`Analysis` owns a detached project/AST snapshot; treat its returned lists as
+read-only. `is_current` compares module origins, package/import edges, file
+metadata, text and AST, not the disk: reload first to detect filesystem changes.
+These are result-local indices, not persistent identities or an incremental cache.
 
 Query offsets are half-open UTF-8 byte offsets. Equal spans prefer the outer
 resolved expression, including field selections and coercions. A call's index

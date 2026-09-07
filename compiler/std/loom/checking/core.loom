@@ -5,6 +5,7 @@ import std.loom.binding.candidates
 import std.loom.ast.has
 import std.loom.project.name
 import std.loom.project.package
+import std.loom.project.package_label
 import std.loom.source.Diagnostic
 import std.loom.ast.Node
 import std.loom.ast.NodeKind

@@ -1,6 +1,7 @@
 import std.loom.project.load
 import std.loom.project.Project
 import std.loom.project.qualify
+import std.loom.project.package_label
 import std.loom.binding.bind
 import std.loom.binding.Program
 import std.loom.binding.candidates
@@ -19,7 +20,7 @@ import std.process.exit_code
 import std.result.Result
 
 fn analyze(project Project, tests Bool) Result[Program, Text] {
-    match bind(project.files, project.root, tests) {
+    match bind(project, tests) {
         Result.Ok(program) => Result.Ok(program)
         Result.Err(failure) => {
             let source = get(project.files, failure.source)
@@ -31,7 +32,7 @@ fn analyze(project Project, tests Bool) Result[Program, Text] {
 // Binding supplies declarations and visible overload candidates, not checked
 // expression types or the selected overload of a call.
 fn describe(program Program) Text {
-    let header = concat("package ", concat(program.root, "\nselected files "))
+    let header = concat("package ", concat(package_label(program.modules, program.packages, program.root), "\nselected files "))
     var summary = concat(header, concat(to_text(length(program.files)), "\n"))
     var index = 0
     while index < length(program.symbols) {
@@ -43,7 +44,7 @@ fn describe(program Program) Text {
             let mode = if has(symbol.node, NodeKind.Test) { "test " } else {
                 if symbol.test_only { "test-only " } else { "" }
             }
-            let declaration = concat(visibility, concat(mode, concat(kind, qualify(source.package, symbol.name))))
+            let declaration = concat(visibility, concat(mode, concat(kind, qualify(package_label(program.modules, program.packages, source.package), symbol.name))))
             let location = position(source.text, symbol.node.span.start)
             let at = concat(source.path, concat(":", concat(to_text(location.line), concat(":", to_text(location.column)))))
             let count = length(candidates(program, symbol.file, symbol.test_only, symbol.name))

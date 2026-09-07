@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Separate module/package identity from display names. Same-named path modules
+  coexist with importer-local visibility, distinct nominal types and test roots.
+
 - Add explicit dynamic associated-type bindings, exact boxing checks and generic
   substitution. Reuse native witness representation and sparse reachability.
 

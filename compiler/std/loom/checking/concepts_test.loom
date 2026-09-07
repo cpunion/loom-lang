@@ -55,8 +55,8 @@ test fn implementations_validate_unused_bodies_and_exact_signatures() {
 test fn test_conformance_is_admitted_by_bounds_but_not_production_discovery() {
     let files = source_files("concept C { fn value(self Self) Int }\nrecord Item {}\nfn optional[T](value T) Int { comptime if T implements C { 1 } else { 0 } }\nfn bounded[T C](value T) Int { value.value() }\npub fn production() Int { optional(Item {}) }")
     let testing = source_file("app", "impl C for Item { fn value(self Item) Int { 7 } }\ntest fn check_bound() { assert bounded(Item {}) == 7 }", false)
-    push(files, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
-    let program = match bind(files, "app", true) {
+    push(files, TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    let program = match bind(fixture_project(files), true) {
         Result.Ok(bound) => match check(bound) {
             Result.Ok(program) => program
             Result.Err(_) => { assert false
@@ -82,8 +82,8 @@ test fn test_conformance_is_admitted_by_bounds_but_not_production_discovery() {
     }
     assert production_fallback && bound_dispatch
     let direct = source_files("concept C { fn value(self Self) Int }\nrecord Item {}\npub fn production() Int { (Item {}).value() }")
-    push(direct, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
-    match bind(direct, "app", true) {
+    push(direct, TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(fixture_project(direct), true) {
         Result.Ok(bound) => match check(bound) { Result.Err(_) => {}
             Result.Ok(_) => { assert false } }
         Result.Err(_) => { assert false }

@@ -22,11 +22,6 @@ fn register_module(loader Loader, module ModuleRoot) Result[Int, Text] {
     var index = 0
     while index < length(loader.modules) {
         let previous = get(loader.modules, index)
-        if previous.name == module.name && previous.base != module.base {
-            return Result.Err(concat("multiple source roots for module ", concat(module.name,
-                concat(": ", concat(previous.base, concat(" and ", concat(module.base,
-                    "; distinct instances with the same module name are not supported yet")))))))
-        }
         if previous.base == module.base {
             if previous.name != module.name { return Result.Err("one source root cannot have different module names") }
             return Result.Ok(index)

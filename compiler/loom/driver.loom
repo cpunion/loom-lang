@@ -82,7 +82,7 @@ fn diagnostic(files List[SourceFile], failure Failure) Text {
 }
 fn prepared(options Options) Result[Program, Text] {
     let loaded = load(options.path, options.std_root, options.command == "test")?
-    let bound = match bind(loaded.files, loaded.root, options.command == "test") {
+    let bound = match bind(loaded, options.command == "test") {
         Result.Ok(value) => value
         Result.Err(failure) => { return Result.Err(diagnostic(loaded.files, failure)) }
     }

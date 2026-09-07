@@ -1,4 +1,9 @@
 import std.loom.project.SourceFile
+import std.loom.project.Project
+import std.loom.project.ModuleInstance
+import std.loom.project.Package
+import std.loom.project.PackageImport
+import std.loom.ast.Node
 import std.loom.binding.Failure
 import std.loom.binding.bind
 import std.loom.parser.parse
@@ -11,20 +16,70 @@ import std.list.get
 import std.list.length
 import std.result.Result
 
-fn source_file(package Text, text Text, trusted Bool) SourceFile {
+record TestFile { package Text path Text text Text tree Node test_only Bool trusted_std Bool }
+
+fn source_file(package Text, text Text, trusted Bool) TestFile {
     let tree = match parse(text) {
         Result.Ok(tree) => tree
         Result.Err(_) => { assert false
             source_file(package, "", trusted).tree }
     }
-    SourceFile { package = package path = package text = text tree = tree test_only = false trusted_std = trusted }
+    TestFile { package = package path = package text = text tree = tree test_only = false trusted_std = trusted }
 }
-fn source_files(text Text) List[SourceFile] {
-    let files = new[SourceFile]()
+fn source_files(text Text) List[TestFile] {
+    let files = new[TestFile]()
     push(files, source_file("app", text, false))
     files
 }
-fn checked(files List[SourceFile]) Result[std.loom.typed.Program, Failure] { check(bind(files, "app", false)?) }
+fn fixture_project(inputs List[TestFile]) Project {
+    let modules = new[ModuleInstance]()
+    push(modules, ModuleInstance { name = "app" source = "memory:app" })
+    let packages = new[Package]()
+    push(packages, Package { instance = 0 relative = "" imports = new[PackageImport]() })
+    let names = new[Text]()
+    push(names, "app")
+    let files = new[SourceFile]()
+    var index = 0
+    while index < length(inputs) {
+        let input = get(inputs, index)
+        var package = 0
+        while package < length(names) && get(names, package) != input.package { package = package + 1 }
+        if package == length(names) {
+            let split = first_dot(input.package)
+            let name = slice(input.package, 0, split)
+            let relative = if split < std.text.length(input.package) { slice(input.package, split + 1, std.text.length(input.package)) } else { "" }
+            var instance = 0
+            while instance < length(modules) && get(modules, instance).name != name { instance = instance + 1 }
+            if instance == length(modules) { push(modules, ModuleInstance { name = name source = concat("memory:", name) }) }
+            push(packages, Package { instance = instance relative = relative imports = new[PackageImport]() })
+            push(names, input.package)
+        }
+        push(files, SourceFile { package = package path = input.path text = input.text tree = input.tree
+            test_only = input.test_only trusted_std = input.trusted_std })
+        index = index + 1
+    }
+    index = 0
+    while index < length(files) {
+        let file = get(files, index)
+        let imports = get(packages, file.package).imports
+        var item = 0
+        while item < length(file.tree.children) {
+            let node = get(file.tree.children, item)
+            if node.kind == NodeKind.Import {
+                let spelling = std.loom.project.package(node.value)
+                var target = 0
+                while target < length(names) && get(names, target) != spelling { target = target + 1 }
+                var edge = 0
+                while edge < length(imports) && get(imports, edge).spelling != spelling { edge = edge + 1 }
+                if target < length(names) && edge == length(imports) { push(imports, PackageImport { spelling = spelling target = target }) }
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    Project { files = files modules = modules packages = packages root = 0 }
+}
+fn checked(files List[TestFile]) Result[std.loom.typed.Program, Failure] { check(bind(fixture_project(files), false)?) }
 fn accepted(text Text) std.loom.typed.Program {
     match checked(source_files(text)) {
         Result.Ok(program) => program
@@ -64,13 +119,13 @@ test fn intrinsic_abi_is_checked_before_generic_substitution() {
         }
         Result.Err(_) => { assert false }
     }
-    let invalid = new[SourceFile]()
+    let invalid = new[TestFile]()
     push(invalid, source_file("std.list", "intrinsic fn list_get[T](values List[T], index Int) Int\n", true))
     match checked(invalid) {
         Result.Err(failure) => { assert failure.diagnostic.message == "intrinsic declaration does not match its runtime signature" }
         Result.Ok(_) => { assert false }
     }
-    let unknown = new[SourceFile]()
+    let unknown = new[TestFile]()
     push(unknown, source_file("std.list", "intrinsic fn unknown() Int\n", true))
     match checked(unknown) {
         Result.Err(failure) => { assert failure.diagnostic.message == "unknown private runtime intrinsic" }

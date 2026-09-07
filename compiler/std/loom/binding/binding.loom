@@ -3,6 +3,12 @@ import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.ast.has
 import std.loom.project.SourceFile
+import std.loom.project.Project
+import std.loom.project.ModuleInstance
+import std.loom.project.Package
+import std.loom.project.PackageImport
+import std.loom.project.package_label
+import std.loom.project.import_target
 import std.loom.project.name
 import std.loom.project.package
 import std.loom.project.qualify
@@ -16,13 +22,15 @@ pub record Failure { source Int diagnostic Diagnostic }
 // owner is the enclosing concept/impl symbol, or -1 for a top-level declaration.
 pub record Symbol { file Int node Node name Text public Bool test_only Bool owner Int }
 record Lookup { path Text symbols List[Int] }
-record Scope { package Text production List[Lookup] testing List[Lookup] }
+record Scope { package Int production List[Lookup] testing List[Lookup] }
 // Source-file and symbol indices are local to this binding result. Rebind after
 // editing its input files or trees; the cached scopes are not an editing model.
 pub record Program {
     files List[SourceFile]
+    modules List[ModuleInstance]
+    packages List[Package]
     symbols List[Symbol]
-    root Text
+    root Int
     tests Bool
     scopes List[Scope]
     file_scopes List[Int]
@@ -45,7 +53,7 @@ fn contains(values List[Text], value Text) Bool {
 fn named_type(kind NodeKind) Bool {
     kind == NodeKind.Record || kind == NodeKind.Enum || kind == NodeKind.Refined || kind == NodeKind.Concept
 }
-fn selected(source SourceFile, root Text, tests Bool) Bool {
+fn selected(source SourceFile, root Int, tests Bool) Bool {
     !source.test_only || (tests && source.package == root)
 }
 
@@ -70,19 +78,31 @@ fn add_names(lookups List[Lookup], short Text, path Text, symbol Int) {
 
 // Resolve package-wide imports once. Iterating the symbol table here preserves
 // declaration order, including overloads interleaved across local/imported files.
-fn scope(files List[SourceFile], symbols List[Symbol], paths List[Text], package Text, testing Bool) Scope {
-    let production_imports = new[Text]()
-    let test_imports = new[Text]()
+fn imported_name(imports List[PackageImport], target Int, member Text) Text {
+    var index = 0
+    while index < length(imports) {
+        let item = get(imports, index)
+        if item.target == target && name(item.spelling) == member { return item.spelling }
+        index = index + 1
+    }
+    ""
+}
+fn scope(project Project, symbols List[Symbol], package_id Int, testing Bool) Scope {
+    let files = project.files
+    let production_imports = new[PackageImport]()
+    let test_imports = new[PackageImport]()
     var index = 0
     while index < length(files) {
         let source = get(files, index)
-        if source.package == package && (!source.test_only || testing) {
+        if source.package == package_id && (!source.test_only || testing) {
             var item = 0
             while item < length(source.tree.children) {
                 let node = get(source.tree.children, item)
                 if node.kind == NodeKind.Import {
-                    if source.test_only { push(test_imports, node.value) }
-                    else { push(production_imports, node.value) }
+                    let target = import_target(project.modules, project.packages, package_id, package(node.value))
+                    let edge = PackageImport { spelling = node.value target = target }
+                    if source.test_only { push(test_imports, edge) }
+                    else { push(production_imports, edge) }
                 }
                 item = item + 1
             }
@@ -95,18 +115,20 @@ fn scope(files List[SourceFile], symbols List[Symbol], paths List[Text], package
     while index < length(symbols) {
         let symbol = get(symbols, index)
         let target = get(files, symbol.file).package
-        if symbol.owner < 0 && symbol.node.kind != NodeKind.Impl && (target == package || symbol.public) {
-            let path = get(paths, index)
-            let visible = target == package || contains(production_imports, path)
+        if symbol.owner < 0 && symbol.node.kind != NodeKind.Impl && (target == package_id || symbol.public) {
+            let imported = imported_name(production_imports, target, symbol.name)
+            let test_imported = imported_name(test_imports, target, symbol.name)
+            let path = if target == package_id { qualify(package_label(project.modules, project.packages, target), symbol.name) } else { imported }
+            let visible = target == package_id || imported != ""
             if visible && !symbol.test_only { add_names(production, symbol.name, path, index) }
-            if testing && (visible || contains(test_imports, path)) &&
-                (!symbol.test_only || target == package) {
-                add_names(tests, symbol.name, path, index)
+            if testing && (visible || test_imported != "") &&
+                (!symbol.test_only || target == package_id) {
+                add_names(tests, symbol.name, if visible { path } else { test_imported }, index)
             }
         }
         index = index + 1
     }
-    Scope { package = package production = production testing = tests }
+    Scope { package = package_id production = production testing = tests }
 }
 
 // Lookups return fresh candidate lists; overload selection belongs to typing.
@@ -166,7 +188,8 @@ fn declaration_names(file Int, node Node) Result[Bool, Failure] {
 }
 fn accessible_import(program Program, file Int, path Text) Bool {
     let source = get(program.files, file)
-    let target = package(path)
+    let target = import_target(program.modules, program.packages, source.package, package(path))
+    if target < 0 { return false }
     let short = name(path)
     var index = 0
     while index < length(program.symbols) {
@@ -206,9 +229,10 @@ fn imports(program Program) Result[Bool, Failure] {
 }
 
 // Tests extend only the selected root package; production scopes stay separate.
-pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failure] {
+pub fn bind(project Project, tests Bool) Result[Program, Failure] {
+    let files = project.files
+    let root = project.root
     let symbols = new[Symbol]()
-    let paths = new[Text]()
     var file = 0
     while file < length(files) {
         let source = get(files, file)
@@ -239,7 +263,6 @@ pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failu
                     let owner = length(symbols)
                     push(symbols, Symbol { file = file node = node name = node.value
                         public = has(node, NodeKind.Public) test_only = test_only owner = -1 })
-                    push(paths, qualify(source.package, node.value))
                     if node.kind == NodeKind.Concept || node.kind == NodeKind.Impl {
                         var member = 0
                         while member < length(node.children) {
@@ -250,7 +273,6 @@ pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failu
                                 }
                                 push(symbols, Symbol { file = file node = method name = method.value
                                     public = false test_only = test_only owner = owner })
-                                push(paths, "")
                             }
                             member = member + 1
                         }
@@ -268,11 +290,11 @@ pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failu
         let package = get(files, file).package
         var index = 0
         while index < length(scopes) && get(scopes, index).package != package { index = index + 1 }
-        if index == length(scopes) { push(scopes, scope(files, symbols, paths, package, tests && package == root)) }
+        if index == length(scopes) { push(scopes, scope(project, symbols, package, tests && package == root)) }
         push(file_scopes, index)
         file = file + 1
     }
-    let program = Program { files = files symbols = symbols root = root tests = tests
+    let program = Program { files = files modules = project.modules packages = project.packages symbols = symbols root = root tests = tests
         scopes = scopes file_scopes = file_scopes }
     discard imports(program)?
     Result.Ok(program)
