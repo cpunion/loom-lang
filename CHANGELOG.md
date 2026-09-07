@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Compile typed List/Text/Bytes accesses and buffer push fast paths directly.
+  Finalize linked GC root frames after inlining, protect allocation-crossing
+  snapshots, keep ordinary locals promotable, and reallocate private buffers.
+  Remove obsolete runtime accessors; retain bounds, overflow and shared-data
+  semantics. Record same-session runtime and self-check benchmark comparisons.
+
 - Add static associated types and bounded generic records/enums. Normalize
   projections through explicit evidence, preserve generic declaration choices,
   and infer independent parameters before checking associated arguments.

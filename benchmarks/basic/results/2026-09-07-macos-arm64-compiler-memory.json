@@ -1,0 +1,106 @@
+{
+  "at": "2026-09-07T02:52:00.940Z",
+  "method": "one warmup pair; ten fresh-process samples per compiler; alternating order; same compiler/loom+std source tree; whole check only, no backend or incremental cache",
+  "sourceFiles": 119,
+  "sourceSha256": "c2565cca297f9d57e91800023337b963f050daaac4565de60067d46fc4b7cc15",
+  "results": [
+    {
+      "binary": "target/performance/loom-before-memory",
+      "sha256": "14b637e8c154edc79319221b061ce6108e7829e259fc48d148985fb11903bf83",
+      "medianMs": 489.6219580000002,
+      "madMs": 2.78610449999951,
+      "medianPeakRssBytes": 95387648,
+      "samples": [
+        {
+          "wallMs": 496.7702079999999,
+          "peakRssBytes": 96206848
+        },
+        {
+          "wallMs": 488.685708,
+          "peakRssBytes": 95420416
+        },
+        {
+          "wallMs": 485.7435830000004,
+          "peakRssBytes": 95404032
+        },
+        {
+          "wallMs": 488.74641599999995,
+          "peakRssBytes": 94814208
+        },
+        {
+          "wallMs": 495.68145799999957,
+          "peakRssBytes": 95436800
+        },
+        {
+          "wallMs": 487.9969999999994,
+          "peakRssBytes": 95469568
+        },
+        {
+          "wallMs": 493.7447919999995,
+          "peakRssBytes": 94011392
+        },
+        {
+          "wallMs": 480.51145799999995,
+          "peakRssBytes": 95272960
+        },
+        {
+          "wallMs": 491.3157919999994,
+          "peakRssBytes": 95371264
+        },
+        {
+          "wallMs": 490.4975000000004,
+          "peakRssBytes": 95371264
+        }
+      ]
+    },
+    {
+      "binary": "target/loom",
+      "sha256": "999173ffa660512a984dfd72c384087bed846df24054bb269b90e38e28ba8f98",
+      "medianMs": 245.30277050000007,
+      "madMs": 1.6364160000003949,
+      "medianPeakRssBytes": 93437952,
+      "samples": [
+        {
+          "wallMs": 249.28170799999998,
+          "peakRssBytes": 93601792
+        },
+        {
+          "wallMs": 246.435291,
+          "peakRssBytes": 93962240
+        },
+        {
+          "wallMs": 244.17025000000012,
+          "peakRssBytes": 93437952
+        },
+        {
+          "wallMs": 243.17275000000018,
+          "peakRssBytes": 93437952
+        },
+        {
+          "wallMs": 244.07866600000034,
+          "peakRssBytes": 93421568
+        },
+        {
+          "wallMs": 248.08791699999983,
+          "peakRssBytes": 93061120
+        },
+        {
+          "wallMs": 247.60229100000015,
+          "peakRssBytes": 93503488
+        },
+        {
+          "wallMs": 244.02583400000003,
+          "peakRssBytes": 93470720
+        },
+        {
+          "wallMs": 243.3068749999993,
+          "peakRssBytes": 93405184
+        },
+        {
+          "wallMs": 246.5350840000001,
+          "peakRssBytes": 93356032
+        }
+      ]
+    }
+  ]
+}

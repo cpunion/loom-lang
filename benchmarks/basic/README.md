@@ -13,6 +13,10 @@ BENCH_CC=clang BENCH_RUSTC=rustc node scripts/benchmark-basic.mjs --runs 9
 node scripts/benchmark-basic.mjs --reuse-build --runs 9
 ```
 
+To compare an archived compiler result in the same session, keep its `loom-o3`
+executable and `build.json` together and add `--baseline directory`. The runner
+verifies the binary and matching Loom source hash before adding that variant.
+
 `BENCH_LOOM`, `BENCH_GO`, `BENCH_ZIG` and `LOOM_CC` can also select tools.
 `--quick --runs 1` validates the harness with small inputs, not useful timings.
 Builds and raw reports stay under `target/performance/`. Reuse checks binary
@@ -108,3 +112,45 @@ To inspect the current compiler's IR (not necessarily the archived baseline):
 LOOM_OPT_LEVEL=3 target/loom build benchmarks/basic \
   --output target/basic-inspect --emit-ir target/basic-inspect.ll
 ```
+
+## Managed-memory lowering repair
+
+Measured on the same host on 2026-09-07, after commit `17c4245`. Ten rotated
+rounds include the archived baseline Loom O3 executable alongside all nine
+current variants: each occupies every position once. Inputs and source files
+are unchanged. [Raw samples and both build manifests](results/2026-09-07-macos-arm64-memory.json)
+retain hashes, flags and tool versions. Host timing changed since the first run;
+compare the before/after columns here, not absolute times across sessions.
+
+Milliseconds, median of ten:
+
+| Case | Loom before | Loom O3 now | Change | C O3 | Go | Rust O3 | Zig ReleaseFast |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Integer LCG | 101.626 | 101.579 | -0.0% | 101.031 | 109.080 | 94.530 | 101.584 |
+| Recursive fib | 123.017 | 125.913 | +2.4% | 93.100 | 123.096 | 93.416 | 97.921 |
+| Record value | 80.491 | 74.105 | -7.9% | 77.862 | 68.854 | 77.785 | 91.824 |
+| List build + scan | 308.409 | 77.648 | -74.8% | 71.665 | 108.121 | 68.414 | 75.787 |
+| Function value | 98.597 | 99.021 | +0.4% | 94.501 | 120.513 | 94.705 | 123.630 |
+
+Loom still checks arithmetic and bounds. With integer checks enabled, C/Rust
+fib take 125.319/127.098 ms; their List results are 75.033/71.679 ms.
+Loom's List time is now about 8% above unchecked C and 13% above unchecked Rust,
+not 4.4x. The small fib regression remains visible; this is not an improvement
+in every kernel or a whole-language performance guarantee.
+
+The repair is general: finalize linked stack roots after source inlining, retain
+only allocation-crossing temporary snapshots, and keep ordinary locals separate
+from their GC shadows. Typed List/Text/Bytes accesses no longer cross an opaque
+runtime accessor. Push uses typed stores and calls the runtime only for capacity
+growth; private backing storage can reallocate in place. Obsolete accessor/push
+ABI symbols were removed. Safety checks, shared headers and tracing of initialized
+managed elements remain; this does not implement moving GC or fault unwinding.
+
+A separate ten-pair alternating test checks the same `compiler/loom` and `std`
+sources with the before/after O2 compiler executables. Whole-check median fell
+from 489.622 to 245.303 ms (-49.9%); median peak RSS fell from 91.0 to 89.1 MiB.
+Median absolute deviations were 2.786/1.636 ms.
+[Compiler samples and source/binary hashes](results/2026-09-07-macos-arm64-compiler-memory.json)
+cover this comparison. It measures the native frontend, not LLVM build throughput
+or incremental reuse. Full Rust 1.88 validation and byte-identical bootstrap
+stages 2/3 also pass locally; cross-platform CI remains a separate gate.
