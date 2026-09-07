@@ -20,6 +20,8 @@ test fn default_methods_specialize_without_erasing_overrides_or_associated_types
 }
 
 test fn default_bodies_need_declared_evidence_and_explicit_conformances() {
+    rejects("concept C { fn value(self Self, other Self) Int { 1 }\nfn value(self Self, other Int) Int { 2 } }\nimpl C for Int {}")
+    rejects("concept C { fn value(self Self, other Self) Int { 1 }\nfn value(self Self, other Int) Bool { true } }\nimpl C for Int {}")
     rejects("concept C { fn value(self Self) Int { 1 } }\nfn main() { discard 1.value() }")
     rejects("concept C { fn value(self Self) Int { self.missing() } }")
     rejects("concept C { fn value(self Self) Int { self + 1 } }\nimpl C for Int {}")

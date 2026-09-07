@@ -117,6 +117,14 @@ fn conformances(env Environment) Result[Bool, Failure] {
             var index = 0
             while index < length(expected) {
                 let requirement = signature(env, get(expected, index), ints(ty), item.node)?
+                var previous = 0
+                while previous < index {
+                    let other = signature(env, get(expected, previous), ints(ty), item.node)?
+                    if symbol(env, requirement.symbol).name == symbol(env, other.symbol).name && same(requirement.params, other.params) {
+                        return Result.Err(failure(env, owner, item.node, "concept method signatures overlap for this implementation"))
+                    }
+                    previous = previous + 1
+                }
                 var found = -1
                 var candidate = 0
                 while candidate < length(actual) {
@@ -128,13 +136,6 @@ fn conformances(env Environment) Result[Bool, Failure] {
                     candidate = candidate + 1
                 }
                 if found >= 0 {
-                    var previous = 0
-                    while previous < length(methods) {
-                        if get(methods, previous) == found {
-                            return Result.Err(failure(env, owner, item.node, "concept method signatures overlap for this implementation"))
-                        }
-                        previous = previous + 1
-                    }
                     supplied = supplied + 1
                 } else {
                     if !has(symbol(env, requirement.symbol).node, NodeKind.Block) {
