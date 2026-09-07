@@ -782,7 +782,15 @@ independent user packages share the public
 types and concrete call targets without invoking the compiler CLI or backend;
 declaration binding alone still provides only name candidates.
 
-The runtime currently uses single-threaded nonmoving mark/sweep GC. LLVM first
+The runtime uses single-threaded stop-the-world copying GC with bump-allocated
+pages for small objects and a large-object space. Small reachable allocations
+move, roots and typed fields are rewritten, then obsolete pages are freed.
+Large allocations are traced in place to avoid
+copying whole backing buffers before growth; this is not a stable-address promise.
+Aliases and cycles retain their meaning; static Text literals do not move.
+No source-visible address, ownership syntax, finalizer or pinning obligation is
+introduced. Collection temporarily holds both old and copied storage.
+LLVM first
 inlines source calls with opaque root-region markers, then lowers one linked
 stack-root frame per remaining native function. Region exits clear inactive
 slots; no marker reaches object code and no root table is copied on entry.
@@ -791,18 +799,23 @@ managed results only across a later possible allocation; immediate local/return
 handoffs and nonallocating reads need no temporary root. Pending arguments and
 aggregate fields keep independent snapshots, while completed expressions and
 mutually exclusive branches reuse same-type slots. Locals remain function-wide
-roots; precise local liveness and moving collection are still future work.
+roots; precise local liveness remains future work.
 Ordinary locals remain nonescaping SSA candidates; separate shadow slots mirror
-their source writes for the collector, including pattern bindings.
+their source writes for the collector, including pattern bindings. After a
+possible allocation, used locals and pending expression snapshots reload updated
+references. An earlier argument retains its own value even if a later argument
+reassigns the source variable.
 List/Text accesses use checked typed loads/stores, not runtime accessors.
 List/Bytes push calls the runtime only on capacity growth, then reloads the
 backing pointer before publishing the initialized element. Raw spare capacity
 is uninitialized and never traced; managed headers/payloads still start zeroed.
-Growth reallocates privately owned backing storage and updates the shared header;
+Growth copies page-backed storage or reallocates individually owned backing
+storage and updates the shared header;
 source-visible interior pointers cannot survive this boundary. File reads
 initialize their requested range before passing a slice to Rust I/O.
 `LOOM_GC_STRESS=1`
-collects before every allocation for focused testing. The LLVM tool links managed
+collects before every allocation and relocates all sizes for focused testing.
+The LLVM tool links managed
 programs with `libloom_runtime.a` (`loom_runtime.lib` on Windows) beside it, or at
 `LOOM_RUNTIME_LIBRARY`.
 No handles escape the file helpers; every recoverable branch closes the
@@ -815,7 +828,7 @@ are absent from the active tree; the pinned historical fallback is not an
 old-language support policy. Stage numbers denote bootstrap generations, not
 language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
-Mutable record fields, broader proofs, moving GC,
+Mutable record fields, broader proofs,
 fault-aware/scoped resources, Tasks, complete compile-time programming,
 Git/version resolution, lockfile/cache behavior, deployment and semantic-change
 tools remain outside this slice. No complete language or `std` claim is made.

@@ -206,6 +206,8 @@ fn emit_checked(
             witnesses: &witnesses,
             function,
             locals,
+            local_types: &source.locals,
+            allocating: &allocating,
             program,
             size_type,
             roots,
@@ -424,6 +426,8 @@ struct FunctionEmitter<'a, 'ctx> {
     witnesses: &'a [Option<PointerValue<'ctx>>],
     function: FunctionValue<'ctx>,
     locals: Vec<Option<PointerValue<'ctx>>>,
+    local_types: &'a [Type],
+    allocating: &'a BTreeSet<usize>,
     program: &'a checked::Program,
     size_type: IntType<'ctx>,
     roots: gc::RootFrame<'ctx>,
@@ -465,19 +469,73 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
+    fn restore_locals(&self) -> NativeResult<()> {
+        if self.roots.locals.is_empty() {
+            return Ok(());
+        }
+        // Source-local order keeps generated IR deterministic. Ordinary locals
+        // remain nonescaping; LLVM removes restores not used before a write.
+        for (index, ty) in self.local_types.iter().enumerate() {
+            if let Some(root) = self.roots.locals.get(&index) {
+                let value = self.builder.build_load(
+                    native_type(self.context, self.program, *ty)?,
+                    *root,
+                    "gc.restored",
+                )?;
+                self.builder
+                    .build_store(self.locals[index].ok_or("missing managed local")?, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn reload(
+        &self,
+        expression: &checked::Expr,
+        value: BasicValueEnum<'ctx>,
+    ) -> NativeResult<BasicValueEnum<'ctx>> {
+        match self
+            .roots
+            .expressions
+            .get(&(expression as *const checked::Expr))
+        {
+            Some(root) => Ok(self
+                .builder
+                .build_load(value.get_type(), *root, "gc.snapshot")?),
+            None => Ok(value),
+        }
+    }
+
+    fn operands<'source>(
+        &mut self,
+        expressions: impl IntoIterator<Item = &'source checked::Expr>,
+    ) -> NativeResult<Option<Vec<BasicValueEnum<'ctx>>>> {
+        let mut pending = Vec::new();
+        for expression in expressions {
+            let Some(value) = self.expr(expression)? else {
+                return Ok(None);
+            };
+            pending.push((expression, value));
+        }
+        // An earlier operand may have moved while a later operand allocated.
+        // Its root holds that evaluation's snapshot, not a reassigned local.
+        Ok(Some(
+            pending
+                .into_iter()
+                .map(|(expression, value)| self.reload(expression, value))
+                .collect::<NativeResult<_>>()?,
+        ))
+    }
+
     fn primitive(
         &mut self,
         result: Type,
         operation: Primitive,
         args: &[checked::Expr],
     ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
-        let mut values = Vec::new();
-        for arg in args {
-            let Some(value) = self.expr(arg)? else {
-                return Ok(None);
-            };
-            values.push(value);
-        }
+        let Some(mut values) = self.operands(args)? else {
+            return Ok(None);
+        };
         let pointer = self.context.ptr_type(AddressSpace::default());
         let i64_type = self.context.i64_type();
         let (name, result_type) = match operation {
@@ -558,11 +616,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 return Ok(None);
             }
             Primitive::BytesPush | Primitive::ListPush => {
-                self.buffer_push(
-                    values[0].into_pointer_value(),
-                    values[1],
-                    operation == Primitive::BytesPush,
-                )?;
+                self.buffer_push(args, &values, operation == Primitive::BytesPush)?;
                 return Ok(None);
             }
             Primitive::BytesUtf8 => ("bytes_utf8", Some(self.context.i32_type().into())),
@@ -627,6 +681,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::PathCanonical => ("path_canonical", Some(i64_type.into())),
         };
         let value = self.runtime_call(name, result_type, &values)?;
+        if gc::allocates(operation) {
+            self.restore_locals()?;
+        }
         if result == Type::Bool {
             return Ok(Some(
                 self.builder
@@ -818,6 +875,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             checked::ExprKind::Binary(op, left, right) => {
                 let operand_type = left.ty;
+                let left_expression = left.as_ref();
                 let Some(left) = self.expr(left)? else {
                     return Ok(None);
                 };
@@ -827,6 +885,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 let Some(right) = self.expr(right)? else {
                     return Ok(None);
                 };
+                let left = self.reload(left_expression, left)?;
                 if operand_type == Type::Float {
                     self.float_binary(*op, left.into_float_value(), right.into_float_value())?
                 } else if matches!(op, Binary::Eq | Binary::Ne) {
@@ -842,18 +901,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 }
             }
             checked::ExprKind::Call(function, args) => {
-                let mut values = Vec::with_capacity(args.len());
-                for arg in args {
-                    let Some(value) = self.expr(arg)? else {
-                        return Ok(None);
-                    };
-                    values.push(value.into());
-                }
+                let Some(values) = self.operands(args)? else {
+                    return Ok(None);
+                };
                 let call = self.builder.build_call(
                     self.functions[*function].ok_or("unresolved checked call")?,
-                    &values,
+                    &values
+                        .iter()
+                        .map(|value| (*value).into())
+                        .collect::<Vec<_>>(),
                     if expr.ty == Type::Unit { "" } else { "call" },
                 )?;
+                if self.allocating.contains(function) {
+                    self.restore_locals()?;
+                }
                 return Ok(call.try_as_basic_value().basic());
             }
             checked::ExprKind::FunctionRef(function) => self.functions[*function]
@@ -868,13 +929,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 let Some(callee) = self.expr(callee)? else {
                     return Ok(None);
                 };
-                let mut values = Vec::with_capacity(arguments.len());
-                for argument in arguments {
-                    let Some(value) = self.expr(argument)? else {
-                        return Ok(None);
-                    };
-                    values.push(value.into());
-                }
+                let Some(values) = self.operands(arguments)? else {
+                    return Ok(None);
+                };
                 let signature = &self.program.function_types[signature];
                 let call = self.builder.build_indirect_call(
                     native_signature(
@@ -884,25 +941,29 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         signature.result,
                     )?,
                     callee.into_pointer_value(),
-                    &values,
+                    &values
+                        .iter()
+                        .map(|value| (*value).into())
+                        .collect::<Vec<_>>(),
                     if signature.result == Type::Unit {
                         ""
                     } else {
                         "indirect.call"
                     },
                 )?;
+                self.restore_locals()?;
                 return Ok(call.try_as_basic_value().basic());
             }
             checked::ExprKind::Record(fields) => {
+                let Some(values) = self.operands(fields.iter().map(|(_, field)| field))? else {
+                    return Ok(None);
+                };
                 let mut result = native_type(self.context, self.program, expr.ty)?
                     .into_struct_type()
                     .const_zero();
                 // The checked field indices preserve source evaluation order even
                 // when construction names fields in a different declaration order.
-                for (index, field) in fields {
-                    let Some(value) = self.expr(field)? else {
-                        return Ok(None);
-                    };
+                for ((index, _), value) in fields.iter().zip(values) {
                     result = self
                         .builder
                         .build_insert_value(result, value, *index as u32, "record.field")?
@@ -921,6 +982,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )?
             }
             checked::ExprKind::Variant { variant, fields } => {
+                let Some(values) = self.operands(fields)? else {
+                    return Ok(None);
+                };
                 let ty = native_type(self.context, self.program, expr.ty)?.into_struct_type();
                 let mut result = self
                     .builder
@@ -936,10 +1000,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .build_extract_value(result, 1, "enum.payload")?
                     .into_array_value();
                 let mut words = Vec::new();
-                for field in fields {
-                    let Some(value) = self.expr(field)? else {
-                        return Ok(None);
-                    };
+                for (field, value) in fields.iter().zip(values) {
                     self.flatten(field.ty, value, &mut words)?;
                 }
                 for (index, word) in words.into_iter().enumerate() {

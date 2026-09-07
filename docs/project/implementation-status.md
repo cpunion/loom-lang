@@ -91,6 +91,15 @@ declarations. Known true/false predicates remove the check or reject; unknown
 inputs or unsuccessful optional evaluation retain normal runtime construction
 and fault behavior. Function contracts remain call-free and proofs mandatory.
 
+Managed memory now uses stop-the-world copying collection with a traced
+large-object space; stress mode relocates all sizes. Rewritable typed
+roots cover records, active/nested enum payloads, dyn boxes, shared headers and
+backing buffers. Runtime copies and generated allocation-crossing snapshots
+reload relocated references; earlier arguments remain independent of later
+reassignments. Static Text is unchanged. This does not add ownership syntax,
+finalizers or a per-access barrier. Locals still have conservative root lifetimes;
+generational/concurrent collection and complete resource cleanup remain open.
+
 Ordinary `Float` values use IEEE binary64 arithmetic and native aggregate
 layouts, without implicit Int conversion. Source `std.float` owns decimal
 grammar, parsing errors and checked integer conversion; tiny runtime codecs
@@ -213,8 +222,13 @@ check/build runs with warm OS caches and backend phase timings. It does not
 implement incremental reuse or establish a performance target as achieved.
 The [native basic benchmark](../../benchmarks/basic/README.md#managed-memory-lowering-repair)
 also records the managed-memory lowering repair, including same-session baseline
-comparisons for native kernels and whole compiler checks. This is measured local
-evidence, not completion of moving GC or the remaining resource/async design.
+comparisons for native kernels and whole compiler checks. Those measurements
+describe the earlier nonmoving runtime; they do not establish the performance
+of copying GC or complete the remaining resource/async design. A separate
+[moving-collector comparison](../../benchmarks/basic/README.md#moving-collector)
+records faster compiler-check CPU time but higher peak RSS, with noisy native
+kernel samples. Memory efficiency and the remaining language work are not closed
+by those results.
 
 Accepted language and deployment decisions remain targets, not claims that the
 whole design is implemented. Bootstrap agreement is not a correctness proof.

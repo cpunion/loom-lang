@@ -154,10 +154,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
 
     pub(super) fn buffer_push(
         &self,
-        buffer: PointerValue<'ctx>,
-        mut item: BasicValueEnum<'ctx>,
+        arguments: &[checked::Expr],
+        values: &[BasicValueEnum<'ctx>],
         bytes: bool,
     ) -> NativeResult<()> {
+        let buffer = values[0].into_pointer_value();
+        let mut item = values[1];
         if bytes {
             item = self.checked_byte(item.into_int_value())?.into();
         }
@@ -182,6 +184,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let ready = self
             .context
             .append_basic_block(self.function, "buffer.ready");
+        let origin = self
+            .builder
+            .get_insert_block()
+            .ok_or("missing buffer block")?;
         self.builder.build_conditional_branch(full, grow, ready)?;
         self.builder.position_at_end(grow);
         // Only capacity growth crosses the runtime/GC boundary. The header
@@ -195,8 +201,25 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             None,
             &[buffer.into()],
         )?;
+        self.restore_locals()?;
+        let moved_buffer = self.reload(&arguments[0], values[0])?.into_pointer_value();
+        let moved_item = if bytes {
+            item
+        } else {
+            self.reload(&arguments[1], item)?
+        };
         self.builder.build_unconditional_branch(ready)?;
         self.builder.position_at_end(ready);
+        // Only the growth branch reloads relocated snapshots. The direct push
+        // fast path retains its original values and has no new runtime calls.
+        let header = self.builder.build_phi(buffer.get_type(), "buffer.header")?;
+        header.add_incoming(&[(&buffer, origin), (&moved_buffer, grow)]);
+        let buffer = header.as_basic_value().into_pointer_value();
+        if gc::managed(self.program, arguments[1].ty) {
+            let value = self.builder.build_phi(item.get_type(), "buffer.item")?;
+            value.add_incoming(&[(&item, origin), (&moved_item, grow)]);
+            item = value.as_basic_value();
+        }
         let slot = self.buffer_slot(buffer, length, item.get_type())?;
         self.builder.build_store(slot, item)?;
         // reserve preserves length and checks len + 1; on the fast path

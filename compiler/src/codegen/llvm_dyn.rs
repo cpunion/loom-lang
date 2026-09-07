@@ -136,6 +136,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )?
             .ok_or("missing dyn allocation")?
             .into_pointer_value();
+        self.restore_locals()?;
+        let value = self.reload(source, value)?;
         // No allocation occurs between obtaining the fresh zeroed box and
         // storing its snapshot. The enclosing DynBox expression roots it next.
         self.builder.build_store(data, value)?;
@@ -163,10 +165,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let Type::Dyn(interface) = receiver.ty else {
             return Err("invalid dyn receiver type".into());
         };
-        let Some(receiver) = self.expr(receiver)? else {
+        let Some(value) = self.expr(receiver)? else {
             return Ok(None);
         };
-        let receiver = receiver.into_struct_value();
+        let Some(arguments) = self.operands(arguments)? else {
+            return Ok(None);
+        };
+        let receiver = self.reload(receiver, value)?.into_struct_value();
         let data = self.builder.build_extract_value(receiver, 0, "dyn.data")?;
         let witness = self
             .builder
@@ -174,10 +179,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .into_pointer_value();
         let mut values = vec![data.into()];
         for argument in arguments {
-            let Some(value) = self.expr(argument)? else {
-                return Ok(None);
-            };
-            values.push(value.into());
+            values.push(argument.into());
         }
         let interface = &self.program.interfaces[interface];
         let address = self.builder.build_struct_gep(
@@ -195,7 +197,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             )?
             .into_pointer_value();
         let signature = &interface.methods[slot];
-        Ok(self
+        let value = self
             .builder
             .build_indirect_call(
                 method_type(self.context, self.program, signature)?,
@@ -208,7 +210,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 },
             )?
             .try_as_basic_value()
-            .basic())
+            .basic();
+        self.restore_locals()?;
+        Ok(value)
     }
 }
 

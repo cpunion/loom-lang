@@ -1,0 +1,143 @@
+{
+  "at": "2026-09-07T06:18:23.069Z",
+  "host": {
+    "os": "darwin",
+    "release": "25.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "method": "Ten alternating pairs; one warmup each; fresh check processes, warm OS caches, no incremental cache. Wall includes launch; CPU rounded by macOS time.",
+  "input": "<repo>/target/performance/gc-inputs.sNwsyV",
+  "sourceFiles": 132,
+  "inputsSha256": "8b02242a7e030f6db7c7f87efaab9ae620548e3cea02a84adcabc8e3e9c6842d",
+  "binaries": {
+    "baseline": {
+      "path": "<repo>/target/performance/pre-moving-Vtc0l2/loom",
+      "sha256": "35571f1d732d958e91cb72dbcbda1b2d79e4c0e288785ce20f4e2f922e567c2f"
+    },
+    "candidate": {
+      "path": "<repo>/target/loom",
+      "sha256": "6d54dadd53bcfdf5567b3d08b247a7ad572fb13f2f8cc57272b0188f5a8d2238"
+    }
+  },
+  "medians": {
+    "baseline": {
+      "wallMs": 1464.943021,
+      "cpuMs": 950,
+      "peakRssBytes": 156426240
+    },
+    "candidate": {
+      "wallMs": 1036.224146,
+      "cpuMs": 695.0000000000001,
+      "peakRssBytes": 206995456
+    }
+  },
+  "samples": {
+    "baseline": [
+      {
+        "wallMs": 905.864875,
+        "cpuMs": 810,
+        "peakRssBytes": 156418048
+      },
+      {
+        "wallMs": 1198.204167,
+        "cpuMs": 879.9999999999999,
+        "peakRssBytes": 156254208
+      },
+      {
+        "wallMs": 926.816291,
+        "cpuMs": 810,
+        "peakRssBytes": 156811264
+      },
+      {
+        "wallMs": 2721.071,
+        "cpuMs": 1030,
+        "peakRssBytes": 157024256
+      },
+      {
+        "wallMs": 1517.838667,
+        "cpuMs": 940,
+        "peakRssBytes": 155746304
+      },
+      {
+        "wallMs": 1318.968375,
+        "cpuMs": 960,
+        "peakRssBytes": 156598272
+      },
+      {
+        "wallMs": 2063.812208,
+        "cpuMs": 990,
+        "peakRssBytes": 157220864
+      },
+      {
+        "wallMs": 1412.047375,
+        "cpuMs": 940,
+        "peakRssBytes": 155959296
+      },
+      {
+        "wallMs": 2475.038583,
+        "cpuMs": 1000,
+        "peakRssBytes": 156139520
+      },
+      {
+        "wallMs": 1702.307417,
+        "cpuMs": 1020,
+        "peakRssBytes": 156434432
+      }
+    ],
+    "candidate": [
+      {
+        "wallMs": 967.076042,
+        "cpuMs": 660,
+        "peakRssBytes": 204783616
+      },
+      {
+        "wallMs": 1724.424708,
+        "cpuMs": 760,
+        "peakRssBytes": 205111296
+      },
+      {
+        "wallMs": 1493.047917,
+        "cpuMs": 790,
+        "peakRssBytes": 204750848
+      },
+      {
+        "wallMs": 683.270708,
+        "cpuMs": 610.0000000000001,
+        "peakRssBytes": 216039424
+      },
+      {
+        "wallMs": 954.761708,
+        "cpuMs": 700.0000000000001,
+        "peakRssBytes": 204554240
+      },
+      {
+        "wallMs": 1100.896667,
+        "cpuMs": 680,
+        "peakRssBytes": 208879616
+      },
+      {
+        "wallMs": 1150.929917,
+        "cpuMs": 690.0000000000001,
+        "peakRssBytes": 213123072
+      },
+      {
+        "wallMs": 1762.399708,
+        "cpuMs": 760,
+        "peakRssBytes": 209027072
+      },
+      {
+        "wallMs": 876.521208,
+        "cpuMs": 710.0000000000001,
+        "peakRssBytes": 204816384
+      },
+      {
+        "wallMs": 971.551625,
+        "cpuMs": 680,
+        "peakRssBytes": 208994304
+      }
+    ]
+  },
+  "sourceRevision": "778cfe154ddf25cfc9473cf47cb48fb87915c1e6",
+  "candidateRevision": "2b2c04dd7229f4b5148839965510abaed339a3eb"
+}

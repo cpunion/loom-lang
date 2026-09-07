@@ -15,6 +15,8 @@ import std.list.get
 
 record Packet { label Text values List[Text] }
 enum Choice { First(Packet) Second(Packet) }
+enum Outer { Empty(Int) Wrapped(Choice, Text) }
+record Envelope { tag Int wrapped Outer }
 
 fn packet(label Text) Packet {
     let values = new[Text]()
@@ -58,6 +60,18 @@ fn main() {
         }
     }
     assert fields.label == "first" && get(fields.values, 0) == "second"
+    let nested = Envelope {
+        tag = 7
+        wrapped = Outer.Wrapped(Choice.Second(packet("nested")), concat("note", ":"))
+    }
+    discard concat("collect", "-after-nested-enum")
+    assert nested.tag == 7
+    match nested.wrapped {
+        Outer.Wrapped(choice, note) => {
+            assert concat(note, describe(choice)) == "note:nested-labelnested-item"
+        }
+        Outer.Empty(_) => { assert false }
+    }
     var index = 0
     while index < 6 {
         let choice = choose(index % 2 == 0, index == 2)
@@ -97,6 +111,7 @@ fn main() {
         );
         let ir = fs::read_to_string(&ir).unwrap();
         assert!(!ir.contains("call void @loom.gc."), "unlowered GC region");
+        assert!(ir.contains("loom_rt_visit") && !ir.contains("loom_rt_mark"));
         for function in ir.split("define ").skip(1) {
             let body = function.split("\n}").next().unwrap();
             assert!(
