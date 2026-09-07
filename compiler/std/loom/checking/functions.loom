@@ -96,6 +96,7 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "arg_text" { return runtime(0, ints(1), 3) }
     if name == "process_run" { return runtime(0, ints(intern(env, TypeKind.List, -1, ints(3))), 1) }
     if name == "process_run_input" { return runtime(0, two_types(intern(env, TypeKind.List, -1, ints(3)), 3), 1) }
+    if name == "process_capture" { return runtime(0, three_types(intern(env, TypeKind.List, -1, ints(3)), 4, 4), 1) }
     if name == "exit" { return runtime(0, ints(1), 0) }
     if name == "bytes_new" { return runtime(0, new[Int](), 4) }
     if name == "bytes_len" { return runtime(0, ints(4), 1) }

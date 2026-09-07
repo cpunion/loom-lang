@@ -1,5 +1,6 @@
 import std.process.run
 import std.process.run_input
+import std.process.capture
 import std.process.SpawnError
 import std.list.new
 import std.list.push
@@ -15,8 +16,16 @@ test fn empty_and_invalid_executables_are_errors() {
         Result.Err(error) => { assert error == SpawnError.EmptyArguments }
         Result.Ok(_) => { assert false }
     }
+    match capture(arguments) {
+        Result.Err(error) => { assert error == SpawnError.EmptyArguments }
+        Result.Ok(_) => { assert false }
+    }
     push(arguments, "invalid\0executable")
     match run(arguments) {
+        Result.Err(error) => { assert error == SpawnError.Failed }
+        Result.Ok(_) => { assert false }
+    }
+    match capture(arguments) {
         Result.Err(error) => { assert error == SpawnError.Failed }
         Result.Ok(_) => { assert false }
     }

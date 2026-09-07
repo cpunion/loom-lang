@@ -71,6 +71,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TextConcat
         | Primitive::TextSlice
         | Primitive::ArgText
+        | Primitive::ProcessCapture
         | Primitive::BytesNew
         | Primitive::BytesPush
         | Primitive::BytesTextCopy
@@ -872,6 +873,21 @@ mod tests {
             ),
             Type::Text,
         )
+    }
+
+    #[test]
+    fn process_capture_roots_arguments_even_with_a_scalar_result() {
+        let value = expr(
+            checked::ExprKind::Primitive(
+                Primitive::ProcessCapture,
+                vec![local(Type::List(0)), local(Type::Bytes), local(Type::Bytes)],
+            ),
+            Type::Int,
+        );
+        let mut slots = TemporarySlots::default();
+        slots.expression(&program(), &BTreeSet::new(), &value, false);
+        assert_eq!(slots.types, [Type::List(0), Type::Bytes, Type::Bytes]);
+        assert!(allocates(Primitive::ProcessCapture));
     }
 
     #[test]
