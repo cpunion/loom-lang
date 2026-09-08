@@ -1,0 +1,327 @@
+import std.loom.source.Span
+import std.loom.typed.Program
+import std.loom.typed.Function
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Field
+import std.loom.typed.Variant
+import std.loom.typed.Local
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Arm
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+import std.list.length
+import std.list.clone
+import std.int.to_text
+
+enum Exit {
+    Unreachable
+    Jump
+    Branch
+    Select
+    Wait
+    Complete
+}
+
+record Edge {
+    target Int
+    bindings List[Int]
+}
+
+record State {
+    code List[Expr]
+    exit Exit
+    value Expr
+    edges List[Edge]
+    arms List[Arm]
+}
+
+record Graph {
+    states List[State]
+    locals List[Local]
+    result Int
+    span Span
+}
+
+record Value {
+    state Int
+    expression Expr
+}
+
+record Loop {
+    exit Int
+    again Int
+}
+
+record Flow {
+    uses List[Bool]
+    definitions List[Bool]
+    live List[Bool]
+}
+
+fn node(kind ExprKind, ty Int, span Span, index Int, children List[Expr]) Expr {
+    Expr {
+        kind = kind
+        ty = ty
+        span = span
+        text = ""
+        index = index
+        children = children
+        arms = new[Arm]()
+        falls = true
+    }
+}
+
+fn changed(value Expr, text Text, children List[Expr], falls Bool) Expr {
+    Expr {
+        kind = value.kind
+        ty = value.ty
+        span = value.span
+        text = text
+        index = value.index
+        children = children
+        arms = value.arms
+        falls = falls
+    }
+}
+
+fn labeled(value Expr, text Text) Expr {
+    changed(value, text, value.children, value.falls)
+}
+
+fn nonfall(value Expr) Expr {
+    changed(value, value.text, value.children, false)
+}
+
+fn one(value Expr) List[Expr] {
+    let values = new[Expr]()
+    push(values, value)
+    values
+}
+
+fn pair(first Expr, second Expr) List[Expr] {
+    let values = one(first)
+    push(values, second)
+    values
+}
+
+fn empty(span Span) Expr {
+    node(ExprKind.Block, 0, span, -1, new[Expr]())
+}
+
+fn integer(value Int, span Span) Expr {
+    labeled(node(ExprKind.Integer, 1, span, -1, new[Expr]()), to_text(value))
+}
+
+fn boolean(value Bool, span Span) Expr {
+    labeled(node(ExprKind.Bool, 2, span, -1, new[Expr]()), if value {
+            "true"
+        } else {
+            "false"
+        })
+}
+
+fn local(graph Graph, id Int) Expr {
+    node(ExprKind.Local, get(graph.locals, id).ty, graph.span, id, new[Expr]())
+}
+
+fn temporary(graph Graph, ty Int) Int {
+    let id = length(graph.locals)
+    push(graph.locals, Local {
+            name = ""
+            ty = ty
+            mutable = true
+            is_scoped = false
+        })
+    id
+}
+
+fn block(values List[Expr], ty Int, span Span, falls Bool) Expr {
+    changed(node(ExprKind.Block, ty, span, -1, values), "", values, falls)
+}
+
+fn operation(name Text, ty Int, span Span, values List[Expr]) Expr {
+    labeled(node(ExprKind.Intrinsic, ty, span, -1, values), name)
+}
+
+fn state(graph Graph) Int {
+    let id = length(graph.states)
+    push(graph.states, State {
+            code = new[Expr]()
+            exit = Exit.Unreachable
+            value = empty(graph.span)
+            edges = new[Edge]()
+            arms = new[Arm]()
+        })
+    id
+}
+
+fn append(graph Graph, id Int, value Expr) {
+    if id >= 0 {
+        push(get(graph.states, id).code, value)
+    }
+}
+
+fn edge(target Int) Edge {
+    Edge {
+        target = target
+        bindings = new[Int]()
+    }
+}
+
+fn edges(first Int) List[Edge] {
+    let values = new[Edge]()
+    push(values, edge(first))
+    values
+}
+
+fn finish(graph Graph, id Int, kind Exit, value Expr, targets List[Edge], arms List[Arm]) {
+    if id >= 0 {
+        set(graph.states, id, State {
+                code = get(graph.states, id).code
+                exit = kind
+                value = value
+                edges = targets
+                arms = arms
+            })
+    }
+}
+
+fn jump(graph Graph, id Int, target Int) {
+    finish(graph, id, Exit.Jump, empty(graph.span), edges(target), new[Arm]())
+}
+
+fn save(graph Graph, id Int, target Int, value Expr) {
+    if target >= 0 {
+        append(graph, id, node(ExprKind.Let, 0, value.span, target, one(value)))
+    }
+    else {
+        append(graph, id, node(ExprKind.Discard, 0, value.span, -1, one(value)))
+    }
+}
+
+fn snapshot(graph Graph, value Value) Value {
+    if value.state < 0 {
+        return value
+    }
+    if value.expression.ty == 0 {
+        save(graph, value.state, -1, value.expression)
+        return Value {
+            state = value.state
+            expression = empty(value.expression.span)
+        }
+    }
+    let id = temporary(graph, value.expression.ty)
+    save(graph, value.state, id, value.expression)
+    Value {
+        state = value.state
+        expression = local(graph, id)
+    }
+}
+
+// Remapping only changes owner-local IDs; function/witness/type IDs stay stable.
+fn remap(value Expr, offset Int) Expr {
+    let local_index = value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, remap(get(value.children, index), offset))
+        index = index + 1
+    }
+    if value.kind == ExprKind.TaskCall {
+        push(children, labeled(node(ExprKind.Text, 3, value.span, -1, new[Expr]()), value.text))
+    }
+    let arms = new[Arm]()
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let bindings = new[Int]()
+        var field = 0
+        while field < length(arm.bindings) {
+            let id = get(arm.bindings, field)
+            push(bindings, if id < 0 {
+                    -1
+                } else {
+                    id + offset
+                })
+            field = field + 1
+        }
+        let body = new[Expr]()
+        field = 0
+        while field < length(arm.body) {
+            push(body, remap(get(arm.body, field), offset))
+            field = field + 1
+        }
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = bindings
+                whole = if arm.whole < 0 {
+                    -1
+                } else {
+                    arm.whole + offset
+                }
+                body = body
+            })
+        index = index + 1
+    }
+    Expr {
+        kind = if value.kind == ExprKind.TaskCall {
+            ExprKind.Call
+        } else {
+            value.kind
+        }
+        ty = value.ty
+        span = value.span
+        text = if value.kind == ExprKind.TaskCall {
+            ""
+        } else {
+            value.text
+        }
+        index = if local_index {
+            value.index + offset
+        } else {
+            value.index
+        }
+        children = children
+        arms = arms
+        falls = value.falls
+    }
+}
+
+fn statement(kind ExprKind) Bool {
+    kind == ExprKind.Let || kind == ExprKind.Assign || kind == ExprKind.Assert ||
+    kind == ExprKind.Discard || kind == ExprKind.While || kind == ExprKind.Defer || kind == ExprKind.Cleanup
+}
+
+fn split(value Expr) Bool {
+    if value.kind == ExprKind.Await || value.kind == ExprKind.Return || value.kind == ExprKind.Break || value.kind == ExprKind.Continue {
+        return true
+    }
+    // A cleanup body never suspends and has its own local control boundary.
+    if value.kind == ExprKind.Defer || value.kind == ExprKind.Cleanup {
+        return false
+    }
+    var index = 0
+    while index < length(value.children) {
+        if split(get(value.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if split(get(body, item)) {
+                return true
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    false
+}

@@ -24,7 +24,7 @@ fn dynamic_method(receiver Int, body Expr, preconditions List[Expr], postconditi
     push(locals, Local { name = "self" ty = receiver mutable = false is_scoped = false })
     push(locals, Local { name = "n" ty = 1 mutable = false is_scoped = false })
     push(locals, Local { name = "result" ty = 1 mutable = false is_scoped = false })
-    Function { symbol = receiver arguments = new[Int]() params = params result = 1 locals = locals
+    Function { is_async = false symbol = receiver arguments = new[Int]() params = params result = 1 locals = locals
         preconditions = preconditions postconditions = postconditions result_local = 2 body = body runtime_name = ""
         span = Span { start = 7 end = 8 } }
 }

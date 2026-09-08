@@ -162,12 +162,12 @@ pub fn decode(text: &str) -> Result<c::Program> {
         } else {
             vec![]
         };
-        let element = if tag == 6 || tag == 9 || tag == 12 {
+        let element = if matches!(tag, 6 | 9 | 12 | 13) {
             reader.index()?
         } else {
             0
         };
-        let fields = if tag == 7 {
+        let fields = if tag == 7 || tag == 14 {
             reader.sequence(|reader| Ok((reader.string()?, reader.index()?)))?
         } else {
             vec![]
@@ -275,7 +275,7 @@ pub fn decode(text: &str) -> Result<c::Program> {
                 program.lists.push(Type::Unit);
                 Type::List(id)
             }
-            7..=9 => {
+            7..=9 | 13 | 14 => {
                 let target = program.types.len();
                 program.types.push(c::Data {
                     name: format!("source.type.{}.{id}", data.symbol),
@@ -364,6 +364,13 @@ pub fn decode(text: &str) -> Result<c::Program> {
                             .collect::<Result<_>>()?,
                     ),
                     9 => c::DataKind::Refined(map(data.element)?),
+                    13 => c::DataKind::Task(map(data.element)?),
+                    14 => c::DataKind::Frame(
+                        data.fields
+                            .iter()
+                            .map(|(name, ty)| Ok((name.clone(), map(*ty)?)))
+                            .collect::<Result<_>>()?,
+                    ),
                     _ => unreachable!(),
                 }
             }
@@ -373,6 +380,14 @@ pub fn decode(text: &str) -> Result<c::Program> {
     let mut state = vec![0; program.types.len()];
     for id in 0..program.types.len() {
         layout(&program, Type::Data(id), &mut state)?;
+        if let c::DataKind::Frame(fields) = &program.types[id].kind {
+            if fields.len() < 2 || fields[1].1 != Type::Int {
+                return Err("checked frame requires a result prefix and Int state".into());
+            }
+            for (_, field) in fields {
+                layout(&program, *field, &mut state)?;
+            }
+        }
     }
     for (id, source) in functions.iter().enumerate() {
         let converter = Converter {
@@ -437,6 +452,7 @@ fn layout(program: &c::Program, ty: Type, state: &mut [u8]) -> Result<()> {
     }
     state[id] = 1;
     match &program.types[id].kind {
+        c::DataKind::Task(_) | c::DataKind::Frame(_) => {}
         c::DataKind::Record(fields) => {
             for (_, ty) in fields {
                 layout(program, *ty, state)?;
@@ -493,6 +509,73 @@ impl Converter<'_> {
             return Ok(fields);
         }
         Err("checked field requires a record layout".into())
+    }
+
+    fn frame(&self, ty: Type) -> Result<&[(String, Type)]> {
+        if let Type::Data(id) = ty
+            && let c::DataKind::Frame(fields) = &self.program.types[id].kind
+        {
+            return Ok(fields);
+        }
+        Err("checked frame operation requires a generated frame".into())
+    }
+
+    fn task_result(&self, ty: Type) -> Result<Type> {
+        if let Type::Data(id) = ty
+            && let c::DataKind::Task(result) = self.program.types[id].kind
+        {
+            return Ok(result);
+        }
+        Err("checked task operation requires a Task type".into())
+    }
+
+    fn task_operation(
+        &self,
+        operation: Primitive,
+        arguments: &[c::Expr],
+        result: Type,
+    ) -> Result<()> {
+        match operation {
+            Primitive::TaskCreate => {
+                let fields = self.frame(arguments[0].ty)?;
+                let Type::Function(id) = arguments[1].ty else {
+                    return Err("checked task resume requires a function pointer".into());
+                };
+                let signature = &self.program.function_types[id];
+                if fields[0].1 != self.task_result(result)?
+                    || signature.params != [arguments[0].ty]
+                    || signature.result != Type::Int
+                    || arguments[2].ty != Type::Text
+                {
+                    return Err("checked task constructor/resume signature mismatch".into());
+                }
+            }
+            Primitive::TaskAwait | Primitive::TaskResult | Primitive::TaskRelease => {
+                let logical = self.task_result(arguments[0].ty)?;
+                let expected = match operation {
+                    Primitive::TaskAwait => Type::Bool,
+                    Primitive::TaskRelease => Type::Unit,
+                    _ => logical,
+                };
+                if result != expected {
+                    return Err("checked task result type mismatch".into());
+                }
+            }
+            Primitive::TaskRun => {
+                let Type::Function(id) = arguments[0].ty else {
+                    return Err("checked task entry requires a constructor pointer".into());
+                };
+                let signature = &self.program.function_types[id];
+                if !signature.params.is_empty()
+                    || result != Type::Unit
+                    || self.task_result(signature.result)? != Type::Unit
+                {
+                    return Err("checked task entry signature mismatch".into());
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn variant(&self, ty: Type, variant: usize) -> Result<&[Type]> {
@@ -690,6 +773,7 @@ impl Converter<'_> {
                     .iter()
                     .map(|child| self.expr(child))
                     .collect::<Result<Vec<_>>>()?;
+                self.task_operation(operation, &arguments, ty)?;
                 if matches!(
                     operation,
                     Primitive::ProcessCaptureConfigured | Primitive::ProcessCaptureInputConfigured
@@ -771,10 +855,45 @@ impl Converter<'_> {
                 }
                 E::List(values)
             }
+            31 => {
+                let fields = self.frame(ty)?;
+                let mut seen = vec![false; fields.len()];
+                let mut values = Vec::new();
+                for field in &node.children {
+                    if field.tag != 9 {
+                        return Err("frame initializers require indexed wrappers".into());
+                    }
+                    let id = index(field.index)?;
+                    let expected = at(fields, id)?.1;
+                    let value = self.expr(self.child(field, 0, 1)?)?;
+                    if seen[id] || value.ty != expected {
+                        return Err("duplicate or mistyped frame initializer".into());
+                    }
+                    seen[id] = true;
+                    values.push((id, value));
+                }
+                E::FrameNew(values)
+            }
+            32 => {
+                let frame = self.expr(self.child(node, 0, 2)?)?;
+                let value = self.expr(self.child(node, 1, 2)?)?;
+                let field = index(node.index)?;
+                if ty != Type::Unit || value.ty != at(self.frame(frame.ty)?, field)?.1 {
+                    return Err("checked frame store type mismatch".into());
+                }
+                E::FrameStore {
+                    frame: Box::new(frame),
+                    field,
+                    value: Box::new(value),
+                }
+            }
             9 => {
                 let value = self.expr(self.child(node, 0, 1)?)?;
                 let id = index(node.index)?;
-                at(self.record(value.ty)?, id)?;
+                let fields = self.record(value.ty).or_else(|_| self.frame(value.ty))?;
+                if at(fields, id)?.1 != ty {
+                    return Err("checked field type mismatch".into());
+                }
                 E::Field(Box::new(value), id)
             }
             10 => {
@@ -1003,6 +1122,11 @@ fn primitive(value: &str) -> Result<Primitive> {
         "file_remove" => P::FileRemove,
         "directory_remove" => P::DirectoryRemove,
         "path_entry_kind" => P::PathEntryKind,
+        "task_create" => P::TaskCreate,
+        "task_await" => P::TaskAwait,
+        "task_result" => P::TaskResult,
+        "task_release" => P::TaskRelease,
+        "task_run" => P::TaskRun,
         _ => return Err("unknown private checked runtime operation".into()),
     })
 }
@@ -1033,7 +1157,11 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::DirectoryCreate
         | P::FileRemove
         | P::DirectoryRemove
-        | P::PathEntryKind => 1,
+        | P::PathEntryKind
+        | P::TaskAwait
+        | P::TaskResult
+        | P::TaskRelease
+        | P::TaskRun => 1,
         P::TextByte
         | P::TextConcat
         | P::TextEqual
@@ -1046,7 +1174,13 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::PathCanonical
         | P::EnvGet
         | P::PathRename => 2,
-        P::TextSlice | P::BytesSet | P::ListSet | P::Read | P::Write | P::WriteBytes => 3,
+        P::TextSlice
+        | P::BytesSet
+        | P::ListSet
+        | P::Read
+        | P::Write
+        | P::WriteBytes
+        | P::TaskCreate => 3,
         P::ProcessCaptureConfigured => 6,
         P::ProcessCaptureInputConfigured => 7,
     }

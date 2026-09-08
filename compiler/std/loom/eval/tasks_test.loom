@@ -1,0 +1,28 @@
+test fn compile_time_purity_rejects_tasks_and_async_function_values() {
+    let program = empty()
+    assert rejected(program, node(ExprKind.TaskCall, 1, "", 0, new[Expr]()), 0).message ==
+    "compile-time evaluation cannot create or await tasks"
+    assert rejected(program, node(ExprKind.Await, 1, "", -1, one(literal(1))), 0).message ==
+    "compile-time evaluation cannot create or await tasks"
+    push(program.functions, Function {
+            is_async = true
+            symbol = 0
+            arguments = new[Int]()
+            params = new[Int]()
+            result = 1
+            locals = new[Local]()
+            preconditions = new[Expr]()
+            postconditions = new[Expr]()
+            result_local = -1
+            body = literal(1)
+            runtime_name = ""
+            span = Span {
+                start = 7
+                end = 8
+            }
+        })
+    assert rejected(program, node(ExprKind.FunctionRef, 1, "", 0, new[Expr]()), 0).message ==
+    "compile-time evaluation cannot create or await tasks"
+    assert rejected(program, node(ExprKind.Call, 1, "", 0, new[Expr]()), 0).message ==
+    "compile-time evaluation cannot create or await tasks"
+}

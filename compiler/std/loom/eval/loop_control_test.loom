@@ -58,6 +58,7 @@ test fn loop_control_cannot_escape_evaluation_or_called_functions() {
     assert rejected(empty(), looped(transfer(ExprKind.Break), grouped(new[Expr]())), 0).message == escaped
     let program = empty()
     push(program.functions, Function {
+        is_async = false
             symbol = 0
             arguments = new[Int]()
             params = new[Int]()

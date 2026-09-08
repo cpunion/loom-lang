@@ -119,6 +119,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/loom/project",
         "std/loom/proof",
         "std/loom/checking",
+        "std/loom/lowering",
         "std/loom/analysis",
         "std/loom/eval",
         "loom/artifact",
@@ -164,6 +165,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/comptime_parameters",
         "examples/comptime_dynamic",
         "examples/cleanup",
+        "examples/tasks",
     ] {
         let output = source_compiler(stage3, &["test", compiler.join(package).to_str().unwrap()]);
         assert!(output.status.success(), "{package}: {output:?}");

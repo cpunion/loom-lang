@@ -156,6 +156,9 @@ fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Fail
         return Result.Ok(expression(ExprKind.Coerce, expected, node, "", -1, expressions(value), value.falls))
     }
     if expected >= 0 && value.ty != expected && value.falls {
+        if expected == 0 && get(context.env.types, value.ty).kind == TypeKind.Task {
+            return Result.Err(error(context, node, "a task must be awaited; it cannot be silently ignored or discarded"))
+        }
         let found = type_name(context.env.source, context.env.types, context.env.interfaces, value.ty)
         let message = if expected == 0 {
             concat("unused value of type ", concat(found, "; use discard to ignore it"))
@@ -225,6 +228,9 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
     var index = 0
     while index < length(source.symbols) {
         let item = symbol(env, index)
+        if item.node.kind == NodeKind.Function && item.owner >= 0 && has(item.node, NodeKind.Async) {
+            return Result.Err(failure(env, index, item.node, "async concept and impl methods are not yet implemented"))
+        }
         if nominal_data(item.node.kind) {
             discard data_type(env, index, abstract_arguments(env, length(group(item.node, NodeKind.TypeParameters))), 0)?
         }

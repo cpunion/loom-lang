@@ -7,6 +7,7 @@ import std.loom.binding.bind
 import std.loom.binding.Failure
 import std.loom.project.SourceFile
 import std.loom.checking.check
+import std.loom.lowering.lower
 import frontend.artifact.encode
 import std.loom.typed.Program
 import std.loom.source.render
@@ -193,7 +194,7 @@ fn child_status(arguments List[Text]) Result[Int, Text] {
 }
 
 fn compile(options Options, program std.loom.typed.Program, output Text) Result[Bool, Text] {
-    let input = encode(program)
+    let input = encode(lower(program))
     if options.object_cache != "" && options.ir == "" {
         if compile_cached(options, input, options.command != "test" && program.entry < 0, output)? {
             return Result.Ok(true)
@@ -234,7 +235,7 @@ fn execute(args List[Text]) Result[Text, Text] {
         return Result.Ok("checked package\n")
     }
     if selected.command == "emit-checked" {
-        return Result.Ok(encode(program))
+        return Result.Ok(encode(lower(program)))
     }
     if selected.command == "run" && program.entry < 0 {
         return Result.Err("run requires fn main() in the selected package")

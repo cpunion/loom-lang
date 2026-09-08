@@ -218,6 +218,7 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
     let item = symbol(env, original.symbol)
     let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
     let current = signature(env, id, arguments, item.node)?
+    discard task_signature(env, current, item.node)?
     if emit && length(env.interfaces) != 0 {
         let seen = new[Int]()
         var index = 0
@@ -271,9 +272,10 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
         push(context.bindings, Binding { name = "result" local = result_local constant = -1 previous = context.head })
         context = context_at(context, binding)
     }
-    let checked_function = Function { symbol = current.symbol arguments = arguments params = runtime_params result = current.result
+    let checked_function = Function { is_async = has(item.node, NodeKind.Async) symbol = current.symbol arguments = arguments params = runtime_params result = current.result
         locals = context.locals preconditions = preconditions postconditions = new[Expr]() result_local = result_local
         body = body runtime_name = runtime_name span = item.node.span }
+    discard task_flow(context, checked_function)?
     Result.Ok(CheckedBody { context = context function = checked_function })
 }
 fn function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {

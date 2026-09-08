@@ -1,0 +1,30 @@
+import std.io.write_text
+import std.int.to_text
+import std.text.concat
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+
+async fn recorded[T](value T, order List[Int], tag Int) T {
+    push(order, tag)
+    value
+}
+
+async fn joined() Text {
+    let order = new[Int]()
+    let number Task[Int] = recorded(42, order, 1)
+    let word Task[Text] = recorded("ready", order, 2)
+
+    // Creation queues both children; it does not run their bodies inline.
+    assert length(order) == 0
+    let total = number.await
+    let label = word.await
+    assert length(order) == 2
+    assert get(order, 0) == 1 && get(order, 1) == 2
+    concat(to_text(total), concat(" ", label))
+}
+
+async fn main() {
+    discard write_text(concat(joined().await, "\n"))
+}

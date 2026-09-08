@@ -106,17 +106,18 @@ compiler correctness.
 
 ## N2 — Complete the language and source library
 
-The private wait-registration substrate is implemented; it queues timer,
-readiness and completion identities without running user code. The next async
-gate is typed task-frame lowering and integration with the owner-scoped frame-root
-set, followed by
-scheduling, task-local faults, cancellation and source I/O/composition. See the
-[accepted Task design](docs/rfcs/tasks.md); reactor tests alone do not close it.
-Frame-root storage now reuses one outer root frame and a dense live set; ordinary
-functions gain no executor or per-call persistent-root registration.
-The native resume fault boundary drains live cleanups and restores roots before
-unwinding into an owned diagnostic. Source outcome propagation and suspended
-cleanup still belong to the remaining async integration gate.
+The first source Task slice implements hot child creation, postfix await,
+one-shot obligations and a CPU ready queue on one owner thread. Loom lowers
+suspension into typed functions and GC-traced frames; ordinary functions gain
+no executor or per-call persistent-root registration. Resume faults propagate
+through awaits and cancel/drain queued or suspended descendants. See the
+[example](compiler/examples/tasks).
+
+The next async gates are suspended lexical cleanup, Task transfers through
+parameters/returns/aggregates, async methods/function values, and source I/O and
+joins. The existing private timer/readiness/completion ABI is not yet connected
+to source Tasks. CPU task scheduling is cooperative, not parallel threads.
+The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 
 Extend the self-hosted path with the remaining accepted capabilities:
 
@@ -238,7 +239,7 @@ bindings and discard. Direct factories and immediate single-payload Result/Optio
 transfer are supported. MustScope results retain their fresh-return obligation
 through runtime function values and dynamic factory methods; every selected
 implementation is checked. A Dispose-only callback result has no such guarantee.
-Nested resource aggregates and async cancellation remain open; this is not the
+Nested resource aggregates and cleanup across suspension remain open; this is not the
 complete resource-cleanup gate.
 
 List literals now share typed/native/compile-time semantics. Runtime literals
@@ -253,7 +254,8 @@ Stop-the-world copying GC now rewrites precise typed roots and object fields,
 preserving shared aliases, cycles and allocation-crossing expression snapshots.
 Nonallocating functions remain root-free and collection adds no per-access
 barrier. This completes moving-memory support for the current native layouts,
-not precise local liveness, concurrent execution, Tasks or resource unwinding.
+not general local root liveness or concurrent collection. Suspended Tasks now
+use separate typed spill liveness and owner-scoped frame roots.
 
 The early syntax portion of the
 [compiler-library gate](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)

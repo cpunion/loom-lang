@@ -79,17 +79,17 @@ test fn calls_have_frames_preconditions_and_return_flow() {
     push(body, literal(999))
     let params = new[Int]()
     push(params, 1)
-    push(program.functions, Function { symbol = 0 arguments = new[Int]() params = params result = 1 locals = locals
+    push(program.functions, Function { is_async = false symbol = 0 arguments = new[Int]() params = params result = 1 locals = locals
         preconditions = one(binary(">=", 2, local(0, 1), literal(0))) postconditions = one(binary(">=", 2, local(2, 1), literal(0)))
         result_local = 2 body = node(ExprKind.Block, 1, "", -1, body) runtime_name = "" span = Span { start = 7 end = 8 } })
     let call = node(ExprKind.Call, 1, "", 0, one(literal(5)))
     assert accepted(program, binary("+", 1, call, literal(1)), 0).number == 16
     assert rejected(program, node(ExprKind.Call, 1, "", 0, one(literal(-1))), 0).message == "compile-time precondition failed"
-    push(program.functions, Function { symbol = 1 arguments = new[Int]() params = new[Int]() result = 0 locals = new[Local]()
+    push(program.functions, Function { is_async = false symbol = 1 arguments = new[Int]() params = new[Int]() result = 0 locals = new[Local]()
         preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1
         body = node(ExprKind.Return, 0, "", -1, new[Expr]()) runtime_name = "" span = Span { start = 7 end = 8 } })
     assert accepted(program, node(ExprKind.Call, 0, "", 1, new[Expr]()), 0).ty == 0
-    push(program.functions, Function { symbol = 2 arguments = new[Int]() params = new[Int]() result = 1 locals = new[Local]()
+    push(program.functions, Function { is_async = false symbol = 2 arguments = new[Int]() params = new[Int]() result = 1 locals = new[Local]()
         preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1
         body = node(ExprKind.Call, 1, "", 2, new[Expr]()) runtime_name = "" span = Span { start = 7 end = 8 } })
     assert rejected(program, node(ExprKind.Call, 1, "", 2, new[Expr]()), 0).message == "compile-time call depth exhausted"

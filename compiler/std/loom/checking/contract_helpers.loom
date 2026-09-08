@@ -29,7 +29,7 @@ fn contract_helpers(node Node) Bool {
     false
 }
 fn with_contracts(function Function, preconditions List[Expr], postconditions List[Expr]) Function {
-    Function { symbol = function.symbol arguments = function.arguments params = function.params result = function.result
+    Function { is_async = function.is_async symbol = function.symbol arguments = function.arguments params = function.params result = function.result
         locals = function.locals preconditions = preconditions postconditions = postconditions result_local = function.result_local
         body = function.body runtime_name = function.runtime_name span = function.span }
 }

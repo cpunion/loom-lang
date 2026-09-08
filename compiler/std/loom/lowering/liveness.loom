@@ -1,0 +1,162 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+import std.list.length
+import std.list.clone
+
+fn flags(count Int) List[Bool] {
+    let values = new[Bool]()
+    var index = 0
+    while index < count {
+        push(values, false)
+        index = index + 1
+    }
+    values
+}
+
+fn mark_read(local Int, uses List[Bool], definitions List[Bool]) {
+    if local >= 0 && !get(definitions, local) {
+        set(uses, local, true)
+    }
+}
+
+fn mark_bound(values List[Int], definitions List[Bool]) {
+    var index = 0
+    while index < length(values) {
+        let local = get(values, index)
+        if local >= 0 {
+            set(definitions, local, true)
+        }
+        index = index + 1
+    }
+}
+
+fn merge_definitions(target List[Bool], branch List[Bool], first Bool) {
+    var index = 0
+    while index < length(target) {
+        set(target, index, get(branch, index) &&(first || get(target, index)))
+        index = index + 1
+    }
+}
+
+fn reads(value Expr, uses List[Bool], definitions List[Bool]) {
+    if value.kind == ExprKind.Local {
+        mark_read(value.index, uses, definitions)
+        return
+    }
+    if value.kind == ExprKind.If ||(value.kind == ExprKind.Binary &&(value.text == "&&" || value.text == "||")) {
+        reads(get(value.children, 0), uses, definitions)
+        let yes = clone(definitions)
+        let no = clone(definitions)
+        reads(get(value.children, 1), uses, yes)
+        if length(value.children) == 3 {
+            reads(get(value.children, 2), uses, no)
+        }
+        merge_definitions(definitions, yes, true)
+        merge_definitions(definitions, no, false)
+        return
+    }
+    if value.kind == ExprKind.While {
+        reads(get(value.children, 0), uses, definitions)
+        reads(get(value.children, 1), uses, clone(definitions))
+        return
+    }
+    if value.kind == ExprKind.Defer || value.kind == ExprKind.Cleanup {
+        reads(get(value.children, 0), uses, clone(definitions))
+        return
+    }
+    var index = 0
+    while index < length(value.children) {
+        reads(get(value.children, index), uses, definitions)
+        index = index + 1
+    }
+    if value.kind == ExprKind.Let || value.kind == ExprKind.Assign {
+        set(definitions, value.index, true)
+    }
+    if value.kind == ExprKind.Match {
+        let incoming = clone(definitions)
+        index = 0
+        while index < length(value.arms) {
+            let arm = get(value.arms, index)
+            let branch = clone(incoming)
+            mark_bound(arm.bindings, branch)
+            if arm.whole >= 0 {
+                set(branch, arm.whole, true)
+            }
+            var child = 0
+            while child < length(arm.body) {
+                reads(get(arm.body, child), uses, branch)
+                child = child + 1
+            }
+            merge_definitions(definitions, branch, index == 0)
+            index = index + 1
+        }
+    }
+}
+
+fn flows(graph Graph) List[Flow] {
+    let analysis = new[Flow]()
+    var index = 0
+    while index < length(graph.states) {
+        let source = get(graph.states, index)
+        let uses = flags(length(graph.locals))
+        let definitions = flags(length(graph.locals))
+        var item = 0
+        while item < length(source.code) {
+            reads(get(source.code, item), uses, definitions)
+            item = item + 1
+        }
+        reads(source.value, uses, definitions)
+        push(analysis, Flow {
+                uses = uses
+                definitions = definitions
+                live = flags(length(graph.locals))
+            })
+        index = index + 1
+    }
+    var changed = true
+    while changed {
+        changed = false
+        index = length(graph.states) - 1
+        while index >= 0 {
+            let current = get(analysis, index)
+            let outgoing = flags(length(graph.locals))
+            let targets = get(graph.states, index).edges
+            var target = 0
+            while target < length(targets) {
+                let edge = get(targets, target)
+                let live = clone(get(analysis, edge.target).live)
+                var binding = 0
+                while binding < length(edge.bindings) {
+                    let id = get(edge.bindings, binding)
+                    if id >= 0 {
+                        set(live, id, false)
+                    }
+                    binding = binding + 1
+                }
+                var local = 0
+                while local < length(live) {
+                    if get(live, local) {
+                        set(outgoing, local, true)
+                    }
+                    local = local + 1
+                }
+                target = target + 1
+            }
+            var local = 0
+            while local < length(outgoing) {
+                let live = get(current.uses, local) ||(get(outgoing, local) && !get(current.definitions, local))
+                if live != get(current.live, local) {
+                    set(current.live, local, live)
+                    changed = true
+                }
+                local = local + 1
+            }
+            index = index - 1
+        }
+    }
+    analysis
+}

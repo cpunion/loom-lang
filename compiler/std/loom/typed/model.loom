@@ -1,14 +1,43 @@
 import std.loom.source.Span
 
 // IDs address immutable entries in the checked program, never source names.
-pub enum TypeKind { Unit Int Bool Text Bytes Parameter List Record Enum Refined Tuple Float Dyn Associated Function }
-pub record Field { name Text ty Int }
-pub record Variant { name Text fields List[Int] }
+pub enum TypeKind {
+    Unit
+    Int
+    Bool
+    Text
+    Bytes
+    Parameter
+    List
+    Record
+    Enum
+    Refined
+    Tuple
+    Float
+    Dyn
+    Associated
+    Function
+    Task
+    Frame
+}
+
+pub record Field {
+    name Text
+    ty Int
+}
+
+pub record Variant {
+    name Text
+    fields List[Int]
+}
+
 pub record Type {
     kind TypeKind
     // Associated uses the member's source symbol and [receiver, member arguments...].
     // Concrete projections normalize before executable IR reaches the backend.
     // Function has symbol -1 and arguments [parameter types..., result type].
+    // Task has symbol -1 and [logical result]. Frame is lowering-only managed
+    // storage: result first, then program counter, parameters and live spills.
     // Dyn arguments are all associated bindings in concept declaration order;
     // its symbol identifies the exact concept-and-bindings interface instance.
     symbol Int
@@ -19,18 +48,62 @@ pub record Type {
     // for a particular queue. These are not executable function references.
     constraint List[Expr]
 }
-pub record Local { name Text ty Int mutable Bool is_scoped Bool }
-pub enum ExprKind {
-    Integer Bool Text Local Unary Binary Call Intrinsic Record Field Variant
-    Block Let Assign Return Assert Discard While If Match Coerce Deferred Float DynBox DynCall
-    FunctionRef IndirectCall Break Continue List Defer Cleanup
+
+pub record Local {
+    name Text
+    ty Int
+    mutable Bool
+    is_scoped Bool
 }
+
+pub enum ExprKind {
+    Integer
+    Bool
+    Text
+    Local
+    Unary
+    Binary
+    Call
+    Intrinsic
+    Record
+    Field
+    Variant
+    Block
+    Let
+    Assign
+    Return
+    Assert
+    Discard
+    While
+    If
+    Match
+    Coerce
+    Deferred
+    Float
+    DynBox
+    DynCall
+    FunctionRef
+    IndirectCall
+    Break
+    Continue
+    List
+    Defer
+    Cleanup
+    TaskCall
+    Await
+    FrameNew
+    FrameStore
+}
+
 // FunctionRef.index is a concrete scheduled function ID. IndirectCall children
 // are [callee, arguments...], evaluated once in source order.
 // List children are ordered, same-typed elements of a fresh shared container.
 // Defer/Cleanup index a function-local cleanup registration and retain its one
 // body child with the owner's Local IDs. Only Cleanup executes that body.
 // Assert.text is a static source diagnostic, or empty for source-less IR.
+// TaskCall/Await exist only before coroutine lowering. FrameNew children are
+// indexed Field initializers; omitted fields are zeroed. FrameStore children
+// are [frame,value], index selects the field, and its result is Unit.
 pub record Expr {
     kind ExprKind
     ty Int
@@ -41,8 +114,16 @@ pub record Expr {
     arms List[Arm]
     falls Bool
 }
-pub record Arm { variant Int bindings List[Int] whole Int body List[Expr] }
+
+pub record Arm {
+    variant Int
+    bindings List[Int]
+    whole Int
+    body List[Expr]
+}
+
 pub record Function {
+    is_async Bool
     symbol Int
     arguments List[Int]
     params List[Int]
@@ -55,13 +136,28 @@ pub record Function {
     runtime_name Text
     span Span
 }
+
 // Interface.symbol is a source concept ID; TypeKind.Dyn.symbol indexes this
 // program's interfaces. Even unused associated bindings distinguish interface
 // instances. Method parameters exclude the erased receiver.
-pub record Method { name Text params List[Int] result Int }
-pub record Interface { symbol Int methods List[Method] }
+pub record Method {
+    name Text
+    params List[Int]
+    result Int
+}
+
+pub record Interface {
+    symbol Int
+    methods List[Method]
+}
+
 // Method entries are concrete function IDs, or -1 for unused slots.
-pub record Witness { interface Int concrete Int methods List[Int] }
+pub record Witness {
+    interface Int
+    concrete Int
+    methods List[Int]
+}
+
 pub record Program {
     types List[Type]
     functions List[Function]

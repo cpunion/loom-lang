@@ -5,17 +5,25 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add the first source Task slice: hot child creation, `async fn main`,
+  `test async fn`, postfix `.await`/`.await?`, and one-shot local obligations.
+  Loom lowers typed frames and resume functions for a single-threaded CPU ready
+  queue, with fault propagation and cancellation of queued/suspended descendants.
+  Source timers, asynchronous I/O, joins, suspended cleanup, Task transfers
+  through parameters/returns/aggregates, and async methods/function values remain
+  unfinished.
+
 - Add a private native resume fault boundary: drain live lexical cleanups,
   restore GC roots, then unwind through LLVM frames into an owned diagnostic.
-  Ordinary synchronous faults still terminate; source Tasks remain unfinished.
+  Ordinary synchronous faults still terminate; Tasks use the boundary per resume.
 
 - Add private owner-scoped frame roots over the existing moving collector,
   with dense scanning, generation-checked reuse and noncollecting handoff.
-  Coroutine lowering, scheduling and suspended cleanup remain unfinished.
+  Generated coroutine frames reuse these roots; suspended cleanup remains unfinished.
 
 - Add a private portable wait ABI for timers, native readiness and worker
   completion, with one-shot delivery and generation-checked cancellation.
-  Task syntax, scheduling and state-machine lowering remain unfinished.
+  Connecting source Tasks to timer/I/O waits remains unfinished.
   Final executable links discard unreferenced runtime sections; library objects
   keep their existing export/reachability policy.
 

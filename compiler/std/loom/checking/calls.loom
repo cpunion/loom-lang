@@ -246,7 +246,12 @@ fn matching_overloads(context Context, node Node, options List[Int], types List[
             discard infer(context.env, get(candidate_signature.params, argument), get(values, argument).ty, args)
             argument = argument + 1
         }
-        if matched && !complete(args) && expected >= 0 { discard infer(context.env, candidate_signature.result, expected, args) }
+        if matched && !complete(args) && expected >= 0 {
+            let result_hint = if async_signature(context.env, candidate_signature) {
+                if get(context.env.types, expected).kind == TypeKind.Task { get(get(context.env.types, expected).arguments, 0) } else { -1 }
+            } else { expected }
+            if result_hint >= 0 { discard infer(context.env, candidate_signature.result, result_hint, args) }
+        }
         if matched && complete(args) {
             if satisfies_arguments(context, candidate_signature, args, node)? {
                 argument = 0
@@ -329,7 +334,9 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
         }
         resource_argument = resource_argument + 1
     }
-    let output = substitute(context.env, context.signature.symbol, signature.result, instance.arguments, node)?
+    let logical_output = substitute(context.env, context.signature.symbol, signature.result, instance.arguments, node)?
+    let asynchronous = async_signature(context.env, signature)
+    let output = if asynchronous { intern(context.env, TypeKind.Task, -1, ints(logical_output)) } else { logical_output }
     if !context.emit && !known_constants(constants) {
         return Result.Ok(expression(ExprKind.Deferred, output, node, "", -1, runtime_values, all_fall(runtime_values)))
     }
@@ -337,5 +344,6 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
         return dynamic_call(context, node, instance.signature, instance.arguments, constants, output, runtime_values)
     }
     let target = if context.emit { schedule(context.env, instance.signature, instance.arguments, constants, node)? } else { -1 }
-    Result.Ok(expression(ExprKind.Call, output, node, "", target, runtime_values, all_fall(runtime_values)))
+    Result.Ok(expression(if asynchronous { ExprKind.TaskCall } else { ExprKind.Call }, output, node,
+        if asynchronous { task_creation_message(context, node) } else { "" }, target, runtime_values, all_fall(runtime_values)))
 }

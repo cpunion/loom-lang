@@ -145,7 +145,7 @@ test fn malformed_syntax_has_exact_location() {
     assert rejected("fn f() Unit {}").message == "omit the Unit return annotation"
     assert rejected("fn f() { Unit }").message == "omit explicit Unit expressions"
     assert rejected("fn f() { let x = 1 let y = 2 }").span.start == 19
-    assert rejected("fn f() { await f() }").message == "expected a newline or '}' after the statement"
+    assert rejected("fn f() { await f() }").message == "expected an expression"
     assert rejected("pub test fn f() {}").message == "test functions cannot be public"
     assert rejected("intrinsic fn f() {}").message == "intrinsic declarations have no body or contracts"
     assert rejected("fn f() { 9223372036854775808 }").message == "integer literal is outside the Int range"

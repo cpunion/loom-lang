@@ -34,7 +34,7 @@ fn concept_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, D
     if at(named.rest, Kind.LBracket) { return Result.Err(error(named.rest, "concepts do not take type parameters")) }
     var rest = newlines(expect(newlines(named.rest), Kind.LBrace, "'{' after the concept name")?)
     while !at(rest, Kind.RBrace) {
-        if !word(rest, "fn") && !word(rest, "type") {
+        if !word(rest, "fn") && !word(rest, "async") && !word(rest, "type") {
             return Result.Err(error(rest, "expected a concept method, associated type, or '}'"))
         }
         let method = if word(rest, "type") { associated_type(rest, false)? }
@@ -146,8 +146,14 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool, proto
         push(children, done(rest, next(rest), NodeKind.Test, "", new[Node]()).node)
         rest = next(rest)
     }
+    let is_async = word(rest, "async")
+    if is_async {
+        push(children, done(rest, next(rest), NodeKind.Async, "", new[Node]()).node)
+        rest = next(rest)
+    }
     let is_intrinsic = word(rest, "intrinsic")
     if is_intrinsic {
+        if is_async { return Result.Err(error(rest, "async intrinsic declarations are not supported")) }
         push(children, done(rest, next(rest), NodeKind.Intrinsic, "", new[Node]()).node)
         rest = next(rest)
     }

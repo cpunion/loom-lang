@@ -33,6 +33,8 @@ mod gc_lower;
 mod memory;
 #[path = "llvm_target.rs"]
 mod native_target;
+#[path = "llvm_tasks.rs"]
+mod tasks;
 
 use native_target::NativeTarget;
 
@@ -159,8 +161,10 @@ fn emit_checked(
         .iter()
         .map(|id| cleanup::plans(&program.functions[*id]).map(|plans| (*id, plans)))
         .collect::<NativeResult<HashMap<_, _>>>()?;
-    let runtime_fault =
-        test_mode || library || cleanup_plans.values().any(|plans| !plans.is_empty());
+    let runtime_fault = test_mode
+        || library
+        || cleanup_plans.values().any(|plans| !plans.is_empty())
+        || tasks::present(program, &reachable);
     if !program.test_names.is_empty() && program.test_names.len() != program.tests.len() {
         return Err("checked test-name count mismatch".into());
     }
@@ -431,6 +435,8 @@ fn native_type<'ctx>(
         Type::Unit => context.struct_type(&[], false).into(),
         Type::Parameter(_) => return Err("unbound type parameter reached native emission".into()),
         Type::Data(id) => match &program.types[id].kind {
+            checked::DataKind::Task(_) => context.i64_type().into(),
+            checked::DataKind::Frame(_) => context.ptr_type(AddressSpace::default()).into(),
             checked::DataKind::Refined(base) => native_type(context, program, *base)?,
             checked::DataKind::Record(fields) => {
                 let fields = fields
@@ -488,6 +494,7 @@ fn value_words(program: &checked::Program, ty: Type) -> NativeResult<usize> {
         Type::Unit => Ok(0),
         Type::Parameter(_) => Err("unbound type parameter reached native layout".into()),
         Type::Data(id) => match &program.types[id].kind {
+            checked::DataKind::Task(_) | checked::DataKind::Frame(_) => Ok(1),
             checked::DataKind::Refined(base) => value_words(program, *base),
             checked::DataKind::Record(fields) => {
                 fields.iter().try_fold(0usize, |total, (_, ty)| {
@@ -628,6 +635,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let pointer = self.context.ptr_type(AddressSpace::default());
         let i64_type = self.context.i64_type();
         let (name, result_type) = match operation {
+            Primitive::TaskCreate
+            | Primitive::TaskAwait
+            | Primitive::TaskResult
+            | Primitive::TaskRelease
+            | Primitive::TaskRun => {
+                return self.task_primitive(result, operation, &values);
+            }
             Primitive::FloatFromInt => {
                 return Ok(Some(
                     self.builder
@@ -1053,6 +1067,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.restore_locals()?;
                 return Ok(call.try_as_basic_value().basic());
             }
+            checked::ExprKind::FrameNew(fields) => return self.frame_new(expr.ty, fields),
+            checked::ExprKind::FrameStore {
+                frame,
+                field,
+                value,
+            } => {
+                return self.frame_store(frame, *field, value);
+            }
             checked::ExprKind::Record(fields) => {
                 let Some(values) = self.operands(fields.iter().map(|(_, field)| field))? else {
                     return Ok(None);
@@ -1072,14 +1094,36 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             checked::ExprKind::List(elements) => return self.list_literal(expr.ty, elements),
             checked::ExprKind::Field(value, index) => {
+                let frame_type = match value.ty {
+                    Type::Data(id)
+                        if matches!(self.program.types[id].kind, checked::DataKind::Frame(_)) =>
+                    {
+                        Some(value.ty)
+                    }
+                    _ => None,
+                };
                 let Some(value) = self.expr(value)? else {
                     return Ok(None);
                 };
-                self.builder.build_extract_value(
-                    value.into_struct_value(),
-                    *index as u32,
-                    "field",
-                )?
+                if let Some(ty) = frame_type {
+                    let address = self.builder.build_struct_gep(
+                        tasks::frame_layout(self.context, self.program, ty)?,
+                        value.into_pointer_value(),
+                        *index as u32,
+                        "frame.field",
+                    )?;
+                    self.builder.build_load(
+                        native_type(self.context, self.program, expr.ty)?,
+                        address,
+                        "frame.load",
+                    )?
+                } else {
+                    self.builder.build_extract_value(
+                        value.into_struct_value(),
+                        *index as u32,
+                        "field",
+                    )?
+                }
             }
             checked::ExprKind::Variant { variant, fields } => {
                 let Some(values) = self.operands(fields)? else {
@@ -1340,6 +1384,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Type::Unit => {}
             Type::Parameter(_) => return Err("unbound type parameter in enum payload".into()),
             Type::Data(id) => match &self.program.types[id].kind {
+                checked::DataKind::Task(_) => self.flatten(Type::Int, value, words)?,
+                checked::DataKind::Frame(_) => self.flatten(Type::Text, value, words)?,
                 checked::DataKind::Refined(base) => self.flatten(*base, value, words)?,
                 checked::DataKind::Record(fields) => {
                     for (index, (_, ty)) in fields.iter().enumerate() {
@@ -1430,6 +1476,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Type::Unit => self.context.struct_type(&[], false).const_zero().into(),
             Type::Parameter(_) => return Err("unbound type parameter in enum payload".into()),
             Type::Data(id) => {
+                match self.program.types[id].kind {
+                    checked::DataKind::Task(_) => return self.rebuild(Type::Int, words, offset),
+                    checked::DataKind::Frame(_) => return self.rebuild(Type::Text, words, offset),
+                    _ => {}
+                }
                 if let checked::DataKind::Refined(base) = &self.program.types[id].kind {
                     return self.rebuild(*base, words, offset);
                 }
@@ -1437,7 +1488,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .into_struct_type()
                     .const_zero();
                 match &self.program.types[id].kind {
-                    checked::DataKind::Refined(_) => {
+                    checked::DataKind::Refined(_)
+                    | checked::DataKind::Task(_)
+                    | checked::DataKind::Frame(_) => {
                         unreachable!("refined layouts use their base representation")
                     }
                     checked::DataKind::Record(fields) => {
@@ -1842,10 +1895,14 @@ fn reachable_functions(
                     expr(arg, calls, witnesses, slots);
                 }
             }
-            checked::ExprKind::Record(fields) => {
+            checked::ExprKind::Record(fields) | checked::ExprKind::FrameNew(fields) => {
                 for (_, field) in fields {
                     expr(field, calls, witnesses, slots);
                 }
+            }
+            checked::ExprKind::FrameStore { frame, value, .. } => {
+                expr(frame, calls, witnesses, slots);
+                expr(value, calls, witnesses, slots);
             }
             checked::ExprKind::Variant { fields, .. } => {
                 for field in fields {

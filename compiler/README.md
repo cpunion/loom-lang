@@ -1244,10 +1244,10 @@ Required proofs still inspect the lowered function; unsupported proofs reject.
 The [cleanup example](examples/cleanup/main.loom) exercises these exits and GC
 snapshots. Fault draining preserves the first diagnostic and runs remaining
 callbacks even if a cleanup faults. Ordinary source programs still terminate;
-the private native resume catcher is not source-level recovery. OOM, internal
+the native resume catcher used by Tasks is not source-level recovery. OOM, internal
 runtime corruption, external process signals,
-and explicit process termination do not guarantee cleanup. Task cancellation
-remains unimplemented.
+and explicit process termination do not guarantee cleanup. Tasks can cancel
+queued or suspended descendants, but active lexical cleanup cannot cross await.
 
 `scoped name [Type] = initializer` uses the same block cleanup mechanism. It
 evaluates its initializer once and registers the statically selected
@@ -1302,7 +1302,7 @@ cannot justify a scoped initializer. Direct calls still use checked body evidenc
 
 This synchronous slice conservatively rejects nested resource aggregates and
 resource lists, and matching a resource itself.
-Pending aggregate-transfer cleanup and async delivery/cancellation remain open.
+Aggregate-transfer cleanup and cleanup across async suspension remain open.
 
 `break` exits the nearest enclosing `while` body; `continue` reevaluates that
 loop's condition. Both run the defers of scopes they leave, but not defers
@@ -1312,6 +1312,43 @@ block evaluates its own loops and cannot jump into a runtime loop; a selected
 `comptime if` branch is ordinary code at its insertion point. Loop execution is
 supported at compile time, but general loop-invariant proofs remain unsupported.
 The [loops example](examples/loops/main.loom) includes same-package unit tests.
+
+## Source Tasks
+
+An `async fn` declares its logical result; calling it creates a hot `Task[T]`.
+Both children below enter the ready queue before either body runs:
+
+```loom
+async fn twice(value Int) Int { value + value }
+
+async fn main() {
+    let first = twice(20)
+    let second = twice(1)
+    assert first.await + second.await == 42
+}
+
+test async fn computes() {
+    assert twice(21).await == 42
+}
+```
+
+Use `loom run` and `loom test` as usual; see the [task package](examples/tasks).
+`.await` is a postfix keyword, allowed only inside async functions/tests.
+`.await?` applies ordinary Result propagation to the completed value. Prefix
+await, `.await()` and `.await!` are invalid. Task handles are one-shot: they
+cannot be discarded, copied, overwritten while live or awaited twice.
+
+The current executor is a CPU ready queue on one owner thread, not parallel
+threads. Loom lowers suspension into typed constructor/resume functions and
+GC-traced frames; ordinary functions keep their direct execution path. A child
+fault propagates at await, and parent failure cancels and drains queued or
+suspended descendants.
+
+This slice rejects active `defer`/`scoped` cleanup across await, Task transfers
+through parameters/returns/aggregates, and async methods/function values. Source
+timers, asynchronous I/O, joins and public task-outcome handling are not available
+yet. Existing synchronous I/O blocks the owner thread. These are implementation
+limits; the [accepted design](../docs/rfcs/tasks.md) remains the target.
 
 ## Next boundary
 
@@ -1382,7 +1419,7 @@ old-language support policy. Stage numbers denote bootstrap generations, not
 language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Mutable record fields, broader proofs,
-nested resource transfers, Tasks, complete compile-time programming,
+nested resource transfers, complete Task/I/O composition, complete compile-time programming,
 version normalization, authenticated Git sources, graph-wide fork policies,
 persistent frontend/proof reuse, deployment and semantic-change tools remain
 outside this slice. Exact HTTPS Git/fork resolution, verified source locks and

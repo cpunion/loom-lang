@@ -4,13 +4,24 @@ Only the native compiler under `compiler/` is maintained. Its
 [guide](../../compiler/README.md) lists the tested subset and commands.
 The former workspace compiler and its feature matrices have been removed.
 
+Source `async fn`, `async fn main`, `test async fn` and postfix `.await` now
+have a native implementation. Calls create hot child Tasks in one owner-thread
+ready queue; they do not execute inline or create parallel threads. Loom lowers
+suspension into typed constructor/resume functions, spilling only values needed
+across awaits into GC-traced frames. Task handles are one-shot; `.await?` retains
+ordinary Result propagation. A child fault propagates at await; parent failure
+cancels and drains queued or suspended descendants. See the
+[task example](../../compiler/examples/tasks) and [accepted design](../rfcs/tasks.md).
+This first slice has no source timers, asynchronous I/O or joins. Active lexical
+cleanup cannot cross an await; Task parameter/return/aggregate transfers, async
+methods and async function values remain unsupported.
+
 The private wait ABI now provides one-shot timers, borrowed socket readiness and
 cross-thread completion notifications through `polling`. Generation checks reject
 stale completion; cancellation removes active registrations before handles may
 close. Focused tests exercise actual timers and localhost sockets. This is not
-an async executor: source Task checking/lowering, outcome propagation and structured
-cancellation remain unimplemented. The accepted
-[Task design](../rfcs/tasks.md) remains the target.
+the source Task I/O path: the CPU task scheduler does not yet consume these wait
+notifications.
 Executable links enable native dead-section removal so an unused reactor does
 not enter synchronous program artifacts. Library object exports are unchanged.
 
@@ -19,15 +30,17 @@ native owner activation. A dense live set supports arbitrary removal and
 generation-checked reuse; the collector updates its typed payload bases without
 retaining vector element addresses. Forced-collection tests cover frames after
 their creator returns, shared/cyclic contents and rooted result handoff. This
-does not yet generate coroutine frames or preserve stack cleanup across awaits.
+storage is now used by generated coroutine frames; suspended lexical cleanup
+remains unsupported.
 
 The private resume fault boundary now drains live lexical cleanups before Rust
 C-unwind crosses LLVM frames with unwind tables. It restores the GC root chain
 and returns owned diagnostic bytes; secondary cleanup faults preserve the first
-error. Ordinary source programs still terminate on faults. Native integration
+error. Ordinary synchronous programs still terminate on faults. Native integration
 tests exercise generated guards, runtime failures and subsequent execution under
-forced GC. This is not source-level recovery, task outcome propagation or
-cancellation; unknown Rust panics and OOM remain process-level failures.
+forced GC. The Task scheduler uses this boundary for fault propagation and
+descendant cancellation, not source-level exception recovery; unknown Rust
+panics and OOM remain process-level failures.
 
 The active compiler has a real source-to-native check/build/test/run path,
 package/test isolation, concrete generic records/enums, shared lists, UTF-8

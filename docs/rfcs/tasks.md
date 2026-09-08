@@ -1,7 +1,7 @@
 # Tasks and suspension
 
 Status: **Accepted direction**. This consolidates the previously accepted async
-decisions; it does not claim current compiler support. See the
+decisions; implementation is incremental. See the
 [implementation status](../project/implementation-status.md).
 
 ## Source behavior
@@ -25,7 +25,7 @@ semantics. Prefix await is invalid syntax. `.await()` is not a method call;
 nested executor.
 
 A Task is a one-shot structured obligation: it cannot be silently dropped,
-discarded, copied, overwritten or awaited twice. Parameters, returns and
+discarded, copied, overwritten while live or awaited twice. Parameters, returns and
 structured bindings may transfer that obligation, including within aggregates.
 This introduces no ownership, borrow, lifetime or pin syntax.
 
@@ -67,8 +67,22 @@ sugar. Concrete library spellings are not compiler dispatch tables.
 
 ## Implementation boundary
 
-Loom lowers suspension into typed state machines; LLVM emits the lowered
-program. Ordinary functions retain direct code without a scheduler or frame.
+The current source slice supports direct async functions, async main/tests,
+one-shot local Tasks and postfix `.await`/`.await?`. Hot creation enqueues a child
+without running its body inline. One owner thread processes the CPU ready queue;
+this is cooperative execution, not parallel threads. Child faults propagate at
+await, and parent failure cancels and drains queued or suspended descendants.
+The [source example](../../compiler/examples/tasks) illustrates the available surface.
+
+Active `defer`/`scoped` cleanup cannot yet cross an await. Task transfers through
+parameters, returns and aggregates, async methods/function values, source timers,
+asynchronous I/O and joins are explicitly unfinished, not removed requirements.
+Synchronous I/O still blocks the owner thread. Public outcome inspection and
+cleanup across suspended activations remain future work.
+
+Loom lowers suspension into ordinary typed constructor/resume functions, using
+private frame/task primitives and control flow; LLVM does not lower source await.
+Ordinary functions retain direct code without a scheduler or frame.
 Suspended state and results need persistent, updateable GC roots; stack root
 slots and interior pointers cannot outlive their native activation.
 
@@ -84,8 +98,8 @@ Frame payloads reuse the existing zeroed typed GC allocation and tracer, without
 changing ordinary record semantics. Allocation-crossing code reloads the frame
 base before deriving field addresses. A completed result stays rooted until its
 receiver has registered a typed snapshot; removing the producer's root does not
-perform cleanup or collect. This storage boundary does not implement Task
-checking, spill selection, state transitions or suspended cleanup.
+perform cleanup or collect. The Loom lowerer computes cross-await liveness and
+state transitions; this storage boundary itself does not manage suspended cleanup.
 
 The private [fault boundary](../../compiler/runtime/src/fault_abi.rs) wraps one
 native resume activation inside that outer root scope. A language fault first
@@ -98,8 +112,8 @@ Rust panics, OOM and runtime corruption are not task outcomes. The runtime requi
 `panic=unwind`; this is not a general foreign-exception recovery mechanism.
 
 Captured diagnostics contain no managed pointers and must be released after
-materializing an outcome. This resume boundary does not implement source Task
-fault propagation or cleanup across suspended state-machine activations.
+materializing an outcome. The scheduler uses this boundary to propagate task
+faults; it does not preserve stack cleanup across suspended activations.
 
 Wait registration is a private runtime boundary for absolute monotonic timers,
 borrowed native readiness handles, and externally completed operations. A
@@ -123,8 +137,7 @@ Failed native interest updates restore the prior registrations; inability to
 restore that borrowed-handle boundary is an unrecoverable runtime fault.
 
 The reactor uses [polling](https://docs.rs/polling/3.11.0/polling/struct.Poller.html)
-for OS readiness rather than separate handwritten platform reactors. Real task
-lowering, scheduling, task-local fault propagation, structured cancellation and
-source async I/O are separate implementation gates, not implied by readiness
-tests. Public raw-fd wait constructors and a runtime registry of join names are
-not required.
+for OS readiness rather than separate handwritten platform reactors. Connecting
+source task suspension to these waits remains a separate gate from CPU scheduling;
+readiness tests do not imply source asynchronous I/O support. Public raw-fd wait
+constructors and a runtime registry of join names are not required.

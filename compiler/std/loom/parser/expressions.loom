@@ -173,20 +173,27 @@ fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
         let rest = parsed.rest
         if at(rest, Kind.Dot) {
             let after = next(rest)
-            let numeric = at(after, Kind.Number)
-            let field = if numeric {
-                done(after, next(after), NodeKind.Name, token(after).value, new[Node]())
-            } else { name(after)? }
-            let types = if numeric { done(field.rest, field.rest, NodeKind.TypeArguments, "", new[Node]()) } else { expression_args(field.rest)? }
-            if !numeric && at(types.rest, Kind.LParen) {
-                let args = sequence(types.rest, Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
-                let children = two(parsed.node, types.node)
-                push(children, args.node)
-                parsed = done(start, args.rest, NodeKind.MethodCall, field.node.value, children)
+            if word(after, "await") {
+                if at(next(after), Kind.LParen) {
+                    return Result.Err(error(next(after), "await is a postfix keyword, not a method"))
+                }
+                parsed = done(start, next(after), NodeKind.Await, "", one(parsed.node))
             } else {
-                parsed = done(start, field.rest, NodeKind.Select, field.node.value, one(parsed.node))
-                if length(types.node.children) != 0 {
-                    parsed = done(start, types.rest, NodeKind.Index, "", two(parsed.node, bracket_arguments(types.node)))
+                let numeric = at(after, Kind.Number)
+                let field = if numeric {
+                    done(after, next(after), NodeKind.Name, token(after).value, new[Node]())
+                } else { name(after)? }
+                let types = if numeric { done(field.rest, field.rest, NodeKind.TypeArguments, "", new[Node]()) } else { expression_args(field.rest)? }
+                if !numeric && at(types.rest, Kind.LParen) {
+                    let args = sequence(types.rest, Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
+                    let children = two(parsed.node, types.node)
+                    push(children, args.node)
+                    parsed = done(start, args.rest, NodeKind.MethodCall, field.node.value, children)
+                } else {
+                    parsed = done(start, field.rest, NodeKind.Select, field.node.value, one(parsed.node))
+                    if length(types.node.children) != 0 {
+                        parsed = done(start, types.rest, NodeKind.Index, "", two(parsed.node, bracket_arguments(types.node)))
+                    }
                 }
             }
         } else {

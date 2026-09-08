@@ -63,7 +63,7 @@ fn reserved(value Text) Bool {
     value == "where" || value == "record" || value == "enum" || value == "match" ||
     value == "test" || value == "import" || value == "let" || value == "var" ||
     value == "return" || value == "assert" || value == "discard" || value == "while" ||
-    value == "break" || value == "continue" ||
+    value == "break" || value == "continue" || value == "async" || value == "await" ||
     value == "if" || value == "else" || value == "requires" || value == "ensures" ||
     value == "true" || value == "false" || value == "comptime" || value == "defer" || value == "scoped" ||
     value == "concept" || value == "impl" || value == "for" || value == "implements" || value == "dyn"
@@ -78,7 +78,7 @@ fn path(cursor Cursor) Result[Step, Diagnostic] {
     let first = name(cursor)?
     var rest = first.rest
     var value = first.node.value
-    while at(rest, Kind.Dot) && !at(next(rest), Kind.Number) {
+    while at(rest, Kind.Dot) && !at(next(rest), Kind.Number) && !word(next(rest), "await") {
         let part = name(next(rest))?
         value = concat(value, concat(".", part.node.value))
         rest = part.rest

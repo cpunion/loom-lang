@@ -1,0 +1,214 @@
+import std.loom.source.Span
+import std.loom.typed.Program
+import std.loom.typed.Function
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Field
+import std.loom.typed.Variant
+import std.loom.typed.Local
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Arm
+import std.loom.typed.Interface
+import std.loom.typed.Witness
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+
+fn test_span() Span {
+    Span {
+        start = 0
+        end = 1
+    }
+}
+
+fn test_local(ty Int) Local {
+    Local {
+        name = ""
+        ty = ty
+        mutable = true
+        is_scoped = false
+    }
+}
+
+fn test_function(params List[Int], output Int, locals List[Local], body Expr) Function {
+    Function {
+        is_async = true
+        symbol = -1
+        arguments = new[Int]()
+        params = params
+        result = output
+        locals = locals
+        preconditions = new[Expr]()
+        postconditions = new[Expr]()
+        result_local = -1
+        body = body
+        runtime_name = ""
+        span = test_span()
+    }
+}
+
+fn has_high(value Expr) Bool {
+    if value.kind == ExprKind.TaskCall || value.kind == ExprKind.Await {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if has_high(get(value.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if has_high(get(body, item)) {
+                return true
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    false
+}
+
+test fn lowers_hot_constructors_and_spills_only_values_crossing_await() {
+    let span = test_span()
+    let types = new[Type]()
+    let kinds = new[TypeKind]()
+    push(kinds, TypeKind.Unit)
+    push(kinds, TypeKind.Int)
+    push(kinds, TypeKind.Bool)
+    push(kinds, TypeKind.Text)
+    push(kinds, TypeKind.Bytes)
+    push(kinds, TypeKind.Float)
+    var index = 0
+    while index < length(kinds) {
+        push(types, Type {
+                kind = get(kinds, index)
+                symbol = -1
+                arguments = new[Int]()
+                fields = new[Field]()
+                variants = new[Variant]()
+                constraint = new[Expr]()
+            })
+        index = index + 1
+    }
+    let task = shape(types, TypeKind.Task, ints(1))
+    let functions = new[Function]()
+    let child_locals = new[Local]()
+    push(child_locals, test_local(1))
+    push(functions, test_function(ints(1), 1, child_locals,
+            block(one(node(ExprKind.Local, 1, span, 0, new[Expr]())), 1, span, true)))
+    let locals = new[Local]()
+    push(locals, test_local(1))
+    push(locals, test_local(5))
+    push(locals, test_local(task))
+    push(locals, test_local(1))
+    let values = one(node(ExprKind.Let, 0, span, 0, one(integer(7, span))))
+    let unused = labeled(node(ExprKind.Float, 5, span, -1, new[Expr]()), "3.5")
+    push(values, node(ExprKind.Let, 0, span, 1, one(unused)))
+    let call = labeled(node(ExprKind.TaskCall, task, span, 0, one(integer(1, span))), "fixture: child creation")
+    push(values, node(ExprKind.Let, 0, span, 2, one(call)))
+    push(values, node(ExprKind.Let, 0, span, 3, one(node(ExprKind.Await, 1, span, -1,
+                    one(node(ExprKind.Local, task, span, 2, new[Expr]()))))))
+    let sum = labeled(node(ExprKind.Binary, 1, span, -1, pair(node(ExprKind.Local, 1, span, 0, new[Expr]()),
+                node(ExprKind.Local, 1, span, 3, new[Expr]()))), "+")
+    let equals = labeled(node(ExprKind.Binary, 2, span, -1, pair(sum, integer(8, span))), "==")
+    push(values, node(ExprKind.Assert, 0, span, -1, one(equals)))
+    push(functions, test_function(new[Int](), 0, locals, block(values, 0, span, true)))
+    let source = Program {
+        types = types
+        functions = functions
+        entry = 1
+        tests = new[Int]()
+        test_names = new[Text]()
+        exports = new[Int]()
+        interfaces = new[Interface]()
+        witnesses = new[Witness]()
+    }
+    let lowered = lower(source)
+    assert get(source.functions, 1).is_async
+    assert lowered.entry != 1 && length(lowered.functions) == 6
+    assert get(lowered.functions, 0).result == task
+    assert length(get(lowered.functions, 0).params) == 2
+    index = 0
+    var frames = 0
+    while index < length(lowered.types) {
+        let ty = get(lowered.types, index)
+        if ty.kind == TypeKind.Frame {
+            frames = frames + 1
+            if get(ty.fields, 0).ty == 0 {
+                assert length(ty.fields) == 4
+                var field = 0
+                while field < length(ty.fields) {
+                    assert get(ty.fields, field).ty != 5
+                    field = field + 1
+                }
+            }
+        }
+        index = index + 1
+    }
+    assert frames == 2
+    index = 0
+    while index < length(lowered.functions) {
+        let function = get(lowered.functions, index)
+        assert !function.is_async && !has_high(function.body)
+        index = index + 1
+    }
+}
+
+test fn edge_bindings_and_argument_snapshots_are_live_at_the_correct_point() {
+    let span = test_span()
+    let locals = new[Local]()
+    push(locals, test_local(1))
+    push(locals, test_local(1))
+    push(locals, test_local(1))
+    push(locals, test_local(6))
+    let graph = Graph {
+        states = new[State]()
+        locals = locals
+        result = 1
+        span = span
+    }
+    let wait = state(graph)
+    let select = state(graph)
+    let arm = state(graph)
+    finish(graph, wait, Exit.Wait, local(graph, 3), edges(select), new[Arm]())
+    let targets = new[Edge]()
+    push(targets, Edge {
+            target = arm
+            bindings = ints(2)
+        })
+    finish(graph, select, Exit.Select, local(graph, 1), targets, new[Arm]())
+    finish(graph, arm, Exit.Complete, local(graph, 2), new[Edge](), new[Arm]())
+    let live = get(flows(graph), wait).live
+    assert get(live, 1) && get(live, 3) && !get(live, 2)
+
+    let ordered = Graph {
+        states = new[State]()
+        locals = new[Local]()
+        result = 1
+        span = span
+    }
+    push(ordered.locals, test_local(1))
+    push(ordered.locals, test_local(1))
+    push(ordered.locals, test_local(6))
+    let first = state(ordered)
+    let body = one(node(ExprKind.Assign, 0, span, 1, one(integer(2, span))))
+    push(body, node(ExprKind.Await, 1, span, -1, one(local(ordered, 2))))
+    let output = evaluate(ordered, node(ExprKind.Call, 1, span, 0,
+            pair(local(ordered, 1), block(body, 1, span, true))), first, Loop {
+            exit = -1
+            again = -1
+        })
+    finish(ordered, output.state, Exit.Complete, output.expression, new[Edge](), new[Arm]())
+    let saved = get(get(ordered.states, first).code, 0)
+    assert saved.kind == ExprKind.Let && get(saved.children, 0).index == 1
+    assert get(get(ordered.states, first).code, 1).kind == ExprKind.Assign
+    let pending = get(flows(ordered), 1).live
+    assert get(pending, saved.index) && !get(pending, 1)
+}

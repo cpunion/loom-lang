@@ -245,6 +245,18 @@ pub(super) fn fault(message: &[u8]) -> ! {
     std::process::exit(1)
 }
 
+pub(super) fn raise_owned(failure: OwnedFault) -> ! {
+    // These Rust-owned bytes remain live until the live-stack drain finishes.
+    // A catcher copies them before unwind and restores the previous test label.
+    TEST_NAME.set(
+        failure
+            .test_name
+            .as_ref()
+            .map(|name| (name.as_ptr(), name.len())),
+    );
+    fault(&failure.message)
+}
+
 #[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn loom_rt_fault(message: *const u8, length: usize) -> ! {
     // SAFETY: The compiler passes a nonempty static diagnostic byte string.
