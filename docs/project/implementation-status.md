@@ -8,11 +8,18 @@ The private wait ABI now provides one-shot timers, borrowed socket readiness and
 cross-thread completion notifications through `polling`. Generation checks reject
 stale completion; cancellation removes active registrations before handles may
 close. Focused tests exercise actual timers and localhost sockets. This is not
-an async executor: source Task checking/lowering, persistent frame roots,
-task-local faults and structured cancellation remain unimplemented. The accepted
+an async executor: source Task checking/lowering, task-local faults and structured
+cancellation remain unimplemented. The accepted
 [Task design](../rfcs/tasks.md) remains the target.
 Executable links enable native dead-section removal so an unused reactor does
 not enter synchronous program artifacts. Library object exports are unchanged.
+
+The private frame-root scope now reuses one existing GC root frame for an entire
+native owner activation. A dense live set supports arbitrary removal and
+generation-checked reuse; the collector updates its typed payload bases without
+retaining vector element addresses. Forced-collection tests cover frames after
+their creator returns, shared/cyclic contents and rooted result handoff. This
+does not yet generate coroutine frames or preserve stack cleanup across awaits.
 
 The active compiler has a real source-to-native check/build/test/run path,
 package/test isolation, concrete generic records/enums, shared lists, UTF-8

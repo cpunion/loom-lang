@@ -14,6 +14,10 @@ use std::ptr::{self, NonNull};
 
 mod cleanup;
 mod file_io;
+mod frame_roots;
+mod frame_roots_abi;
+#[cfg(test)]
+mod frame_roots_tests;
 mod fs_ops;
 mod process_io;
 mod wait;
