@@ -1,0 +1,482 @@
+{
+  "at": "2026-09-08T02:56:24.263Z",
+  "host": {
+    "os": "darwin",
+    "release": "25.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "method": "Ten alternating pairs after one warmup each; fresh processes, warm OS caches, no incremental cache. Wall includes launch. CPU rounded by macOS time. Builds finish before measurements.",
+  "revision": "356de6e1e95e3cb7d4a0fef26af30299546b7d4f",
+  "dirty": true,
+  "cc": "Homebrew clang version 22.1.8\nTarget: arm64-apple-darwin25.2.0\nThread model: posix\nInstalledDir: /opt/homebrew/Cellar/llvm@22/22.1.8/bin\nConfiguration file: /opt/homebrew/Cellar/llvm@22/22.1.8/etc/clang/arm64-apple-darwin25.cfg",
+  "source": {
+    "path": "/Users/lijie/source/cpunion/loom-lang/benchmarks/gc-lifetimes/main.loom",
+    "sha256": "20d9a0beabc17d82e04998a85b58388028abc6cedcb647baeca96ed5a0ec011b"
+  },
+  "input": "/Users/lijie/source/cpunion/loom-lang/target/performance/local-root-inputs.m3PCXG",
+  "sourceFiles": 145,
+  "inputsSha256": "d5e166bba950b7bd4cef9e425b008f86777775bfc75578645696c30872a27938",
+  "toolchains": {
+    "baseline": {
+      "compiler": {
+        "path": "/Users/lijie/source/cpunion/loom-lang/target/performance/pre-local-roots.TEM1VY/loom",
+        "sha256": "98821abeb8b20a0e3477bf37caca852be3348c88fa9f3a42ce2417db052af5c6"
+      },
+      "native": {
+        "path": "/Users/lijie/source/cpunion/loom-lang/target/performance/pre-local-roots.TEM1VY/loom-native",
+        "sha256": "804621a609f1bd6dcd1e4e62979eef8e079565ea3431ca144a329d4f2cb06a6d"
+      },
+      "runtime": {
+        "path": "/Users/lijie/source/cpunion/loom-lang/target/performance/pre-local-roots.TEM1VY/libloom_runtime.a",
+        "sha256": "ffcf891ab92357d8b27b2d1d43e43409489b789d66a23f3af31224c1f9144a7a"
+      },
+      "binary": {
+        "path": "/Users/lijie/source/cpunion/loom-lang/target/performance/gc-lifetimes/baseline",
+        "sha256": "e6d95e03b586101b7defc2ebcb110b0f9308e4670774a99e292134066af7af3c"
+      }
+    },
+    "candidate": {
+      "compiler": {
+        "path": "/Users/lijie/source/cpunion/loom-lang/target/loom",
+        "sha256": "f064aad68bd00227122c92362d1b2879a60dabebcc5dc6d5b90b0ddfc9fdf470"
+      },
+      "native": {
+        "path": "/Users/lijie/source/cpunion/loom-lang/target/debug/loom-native",
+        "sha256": "8e0912be629d2625792ae2ab6902bb1bbd42b941dfbb0663cc70b8f8b306a377"
+      },
+      "runtime": {
+        "path": "/Users/lijie/source/cpunion/loom-lang/target/debug/libloom_runtime.a",
+        "sha256": "ffcf891ab92357d8b27b2d1d43e43409489b789d66a23f3af31224c1f9144a7a"
+      },
+      "binary": {
+        "path": "/Users/lijie/source/cpunion/loom-lang/target/performance/gc-lifetimes/candidate",
+        "sha256": "fc5aae2d96e1ae592f7d914dc26e9ce92446d450e148a17429482805ea85da03"
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "eight_disjoint_lists",
+      "count": 1048576,
+      "expected": "8388600",
+      "summary": {
+        "baseline": {
+          "wallMs": {
+            "median": 23.01225,
+            "mad": 0.2098545000000005
+          },
+          "cpuMs": {
+            "median": 10,
+            "mad": 0
+          },
+          "peakRssBytes": {
+            "median": 71516160,
+            "mad": 0
+          }
+        },
+        "candidate": {
+          "wallMs": {
+            "median": 22.6767295,
+            "mad": 0.29260450000000127
+          },
+          "cpuMs": {
+            "median": 10,
+            "mad": 0
+          },
+          "peakRssBytes": {
+            "median": 71860224,
+            "mad": 0
+          }
+        }
+      },
+      "samples": {
+        "baseline": [
+          {
+            "wallMs": 23.12725,
+            "cpuMs": 10,
+            "peakRssBytes": 71516160
+          },
+          {
+            "wallMs": 23.3645,
+            "cpuMs": 10,
+            "peakRssBytes": 71516160
+          },
+          {
+            "wallMs": 23.049042,
+            "cpuMs": 10,
+            "peakRssBytes": 71516160
+          },
+          {
+            "wallMs": 23.137583,
+            "cpuMs": 10,
+            "peakRssBytes": 71516160
+          },
+          {
+            "wallMs": 22.7655,
+            "cpuMs": 10,
+            "peakRssBytes": 71516160
+          },
+          {
+            "wallMs": 23.185209,
+            "cpuMs": 10,
+            "peakRssBytes": 71516160
+          },
+          {
+            "wallMs": 22.422959,
+            "cpuMs": 10,
+            "peakRssBytes": 71532544
+          },
+          {
+            "wallMs": 22.975458,
+            "cpuMs": 10,
+            "peakRssBytes": 71516160
+          },
+          {
+            "wallMs": 22.328166,
+            "cpuMs": 10,
+            "peakRssBytes": 71516160
+          },
+          {
+            "wallMs": 22.214416,
+            "cpuMs": 10,
+            "peakRssBytes": 71516160
+          }
+        ],
+        "candidate": [
+          {
+            "wallMs": 23.367958,
+            "cpuMs": 10,
+            "peakRssBytes": 71860224
+          },
+          {
+            "wallMs": 23.646291,
+            "cpuMs": 10,
+            "peakRssBytes": 71860224
+          },
+          {
+            "wallMs": 22.401833,
+            "cpuMs": 10,
+            "peakRssBytes": 71860224
+          },
+          {
+            "wallMs": 23.084708,
+            "cpuMs": 10,
+            "peakRssBytes": 71860224
+          },
+          {
+            "wallMs": 22.856667,
+            "cpuMs": 10,
+            "peakRssBytes": 71860224
+          },
+          {
+            "wallMs": 22.794834,
+            "cpuMs": 10,
+            "peakRssBytes": 71860224
+          },
+          {
+            "wallMs": 22.293375,
+            "cpuMs": 10,
+            "peakRssBytes": 71843840
+          },
+          {
+            "wallMs": 22.366417,
+            "cpuMs": 10,
+            "peakRssBytes": 71860224
+          },
+          {
+            "wallMs": 22.558625,
+            "cpuMs": 10,
+            "peakRssBytes": 71843840
+          },
+          {
+            "wallMs": 22.505833,
+            "cpuMs": 10,
+            "peakRssBytes": 71860224
+          }
+        ]
+      }
+    },
+    {
+      "name": "eight_disjoint_lists",
+      "count": 8388608,
+      "expected": "67108856",
+      "summary": {
+        "baseline": {
+          "wallMs": {
+            "median": 157.838042,
+            "mad": 3.2796665000000047
+          },
+          "cpuMs": {
+            "median": 139.99999999999997,
+            "mad": 0
+          },
+          "peakRssBytes": {
+            "median": 541278208,
+            "mad": 0
+          }
+        },
+        "candidate": {
+          "wallMs": {
+            "median": 155.141271,
+            "mad": 1.001666499999999
+          },
+          "cpuMs": {
+            "median": 139.99999999999997,
+            "mad": 0
+          },
+          "peakRssBytes": {
+            "median": 541622272,
+            "mad": 0
+          }
+        }
+      },
+      "samples": {
+        "baseline": [
+          {
+            "wallMs": 160.445584,
+            "cpuMs": 150,
+            "peakRssBytes": 541278208
+          },
+          {
+            "wallMs": 153.600292,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541294592
+          },
+          {
+            "wallMs": 153.471625,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541278208
+          },
+          {
+            "wallMs": 158.971792,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 543391744
+          },
+          {
+            "wallMs": 158.875625,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 543899648
+          },
+          {
+            "wallMs": 153.871959,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541278208
+          },
+          {
+            "wallMs": 156.800459,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541278208
+          },
+          {
+            "wallMs": 161.269292,
+            "cpuMs": 150,
+            "peakRssBytes": 541278208
+          },
+          {
+            "wallMs": 153.105584,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541278208
+          },
+          {
+            "wallMs": 160.966125,
+            "cpuMs": 150,
+            "peakRssBytes": 541360128
+          }
+        ],
+        "candidate": [
+          {
+            "wallMs": 154.573834,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541622272
+          },
+          {
+            "wallMs": 156.053291,
+            "cpuMs": 150,
+            "peakRssBytes": 541622272
+          },
+          {
+            "wallMs": 152.546666,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541622272
+          },
+          {
+            "wallMs": 157.1555,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541622272
+          },
+          {
+            "wallMs": 154.942875,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541622272
+          },
+          {
+            "wallMs": 157.064417,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541622272
+          },
+          {
+            "wallMs": 154.600791,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541622272
+          },
+          {
+            "wallMs": 155.339667,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 544210944
+          },
+          {
+            "wallMs": 154.049958,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 541622272
+          },
+          {
+            "wallMs": 156.531375,
+            "cpuMs": 139.99999999999997,
+            "peakRssBytes": 544210944
+          }
+        ]
+      }
+    },
+    {
+      "name": "compiler_check",
+      "expected": "checked package\n",
+      "summary": {
+        "baseline": {
+          "wallMs": {
+            "median": 337.189542,
+            "mad": 4.88108299999999
+          },
+          "cpuMs": {
+            "median": 320,
+            "mad": 10
+          },
+          "peakRssBytes": {
+            "median": 229269504,
+            "mad": 3817472
+          }
+        },
+        "candidate": {
+          "wallMs": {
+            "median": 346.9612915,
+            "mad": 3.1651040000000137
+          },
+          "cpuMs": {
+            "median": 330,
+            "mad": 0
+          },
+          "peakRssBytes": {
+            "median": 232218624,
+            "mad": 10149888
+          }
+        }
+      },
+      "samples": {
+        "baseline": [
+          {
+            "wallMs": 335.301417,
+            "cpuMs": 320,
+            "peakRssBytes": 259670016
+          },
+          {
+            "wallMs": 343.017333,
+            "cpuMs": 330,
+            "peakRssBytes": 232669184
+          },
+          {
+            "wallMs": 339.077667,
+            "cpuMs": 320,
+            "peakRssBytes": 225034240
+          },
+          {
+            "wallMs": 330.093083,
+            "cpuMs": 310,
+            "peakRssBytes": 225869824
+          },
+          {
+            "wallMs": 341.123917,
+            "cpuMs": 320,
+            "peakRssBytes": 236519424
+          },
+          {
+            "wallMs": 326.111291,
+            "cpuMs": 310,
+            "peakRssBytes": 225869824
+          },
+          {
+            "wallMs": 330.75725,
+            "cpuMs": 310,
+            "peakRssBytes": 225869824
+          },
+          {
+            "wallMs": 349.561667,
+            "cpuMs": 340,
+            "peakRssBytes": 238600192
+          },
+          {
+            "wallMs": 341.038875,
+            "cpuMs": 330,
+            "peakRssBytes": 255197184
+          },
+          {
+            "wallMs": 333.823875,
+            "cpuMs": 310,
+            "peakRssBytes": 225869824
+          }
+        ],
+        "candidate": [
+          {
+            "wallMs": 346.865708,
+            "cpuMs": 330,
+            "peakRssBytes": 222068736
+          },
+          {
+            "wallMs": 347.056875,
+            "cpuMs": 340,
+            "peakRssBytes": 251166720
+          },
+          {
+            "wallMs": 346.118459,
+            "cpuMs": 330,
+            "peakRssBytes": 222068736
+          },
+          {
+            "wallMs": 343.863375,
+            "cpuMs": 330,
+            "peakRssBytes": 222068736
+          },
+          {
+            "wallMs": 343.729,
+            "cpuMs": 330,
+            "peakRssBytes": 247316480
+          },
+          {
+            "wallMs": 347.525125,
+            "cpuMs": 330,
+            "peakRssBytes": 222068736
+          },
+          {
+            "wallMs": 357.627708,
+            "cpuMs": 340,
+            "peakRssBytes": 247349248
+          },
+          {
+            "wallMs": 342.989709,
+            "cpuMs": 330,
+            "peakRssBytes": 229703680
+          },
+          {
+            "wallMs": 352.690167,
+            "cpuMs": 330,
+            "peakRssBytes": 259604480
+          },
+          {
+            "wallMs": 358.016292,
+            "cpuMs": 340,
+            "peakRssBytes": 234733568
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+Read-only GC reclamation diagnosis, 2026-09-08, macOS arm64.
+This is debugger evidence of post-collection managed bytes, not a timing or RSS benchmark.
+No source/runtime edits or forced collections were used. The breakpoint observes the
+existing collection after dead objects are freed, before threshold is recomputed.
+
+SHA256:
+fc5aae2d96e1ae592f7d914dc26e9ce92446d450e148a17429482805ea85da03  inspect-candidate
+e6d95e03b586101b7defc2ebcb110b0f9308e4670774a99e292134066af7af3c  inspect-baseline
+ce15a2f2418d8bdbed6be4392d570881fced7060a3453610a48afb0b731fb741  candidate.ll
+ae8d8928245b82290e2568d08132a368fdd26b47c649cc4a061dc0b05a96dda7  baseline.ll
+8e0912be629d2625792ae2ab6902bb1bbd42b941dfbb0663cc70b8f8b306a377  target/debug/loom-native
+804621a609f1bd6dcd1e4e62979eef8e079565ea3431ca144a329d4f2cb06a6d  archived loom-native
+ffcf891ab92357d8b27b2d1d43e43409489b789d66a23f3af31224c1f9144a7a  shared libloom_runtime.a
+f064aad68bd00227122c92362d1b2879a60dabebcc5dc6d5b90b0ddfc9fdf470  target/loom
+98821abeb8b20a0e3477bf37caca852be3348c88fa9f3a42ce2417db052af5c6  archived loom
+
+Build commands (working directory /Users/lijie/source/cpunion/loom-lang):
+env LOOM_CC=/opt/homebrew/opt/llvm@22/bin/clang LOOM_OPT_LEVEL=3 target/loom build benchmarks/gc-lifetimes --std target/performance/local-root-inputs.m3PCXG/compiler/std --native-tool target/debug/loom-native --output target/performance/gc-lifetimes/inspect-candidate --emit-ir target/performance/gc-lifetimes/candidate.ll
+env LOOM_CC=/opt/homebrew/opt/llvm@22/bin/clang LOOM_OPT_LEVEL=3 LOOM_RUNTIME_LIBRARY=/Users/lijie/source/cpunion/loom-lang/target/performance/pre-local-roots.TEM1VY/libloom_runtime.a target/performance/pre-local-roots.TEM1VY/loom build benchmarks/gc-lifetimes --std target/performance/local-root-inputs.m3PCXG/compiler/std --native-tool target/performance/pre-local-roots.TEM1VY/loom-native --output target/performance/gc-lifetimes/inspect-baseline --emit-ir target/performance/gc-lifetimes/baseline.ll
+
+Debugger command, repeat replacing inspect-candidate with inspect-baseline:
+lldb --batch -o 'breakpoint set -f lib.rs -l 403' -o 'script import builtins; builtins.loom_samples=[]; lldb.debugger.GetSelectedTarget().GetBreakpointAtIndex(0).SetScriptCallbackBody("import builtins; h=frame.FindVariable(\"heap\").GetChildMemberWithName(\"value\").GetChildMemberWithName(\"pointer\").Dereference(); builtins.loom_samples.append(h.GetChildMemberWithName(\"bytes\").GetValueAsUnsigned()); return False")' -o 'run 1048576' -o 'script print("post_gc_live_bytes", builtins.loom_samples)' target/performance/gc-lifetimes/inspect-candidate
+
+Candidate raw output:
+(lldb) target create "target/performance/gc-lifetimes/inspect-candidate"
+Current executable set to '/Users/lijie/source/cpunion/loom-lang/target/performance/gc-lifetimes/inspect-candidate' (arm64).
+(lldb) breakpoint set -f lib.rs -l 403
+Breakpoint 1: where = inspect-candidate`std::thread::local::LocalKey$LT$T$GT$::with::hca751a4507ad9a79 + 364 [inlined] loom_runtime::loom_rt_collect::_$u7b$$u7b$closure$u7d$$u7d$::haea6602840ee29fc + 312 at lib.rs:403:26, address = 0x000000010000aeb4
+(lldb) script import builtins; builtins.loom_samples=[]; lldb.debugger.GetSelectedTarget().GetBreakpointAtIndex(0).SetScriptCallbackBody("import builtins; h=frame.FindVariable(\"heap\").GetChildMemberWithName(\"value\").GetChildMemberWithName(\"pointer\").Dereference(); builtins.loom_samples.append(h.GetChildMemberWithName(\"bytes\").GetValueAsUnsigned()); return False")
+success
+(lldb) run 1048576
+8388600Process 28394 launched: '/Users/lijie/source/cpunion/loom-lang/target/performance/gc-lifetimes/inspect-candidate' (arm64)
+Process 28394 exited with status = 0 (0x00000000)
+(lldb) script print("post_gc_live_bytes", builtins.loom_samples)
+post_gc_live_bytes [16432, 32816, 65584, 131120, 262192, 524336, 1048624, 2097200, 4194352, 0, 32816, 65584, 131120, 262192, 524336, 1048624, 2097200, 4194352, 0, 32816, 65584, 131120, 262192, 524336, 1048624, 2097200, 4194352, 0, 32816, 65584, 131120, 262192, 524336, 1048624, 2097200, 4194352, 0, 32816, 65584, 131120, 262192, 524336, 1048624, 2097200, 4194352, 0, 32816, 65584, 131120, 262192, 524336, 1048624, 2097200, 4194352, 0, 32816, 65584, 131120, 262192, 524336, 1048624, 2097200, 4194352, 0, 32816, 65584, 131120, 262192, 524336, 1048624, 2097200, 4194352, 16]
+
+Baseline raw output:
+(lldb) target create "target/performance/gc-lifetimes/inspect-baseline"
+Current executable set to '/Users/lijie/source/cpunion/loom-lang/target/performance/gc-lifetimes/inspect-baseline' (arm64).
+(lldb) breakpoint set -f lib.rs -l 403
+Breakpoint 1: where = inspect-baseline`std::thread::local::LocalKey$LT$T$GT$::with::hca751a4507ad9a79 + 364 [inlined] loom_runtime::loom_rt_collect::_$u7b$$u7b$closure$u7d$$u7d$::haea6602840ee29fc + 312 at lib.rs:403:26, address = 0x000000010000ae90
+(lldb) script import builtins; builtins.loom_samples=[]; lldb.debugger.GetSelectedTarget().GetBreakpointAtIndex(0).SetScriptCallbackBody("import builtins; h=frame.FindVariable(\"heap\").GetChildMemberWithName(\"value\").GetChildMemberWithName(\"pointer\").Dereference(); builtins.loom_samples.append(h.GetChildMemberWithName(\"bytes\").GetValueAsUnsigned()); return False")
+success
+(lldb) run 1048576
+8388600Process 28727 launched: '/Users/lijie/source/cpunion/loom-lang/target/performance/gc-lifetimes/inspect-baseline' (arm64)
+Process 28727 exited with status = 0 (0x00000000)
+(lldb) script print("post_gc_live_bytes", builtins.loom_samples)
+post_gc_live_bytes [16656, 33040, 65808, 131344, 262416, 524560, 1048848, 2097424, 4194576, 8389056, 12583232, 20971888, 37749200]
+
+IR evidence:
+candidate.ll:605 clears payload 1's shadow slot `%3` immediately before calling
+the next payload function at line 606. Corresponding clears release `%4`..`%10`.
+baseline.ll:604 calls the next payload with `%3` still holding payload 1.
+`payload` remains a separate noinline function; its six-slot frame leaves before
+return, so its reused push operand snapshots cannot retain earlier payloads.
+
+Interpretation:
+The local root change makes the previous graph actually reclaimed at the next
+collection; it is not merely eligible in principle. Post-GC live bytes are not
+peak allocation bytes (a payload grows to 8 MiB between collection samples).
+Both executable hashes exactly match the binaries measured in local-roots.json.
+The unchanged process peak-RSS result therefore is not evidence of retained
+Loom roots. Allocator/high-water effects are a plausible explanation, not a
+measured claim about the host allocator's exact release behavior.

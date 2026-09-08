@@ -1,0 +1,136 @@
+{
+  "at": "2026-09-08T03:29:31.412Z",
+  "method": "Same fixed checked input; one warmup per binary, three alternating pairs; fresh processes, warmed OS caches; no concurrent builds. Codegen includes native lowering, LLVM passes and object emission, not frontend/linking.",
+  "host": {
+    "os": "darwin",
+    "release": "25.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "checked": {
+    "path": "/Users/lijie/source/cpunion/loom-lang/target/performance/gc-lifetimes/compiler.checked",
+    "sha256": "9488e8b1f0b52d2ea503a705651e37d8ddd31d807d7519d19ed17ccc8b18bcc6"
+  },
+  "runtime": {
+    "path": "/Users/lijie/source/cpunion/loom-lang/target/debug/libloom_runtime.a",
+    "sha256": "ffcf891ab92357d8b27b2d1d43e43409489b789d66a23f3af31224c1f9144a7a"
+  },
+  "tools": {
+    "pre_liveness": {
+      "path": "/Users/lijie/source/cpunion/loom-lang/target/performance/pre-local-roots.TEM1VY/loom-native",
+      "sha256": "804621a609f1bd6dcd1e4e62979eef8e079565ea3431ca144a329d4f2cb06a6d"
+    },
+    "future_gc": {
+      "path": "/Users/lijie/source/cpunion/loom-lang/target/debug/loom-native",
+      "sha256": "ea5c6161c8e684014c492a8bcee13e8bc641812c3265b85ffbf8a3a8bae18568"
+    }
+  },
+  "summary": {
+    "pre_liveness": {
+      "wallMs": {
+        "median": 9060.087417,
+        "mad": 1.4772920000013983
+      },
+      "cpuMs": {
+        "median": 9090,
+        "mad": 20
+      },
+      "peakRssBytes": {
+        "median": 774324224,
+        "mad": 32768
+      },
+      "decodeMs": {
+        "median": 74.963,
+        "mad": 0.06100000000000705
+      },
+      "codegenMs": {
+        "median": 8903.626,
+        "mad": 4.54700000000048
+      },
+      "linkMs": {
+        "median": 64.441,
+        "mad": 0.37700000000000955
+      }
+    },
+    "future_gc": {
+      "wallMs": {
+        "median": 9472.195375,
+        "mad": 22.304417000001195
+      },
+      "cpuMs": {
+        "median": 9490,
+        "mad": 10
+      },
+      "peakRssBytes": {
+        "median": 777764864,
+        "mad": 163840
+      },
+      "decodeMs": {
+        "median": 74.659,
+        "mad": 0.05100000000000193
+      },
+      "codegenMs": {
+        "median": 9315.91,
+        "mad": 21.80999999999949
+      },
+      "linkMs": {
+        "median": 63.613,
+        "mad": 0.6439999999999984
+      }
+    }
+  },
+  "samples": {
+    "pre_liveness": [
+      {
+        "wallMs": 9058.610125,
+        "cpuMs": 9070,
+        "peakRssBytes": 774324224,
+        "decodeMs": 75.024,
+        "codegenMs": 8899.079,
+        "linkMs": 66.796
+      },
+      {
+        "wallMs": 9253.69675,
+        "cpuMs": 9250,
+        "peakRssBytes": 777207808,
+        "decodeMs": 74.963,
+        "codegenMs": 9096.753,
+        "linkMs": 64.064
+      },
+      {
+        "wallMs": 9060.087417,
+        "cpuMs": 9090,
+        "peakRssBytes": 774291456,
+        "decodeMs": 74.522,
+        "codegenMs": 8903.626,
+        "linkMs": 64.441
+      }
+    ],
+    "future_gc": [
+      {
+        "wallMs": 9494.499792,
+        "cpuMs": 9490,
+        "peakRssBytes": 777764864,
+        "decodeMs": 75.402,
+        "codegenMs": 9337.72,
+        "linkMs": 63.613
+      },
+      {
+        "wallMs": 9472.195375,
+        "cpuMs": 9500,
+        "peakRssBytes": 777125888,
+        "decodeMs": 74.608,
+        "codegenMs": 9315.91,
+        "linkMs": 64.415
+      },
+      {
+        "wallMs": 9424.054792,
+        "cpuMs": 9430,
+        "peakRssBytes": 777928704,
+        "decodeMs": 74.659,
+        "codegenMs": 9269.281,
+        "linkMs": 62.969
+      }
+    ]
+  }
+}

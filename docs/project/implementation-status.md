@@ -118,7 +118,8 @@ backing buffers. Runtime copies and generated allocation-crossing snapshots
 reload relocated references; earlier arguments remain independent of later
 reassignments. Static Text is unchanged. This does not add ownership syntax,
 finalizers or a per-access barrier. Local shadow roots now clear after conservative
-last-read analysis, retaining cleanup continuations and loop backedges. Temporary
+last-read analysis where later collection is possible, retaining cleanup
+continuations and loop backedges. Temporary
 snapshot lifetimes remain conservative; generational/concurrent collection and
 complete resource cleanup remain open.
 

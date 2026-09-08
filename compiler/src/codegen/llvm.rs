@@ -200,7 +200,7 @@ fn emit_checked(
         } else {
             gc::RootFrame::empty()
         };
-        let liveness = liveness::plan(source, roots.locals.keys().copied());
+        let liveness = liveness::plan(source, roots.locals.keys().copied(), &allocating);
         let mut emitter = FunctionEmitter {
             context: &context,
             module: &module,
