@@ -423,8 +423,8 @@ Runtime callbacks and dynamic factory methods preserve that result obligation:
 all selected implementations must establish freshness, including targets reached
 through stored or returned function values. Dispose-only callback results do not
 imply freshness. Unused concrete resource functions are checked without entering
-native reachability. Nested resource aggregates and Task cancellation remain
-unimplemented.
+native reachability. Nested resource aggregates and cleanup across suspended
+Task activations remain unimplemented.
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
 same-directory tests, a separate library package, Unicode text and file I/O.
