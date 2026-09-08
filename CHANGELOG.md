@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add a private native resume fault boundary: drain live lexical cleanups,
+  restore GC roots, then unwind through LLVM frames into an owned diagnostic.
+  Ordinary synchronous faults still terminate; source Tasks remain unfinished.
+
 - Add private owner-scoped frame roots over the existing moving collector,
   with dense scanning, generation-checked reuse and noncollecting handoff.
   Coroutine lowering, scheduling and suspended cleanup remain unfinished.

@@ -87,6 +87,20 @@ receiver has registered a typed snapshot; removing the producer's root does not
 perform cleanup or collect. This storage boundary does not implement Task
 checking, spill selection, state transitions or suspended cleanup.
 
+The private [fault boundary](../../compiler/runtime/src/fault_abi.rs) wraps one
+native resume activation inside that outer root scope. A language fault first
+owns its diagnostic bytes and drains lexical cleanups while captures and root
+slots are live. It then restores the boundary's root head and uses Rust
+`C-unwind` through LLVM unwind-table frames to reach the catcher. Secondary
+cleanup faults retain the first diagnostic. No panic hook or per-function catcher
+is installed; without a boundary, a fault still terminates the process. Unknown
+Rust panics, OOM and runtime corruption are not task outcomes. The runtime requires
+`panic=unwind`; this is not a general foreign-exception recovery mechanism.
+
+Captured diagnostics contain no managed pointers and must be released after
+materializing an outcome. This resume boundary does not implement source Task
+fault propagation or cleanup across suspended state-machine activations.
+
 Wait registration is a private runtime boundary for absolute monotonic timers,
 borrowed native readiness handles, and externally completed operations. A
 registration carries a reusable slot and non-wrapping generation. It is retired
@@ -110,7 +124,7 @@ restore that borrowed-handle boundary is an unrecoverable runtime fault.
 
 The reactor uses [polling](https://docs.rs/polling/3.11.0/polling/struct.Poller.html)
 for OS readiness rather than separate handwritten platform reactors. Real task
-frames, scheduling, task-local fault propagation, structured cancellation and
+lowering, scheduling, task-local fault propagation, structured cancellation and
 source async I/O are separate implementation gates, not implied by readiness
 tests. Public raw-fd wait constructors and a runtime registry of join names are
 not required.

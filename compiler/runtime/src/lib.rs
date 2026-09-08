@@ -1,5 +1,10 @@
 //! Loom's single-threaded, moving managed-memory and platform boundary.
 //! Generated code roots every live managed slot before an allocating call.
+//! Entries that can raise a language fault use C-unwind so an explicit resume
+//! boundary can catch it. GC tracers and invariant failures never unwind.
+
+#[cfg(panic = "abort")]
+compile_error!("Loom runtime requires panic=unwind for native fault boundaries");
 
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc, realloc};
 #[cfg(not(windows))]
@@ -13,6 +18,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr::{self, NonNull};
 
 mod cleanup;
+mod fault_abi;
 mod file_io;
 mod frame_roots;
 mod frame_roots_abi;
@@ -273,7 +279,7 @@ fn allocate_storage(size: usize, trace: Option<Trace>, zeroed: bool) -> *mut u8 
 // Generated code roots the input, then initializes this zeroed payload before
 // the next allocation. The supplied tracer describes the stored concrete value.
 #[unsafe(no_mangle)]
-extern "C" fn loom_rt_box_new(size: usize, trace: Option<Trace>) -> *mut u8 {
+extern "C-unwind" fn loom_rt_box_new(size: usize, trace: Option<Trace>) -> *mut u8 {
     allocate(size, trace)
 }
 
@@ -433,10 +439,13 @@ fn rooted<const N: usize, R>(
         trace: trace_pointer,
     });
     let mut frame = std::mem::MaybeUninit::<RootFrame>::uninit();
+    let frame_pointer = frame.as_mut_ptr();
     // SAFETY: Slots, entries and frame remain live until the operation returns.
-    unsafe { loom_rt_roots_enter(frame.as_mut_ptr(), roots.as_ptr(), N) };
+    // A fault boundary drains callbacks then rolls back these roots before
+    // unwinding; an additional unwind destructor must not pop them again.
+    unsafe { loom_rt_roots_enter(frame_pointer, roots.as_ptr(), N) };
     let output = operation(slots);
-    unsafe { loom_rt_roots_leave(frame.as_mut_ptr()) };
+    unsafe { loom_rt_roots_leave(frame_pointer) };
     output
 }
 
@@ -465,7 +474,7 @@ fn allocate_text(len: usize) -> *mut Text {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_text_new(bytes: *const u8, len: usize) -> *mut u8 {
+unsafe extern "C-unwind" fn loom_rt_text_new(bytes: *const u8, len: usize) -> *mut u8 {
     // SAFETY: This entry accepts only independently owned or static bytes,
     // never a managed interior pointer. A zero-length buffer may be null.
     let bytes = if len == 0 {
@@ -485,21 +494,21 @@ unsafe extern "C" fn loom_rt_text_new(bytes: *const u8, len: usize) -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_float_parse(text: *const u8) -> f64 {
+unsafe extern "C-unwind" fn loom_rt_float_parse(text: *const u8) -> f64 {
     // SAFETY: The caller supplies live UTF-8 Text; parsing never collects.
     let text = unsafe { std::str::from_utf8_unchecked(text_bytes(text)) };
     text.parse().unwrap_or_else(|_| fault("invalid Float text"))
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn loom_rt_float_format(value: f64) -> *mut u8 {
+extern "C-unwind" fn loom_rt_float_format(value: f64) -> *mut u8 {
     let text = value.to_string();
     // SAFETY: Rust owns these UTF-8 bytes across the managed allocation/copy.
     unsafe { loom_rt_text_new(text.as_ptr(), text.len()) }
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_text_concat(left: *const u8, right: *const u8) -> *mut u8 {
+unsafe extern "C-unwind" fn loom_rt_text_concat(left: *const u8, right: *const u8) -> *mut u8 {
     rooted([left.cast_mut(), right.cast_mut()], |slots| {
         // SAFETY: Read lengths before allocation; obtain fresh interior pointers
         // from the rewritten input slots only after allocation has finished.
@@ -525,7 +534,7 @@ unsafe extern "C" fn loom_rt_text_equal(left: *const u8, right: *const u8) -> i3
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_text_slice(text: *const u8, start: i64, end: i64) -> *mut u8 {
+unsafe extern "C-unwind" fn loom_rt_text_slice(text: *const u8, start: i64, end: i64) -> *mut u8 {
     let (start, end) = usize::try_from(start)
         .ok()
         .zip(usize::try_from(end).ok())
@@ -571,7 +580,7 @@ extern "C" fn loom_rt_unicode_whitespace(value: i64) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_process_init(argc: i32, argv: *const *const c_char) {
+unsafe extern "C-unwind" fn loom_rt_process_init(argc: i32, argv: *const *const c_char) {
     if argc < 0 || (argc != 0 && argv.is_null()) {
         fault("invalid process arguments");
     }
@@ -605,7 +614,7 @@ extern "C" fn loom_rt_process_arg_count() -> i64 {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_process_arg_text(index: i64) -> *mut u8 {
+unsafe extern "C-unwind" fn loom_rt_process_arg_text(index: i64) -> *mut u8 {
     #[cfg(not(windows))]
     {
         let (count, arguments) = PROCESS_ARGS.get();
@@ -704,7 +713,7 @@ unsafe extern "C" fn loom_rt_process_run_input(arguments: *const u8, input: *con
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_process_capture_configured(
+unsafe extern "C-unwind" fn loom_rt_process_capture_configured(
     arguments: *const u8,
     directory: *const u8,
     clear: i64,
@@ -728,7 +737,7 @@ unsafe extern "C" fn loom_rt_process_capture_configured(
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_process_capture_input_configured(
+unsafe extern "C-unwind" fn loom_rt_process_capture_input_configured(
     arguments: *const u8,
     input: *const u8,
     directory: *const u8,
@@ -802,7 +811,7 @@ unsafe fn process_capture_configured(
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_env_get(name: *const u8, bytes: *mut u8) -> i64 {
+unsafe extern "C-unwind" fn loom_rt_env_get(name: *const u8, bytes: *mut u8) -> i64 {
     let value = {
         // SAFETY: Text is valid UTF-8. var returns an owned String before the
         // managed output buffer can move; no environment value is logged.
@@ -835,7 +844,7 @@ unsafe extern "C" fn loom_rt_env_get(name: *const u8, bytes: *mut u8) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn loom_rt_process_exit(code: i64) -> ! {
+extern "C-unwind" fn loom_rt_process_exit(code: i64) -> ! {
     let code = u8::try_from(code).unwrap_or_else(|_| fault("exit code out of range"));
     std::process::exit(i32::from(code))
 }
@@ -951,12 +960,12 @@ unsafe fn reserve(owner: *mut u8, additional: usize, stride: usize) -> *mut Buff
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn loom_rt_bytes_new() -> *mut u8 {
+extern "C-unwind" fn loom_rt_bytes_new() -> *mut u8 {
     allocate(size_of::<Buffer>(), Some(trace_bytes))
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_bytes_reserve_one(bytes: *mut u8) {
+unsafe extern "C-unwind" fn loom_rt_bytes_reserve_one(bytes: *mut u8) {
     // SAFETY: Generated code roots the owning header across this slow path.
     unsafe { reserve(bytes, 1, 1) };
 }
@@ -981,7 +990,7 @@ unsafe extern "C" fn loom_rt_bytes_utf8(bytes: *const u8) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_bytes_text_copy(bytes: *const u8) -> *mut u8 {
+unsafe extern "C-unwind" fn loom_rt_bytes_text_copy(bytes: *const u8) -> *mut u8 {
     rooted([bytes.cast_mut()], |slots| {
         // SAFETY: End the validation borrow before allocating independent Text.
         // Reconstruct the buffer slice from its rewritten owner afterwards.
@@ -1002,7 +1011,7 @@ unsafe extern "C" fn loom_rt_bytes_text_copy(bytes: *const u8) -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn loom_rt_list_new(
+extern "C-unwind" fn loom_rt_list_new(
     stride: usize,
     trace_element: Option<Trace>,
     capacity: usize,
@@ -1049,7 +1058,7 @@ unsafe fn list_push(list: *mut u8, item: *const u8) {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_list_reserve_one(list: *mut u8) {
+unsafe extern "C-unwind" fn loom_rt_list_reserve_one(list: *mut u8) {
     // SAFETY: Generated code roots the header and its pending typed item. The
     // caller reloads the backing pointer and publishes length after storing it.
     unsafe {
@@ -1104,7 +1113,7 @@ unsafe extern "C" fn loom_rt_file_write_bytes(fd: i64, bytes: *const u8, offset:
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_file_read(fd: i64, bytes: *mut u8, limit: i64) -> i64 {
+unsafe extern "C-unwind" fn loom_rt_file_read(fd: i64, bytes: *mut u8, limit: i64) -> i64 {
     let Ok(limit) = usize::try_from(limit) else {
         return -1;
     };
@@ -1133,7 +1142,7 @@ extern "C" fn loom_rt_file_close(fd: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_directory_read(path: *const u8, names: *mut u8) -> i64 {
+unsafe extern "C-unwind" fn loom_rt_directory_read(path: *const u8, names: *mut u8) -> i64 {
     // SAFETY: The caller supplies rooted Text and List[Text] values. Text is
     // valid UTF-8; read_dir consumes the path without retaining its bytes.
     let entries = {
@@ -1216,7 +1225,7 @@ unsafe extern "C" fn loom_rt_path_entry_kind(path: *const u8) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn loom_rt_path_canonical(path: *const u8, bytes: *mut u8) -> i64 {
+unsafe extern "C-unwind" fn loom_rt_path_canonical(path: *const u8, bytes: *mut u8) -> i64 {
     // SAFETY: The caller roots the Text and mutable Bytes arguments.
     let canonical = {
         let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };

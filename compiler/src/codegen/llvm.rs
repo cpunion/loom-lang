@@ -4,6 +4,7 @@ use super::{Backend, EmissionResult, EmitOptions, Optimization};
 use crate::model::{Binary, Primitive, Type, Unary, checked};
 use inkwell::{
     AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel,
+    attributes::{Attribute, AttributeLoc},
     basic_block::BasicBlock,
     builder::Builder,
     context::Context,
@@ -96,6 +97,37 @@ fn configure_codegen() {
             );
         }
     });
+}
+
+fn unwind_tables<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    runtime_fault: bool,
+) -> NativeResult<()> {
+    if !runtime_fault {
+        return Ok(());
+    }
+    // LLVM's UWTableKind::Sync is 1. Synthesized functions inherit this module
+    // default; Max (7) is LLVM's merge policy, absent from LLVM-C/Inkwell's enum.
+    if module.get_flag("uwtable").is_none() {
+        module.add_global_metadata(
+            "llvm.module.flags",
+            &context.metadata_node(&[
+                context.i32_type().const_int(7, false).into(),
+                context.metadata_string("uwtable").into(),
+                context.i32_type().const_int(1, false).into(),
+            ]),
+        )?;
+    }
+    let attribute = context.create_enum_attribute(Attribute::get_named_enum_kind_id("uwtable"), 1);
+    for function in module.get_functions() {
+        if function.count_basic_blocks() != 0 {
+            // Loom passes private runtime faults through to the Rust boundary;
+            // this does not promise nounwind or introduce a landing pad.
+            function.add_attribute(AttributeLoc::Function, attribute);
+        }
+    }
+    Ok(())
 }
 
 fn emit_checked(
@@ -320,6 +352,7 @@ fn emit_checked(
         builder.build_return(Some(&context.i32_type().const_zero()))?;
     }
     trace_phase("optimize");
+    unwind_tables(&context, &module, runtime_fault)?;
     module.verify().map_err(|error| error.to_string())?;
     // Inline source abstractions before committing to physical root frames.
     // These opaque markers preserve managed snapshots through the early pass.
@@ -342,6 +375,9 @@ fn emit_checked(
     module
         .run_passes(pipeline, machine, PassBuilderOptions::create())
         .map_err(|error| error.to_string())?;
+    // Also cover surviving definitions synthesized without LLVM's default-attr
+    // constructor. The module flag covers later target-generated helpers.
+    unwind_tables(&context, &module, runtime_fault)?;
     module.verify().map_err(|error| error.to_string())?;
     if let Some(path) = llvm_ir {
         module
@@ -1966,6 +2002,60 @@ mod memory_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_fault_definitions_and_late_helpers_get_synchronous_unwind_tables() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let kind = Attribute::get_named_enum_kind_id("uwtable");
+        for enabled in [false, true] {
+            let module = context.create_module("unwind");
+            let ty = context.void_type().fn_type(&[], false);
+            let declaration = module.add_function("loom_rt_fault", ty, None);
+            for name in [
+                "loom.fn.0",
+                "loom.witness.0",
+                "loom.cleanup.0",
+                "loom.trace.0",
+            ] {
+                let function = module.add_function(name, ty, Some(Linkage::Internal));
+                builder.position_at_end(context.append_basic_block(function, "entry"));
+                builder.build_return(None).unwrap();
+            }
+            unwind_tables(&context, &module, enabled).unwrap();
+            let late = module.add_function("late.helper", ty, Some(Linkage::Internal));
+            builder.position_at_end(context.append_basic_block(late, "entry"));
+            builder.build_return(None).unwrap();
+            unwind_tables(&context, &module, enabled).unwrap();
+            module.verify().unwrap();
+            for function in module.get_functions().filter(|value| *value != declaration) {
+                let attribute = function.get_enum_attribute(AttributeLoc::Function, kind);
+                assert_eq!(
+                    attribute.map(Attribute::get_enum_value),
+                    enabled.then_some(1)
+                );
+                assert!(
+                    function
+                        .get_enum_attribute(
+                            AttributeLoc::Function,
+                            Attribute::get_named_enum_kind_id("nounwind"),
+                        )
+                        .is_none()
+                );
+            }
+            assert!(
+                declaration
+                    .get_enum_attribute(AttributeLoc::Function, kind)
+                    .is_none()
+            );
+            let text = module.print_to_string().to_string();
+            assert_eq!(text.contains("uwtable(sync)"), enabled);
+            assert_eq!(
+                text.matches("!{i32 7, !\"uwtable\", i32 1}").count(),
+                usize::from(enabled)
+            );
+        }
+    }
 
     #[test]
     fn fault_writes_follow_host_crt_integer_widths() {
