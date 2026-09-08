@@ -210,7 +210,30 @@ owned staging; crashes can leave staging directories. Cache format changes may
 discard reuse; no compatibility promise or automatic eviction is provided.
 Full toolchain hashing and bundle verification have costs, so caching is opt-in,
 not a promise that tiny programs build faster. Incremental frontend/proof reuse
-and separate per-package objects remain future work.
+and separate per-package objects remain future work. Bootstrap generation checks
+do not enable this cache.
+
+`node scripts/benchmark-compiler.mjs --compare-cache` compares uncached and warm
+object-cache builds in alternating order. Initial misses are recorded separately;
+the measurements include source checking, full toolchain hashing and relinking.
+
+On Apple M4 Max/macOS 25.2, three alternating O2 pairs gave these medians:
+
+| Build | Uncached | Warm object cache |
+| --- | ---: | ---: |
+| Scalar example | 107.29 ms | 192.61 ms |
+| Data example | 92.87 ms | 185.51 ms |
+| Compiler | 20,530.64 ms | 1,379.30 ms |
+
+The compiler's peak RSS medians were 754.95/301.17 MiB; its source-only check
+median was 499.72 ms. Cache hits had no decode/codegen phase and still linked.
+Host variation was substantial: compiler uncached samples ranged 18.00–33.29 s,
+hits 1.01–1.48 s. Its initial miss was a separate 15.29 s observation, not evidence
+that a miss is faster than an uncached build. Small examples regressed, as the
+cost of toolchain identity exceeded saved codegen. These are compilation timings,
+not runtime kernel speedups or a portable performance guarantee.
+[Raw samples and source/tool hashes](../benchmarks/compiler/results/2026-09-08-macos-arm64-object-cache.json)
+retain the exact measurement basis.
 
 ### Earlier uncached measurements
 
