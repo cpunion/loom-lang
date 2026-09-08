@@ -34,3 +34,10 @@ pub fn summarize(text Text) Summary {
         bytes = length(text)
     }
 }
+
+test fn empty_input() {
+    let counts = summarize("")
+    assert counts.lines == 0
+    assert counts.words == 0
+    assert counts.bytes == 0
+}

@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Launch the VS Code programming trial directly with `npm run try` in
+  `editors/vscode`, with format/check/build/test/run tasks and a feature-writing
+  exercise. Demonstrate both same-directory test forms in the file-tool library.
+  `loom run` now preserves application exit codes in the portable 0–255 range
+  without appending a compiler error to a normal nonzero exit.
+
 - Add `std.time.monotonic_ns`, `sleep_ns`, `sleep_ms` and `sleep_until_ns`.
   Loom timer states preserve a single evaluated deadline; runtime notifications
   requeue them through a lazily created reactor. Idle waits block without spinning

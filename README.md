@@ -15,6 +15,17 @@ in Git history.
 
 ## Start here
 
+Already built this checkout? Open the programming trial directly:
+
+```sh
+npm --prefix editors/vscode ci
+npm --prefix editors/vscode run try
+```
+
+This opens the local VS Code development extension with a small file tool,
+same-directory tests, and format/check/build/test/run tasks. See the
+[trial setup](editors/vscode/README.md#try-it) for prerequisites and CLI-only use.
+
 - [Try editing a small Loom program](editors/vscode/README.md#try-it)
 - [Write and test a multi-package file tool](compiler/examples/wordcount/README.md)
 - [Try typed tasks and postfix await](compiler/examples/tasks/README.md)

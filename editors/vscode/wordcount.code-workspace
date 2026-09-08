@@ -12,6 +12,14 @@
     "version": "2.0.0",
     "tasks": [
       {
+        "label": "Loom: format wordcount",
+        "type": "process",
+        "command": "${workspaceFolder}/../../../target/loom",
+        "windows": { "command": "${workspaceFolder}/../../../target/loom.exe" },
+        "args": ["fmt", "--recursive", "."],
+        "problemMatcher": []
+      },
+      {
         "label": "Loom: check wordcount",
         "type": "process",
         "command": "${workspaceFolder}/../../../target/loom",
@@ -19,6 +27,18 @@
         "args": ["check"],
         "problemMatcher": [],
         "group": { "kind": "build", "isDefault": true }
+      },
+      {
+        "label": "Loom: build wordcount",
+        "type": "process",
+        "command": "${workspaceFolder}/../../../target/loom",
+        "windows": {
+          "command": "${workspaceFolder}/../../../target/loom.exe",
+          "args": ["build", "--output", "target/wordcount.exe"]
+        },
+        "args": ["build", "--output", "target/wordcount"],
+        "problemMatcher": [],
+        "group": "build"
       },
       {
         "label": "Loom: test wordcount",

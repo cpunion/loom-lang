@@ -18,6 +18,7 @@ import std.list.get
 import std.list.length
 import std.process.run
 import std.process.run_input
+import std.process.exit_code
 import std.result.Result
 import std.text.concat
 import std.text.byte
@@ -284,7 +285,12 @@ fn execute(args List[Text]) Result[Text, Text] {
         push(arguments, get(selected.program_args, index))
         index = index + 1
     }
-    if child_status(arguments)? != 0 {
+    let status = child_status(arguments)?
+    if selected.command == "run" && status >= 0 && status <= 255 {
+        exit_code(status)
+        return Result.Ok("")
+    }
+    if status != 0 {
         return Result.Err("native program failed")
     }
     if selected.command == "test" {
