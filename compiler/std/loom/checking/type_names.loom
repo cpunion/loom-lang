@@ -10,6 +10,22 @@ import std.list.length
 import std.text.concat
 import std.int.to_text
 
+fn qualified_type_name(bindings std.loom.binding.Program, file Int, name Text) Text {
+    let package = get(bindings.files, file).package
+    let instance = get(bindings.packages, package).instance
+    let module = get(bindings.modules, instance)
+    let label = qualify(package_label(bindings.modules, bindings.packages, package), name)
+    var index = 0
+    while index < length(bindings.modules) {
+        if index != instance && get(bindings.modules, index).name == module.name {
+            // Project loading records the canonical local source root, not a remote URL.
+            return concat(label, concat(" (from ", concat(module.source, ")")))
+        }
+        index = index + 1
+    }
+    label
+}
+
 // Type IDs belong to the supplied checked type table. () labels the internal no-value type;
 // abstract parameter labels are positional, not recovered source spellings.
 pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces List[Interface], ty Int) Text {
@@ -23,9 +39,7 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
     if value.kind == TypeKind.Dyn {
         let interface = get(interfaces, value.symbol)
         let symbol = get(bindings.symbols, interface.symbol)
-        let package = package_label(bindings.modules, bindings.packages,
-            get(bindings.files, symbol.file).package)
-        var label = concat("dyn ", qualify(package, symbol.name))
+        var label = concat("dyn ", qualified_type_name(bindings, symbol.file, symbol.name))
         if length(value.arguments) == 0 { return label }
         label = concat(label, "[")
         var index = 0
@@ -58,10 +72,8 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
     if value.kind == TypeKind.Associated {
         let member = get(bindings.symbols, value.symbol)
         let capability = get(bindings.symbols, member.owner)
-        let package = package_label(bindings.modules, bindings.packages,
-            get(bindings.files, capability.file).package)
-        let owner = qualify(package, capability.name)
-        var label = concat(type_name(bindings, types, interfaces, get(value.arguments, 0)), concat(".", qualify(owner, member.name)))
+        let projection = qualified_type_name(bindings, capability.file, qualify(capability.name, member.name))
+        var label = concat(type_name(bindings, types, interfaces, get(value.arguments, 0)), concat(".", projection))
         if length(value.arguments) > 1 {
             label = concat(label, "[")
             var index = 1
@@ -88,9 +100,7 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
     var label = "List"
     if value.kind != TypeKind.List {
         let symbol = get(bindings.symbols, value.symbol)
-        let package = package_label(bindings.modules, bindings.packages,
-            get(bindings.files, symbol.file).package)
-        label = qualify(package, symbol.name)
+        label = qualified_type_name(bindings, symbol.file, symbol.name)
     }
     if length(value.arguments) > 0 {
         label = concat(label, "[")
