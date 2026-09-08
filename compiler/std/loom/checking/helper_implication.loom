@@ -19,7 +19,7 @@ fn prepared_implication(context Context, node Node, source Int, target Int, base
     let stage = staging(predicate_scope(context.env, source, base), node)?
     // Preparation must not recursively depend on the optional proof it is
     // trying to obtain. Ordinary checking and mandatory proofs still run.
-    let env = Environment { source = stage.env.source types = stage.env.types type_states = stage.env.type_states task_widths = stage.env.task_widths expand_data = true
+    let env = Environment { source = stage.env.source types = stage.env.types type_states = stage.env.type_states expand_data = true
         has_refinements = stage.env.has_refinements expanding_helpers = true signatures = stage.env.signatures
         pending = stage.env.pending stage_depth = stage.env.stage_depth computations = stage.env.computations validations = stage.env.validations
         concepts = stage.env.concepts implementations = stage.env.implementations interfaces = stage.env.interfaces

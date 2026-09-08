@@ -186,7 +186,7 @@ fn validate_static(env Environment, id Int, constants List[StaticValue], node No
     if length(env.validations) >= 1024 { return Result.Err(failure(env, original.symbol, node, "comptime specialization budget exceeded; expansion must be finite")) }
     let selected = length(env.validations)
     push(env.validations, Validation { signature = id constants = constants })
-    let validation = Environment { source = env.source types = env.types type_states = env.type_states task_widths = env.task_widths expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
+    let validation = Environment { source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth + 1 computations = env.computations
         validations = env.validations concepts = env.concepts implementations = env.implementations interfaces = env.interfaces
         associations = env.associations association_depth = env.association_depth

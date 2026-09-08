@@ -11,12 +11,13 @@ fn task_width_known(env Environment, ty Int) Int {
     if ty <= 5 {
         return 0
     }
-    let cached = get(env.task_widths, ty)
+    let state = get(env.type_states, ty)
+    let cached = state.task_width
     if cached >= 0 { return cached }
-    if cached == -2 || get(env.type_states, ty) != 2 { return -1 }
-    set(env.task_widths, ty, -2)
+    if cached == -2 || state.phase != 2 { return -1 }
+    set(env.type_states, ty, TypeState { phase = state.phase task_width = -2 })
     let width = task_width_uncached(env, ty)
-    set(env.task_widths, ty, width)
+    set(env.type_states, ty, TypeState { phase = state.phase task_width = width })
     width
 }
 

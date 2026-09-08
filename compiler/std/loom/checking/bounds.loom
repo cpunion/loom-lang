@@ -52,7 +52,7 @@ fn declaration_types(env Environment) Result[Bool, Failure] {
     if length(env.concepts) == 0 { return Result.Ok(true) }
     var pending = 0
     while pending < length(env.types) {
-        if get(env.type_states, pending) == 0 { discard expand_type(env, pending, 0)? }
+        if get(env.type_states, pending).phase == 0 { discard expand_type(env, pending, 0)? }
         pending = pending + 1
     }
     var owner = 0

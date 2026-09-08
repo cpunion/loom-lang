@@ -72,7 +72,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
         return Result.Err(error(context, node, "compile-time staging depth exceeded; check for a dependency cycle"))
     }
     // Compile-time call targets never enter the runtime reachability queue.
-    let env = Environment { source = context.env.source types = context.env.types type_states = context.env.type_states task_widths = context.env.task_widths expand_data = true
+    let env = Environment { source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true
         has_refinements = context.env.has_refinements expanding_helpers = context.env.expanding_helpers signatures = context.env.signatures
         pending = new[Instance]() stage_depth = context.env.stage_depth + 1 computations = context.env.computations
         validations = context.env.validations

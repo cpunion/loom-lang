@@ -34,7 +34,7 @@ fn enclosing(env Environment, owner Int) Int {
     if item.node.kind == NodeKind.Concept || item.node.kind == NodeKind.Impl { owner } else { item.owner }
 }
 fn header_environment(env Environment) Environment {
-    Environment { source = env.source types = env.types type_states = env.type_states task_widths = env.task_widths expand_data = false has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
+    Environment { source = env.source types = env.types type_states = env.type_states expand_data = false has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
         concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses
         associations = env.associations association_depth = env.association_depth
@@ -54,7 +54,7 @@ fn association_environment(env Environment, member Int, receiver Int, arguments 
     }
     let current = Association { member = member receiver = receiver arguments = arguments }
     if index == length(env.associations) { push(env.associations, current) } else { set(env.associations, index, current) }
-    Result.Ok(Environment { source = env.source types = env.types type_states = env.type_states task_widths = env.task_widths expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
+    Result.Ok(Environment { source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
         concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses
         associations = env.associations association_depth = env.association_depth + 1
