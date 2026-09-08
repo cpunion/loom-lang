@@ -506,6 +506,9 @@ push/growth check per element. Compile-time literals use the same sharing rules;
 materializing general compile-time object graphs still uses the existing
 allocate-then-fill path to preserve aliases and cycles. Access and mutation use
 `std.list.get`, `set`, and `push`; list indexing/repetition syntax is not included.
+An element block currently needs a value-producing path: an unconditional
+`[{ return }]` is rejected even with a List type context. General typing of
+non-returning expressions remains incomplete, as it is for tuples and bindings.
 
 ## Hash collections
 
