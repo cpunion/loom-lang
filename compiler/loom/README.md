@@ -23,9 +23,14 @@ not language versions or additional supported compilers. Stage 0 is an existing
 Loom compiler, recovered from frozen history on macOS/Linux when needed. The
 [Windows bootstrap](../README.md#windows-bootstrap) can instead compile a trusted
 same-checkout checked export into its initial native compiler. New language
-features do not require a parallel Rust implementation; only their use in the
-compiler's own source must wait until the selected bootstrap compiler supports
-them.
+features do not require a parallel Rust implementation. Keep the compiler and
+its production `std` dependencies within the existing seed's supported subset,
+even when user programs can use newer features. Raise that requirement only for
+substantial simplification or measured performance gains, batching upgrades to
+avoid a growing checkpoint chain. Test fixtures may exercise newer syntax.
+Source Map adoption, for example, compiles with the existing pinned seed and
+does not add a bootstrap checkpoint. Use one-stage `--dev` for ordinary edits;
+the three-stage comparison is the bootstrap/CI validation gate.
 
 The source CLI provides `check`, `build`, `test`, and `run` for one directory
 package. It defaults to `compiler/std` and `target/debug/loom-native` relative to
