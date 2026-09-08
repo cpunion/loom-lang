@@ -4,7 +4,7 @@ const path = require('node:path');
 const { createProtocolConnection, StreamMessageReader, StreamMessageWriter } = require('vscode-languageserver-protocol/node');
 const { URI } = require('vscode-uri');
 
-async function session(settings, folder) {
+async function session(settings, folder, configuration) {
   const child = spawn(process.execPath, [path.resolve(__dirname, '../server.js'), '--stdio'], { stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
   child.stderr.on('data', data => { stderr += data; });
@@ -15,9 +15,12 @@ async function session(settings, folder) {
     for (const check of [...waiters]) check();
   });
   rpc.onNotification('window/showMessage', message => { stderr += message.message; });
+  if (configuration) rpc.onRequest('workspace/configuration', params => params.items.map(item => configuration(item.scopeUri)));
   rpc.listen();
-  const initialized = await rpc.sendRequest('initialize', { processId: process.pid, capabilities: {},
-    workspaceFolders: [{ uri: URI.file(folder).toString(), name: 'fixture' }], initializationOptions: { settings } });
+  const initialized = await rpc.sendRequest('initialize', { processId: process.pid,
+    capabilities: configuration ? { workspace: { configuration: true } } : {},
+    workspaceFolders: (Array.isArray(folder) ? folder : [folder]).map(folder => ({ uri: URI.file(folder).toString(), name: path.basename(folder) })),
+    initializationOptions: { settings } });
   await rpc.sendNotification('initialized', {});
   return {
     rpc, diagnostics, initialized,
