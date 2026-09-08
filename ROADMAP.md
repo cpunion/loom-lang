@@ -131,12 +131,15 @@ independent capability restriction, without ownership syntax. See the
 Source `std.file.tasks` now supplies byte/text reads and writes through bounded
 native workers and the existing completion reactor. Source loops retain partial-I/O,
 UTF-8 and close policy; cancellation drains active OS calls before scope cleanup.
-Open/close and handle duplication remain synchronous. See the
+Open/create and normal close also use workers, with owned results until extraction
+or cancellation and single-transfer close tokens. Private native waits suspend
+their caller without child Tasks. Duplication and failure-cleanup close remain
+synchronous; a stuck OS call can delay cancellation. See the
 [file task example](compiler/examples/async_files).
 
 The next async gates are Task-bearing aggregates,
-async methods, Task-bearing function values/dynamic calls, asynchronous
-fully asynchronous file operations, socket readiness adapters, general worker
+async methods, Task-bearing function values/dynamic calls,
+socket readiness adapters, general worker
 operations and joins. Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 

@@ -62,7 +62,14 @@ fn source_file_tasks_roundtrip_binary_and_utf8_with_real_completion() {
         assert!(
             ir.contains("loom_rt_task_wait_file_read")
                 && ir.contains("loom_rt_task_wait_file_write_bytes")
+                && ir.contains("loom_rt_task_wait_file_open")
+                && ir.contains("loom_rt_task_wait_file_close")
         );
+        if level == "0" {
+            // main, copy_file, read_bytes and write_bytes are public-source
+            // Tasks. Each private I/O await suspends that same frame directly.
+            assert_eq!(ir.matches("call i64 @loom_rt_task_create(").count(), 4);
+        }
     }
 
     let package = directory.path().join("package");

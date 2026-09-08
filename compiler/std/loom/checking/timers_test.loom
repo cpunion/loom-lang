@@ -24,7 +24,8 @@ test fn private_async_intrinsics_produce_typed_suspension_not_blocking_calls() {
             var index = 0
             while index < length(program.functions) {
                 let function = get(program.functions, index)
-                if function.runtime_name == "timer_until_ns" {
+                assert function.runtime_name != "timer_until_ns"
+                if function.is_async && length(function.params) == 1 && function.result == 0 {
                     let operation = get(function.body.children, 0)
                     assert function.is_async && function.result == 0
                     assert operation.kind == ExprKind.Suspend && operation.ty == 0
@@ -47,6 +48,7 @@ test fn private_async_intrinsics_produce_typed_suspension_not_blocking_calls() {
     }
     rejects_timer(declarations, "import std.clock_fixture.now\nfn main() { discard comptime { now() } }")
     rejects_timer(declarations, "import std.clock_fixture.pause\nasync fn main() { comptime { pause(0).await } }")
+    rejects_timer("async intrinsic fn timer_until_ns(deadline Int)\npub async fn bad() { let pending = timer_until_ns(0)\npending.await }", "")
 }
 
 test fn intrinsic_effect_and_type_metadata_cannot_be_changed_by_a_declaration() {

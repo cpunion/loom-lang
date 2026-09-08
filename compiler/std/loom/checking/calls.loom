@@ -345,6 +345,12 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
     if dynamic {
         return dynamic_call(context, node, instance.signature, instance.arguments, constants, output, runtime_values)
     }
+    if asynchronous && has(symbol(context.env, signature.symbol).node, NodeKind.Intrinsic) {
+        // A private suspension primitive is not a separately scheduled Task.
+        // Await unwraps this temporary Task type; task flow rejects any escape.
+        return Result.Ok(expression(ExprKind.Suspend, output, node, validate_intrinsic(context.env, instance.signature)?, -1,
+            runtime_values, all_fall(runtime_values)))
+    }
     let target = if context.emit { schedule(context.env, instance.signature, instance.arguments, constants, node)? } else { -1 }
     Result.Ok(expression(if asynchronous { ExprKind.TaskCall } else { ExprKind.Call }, output, node,
         if asynchronous { task_creation_message(context, node) } else { "" }, target, runtime_values, all_fall(runtime_values)))

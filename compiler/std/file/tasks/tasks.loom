@@ -5,11 +5,11 @@ import std.bytes.new
 import std.bytes.length
 import std.bytes.decode_utf8
 
-intrinsic fn open(path Text) Int
+intrinsic fn file_abort(handle Int) Int
 
-intrinsic fn create(path Text) Int
+async intrinsic fn async_open(path Text, create Bool) Int
 
-intrinsic fn close(handle Int) Int
+async intrinsic fn async_close(handle Int) Int
 
 async intrinsic fn async_read(handle Int, buffer Bytes, limit Int) Int
 
@@ -17,17 +17,17 @@ async intrinsic fn async_write(handle Int, value Text, offset Int) Int
 
 async intrinsic fn async_write_bytes(handle Int, value Bytes, offset Int) Int
 
-// Blocking reads/writes use bounded native workers; open/close are still
-// synchronous. Cancellation drains active operations before this scope closes.
+// Normal open/read/write/close use workers. Cleanup cannot suspend, so failure
+// fallback closes synchronously after pending operations have drained.
 pub async fn read_bytes(path Text) Result[Bytes, FileError] {
-    let handle = open(path)
+    let handle = async_open(path, false).await
     if handle < 0 {
         return Result.Err(FileError.Open)
     }
     var closed = false
     defer {
         if !closed {
-            discard close(handle)
+            discard file_abort(handle)
         }
     }
     let buffer = new()
@@ -35,8 +35,8 @@ pub async fn read_bytes(path Text) Result[Bytes, FileError] {
     while count > 0 {
         count = async_read(handle, buffer, 8192).await
     }
-    let status = close(handle)
     closed = true
+    let status = async_close(handle).await
     if count < 0 {
         return Result.Err(FileError.Read)
     }
@@ -55,14 +55,14 @@ pub async fn read_text(path Text) Result[Text, FileError] {
 }
 
 pub async fn write_text(path Text, value Text) Result[Int, FileError] {
-    let handle = create(path)
+    let handle = async_open(path, true).await
     if handle < 0 {
         return Result.Err(FileError.Open)
     }
     var closed = false
     defer {
         if !closed {
-            discard close(handle)
+            discard file_abort(handle)
         }
     }
     let size = length(value)
@@ -74,8 +74,8 @@ pub async fn write_text(path Text, value Text) Result[Int, FileError] {
         }
         offset = offset + count
     }
-    let status = close(handle)
     closed = true
+    let status = async_close(handle).await
     if status < 0 {
         return Result.Err(FileError.Close)
     }
@@ -83,14 +83,14 @@ pub async fn write_text(path Text, value Text) Result[Int, FileError] {
 }
 
 pub async fn write_bytes(path Text, value Bytes) Result[Int, FileError] {
-    let handle = create(path)
+    let handle = async_open(path, true).await
     if handle < 0 {
         return Result.Err(FileError.Open)
     }
     var closed = false
     defer {
         if !closed {
-            discard close(handle)
+            discard file_abort(handle)
         }
     }
     let size = std.bytes.length(value)
@@ -102,8 +102,8 @@ pub async fn write_bytes(path Text, value Bytes) Result[Int, FileError] {
         }
         offset = offset + count
     }
-    let status = close(handle)
     closed = true
+    let status = async_close(handle).await
     if status < 0 {
         return Result.Err(FileError.Close)
     }

@@ -1366,14 +1366,17 @@ Direct Task parameters, returns and nested results preserve one-shot obligations
 Task-bearing aggregates, async methods, and Task-bearing function values/dynamic
 calls remain unsupported.
 `std.file.tasks.read_bytes/read_text/write_bytes/write_text` return ordinary Tasks
-and run file read/write operations on a native pool of at most four threads per
+and run open/create, read/write and normal close on a native pool of at most four threads per
 owner. See the [file task package](examples/async_files). Source code owns I/O
 loops, UTF-8 validation and close policy; workers copy buffers and publish completion
 identities, never access GC objects. Cancellation drains active work before closing
-resources. Open/close and duplication still block the owner, and cancellation can
-wait for a stuck OS call. The synchronous `std.file` API remains unchanged.
+resources. Unclaimed open results own their File until extraction or cancellation;
+close transfers its private token exactly once. Duplication and failure-cleanup
+close still block the owner, and cancellation can wait for a stuck OS call.
+Private async intrinsics must be awaited directly and suspend the current frame,
+without creating another Task. The synchronous `std.file` API remains unchanged.
 
-Fully asynchronous opens, socket adapters, general worker operations, joins and
+Socket adapters, general worker operations, joins and
 public task-outcome handling are not available yet. These are implementation
 limits; the [accepted design](../docs/rfcs/tasks.md) remains the target.
 
