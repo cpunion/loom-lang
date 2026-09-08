@@ -1,0 +1,1287 @@
+{
+  "schema": 1,
+  "revision": "1c31f6dc5df33913004ff6dcf0c36d1db5d6197e",
+  "dirty": false,
+  "compiler": "/Users/lijie/source/cpunion/loom-lang/target/loom",
+  "compilerVersion": "loom source compiler (development)",
+  "compilerSha256": "1baf59768e4e0520ea89b6b7e587635d9ff56d2e0e1135444bbae59b6b020f80",
+  "baselineCompiler": "/Users/lijie/source/cpunion/loom-lang/target/performance/name-index-baseline/loom",
+  "baselineVersion": "loom source compiler (development)",
+  "baselineSha256": "5164eaeabfd28dc66c7c98dc3e06a93a25e3070b7f94ef375818b26d67c4ebbb",
+  "harnessSha256": "efad9939fde9c847344e9aa421f1b72b7a82bb07430b6128f497da46119bc613",
+  "sourceSha256": "b85f3291c3177bde73bb4ca901d7176bad7d57d2f67d48bd870c88e5d7759bfd",
+  "sourceFiles": 216,
+  "extended": true,
+  "compareCache": false,
+  "checkOnly": true,
+  "generatedSizes": [
+    10,
+    50,
+    200,
+    512
+  ],
+  "host": {
+    "os": "darwin",
+    "release": "25.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "method": "fresh processes; same source inputs; one warmup per compiler per case; paired samples alternate baseline/candidate order; sample indexes identify pairs; no incremental compiler cache",
+  "wall": "elapsed around /usr/bin/time launch, including process launch and output; startup runs --version without loading a package",
+  "rss": "maximum RSS reported by macOS time, not a sum of simultaneous process memory",
+  "cpu": "user and system CPU time reported by macOS time, converted from seconds to milliseconds; short runs are limited by time's reporting precision",
+  "cases": [
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 10.252979,
+        "peakRssBytes": 6602752,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 11.451333,
+          "peakRssBytes": 6602752,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.395917,
+          "peakRssBytes": 6619136,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.873541,
+          "peakRssBytes": 6602752,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.314708,
+          "peakRssBytes": 6602752,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.470584,
+          "peakRssBytes": 6602752,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.968875,
+          "peakRssBytes": 6602752,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.981459,
+          "peakRssBytes": 6602752,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.109541,
+          "peakRssBytes": 6602752,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.357667,
+          "peakRssBytes": 6602752,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.19125,
+          "peakRssBytes": 6602752,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 10.1996875,
+        "peakRssBytes": 6619136,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 10.401583,
+          "peakRssBytes": 6619136,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.157125,
+          "peakRssBytes": 6619136,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.104917,
+          "peakRssBytes": 6619136,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.904625,
+          "peakRssBytes": 6619136,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.55425,
+          "peakRssBytes": 6619136,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.24225,
+          "peakRssBytes": 6619136,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.068625,
+          "peakRssBytes": 6635520,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.039334,
+          "peakRssBytes": 6619136,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.27175,
+          "peakRssBytes": 6619136,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.046834,
+          "peakRssBytes": 6635520,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 6.0787295,
+        "peakRssBytes": 3620864,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 6.088042,
+          "peakRssBytes": 3620864,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.672458,
+          "peakRssBytes": 3620864,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.43275,
+          "peakRssBytes": 3637248,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.784542,
+          "peakRssBytes": 3620864,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.471416,
+          "peakRssBytes": 3620864,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.327,
+          "peakRssBytes": 3620864,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.505625,
+          "peakRssBytes": 3620864,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.549584,
+          "peakRssBytes": 3620864,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.224791,
+          "peakRssBytes": 3637248,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.069417,
+          "peakRssBytes": 3620864,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 5.796583,
+        "peakRssBytes": 3653632,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 5.453625,
+          "peakRssBytes": 3653632,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.719125,
+          "peakRssBytes": 3670016,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.98,
+          "peakRssBytes": 3653632,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.868625,
+          "peakRssBytes": 3653632,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.697625,
+          "peakRssBytes": 3653632,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.724541,
+          "peakRssBytes": 3653632,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.222833,
+          "peakRssBytes": 3670016,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.057083,
+          "peakRssBytes": 3653632,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.941666,
+          "peakRssBytes": 3653632,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.716792,
+          "peakRssBytes": 3653632,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 516.030083,
+        "peakRssBytes": 232996864,
+        "userCpuMs": 480,
+        "systemCpuMs": 20
+      },
+      "samples": [
+        {
+          "wallMs": 535.55925,
+          "peakRssBytes": 238911488,
+          "userCpuMs": 500,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 518.145708,
+          "peakRssBytes": 251478016,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 508.212291,
+          "peakRssBytes": 231112704,
+          "userCpuMs": 480,
+          "systemCpuMs": 10
+        },
+        {
+          "wallMs": 510.767,
+          "peakRssBytes": 232570880,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 509.284916,
+          "peakRssBytes": 243154944,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 510.715833,
+          "peakRssBytes": 228163584,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 515.676833,
+          "peakRssBytes": 233422848,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 516.383333,
+          "peakRssBytes": 229359616,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 519.108042,
+          "peakRssBytes": 226279424,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 518.996208,
+          "peakRssBytes": 244203520,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 509.84497899999997,
+        "peakRssBytes": 226304000,
+        "userCpuMs": 475,
+        "systemCpuMs": 20
+      },
+      "samples": [
+        {
+          "wallMs": 508.143458,
+          "peakRssBytes": 234553344,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 511.790834,
+          "peakRssBytes": 226590720,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 509.964583,
+          "peakRssBytes": 226312192,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 504.428375,
+          "peakRssBytes": 226295808,
+          "userCpuMs": 470,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 502.303,
+          "peakRssBytes": 226295808,
+          "userCpuMs": 470,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 521.739208,
+          "peakRssBytes": 226295808,
+          "userCpuMs": 490,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 504.700125,
+          "peakRssBytes": 226312192,
+          "userCpuMs": 470,
+          "systemCpuMs": 10
+        },
+        {
+          "wallMs": 511.449167,
+          "peakRssBytes": 226590720,
+          "userCpuMs": 480,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 511.05725,
+          "peakRssBytes": 226279424,
+          "userCpuMs": 470,
+          "systemCpuMs": 20
+        },
+        {
+          "wallMs": 509.725375,
+          "peakRssBytes": 226279424,
+          "userCpuMs": 470,
+          "systemCpuMs": 20
+        }
+      ]
+    },
+    {
+      "name": "growth-10",
+      "command": "check",
+      "package": "target/performance/run-StCo8n/growth-10",
+      "generated": {
+        "helpers": 10,
+        "files": 5,
+        "sourceBytes": 2678,
+        "sourceSha256": "0ab4ac10ab19aedc34e93dab5cb2077892574f9d96ab261c3faf9b3a690e868c"
+      },
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 11.861542,
+        "peakRssBytes": 7569408,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 11.76125,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 12.264417,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 12.352333,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.779792,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 12.211709,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.666584,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.943292,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.621541,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.652958,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 12.273041,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "growth-10",
+      "command": "check",
+      "package": "target/performance/run-StCo8n/growth-10",
+      "generated": {
+        "helpers": 10,
+        "files": 5,
+        "sourceBytes": 2678,
+        "sourceSha256": "0ab4ac10ab19aedc34e93dab5cb2077892574f9d96ab261c3faf9b3a690e868c"
+      },
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 11.799687500000001,
+        "peakRssBytes": 7569408,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 11.888167,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.650917,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.772334,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.827041,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.968667,
+          "peakRssBytes": 7585792,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.564542,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.6865,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 11.718291,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 12.913,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 12.327333,
+          "peakRssBytes": 7569408,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "growth-50",
+      "command": "check",
+      "package": "target/performance/run-StCo8n/growth-50",
+      "generated": {
+        "helpers": 50,
+        "files": 9,
+        "sourceBytes": 12076,
+        "sourceSha256": "24ea8638268f76cb297997ab48c997cc0d09a3b64ccd31c75e361edc7d3e7766"
+      },
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 17.228375,
+        "peakRssBytes": 12091392,
+        "userCpuMs": 10,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 17.244583,
+          "peakRssBytes": 12091392,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 17.032291,
+          "peakRssBytes": 12353536,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 16.891416,
+          "peakRssBytes": 12468224,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 17.595791,
+          "peakRssBytes": 9846784,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 16.740334,
+          "peakRssBytes": 9502720,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 17.158708,
+          "peakRssBytes": 12091392,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 17.322083,
+          "peakRssBytes": 12550144,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 17.212167,
+          "peakRssBytes": 10829824,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 17.85525,
+          "peakRssBytes": 9502720,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 19.08325,
+          "peakRssBytes": 12337152,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "growth-50",
+      "command": "check",
+      "package": "target/performance/run-StCo8n/growth-50",
+      "generated": {
+        "helpers": 50,
+        "files": 9,
+        "sourceBytes": 12076,
+        "sourceSha256": "24ea8638268f76cb297997ab48c997cc0d09a3b64ccd31c75e361edc7d3e7766"
+      },
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 16.873874999999998,
+        "peakRssBytes": 11829248,
+        "userCpuMs": 10,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 16.714542,
+          "peakRssBytes": 11272192,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 16.947375,
+          "peakRssBytes": 12648448,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 16.7695,
+          "peakRssBytes": 12386304,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 16.800375,
+          "peakRssBytes": 10829824,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 16.998875,
+          "peakRssBytes": 12386304,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 16.399083,
+          "peakRssBytes": 9519104,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 16.769917,
+          "peakRssBytes": 12386304,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 17.225625,
+          "peakRssBytes": 12566528,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 18.391167,
+          "peakRssBytes": 9863168,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 18.316375,
+          "peakRssBytes": 10846208,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "growth-200",
+      "command": "check",
+      "package": "target/performance/run-StCo8n/growth-200",
+      "generated": {
+        "helpers": 200,
+        "files": 24,
+        "sourceBytes": 47914,
+        "sourceSha256": "450f23fc8837aea817ad14f4f1c0c4bb7932a993a0f5e96f8e5b7ac93e2b39f0"
+      },
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 35.8751665,
+        "peakRssBytes": 17448960,
+        "userCpuMs": 20,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 40.932292,
+          "peakRssBytes": 26755072,
+          "userCpuMs": 30,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 35.981916,
+          "peakRssBytes": 17448960,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 35.768417,
+          "peakRssBytes": 17448960,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 36.05775,
+          "peakRssBytes": 17448960,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 35.449333,
+          "peakRssBytes": 17448960,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 35.576583,
+          "peakRssBytes": 17448960,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 36.230042,
+          "peakRssBytes": 17448960,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 35.6925,
+          "peakRssBytes": 17448960,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 35.559041,
+          "peakRssBytes": 17448960,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 37.208916,
+          "peakRssBytes": 17448960,
+          "userCpuMs": 30,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "growth-200",
+      "command": "check",
+      "package": "target/performance/run-StCo8n/growth-200",
+      "generated": {
+        "helpers": 200,
+        "files": 24,
+        "sourceBytes": 47914,
+        "sourceSha256": "450f23fc8837aea817ad14f4f1c0c4bb7932a993a0f5e96f8e5b7ac93e2b39f0"
+      },
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 32.554770500000004,
+        "peakRssBytes": 17563648,
+        "userCpuMs": 20,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 34.198125,
+          "peakRssBytes": 24117248,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 34.229125,
+          "peakRssBytes": 24363008,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 33.285584,
+          "peakRssBytes": 17547264,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 32.639541,
+          "peakRssBytes": 17563648,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 32.138208,
+          "peakRssBytes": 17563648,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 32.536166,
+          "peakRssBytes": 17563648,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 32.425042,
+          "peakRssBytes": 17563648,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 32.573375,
+          "peakRssBytes": 17563648,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 32.372209,
+          "peakRssBytes": 17563648,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 32.417833,
+          "peakRssBytes": 17563648,
+          "userCpuMs": 20,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "growth-512",
+      "command": "check",
+      "package": "target/performance/run-StCo8n/growth-512",
+      "generated": {
+        "helpers": 512,
+        "files": 56,
+        "sourceBytes": 123075,
+        "sourceSha256": "d5b36fd5ce829293c9530718a1da06a669a3ead333cf329b43ce934e3e7fc746"
+      },
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 97.556354,
+        "peakRssBytes": 54312960,
+        "userCpuMs": 80,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 97.344083,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 80,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 99.741834,
+          "peakRssBytes": 54296576,
+          "userCpuMs": 80,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 99.464417,
+          "peakRssBytes": 54296576,
+          "userCpuMs": 80,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 98.137083,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 80,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 97.033125,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 80,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 96.043167,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 80,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 101.687459,
+          "peakRssBytes": 62226432,
+          "userCpuMs": 80,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 97.751875,
+          "peakRssBytes": 54329344,
+          "userCpuMs": 80,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 97.360833,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 80,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 96.779291,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 80,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "growth-512",
+      "command": "check",
+      "package": "target/performance/run-StCo8n/growth-512",
+      "generated": {
+        "helpers": 512,
+        "files": 56,
+        "sourceBytes": 123075,
+        "sourceSha256": "d5b36fd5ce829293c9530718a1da06a669a3ead333cf329b43ce934e3e7fc746"
+      },
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 76.4574165,
+        "peakRssBytes": 54312960,
+        "userCpuMs": 60,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 76.496625,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 60,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 78.556417,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 60,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 75.502708,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 60,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 76.526125,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 60,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 76.418208,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 60,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 75.6005,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 60,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 75.455584,
+          "peakRssBytes": 54591488,
+          "userCpuMs": 60,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 77.28175,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 60,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 74.128459,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 60,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 76.804875,
+          "peakRssBytes": 54312960,
+          "userCpuMs": 60,
+          "systemCpuMs": 0
+        }
+      ]
+    }
+  ]
+}
