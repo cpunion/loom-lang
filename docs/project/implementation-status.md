@@ -20,9 +20,13 @@ per task. Relative sleeps start when their task body runs, not when queued.
 See the [timer example](../../compiler/examples/timers). Scheduling has no
 fairness guarantee.
 
-Source asynchronous file/socket/worker I/O and joins remain unfinished. Active lexical
-cleanup cannot cross an await; Task parameter/return/aggregate transfers, async
-methods and async function values remain unsupported.
+Direct Task parameters/returns, generic forwarding and nested Task results now
+preserve one-shot obligations. Async callees adopt argument subtrees; completed
+producers retain Task-valued results until extraction by the actual consumer.
+Sync helpers expose a direct Task parameter/result and use their caller's owner.
+Source asynchronous file/socket/worker I/O and joins remain unfinished. Active
+lexical cleanup cannot cross an await; Task-bearing aggregates, async methods,
+Task-bearing function values and dynamic calls remain unsupported.
 
 The private wait ABI now provides one-shot timers, borrowed socket readiness and
 cross-thread completion notifications through `polling`. Generation checks reject

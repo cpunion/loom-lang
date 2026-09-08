@@ -562,6 +562,19 @@ impl Converter<'_> {
                     return Err("checked task constructor/resume signature mismatch".into());
                 }
             }
+            Primitive::TaskAdopt => {
+                self.task_result(arguments[0].ty)?;
+                self.task_result(arguments[1].ty)?;
+                if result != Type::Unit {
+                    return Err("checked task adoption requires an empty result".into());
+                }
+            }
+            Primitive::TaskReturn => {
+                self.task_result(arguments[0].ty)?;
+                if result != arguments[0].ty {
+                    return Err("checked task return must preserve its handle type".into());
+                }
+            }
             Primitive::TaskAwait | Primitive::TaskResult | Primitive::TaskRelease => {
                 let logical = self.task_result(arguments[0].ty)?;
                 let expected = match operation {
@@ -1135,6 +1148,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "directory_remove" => P::DirectoryRemove,
         "path_entry_kind" => P::PathEntryKind,
         "task_create" => P::TaskCreate,
+        "task_adopt" => P::TaskAdopt,
+        "task_return" => P::TaskReturn,
         "task_await" => P::TaskAwait,
         "task_result" => P::TaskResult,
         "task_release" => P::TaskRelease,
@@ -1173,6 +1188,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::DirectoryRemove
         | P::PathEntryKind
         | P::TaskAwait
+        | P::TaskReturn
         | P::TaskResult
         | P::TaskRelease
         | P::TaskRun => 1,
@@ -1188,6 +1204,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::DirectoryRead
         | P::PathCanonical
         | P::EnvGet
+        | P::TaskAdopt
         | P::PathRename => 2,
         P::TextSlice
         | P::BytesSet

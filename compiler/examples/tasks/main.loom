@@ -11,6 +11,16 @@ async fn recorded[T](value T, order List[Int], tag Int) T {
     value
 }
 
+fn forward[T](task Task[T]) Task[T] {
+    task
+}
+
+async fn render(number Task[Int], word Task[Text]) Text {
+    let total = number.await
+    let label = word.await
+    concat(to_text(total), concat(" ", label))
+}
+
 async fn joined() Text {
     let order = new[Int]()
     let number Task[Int] = recorded(42, order, 1)
@@ -18,11 +28,10 @@ async fn joined() Text {
 
     // Creation queues both children; it does not run their bodies inline.
     assert length(order) == 0
-    let total = number.await
-    let label = word.await
+    let text = render(forward(number), word).await
     assert length(order) == 2
     assert get(order, 0) == 1 && get(order, 1) == 2
-    concat(to_text(total), concat(" ", label))
+    text
 }
 
 async fn main() {

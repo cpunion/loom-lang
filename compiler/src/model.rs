@@ -104,6 +104,8 @@ pub enum Primitive {
     DirectoryRemove,
     PathEntryKind,
     TaskCreate,
+    TaskAdopt,
+    TaskReturn,
     TaskAwait,
     TaskResult,
     TaskRelease,

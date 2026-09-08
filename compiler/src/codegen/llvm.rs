@@ -636,6 +636,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let i64_type = self.context.i64_type();
         let (name, result_type) = match operation {
             Primitive::TaskCreate
+            | Primitive::TaskAdopt
+            | Primitive::TaskReturn
             | Primitive::TaskAwait
             | Primitive::TaskResult
             | Primitive::TaskRelease

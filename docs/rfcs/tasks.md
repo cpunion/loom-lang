@@ -83,8 +83,18 @@ the first external wait. There is no thread per task, spin loop or fairness
 promise. Past deadlines and zero delays are valid but do not guarantee a yield.
 See the [timer example](../../compiler/examples/timers).
 
-Active `defer`/`scoped` cleanup cannot yet cross an await. Task transfers through
-parameters, returns and aggregates, async methods/function values, asynchronous
+Direct Task parameters and returns now transfer one-shot obligations, including
+nested `Task[Task[T]]`. Sync helpers expose their owner requirement through a
+direct Task parameter/result and use the caller's owner; async constructors adopt
+Task parameters without running their bodies. A Task-valued result stays below
+its completed producer until the actual consumer extracts it, preserving subtree
+cancellation even when that producer is transferred again. Already-evaluated
+call arguments remain obligations until the call executes.
+Consumption through an unselected `comptime if` remains unsupported: abstract
+checking must establish the transfer rather than drop a live parameter's obligation.
+
+Active `defer`/`scoped` cleanup cannot yet cross an await. Task-bearing aggregates,
+async methods, Task-bearing function values/dynamic calls, asynchronous
 file/socket/worker I/O and joins are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread. Public outcome inspection and
 cleanup across suspended activations remain future work.

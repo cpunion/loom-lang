@@ -16,6 +16,26 @@ fn async_signature(env Environment, signature Signature) Bool {
     has(symbol(env, signature.symbol).node, NodeKind.Async)
 }
 
+fn direct_task(env Environment, ty Int) Bool {
+    ty >= 0 && get(env.types, ty).kind == TypeKind.Task
+}
+
+// A synchronous helper exposes its owner requirement through its Task inputs
+// or output. No hidden effect or source ownership annotation is introduced.
+fn task_owner(context Context) Bool {
+    if async_signature(context.env, context.signature) || direct_task(context.env, context.signature.result) {
+        return true
+    }
+    var index = 0
+    while index < length(context.signature.params) {
+        if !is_static(context.signature, index) && direct_task(context.env, get(context.signature.params, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
 fn task_creation_message(context Context, node Node) Text {
     if !context.emit {
         return ""
@@ -48,7 +68,7 @@ fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {
 }
 
 fn contains_task(env Environment, ty Int, seen List[Int]) Bool {
-    if ty < 0 || resource_seen(seen, ty) {
+    if ty <= 5 || resource_seen(seen, ty) {
         return false
     }
     push(seen, ty)
@@ -85,16 +105,52 @@ fn contains_task(env Environment, ty Int, seen List[Int]) Bool {
     false
 }
 
+fn task_transfer_type(env Environment, signature Signature, ty Int, node Node) Result[Bool, Failure] {
+    if ty <= 5 { return Result.Ok(true) }
+    var payload = ty
+    while direct_task(env, payload) {
+        payload = get(get(env.types, payload).arguments, 0)
+    }
+    if contains_task(env, payload, new[Int]()) {
+        return Result.Err(failure(env, signature.symbol, node, "Task-bearing aggregates and function values are not yet implemented"))
+    }
+    if payload != ty && resource_type(env, signature.symbol, signature.requirements, payload, new[Int]())? {
+        return Result.Err(failure(env, signature.symbol, node, "Task results containing MustScope resources are not yet implemented"))
+    }
+    Result.Ok(true)
+}
+
 fn task_signature(env Environment, signature Signature, node Node) Result[Bool, Failure] {
     var index = 0
     while index < length(signature.params) {
-        if contains_task(env, get(signature.params, index), new[Int]()) {
-            return Result.Err(failure(env, signature.symbol, node, "Task parameters and aggregate task transfers are not yet implemented"))
-        }
+        discard task_transfer_type(env, signature, get(signature.params, index), node)?
         index = index + 1
     }
-    if contains_task(env, signature.result, new[Int]()) {
-        return Result.Err(failure(env, signature.symbol, node, "returning Task values or task-containing aggregates is not yet implemented; use async fn"))
+    let output = if async_signature(env, signature) {
+        intern(env, TypeKind.Task, -1, ints(signature.result))
+    } else { signature.result }
+    task_transfer_type(env, signature, output, node)
+}
+
+fn task_call_context(context Context, node Node, values List[Expr], output Int, asynchronous Bool, dynamic Bool) Result[Bool, Failure] {
+    if direct_task(context.env, output) {
+        discard task_transfer_type(context.env, context.signature, output, node)?
+    }
+    var transfers = asynchronous || direct_task(context.env, output)
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        if direct_task(context.env, value.ty) {
+            discard task_transfer_type(context.env, context.signature, value.ty, node)?
+        }
+        transfers = transfers || direct_task(context.env, value.ty)
+        index = index + 1
+    }
+    if transfers && dynamic {
+        return Result.Err(error(context, node, "Task-bearing dynamic calls are not yet implemented; call a concrete function directly"))
+    }
+    if transfers && !task_owner(context) {
+        return Result.Err(error(context, node, "task creation or transfer requires an async function or a direct Task parameter or return type"))
     }
     Result.Ok(true)
 }

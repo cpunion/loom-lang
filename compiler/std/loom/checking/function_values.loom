@@ -81,6 +81,9 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
         if static_only { return Result.Err(error(context, node, "functions with comptime parameters cannot be used as function values yet")) }
         return Result.Err(error(context, node, "no accessible function reference matches; provide an exact function type and required concept evidence"))
     }
+    if contains_task(context.env, output, new[Int]()) {
+        return Result.Err(error(context, node, "Task-bearing function values are not yet implemented; call the function directly"))
+    }
     let target = if context.emit { schedule(context.env, selected, arguments, new[StaticValue](), node)? } else { -1 }
     Result.Ok(expression(ExprKind.FunctionRef, output, node, "", target, new[Expr](), true))
 }
@@ -88,6 +91,9 @@ fn call_value(context Context, node Node, callee Expr, types List[Node], inputs 
     if length(types) != 0 { return Result.Err(error(context, node, "function values have fixed signatures and do not take type arguments")) }
     let shape = get(context.env.types, callee.ty)
     if shape.kind != TypeKind.Function { return Result.Err(error(context, node, "this value is not callable")) }
+    if contains_task(context.env, callee.ty, new[Int]()) {
+        return Result.Err(error(context, node, "Task-bearing function values are not yet implemented; call the function directly"))
+    }
     let count = length(shape.arguments) - 1
     if length(inputs) != count { return Result.Err(error(context, node, "function value argument count does not match")) }
     let values = expressions(callee)
@@ -144,6 +150,9 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
         return Result.Err(error(context, node, "ambiguous function field and concept method; parenthesize the field or use Concept.method(value, ...)"))
     }
     if field_matches {
+        if contains_task(context.env, callee.ty, new[Int]()) {
+            return Result.Err(error(context, node, "Task-bearing function values are not yet implemented; call the function directly"))
+        }
         let arguments = expressions(callee)
         index = 0
         while index < count {
