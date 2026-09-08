@@ -151,6 +151,16 @@ fn source_process_run_preserves_arguments_and_nonzero_exit_codes() {
         format!("{literal}\n\n")
     );
     assert!(!parent.path().join("MUST_NOT_EXIST").exists());
+
+    // The compiler's run command must preserve the application's exit status
+    // as well, without adding a compiler error to the application's streams.
+    let output = common::command(&["run", path(child.path())])
+        .args(["--", literal, ""])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
+    assert_eq!(output.stdout, format!("{literal}\n\n").as_bytes());
+    assert!(output.stderr.is_empty(), "{output:?}");
 }
 
 #[test]

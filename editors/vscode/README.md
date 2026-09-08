@@ -12,34 +12,35 @@ Build the [compiler](../../compiler/README.md#build-and-try-it). With Node.js,
 npm, and VS Code installed, run from the repository root:
 
 ```sh
-cd editors/vscode
-npm ci
-code .
+npm --prefix editors/vscode ci
+npm --prefix editors/vscode run try
 ```
 
-If the `code` shell command is unavailable, use VS Code's **File > Open Folder**
-to open `editors/vscode` after `npm ci`.
+On an already built checkout with dependencies installed, only the second command
+is needed. It opens a Development Host directly with the
+[file-tool workspace](wordcount.code-workspace), using this checkout's compiler
+and Loom-only format-on-save. No F5 setup, extension installation, or global
+configuration changes are required. The trial edits real example files in this
+checkout; review or keep your changes as usual.
 
-Press F5 to launch the **Loom extension** development host with the
-[trial workspace](try-loom.code-workspace). Compiler paths and Loom-only
-format-on-save are already configured there; your user settings are unchanged.
-Open `main.loom`, introduce a type error without saving, then fix it. Hover over
-a value, use **Go to Definition**, and save to format. **Tasks: Run Task** offers
-**Loom: check receipt**, **Loom: test receipt**, and **Loom: run receipt**; the run
-task prints `36`. No extension is installed or published by these commands.
+Open `main.loom` and follow the [short programming exercise](../../compiler/examples/wordcount/README.md).
+**Tasks: Run Task** offers format, check, build, test, and run; test includes the
+separate `stats` package, and run prints `2 4 23`. Introduce an unsaved type error,
+fix it, hover over a value, navigate to its definition, and save to format.
+
+If `code` is unavailable, set `VSCODE_EXECUTABLE` to the installed VS Code
+launcher. Alternatively, open `editors/vscode` using **File > Open Folder**,
+select **Loom file-tool trial**, and press F5. Select **Loom extension** instead
+for the smaller [receipt workspace](try-loom.code-workspace), whose run task
+prints `36`.
 
 For your own project, set workspace `loom.executable` to the absolute `target/loom`
 path (`loom.exe` on Windows) and `loom.stdRoot` to the repository's `compiler/std`.
 The checkout's compiler can also run CLI commands directly in your project
 directory; use its absolute path or a relative path containing a separator.
-
-For a more realistic exercise, select **Loom file-tool trial** before pressing
-F5. Its [workspace](wordcount.code-workspace) opens a small
-[file-counting application](../../compiler/examples/wordcount/README.md) with a
-separate `stats` package. Its tasks check, test both packages, and run against a
-UTF-8 file. Try the edits in that walkthrough, including a failed test and missing
-file; `run` prints `2 4 23` before changes. This is still a development extension,
-not an installed Marketplace release.
+Do not assume a bare `loom` on PATH is this compiler: `target/loom --help` should
+start with `Loom source compiler`. The trial does not replace other installed
+tools. This is still a development extension, not a Marketplace release.
 
 `loom.executable` defaults to `loom` on PATH; relative paths containing a separator
 and relative `loom.stdRoot` paths resolve from the containing workspace folder.
