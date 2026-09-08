@@ -226,7 +226,9 @@ function contracts still use the documented call-free proof fragment.
 Explicit Int refinement conversion now reuses that fragment to eliminate a
 destination check only when both truth and definedness follow from the source
 predicate. Exact call-free conjunction reuse also handles Float without
-arithmetic rewriting. Local-flow facts and helper-call summaries remain later work.
+arithmetic rewriting. Immutable local-flow facts and bounded direct scalar-helper
+expansion extend this optional proof as described above; mutable/alias facts and
+general helper control flow remain open.
 
 Typed metaprogramming later reuses this infrastructure. Public analysis does not
 freeze the schemas or complete

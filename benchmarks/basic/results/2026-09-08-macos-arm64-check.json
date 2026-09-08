@@ -1,0 +1,141 @@
+{
+  "at": "2026-09-08T03:44:44.479Z",
+  "host": {
+    "os": "darwin",
+    "release": "25.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "method": "Ten alternating pairs; one warmup each; fresh check processes, warm OS caches, no incremental cache. Wall includes launch; CPU rounded by macOS time.",
+  "input": "/Users/lijie/source/cpunion/loom-lang/target/performance/local-root-inputs.m3PCXG",
+  "sourceFiles": 145,
+  "inputsSha256": "d5e166bba950b7bd4cef9e425b008f86777775bfc75578645696c30872a27938",
+  "binaries": {
+    "baseline": {
+      "path": "/Users/lijie/source/cpunion/loom-lang/target/performance/pre-local-roots.TEM1VY/loom",
+      "sha256": "98821abeb8b20a0e3477bf37caca852be3348c88fa9f3a42ce2417db052af5c6"
+    },
+    "candidate": {
+      "path": "/Users/lijie/source/cpunion/loom-lang/target/loom",
+      "sha256": "b0c162b0d0c814b573b7e2be9d864f47b10bcb1b456883800783e9f069a08650"
+    }
+  },
+  "medians": {
+    "baseline": {
+      "wallMs": 351.681687,
+      "cpuMs": 340,
+      "peakRssBytes": 230277120
+    },
+    "candidate": {
+      "wallMs": 356.978,
+      "cpuMs": 340,
+      "peakRssBytes": 240508928
+    }
+  },
+  "samples": {
+    "baseline": [
+      {
+        "wallMs": 347.144459,
+        "cpuMs": 330,
+        "peakRssBytes": 259342336
+      },
+      {
+        "wallMs": 344.725833,
+        "cpuMs": 330,
+        "peakRssBytes": 225820672
+      },
+      {
+        "wallMs": 351.585916,
+        "cpuMs": 330,
+        "peakRssBytes": 230113280
+      },
+      {
+        "wallMs": 368.3615,
+        "cpuMs": 360.00000000000006,
+        "peakRssBytes": 228491264
+      },
+      {
+        "wallMs": 369.24075,
+        "cpuMs": 360.00000000000006,
+        "peakRssBytes": 230506496
+      },
+      {
+        "wallMs": 342.408333,
+        "cpuMs": 330,
+        "peakRssBytes": 225787904
+      },
+      {
+        "wallMs": 350.250709,
+        "cpuMs": 340,
+        "peakRssBytes": 252264448
+      },
+      {
+        "wallMs": 351.777458,
+        "cpuMs": 340,
+        "peakRssBytes": 235683840
+      },
+      {
+        "wallMs": 362.661041,
+        "cpuMs": 350.00000000000006,
+        "peakRssBytes": 226033664
+      },
+      {
+        "wallMs": 354.628333,
+        "cpuMs": 340,
+        "peakRssBytes": 230440960
+      }
+    ],
+    "candidate": [
+      {
+        "wallMs": 365.966875,
+        "cpuMs": 350.00000000000006,
+        "peakRssBytes": 246956032
+      },
+      {
+        "wallMs": 357.290584,
+        "cpuMs": 340,
+        "peakRssBytes": 255295488
+      },
+      {
+        "wallMs": 359.258042,
+        "cpuMs": 340,
+        "peakRssBytes": 225804288
+      },
+      {
+        "wallMs": 363.559708,
+        "cpuMs": 350.00000000000006,
+        "peakRssBytes": 229031936
+      },
+      {
+        "wallMs": 347.284834,
+        "cpuMs": 330,
+        "peakRssBytes": 234373120
+      },
+      {
+        "wallMs": 340.271958,
+        "cpuMs": 320,
+        "peakRssBytes": 225476608
+      },
+      {
+        "wallMs": 342.846875,
+        "cpuMs": 330,
+        "peakRssBytes": 242778112
+      },
+      {
+        "wallMs": 350.4225,
+        "cpuMs": 340,
+        "peakRssBytes": 242581504
+      },
+      {
+        "wallMs": 356.665416,
+        "cpuMs": 350.00000000000006,
+        "peakRssBytes": 238436352
+      },
+      {
+        "wallMs": 374.571208,
+        "cpuMs": 360.00000000000006,
+        "peakRssBytes": 256016384
+      }
+    ]
+  }
+}

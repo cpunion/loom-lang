@@ -1,0 +1,1519 @@
+{
+  "schema": 1,
+  "at": "2026-09-08T03:40:32.883Z",
+  "host": {
+    "os": "darwin",
+    "release": "25.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "method": "fresh native processes; one warmup per case/variant; rotated variant order per measured round; median and MAD; includes startup, argv parsing, allocation, stdout and process exit; no baseline subtraction",
+  "buildMethod": "one observed build invocation per variant, with existing tool caches; not comparable compiler-throughput measurements",
+  "quick": false,
+  "runs": 10,
+  "build": {
+    "revision": "49ad5e8b6bd5f13c1cb96db56c5a3eddbe577054",
+    "dirty": true,
+    "sources": {
+      "loom": "4414c6d354e71b7df1fc20875d8ea60976e8e31f7b0b21b4d340f543a906dfa0",
+      "c": "1654e6fe6e572af576d0a2c4c08ffa3e226b4440d860f573d6aa5f63042d22b2",
+      "go": "62fbea5b55421f1c10c206a44c6b410c4f7c563902c20fcfcf51710e826e839e",
+      "rs": "e39a7079c0b10c1b51fb49160756775d69c3d389839118c366e4d144a22475c8",
+      "zig": "d545241337cf31015d4a2ce739fe7fe338405474069ac62bee566b13faa9f9db"
+    },
+    "loomCompilerSha256": "b0c162b0d0c814b573b7e2be9d864f47b10bcb1b456883800783e9f069a08650",
+    "nativeToolSha256": "787a7df69484bb1f45b13d39908f26ecf97d99820ea4eb09a3a46012d8867791",
+    "runtimeSha256": "ffcf891ab92357d8b27b2d1d43e43409489b789d66a23f3af31224c1f9144a7a",
+    "tools": {
+      "loom": "loom source compiler (development)",
+      "c": "Homebrew clang version 22.1.8\nTarget: arm64-apple-darwin25.2.0\nThread model: posix\nInstalledDir: /opt/homebrew/Cellar/llvm@22/22.1.8/bin\nConfiguration file: /opt/homebrew/Cellar/llvm@22/22.1.8/etc/clang/arm64-apple-darwin25.cfg",
+      "go": "go version go1.27.0 darwin/arm64",
+      "rust": "rustc 1.95.0-nightly (eda76d9d1 2026-01-21)\nbinary: rustc\ncommit-hash: eda76d9d1d133effbf7facb28168fd78d75fd434\ncommit-date: 2026-01-21\nhost: aarch64-apple-darwin\nrelease: 1.95.0-nightly\nLLVM version: 21.1.8",
+      "zig": "0.16.0"
+    },
+    "variants": [
+      {
+        "id": "loom-o3",
+        "label": "Loom O3",
+        "tool": "/Users/lijie/source/cpunion/loom-lang/target/loom",
+        "args": [
+          "build",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic",
+          "--output",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/loom-o3"
+        ],
+        "env": {
+          "LOOM_OPT_LEVEL": "3"
+        },
+        "buildWallMs": 115.167125,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/loom-o3",
+        "sha256": "131eac767e0d65c19a2be8ee9abab42cca85b2772330bf28b2aaaed6a634583d"
+      },
+      {
+        "id": "c-o3",
+        "label": "C O3",
+        "tool": "/opt/homebrew/opt/llvm@22/bin/clang",
+        "args": [
+          "-std=c17",
+          "-O3",
+          "-mcpu=native",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.c",
+          "-o",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/c-o3"
+        ],
+        "buildWallMs": 123.974916,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/c-o3",
+        "sha256": "0a3f8918b66cec5174ca48e3746516da12fc554f4629bb3d57c0ae2899652a14"
+      },
+      {
+        "id": "go",
+        "label": "Go",
+        "tool": "go",
+        "args": [
+          "build",
+          "-trimpath",
+          "-o",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/go",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.go"
+        ],
+        "buildWallMs": 55.435084,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/go",
+        "sha256": "19857c4034a04b4ce271df29d1690b3cdc72e1c655ed43c5fe2a82d015c8510e"
+      },
+      {
+        "id": "rust-o3",
+        "label": "Rust O3",
+        "tool": "rustc",
+        "args": [
+          "--edition",
+          "2024",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "target-cpu=native",
+          "-C",
+          "panic=abort",
+          "-C",
+          "overflow-checks=off",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.rs",
+          "-o",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/rust-o3"
+        ],
+        "buildWallMs": 195.905416,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/rust-o3",
+        "sha256": "f9843fdf10b142f9e6508df8935dff5f2bafc8bab2e55f9128240e33a3836237"
+      },
+      {
+        "id": "zig-fast",
+        "label": "Zig Fast",
+        "tool": "zig",
+        "args": [
+          "build-exe",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.zig",
+          "-O",
+          "ReleaseFast",
+          "-mcpu=native",
+          "-lc",
+          "-femit-bin=/Users/lijie/source/cpunion/loom-lang/target/performance/basic/zig-fast"
+        ],
+        "buildWallMs": 4364.944166,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/zig-fast",
+        "sha256": "acc7e65132fb7e003b6dedaf3272ca4913baba2986cb5c04d998fa9572e02242"
+      },
+      {
+        "id": "loom-o2",
+        "label": "Loom O2",
+        "tool": "/Users/lijie/source/cpunion/loom-lang/target/loom",
+        "args": [
+          "build",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic",
+          "--output",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/loom-o2"
+        ],
+        "env": {
+          "LOOM_OPT_LEVEL": "2"
+        },
+        "buildWallMs": 112.336375,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/loom-o2",
+        "sha256": "649e43ab51e8006108da8706bb93758dc45d8993a0594ceb994036e8b759f1eb"
+      },
+      {
+        "id": "c-checked",
+        "label": "C checked",
+        "tool": "/opt/homebrew/opt/llvm@22/bin/clang",
+        "args": [
+          "-std=c17",
+          "-O3",
+          "-mcpu=native",
+          "-ftrapv",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.c",
+          "-o",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/c-checked"
+        ],
+        "buildWallMs": 102.326667,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/c-checked",
+        "sha256": "bc7b22f8520d67cbfbb00c2c0a5f895fbb54af225f7d9e2cad11313d390b2815"
+      },
+      {
+        "id": "rust-checked",
+        "label": "Rust checked",
+        "tool": "rustc",
+        "args": [
+          "--edition",
+          "2024",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "target-cpu=native",
+          "-C",
+          "panic=abort",
+          "-C",
+          "overflow-checks=on",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.rs",
+          "-o",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/rust-checked"
+        ],
+        "buildWallMs": 144.154709,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/rust-checked",
+        "sha256": "73fc1bc8ff37edca50099da9c6dff432ce5165184a9c643463c997626d74f6dd"
+      },
+      {
+        "id": "zig-safe",
+        "label": "Zig Safe",
+        "tool": "zig",
+        "args": [
+          "build-exe",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.zig",
+          "-O",
+          "ReleaseSafe",
+          "-mcpu=native",
+          "-lc",
+          "-femit-bin=/Users/lijie/source/cpunion/loom-lang/target/performance/basic/zig-safe"
+        ],
+        "buildWallMs": 4723.237416,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/zig-safe",
+        "sha256": "3ae98b26937473d245dfe033bc11c567111a5644d3f8edc6ffe54fdd92b75382"
+      }
+    ]
+  },
+  "baselineBuild": {
+    "revision": "356de6e1e95e3cb7d4a0fef26af30299546b7d4f",
+    "dirty": true,
+    "sources": {
+      "loom": "4414c6d354e71b7df1fc20875d8ea60976e8e31f7b0b21b4d340f543a906dfa0",
+      "c": "1654e6fe6e572af576d0a2c4c08ffa3e226b4440d860f573d6aa5f63042d22b2",
+      "go": "62fbea5b55421f1c10c206a44c6b410c4f7c563902c20fcfcf51710e826e839e",
+      "rs": "e39a7079c0b10c1b51fb49160756775d69c3d389839118c366e4d144a22475c8",
+      "zig": "d545241337cf31015d4a2ce739fe7fe338405474069ac62bee566b13faa9f9db"
+    },
+    "loomCompilerSha256": "98821abeb8b20a0e3477bf37caca852be3348c88fa9f3a42ce2417db052af5c6",
+    "nativeToolSha256": "804621a609f1bd6dcd1e4e62979eef8e079565ea3431ca144a329d4f2cb06a6d",
+    "runtimeSha256": "ffcf891ab92357d8b27b2d1d43e43409489b789d66a23f3af31224c1f9144a7a",
+    "tools": {
+      "loom": "loom source compiler (development)",
+      "c": "Homebrew clang version 22.1.8\nTarget: arm64-apple-darwin25.2.0\nThread model: posix\nInstalledDir: /opt/homebrew/Cellar/llvm@22/22.1.8/bin\nConfiguration file: /opt/homebrew/Cellar/llvm@22/22.1.8/etc/clang/arm64-apple-darwin25.cfg",
+      "go": "go version go1.27.0 darwin/arm64",
+      "rust": "rustc 1.95.0-nightly (eda76d9d1 2026-01-21)\nbinary: rustc\ncommit-hash: eda76d9d1d133effbf7facb28168fd78d75fd434\ncommit-date: 2026-01-21\nhost: aarch64-apple-darwin\nrelease: 1.95.0-nightly\nLLVM version: 21.1.8",
+      "zig": "0.16.0"
+    },
+    "variants": [
+      {
+        "id": "loom-o3",
+        "label": "Loom O3",
+        "tool": "/Users/lijie/source/cpunion/loom-lang/target/performance/pre-local-roots.TEM1VY/loom",
+        "args": [
+          "build",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic",
+          "--native-tool",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/pre-local-roots.TEM1VY/loom-native",
+          "--output",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/loom-o3"
+        ],
+        "env": {
+          "LOOM_OPT_LEVEL": "3"
+        },
+        "buildWallMs": 118.915375,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/loom-o3",
+        "sha256": "2d0e8d1aeda27151264659d3237eeaa3a1d3114fe44d216831053c8cb04c37b9"
+      },
+      {
+        "id": "c-o3",
+        "label": "C O3",
+        "tool": "/opt/homebrew/opt/llvm@22/bin/clang",
+        "args": [
+          "-std=c17",
+          "-O3",
+          "-mcpu=native",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.c",
+          "-o",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/c-o3"
+        ],
+        "buildWallMs": 160.999958,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/c-o3",
+        "sha256": "0a3f8918b66cec5174ca48e3746516da12fc554f4629bb3d57c0ae2899652a14"
+      },
+      {
+        "id": "go",
+        "label": "Go",
+        "tool": "go",
+        "args": [
+          "build",
+          "-trimpath",
+          "-o",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/go",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.go"
+        ],
+        "buildWallMs": 52.502667,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/go",
+        "sha256": "19857c4034a04b4ce271df29d1690b3cdc72e1c655ed43c5fe2a82d015c8510e"
+      },
+      {
+        "id": "rust-o3",
+        "label": "Rust O3",
+        "tool": "rustc",
+        "args": [
+          "--edition",
+          "2024",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "target-cpu=native",
+          "-C",
+          "panic=abort",
+          "-C",
+          "overflow-checks=off",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.rs",
+          "-o",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/rust-o3"
+        ],
+        "buildWallMs": 254.428666,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/rust-o3",
+        "sha256": "f9843fdf10b142f9e6508df8935dff5f2bafc8bab2e55f9128240e33a3836237"
+      },
+      {
+        "id": "zig-fast",
+        "label": "Zig Fast",
+        "tool": "zig",
+        "args": [
+          "build-exe",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.zig",
+          "-O",
+          "ReleaseFast",
+          "-mcpu=native",
+          "-lc",
+          "-femit-bin=/Users/lijie/source/cpunion/loom-lang/target/performance/basic/zig-fast"
+        ],
+        "buildWallMs": 4421.623542,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/zig-fast",
+        "sha256": "63b9ac97f19409b7cda8dd8c0f8351107e694d61137bd04239df9698ef4954dd"
+      },
+      {
+        "id": "loom-o2",
+        "label": "Loom O2",
+        "tool": "/Users/lijie/source/cpunion/loom-lang/target/performance/pre-local-roots.TEM1VY/loom",
+        "args": [
+          "build",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic",
+          "--native-tool",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/pre-local-roots.TEM1VY/loom-native",
+          "--output",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/loom-o2"
+        ],
+        "env": {
+          "LOOM_OPT_LEVEL": "2"
+        },
+        "buildWallMs": 109.319416,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/loom-o2",
+        "sha256": "3680424d3f6d5fa9c25ad5f58663d8c5d54ac3e1e5891ac54f6a00e7744c9c11"
+      },
+      {
+        "id": "c-checked",
+        "label": "C checked",
+        "tool": "/opt/homebrew/opt/llvm@22/bin/clang",
+        "args": [
+          "-std=c17",
+          "-O3",
+          "-mcpu=native",
+          "-ftrapv",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.c",
+          "-o",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/c-checked"
+        ],
+        "buildWallMs": 105.22425,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/c-checked",
+        "sha256": "bc7b22f8520d67cbfbb00c2c0a5f895fbb54af225f7d9e2cad11313d390b2815"
+      },
+      {
+        "id": "rust-checked",
+        "label": "Rust checked",
+        "tool": "rustc",
+        "args": [
+          "--edition",
+          "2024",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "target-cpu=native",
+          "-C",
+          "panic=abort",
+          "-C",
+          "overflow-checks=on",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.rs",
+          "-o",
+          "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/rust-checked"
+        ],
+        "buildWallMs": 142.432375,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/rust-checked",
+        "sha256": "73fc1bc8ff37edca50099da9c6dff432ce5165184a9c643463c997626d74f6dd"
+      },
+      {
+        "id": "zig-safe",
+        "label": "Zig Safe",
+        "tool": "zig",
+        "args": [
+          "build-exe",
+          "/Users/lijie/source/cpunion/loom-lang/benchmarks/basic/main.zig",
+          "-O",
+          "ReleaseSafe",
+          "-mcpu=native",
+          "-lc",
+          "-femit-bin=/Users/lijie/source/cpunion/loom-lang/target/performance/basic/zig-safe"
+        ],
+        "buildWallMs": 4766.561166,
+        "binary": "/Users/lijie/source/cpunion/loom-lang/target/performance/basic/zig-safe",
+        "sha256": "b7e755dfbb388c01fa6a890d53e145ed74b97a77280ea3257fe81a98443ba783"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "startup",
+      "kernel": "int_lcg",
+      "count": 0,
+      "seed": 17,
+      "expected": "17",
+      "results": [
+        {
+          "id": "loom-o3",
+          "label": "Loom O3",
+          "medianMs": 1.758563,
+          "madMs": 0.029166499999999984,
+          "samplesMs": [
+            1.999666,
+            1.884208,
+            1.749792,
+            1.727917,
+            1.655625,
+            1.78625,
+            1.747291,
+            1.559208,
+            1.770459,
+            1.767334
+          ]
+        },
+        {
+          "id": "c-o3",
+          "label": "C O3",
+          "medianMs": 1.2810625,
+          "madMs": 0.07195799999999997,
+          "samplesMs": [
+            1.507459,
+            1.41825,
+            1.287625,
+            1.397167,
+            1.222667,
+            1.227042,
+            1.2745,
+            1.180334,
+            1.195542,
+            1.316583
+          ]
+        },
+        {
+          "id": "go",
+          "label": "Go",
+          "medianMs": 2.017125,
+          "madMs": 0.1578545,
+          "samplesMs": [
+            2.290084,
+            2.181875,
+            2.050875,
+            2.310167,
+            1.9605,
+            2.006417,
+            1.769917,
+            1.865833,
+            2.027833,
+            1.852708
+          ]
+        },
+        {
+          "id": "rust-o3",
+          "label": "Rust O3",
+          "medianMs": 1.592687,
+          "madMs": 0.1055425000000001,
+          "samplesMs": [
+            1.796166,
+            1.64225,
+            1.726167,
+            1.589291,
+            1.521875,
+            1.670292,
+            1.345208,
+            1.596083,
+            1.333291,
+            1.306667
+          ]
+        },
+        {
+          "id": "zig-fast",
+          "label": "Zig Fast",
+          "medianMs": 1.6344789999999998,
+          "madMs": 0.13058300000000023,
+          "samplesMs": [
+            1.750208,
+            1.768416,
+            1.761708,
+            1.614958,
+            1.910959,
+            1.654,
+            1.522167,
+            1.460791,
+            1.446458,
+            1.398792
+          ]
+        },
+        {
+          "id": "loom-o2",
+          "label": "Loom O2",
+          "medianMs": 1.821167,
+          "madMs": 0.133417,
+          "samplesMs": [
+            1.925083,
+            1.811292,
+            2.046375,
+            2.037916,
+            1.741792,
+            2.057042,
+            1.668667,
+            1.554875,
+            1.831042,
+            1.706833
+          ]
+        },
+        {
+          "id": "c-checked",
+          "label": "C checked",
+          "medianMs": 1.344583,
+          "madMs": 0.08914599999999995,
+          "samplesMs": [
+            1.431333,
+            1.367,
+            1.453458,
+            1.322166,
+            1.253041,
+            1.226875,
+            1.300125,
+            1.143125,
+            1.382333,
+            1.541208
+          ]
+        },
+        {
+          "id": "rust-checked",
+          "label": "Rust checked",
+          "medianMs": 1.5288125,
+          "madMs": 0.06643700000000008,
+          "samplesMs": [
+            1.695458,
+            1.460667,
+            1.587167,
+            1.593541,
+            1.507583,
+            1.550042,
+            1.444,
+            1.382583,
+            1.412,
+            1.588167
+          ]
+        },
+        {
+          "id": "zig-safe",
+          "label": "Zig Safe",
+          "medianMs": 1.6786875,
+          "madMs": 0.05712549999999994,
+          "samplesMs": [
+            1.739042,
+            1.484042,
+            1.694083,
+            2.107958,
+            1.680917,
+            1.676458,
+            1.469625,
+            1.624791,
+            1.421625,
+            1.692708
+          ]
+        },
+        {
+          "id": "loom-before",
+          "label": "Loom before",
+          "medianMs": 1.7690625,
+          "madMs": 0.05870799999999998,
+          "samplesMs": [
+            1.865792,
+            1.690458,
+            1.836125,
+            2.023875,
+            1.77325,
+            1.72,
+            1.764875,
+            1.688083,
+            1.737917,
+            1.819416
+          ]
+        }
+      ]
+    },
+    {
+      "name": "int_lcg",
+      "count": 20000000,
+      "seed": 17,
+      "expected": "427876",
+      "results": [
+        {
+          "id": "loom-o3",
+          "label": "Loom O3",
+          "medianMs": 74.395021,
+          "madMs": 0.4262705000000011,
+          "samplesMs": [
+            72.471333,
+            73.292583,
+            74.790958,
+            74.724334,
+            75.17975,
+            72.1005,
+            74.352958,
+            74.851625,
+            74.175792,
+            74.437084
+          ]
+        },
+        {
+          "id": "c-o3",
+          "label": "C O3",
+          "medianMs": 73.63327100000001,
+          "madMs": 0.29129199999999855,
+          "samplesMs": [
+            73.364208,
+            73.366708,
+            74.127667,
+            73.946792,
+            72.936458,
+            72.687541,
+            73.752167,
+            73.6335,
+            73.633042,
+            74.532916
+          ]
+        },
+        {
+          "id": "go",
+          "label": "Go",
+          "medianMs": 79.15397899999999,
+          "madMs": 0.5025619999999904,
+          "samplesMs": [
+            79.2325,
+            79.5675,
+            78.619417,
+            79.712166,
+            78.842375,
+            80.057959,
+            78.146541,
+            79.075458,
+            80.14725,
+            78.683417
+          ]
+        },
+        {
+          "id": "rust-o3",
+          "label": "Rust O3",
+          "medianMs": 68.37925,
+          "madMs": 0.8814375000000041,
+          "samplesMs": [
+            69.770084,
+            68.552375,
+            67.517833,
+            69.009291,
+            67.496,
+            69.423209,
+            66.709084,
+            68.206125,
+            66.569875,
+            69.258875
+          ]
+        },
+        {
+          "id": "zig-fast",
+          "label": "Zig Fast",
+          "medianMs": 74.16597949999999,
+          "madMs": 0.2858540000000005,
+          "samplesMs": [
+            74.57125,
+            74.720333,
+            74.327625,
+            74.608417,
+            73.999542,
+            74.079792,
+            74.252167,
+            72.795375,
+            74.062,
+            73.421917
+          ]
+        },
+        {
+          "id": "loom-o2",
+          "label": "Loom O2",
+          "medianMs": 74.221479,
+          "madMs": 0.6570415000000054,
+          "samplesMs": [
+            71.8455,
+            75.324167,
+            73.526958,
+            74.590959,
+            74.4365,
+            73.601917,
+            74.353875,
+            73.289084,
+            74.089083,
+            75.354416
+          ]
+        },
+        {
+          "id": "c-checked",
+          "label": "C checked",
+          "medianMs": 73.833396,
+          "madMs": 0.8965624999999946,
+          "samplesMs": [
+            71.576458,
+            76.477916,
+            73.056292,
+            73.856292,
+            76.237792,
+            72.817375,
+            73.8105,
+            73.585666,
+            74.01375,
+            80.412583
+          ]
+        },
+        {
+          "id": "rust-checked",
+          "label": "Rust checked",
+          "medianMs": 68.965396,
+          "madMs": 0.26099949999999694,
+          "samplesMs": [
+            68.006917,
+            66.158625,
+            66.930625,
+            68.745334,
+            69.267333,
+            69.001916,
+            68.95,
+            68.980792,
+            69.05575,
+            72.566375
+          ]
+        },
+        {
+          "id": "zig-safe",
+          "label": "Zig Safe",
+          "medianMs": 74.170875,
+          "madMs": 0.4062915000000018,
+          "samplesMs": [
+            73.369041,
+            73.827125,
+            75.861417,
+            74.49375,
+            74.452375,
+            74.20525,
+            74.639708,
+            74.1365,
+            72.806625,
+            73.122917
+          ]
+        },
+        {
+          "id": "loom-before",
+          "label": "Loom before",
+          "medianMs": 74.23343750000001,
+          "madMs": 0.37329149999999345,
+          "samplesMs": [
+            73.706083,
+            72.349083,
+            74.471125,
+            74.742333,
+            74.359125,
+            74.194917,
+            71.560792,
+            74.271958,
+            73.564125,
+            74.300292
+          ]
+        }
+      ]
+    },
+    {
+      "name": "fib_recursive",
+      "count": 38,
+      "seed": 17,
+      "expected": "39088169",
+      "results": [
+        {
+          "id": "loom-o3",
+          "label": "Loom O3",
+          "medianMs": 90.0023545,
+          "madMs": 0.844729000000001,
+          "samplesMs": [
+            90.943458,
+            90.196542,
+            93.157917,
+            89.687458,
+            91.231167,
+            89.808167,
+            89.441333,
+            92.685,
+            89.254,
+            87.35425
+          ]
+        },
+        {
+          "id": "c-o3",
+          "label": "C O3",
+          "medianMs": 68.77672949999999,
+          "madMs": 0.5662294999999844,
+          "samplesMs": [
+            67.379,
+            70.094542,
+            68.633709,
+            67.960042,
+            69.063459,
+            68.91975,
+            67.237541,
+            70.172083,
+            69.065459,
+            68.460958
+          ]
+        },
+        {
+          "id": "go",
+          "label": "Go",
+          "medianMs": 89.8602085,
+          "madMs": 0.2890624999999929,
+          "samplesMs": [
+            89.845167,
+            90.591958,
+            89.87525,
+            88.197584,
+            89.652792,
+            89.901542,
+            89.4895,
+            89.997291,
+            88.793459,
+            92.735209
+          ]
+        },
+        {
+          "id": "rust-o3",
+          "label": "Rust O3",
+          "medianMs": 67.41918749999999,
+          "madMs": 0.9289585000000002,
+          "samplesMs": [
+            68.132834,
+            67.966208,
+            67.19875,
+            67.963542,
+            66.117584,
+            65.241791,
+            68.776958,
+            66.274917,
+            66.16625,
+            67.639625
+          ]
+        },
+        {
+          "id": "zig-fast",
+          "label": "Zig Fast",
+          "medianMs": 71.61583300000001,
+          "madMs": 0.44502149999998863,
+          "samplesMs": [
+            71.32925,
+            70.0945,
+            71.984167,
+            72.137542,
+            71.91475,
+            70.041792,
+            70.637875,
+            71.455875,
+            71.775791,
+            73.413834
+          ]
+        },
+        {
+          "id": "loom-o2",
+          "label": "Loom O2",
+          "medianMs": 89.637146,
+          "madMs": 0.561520999999999,
+          "samplesMs": [
+            88.438583,
+            90.028084,
+            87.455209,
+            91.15175,
+            87.760416,
+            89.032042,
+            90.155084,
+            89.9095,
+            89.403375,
+            89.870917
+          ]
+        },
+        {
+          "id": "c-checked",
+          "label": "C checked",
+          "medianMs": 90.5388125,
+          "madMs": 0.9198130000000049,
+          "samplesMs": [
+            90.028791,
+            88.604917,
+            90.591208,
+            92.196291,
+            90.486417,
+            92.214833,
+            90.916667,
+            89.934958,
+            87.748209,
+            91.774584
+          ]
+        },
+        {
+          "id": "rust-checked",
+          "label": "Rust checked",
+          "medianMs": 92.23475,
+          "madMs": 0.30264599999999575,
+          "samplesMs": [
+            90.740166,
+            93.180833,
+            92.142542,
+            95.003667,
+            92.326958,
+            92.5105,
+            91.905208,
+            92.128208,
+            92.397917,
+            91.39325
+          ]
+        },
+        {
+          "id": "zig-safe",
+          "label": "Zig Safe",
+          "medianMs": 88.90216649999999,
+          "madMs": 0.8602704999999915,
+          "samplesMs": [
+            90.242209,
+            89.846042,
+            88.480375,
+            88.892833,
+            90.629417,
+            88.831,
+            88.071584,
+            88.9115,
+            88.012208,
+            90.827958
+          ]
+        },
+        {
+          "id": "loom-before",
+          "label": "Loom before",
+          "medianMs": 89.462375,
+          "madMs": 0.769499500000002,
+          "samplesMs": [
+            88.200375,
+            89.725458,
+            89.324542,
+            91.37425,
+            88.323,
+            88.778042,
+            89.181958,
+            90.94175,
+            90.317041,
+            89.600208
+          ]
+        }
+      ]
+    },
+    {
+      "name": "record_value",
+      "count": 15000000,
+      "seed": 17,
+      "expected": "1213428",
+      "results": [
+        {
+          "id": "loom-o3",
+          "label": "Loom O3",
+          "medianMs": 54.1850625,
+          "madMs": 0.3734789999999997,
+          "samplesMs": [
+            53.838375,
+            53.846667,
+            54.93,
+            54.428958,
+            53.784792,
+            53.863,
+            54.63825,
+            56.395833,
+            53.941167,
+            58.19075
+          ]
+        },
+        {
+          "id": "c-o3",
+          "label": "C O3",
+          "medianMs": 56.9915005,
+          "madMs": 0.206729499999998,
+          "samplesMs": [
+            56.498416,
+            57.16275,
+            56.150208,
+            56.763125,
+            57.012084,
+            56.970917,
+            56.806417,
+            57.046417,
+            57.880959,
+            59.383084
+          ]
+        },
+        {
+          "id": "go",
+          "label": "Go",
+          "medianMs": 50.272896,
+          "madMs": 0.4984169999999999,
+          "samplesMs": [
+            50.478583,
+            49.476834,
+            49.954292,
+            52.723792,
+            50.7675,
+            50.067209,
+            49.58325,
+            52.622209,
+            50.651917,
+            49.770666
+          ]
+        },
+        {
+          "id": "rust-o3",
+          "label": "Rust O3",
+          "medianMs": 56.7903125,
+          "madMs": 0.35152049999999946,
+          "samplesMs": [
+            56.564209,
+            56.871,
+            56.313375,
+            62.197375,
+            56.869083,
+            56.690833,
+            56.029583,
+            59.851416,
+            56.711542,
+            61.220541
+          ]
+        },
+        {
+          "id": "zig-fast",
+          "label": "Zig Fast",
+          "medianMs": 66.9264165,
+          "madMs": 0.5788119999999992,
+          "samplesMs": [
+            66.210125,
+            66.8965,
+            68.73875,
+            66.592584,
+            70.037,
+            66.642291,
+            66.485084,
+            68.149042,
+            69.440167,
+            66.956333
+          ]
+        },
+        {
+          "id": "loom-o2",
+          "label": "Loom O2",
+          "medianMs": 54.394729,
+          "madMs": 0.4102704999999993,
+          "samplesMs": [
+            53.45225,
+            54.296541,
+            56.772917,
+            53.941292,
+            58.260333,
+            54.027625,
+            54.492917,
+            55.139125,
+            54.257667,
+            54.654833
+          ]
+        },
+        {
+          "id": "c-checked",
+          "label": "C checked",
+          "medianMs": 56.604896,
+          "madMs": 0.2774579999999993,
+          "samplesMs": [
+            56.571375,
+            56.196459,
+            56.398125,
+            56.345625,
+            56.638417,
+            56.782125,
+            56.900541,
+            56.948375,
+            56.9925,
+            56.298167
+          ]
+        },
+        {
+          "id": "rust-checked",
+          "label": "Rust checked",
+          "medianMs": 56.7943755,
+          "madMs": 0.3892914999999988,
+          "samplesMs": [
+            56.482,
+            56.685334,
+            57.260583,
+            57.344708,
+            56.287917,
+            57.103083,
+            56.903417,
+            56.290708,
+            58.225375,
+            56.638667
+          ]
+        },
+        {
+          "id": "zig-safe",
+          "label": "Zig Safe",
+          "medianMs": 65.43787499999999,
+          "madMs": 0.15747950000000088,
+          "samplesMs": [
+            65.268833,
+            65.187833,
+            65.491542,
+            65.863291,
+            65.109833,
+            65.323917,
+            65.405,
+            65.583792,
+            65.669292,
+            65.47075
+          ]
+        },
+        {
+          "id": "loom-before",
+          "label": "Loom before",
+          "medianMs": 53.8786875,
+          "madMs": 0.332354500000001,
+          "samplesMs": [
+            53.85175,
+            53.678125,
+            54.339458,
+            54.264416,
+            53.905625,
+            53.502458,
+            53.47175,
+            55.759,
+            53.590208,
+            53.972959
+          ]
+        }
+      ]
+    },
+    {
+      "name": "list_build_scan",
+      "count": 12000000,
+      "seed": 17,
+      "expected": "6000862207333",
+      "results": [
+        {
+          "id": "loom-o3",
+          "label": "Loom O3",
+          "medianMs": 58.8304995,
+          "madMs": 1.3159790000000022,
+          "samplesMs": [
+            58.770583,
+            58.459167,
+            57.418875,
+            57.161875,
+            60.98225,
+            58.890416,
+            57.50125,
+            60.133208,
+            60.509417,
+            59.95075
+          ]
+        },
+        {
+          "id": "c-o3",
+          "label": "C O3",
+          "medianMs": 53.8125625,
+          "madMs": 1.156520999999998,
+          "samplesMs": [
+            53.367,
+            54.006833,
+            51.9395,
+            51.168416,
+            52.643208,
+            53.618292,
+            54.95625,
+            58.782625,
+            55.235583,
+            54.53175
+          ]
+        },
+        {
+          "id": "go",
+          "label": "Go",
+          "medianMs": 79.062937,
+          "madMs": 2.7091250000000002,
+          "samplesMs": [
+            79.017666,
+            76.178833,
+            84.469125,
+            76.366791,
+            86.118791,
+            77.635291,
+            76.452334,
+            86.4105,
+            81.785041,
+            79.108208
+          ]
+        },
+        {
+          "id": "rust-o3",
+          "label": "Rust O3",
+          "medianMs": 51.328292000000005,
+          "madMs": 0.6518960000000042,
+          "samplesMs": [
+            51.909375,
+            51.536167,
+            50.733125,
+            49.133459,
+            50.619667,
+            51.120417,
+            50.998333,
+            52.76325,
+            53.409625,
+            54.106834
+          ]
+        },
+        {
+          "id": "zig-fast",
+          "label": "Zig Fast",
+          "medianMs": 57.0003745,
+          "madMs": 0.9472714999999994,
+          "samplesMs": [
+            56.443542,
+            57.706208,
+            54.904834,
+            55.42375,
+            54.076334,
+            58.112125,
+            57.783167,
+            59.700792,
+            56.623291,
+            57.377458
+          ]
+        },
+        {
+          "id": "loom-o2",
+          "label": "Loom O2",
+          "medianMs": 59.422895499999996,
+          "madMs": 0.5986454999999999,
+          "samplesMs": [
+            60.184458,
+            59.940083,
+            59.468875,
+            56.86675,
+            57.714625,
+            57.075167,
+            59.669208,
+            58.742792,
+            59.376916,
+            59.594292
+          ]
+        },
+        {
+          "id": "c-checked",
+          "label": "C checked",
+          "medianMs": 56.090292,
+          "madMs": 1.0126039999999996,
+          "samplesMs": [
+            56.084875,
+            57.02425,
+            55.134917,
+            54.545666,
+            54.601291,
+            55.019708,
+            56.095709,
+            58.328,
+            57.116333,
+            57.089459
+          ]
+        },
+        {
+          "id": "rust-checked",
+          "label": "Rust checked",
+          "medianMs": 53.818396,
+          "madMs": 1.4456874999999982,
+          "samplesMs": [
+            54.47825,
+            55.435792,
+            51.825291,
+            51.911458,
+            52.546541,
+            52.544417,
+            53.273042,
+            58.598959,
+            56.7225,
+            54.36375
+          ]
+        },
+        {
+          "id": "zig-safe",
+          "label": "Zig Safe",
+          "medianMs": 58.6412295,
+          "madMs": 1.089292000000004,
+          "samplesMs": [
+            60.758166,
+            61.194291,
+            57.55025,
+            57.553625,
+            57.870125,
+            57.864208,
+            58.999917,
+            58.282542,
+            61.179333,
+            61.772542
+          ]
+        },
+        {
+          "id": "loom-before",
+          "label": "Loom before",
+          "medianMs": 59.2175835,
+          "madMs": 1.1782915000000003,
+          "samplesMs": [
+            59.797708,
+            61.534916,
+            57.833083,
+            58.621,
+            57.846333,
+            58.637459,
+            60.38675,
+            58.030167,
+            59.859667,
+            62.20875
+          ]
+        }
+      ]
+    },
+    {
+      "name": "function_value",
+      "count": 20000000,
+      "seed": 17,
+      "expected": "437152",
+      "results": [
+        {
+          "id": "loom-o3",
+          "label": "Loom O3",
+          "medianMs": 72.0499585,
+          "madMs": 0.26293799999999834,
+          "samplesMs": [
+            71.551708,
+            72.076834,
+            72.181625,
+            71.792,
+            72.023083,
+            71.782041,
+            74.251917,
+            71.860084,
+            72.328,
+            77.213792
+          ]
+        },
+        {
+          "id": "c-o3",
+          "label": "C O3",
+          "medianMs": 68.63412500000001,
+          "madMs": 0.20368799999999965,
+          "samplesMs": [
+            67.995833,
+            68.599042,
+            68.401416,
+            68.695834,
+            68.61275,
+            69.365625,
+            68.6555,
+            68.808792,
+            68.3625,
+            73.825917
+          ]
+        },
+        {
+          "id": "go",
+          "label": "Go",
+          "medianMs": 87.809229,
+          "madMs": 0.694896,
+          "samplesMs": [
+            86.925375,
+            91.3955,
+            88.680166,
+            87.429,
+            88.676917,
+            89.309041,
+            88.135541,
+            87.482917,
+            87.287125,
+            87.390583
+          ]
+        },
+        {
+          "id": "rust-o3",
+          "label": "Rust O3",
+          "medianMs": 69.2071665,
+          "madMs": 0.24162449999999325,
+          "samplesMs": [
+            69.327958,
+            69.306542,
+            69.042792,
+            69.121667,
+            69.606709,
+            68.888292,
+            68.67475,
+            71.972083,
+            68.779542,
+            69.292666
+          ]
+        },
+        {
+          "id": "zig-fast",
+          "label": "Zig Fast",
+          "medianMs": 90.164625,
+          "madMs": 0.35193749999999824,
+          "samplesMs": [
+            90.507167,
+            89.803292,
+            90.1575,
+            90.17175,
+            89.700333,
+            95.052417,
+            90.13625,
+            90.285833,
+            88.890583,
+            93.5235
+          ]
+        },
+        {
+          "id": "loom-o2",
+          "label": "Loom O2",
+          "medianMs": 71.80937499999999,
+          "madMs": 0.3221249999999998,
+          "samplesMs": [
+            72.175667,
+            71.40725,
+            71.847917,
+            71.566417,
+            71.76525,
+            72.709042,
+            72.6695,
+            71.531417,
+            71.770833,
+            72.274583
+          ]
+        },
+        {
+          "id": "c-checked",
+          "label": "C checked",
+          "medianMs": 69.25525,
+          "madMs": 0.3622710000000069,
+          "samplesMs": [
+            68.596375,
+            70.439666,
+            69.191083,
+            70.444125,
+            68.910083,
+            69.420917,
+            70.389625,
+            68.875875,
+            69.319417,
+            69.076958
+          ]
+        },
+        {
+          "id": "rust-checked",
+          "label": "Rust checked",
+          "medianMs": 69.0824585,
+          "madMs": 0.11966650000000101,
+          "samplesMs": [
+            69.08175,
+            73.29425,
+            69.168625,
+            68.746542,
+            68.987125,
+            68.953875,
+            69.193208,
+            69.083167,
+            69.313958,
+            68.365958
+          ]
+        },
+        {
+          "id": "zig-safe",
+          "label": "Zig Safe",
+          "medianMs": 90.1521875,
+          "madMs": 0.19222950000000338,
+          "samplesMs": [
+            93.91975,
+            90.442875,
+            90.195459,
+            89.8715,
+            90.255959,
+            90.108916,
+            89.519,
+            89.038375,
+            90.068334,
+            90.213917
+          ]
+        },
+        {
+          "id": "loom-before",
+          "label": "Loom before",
+          "medianMs": 71.634167,
+          "madMs": 0.20895850000000848,
+          "samplesMs": [
+            72.780042,
+            72.531875,
+            71.36325,
+            70.882625,
+            71.558417,
+            71.739542,
+            71.709917,
+            71.915625,
+            71.487167,
+            71.541625
+          ]
+        }
+      ]
+    }
+  ]
+}
