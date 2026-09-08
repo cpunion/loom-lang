@@ -48,12 +48,18 @@ fn concrete_methods(env Environment, owner Int, ty Int, capability Int) Result[B
     let node = symbol(env, owner).node
     var index = 0
     while index < length(methods) {
-        let method = signature(env, get(methods, index), ints(ty), node)?
+        let declaration = get(env.signatures, get(methods, index)).symbol
+        let arguments = method_instance_arguments(env, declaration, ty, 0)
+        let method = signature(env, get(methods, index), arguments, node)?
         var previous = 0
         while previous < index {
-            let other = signature(env, get(methods, previous), ints(ty), node)?
-            if symbol(env, method.symbol).name == symbol(env, other.symbol).name && same(method.params, other.params) {
-                return Result.Err(failure(env, owner, node, "concept method signatures overlap for this implementation"))
+            let other_declaration = get(env.signatures, get(methods, previous)).symbol
+            if symbol(env, method.symbol).name == symbol(env, other_declaration).name &&
+                method_parameter_count(env, declaration) == method_parameter_count(env, other_declaration) {
+                let other = signature(env, get(methods, previous), arguments, node)?
+                if same(method.params, other.params) {
+                    return Result.Err(failure(env, owner, node, "concept method signatures overlap for this implementation"))
+                }
             }
             previous = previous + 1
         }

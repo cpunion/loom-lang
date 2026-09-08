@@ -25,6 +25,7 @@ fn prepared_implication(context Context, node Node, source Int, target Int, base
         concepts = stage.env.concepts implementations = stage.env.implementations interfaces = stage.env.interfaces
         associations = stage.env.associations association_depth = stage.env.association_depth
         family_applications = stage.env.family_applications promise_path = stage.env.promise_path promise_depth = stage.env.promise_depth
+        dynamic_interfaces = stage.env.dynamic_interfaces
         witnesses = stage.env.witnesses uses = stage.env.uses }
     let left_scope = predicate_context(env, source, stage.locals, 0, true)
     let left = expr(left_scope, predicate_node(env, source), 2)?

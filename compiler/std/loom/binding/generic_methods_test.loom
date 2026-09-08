@@ -1,0 +1,10 @@
+test fn method_type_parameters_remain_local_without_shadowing_the_receiver() {
+    let files = one_source("concept C { fn first[T](self Self, value T) T\nfn second[T](self Self, value T) T }\nrecord Box[X] { value X }\nimpl[X] C for Box[X] { fn first[U](self Box[X], value U) U { value }\nfn second[U](self Box[X], value U) U { value } }")
+    let program = bound(files, false)
+    assert length(program.symbols) == 7 && get(program.symbols, 1).owner == 0 && get(program.symbols, 5).owner == 4
+    assert length(candidates(program, 0, false, "T")) == 0 && length(candidates(program, 0, false, "first")) == 0
+    assert rejected(one_source("concept C { fn pick[T, T](self Self) }" )).diagnostic.message == "duplicate or reserved type parameter"
+    assert rejected(one_source("concept C { fn pick[Text](self Self) }" )).diagnostic.message == "duplicate or reserved type parameter"
+    assert rejected(one_source("concept C { fn pick[Self](self Self) }" )).diagnostic.message == "method type parameter shadows Self"
+    assert rejected(one_source("impl[X] C for Box[X] { fn pick[X](self Box[X]) {} }" )).diagnostic.message == "method type parameter shadows an implementation type parameter"
+}

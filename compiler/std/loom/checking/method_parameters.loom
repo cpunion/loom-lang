@@ -1,0 +1,173 @@
+// Source method arguments omit the receiver/impl prefix. Signatures and
+// scheduled instances retain the complete parameter vector.
+fn method_parameter_prefix(env Environment, owner Int) Int {
+    if prototype(env, owner) { return 1 }
+    let parent = symbol(env, owner).owner
+    if parent >= 0 && symbol(env, parent).node.kind == NodeKind.Impl {
+        return length(group(symbol(env, parent).node, NodeKind.TypeParameters))
+    }
+    0
+}
+fn method_parameter_count(env Environment, owner Int) Int {
+    length(group(symbol(env, owner).node, NodeKind.TypeParameters))
+}
+fn function_parameter_count(env Environment, owner Int) Int {
+    method_parameter_prefix(env, owner) + method_parameter_count(env, owner)
+}
+fn method_instance_arguments(env Environment, owner Int, receiver Int, offset Int) List[Int] {
+    let arguments = ints(receiver)
+    var index = 0
+    while index < method_parameter_count(env, owner) {
+        push(arguments, intern(env, TypeKind.Parameter, offset + index, new[Int]()))
+        index = index + 1
+    }
+    arguments
+}
+fn method_declaration(env Environment, owner Int) Int {
+    if prototype(env, owner) { return owner }
+    let parent = symbol(env, owner).owner
+    if parent < 0 || symbol(env, parent).node.kind != NodeKind.Impl { return -1 }
+    let header = get(env.implementations, implementation_owner(env, parent))
+    let declarations = get(env.concepts, concept_index(env, header.capability)).methods
+    var index = 0
+    while index < length(header.methods) {
+        let method = get(header.methods, index)
+        if method >= 0 && get(env.signatures, method).symbol == owner { return get(env.signatures, get(declarations, index)).symbol }
+        index = index + 1
+    }
+    -1
+}
+fn source_signature(env Environment, owner Int, arguments List[Int], obligations List[Requirement]) Result[Signature, Failure] {
+    let item = symbol(env, owner)
+    let count = function_parameter_count(env, owner)
+    if item.owner >= 0 && !prototype(env, owner) && has(item.node, NodeKind.Requires) {
+        return Result.Err(failure(env, owner, item.node, "an implementation cannot add an undeclared precondition"))
+    }
+    let params = new[Int]()
+    let compile_time = new[Int]()
+    let declarations = group(item.node, NodeKind.Parameters)
+    var parameter = 0
+    while parameter < length(declarations) {
+        let declaration = get(declarations, parameter)
+        let ty = resolve_bound(env, owner, child(declaration, 0), arguments, obligations, 0)?
+        let constant = has(declaration, NodeKind.Comptime)
+        if constant && (item.owner >= 0 || has(item.node, NodeKind.Intrinsic)) {
+            return Result.Err(failure(env, owner, declaration, "comptime parameters are not supported on concept, implementation or intrinsic methods"))
+        }
+        if constant && ty != 1 && ty != 2 && ty != 3 && get(env.types, ty).kind != TypeKind.Function {
+            return Result.Err(failure(env, owner, declaration, "comptime parameters require Int, Bool, Text or a function type"))
+        }
+        push(params, ty)
+        if constant { push(compile_time, parameter) }
+        parameter = parameter + 1
+    }
+    let returns = group(item.node, NodeKind.ReturnType)
+    let output = if length(returns) == 0 { 0 } else { resolve_bound(env, owner, get(returns, 0), arguments, obligations, 0)? }
+    let entry = item.owner < 0 && get(env.source.files, item.file).package == env.source.root && item.name == "main" && !item.test_only
+    if (entry || has(item.node, NodeKind.Test)) && (length(params) != 0 || output != 0 || count != 0) {
+        return Result.Err(failure(env, owner, item.node, "main and tests take no parameters and omit the return type"))
+    }
+    Result.Ok(Signature { symbol = owner parameters = count params = params result = output compile_time = compile_time requirements = obligations })
+}
+fn register_signature(env Environment, current Signature) Result[Int, Failure] {
+    let item = symbol(env, current.symbol)
+    var index = 0
+    while index < length(env.signatures) {
+        let other = get(env.signatures, index)
+        let declaration = symbol(env, other.symbol)
+        if item.owner == declaration.owner && item.name == declaration.name && get(env.source.files, item.file).package == get(env.source.files, declaration.file).package &&
+            current.parameters == other.parameters && same(current.params, other.params) {
+            return Result.Err(failure(env, current.symbol, item.node, "duplicate overload signature"))
+        }
+        index = index + 1
+    }
+    let id = length(env.signatures)
+    push(env.signatures, current)
+    Result.Ok(id)
+}
+
+record MethodMatch { slot Int signature Signature }
+
+fn method_bounds_match(env Environment, declaration Int, implementation Int) Result[Bool, Failure] {
+    let expected = member_parameters(env, declaration)
+    let actual = member_parameters(env, implementation)
+    if length(expected) != length(actual) { return Result.Ok(false) }
+    var index = 0
+    while index < length(actual) {
+        let supplied = get(actual, index).children
+        let declared = get(expected, index).children
+        var bound = 0
+        while bound < length(supplied) {
+            let capability = required_concept(env, implementation, get(supplied, bound))?
+            var found = false
+            var candidate = 0
+            while candidate < length(declared) {
+                found = found || required_concept(env, declaration, get(declared, candidate))? == capability
+                candidate = candidate + 1
+            }
+            if !found { return Result.Ok(false) }
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn method_trial_missing_evidence(failed Failure) Bool {
+    // Only another overload's domain can cure these header failures. Never
+    // retry unknown types, malformed declarations, cycles or exhausted budgets.
+    let message = failed.diagnostic.message
+    message == "associated type needs an explicit, accessible concept requirement" ||
+        message == "ambiguous associated type; qualify its concept" ||
+        message == "associated type needs its declared concept requirement" ||
+        message == "associated type argument needs its declared concept requirement" ||
+        message == "associated type binding does not satisfy its declared concept requirement" ||
+        message == "data type argument needs an explicit implementation or declared concept requirement"
+}
+fn implementation_method(env Environment, header Implementation, owner Int, expected List[Int]) Result[MethodMatch, Failure] {
+    let item = symbol(env, owner)
+    let count = method_parameter_count(env, owner)
+    let arguments = abstract_arguments(env, function_parameter_count(env, owner))
+    let scoped = header_environment(env)
+    let original = requirements(scoped, owner, arguments)?
+    let ordinary = new[Signature]()
+    if count == 0 { push(ordinary, source_signature(env, owner, arguments, original)?) }
+    let matches = new[MethodMatch]()
+    var strengthened = false
+    var slot = 0
+    while slot < length(expected) {
+        let id = get(expected, slot)
+        let declaration = get(env.signatures, id)
+        if symbol(env, declaration.symbol).name == item.name && method_parameter_count(env, declaration.symbol) == count &&
+            length(declaration.params) == length(group(item.node, NodeKind.Parameters)) {
+            if !method_bounds_match(env, declaration.symbol, owner)? { strengthened = true } else {
+                let target = signature_in(scoped, id, method_instance_arguments(env, declaration.symbol, header.ty, method_parameter_prefix(env, owner)), item.node, header.symbol)?
+                let obligations = new[Requirement]()
+                var index = 0
+                while index < length(original) { push(obligations, get(original, index))
+                    index = index + 1 }
+                discard inherit_member_requirements(env, declaration.symbol, argument_tail(arguments, method_parameter_prefix(env, owner)), obligations)?
+                let trial Result[Signature, Failure] = if count == 0 { Result.Ok(get(ordinary, 0)) } else {
+                    source_signature(scoped, owner, arguments, function_requirements(scoped, owner, obligations)?)
+                }
+                match trial {
+                    Result.Ok(current) => {
+                        if same(current.params, target.params) && current.result == target.result {
+                            push(matches, MethodMatch { slot = slot signature = current })
+                        }
+                    }
+                    Result.Err(failed) => { if !method_trial_missing_evidence(failed) { return Result.Err(failed) } }
+                }
+            }
+        }
+        slot = slot + 1
+    }
+    if length(matches) == 0 {
+        return Result.Err(failure(env, owner, item.node, if strengthened {
+            "an implementation method cannot strengthen its parameter requirements"
+        } else { "implementation method signature does not match its concept" }))
+    }
+    if length(matches) != 1 { return Result.Err(failure(env, owner, item.node, "implementation method matches multiple concept overloads")) }
+    let selected = get(matches, 0)
+    if count == 0 { return Result.Ok(selected) }
+    Result.Ok(MethodMatch { slot = selected.slot signature = source_signature(env, owner, arguments, selected.signature.requirements)? })
+}

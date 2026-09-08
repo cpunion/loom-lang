@@ -44,7 +44,7 @@ test fn implementations_validate_unused_bodies_and_exact_signatures() {
     rejects("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int requires self > 0 { self } }")
     rejects("concept C { fn value(self Self) Bool }\nimpl C for Int { fn value(self Int) Bool ensures false { true } }")
     rejects("concept C { fn value(self Int) Int }")
-    rejects("concept C { fn value[T](self Self, value T) T }")
+    rejects("concept C { fn value[T](self Self, value T) T { missing(value) } }")
     rejects("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { missing(self) } }")
     let program = accepted("concept Copy { fn copy(self Self) Self }\nimpl Copy for Int { fn copy(self Int) Int { self } }\nfn main() { assert (1 + 2).copy() == 3 }")
     let call = get(get(get(program.functions, program.entry).body.children, 0).children, 0)

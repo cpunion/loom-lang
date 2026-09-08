@@ -159,7 +159,7 @@ fn names(file Int, nodes List[Node], reserved_types Bool) Result[Bool, Failure] 
     }
     Result.Ok(true)
 }
-fn associated_parameter_names(file Int, node Node, owner Node) Result[Bool, Failure] {
+fn member_parameter_names(file Int, node Node, owner Node) Result[Bool, Failure] {
     var index = 0
     while index < length(node.children) {
         let group = get(node.children, index)
@@ -168,7 +168,9 @@ fn associated_parameter_names(file Int, node Node, owner Node) Result[Bool, Fail
             while parameter < length(group.children) {
                 let named = get(group.children, parameter)
                 if named.value == "Self" {
-                    return Result.Err(failure(file, named, "associated type parameter shadows Self"))
+                    return Result.Err(failure(file, named, if node.kind == NodeKind.AssociatedType {
+                        "associated type parameter shadows Self"
+                    } else { "method type parameter shadows Self" }))
                 }
                 var inherited = 0
                 while inherited < length(owner.children) {
@@ -177,7 +179,9 @@ fn associated_parameter_names(file Int, node Node, owner Node) Result[Bool, Fail
                         var other = 0
                         while other < length(outer.children) {
                             if get(outer.children, other).value == named.value {
-                                return Result.Err(failure(file, named, "associated type parameter shadows an implementation type parameter"))
+                                return Result.Err(failure(file, named, if node.kind == NodeKind.AssociatedType {
+                                    "associated type parameter shadows an implementation type parameter"
+                                } else { "method type parameter shadows an implementation type parameter" }))
                             }
                             other = other + 1
                         }
@@ -198,10 +202,9 @@ fn declaration_names(file Int, node Node) Result[Bool, Failure] {
         let child = get(node.children, index)
         if child.kind == NodeKind.TypeParameters { discard names(file, child.children, true)? }
         if child.kind == NodeKind.Parameters { discard names(file, child.children, false)? }
-        if child.kind == NodeKind.Function { discard declaration_names(file, child)? }
-        if child.kind == NodeKind.AssociatedType {
+        if child.kind == NodeKind.Function || child.kind == NodeKind.AssociatedType {
             discard declaration_names(file, child)?
-            discard associated_parameter_names(file, child, node)?
+            discard member_parameter_names(file, child, node)?
         }
         if child.kind == NodeKind.Field || child.kind == NodeKind.Variant || child.kind == NodeKind.AssociatedType { push(members, child) }
         index = index + 1

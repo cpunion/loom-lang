@@ -23,3 +23,40 @@ fn exercise_generic_conformances() {
     assert comptime { forward(Wrapped { value = 7 }) } == "7"
     assert render_any(Wrapped { value = Hidden { value = 1 } }) == "<value>"
 }
+
+concept Mixer {
+    type Item
+    fn pair[T](self Self, value T) (Self.Item, T)
+    fn choose[T](self Self, first T, second T) T { first }
+    fn forward[T](self Self, first T, second T) T { self.choose[T](first, second) }
+    fn label[T Display](self Self, value T) Text { value.display() }
+}
+impl[X] Mixer for Wrapped[X] {
+    type Item = X
+    fn pair[U](self Wrapped[X], value U) (X, U) { (self.value, value) }
+    fn choose[U](self Wrapped[X], first U, second U) U { second }
+    fn label[U](self Wrapped[X], value U) Text { value.display() }
+}
+impl Mixer for Bool {
+    type Item = Bool
+    fn pair[T](self Bool, value T) (Bool, T) { (self, value) }
+}
+
+fn mixed[S Mixer, T](source S, value T) (S.Item, T) { source.pair[T](value) }
+
+fn exercise_generic_methods() {
+    let words = new[Text]()
+    push(words, concat("shared", "!"))
+    let source = Wrapped { value = words }
+    let direct = mixed(source, words)
+    let erased dyn Mixer[Item = List[Text]] = source
+    let dynamic = Mixer.pair[List[Text]](erased, words)
+    set(words, 0, concat("changed", "!"))
+    assert get(direct.0, 0) == "changed!" && get(dynamic.1, 0) == "changed!"
+    assert source.forward(1, 2) == 2 && erased.forward[Text]("first", "second") == "second"
+    assert erased.label(42) == "42"
+    let fallback dyn Mixer[Item = Bool] = true
+    assert fallback.forward[Int](1, 2) == 1
+    let constant = comptime { mixed(Wrapped { value = 7 }, ("text", true)) }
+    assert constant.0 == 7 && constant.1.0 == "text" && constant.1.1
+}

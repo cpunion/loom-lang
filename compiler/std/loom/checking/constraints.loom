@@ -214,6 +214,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
         concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces
         associations = context.env.associations association_depth = context.env.association_depth
         family_applications = context.env.family_applications promise_path = context.env.promise_path promise_depth = context.env.promise_depth
+        dynamic_interfaces = context.env.dynamic_interfaces
         witnesses = context.env.witnesses uses = context.env.uses }
     let predicate = expr(predicate_context(env, declaration, context.locals, local, context.emit),
         predicate_node(context.env, declaration), 2)?

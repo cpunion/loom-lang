@@ -14,7 +14,7 @@ fn type_parameters(env Environment, owner Int) List[Node] {
     let item = symbol(env, owner)
     let declaration = if item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl { item.owner } else { owner }
     let parameters = group(symbol(env, declaration).node, NodeKind.TypeParameters)
-    if declaration == owner || item.node.kind != NodeKind.AssociatedType { return parameters }
+    if declaration == owner || (item.node.kind != NodeKind.AssociatedType && item.node.kind != NodeKind.Function) { return parameters }
     let joined = new[Node]()
     var index = 0
     while index < length(parameters) { push(joined, get(parameters, index))
@@ -91,6 +91,12 @@ fn requirements(env Environment, owner Int, arguments List[Int]) Result[List[Req
             let declaration = associated_declaration(env, owner)
             let offset = length(type_parameters(env, item.owner))
             discard inherit_member_requirements(env, declaration, argument_tail(arguments, offset), obligations)?
+        }
+        if item.node.kind == NodeKind.Function {
+            let declaration = method_declaration(env, owner)
+            if declaration >= 0 {
+                discard inherit_member_requirements(env, declaration, argument_tail(arguments, method_parameter_prefix(env, owner)), obligations)?
+            }
         }
     }
     function_requirements(env, owner, obligations)
@@ -169,43 +175,49 @@ fn conformances(env Environment) Result[Bool, Failure] {
             let capability = header.capability
             let ty = header.ty
             let expected = get(env.concepts, concept_index(env, capability)).methods
-            let actual = owned_signatures(env, owner)
             let methods = new[Int]()
-            var supplied = 0
             var index = 0
             while index < length(expected) {
-                let requirement = signature_in(env, get(expected, index), ints(ty), item.node, owner)?
+                let declaration = get(env.signatures, get(expected, index)).symbol
+                let arguments = method_instance_arguments(env, declaration, ty, length(type_parameters(env, owner)))
+                let requirement = signature_in(env, get(expected, index), arguments, item.node, owner)?
                 var previous = 0
                 while previous < index {
-                    let other = signature_in(env, get(expected, previous), ints(ty), item.node, owner)?
-                    if symbol(env, requirement.symbol).name == symbol(env, other.symbol).name && same(requirement.params, other.params) {
-                        return Result.Err(failure(env, owner, item.node, "concept method signatures overlap for this implementation"))
+                    let other_declaration = get(env.signatures, get(expected, previous)).symbol
+                    if symbol(env, requirement.symbol).name == symbol(env, other_declaration).name &&
+                        method_parameter_count(env, declaration) == method_parameter_count(env, other_declaration) {
+                        let other = signature_in(env, get(expected, previous), arguments, item.node, owner)?
+                        if same(requirement.params, other.params) {
+                            return Result.Err(failure(env, owner, item.node, "concept method signatures overlap for this implementation"))
+                        }
                     }
                     previous = previous + 1
                 }
-                var found = -1
-                var candidate = 0
-                while candidate < length(actual) {
-                    let method = get(env.signatures, get(actual, candidate))
-                    if symbol(env, method.symbol).name == symbol(env, requirement.symbol).name &&
-                        same(method.params, requirement.params) && method.result == requirement.result {
-                        found = get(actual, candidate)
-                    }
-                    candidate = candidate + 1
-                }
-                if found >= 0 {
-                    supplied = supplied + 1
-                } else {
-                    if !has(symbol(env, requirement.symbol).node, NodeKind.Block) {
-                        return Result.Err(failure(env, owner, item.node, "implementation is missing a required concept method"))
-                    }
-                    found = get(expected, index)
-                }
-                push(methods, found)
+                push(methods, -1)
                 index = index + 1
             }
-            if supplied != length(actual) {
-                return Result.Err(failure(env, owner, item.node, "implementation method signature does not match its concept"))
+            var candidate = 0
+            while candidate < length(env.source.symbols) {
+                let method = symbol(env, candidate)
+                if method.owner == owner && method.node.kind == NodeKind.Function {
+                    let matched = implementation_method(env, header, candidate, expected)?
+                    if get(methods, matched.slot) >= 0 {
+                        return Result.Err(failure(env, candidate, method.node, "duplicate implementation method for this concept overload"))
+                    }
+                    set(methods, matched.slot, register_signature(env, matched.signature)?)
+                }
+                candidate = candidate + 1
+            }
+            index = 0
+            while index < length(methods) {
+                if get(methods, index) < 0 {
+                    let declaration = get(expected, index)
+                    if !has(symbol(env, get(env.signatures, declaration).symbol).node, NodeKind.Block) {
+                        return Result.Err(failure(env, owner, item.node, "implementation is missing a required concept method"))
+                    }
+                    set(methods, index, declaration)
+                }
+                index = index + 1
             }
             set(env.implementations, position, Implementation { symbol = owner capability = capability ty = ty methods = methods associated = header.associated state = 2 })
         }
@@ -242,7 +254,21 @@ fn satisfies_arguments(context Context, current Signature, arguments List[Int], 
     if parent >= 0 && symbol(context.env, parent).node.kind == NodeKind.Impl {
         let header = get(context.env.implementations, implementation_owner(context.env, parent))
         let receiver = substitute(context.env, current.symbol, header.ty, arguments, node)?
-        if entailed(context.env, context.signature.requirements, receiver, header.capability) { return Result.Ok(true) }
+        if entailed(context.env, context.signature.requirements, receiver, header.capability) {
+            // Receiver evidence carries the impl header's prerequisites, not
+            // the independent requirements of this method's local arguments.
+            let declaration = method_declaration(context.env, current.symbol)
+            if declaration < 0 { return Result.Ok(false) }
+            let bounds = new[Requirement]()
+            discard inherit_member_requirements(context.env, declaration, argument_tail(arguments, method_parameter_prefix(context.env, current.symbol)), bounds)?
+            var index = 0
+            while index < length(bounds) {
+                let bound = get(bounds, index)
+                if !satisfies(context, bound.ty, bound.capability)? { return Result.Ok(false) }
+                index = index + 1
+            }
+            return Result.Ok(true)
+        }
     }
     var index = 0
     while index < length(current.requirements) {

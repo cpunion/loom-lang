@@ -15,10 +15,18 @@ record SlotUse { interface Int slot Int }
 
 fn dynamic_member_type(env Environment, ty Int, capability Int) Bool {
     let shape = get(env.types, ty)
-    if shape.kind == TypeKind.Parameter { return false }
+    if shape.kind == TypeKind.Parameter { return shape.symbol != 0 }
     if shape.kind == TypeKind.Associated {
-        return symbol(env, shape.symbol).owner == capability &&
-            get(env.types, get(shape.arguments, 0)).kind == TypeKind.Parameter
+        let receiver = get(env.types, get(shape.arguments, 0))
+        if receiver.kind == TypeKind.Parameter && receiver.symbol == 0 {
+            if symbol(env, shape.symbol).owner != capability { return false }
+            var argument = 1
+            while argument < length(shape.arguments) {
+                if !dynamic_member_type(env, get(shape.arguments, argument), capability) { return false }
+                argument = argument + 1
+            }
+            return true
+        }
     }
     var index = 0
     while index < length(shape.arguments) {
@@ -31,37 +39,64 @@ fn fill_interface(env Environment, receiver Int) Result[Bool, Failure] {
     let index = get(env.types, receiver).symbol
     let declaration = get(env.interfaces, index)
     let capability = get(env.concepts, concept_index(env, declaration.symbol))
+    let state = get(env.dynamic_interfaces, index)
+    if state.initialized || state.filling { return Result.Ok(true) }
+    // Signatures can mention dyn before conformance collection has attached
+    // their concept's methods. The later fill_interfaces pass initializes it.
+    if length(capability.methods) == 0 && has(symbol(env, capability.symbol).node, NodeKind.Function) {
+        return Result.Ok(true)
+    }
     let methods = new[Method]()
+    let slots = new[DynamicSlot]()
+    set(env.dynamic_interfaces, index, DynamicInterface { initialized = false filling = true slots = state.slots })
+    match fill_interface_methods(env, receiver, capability, methods, slots) {
+        Result.Ok(_) => {
+            set(env.interfaces, index, Interface { symbol = declaration.symbol methods = methods })
+            set(env.dynamic_interfaces, index, DynamicInterface { initialized = true filling = false slots = slots })
+            Result.Ok(true)
+        }
+        Result.Err(failure) => {
+            // Optional/header resolution may retry after missing evidence.
+            // Never publish a validated prefix or suppress the next check.
+            set(env.dynamic_interfaces, index, state)
+            Result.Err(failure)
+        }
+    }
+}
+fn fill_interface_methods(env Environment, receiver Int, capability Concept, methods List[Method], slots List[DynamicSlot]) Result[Bool, Failure] {
     var method = 0
     while method < length(capability.methods) {
         let current = get(env.signatures, get(capability.methods, method))
         let node = symbol(env, current.symbol).node
-        let specialized = signature(env, get(capability.methods, method), ints(receiver), node)?
-        let params = new[Int]()
         var parameter = 1
         while parameter < length(current.params) {
             let ty = get(current.params, parameter)
             if !dynamic_member_type(env, ty, capability.symbol) {
                 return Result.Err(failure(env, current.symbol, symbol(env, current.symbol).node, "dyn concept methods may use Self only as the receiver"))
             }
-            push(params, get(specialized.params, parameter))
             parameter = parameter + 1
         }
         if !dynamic_member_type(env, current.result, capability.symbol) {
             return Result.Err(failure(env, current.symbol, symbol(env, current.symbol).node, "dyn concept methods cannot return Self or a type containing Self"))
         }
-        var previous = 0
-        while previous < length(methods) {
-            let other = get(methods, previous)
-            if other.name == symbol(env, current.symbol).name && same(other.params, params) {
-                return Result.Err(failure(env, current.symbol, node, "dynamic bindings produce overlapping method signatures"))
+        // A generic declaration is checked now but has no unspecialized ABI
+        // slot. Concrete calls append only the instances this build needs.
+        if current.parameters == 1 {
+            let specialized = signature(env, get(capability.methods, method), ints(receiver), node)?
+            let params = argument_tail(specialized.params, 1)
+            var previous = 0
+            while previous < length(methods) {
+                let other = get(methods, previous)
+                if other.name == symbol(env, current.symbol).name && same(other.params, params) {
+                    return Result.Err(failure(env, current.symbol, node, "dynamic bindings produce overlapping method signatures"))
+                }
+                previous = previous + 1
             }
-            previous = previous + 1
+            push(methods, Method { name = symbol(env, current.symbol).name params = params result = specialized.result })
+            push(slots, DynamicSlot { signature = get(capability.methods, method) arguments = new[Int]() })
         }
-        push(methods, Method { name = symbol(env, current.symbol).name params = params result = specialized.result })
         method = method + 1
     }
-    set(env.interfaces, index, Interface { symbol = declaration.symbol methods = methods })
     Result.Ok(true)
 }
 fn fill_interfaces(env Environment) Result[Bool, Failure] {
@@ -92,6 +127,7 @@ fn dynamic_instance(env Environment, owner Int, capability Int, bindings List[In
     }
     let interface = length(env.interfaces)
     push(env.interfaces, Interface { symbol = capability methods = new[Method]() })
+    push(env.dynamic_interfaces, DynamicInterface { initialized = false filling = false slots = new[DynamicSlot]() })
     Result.Ok(intern(env, TypeKind.Dyn, interface, bindings))
 }
 fn emitted_type(env Environment, owner Int, ty Int, node Node, seen List[Int]) Result[Bool, Failure] {
@@ -200,17 +236,19 @@ fn boxed(context Context, node Node, value Expr, target Int) Result[Expr, Failur
     }
     Result.Ok(expression(ExprKind.DynBox, target, node, "", witness, expressions(value), value.falls))
 }
-fn dynamic_call(context Context, node Node, signature Int, output Int, values List[Expr]) Result[Expr, Failure] {
+fn dynamic_call(context Context, node Node, signature Int, arguments List[Int], output Int, values List[Expr]) Result[Expr, Failure] {
     let receiver = get(values, 0)
     discard fill_interface(context.env, receiver.ty)?
     let interface = get(context.env.types, receiver.ty).symbol
     let capability = get(context.env.interfaces, interface).symbol
     let methods = get(context.env.concepts, concept_index(context.env, capability)).methods
-    var slot = 0
-    while slot < length(methods) && get(methods, slot) != signature { slot = slot + 1 }
-    if slot == length(methods) { return Result.Err(error(context, node, "dynamic method does not belong to the receiver's concept")) }
+    var member = 0
+    while member < length(methods) && get(methods, member) != signature { member = member + 1 }
+    if member == length(methods) { return Result.Err(error(context, node, "dynamic method does not belong to the receiver's concept")) }
+    var slot = -1
     if context.emit {
         if !concrete(context.env, receiver.ty) { return Result.Err(error(context, node, "dynamic calls require concrete associated bindings")) }
+        slot = dynamic_slot(context, node, receiver.ty, signature, arguments)?
         var index = 0
         while index < length(context.env.uses) &&
             (get(context.env.uses, index).interface != interface || get(context.env.uses, index).slot != slot) { index = index + 1 }
@@ -236,13 +274,21 @@ fn activate_witnesses(env Environment, retain Bool) Result[Bool, Failure] {
         // Witness creation already admitted this exact conformance in its scope.
         let provided = conformance(env, witness.concrete, capability)
         let implementation = get(env.implementations, provided.implementation)
+        let declarations = get(env.concepts, concept_index(env, capability)).methods
+        let slots = get(env.dynamic_interfaces, witness.interface).slots
+        // Staging shares interface identities but owns its witness queue.
+        // Bring a table up to date if another queue discovered a slot.
+        while length(witness.methods) < length(slots) { push(witness.methods, -1) }
         var slot = 0
         while slot < length(witness.methods) {
             if get(witness.methods, slot) < 0 && (retain || slot_used(env, witness.interface, slot)) {
-                let method = get(implementation.methods, slot)
+                let instance = get(slots, slot)
+                var member = 0
+                while get(declarations, member) != instance.signature { member = member + 1 }
+                let method = get(implementation.methods, member)
                 let current = get(env.signatures, method)
                 let declaration = symbol(env, current.symbol)
-                let arguments = if prototype(env, current.symbol) { ints(witness.concrete) } else { provided.arguments }
+                let arguments = member_arguments(if prototype(env, current.symbol) { ints(witness.concrete) } else { provided.arguments }, instance.arguments)
                 set(witness.methods, slot, schedule(env, method, arguments, new[StaticValue](), declaration.node)?)
                 changed = true
             }

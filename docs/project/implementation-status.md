@@ -135,9 +135,17 @@ member parameters, and implementations inherit their declared requirements even
 when renaming them. Arity, stronger implementation requirements, unproved result
 bounds and cyclic or growing expansion reject during abstract validation.
 The [family example](../../compiler/examples/associated/generic.loom) covers this
-without adopting the new syntax in the compiler's production sources. Generic
-concept methods and dynamic family bindings remain unsupported; ordinary exact
-dyn bindings keep the existing witness ABI.
+without adopting the new syntax in the compiler's production sources. Dynamic
+family bindings remain unsupported; ordinary exact dyn bindings keep the existing
+witness ABI.
+
+Concept and implementation methods also have independent generic parameters,
+with explicit or inferred call arguments, inherited requirements and default
+bodies. Calls resolve against the concept's declared domain before selecting an
+implementation. Dynamic calls materialize only concrete method instances in the
+selected build, retaining the existing typed witness ABI and reachability model.
+No runtime type discovery, generic code generation or new bootstrap checkpoint
+is required. Native objects remain build-specific, not open-ended generic libraries.
 
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The

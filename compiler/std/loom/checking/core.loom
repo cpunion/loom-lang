@@ -58,6 +58,7 @@ record Environment {
     promise_path List[Requirement]
     promise_depth Int
     interfaces List[Interface]
+    dynamic_interfaces List[DynamicInterface]
     witnesses List[Witness]
     uses List[SlotUse]
 }
@@ -199,7 +200,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         associations = new[Association]() association_depth = 0
         family_applications = new[FamilyApplication]() promise_path = new[Requirement]() promise_depth = 0
-        interfaces = new[Interface]() witnesses = new[Witness]() uses = new[SlotUse]() }
+        interfaces = new[Interface]() dynamic_interfaces = new[DynamicInterface]() witnesses = new[Witness]() uses = new[SlotUse]() }
     initialize_types(env)
     discard conformance_headers(env)?
     var index = 0
@@ -213,51 +214,11 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
     index = 0
     while index < length(source.symbols) {
         let item = symbol(env, index)
-        if item.node.kind == NodeKind.Function {
-            let count = if prototype(env, index) { 1 } else { length(type_parameters(env, index)) }
-            if item.owner >= 0 && length(group(item.node, NodeKind.TypeParameters)) != 0 {
-                return Result.Err(failure(env, index, item.node, "concept and implementation methods do not yet take type parameters"))
-            }
-            if item.owner >= 0 && !prototype(env, index) && has(item.node, NodeKind.Requires) {
-                return Result.Err(failure(env, index, item.node, "an implementation cannot add an undeclared precondition"))
-            }
-            let arguments = abstract_arguments(env, count)
-            let obligations = requirements(env, index, arguments)?
-            let params = new[Int]()
-            let compile_time = new[Int]()
-            let declarations = group(item.node, NodeKind.Parameters)
-            var parameter = 0
-            while parameter < length(declarations) {
-                let declaration = get(declarations, parameter)
-                let ty = resolve_bound(env, index, child(declaration, 0), arguments, obligations, 0)?
-                let constant = has(declaration, NodeKind.Comptime)
-                if constant && (item.owner >= 0 || has(item.node, NodeKind.Intrinsic)) {
-                    return Result.Err(failure(env, index, declaration, "comptime parameters are not supported on concept, implementation or intrinsic methods"))
-                }
-                if constant && ty != 1 && ty != 2 && ty != 3 && get(env.types, ty).kind != TypeKind.Function {
-                    return Result.Err(failure(env, index, declaration, "comptime parameters require Int, Bool, Text or a function type"))
-                }
-                push(params, ty)
-                if constant { push(compile_time, parameter) }
-                parameter = parameter + 1
-            }
-            let returns = group(item.node, NodeKind.ReturnType)
-            let output = if length(returns) == 0 { 0 } else { resolve_bound(env, index, get(returns, 0), arguments, obligations, 0)? }
-            let entry = item.owner < 0 && get(source.files, item.file).package == source.root && item.name == "main" && !item.test_only
-            if (entry || has(item.node, NodeKind.Test)) && (length(params) != 0 || output != 0 || count != 0) {
-                return Result.Err(failure(env, index, item.node, "main and tests take no parameters and omit the return type"))
-            }
-            var previous = 0
-            while previous < length(env.signatures) {
-                let other = get(env.signatures, previous)
-                let other_symbol = symbol(env, other.symbol)
-                if item.owner == other_symbol.owner && item.name == other_symbol.name && get(source.files, item.file).package == get(source.files, other_symbol.file).package && count == other.parameters && same(params, other.params) {
-                    return Result.Err(failure(env, index, item.node, "duplicate overload signature"))
-                }
-                previous = previous + 1
-            }
-            push(env.signatures, Signature { symbol = index parameters = count params = params result = output
-                compile_time = compile_time requirements = obligations })
+        // Impl headers are matched against complete concept signatures before
+        // inheriting that exact overload's method parameter requirements.
+        if item.node.kind == NodeKind.Function && (item.owner < 0 || prototype(env, index)) {
+            let arguments = abstract_arguments(env, function_parameter_count(env, index))
+            discard register_signature(env, source_signature(env, index, arguments, requirements(env, index, arguments)?)?)?
         }
         index = index + 1
     }
