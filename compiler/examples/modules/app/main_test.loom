@@ -1,1 +1,3 @@
-test fn dependency_answer() { main() }
+test fn dependency_answer() {
+    main()
+}

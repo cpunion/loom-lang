@@ -1,16 +1,37 @@
-record Box[T] { value T }
+record Box[T] {
+    value T
+}
 
 fn list_first[T](value T) Int {
-    comptime if T == List[Int] { get(value, 0) } else { 0 }
+    comptime if T == List[Int] {
+        get(value, 0)
+    } else {
+        0
+    }
 }
+
 fn list_kind[T]() Int {
-    comptime if List[T] != List[Text] { 1 } else { 2 }
+    comptime if List[T] != List[Text] {
+        1
+    } else {
+        2
+    }
 }
+
 fn unbox_integer[T](value T) Int {
-    comptime if T == Box[Int] { value.value } else { unavailable_for_other_types() }
+    comptime if T == Box[Int] {
+        value.value
+    } else {
+        unavailable_for_other_types()
+    }
 }
+
 fn nested_box[T]() Bool {
-    comptime if List[Box[T]] == List[Box[Int]] { true } else { false }
+    comptime if List[Box[T]] == List[Box[Int]] {
+        true
+    } else {
+        false
+    }
 }
 
 fn composite_guards() {
@@ -18,8 +39,12 @@ fn composite_guards() {
     push(values, 9)
     assert list_first(values) == 9 && list_first("other") == 0
     assert list_kind[Int]() == 1 && list_kind[Text]() == 2
-    assert unbox_integer(Box { value = 7 }) == 7
+    assert unbox_integer(Box {
+            value = 7
+        }) == 7
     assert nested_box[Int]() && !nested_box[Text]()
 }
 
-test fn composite_types_select_runtime_bodies() { composite_guards() }
+test fn composite_types_select_runtime_bodies() {
+    composite_guards()
+}

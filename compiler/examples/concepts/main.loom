@@ -6,40 +6,69 @@ import std.list.get
 import std.list.push
 import std.list.set
 
-record Person { name Text score Int }
-record Hidden { value Int }
+record Person {
+    name Text
+    score Int
+}
+
+record Hidden {
+    value Int
+}
 
 impl Display for Person {
-    fn display(self Person) Text { self.name }
+    fn display(self Person) Text {
+        self.name
+    }
 }
 
 concept Rank {
     fn rank(self Self, offset Int) Int
-    fn doubled(self Self) Int { self.rank(0) + self.rank(0) }
+    fn doubled(self Self) Int {
+        self.rank(0) + self.rank(0)
+    }
 }
+
 impl Rank for Person {
-    fn rank(self Person, offset Int) Int { self.score + offset }
+    fn rank(self Person, offset Int) Int {
+        self.score + offset
+    }
 }
+
 impl Rank for Bool {
-    fn rank(self Bool, offset Int) Int { offset }
-    fn doubled(self Bool) Int { 101 }
+    fn rank(self Bool, offset Int) Int {
+        offset
+    }
+    fn doubled(self Bool) Int {
+        101
+    }
 }
 
 concept Source {
     type Item
     fn first(self Self) Self.Item
-    fn copy(self Self) Self.Item { self.first() }
-}
-impl Source for Person {
-    type Item = Text
-    fn first(self Person) Text { self.name }
+    fn copy(self Self) Self.Item {
+        self.first()
+    }
 }
 
-fn forward[T Display](value T) Text { to_text(value) }
+impl Source for Person {
+    type Item = Text
+    fn first(self Person) Text {
+        self.name
+    }
+}
+
+fn forward[T Display](value T) Text {
+    to_text(value)
+}
 
 // No Display bound is required: only the selected branch is instantiated.
 fn render_any[T](value T) Text {
-    comptime if T implements Display { value.display() } else { "<value>" }
+    comptime if T implements Display {
+        value.display()
+    } else {
+        "<value>"
+    }
 }
 
 fn ranked[T Display + Rank](value T) Text {
@@ -48,8 +77,12 @@ fn ranked[T Display + Rank](value T) Text {
 
 fn make_person(trace List[Int]) Person {
     set(trace, 0, get(trace, 0) * 10 + 1)
-    Person { name = "Ada" score = 10 }
+    Person {
+        name = "Ada"
+        score = 10
+    }
 }
+
 fn next_offset(trace List[Int]) Int {
     set(trace, 0, get(trace, 0) * 10 + 2)
     3
@@ -58,18 +91,33 @@ fn next_offset(trace List[Int]) Int {
 fn exercise() {
     exercise_generic_conformances()
     exercise_generic_methods()
-    let person = Person { name = "Ada" score = 10 }
+    let person = Person {
+        name = "Ada"
+        score = 10
+    }
     assert forward(person) == "Ada" && forward(42) == "42"
     assert forward(1.25) == "1.25" && forward(true) == "true"
-    assert render_any(person) == "Ada" && render_any(Hidden { value = 7 }) == "<value>"
+    assert render_any(person) == "Ada" && render_any(Hidden {
+            value = 7
+        }) == "<value>"
     assert ranked(person) == "Ada:10"
     assert person.doubled() == 20 && true.doubled() == 101
     assert person.copy() == "Ada"
     let dynamic dyn Rank = person
     let overridden dyn Rank = true
     assert dynamic.doubled() == 20 && overridden.doubled() == 101
-    assert comptime { Person { name = "Loom" score = 3 }.doubled() } == 6
-    let fixed = comptime { forward(Person { name = "Loom" score = 1 }) }
+    assert comptime {
+        Person {
+            name = "Loom"
+            score = 3
+        }.doubled()
+    } == 6
+    let fixed = comptime {
+        forward(Person {
+                name = "Loom"
+                score = 1
+            })
+    }
     assert fixed == "Loom"
 
     // The receiver runs once, before explicit arguments, even when both mutate
@@ -80,4 +128,6 @@ fn exercise() {
     assert get(trace, 0) == 12
 }
 
-fn main() { exercise() }
+fn main() {
+    exercise()
+}

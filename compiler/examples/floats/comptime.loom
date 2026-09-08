@@ -10,8 +10,10 @@ import std.result.Result
 fn scaled_decimal(text Text, scale Float) Float {
     match parse(text) {
         Result.Ok(value) => value * scale
-        Result.Err(_) => { assert false
-            0.0 }
+        Result.Err(_) => {
+            assert false
+            0.0
+        }
     }
 }
 
@@ -27,9 +29,13 @@ fn prepared_floats() (List[Float], List[Float], Sample) {
 }
 
 fn compile_time_values() {
-    let fixed = comptime { scaled_decimal("1.25", 2.0) }
+    let fixed = comptime {
+        scaled_decimal("1.25", 2.0)
+    }
     assert fixed == scaled_decimal("1.25", 2.0)
-    let label = comptime { to_text(scaled_decimal("1.25", 2.0)) }
+    let label = comptime {
+        to_text(scaled_decimal("1.25", 2.0))
+    }
     assert label == to_text(fixed)
     let left, alias, sample = prepared_floats()
     let other = prepared_floats()
@@ -38,9 +44,15 @@ fn compile_time_values() {
     assert 1.0 / get(other.0, 0) == -1.0 / 0.0
     assert get(alias, 1) == 5e-324
     match sample {
-        Sample.Value(number, text) => { assert number == 2.5 && text == "2.5" }
-        Sample.Empty => { assert false }
+        Sample.Value(number, text) => {
+            assert number == 2.5 && text == "2.5"
+        }
+        Sample.Empty => {
+            assert false
+        }
     }
-    let zero, infinity, nan, tiny = comptime { (-0.0, 1.0 / 0.0, 0.0 / 0.0, 5e-324) }
+    let zero, infinity, nan, tiny = comptime {
+        (-0.0, 1.0 / 0.0, 0.0 / 0.0, 5e-324)
+    }
     assert 1.0 / zero == -infinity && is_nan(nan) && tiny == 5e-324
 }

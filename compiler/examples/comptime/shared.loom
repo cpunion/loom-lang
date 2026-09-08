@@ -4,28 +4,50 @@ import std.bytes.length
 import std.bytes.to_text
 import std.list.length
 
-record SharedLists { left List[Int] right List[Int] }
-record SharedBytes { left Bytes right Bytes }
-record Tree { value Int children List[Tree] }
+record SharedLists {
+    left List[Int]
+    right List[Int]
+}
+
+record SharedBytes {
+    left Bytes
+    right Bytes
+}
+
+record Tree {
+    value Int
+    children List[Tree]
+}
 
 fn prepared_lists() SharedLists {
     comptime {
         let values = std.list.new[Int]()
         std.list.push(values, 1)
-        SharedLists { left = values right = values }
+        SharedLists {
+            left = values
+            right = values
+        }
     }
 }
+
 fn prepared_bytes() SharedBytes {
     comptime {
         let buffer = std.bytes.new()
         std.bytes.push(buffer, 65)
-        SharedBytes { left = buffer right = buffer }
+        SharedBytes {
+            left = buffer
+            right = buffer
+        }
     }
 }
+
 fn prepared_cycle() Tree {
     comptime {
         let children = std.list.new[Tree]()
-        let root = Tree { value = 7 children = children }
+        let root = Tree {
+            value = 7
+            children = children
+        }
         std.list.push(children, root)
         root
     }
@@ -43,7 +65,10 @@ fn shared_results() {
     assert std.bytes.length(prepared_bytes().left) == 1
     let tree = prepared_cycle()
     let back = get(tree.children, 0)
-    std.list.push(back.children, Tree { value = 8 children = std.list.new[Tree]() })
+    std.list.push(back.children, Tree {
+            value = 8
+            children = std.list.new[Tree]()
+        })
     assert std.list.length(tree.children) == 2
     assert get(tree.children, 1).value == 8
     assert std.list.length(prepared_cycle().children) == 1

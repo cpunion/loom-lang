@@ -14,14 +14,18 @@ test fn inspect_declarations_and_byte_spans() {
             let location = position(source, function.span.start)
             assert location.line == 2 && location.column == 1
         }
-        Result.Err(_) => { assert false }
+        Result.Err(_) => {
+            assert false
+        }
     }
 }
 
 test fn diagnostics_are_ordinary_values() {
     let source = "fn bad() Unit {}"
     match parse(source) {
-        Result.Ok(_) => { assert false }
+        Result.Ok(_) => {
+            assert false
+        }
         Result.Err(error) => {
             assert error.span.start == 9 && error.span.end == 13
             assert error.message == "omit the Unit return annotation"

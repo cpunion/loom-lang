@@ -3,6 +3,8 @@ test fn inspect_in_memory_source_through_public_semantic_api() {
         Result.Ok(summary) => {
             assert summary == "local Int\noverload pick(Bool)\ngeneric identity[Int]\nstale after edit true\n"
         }
-        Result.Err(_) => { assert false }
+        Result.Err(_) => {
+            assert false
+        }
     }
 }

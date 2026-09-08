@@ -19,14 +19,21 @@ import std.list.length
 import std.text.concat
 import std.int.to_text
 
-record Label { name Text }
+record Label {
+    name Text
+}
 
 impl Equal for Label {
-    fn equals(self Label, other Label) Bool { self.name == other.name }
+    fn equals(self Label, other Label) Bool {
+        self.name == other.name
+    }
 }
+
 impl Hash for Label {
     // An allocating implementation also exercises receiver/root preservation.
-    fn hash(self Label) Int { concat(self.name, "!").hash() }
+    fn hash(self Label) Int {
+        concat(self.name, "!").hash()
+    }
 }
 
 fn prepared() Map[Text, Int] {
@@ -37,8 +44,13 @@ fn prepared() Map[Text, Int] {
 }
 
 fn exercise() {
-    let counts = comptime { prepared() }
-    assert match get(counts, "Loom") { Option.Some(value) => value == 2, Option.None => false }
+    let counts = comptime {
+        prepared()
+    }
+    assert match get(counts, "Loom") {
+        Option.Some(value) => value == 2,
+        Option.None => false
+    }
     discard insert(counts, "runtime", 3)
     assert length(counts) == 2
 
@@ -49,20 +61,30 @@ fn exercise() {
         let name = concat("label-", to_text(index))
         let words = std.list.new[Text]()
         push(words, concat(name, "-value"))
-        discard insert(alias, Label { name = name }, words)
+        discard insert(alias, Label {
+                name = name
+            }, words)
         index = index + 1
     }
-    let found = match get(labels, Label { name = "label-7" }) {
+    let found = match get(labels, Label {
+            name = "label-7"
+        }) {
         Option.Some(words) => words
-        Option.None => { assert false
-            std.list.new[Text]() }
+        Option.None => {
+            assert false
+            std.list.new[Text]()
+        }
     }
     push(found, "shared")
-    assert match get(alias, Label { name = "label-7" }) {
+    assert match get(alias, Label {
+            name = "label-7"
+        }) {
         Option.Some(words) => length(words) == 2 && get(words, 1) == "shared"
         Option.None => false
     }
-    assert match remove(alias, Label { name = "label-7" }) {
+    assert match remove(alias, Label {
+            name = "label-7"
+        }) {
         Option.Some(words) => get(words, 0) == "label-7-value"
         Option.None => false
     }
@@ -76,4 +98,6 @@ fn exercise() {
     assert !insert(seen, "Loom") && contains(seen, "Loom")
 }
 
-fn main() { exercise() }
+fn main() {
+    exercise()
+}

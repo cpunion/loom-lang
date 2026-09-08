@@ -1,5 +1,9 @@
 pub fn fib(n Int) Int {
-    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+    if n < 2 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
 }
 
 // An imported package's tests are not tests of its consumer.
