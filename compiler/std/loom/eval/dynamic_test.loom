@@ -38,7 +38,7 @@ fn dynamic_program() Program {
     let params = new[Int]()
     push(params, 1)
     let methods = new[Method]()
-    push(methods, Method { name = "apply" params = params result = 1 })
+    push(methods, Method { is_async = false name = "apply" params = params result = 1 })
     push(program.interfaces, Interface { symbol = 0 methods = methods })
     let targets = new[Int]()
     push(targets, 0)

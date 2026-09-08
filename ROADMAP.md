@@ -137,8 +137,13 @@ their caller without child Tasks. Duplication and failure-cleanup close remain
 synchronous; a stuck OS call can delay cancellation. See the
 [file task example](compiler/examples/async_files).
 
-The next async gates are Task-bearing aggregates,
-async methods, Task-bearing function values/dynamic calls,
+Async methods now reuse typed constructors through concrete, generic and dynamic
+calls. Declared async effects must match; defaults and associated/generic/comptime
+methods keep ordinary specialization and sparse witnesses. Direct Task transfers
+also work through synchronous dynamic methods. Scoped receiver transfer remains
+unsupported. See the [method example](compiler/examples/async_methods).
+
+The next async gates are Task-bearing aggregates and function values,
 socket readiness adapters, general worker
 operations and joins. Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.

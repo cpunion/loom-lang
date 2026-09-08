@@ -1363,8 +1363,14 @@ before awaiting. NoSuspend values cannot enter Task parameters/results or lose
 their marker through dyn conversion.
 
 Direct Task parameters, returns and nested results preserve one-shot obligations.
-Task-bearing aggregates, async methods, and Task-bearing function values/dynamic
-calls remain unsupported.
+Async concept/impl methods support concrete, generic and dynamic calls, default
+bodies, associated results and type/comptime method parameters. The implementation's
+async modifier must match its concept. Witnesses invoke the same typed constructors,
+including creation-site diagnostics and Task argument adoption. Synchronous dynamic
+methods can forward Task parameters/results without installing an owner. See the
+[method example](examples/async_methods). Async parameters cannot contain MustScope
+or NoSuspend values, and scoped receivers cannot escape into child Tasks.
+Task-bearing aggregates and function values remain unsupported.
 `std.file.tasks.read_bytes/read_text/write_bytes/write_text` return ordinary Tasks
 and run open/create, read/write and normal close on a native pool of at most four threads per
 owner. See the [file task package](examples/async_files). Source code owns I/O

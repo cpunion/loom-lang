@@ -24,9 +24,16 @@ Direct Task parameters/returns, generic forwarding and nested Task results now
 preserve one-shot obligations. Async callees adopt argument subtrees; completed
 producers retain Task-valued results until extraction by the actual consumer.
 Sync helpers expose a direct Task parameter/result and use their caller's owner.
-Socket adapters, general worker operations and joins remain unfinished.
-Task-bearing aggregates, async methods,
-Task-bearing function values and dynamic calls remain unsupported.
+Async concept/impl methods now share the same constructor/resume path through
+concrete, generic and dynamic calls. Implementations must match the declared async
+effect. Default methods, associated results and type/comptime method parameters
+reuse ordinary specialization. Dynamic calls also transfer direct Task parameters
+and results through synchronous methods, without adding an owner or runtime ABI.
+Witnesses retain only used constructors; child failures preserve dynamic creation
+locations. Scoped receivers cannot escape into Tasks; async MustScope/NoSuspend
+parameters remain rejected. See the [method example](../../compiler/examples/async_methods).
+Socket adapters, general worker operations, joins, Task-bearing aggregates and
+Task-bearing function values remain unfinished.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;

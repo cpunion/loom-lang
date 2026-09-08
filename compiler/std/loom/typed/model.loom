@@ -142,8 +142,11 @@ pub record Function {
 
 // Interface.symbol is a source concept ID; TypeKind.Dyn.symbol indexes this
 // program's interfaces. Even unused associated bindings distinguish interface
-// instances. Method parameters exclude the erased receiver.
+// instances. Method parameters exclude the erased receiver; result is the call
+// result (Task[T] for async methods). Lowering removes is_async and appends the
+// private constructor label parameter before native emission.
 pub record Method {
+    is_async Bool
     name Text
     params List[Int]
     result Int

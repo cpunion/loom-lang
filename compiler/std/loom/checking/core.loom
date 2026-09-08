@@ -228,9 +228,6 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
     var index = 0
     while index < length(source.symbols) {
         let item = symbol(env, index)
-        if item.node.kind == NodeKind.Function && item.owner >= 0 && has(item.node, NodeKind.Async) {
-            return Result.Err(failure(env, index, item.node, "async concept and impl methods are not yet implemented"))
-        }
         if nominal_data(item.node.kind) {
             discard data_type(env, index, abstract_arguments(env, length(group(item.node, NodeKind.TypeParameters))), 0)?
         }

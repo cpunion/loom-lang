@@ -229,6 +229,17 @@ test fn inspections_navigate_static_methods_and_dynamic_concept_signatures() {
     only_type(inspection(analysis, text, "view.read()"), "dyn app.Read")
 }
 
+test fn async_method_queries_keep_logical_signatures_and_task_result_types() {
+    let text = "concept Read { async fn read(self Self) Int }\nimpl Read for Int { async fn read(self Int) Int { self } }\nasync fn main() { let view dyn Read = 7\nlet task = view.read()\nassert task.await == 7 }"
+    let analysis = accepted(input(text))
+    let call = inspection(analysis, text, "read()")
+    only_type(call, "async fn() Int")
+    let prototype = query_offset(text, "read(self Self)")
+    only_definition(call, prototype, prototype + 4)
+    only_type(inspection(analysis, text, "task ="), "Task[Int]")
+    only_type(inspection(analysis, text, "await"), "Int")
+}
+
 test fn inspections_do_not_invent_results_for_comments_punctuation_or_unchecked_bodies() {
     let text = "fn unused[T](value T) T { value }\nfn main() {\nlet 数量 = 3\n// 数量 has no reference here\nassert 数量 == 3\n}"
     let analysis = accepted(input(text))

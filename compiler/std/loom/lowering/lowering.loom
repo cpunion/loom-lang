@@ -9,6 +9,8 @@ import std.loom.typed.Local
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.Arm
+import std.loom.typed.Interface
+import std.loom.typed.Method
 import std.list.new
 import std.list.push
 import std.list.get
@@ -131,14 +133,14 @@ fn async_function(program Program, id Int) {
         result = source.result
         span = source.span
     }
-    let source_body = remap(source.body, 1)
+    let source_body = remap(program, source.body, 1)
     let captures = flags(length(locals))
     let cleanups = new[CleanupPlan]()
     cleanup_plans(source_body, locals, cleanups, captures)
     let first = state(graph)
     index = 0
     while index < length(source.preconditions) {
-        let guard = labeled(node(ExprKind.Assert, 0, source.span, -1, one(remap(get(source.preconditions, index), 1))), "precondition failed")
+        let guard = labeled(node(ExprKind.Assert, 0, source.span, -1, one(remap(program, get(source.preconditions, index), 1))), "precondition failed")
         append(graph, first, guard)
         index = index + 1
     }
@@ -337,6 +339,26 @@ fn root_wrapper(program Program, original Int) Int {
     wrapper
 }
 
+fn native_interfaces(interfaces List[Interface]) List[Interface] {
+    let lowered = new[Interface]()
+    var index = 0
+    while index < length(interfaces) {
+        let source = get(interfaces, index)
+        let methods = new[Method]()
+        var slot = 0
+        while slot < length(source.methods) {
+            let method = get(source.methods, slot)
+            let params = clone(method.params)
+            if method.is_async { push(params, 3) }
+            push(methods, Method { is_async = false name = method.name params = params result = method.result })
+            slot = slot + 1
+        }
+        push(lowered, Interface { symbol = source.symbol methods = methods })
+        index = index + 1
+    }
+    lowered
+}
+
 // Checking exposes high-level async IR. Only the native artifact boundary calls
 // this lowering; ordinary programs retain their existing representation.
 pub fn lower(source Program) Program {
@@ -344,6 +366,16 @@ pub fn lower(source Program) Program {
     var index = 0
     while index < length(source.functions) {
         any = any || get(source.functions, index).is_async
+        index = index + 1
+    }
+    index = 0
+    while !any && index < length(source.interfaces) {
+        let methods = get(source.interfaces, index).methods
+        var slot = 0
+        while !any && slot < length(methods) {
+            any = get(methods, slot).is_async
+            slot = slot + 1
+        }
         index = index + 1
     }
     if !any {
@@ -365,7 +397,7 @@ pub fn lower(source Program) Program {
         if function.is_async {
             async_function(program, index)
         } else {
-            set(program.functions, index, function_body(function, remap(function.body, 0)))
+            set(program.functions, index, function_body(function, remap(program, function.body, 0)))
         }
         index = index + 1
     }
@@ -389,7 +421,7 @@ pub fn lower(source Program) Program {
         tests = program.tests
         test_names = program.test_names
         exports = program.exports
-        interfaces = program.interfaces
+        interfaces = native_interfaces(program.interfaces)
         witnesses = program.witnesses
     }
 }

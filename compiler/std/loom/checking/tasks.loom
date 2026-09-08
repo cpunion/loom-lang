@@ -16,6 +16,10 @@ fn async_signature(env Environment, signature Signature) Bool {
     has(symbol(env, signature.symbol).node, NodeKind.Async)
 }
 
+fn call_result(env Environment, signature Signature, logical Int) Int {
+    if async_signature(env, signature) { intern(env, TypeKind.Task, -1, ints(logical)) } else { logical }
+}
+
 fn direct_task(env Environment, ty Int) Bool {
     ty >= 0 && get(env.types, ty).kind == TypeKind.Task
 }
@@ -77,8 +81,11 @@ fn contains_task(env Environment, ty Int, seen List[Int]) Bool {
     if shape.kind == TypeKind.Task {
         return true
     }
+    // Nominal arguments and dyn associated bindings are metadata, not stored
+    // Tasks. Follow actual fields/payloads; function signatures keep their
+    // separate, still-unsupported Task-call boundary here.
     var index = 0
-    while index < length(shape.arguments) {
+    while (shape.kind == TypeKind.List || shape.kind == TypeKind.Function) && index < length(shape.arguments) {
         if contains_task(env, get(shape.arguments, index), seen) {
             return true
         }
@@ -137,21 +144,21 @@ fn task_signature(env Environment, signature Signature, node Node) Result[Bool, 
     var index = 0
     while index < length(signature.params) {
         discard task_transfer_type(env, signature, get(signature.params, index), node)?
+        if asynchronous && !is_static(signature, index) && resource_type(env, signature.symbol,
+            signature.requirements, get(signature.params, index), new[Int]())? {
+            return Result.Err(failure(env, signature.symbol, node, "async parameters cannot contain MustScope resources"))
+        }
         if marker >= 0 && !is_static(signature, index) && marker_type(env, signature.symbol,
             signature.requirements, get(signature.params, index), marker, new[Int]())? {
             return Result.Err(failure(env, signature.symbol, node, "async parameters cannot contain NoSuspend values"))
         }
         index = index + 1
     }
-    let output = if asynchronous {
-        intern(env, TypeKind.Task, -1, ints(signature.result))
-    } else {
-        signature.result
-    }
+    let output = call_result(env, signature, signature.result)
     task_transfer_type(env, signature, output, node)
 }
 
-fn task_call_context(context Context, node Node, values List[Expr], output Int, asynchronous Bool, dynamic Bool) Result[Bool, Failure] {
+fn task_call_context(context Context, node Node, values List[Expr], output Int, asynchronous Bool) Result[Bool, Failure] {
     if direct_task(context.env, output) {
         discard task_transfer_type(context.env, context.signature, output, node)?
     }
@@ -164,9 +171,6 @@ fn task_call_context(context Context, node Node, values List[Expr], output Int, 
         }
         transfers = transfers || direct_task(context.env, value.ty)
         index = index + 1
-    }
-    if transfers && dynamic {
-        return Result.Err(error(context, node, "Task-bearing dynamic calls are not yet implemented; call a concrete function directly"))
     }
     if transfers && !task_owner(context) {
         return Result.Err(error(context, node, "task creation or transfer requires an async function or a direct Task parameter or return type"))
