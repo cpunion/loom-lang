@@ -44,6 +44,7 @@ record Environment {
     type_states List[Int]
     expand_data Bool
     has_refinements Bool
+    expanding_helpers Bool
     signatures List[Signature]
     pending List[Instance]
     stage_depth Int
@@ -191,7 +192,7 @@ fn bind_name(context Context, node Node, value Text, local Int, constant Int, bo
 
 pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
     let env = Environment { source = source types = new[Type]() type_states = new[Int]() expand_data = true
-        has_refinements = refinement_declarations(source) signatures = new[Signature]() pending = new[Instance]()
+        has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         associations = new[Association]() association_depth = 0
         interfaces = new[Interface]() witnesses = new[Witness]() uses = new[SlotUse]() }

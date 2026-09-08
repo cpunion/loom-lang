@@ -1,0 +1,39 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.proof.implies_with_helpers
+import std.list.get
+import std.list.length
+import std.result.Result
+
+fn predicate_calls(value Expr, depth Int) Bool {
+    if depth >= 64 { return false }
+    if value.kind == ExprKind.Call { return true }
+    var index = 0
+    while index < length(value.children) {
+        if predicate_calls(get(value.children, index), depth + 1) { return true }
+        index = index + 1
+    }
+    false
+}
+fn prepared_implication(context Context, node Node, source Int, target Int, base Int) Result[Bool, Failure] {
+    let stage = staging(predicate_scope(context.env, source, base), node)?
+    // Preparation must not recursively depend on the optional proof it is
+    // trying to obtain. Ordinary checking and mandatory proofs still run.
+    let env = Environment { source = stage.env.source types = stage.env.types type_states = stage.env.type_states expand_data = true
+        has_refinements = stage.env.has_refinements expanding_helpers = true signatures = stage.env.signatures
+        pending = stage.env.pending stage_depth = stage.env.stage_depth computations = stage.env.computations validations = stage.env.validations
+        concepts = stage.env.concepts implementations = stage.env.implementations interfaces = stage.env.interfaces
+        associations = stage.env.associations association_depth = stage.env.association_depth
+        witnesses = stage.env.witnesses uses = stage.env.uses }
+    let left_scope = predicate_context(env, source, stage.locals, 0, true)
+    let left = expr(left_scope, predicate_node(env, source), 2)?
+    let right = expr(predicate_context(env, target, stage.locals, 0, true), predicate_node(env, target), 2)?
+    Result.Ok(implies_with_helpers(prepared(left_scope)?, left, right))
+}
+fn helpers_imply(context Context, node Node, source Int, target Int, base Int) Bool {
+    if context.env.expanding_helpers { return false }
+    match prepared_implication(context, node, source, target, base) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+}

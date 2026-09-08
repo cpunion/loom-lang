@@ -632,8 +632,8 @@ fn widen(value Bounded) NonNegative { NonNegative(value) }
 
 The latter rule matches typed expressions exactly, permits regrouping/reordering
 conjuncts, and does not apply integer algebra to IEEE values. It cannot extract
-a condition hidden behind `||`. Helper calls, unproved narrowing, and exhausted
-or unsupported proofs retain ordinary checked `Result` construction. General
+a condition hidden behind `||`. Unproved narrowing and exhausted or unsupported
+proofs retain ordinary checked `Result` construction. General
 Float postcondition reasoning remains unsupported.
 
 Construction also consumes already established facts about an immutable scalar
@@ -672,8 +672,16 @@ optional evaluation retain the single runtime construction boundary. A fault
 during optional folding is not proof of validity or rejection; ordinary runtime
 fault behavior remains. Explicit `comptime` faults still reject compilation.
 
-Shared-container constraints, mutable flow facts, helper-call implications and
-invariant-aware proofs over refined parameters remain open.
+Refinement-to-refinement implication also expands direct, acyclic scalar helpers
+with immutable locals and a tail expression or return. It uses each checked
+specialization in its defining scope and preserves eager arguments, unused
+calculations, short-circuit guards and helper preconditions as proof obligations.
+For example, replacing `self >= 0` above with `nonnegative(self)` can still remove
+the check when `nonnegative` returns `value >= 0`. A helper returning `true` after
+`let unused = value + 1` cannot discard a possible overflow. Unsupported helper
+control flow, indirect calls or exhausted expansion retain runtime checks.
+Required function contracts remain call-free; shared-container constraints,
+mutable flow facts and invariant-aware proofs over refined parameters remain open.
 
 `requires` is checked before the callee body. Every declared `ensures` must be
 proved; unknown or unsupported proofs reject the build, including for functions

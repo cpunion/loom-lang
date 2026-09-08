@@ -34,8 +34,12 @@ algebra. Conjuncts may regroup or reorder; `||` branches are not assumed true.
 Construction also uses immutable scalar facts from preconditions, successful
 assertions and lexical branches. The original guard remains while proved
 constructors lower directly, preserving one input evaluation. Mutable bindings,
-heap reads, cross-local relations, branch joins, helper-call implications and
-general Float reasoning remain open; unsupported proofs keep their checks.
+heap reads, cross-local relations, branch joins and general Float reasoning
+remain open; unsupported proofs keep their checks. Refinement-to-refinement
+implication can expand direct acyclic scalar helpers with immutable locals,
+preserving evaluated arguments, unused calculations, guarded preconditions and
+checked arithmetic. Helper loops, mutation and indirect calls remain unsupported
+for this optional proof; they do not become proof assumptions.
 
 Structural tuples support positional access and plain-name `let`/`var`
 destructuring, including nested types and `List`/`Result` elements. Native layout,
