@@ -27,6 +27,10 @@ fn executable_directory(path Text) Text {
     ""
 }
 
+fn checkout_source(root Text, component Text) Text {
+    join_path(join_path(root, "compiler"), component)
+}
+
 // Development stages share one checkout's std and native bridge. Never search
 // the caller's package directory or mix a cached checkpoint's source with it.
 fn compiler_checkout(invoked Text) Result[Text, Text] {
@@ -39,12 +43,19 @@ fn compiler_checkout(invoked Text) Result[Text, Text] {
             return Result.Err("cannot resolve the compiler executable; pass --std and --native-tool")
         }
     }
-    var directory = executable_directory(executable)
+    var directory = match canonicalize(executable_directory(executable)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("cannot resolve the compiler directory; pass --std and --native-tool")
+        }
+    }
     while directory != "" {
-        if tool_file(join_path(directory, "compiler/loom/loom.toml")) && tool_file(join_path(directory, "compiler/std/result/result.loom")) {
+        if tool_file(join_path(checkout_source(directory, "loom"), "loom.toml")) && tool_file(join_path(join_path(checkout_source(directory, "std"), "result"), "result.loom")) {
             return Result.Ok(directory)
         }
-        let parent = match canonicalize(join_path(directory, "..")) {
+        // Canonical Windows paths are verbatim: neither '/' nor '..' may be
+        // appended expecting the OS to normalize them.
+        let parent = match canonicalize(executable_directory(directory)) {
             Result.Ok(value) => value
             Result.Err(_) => {
                 return Result.Err("cannot locate the development checkout; pass --std and --native-tool")
@@ -70,7 +81,7 @@ fn development_tools(invoked Text, standard Text, native Text, needs_native Bool
     let std_root = if standard != "" {
         standard
     } else {
-        join_path(root, "compiler/std")
+        checkout_source(root, "std")
     }
     var native_tool = native
     if needs_native && native_tool == "" {
