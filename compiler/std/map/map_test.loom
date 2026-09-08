@@ -1,0 +1,107 @@
+import std.text.concat
+import std.int.to_text
+
+record Collision { id Int }
+impl Equal for Collision {
+    fn equals(self Collision, other Collision) Bool { self.id == other.id }
+}
+impl Hash for Collision {
+    fn hash(self Collision) Int { -1 }
+}
+
+test fn collisions_replacement_removal_and_rehash_preserve_aliases() {
+    let map = new[Collision, Text]()
+    let alias = map
+    var index = 0
+    while index < 6 {
+        discard insert(map, Collision { id = index }, "initial")
+        index = index + 1
+    }
+    discard insert(alias, Collision { id = 5 }, "replaced")
+    assert std.list.length(std.list.get(map.state.cells, 0).slots) == 8
+    index = 0
+    while index < 5 {
+        discard remove(map, Collision { id = index })
+        index = index + 1
+    }
+    discard insert(alias, Collision { id = 6 }, "compacted")
+    assert std.list.get(map.state.cells, 0).used == 2
+    assert std.list.length(std.list.get(map.state.cells, 0).slots) == 8
+    clear(alias)
+    index = 0
+    while index < 80 {
+        assert match insert(map, Collision { id = index }, concat("item-", to_text(index))) {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        index = index + 1
+    }
+    assert length(alias) == 80
+    let capacity = std.list.length(std.list.get(map.state.cells, 0).slots)
+    assert match insert(alias, Collision { id = 40 }, "updated") {
+        Option.Some(previous) => previous == "item-40"
+        Option.None => false
+    }
+    assert std.list.length(std.list.get(map.state.cells, 0).slots) == capacity
+    assert length(map) == 80
+    index = 0
+    while index < 80 {
+        if index != 40 {
+            assert match remove(alias, Collision { id = index }) {
+                Option.Some(previous) => previous == concat("item-", to_text(index))
+                Option.None => false
+            }
+        }
+        index = index + 1
+    }
+    assert length(map) == 1 && contains(map, Collision { id = 40 })
+    assert !contains(map, Collision { id = 79 })
+    assert match remove(map, Collision { id = 79 }) { Option.None => true, Option.Some(_) => false }
+    index = 80
+    while index < 180 {
+        discard insert(alias, Collision { id = index }, to_text(index))
+        index = index + 1
+    }
+    assert length(map) == 101
+    assert match get(map, Collision { id = 40 }) { Option.Some(value) => value == "updated", Option.None => false }
+    assert match get(map, Collision { id = 179 }) { Option.Some(value) => value == "179", Option.None => false }
+    clear(alias)
+    assert is_empty(map)
+    assert !contains(map, Collision { id = 40 })
+    discard insert(map, Collision { id = 1 }, "fresh")
+    assert contains(alias, Collision { id = 1 })
+}
+
+test fn entry_snapshot_keeps_shared_values_without_sharing_map_storage() {
+    let map = new[Text, List[Int]]()
+    let values = std.list.new[Int]()
+    push(values, 7)
+    discard insert(map, concat("ke", "y"), values)
+    let snapshot = entries(map)
+    let saved_keys = keys(map)
+    assert std.list.length(snapshot) == 1
+    assert std.list.length(saved_keys) == 1
+    assert std.list.get(snapshot, 0).0 == "key"
+    push(values, 9)
+    clear(map)
+    assert std.list.get(saved_keys, 0) == "key"
+    assert std.list.length(std.list.get(snapshot, 0).1) == 2
+    assert std.list.get(std.list.get(snapshot, 0).1, 1) == 9
+    assert is_empty(map)
+}
+
+fn map_computation() Int {
+    let map = new[Int, Int]()
+    discard insert(map, -9223372036854775807 - 1, 3)
+    discard insert(map, 9223372036854775807, 5)
+    discard insert(map, 0, 7)
+    discard remove(map, 0)
+    let first = match get(map, -9223372036854775807 - 1) { Option.Some(value) => value, Option.None => 0 }
+    let last = match get(map, 9223372036854775807) { Option.Some(value) => value, Option.None => 0 }
+    first + last + length(map)
+}
+
+test fn native_and_compile_time_maps_agree() {
+    assert comptime { map_computation() } == 10
+    assert map_computation() == 10
+}

@@ -339,6 +339,11 @@ timings; local variables remain conservatively rooted for the function.
   comparisons and O(n) scratch storage. The comparator must remain a consistent
   strict weak order; the compiler does not prove this requirement. Directory
   enumeration reuses this sorter instead of maintaining a separate algorithm.
+- Source `std.map.Map[K Equal + Hash, V]` and `std.set.Set[T Equal + Hash]`
+  provide shared hash collections over the existing List/record/enum mechanisms.
+  Growth and clear preserve aliases; enumeration returns fresh outer Lists with
+  shared elements and unspecified order. There are no map/set runtime intrinsics.
+  See [hash collections](#hash-collections) for key laws and the minimal API.
 - Source `std.option` and `std.result` provide `map`, `and_then`, and
   `unwrap_or_else`; Result also provides `map_err`. The selected branch invokes
   its callback once, while the other branch preserves its payload without
@@ -441,6 +446,55 @@ two or more plain names with exact arity; nested patterns, wildcards, and
 parallel reassignment are not implemented. Copying a tuple shares its managed
 fields just as copying a record does; compile-time results construct fresh graphs
 while preserving internal sharing.
+
+## Hash collections
+
+`std.map` exports `new`, `length`, `is_empty`, `contains`, `get`, `insert`,
+`remove`, `clear`, `keys`, and `entries`. Get returns `Option[V]`; insert/remove return
+the previous value, or `None` for an absent key. Replacing a value keeps the
+original key. `std.set` provides membership/count/mutation operations and
+a `values` snapshot. Set insert/remove return whether membership
+changed. Qualify zero-argument `new` when importing multiple container factories.
+
+```loom
+import std.map.new
+import std.map.insert
+import std.map.get
+import std.option.Option
+
+fn main() {
+    let counts = new[Text, Int]()
+    let alias = counts
+    discard insert(alias, "Loom", 2)
+    assert match get(counts, "Loom") {
+        Option.Some(count) => count == 2
+        Option.None => false
+    }
+}
+```
+
+Keys explicitly implement `std.equal.Equal` (`equals(self, other) Bool`) and
+`std.hash.Hash` (`hash(self) Int`). Int, Bool and Text supply implementations;
+Text compares and hashes UTF-8 bytes without normalization. Float deliberately
+does not: ordinary NaN equality is not reflexive. Custom keys must provide an
+equivalence relation, equal hashes for equal keys, and stable, side-effect-free
+hash/equality behavior. Do not mutate key data affecting these methods while
+stored. The compiler checks the concept signatures, not these algebraic laws.
+
+Tables use open addressing, tombstones and geometric growth. Lookup/mutation
+are expected amortized O(1) under a well-distributed hash, not worst-case O(1).
+The built-in hash is deterministic and noncryptographic, without adversarial
+collision protection or a persistent hash format. Enumeration scans capacity;
+clear releases the table through shared state. Private nominal storage prevents
+cross-package access to table internals. Snapshots isolate the outer List, not
+shared keys/values; mutation is not thread-safe. No iterator invalidation or
+concurrent-access protocol is introduced.
+
+The [collection example](examples/collections/main.loom) combines user-defined
+managed keys, shared List values, alias mutation and a compile-time-created map.
+`loom test compiler/std/map`, `loom test compiler/std/set`, and the example use
+the same source implementation; the native gate also runs the example with
+collection before every allocation.
 
 ## Concepts
 

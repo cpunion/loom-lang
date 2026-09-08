@@ -1,0 +1,19 @@
+// Implementations must be reflexive, symmetric, and transitive. Float is not
+// implemented: its ordinary equality is not reflexive for NaN.
+pub concept Equal {
+    fn equals(self Self, other Self) Bool
+}
+
+impl Equal for Int {
+    fn equals(self Int, other Int) Bool { self == other }
+}
+
+impl Equal for Bool {
+    fn equals(self Bool, other Bool) Bool { self == other }
+}
+
+impl Equal for Text {
+    fn equals(self Text, other Text) Bool { self == other }
+}
+
+pub fn equals[T Equal](left T, right T) Bool { left.equals(right) }

@@ -1,0 +1,58 @@
+import std.list.length
+import std.list.get
+import std.list.push
+
+test fn growth_duplicates_and_removal() {
+    let numbers = std.set.new[Int]()
+    assert is_empty(numbers)
+    var index = 0
+    while index < 80 {
+        assert insert(numbers, index)
+        assert !insert(numbers, index)
+        index = index + 1
+    }
+    assert length(numbers) == 80
+    index = 0
+    while index < 80 {
+        assert contains(numbers, index)
+        assert remove(numbers, index)
+        assert !remove(numbers, index)
+        index = index + 1
+    }
+    assert is_empty(numbers)
+    assert insert(numbers, -1)
+    assert contains(numbers, -1)
+}
+
+test fn aliases_share_mutations_and_values_are_a_snapshot() {
+    let numbers = std.set.new[Int]()
+    let alias = numbers
+    assert insert(numbers, 10)
+    assert insert(alias, 20)
+    let snapshot = values(numbers)
+    assert std.list.length(snapshot) == 2
+    assert std.list.get(snapshot, 0) + std.list.get(snapshot, 1) == 30
+    std.list.push(snapshot, 30)
+    assert !contains(numbers, 30)
+    clear(alias)
+    assert is_empty(numbers)
+    assert std.list.length(snapshot) == 3
+    assert std.list.get(snapshot, 0) + std.list.get(snapshot, 1) == 30
+    assert insert(alias, 40)
+    assert contains(numbers, 40)
+}
+
+test fn text_and_bool_keys_use_their_conformances() {
+    let names = std.set.new[Text]()
+    assert insert(names, "loom")
+    assert !insert(names, "loom")
+    assert insert(names, "")
+    assert remove(names, "loom")
+    assert !contains(names, "loom")
+    assert contains(names, "")
+    let flags = std.set.new[Bool]()
+    assert insert(flags, true)
+    assert insert(flags, false)
+    assert !insert(flags, true)
+    assert length(flags) == 2
+}
