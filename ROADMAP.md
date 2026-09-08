@@ -149,10 +149,18 @@ actual calls preserve owner requirements, creation locations and one-shot transf
 Native callbacks remain one code pointer. See the
 [callback example](compiler/examples/task_callbacks).
 
-The next async gates are Task-bearing aggregates,
+Task-bearing tuples and records now support whole-value transfer, independent
+field consumption and tuple destructuring. Async calls adopt every Task field;
+completed producers retain all returned subtrees until extraction. Ordinary
+metadata remains readable after Task fields transfer. See the
+[aggregate example](compiler/examples/task_aggregates).
+
+The next async gates are Task-bearing Lists/enums,
 socket readiness adapters, general worker
 operations and joins. Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
+Join APIs need multi-task completion observation: sequential awaits in input
+order alone cannot provide prompt cancellation when a different child faults.
 
 Extend the self-hosted path with the remaining accepted capabilities:
 

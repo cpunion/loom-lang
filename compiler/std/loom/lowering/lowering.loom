@@ -149,19 +149,7 @@ fn async_function(program Program, callbacks List[Int], id Int) {
             again = -1
         })
     finish(graph, output.state, Exit.Complete, output.expression, new[Edge](), new[Arm]())
-    if get(program.types, source.result).kind == TypeKind.Task {
-        index = 0
-        while index < length(graph.states) {
-            let current = get(graph.states, index)
-            if current.exit == Exit.Complete {
-                // Evaluate the returned value and its lexical cleanup before
-                // marking it. The runtime hands it off only when extracted.
-                finish(graph, index, Exit.Complete,
-                    operation("task_return", source.result, source.span, one(current.value)), current.edges, current.arms)
-            }
-            index = index + 1
-        }
-    }
+    task_results(program, graph)
     let live = flows(graph)
     let needed = flags(length(graph.locals))
     index = 0
@@ -282,26 +270,29 @@ fn async_function(program Program, callbacks List[Int], id Int) {
     push(params, 3)
     let create = operation("task_create", task, source.span, values)
     let body = new[Expr]()
+    let transfers = new[Expr]()
     var owner = -1
     index = 0
     while index < length(source.params) {
         let parameter = get(source.params, index)
-        if get(program.types, parameter).kind == TypeKind.Task {
-            if owner < 0 {
-                owner = length(constructor_locals)
-                push(constructor_locals, Local {
-                        name = ""
-                        ty = task
-                        mutable = false
-                        is_scoped = false
-                    })
-                push(body, node(ExprKind.Let, 0, source.span, owner, one(create)))
-            }
-            push(body, operation("task_adopt", 0, source.span,
-                    pair(node(ExprKind.Local, task, source.span, owner, new[Expr]()),
-                        node(ExprKind.Local, parameter, source.span, index, new[Expr]()))))
-        }
+        task_members(program.types, node(ExprKind.Local, parameter, source.span, index, new[Expr]()), transfers)
         index = index + 1
+    }
+    if length(transfers) > 0 {
+        owner = length(constructor_locals)
+        push(constructor_locals, Local {
+                name = ""
+                ty = task
+                mutable = false
+                is_scoped = false
+            })
+        push(body, node(ExprKind.Let, 0, source.span, owner, one(create)))
+        index = 0
+        while index < length(transfers) {
+            push(body, operation("task_adopt", 0, source.span,
+                    pair(node(ExprKind.Local, task, source.span, owner, new[Expr]()), get(transfers, index))))
+            index = index + 1
+        }
     }
     push(body, if owner < 0 {
             create

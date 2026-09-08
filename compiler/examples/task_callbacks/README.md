@@ -15,7 +15,7 @@ body starts only when scheduled.
 
 Function values contain code, not pending Tasks. They can be copied, returned,
 stored in records/Lists, and kept across awaits. Invoking them still requires an
-async function or a synchronous helper with a direct Task parameter/result.
+async function or a synchronous helper with a Task-bearing parameter/result.
 Actual Task arguments and results must be transferred or awaited exactly once.
 
 The example covers contextual generic references, returned callbacks, function

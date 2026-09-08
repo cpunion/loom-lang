@@ -23,7 +23,7 @@ fairness guarantee.
 Direct Task parameters/returns, generic forwarding and nested Task results now
 preserve one-shot obligations. Async callees adopt argument subtrees; completed
 producers retain Task-valued results until extraction by the actual consumer.
-Sync helpers expose a direct Task parameter/result and use their caller's owner.
+Sync helpers expose a Task-bearing parameter/result and use their caller's owner.
 Async concept/impl methods now share the same constructor/resume path through
 concrete, generic and dynamic calls. Implementations must match the declared async
 effect. Default methods, associated results and type/comptime method parameters
@@ -39,8 +39,16 @@ indirect creation location. Only Task-returning callback signatures gain a priva
 label argument; synchronous factories use one adapter per referenced target.
 Ordinary callbacks retain their ABI. Compile-time Task references and capturing
 closures remain unsupported. See the [callback example](../../compiler/examples/task_callbacks).
-Socket adapters, general worker operations, joins and Task-bearing aggregates
-remain unfinished.
+Tuples and records now carry one-shot Task fields, including nested fields,
+generic forwarding and callback/dynamic signatures. Whole-value reads transfer
+all fields; field reads and tuple destructuring track each Task independently.
+Ordinary metadata remains readable. Async constructors adopt all argument Tasks;
+typed result projections mark every returned subtree before completion. The runtime
+retains these in its existing child set until extraction, using a count and member
+flag rather than another allocation. Cancellation drains all children before parent
+cleanup. See the [aggregate example](../../compiler/examples/task_aggregates).
+Socket adapters, general worker operations, joins and Task-bearing Lists/enums
+remain unfinished; tuple transfer does not implement tuple-await sugar.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;

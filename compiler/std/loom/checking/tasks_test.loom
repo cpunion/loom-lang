@@ -119,15 +119,15 @@ test fn task_transfers_reject_unused_parameters_duplicate_arguments_and_hidden_c
 
 test fn task_owner_requirements_cannot_escape_through_function_or_compile_time_values() {
     let prefix = "async fn item() Int { 7 }\nfn factory() Task[Int] { item() }\nfn pass[T](value T) T { value }\n"
-    let owner = "task creation or transfer requires an async function or a direct Task parameter or return type"
+    let owner = "task creation or transfer requires an async function or a Task-bearing parameter or return type"
     task_rejected(concat(prefix, "fn main() { let task = factory() }"), owner)
     task_rejected(concat(prefix, "fn sink(task Task[Int]) { sink(task) }\nfn main() { sink(item()) }"), owner)
     discard accepted(concat(prefix, "fn main() { let callback = factory\ndiscard callback }"))
     task_rejected(concat(prefix, "fn main() { discard comptime { pass[Task[Int]] } }"), "compile-time evaluation cannot transfer tasks")
     rejects(concat(prefix, "fn ignored(value List[Task[Int]]) {}"))
-    task_rejected("fn empty[T]() List[T] { [] }\nfn unused() { discard empty[Task[Int]]() }", "storing tasks in aggregates is not yet implemented")
+    task_rejected("fn empty[T]() List[T] { [] }\nfn unused() { discard empty[Task[Int]]() }", "storing tasks in lists or enums is not yet implemented")
     rejects(concat(prefix, "fn ignored(value Task[List[Task[Int]]]) Task[List[Task[Int]]] { value }"))
-    rejects(concat(prefix, "record Held { task Task[Int] }\nfn ignored(value Task[Held]) Task[Held] { value }"))
+    discard accepted(concat(prefix, "record Held { task Task[Int] }\nfn forward_held(value Task[Held]) Task[Held] { value }"))
     discard accepted(concat(prefix, "concept Factory { fn create(self Self) Task[Int] }\nimpl Factory for Int { fn create(self Int) Task[Int] { factory() } }\nasync fn main() { let provider dyn Factory = 1\ndiscard provider.create().await }"))
     rejects(concat(prefix, "async fn main() { discard comptime { factory() } }"))
     resource_reject(concat(resource_header(), "async fn acquire() Handle { make([0]) }"))

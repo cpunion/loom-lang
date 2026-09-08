@@ -31,7 +31,7 @@ test fn async_method_effects_and_task_obligations_cannot_be_erased() {
         "implementation method signature does not match its concept")
     let prefix = concat(async_method_header(), "fn source() dyn Source[Item = Int] { Number { value = 7 } }\n")
     task_rejected(concat(prefix, "fn main() { let pending = source().read() }"),
-        "task creation or transfer requires an async function or a direct Task parameter or return type")
+        "task creation or transfer requires an async function or a Task-bearing parameter or return type")
     rejects(concat(prefix, "async fn main() { discard source().read() }"))
     rejects(concat(prefix, "async fn main() { let pending = source().read()\ndiscard source().forward(pending).await\ndiscard pending.await }"))
     rejects(concat(prefix, "async fn main() { defer { discard source().read().await } }"))

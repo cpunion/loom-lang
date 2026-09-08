@@ -12,7 +12,7 @@ test fn task_callbacks_infer_async_results_and_store_code_not_obligations() {
 
 test fn indirect_task_calls_preserve_owner_and_one_shot_boundaries() {
     let prefix = task_callback_header()
-    let owner = "task creation or transfer requires an async function or a direct Task parameter or return type"
+    let owner = "task creation or transfer requires an async function or a Task-bearing parameter or return type"
     task_rejected(concat(prefix, "fn main() { let callback = item[Int]\ndiscard callback(1) }"), owner)
     task_rejected(concat(prefix, "fn hidden(callback fn() Task[Int]) { let task = callback() }"), owner)
     task_rejected(concat(prefix, "record Hook { call fn() Task[Int] }\nfn hidden(hook Hook) { let task = hook.call() }"), owner)

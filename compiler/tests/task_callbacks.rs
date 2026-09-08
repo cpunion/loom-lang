@@ -1,33 +1,6 @@
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output, Stdio},
-    thread,
-    time::{Duration, Instant},
-};
+use std::fs;
 mod common;
-use common::success;
-
-fn run(executable: &Path) -> Output {
-    let mut child = Command::new(executable)
-        .env("LOOM_GC_STRESS", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let limit = Instant::now() + Duration::from_secs(30);
-    while child.try_wait().unwrap().is_none() {
-        if Instant::now() >= limit {
-            child.kill().unwrap();
-            panic!(
-                "callback tasks failed to drain: {:?}",
-                child.wait_with_output()
-            );
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
-    child.wait_with_output().unwrap()
-}
+use common::{run_tasks as run, success};
 
 #[test]
 fn task_callbacks_use_native_pointers_through_storage_and_suspension() {

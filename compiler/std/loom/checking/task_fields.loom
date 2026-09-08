@@ -1,0 +1,89 @@
+// Only stored value fields contribute obligations. Function signatures and
+// nominal arguments are metadata; shared Lists need a separate transfer API.
+fn task_width(env Environment, ty Int) Int {
+    if ty <= 5 {
+        return 0
+    }
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Task {
+        return 1
+    }
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+        return 0
+    }
+    var width = 0
+    var index = 0
+    while index < length(shape.fields) {
+        width = width + task_width(env, get(shape.fields, index).ty)
+        index = index + 1
+    }
+    width
+}
+
+fn task_value(env Environment, ty Int) Bool {
+    task_width(env, ty) > 0
+}
+
+fn task_storage(env Environment, ty Int) Bool {
+    if ty <= 5 {
+        return true
+    }
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Task {
+        return true
+    }
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+        return !contains_task(env, ty, new[Int]())
+    }
+    var index = 0
+    while index < length(shape.fields) {
+        if !task_storage(env, get(shape.fields, index).ty) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn task_field_offset(env Environment, ty Int, field Int) Int {
+    let fields = get(env.types, ty).fields
+    var offset = 0
+    var index = 0
+    while index < field {
+        offset = offset + task_width(env, get(fields, index).ty)
+        index = index + 1
+    }
+    offset
+}
+
+fn task_take(flow TaskFlow, value Expr, start Int, width Int) Result[Bool, Failure] {
+    var index = start
+    while index < start + width {
+        if get(flow.locals, index) == 0 {
+            return Result.Err(task_error(flow, value, "this task was already awaited or transferred"))
+        }
+        set(flow.locals, index, 0)
+        index = index + 1
+    }
+    Result.Ok(width > 0)
+}
+
+fn task_projection(flow TaskFlow, value Expr) Result[Bool, Failure] {
+    var root = value
+    var offset = 0
+    while root.kind == ExprKind.Field {
+        let receiver = get(root.children, 0)
+        offset = offset + task_field_offset(flow.context.env, receiver.ty, root.index)
+        root = receiver
+    }
+    let width = task_width(flow.context.env, value.ty)
+    if root.kind == ExprKind.Local {
+        return task_take(flow, value, get(flow.offsets, root.index) + offset, width)
+    }
+    let available = task_width(flow.context.env, root.ty)
+    if width != available {
+        return Result.Err(task_error(flow, value, "bind the aggregate before selecting a field; this projection would discard other tasks"))
+    }
+    discard task_expression(flow, root, available > 0)?
+    Result.Ok(width > 0)
+}

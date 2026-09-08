@@ -16,6 +16,8 @@ import std.result.Result
 record TaskFlow {
     context Context
     locals List[Int]
+    // Flat Task leaves per local; no fixed tuple-size or machine-word limit.
+    offsets List[Int]
     // Task obligations and NoSuspend operands awaiting their enclosing operation.
     pending List[Int]
     no_suspend Int
@@ -48,6 +50,7 @@ fn task_branch(flow TaskFlow) TaskFlow {
     TaskFlow {
         context = flow.context
         locals = task_states(flow.locals)
+        offsets = flow.offsets
         pending = task_states(flow.pending)
         no_suspend = flow.no_suspend
         loop_entry = flow.loop_entry
@@ -105,8 +108,12 @@ fn task_arguments(flow TaskFlow, value Expr) Result[Bool, Failure] {
     let suspended = get(flow.pending, 1)
     var index = 0
     while index < length(value.children) {
-        let argument = get(value.children, index)
-        let transferred = task_expression(flow, argument, direct_task(flow.context.env, argument.ty))?
+        let argument = if value.kind == ExprKind.Record {
+            get(get(value.children, index).children, 0)
+        } else {
+            get(value.children, index)
+        }
+        let transferred = task_expression(flow, argument, task_value(flow.context.env, argument.ty))?
         if !argument.falls {
             return Result.Ok(false)
         }
@@ -120,7 +127,7 @@ fn task_arguments(flow TaskFlow, value Expr) Result[Bool, Failure] {
     }
     set(flow.pending, 0, before)
     set(flow.pending, 1, suspended)
-    Result.Ok(direct_task(flow.context.env, value.ty))
+    Result.Ok(task_value(flow.context.env, value.ty))
 }
 
 // Eager operands retain earlier values through later operands. Blocks and
@@ -145,12 +152,12 @@ fn task_operands(flow TaskFlow, values List[Expr]) Result[Bool, Failure] {
 
 fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure] {
     let shape = get(flow.context.env.types, value.ty)
-    let task = shape.kind == TypeKind.Task
-    if value.kind == ExprKind.Suspend && task {
+    let task = task_value(flow.context.env, value.ty)
+    if value.kind == ExprKind.Suspend && shape.kind == TypeKind.Task {
         return Result.Err(task_error(flow, value, "private async intrinsics must be awaited directly"))
     }
     if !task && contains_task(flow.context.env, value.ty, new[Int]()) {
-        return Result.Err(task_error(flow, value, "storing tasks in aggregates is not yet implemented"))
+        return Result.Err(task_error(flow, value, "storing tasks in lists or enums is not yet implemented"))
     }
     if flow.cleanup &&(task || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend) {
         return Result.Err(task_error(flow, value, "task creation, reading or transfer in cleanup is not yet implemented"))
@@ -159,11 +166,10 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         return Result.Err(task_error(flow, value, "a task must be awaited or transferred; it cannot be copied or discarded"))
     }
     if value.kind == ExprKind.Local && task {
-        if get(flow.locals, value.index) == 0 {
-            return Result.Err(task_error(flow, value, "this task was already awaited or transferred"))
-        }
-        set(flow.locals, value.index, 0)
-        return Result.Ok(true)
+        return task_take(flow, value, get(flow.offsets, value.index), task_width(flow.context.env, value.ty))
+    }
+    if value.kind == ExprKind.Field && task_value(flow.context.env, get(value.children, 0).ty) {
+        return task_projection(flow, value)
     }
     if value.kind == ExprKind.Await {
         discard task_expression(flow, get(value.children, 0), true)?
@@ -181,23 +187,27 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     }
     // A deferred call retains its runtime arguments during abstract checking.
     // Other Deferred expressions have no children and cannot hide transfers.
-    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall || value.kind == ExprKind.IndirectCall || value.kind == ExprKind.Deferred {
+    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall || value.kind == ExprKind.IndirectCall || value.kind == ExprKind.Deferred || value.kind == ExprKind.Record {
         return task_arguments(flow, value)
     }
     if value.kind == ExprKind.Let || value.kind == ExprKind.Assign {
         let destination = get(flow.context.locals, value.index).ty
-        let takes_task = get(flow.context.env.types, destination).kind == TypeKind.Task
+        let takes_task = task_value(flow.context.env, destination)
         discard task_sequence(flow, value.children, takes_task)?
         if value.falls && takes_task {
-            if get(flow.locals, value.index) != 0 {
-                return Result.Err(task_error(flow, value, "cannot overwrite a live task; await or transfer it first"))
+            var index = get(flow.offsets, value.index)
+            while index < get(flow.offsets, value.index + 1) {
+                if get(flow.locals, index) != 0 {
+                    return Result.Err(task_error(flow, value, "cannot overwrite a live task; await or transfer it first"))
+                }
+                set(flow.locals, index, 1)
+                index = index + 1
             }
-            set(flow.locals, value.index, 1)
         }
         return Result.Ok(false)
     }
     if value.kind == ExprKind.Return {
-        discard task_sequence(flow, value.children, direct_task(flow.context.env, flow.context.signature.result))?
+        discard task_sequence(flow, value.children, task_value(flow.context.env, flow.context.signature.result))?
         discard tasks_consumed(flow, value)?
         return Result.Ok(false)
     }
@@ -275,6 +285,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         let branch = TaskFlow {
             context = flow.context
             locals = task_states(before)
+            offsets = flow.offsets
             pending = task_states(flow.pending)
             no_suspend = flow.no_suspend
             loop_entry = before
@@ -298,6 +309,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         let branch = TaskFlow {
             context = flow.context
             locals = task_states(flow.locals)
+            offsets = flow.offsets
             pending = task_states(flow.pending)
             no_suspend = flow.no_suspend
             loop_entry = flow.loop_entry
@@ -346,20 +358,27 @@ fn task_flow(context Context, function Function) Result[Bool, Failure] {
     var parameters = false
     var index = 0
     while index < length(function.params) {
-        parameters = parameters || direct_task(context.env, get(function.params, index))
+        parameters = parameters || task_value(context.env, get(function.params, index))
         index = index + 1
     }
-    if !parameters && !direct_task(context.env, function.result) && !task_nodes(function.body, context.env, new[Int]()) {
+    if !parameters && !task_value(context.env, function.result) && !task_nodes(function.body, context.env, new[Int]()) {
         return Result.Ok(true)
     }
     let locals = new[Int]()
+    let offsets = ints(0)
     index = 0
     while index < length(function.locals) {
-        push(locals, if index < length(function.params) && direct_task(context.env, get(function.params, index)) {
-                1
-            } else {
-                0
-            })
+        let width = task_width(context.env, get(function.locals, index).ty)
+        var field = 0
+        while field < width {
+            push(locals, if index < length(function.params) {
+                    1
+                } else {
+                    0
+                })
+            field = field + 1
+        }
+        push(offsets, length(locals))
         index = index + 1
     }
     let pending = ints(0)
@@ -367,6 +386,7 @@ fn task_flow(context Context, function Function) Result[Bool, Failure] {
     let flow = TaskFlow {
         context = context
         locals = locals
+        offsets = offsets
         pending = pending
         no_suspend = if function.is_async {
             resource_concept(context.env, "NoSuspend")
@@ -377,7 +397,7 @@ fn task_flow(context Context, function Function) Result[Bool, Failure] {
         loop_pending = 0
         cleanup = false
     }
-    discard task_expression(flow, function.body, direct_task(context.env, function.result))?
+    discard task_expression(flow, function.body, task_value(context.env, function.result))?
     if function.body.falls {
         discard tasks_consumed(flow, function.body)?
     }

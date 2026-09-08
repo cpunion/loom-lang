@@ -15,19 +15,44 @@ fn pure_intrinsic(name Text) Bool {
     name == "bytes_new" || name == "bytes_len" || name == "bytes_push" || name == "bytes_get" || name == "bytes_set" ||
     name == "bytes_utf8" || name == "bytes_text_copy"
 }
+
 fn task_type(state State, ty Int) Bool {
-    ty >= 0 && ty < length(state.program.types) && get(state.program.types, ty).kind == TypeKind.Task
+    if ty < 0 || ty >= length(state.program.types) {
+        return false
+    }
+    let shape = get(state.program.types, ty)
+    if shape.kind == TypeKind.Task {
+        return true
+    }
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+        return false
+    }
+    var index = 0
+    while index < length(shape.fields) {
+        if task_type(state, get(shape.fields, index).ty) {
+            return true
+        }
+        index = index + 1
+    }
+    false
 }
+
 fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) Result[Bool, Failure] {
     if target < 0 || target >= length(state.program.functions) {
         return Result.Err(failure(expr, "compile-time call has no checked function body"))
     }
     var index = 0
-    while index < length(seen) && get(seen, index) != target { index = index + 1 }
-    if index < length(seen) { return Result.Ok(true) }
+    while index < length(seen) && get(seen, index) != target {
+        index = index + 1
+    }
+    if index < length(seen) {
+        return Result.Ok(true)
+    }
     push(seen, target)
     let function = get(state.program.functions, target)
-    if function.is_async { return Result.Err(failure(expr, "compile-time evaluation cannot create or await tasks")) }
+    if function.is_async {
+        return Result.Err(failure(expr, "compile-time evaluation cannot create or await tasks"))
+    }
     if task_type(state, function.result) {
         return Result.Err(failure(expr, "compile-time evaluation cannot transfer tasks"))
     }
@@ -55,6 +80,7 @@ fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) 
     }
     Result.Ok(true)
 }
+
 fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Bool, Failure] {
     if expr.kind == ExprKind.TaskCall || expr.kind == ExprKind.Await || expr.kind == ExprKind.Suspend {
         return Result.Err(failure(expr, "compile-time evaluation cannot create or await tasks"))
@@ -62,17 +88,21 @@ fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Boo
     if task_type(state, expr.ty) {
         return Result.Err(failure(expr, "compile-time evaluation cannot transfer tasks"))
     }
-    if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
+    if depth >= 256 {
+        return Result.Err(failure(expr, "compile-time expression depth exhausted"))
+    }
     discard spend(state, expr, 0, 1)?
     if (expr.kind == ExprKind.Break || expr.kind == ExprKind.Continue) && loops == 0 {
         return Result.Err(failure(expr, "compile-time loop control escaped its loop"))
     }
-    if expr.kind == ExprKind.Deferred { return Result.Err(failure(expr, "compile-time expression still has unresolved types")) }
+    if expr.kind == ExprKind.Deferred {
+        return Result.Err(failure(expr, "compile-time expression still has unresolved types"))
+    }
     if expr.ty >= 0 && expr.ty < length(state.program.types) && get(state.program.types, expr.ty).kind == TypeKind.Associated {
         return Result.Err(failure(expr, "compile-time expression still has an unresolved associated type"))
     }
     if state.partial && expr.kind != ExprKind.Integer && expr.kind != ExprKind.Float && expr.kind != ExprKind.Bool && expr.kind != ExprKind.Text &&
-        expr.kind != ExprKind.Local && expr.kind != ExprKind.Unary && expr.kind != ExprKind.Binary && expr.kind != ExprKind.Coerce {
+    expr.kind != ExprKind.Local && expr.kind != ExprKind.Unary && expr.kind != ExprKind.Binary && expr.kind != ExprKind.Coerce {
         return Result.Err(failure(expr, "expression is not a call-free scalar constant"))
     }
     if expr.kind == ExprKind.Intrinsic && !pure_intrinsic(expr.text) {
@@ -81,13 +111,21 @@ fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Boo
     if expr.kind == ExprKind.Call || expr.kind == ExprKind.FunctionRef {
         discard scan_function(state, expr, expr.index, seen, depth)?
     }
-    if expr.kind == ExprKind.DynCall { discard scan_dynamic(state, expr, seen, depth)? }
+    if expr.kind == ExprKind.DynCall {
+        discard scan_dynamic(state, expr, seen, depth)?
+    }
     var index = 0
     while index < length(expr.children) {
         // Registration does not execute the body, but its effects still belong
         // to this computation's purity closure. Cleanup has its own loop scope.
-        let nested = if expr.kind == ExprKind.Defer || expr.kind == ExprKind.Cleanup { 0 } else {
-            if expr.kind == ExprKind.While && index == 1 { loops + 1 } else { loops }
+        let nested = if expr.kind == ExprKind.Defer || expr.kind == ExprKind.Cleanup {
+            0
+        } else {
+            if expr.kind == ExprKind.While && index == 1 {
+                loops + 1
+            } else {
+                loops
+            }
         }
         discard scan(state, get(expr.children, index), seen, depth + 1, nested)?
         index = index + 1
