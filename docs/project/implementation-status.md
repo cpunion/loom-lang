@@ -325,9 +325,15 @@ to static-parameter declarations, capturing closure parameters and variadics
 are not included in this slice.
 
 The [lexical cleanup example](../../compiler/examples/cleanup/main.loom) runs
-late-bound `defer` blocks on normal, tail, return and `Result?` exits, with LIFO
+late-bound `defer` blocks on normal, tail, return, `Result?`, `break` and `continue` exits, with LIFO
 order and managed result snapshots. Pure cleanup shares compile-time execution.
 Fault unwinding, task cancellation and `scoped`/`MustScope` remain unimplemented.
+
+Unlabeled loop control lowers directly to native branches and shares compile-time
+execution, including cleanup at the nearest loop boundary. The
+[loops example](../../compiler/examples/loops/main.loom) exercises check/build/test/run.
+General loop-invariant proofs and list literal syntax are not implemented;
+lists are currently populated through `std.list.new` and `push`.
 
 Normal compiler iteration can use a [single development rebuild](../../compiler/README.md#build-and-try-it);
 CI retains full bootstrap generation checks. The initial

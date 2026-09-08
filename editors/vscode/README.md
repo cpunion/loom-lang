@@ -47,6 +47,13 @@ diagnostic, then restore the integer. Hover over an expression for its checked
 type or use **Go to Definition** on a resolved name. Use **Format Document** or format-on-save
 to keep fields, constructors, and statements readable as you edit.
 
+For a second exercise, open [loops/main.loom](../../compiler/examples/loops/main.loom).
+Run `target/loom test compiler/examples/loops` and `target/loom run compiler/examples/loops`
+from the repository root; the program prints `8`. Change the limit from `10` to
+`4` and run it again to get `4`. Move `break` outside the loop to see its scope
+diagnostic, then restore it. Lists currently use `new` and `push`; list literals
+are not implemented.
+
 ## Behavior and tests
 
 After a 350 ms debounce, the server checks each open directory package with tests

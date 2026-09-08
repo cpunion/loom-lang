@@ -118,3 +118,13 @@ test fn proof_outcomes_never_exceed_the_path_budget() {
     }
     assert length(output) == 4096
 }
+
+test fn unsupported_loop_control_is_not_a_proved_function_exit() {
+    let yes = expression(ExprKind.Bool, 2, "true", -1, new[Expr]())
+    let stop = expression(ExprKind.Break, 0, "", -1, new[Expr]())
+    let next = expression(ExprKind.Continue, 0, "", -1, new[Expr]())
+    assert !verified(fixture(stop, new[Expr](), yes))
+    assert !verified(fixture(next, new[Expr](), yes))
+    let loop = expression(ExprKind.While, 0, "", -1, nodes(yes, stop))
+    assert !verified(fixture(loop, new[Expr](), yes))
+}

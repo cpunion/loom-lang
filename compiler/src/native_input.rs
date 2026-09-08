@@ -368,6 +368,7 @@ pub fn decode(text: &str) -> Result<c::Program> {
             types: &types,
             functions: &functions,
             source,
+            loop_depth: 0,
         };
         let params = source
             .params
@@ -446,11 +447,13 @@ fn layout(program: &c::Program, ty: Type, state: &mut [u8]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct Converter<'a> {
     program: &'a c::Program,
     types: &'a [Type],
     functions: &'a [Function],
     source: &'a Function,
+    loop_depth: usize,
 }
 
 impl Converter<'_> {
@@ -496,7 +499,7 @@ impl Converter<'_> {
         let mut statements = Vec::new();
         let mut tail = None;
         for (index, child) in node.children.iter().enumerate() {
-            if index + 1 == node.children.len() && !(12..=17).contains(&child.tag) {
+            if index + 1 == node.children.len() && !matches!(child.tag, 12..=17 | 26 | 27) {
                 tail = Some(Box::new(self.expr(child)?));
             } else {
                 statements.push(self.statement(child)?);
@@ -537,10 +540,32 @@ impl Converter<'_> {
             }
             15 => S::Assert(self.expr(self.child(node, 0, 1)?)?),
             16 => S::Discard(self.expr(self.child(node, 0, 1)?)?),
-            17 => S::While {
-                condition: self.expr(self.child(node, 0, 2)?)?,
-                body: self.block(self.child(node, 1, 2)?)?,
-            },
+            17 => {
+                let condition = self.expr(self.child(node, 0, 2)?)?;
+                let body = Self {
+                    loop_depth: self.loop_depth + 1,
+                    ..*self
+                }
+                .block(self.child(node, 1, 2)?)?;
+                S::While { condition, body }
+            }
+            26 | 27 => {
+                if self.loop_depth == 0 {
+                    return Err("checked loop control requires an enclosing loop body".into());
+                }
+                if self.ty(node.ty)? != Type::Unit
+                    || node.falls
+                    || !node.children.is_empty()
+                    || !node.arms.is_empty()
+                {
+                    return Err("invalid checked loop control".into());
+                }
+                if node.tag == 26 {
+                    S::Break
+                } else {
+                    S::Continue
+                }
+            }
             _ => S::Expr(self.expr(node)?),
         };
         Ok(c::Stmt {
@@ -981,6 +1006,58 @@ mod tests {
             children.len(),
             children.concat()
         )
+    }
+
+    #[test]
+    fn loop_control_is_childless_and_scoped_to_while_bodies() {
+        let stream = |children: &[String]| {
+            let body = node(11, 0, "", -1, children);
+            format!("loom-checked-1\n2\n0\n-1\n2\n-1\n1\n0\n0\n0\n0\n0\n0\n0\n{body}-1\n0\n1\n0\n")
+        };
+        let boolean = node(1, 1, "true", -1, &[]);
+        let loop_node = |condition: String, body: &[String]| {
+            node(17, 0, "", -1, &[condition, node(11, 0, "", -1, body)])
+        };
+        for tag in [26, 27] {
+            let control = format!("{tag}\n0\n0\n0\n0\n-1\n0\n0\n0\n");
+            let valid_loop = loop_node(boolean.clone(), std::slice::from_ref(&control));
+            let program = decode(&stream(std::slice::from_ref(&valid_loop))).unwrap();
+            let c::StmtKind::While { body, .. } = &program.functions[0].body.statements[0].kind
+            else {
+                panic!("expected while")
+            };
+            assert!(body.tail.is_none());
+            assert!(if tag == 26 {
+                matches!(body.statements[0].kind, c::StmtKind::Break)
+            } else {
+                matches!(body.statements[0].kind, c::StmtKind::Continue)
+            });
+            for invalid in [
+                vec![control.clone()],
+                vec![valid_loop, control.clone()],
+                vec![loop_node(node(11, 1, "", -1, &[control.clone()]), &[])],
+            ] {
+                assert!(
+                    decode(&stream(&invalid))
+                        .unwrap_err()
+                        .contains("enclosing loop body")
+                );
+            }
+            for invalid in [
+                node(tag, 0, "", -1, &[]), // Cannot fall through.
+                format!("{tag}\n1\n0\n0\n0\n-1\n0\n0\n0\n"),
+                format!("{tag}\n0\n0\n0\n0\n-1\n0\n1\n{boolean}0\n"),
+            ] {
+                assert!(
+                    decode(&stream(&[loop_node(boolean.clone(), &[invalid])]))
+                        .unwrap_err()
+                        .contains("invalid checked loop control")
+                );
+            }
+            // The inner condition belongs to the outer loop's body.
+            let inner = loop_node(node(11, 1, "", -1, &[control]), &[]);
+            decode(&stream(&[loop_node(boolean.clone(), &[inner])])).unwrap();
+        }
     }
 
     #[test]

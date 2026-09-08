@@ -50,7 +50,7 @@ fn predicate_context(env Environment, owner Int, locals List[Local], self_local 
     push(bindings, Binding { name = "self" local = self_local constant = -1 previous = -1 })
     Context { env = env signature = Signature { symbol = owner parameters = 0 params = ints(get(locals, self_local).ty) compile_time = new[Int]() result = 2 requirements = new[Requirement]() }
         arguments = new[Int]() constants = new[StaticValue]() locals = locals bindings = bindings head = 0
-        cleanups = new[Cleanup]() cleanup_head = -1 facts = new[Fact]() fact_head = -1 emit = emit }
+        cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2 facts = new[Fact]() fact_head = -1 emit = emit }
 }
 fn predicate_scope(env Environment, owner Int, base Int) Context {
     let locals = new[Local]()

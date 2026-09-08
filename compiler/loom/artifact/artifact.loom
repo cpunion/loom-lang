@@ -109,6 +109,7 @@ fn expression_tag(kind ExprKind) Int {
         ExprKind.Discard => 16, ExprKind.While => 17, ExprKind.If => 18, ExprKind.Match => 19
         ExprKind.Coerce => 20, ExprKind.Float => 21, ExprKind.DynBox => 22, ExprKind.DynCall => 23
         ExprKind.FunctionRef => 24, ExprKind.IndirectCall => 25
+        ExprKind.Break => 26, ExprKind.Continue => 27
         // A deferred generic branch is check-only and must be instantiated.
         ExprKind.Deferred => { assert false
             -1 }

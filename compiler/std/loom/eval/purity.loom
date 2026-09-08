@@ -15,9 +15,12 @@ fn pure_intrinsic(name Text) Bool {
     name == "bytes_new" || name == "bytes_len" || name == "bytes_push" || name == "bytes_get" || name == "bytes_set" ||
     name == "bytes_utf8" || name == "bytes_text_copy"
 }
-fn scan(state State, expr Expr, seen List[Int], depth Int) Result[Bool, Failure] {
+fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Bool, Failure] {
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
     discard spend(state, expr, 0, 1)?
+    if (expr.kind == ExprKind.Break || expr.kind == ExprKind.Continue) && loops == 0 {
+        return Result.Err(failure(expr, "compile-time loop control escaped its loop"))
+    }
     if expr.kind == ExprKind.Deferred { return Result.Err(failure(expr, "compile-time expression still has unresolved types")) }
     if expr.ty >= 0 && expr.ty < length(state.program.types) && get(state.program.types, expr.ty).kind == TypeKind.Associated {
         return Result.Err(failure(expr, "compile-time expression still has an unresolved associated type"))
@@ -45,22 +48,24 @@ fn scan(state State, expr Expr, seen List[Int], depth Int) Result[Bool, Failure]
             if function.runtime_name != "" && !pure_intrinsic(function.runtime_name) {
                 return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", function.runtime_name)))
             }
-            discard scan(state, function.body, seen, depth + 1)?
+            // A called function cannot transfer control into its caller's loop.
+            discard scan(state, function.body, seen, depth + 1, 0)?
             index = 0
             while index < length(function.preconditions) {
-                discard scan(state, get(function.preconditions, index), seen, depth + 1)?
+                discard scan(state, get(function.preconditions, index), seen, depth + 1, 0)?
                 index = index + 1
             }
             index = 0
             while index < length(function.postconditions) {
-                discard scan(state, get(function.postconditions, index), seen, depth + 1)?
+                discard scan(state, get(function.postconditions, index), seen, depth + 1, 0)?
                 index = index + 1
             }
         }
     }
     var index = 0
     while index < length(expr.children) {
-        discard scan(state, get(expr.children, index), seen, depth + 1)?
+        let nested = if expr.kind == ExprKind.While && index == 1 { loops + 1 } else { loops }
+        discard scan(state, get(expr.children, index), seen, depth + 1, nested)?
         index = index + 1
     }
     index = 0
@@ -68,7 +73,7 @@ fn scan(state State, expr Expr, seen List[Int], depth Int) Result[Bool, Failure]
         let arm = get(expr.arms, index)
         var item = 0
         while item < length(arm.body) {
-            discard scan(state, get(arm.body, item), seen, depth + 1)?
+            discard scan(state, get(arm.body, item), seen, depth + 1, loops)?
             item = item + 1
         }
         index = index + 1

@@ -23,7 +23,7 @@ pub record Local { name Text ty Int mutable Bool }
 pub enum ExprKind {
     Integer Bool Text Local Unary Binary Call Intrinsic Record Field Variant
     Block Let Assign Return Assert Discard While If Match Coerce Deferred Float DynBox DynCall
-    FunctionRef IndirectCall
+    FunctionRef IndirectCall Break Continue
 }
 // FunctionRef.index is a concrete scheduled function ID. IndirectCall children
 // are [callee, arguments...], evaluated once in source order.
