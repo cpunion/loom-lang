@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Fresh compiler processes with one OS-cache warmup, not an incremental build.
+// Fresh compiler processes; optional paired native object-cache comparison.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -12,6 +12,7 @@ let compiler = join(root, "target/loom");
 let reportPath = join(root, "target/performance/compiler.json");
 let runs = 3;
 let extended = false;
+let compareCache = false;
 let sizes = [10, 50, 200];
 const args = process.argv.slice(2);
 for (let index = 0; index < args.length; index += 1) {
@@ -22,16 +23,20 @@ for (let index = 0; index < args.length; index += 1) {
   --output path    JSON report (default: target/performance/compiler.json)
   --runs N         Fresh measured processes per case, 1..20 (default: 3)
   --extended       Add startup, test --no-run, and generated package growth
+  --compare-cache  Pair native builds with and without a warm object cache
   --sizes N,N,...  Generated helper counts, 1..512 (default: 10,50,200);
                    implies --extended, at most eight distinct sizes
 
-macOS only: one unmeasured warmup per case, warm OS caches, no incremental cache.
+macOS only: one unmeasured warmup per case, warm OS caches. --compare-cache
+also records an initial cache miss separately, then alternates measured order.
+Both variants start fresh processes, check sources, and link current artifacts.
 Generated packages exercise multiple files, an imported package, records,
 generic calls and Lists. Their tests compile without running. Native phase
 timings and OS peak RSS are reported separately. Temporary inputs are removed.`);
     process.exit(0);
   }
   if (option === "--extended") { extended = true; continue; }
+  if (option === "--compare-cache") { compareCache = true; continue; }
   const value = args[++index];
   if (!value || value.startsWith("--")) throw new Error(`${option} needs a value`);
   if (option === "--compiler") compiler = resolve(value);
@@ -86,21 +91,25 @@ const report = {
   runtimeArchiveSha256: hash(readFileSync(process.env.LOOM_RUNTIME_LIBRARY ?? join(root, "target/debug/libloom_runtime.a"))),
   nativeOptimization: process.env.LOOM_OPT_LEVEL ?? "2",
   extended,
+  compareCache,
   generatedSizes: extended ? sizes : [],
   host: { os: platform(), release: release(), arch: arch(), cpu: cpus()[0]?.model },
-  method: "fresh processes; one warmup; warmed OS caches; no incremental compiler cache",
+  method: compareCache
+    ? "fresh processes; one uncached warmup and one initial cache miss per native case; paired samples alternate uncached/cache order; sample indexes identify pairs; source checking and linking always run"
+    : "fresh processes; one warmup; warmed OS caches; no incremental compiler cache",
   wall: "elapsed around /usr/bin/time launch, including process launch and output; startup runs --version without loading a package",
   rss: "maximum RSS reported by macOS time, not a sum of simultaneous process memory",
   cases: [],
 };
 const temporary = mkdtempSync(join(root, "target/performance/run-"));
 
-function measure(mode, packagePath) {
+function measure(mode, packagePath, cache = null, expectedCache = null) {
   const nativeMode = mode === "build" || mode === "test --no-run";
   const command = [compiler, ...mode.split(" ")];
   if (packagePath) command.push(resolve(root, packagePath),
     "--std", join(root, "compiler/std"), "--native-tool", join(root, "target/debug/loom-native"));
   if (nativeMode) command.push("--output", join(temporary, "program"));
+  if (cache) command.push("--object-cache", cache);
   const started = process.hrtime.bigint();
   const result = spawnSync("/usr/bin/time", ["-l", ...command], {
     cwd: root, env: environment, encoding: "utf8", maxBuffer: 1024 * 1024,
@@ -110,18 +119,28 @@ function measure(mode, packagePath) {
   if (result.status !== 0) throw new Error(`${mode} ${packagePath} failed:\n${result.stdout}${result.stderr}`);
   const rss = result.stderr.match(/(\d+)\s+maximum resident set size/);
   if (!rss) throw new Error("missing macOS peak RSS measurement");
-  const native = result.stderr.match(/loom-native timings: decode_ms=([\d.]+) codegen_ms=([\d.]+) link_ms=([\d.]+)/);
-  if (nativeMode && !native) throw new Error("missing native phase timings; rebuild loom-native and ensure the package has tests");
+  const phases = Object.fromEntries([...result.stderr.matchAll(/^loom-native timings: (.+)$/gm)]
+    .flatMap(line => [...line[1].matchAll(/(decode|codegen|link)_ms=([\d.]+)/g)].map(field => [field[1], Number(field[2])])));
+  if (expectedCache) {
+    const markers = [...result.stderr.matchAll(/^loom cache: (.+)$/gm)].map(match => match[1]);
+    if (markers.length !== 1 || markers[0] !== expectedCache) throw new Error(`expected cache ${expectedCache}:\n${result.stderr}`);
+    if (expectedCache === "hit" && (phases.decode !== undefined || phases.codegen !== undefined ||
+        result.stderr.includes("loom-native phase: codegen"))) throw new Error("cache hit unexpectedly decoded or generated native code");
+  }
+  if (nativeMode && (!Number.isFinite(phases.link) || (expectedCache !== "hit" &&
+      (!Number.isFinite(phases.decode) || !Number.isFinite(phases.codegen))))) {
+    throw new Error("missing native phase timings; rebuild loom-native and ensure the package has tests");
+  }
   return {
     wallMs, peakRssBytes: Number(rss[1]),
-    ...(native ? { decodeMs: Number(native[1]), codegenMs: Number(native[2]), linkMs: Number(native[3]) } : {}),
+    ...(nativeMode ? { decodeMs: phases.decode ?? 0, codegenMs: phases.codegen ?? 0, linkMs: phases.link } : {}),
   };
 }
 
 function generated(size) {
   const directory = join(temporary, `growth-${size}`);
   mkdirSync(join(directory, "data"), { recursive: true });
-  writeFileSync(join(directory, "loom.toml"), 'schema = 2\nlanguage = "0.4"\n[module]\nname = "benchmark"\n');
+  writeFileSync(join(directory, "loom.toml"), '[module]\nname = "benchmark"\n');
   writeFileSync(join(directory, "data/data.loom"),
     "pub record Item { amount Int label Text }\npub fn identity[T](value T) T { value }\n");
   const calls = Array.from({ length: size }, (_, index) => `    total = step_${index}(total)`);
@@ -169,16 +188,38 @@ ${Array.from({ length: size }, (_, index) => `    assert step_${index}(0) == ${i
 
 function benchmark(name, mode, packagePath, generated) {
   measure(mode, packagePath);
-  const samples = Array.from({ length: runs }, () => measure(mode, packagePath));
-  const summary = Object.fromEntries(Object.keys(samples[0]).map(key => [key, median(samples.map(sample => sample[key]))]));
-  report.cases.push({ name, command: mode, package: packagePath, ...(generated ? { generated } : {}), median: summary, samples });
-  const number = value => value === undefined ? "—" : value.toFixed(2);
-  console.log(`| ${name} | ${mode} | ${number(summary.wallMs)} | ${number(summary.peakRssBytes / 1048576)} | ${number(summary.decodeMs)} | ${number(summary.codegenMs)} | ${number(summary.linkMs)} |`);
+  const display = (summary, variant = "—") => {
+    const number = value => value === undefined ? "—" : value.toFixed(2);
+    console.log(`| ${name} | ${mode} |${compareCache ? ` ${variant} |` : ""} ${number(summary.wallMs)} | ${number(summary.peakRssBytes / 1048576)} | ${number(summary.decodeMs)} | ${number(summary.codegenMs)} | ${number(summary.linkMs)} |`);
+  };
+  const record = (samples, extra = {}) => {
+    const summary = Object.fromEntries(Object.keys(samples[0]).map(key => [key, median(samples.map(sample => sample[key]))]));
+    report.cases.push({ name, command: mode, package: packagePath, ...(generated ? { generated } : {}), ...extra, median: summary, samples });
+    display(summary, extra.variant);
+  };
+  if (!compareCache || (mode !== "build" && mode !== "test --no-run")) {
+    record(Array.from({ length: runs }, () => measure(mode, packagePath)));
+    return;
+  }
+  const cache = join(temporary, `cache-${report.cases.length}`);
+  const firstMiss = measure(mode, packagePath, cache, "miss");
+  display(firstMiss, "initial miss (observation)");
+  const samples = [[], []];
+  const positions = [[], []];
+  for (let pair = 0; pair < runs; pair += 1) {
+    const order = pair % 2 === 0 ? [0, 1] : [1, 0];
+    for (const [position, variant] of order.entries()) {
+      samples[variant].push(measure(mode, packagePath, variant ? cache : null, variant ? "hit" : null));
+      positions[variant].push(position);
+    }
+  }
+  record(samples[0], { variant: "uncached", flags: [], samplePositions: positions[0] });
+  record(samples[1], { variant: "warm-object-cache", flags: ["--object-cache", cache], samplePositions: positions[1], firstMiss });
 }
 
 try {
-  console.log("| Case | Command | Wall ms | RSS MiB | Decode ms | Codegen ms | Link ms |");
-  console.log("| --- | --- | ---: | ---: | ---: | ---: | ---: |");
+  console.log(`| Case | Command |${compareCache ? " Variant |" : ""} Wall ms | RSS MiB | Decode ms | Codegen ms | Link ms |`);
+  console.log(`| --- | --- |${compareCache ? " --- |" : ""} ---: | ---: | ---: | ---: | ---: |`);
   if (extended) benchmark("startup", "--version", null);
   const packages = [
     ["scalar", "compiler/examples/scalar"], ["data", "compiler/examples/data"], ["compiler", "compiler/loom"],

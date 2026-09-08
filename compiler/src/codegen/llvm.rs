@@ -10,7 +10,7 @@ use inkwell::{
     intrinsics::Intrinsic,
     module::{Linkage, Module},
     passes::PassBuilderOptions,
-    targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
+    targets::{FileType, TargetMachine},
     types::{BasicType, BasicTypeEnum, FunctionType, IntType},
     values::{BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue},
 };
@@ -28,12 +28,25 @@ mod gc;
 mod gc_lower;
 #[path = "llvm_memory.rs"]
 mod memory;
+#[path = "llvm_target.rs"]
+mod native_target;
+
+use native_target::NativeTarget;
 
 type NativeResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 pub struct Llvm;
 
 impl Backend for Llvm {
+    fn cache_identity(
+        &self,
+        optimization: Optimization,
+        test_mode: bool,
+    ) -> Result<Option<String>, String> {
+        let target = NativeTarget::new(optimization)?;
+        Ok(target.cache_identity(test_mode))
+    }
+
     fn emit(
         &self,
         program: &checked::Program,
@@ -41,18 +54,12 @@ impl Backend for Llvm {
     ) -> Result<EmissionResult, String> {
         trace_phase("configure");
         configure_codegen();
-        let optimization = match options.optimization {
-            Optimization::O0 => OptimizationLevel::None,
-            Optimization::O1 => OptimizationLevel::Less,
-            Optimization::O2 => OptimizationLevel::Default,
-            Optimization::O3 => OptimizationLevel::Aggressive,
-        };
         let uses_runtime = emit_checked(
             program,
             options.test_mode,
             options.object,
             options.ir,
-            optimization,
+            options.optimization,
         )
         .map_err(|error| error.to_string())?;
         Ok(EmissionResult {
@@ -94,7 +101,7 @@ fn emit_checked(
     test_mode: bool,
     object: &Path,
     llvm_ir: Option<&Path>,
-    optimization: OptimizationLevel,
+    optimization: Optimization,
 ) -> NativeResult<bool> {
     if !cfg!(any(unix, all(windows, target_env = "msvc"))) {
         return Err("native emission requires a Unix or Windows MSVC host".into());
@@ -115,28 +122,12 @@ fn emit_checked(
     } = reachable_functions(program, &roots, library)?;
     let allocating = gc::allocating_functions(program, &reachable);
     trace_phase("target");
-    Target::initialize_native(&InitializationConfig::default())?;
-    let triple = TargetMachine::get_default_triple();
-    let target = Target::from_triple(&triple).map_err(|error| error.to_string())?;
-    let cpu = TargetMachine::get_host_cpu_name().to_string();
-    let features = TargetMachine::get_host_cpu_features().to_string();
-    let machine = target
-        .create_target_machine(
-            &triple,
-            &cpu,
-            &features,
-            optimization,
-            if cfg!(windows) {
-                RelocMode::Default
-            } else {
-                RelocMode::PIC
-            },
-            CodeModel::Default,
-        )
-        .ok_or("LLVM could not create a native target machine")?;
+    let native = NativeTarget::new(optimization)?;
+    let machine = &native.machine;
+    let optimization = native.optimization;
     let context = Context::create();
     let module = context.create_module("loom");
-    module.set_triple(&triple);
+    module.set_triple(&machine.get_triple());
     module.set_data_layout(&machine.get_target_data().get_data_layout());
     let builder = context.create_builder();
     let mut tracers = HashMap::new();
@@ -278,12 +269,12 @@ fn emit_checked(
         module
             .run_passes(
                 "function(sroa,early-cse),cgscc(inline)",
-                &machine,
+                machine,
                 PassBuilderOptions::create(),
             )
             .map_err(|error| error.to_string())?;
     }
-    gc_lower::lower(&context, &module, &machine)?;
+    gc_lower::lower(&context, &module, machine)?;
     let pipeline = match optimization {
         OptimizationLevel::None => "default<O0>",
         OptimizationLevel::Less => "default<O1>",
@@ -291,7 +282,7 @@ fn emit_checked(
         OptimizationLevel::Aggressive => "default<O3>",
     };
     module
-        .run_passes(pipeline, &machine, PassBuilderOptions::create())
+        .run_passes(pipeline, machine, PassBuilderOptions::create())
         .map_err(|error| error.to_string())?;
     module.verify().map_err(|error| error.to_string())?;
     if let Some(path) = llvm_ir {

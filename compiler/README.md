@@ -165,7 +165,7 @@ macOS peak RSS for scalar, data, and compiler packages, with raw samples in
 select the binary, report, and sample count.
 
 Every sample starts a fresh process after one warmup; OS caches are warm.
-There is no incremental compiler cache yet. Native decode, codegen, and linker
+The harness does not enable the opt-in object cache described below. Native decode, codegen, and linker
 timings separate backend costs; remaining build wall time also includes
 serialization and process/pipe overhead, not just frontend analysis. Peak RSS
 is the operating system's reported maximum, not summed concurrent process
@@ -175,6 +175,67 @@ cases exercise multiple files, an imported package, records, generics and Lists;
 the reported size is the helper count, not lines of code. Reports record input,
 compiler, backend, runtime and harness hashes. Startup includes process-launch
 overhead, and these synthetic packages do not substitute for large applications.
+
+### Native object cache
+
+`build`, `test`, and `run` accept `--object-cache <trusted local directory>`.
+The directory is created if needed; its parent must already exist. Omitting the
+option disables reuse. For example, with the existing repository `target`:
+
+```sh
+target/loom build compiler/examples/data --object-cache target/native-cache
+LOOM_NATIVE_TIMINGS=1 target/loom run compiler/examples/data --object-cache target/native-cache
+```
+
+Every invocation still loads and checks source, including contracts and selected
+dependency snapshots. Only the single object for the complete checked closure
+is reused. Its key covers exact checked bytes, native-tool and loaded LLVM image
+contents, effective target/CPU/features/layout, optimization and test mode.
+It does not use an LLVM version string or file metadata as a content identity.
+If the backend cannot identify its implementation, compilation proceeds without
+caching. `--emit-ir` also uses full emission so the requested IR is produced.
+
+Loom owns lookup and atomic publication under `objects-v1`. One binary bundle
+contains the object and link metadata; SHA-256 covers both. Damaged entries are
+misses. A verified object is copied into exclusively created staging before use;
+executables always relink with the current runtime and linker. Library outputs
+remain objects. Final outputs cannot be placed inside the cache-owned directory.
+Trace output reports `loom cache: hit`, `miss`, or `unavailable`.
+
+This is a trusted-local executable cache, not a source registry, attestation or
+sandbox. Anyone who can replace a bundle can also compute a new checksum. Do not
+use caches supplied by an untrusted checkout/download; filesystem ancestors and
+the toolchain must remain trusted and stable during a build. Normal exits clean
+owned staging; crashes can leave staging directories. Cache format changes may
+discard reuse; no compatibility promise or automatic eviction is provided.
+Full toolchain hashing and bundle verification have costs, so caching is opt-in,
+not a promise that tiny programs build faster. Incremental frontend/proof reuse
+and separate per-package objects remain future work. Bootstrap generation checks
+do not enable this cache.
+
+`node scripts/benchmark-compiler.mjs --compare-cache` compares uncached and warm
+object-cache builds in alternating order. Initial misses are recorded separately;
+the measurements include source checking, full toolchain hashing and relinking.
+
+On Apple M4 Max/macOS 25.2, three alternating O2 pairs gave these medians:
+
+| Build | Uncached | Warm object cache |
+| --- | ---: | ---: |
+| Scalar example | 107.29 ms | 192.61 ms |
+| Data example | 92.87 ms | 185.51 ms |
+| Compiler | 20,530.64 ms | 1,379.30 ms |
+
+The compiler's peak RSS medians were 754.95/301.17 MiB; its source-only check
+median was 499.72 ms. Cache hits had no decode/codegen phase and still linked.
+Host variation was substantial: compiler uncached samples ranged 18.00–33.29 s,
+hits 1.01–1.48 s. Its initial miss was a separate 15.29 s observation, not evidence
+that a miss is faster than an uncached build. Small examples regressed, as the
+cost of toolchain identity exceeded saved codegen. These are compilation timings,
+not runtime kernel speedups or a portable performance guarantee.
+[Raw samples and source/tool hashes](../benchmarks/compiler/results/2026-09-08-macos-arm64-object-cache.json)
+retain the exact measurement basis.
+
+### Earlier uncached measurements
 
 Development snapshot on Apple M4 Max/macOS 25.2, medians of three warmed runs
 on the same compiler source (not a portable performance guarantee):

@@ -1,0 +1,379 @@
+{
+  "schema": 1,
+  "revision": "26d15c1f00293ed02a2241d223c0bb100e770d50",
+  "dirty": false,
+  "compiler": "/Users/lijie/source/cpunion/loom-lang/target/loom",
+  "compilerVersion": "loom source compiler (development)",
+  "compilerSha256": "5164eaeabfd28dc66c7c98dc3e06a93a25e3070b7f94ef375818b26d67c4ebbb",
+  "harnessSha256": "7468f2377be45c87db4a395b65c6ca18a6f98e50ac844700dc181c25a037217a",
+  "sourceSha256": "018195aafa4943d6f56019d9fe36b52c1e42cc4b7b375ad9287d9ad86be65f45",
+  "sourceFiles": 206,
+  "nativeToolSha256": "664c22978b28347d8c33813f1efe9342fd3dbda44cbd6b145d32f4759785de87",
+  "runtimeArchiveSha256": "e435edbe3906f287167573a52df19271c4b6d3d0b3da4e8980b4827eac1c7798",
+  "nativeOptimization": "2",
+  "extended": false,
+  "compareCache": true,
+  "generatedSizes": [],
+  "host": {
+    "os": "darwin",
+    "release": "25.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "method": "fresh processes; one uncached warmup and one initial cache miss per native case; paired samples alternate uncached/cache order; sample indexes identify pairs; source checking and linking always run",
+  "wall": "elapsed around /usr/bin/time launch, including process launch and output; startup runs --version without loading a package",
+  "rss": "maximum RSS reported by macOS time, not a sum of simultaneous process memory",
+  "cases": [
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "median": {
+        "wallMs": 10.450417,
+        "peakRssBytes": 6602752
+      },
+      "samples": [
+        {
+          "wallMs": 10.450417,
+          "peakRssBytes": 6602752
+        },
+        {
+          "wallMs": 10.535375,
+          "peakRssBytes": 6602752
+        },
+        {
+          "wallMs": 10.425458,
+          "peakRssBytes": 6602752
+        }
+      ]
+    },
+    {
+      "name": "scalar",
+      "command": "build",
+      "package": "compiler/examples/scalar",
+      "variant": "uncached",
+      "flags": [],
+      "samplePositions": [
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 107.288875,
+        "peakRssBytes": 44466176,
+        "decodeMs": 0.311,
+        "codegenMs": 6.472,
+        "linkMs": 75.109
+      },
+      "samples": [
+        {
+          "wallMs": 99.447625,
+          "peakRssBytes": 43909120,
+          "decodeMs": 0.304,
+          "codegenMs": 6.127,
+          "linkMs": 70.279
+        },
+        {
+          "wallMs": 107.757542,
+          "peakRssBytes": 44531712,
+          "decodeMs": 0.311,
+          "codegenMs": 6.951,
+          "linkMs": 76.159
+        },
+        {
+          "wallMs": 107.288875,
+          "peakRssBytes": 44466176,
+          "decodeMs": 0.312,
+          "codegenMs": 6.472,
+          "linkMs": 75.109
+        }
+      ]
+    },
+    {
+      "name": "scalar",
+      "command": "build",
+      "package": "compiler/examples/scalar",
+      "variant": "warm-object-cache",
+      "flags": [
+        "--object-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-gtswsh/cache-1"
+      ],
+      "samplePositions": [
+        1,
+        0,
+        1
+      ],
+      "firstMiss": {
+        "wallMs": 303.968542,
+        "peakRssBytes": 44285952,
+        "decodeMs": 0.297,
+        "codegenMs": 5.879,
+        "linkMs": 72.754
+      },
+      "median": {
+        "wallMs": 192.610542,
+        "peakRssBytes": 44400640,
+        "decodeMs": 0,
+        "codegenMs": 0,
+        "linkMs": 73.532
+      },
+      "samples": [
+        {
+          "wallMs": 188.218083,
+          "peakRssBytes": 44400640,
+          "decodeMs": 0,
+          "codegenMs": 0,
+          "linkMs": 70.378
+        },
+        {
+          "wallMs": 192.610542,
+          "peakRssBytes": 44154880,
+          "decodeMs": 0,
+          "codegenMs": 0,
+          "linkMs": 73.532
+        },
+        {
+          "wallMs": 195.384583,
+          "peakRssBytes": 44662784,
+          "decodeMs": 0,
+          "codegenMs": 0,
+          "linkMs": 75.485
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "median": {
+        "wallMs": 6.2345,
+        "peakRssBytes": 3620864
+      },
+      "samples": [
+        {
+          "wallMs": 5.845791,
+          "peakRssBytes": 3620864
+        },
+        {
+          "wallMs": 6.521208,
+          "peakRssBytes": 3620864
+        },
+        {
+          "wallMs": 6.2345,
+          "peakRssBytes": 3620864
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "build",
+      "package": "compiler/examples/data",
+      "variant": "uncached",
+      "flags": [],
+      "samplePositions": [
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 92.866583,
+        "peakRssBytes": 44433408,
+        "decodeMs": 0.239,
+        "codegenMs": 3.654,
+        "linkMs": 69.895
+      },
+      "samples": [
+        {
+          "wallMs": 92.269125,
+          "peakRssBytes": 44171264,
+          "decodeMs": 0.239,
+          "codegenMs": 3.654,
+          "linkMs": 69.655
+        },
+        {
+          "wallMs": 94.323708,
+          "peakRssBytes": 44433408,
+          "decodeMs": 0.23,
+          "codegenMs": 3.557,
+          "linkMs": 71.253
+        },
+        {
+          "wallMs": 92.866583,
+          "peakRssBytes": 44564480,
+          "decodeMs": 0.243,
+          "codegenMs": 3.662,
+          "linkMs": 69.895
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "build",
+      "package": "compiler/examples/data",
+      "variant": "warm-object-cache",
+      "flags": [
+        "--object-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-gtswsh/cache-4"
+      ],
+      "samplePositions": [
+        1,
+        0,
+        1
+      ],
+      "firstMiss": {
+        "wallMs": 286.533875,
+        "peakRssBytes": 43761664,
+        "decodeMs": 0.229,
+        "codegenMs": 3.579,
+        "linkMs": 71.334
+      },
+      "median": {
+        "wallMs": 185.508125,
+        "peakRssBytes": 43892736,
+        "decodeMs": 0,
+        "codegenMs": 0,
+        "linkMs": 71.589
+      },
+      "samples": [
+        {
+          "wallMs": 184.497334,
+          "peakRssBytes": 43696128,
+          "decodeMs": 0,
+          "codegenMs": 0,
+          "linkMs": 70.942
+        },
+        {
+          "wallMs": 186.1465,
+          "peakRssBytes": 43892736,
+          "decodeMs": 0,
+          "codegenMs": 0,
+          "linkMs": 72.217
+        },
+        {
+          "wallMs": 185.508125,
+          "peakRssBytes": 43958272,
+          "decodeMs": 0,
+          "codegenMs": 0,
+          "linkMs": 71.589
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "median": {
+        "wallMs": 499.724917,
+        "peakRssBytes": 226263040
+      },
+      "samples": [
+        {
+          "wallMs": 499.724917,
+          "peakRssBytes": 226263040
+        },
+        {
+          "wallMs": 510.838458,
+          "peakRssBytes": 250757120
+        },
+        {
+          "wallMs": 495.807041,
+          "peakRssBytes": 226246656
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "build",
+      "package": "compiler/loom",
+      "variant": "uncached",
+      "flags": [],
+      "samplePositions": [
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 20530.639083,
+        "peakRssBytes": 791625728,
+        "decodeMs": 229.665,
+        "codegenMs": 18749.436,
+        "linkMs": 136.206
+      },
+      "samples": [
+        {
+          "wallMs": 33287.677708,
+          "peakRssBytes": 788152320,
+          "decodeMs": 246.449,
+          "codegenMs": 31198.681,
+          "linkMs": 181.909
+        },
+        {
+          "wallMs": 20530.639083,
+          "peakRssBytes": 793313280,
+          "decodeMs": 229.665,
+          "codegenMs": 18749.436,
+          "linkMs": 136.206
+        },
+        {
+          "wallMs": 18004.687,
+          "peakRssBytes": 791625728,
+          "decodeMs": 144.521,
+          "codegenMs": 16877.979,
+          "linkMs": 103.289
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "build",
+      "package": "compiler/loom",
+      "variant": "warm-object-cache",
+      "flags": [
+        "--object-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-gtswsh/cache-7"
+      ],
+      "samplePositions": [
+        1,
+        0,
+        1
+      ],
+      "firstMiss": {
+        "wallMs": 15288.748792,
+        "peakRssBytes": 795688960,
+        "decodeMs": 122.008,
+        "codegenMs": 13920.59,
+        "linkMs": 303.02
+      },
+      "median": {
+        "wallMs": 1379.295125,
+        "peakRssBytes": 315801600,
+        "decodeMs": 0,
+        "codegenMs": 0,
+        "linkMs": 132.737
+      },
+      "samples": [
+        {
+          "wallMs": 1482.473792,
+          "peakRssBytes": 314130432,
+          "decodeMs": 0,
+          "codegenMs": 0,
+          "linkMs": 132.737
+        },
+        {
+          "wallMs": 1379.295125,
+          "peakRssBytes": 315801600,
+          "decodeMs": 0,
+          "codegenMs": 0,
+          "linkMs": 109.932
+        },
+        {
+          "wallMs": 1009.286,
+          "peakRssBytes": 333348864,
+          "decodeMs": 0,
+          "codegenMs": 0,
+          "linkMs": 140.724
+        }
+      ]
+    }
+  ]
+}

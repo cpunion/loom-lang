@@ -126,8 +126,11 @@ roots with the same module name coexist without merging nominal types, scopes
 or entry points. Exact HTTPS Git/fork sources now use the same selected-import
 traversal, with explicit resolution, locked source edges and actual snapshot
 content/membership verification. Local path inputs remain editable. Version
-ranges/normalization, graph-wide fork policies, authenticated transport and
-persistent native input-based reuse remain open.
+ranges/normalization, graph-wide fork policies and authenticated transport remain
+open. Native commands now have opt-in, trusted-local whole-closure object reuse
+keyed by checked inputs and actual backend/toolchain content. Source checks and
+final links still run; persistent frontend/proof reuse and per-package objects
+remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic
 method calls into the existing direct-call path. Conditional conformance queries,

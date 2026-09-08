@@ -32,6 +32,10 @@ package. It defaults to `compiler/std` and `target/debug/loom-native` relative t
 the working directory; use `--std` and `--native-tool` elsewhere. `build` accepts
 `--output`; native commands also accept `--emit-ir`. Library builds produce an
 object, and production excludes test files and test declarations.
+`--object-cache` enables [trusted-local object reuse](../README.md#native-object-cache)
+for native commands. The Loom driver owns cache policy; the Rust bridge only
+identifies its implementation, emits objects and links/publishes requested files.
+Source checking always runs and executables always relink.
 The private `emit-checked` command performs normal source/type/proof checks but
 writes the checked artifact to stdout without invoking a native tool. It serves
 bootstrap transfer, not a stable interchange or cache format.

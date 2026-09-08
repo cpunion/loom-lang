@@ -282,7 +282,16 @@ Normal compiler iteration can use a [single development rebuild](../../compiler/
 CI retains full bootstrap generation checks. The initial
 [latency harness](../../compiler/README.md#compiler-latency) measures fresh-process
 check/build runs with warm OS caches and backend phase timings. It does not
-implement incremental reuse or establish a performance target as achieved.
+implement incremental frontend reuse or establish a performance target as achieved.
+Native commands now offer an opt-in trusted-local object cache. The Loom driver
+keys exact checked bytes and the backend's content/configuration identity,
+verifies object/link metadata as one checksummed bundle, and always relinks
+executables. Source/type/proof checks still run; IR requests bypass caching.
+The Rust bridge shares target configuration between identity and actual emission,
+hashes the native executable and loaded LLVM implementation, and otherwise owns
+only object emission and host linking. Runtime/linker changes do not reuse final
+executables. This is not an authenticated binary cache or a frontend incremental
+engine; unsupported implementation identity falls back to uncached compilation.
 The [native basic benchmark](../../benchmarks/basic/README.md#managed-memory-lowering-repair)
 also records the managed-memory lowering repair, including same-session baseline
 comparisons for native kernels and whole compiler checks. Those measurements
