@@ -25,7 +25,7 @@ semantics. Prefix await is invalid syntax. `.await()` is not a method call;
 nested executor.
 
 A Task is a one-shot structured obligation: it cannot be silently dropped,
-discarded, copied, overwritten or awaited twice. Parameters, returns and
+discarded, copied, overwritten while live or awaited twice. Parameters, returns and
 structured bindings may transfer that obligation, including within aggregates.
 This introduces no ownership, borrow, lifetime or pin syntax.
 

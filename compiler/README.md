@@ -1336,7 +1336,7 @@ Use `loom run` and `loom test` as usual; see the [task package](examples/tasks).
 `.await` is a postfix keyword, allowed only inside async functions/tests.
 `.await?` applies ordinary Result propagation to the completed value. Prefix
 await, `.await()` and `.await!` are invalid. Task handles are one-shot: they
-cannot be discarded, copied, overwritten or awaited twice.
+cannot be discarded, copied, overwritten while live or awaited twice.
 
 The current executor is a CPU ready queue on one owner thread, not parallel
 threads. Loom lowers suspension into typed constructor/resume functions and
