@@ -112,6 +112,8 @@ fn three_types(a Int, b Int, c Int) List[Int] { let values = two_types(a, b)
 fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "clock_monotonic_ns" { return runtime(0, new[Int](), 1) }
     if name == "timer_until_ns" { return runtime(0, ints(1), 0) }
+    if name == "async_read" || name == "async_write_bytes" { return runtime(0, three_types(1, 4, 1), 1) }
+    if name == "async_write" { return runtime(0, three_types(1, 3, 1), 1) }
     if name == "float_from_int" { return runtime(0, ints(1), 5) }
     if name == "float_to_int" { return runtime(0, ints(5), 1) }
     if name == "float_parse" { return runtime(0, ints(3), 5) }
@@ -168,7 +170,7 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
     let item = symbol(env, current.symbol)
     let expected = runtime_signature(env, item.name)
     if expected.parameters < 0 { return Result.Err(failure(env, current.symbol, item.node, "unknown private runtime intrinsic")) }
-    if has(item.node, NodeKind.Async) != (item.name == "timer_until_ns") {
+    if has(item.node, NodeKind.Async) != (item.name == "timer_until_ns" || item.name == "async_read" || item.name == "async_write" || item.name == "async_write_bytes") {
         return Result.Err(failure(env, current.symbol, item.node, "intrinsic declaration has an incorrect async modifier"))
     }
     if current.parameters != expected.parameters || !same(current.params, expected.params) || current.result != expected.result {

@@ -147,6 +147,57 @@ fn waiting(graph Graph, source Expr, start Int, loop Loop) Value {
 }
 
 fn parking(graph Graph, source Expr, start Int, loop Loop) Value {
+    if source.text != "timer_until_ns" {
+        let arguments = new[Expr]()
+        var current = start
+        var index = 0
+        while index < length(source.children) {
+            let argument = snapshot(graph, evaluate(graph, get(source.children, index), current, loop))
+            if argument.state < 0 {
+                return argument
+            }
+            push(arguments, argument.expression)
+            current = argument.state
+            index = index + 1
+        }
+        let reading = source.text == "async_read"
+        let wait_name = if reading {
+            "task_wait_file_read"
+        } else {
+            if source.text == "async_write" {
+                "task_wait_file_write"
+            } else {
+                "task_wait_file_write_bytes"
+            }
+        }
+        assert source.ty == 1 && length(arguments) == 3
+        assert reading || source.text == "async_write" || source.text == "async_write_bytes"
+        let park = state(graph)
+        let after = state(graph)
+        jump(graph, current, park)
+        let inputs = if reading {
+            pair(get(arguments, 0), get(arguments, 2))
+        } else {
+            arguments
+        }
+        finish(graph, park, Exit.Park, operation(wait_name, 2, source.span, inputs), edges(after), new[Arm]())
+        let output = operation(if reading {
+                "task_file_read_result"
+            } else {
+                "task_file_result"
+            }, 1, source.span,
+            if reading {
+                one(get(arguments, 1))
+            } else {
+                new[Expr]()
+            })
+        let saved = temporary(graph, 1)
+        save(graph, after, saved, output)
+        return Value {
+            state = after
+            expression = local(graph, saved)
+        }
+    }
     assert source.text == "timer_until_ns" && source.ty == 0 && length(source.children) == 1
     let deadline = snapshot(graph, evaluate(graph, get(source.children, 0), start, loop))
     if deadline.state < 0 {

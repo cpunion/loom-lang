@@ -536,6 +536,36 @@ impl Converter<'_> {
         result: Type,
     ) -> Result<()> {
         match operation {
+            Primitive::TaskWaitFileRead => {
+                if arguments.iter().any(|argument| argument.ty != Type::Int) || result != Type::Bool
+                {
+                    return Err("checked file read wait signature mismatch".into());
+                }
+            }
+            Primitive::TaskWaitFileWrite | Primitive::TaskWaitFileWriteBytes => {
+                let input = if operation == Primitive::TaskWaitFileWrite {
+                    Type::Text
+                } else {
+                    Type::Bytes
+                };
+                if arguments[0].ty != Type::Int
+                    || arguments[1].ty != input
+                    || arguments[2].ty != Type::Int
+                    || result != Type::Bool
+                {
+                    return Err("checked file write wait signature mismatch".into());
+                }
+            }
+            Primitive::TaskFileResult => {
+                if result != Type::Int {
+                    return Err("checked file result requires Int".into());
+                }
+            }
+            Primitive::TaskFileReadResult => {
+                if arguments[0].ty != Type::Bytes || result != Type::Int {
+                    return Err("checked file read result requires Bytes and returns Int".into());
+                }
+            }
             Primitive::TaskWaitTimer => {
                 if arguments[0].ty != Type::Int || result != Type::Bool {
                     return Err(
@@ -1176,6 +1206,11 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_release" => P::TaskRelease,
         "task_run" => P::TaskRun,
         "task_wait_timer" => P::TaskWaitTimer,
+        "task_wait_file_read" => P::TaskWaitFileRead,
+        "task_wait_file_write" => P::TaskWaitFileWrite,
+        "task_wait_file_write_bytes" => P::TaskWaitFileWriteBytes,
+        "task_file_result" => P::TaskFileResult,
+        "task_file_read_result" => P::TaskFileReadResult,
         "clock_monotonic_ns" => P::MonotonicNs,
         _ => return Err("unknown private checked runtime operation".into()),
     })
@@ -1184,7 +1219,7 @@ fn primitive(value: &str) -> Result<Primitive> {
 fn primitive_arity(operation: Primitive) -> usize {
     use Primitive as P;
     match operation {
-        P::ArgCount | P::BytesNew | P::ListNew | P::MonotonicNs => 0,
+        P::ArgCount | P::BytesNew | P::ListNew | P::MonotonicNs | P::TaskFileResult => 0,
         P::FloatFromInt
         | P::FloatToInt
         | P::FloatParse
@@ -1214,7 +1249,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskResult
         | P::TaskRelease
         | P::TaskRun => 1,
-        P::TaskWaitTimer => 1,
+        P::TaskWaitTimer | P::TaskFileReadResult => 1,
         P::TextByte
         | P::TextConcat
         | P::TextEqual
@@ -1228,6 +1263,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::EnvGet
         | P::TaskAdopt
         | P::TaskCleanupPush
+        | P::TaskWaitFileRead
         | P::PathRename => 2,
         P::TextSlice
         | P::BytesSet
@@ -1235,6 +1271,8 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::Read
         | P::Write
         | P::WriteBytes
+        | P::TaskWaitFileWrite
+        | P::TaskWaitFileWriteBytes
         | P::TaskCreate => 3,
         P::ProcessCaptureConfigured => 6,
         P::ProcessCaptureInputConfigured => 7,

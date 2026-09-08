@@ -113,6 +113,11 @@ pub enum Primitive {
     TaskRelease,
     TaskRun,
     TaskWaitTimer,
+    TaskWaitFileRead,
+    TaskWaitFileWrite,
+    TaskWaitFileWriteBytes,
+    TaskFileResult,
+    TaskFileReadResult,
     MonotonicNs,
 }
 

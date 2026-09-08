@@ -17,6 +17,7 @@ use std::ffi::c_char;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr::{self, NonNull};
 
+mod blocking_io;
 mod cleanup;
 mod fault_abi;
 mod file_io;

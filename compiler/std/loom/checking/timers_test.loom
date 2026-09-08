@@ -57,4 +57,7 @@ test fn intrinsic_effect_and_type_metadata_cannot_be_changed_by_a_declaration() 
     rejects_timer("async intrinsic fn timer_until_ns(deadline Int) Int\n", "")
     rejects_timer("intrinsic fn clock_monotonic_ns() Bool\n", "")
     rejects("async intrinsic fn timer_until_ns(deadline Int)\n")
+    rejects_timer("intrinsic fn async_read(fd Int, buffer Bytes, limit Int) Int", "")
+    rejects_timer("async intrinsic fn async_write(fd Int, value Bytes, offset Int) Int", "")
+    rejects_timer("async intrinsic fn async_write_bytes(fd Int, value Bytes, offset Int) Bool", "")
 }

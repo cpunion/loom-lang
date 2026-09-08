@@ -128,9 +128,16 @@ children and waits drained before parent cleanup. `NoSuspend` remains an
 independent capability restriction, without ownership syntax. See the
 [cleanup trial](compiler/examples/async_cleanup).
 
+Source `std.file.tasks` now supplies byte/text reads and writes through bounded
+native workers and the existing completion reactor. Source loops retain partial-I/O,
+UTF-8 and close policy; cancellation drains active OS calls before scope cleanup.
+Open/close and handle duplication remain synchronous. See the
+[file task example](compiler/examples/async_files).
+
 The next async gates are Task-bearing aggregates,
 async methods, Task-bearing function values/dynamic calls, asynchronous
-file/socket/worker I/O and joins. Task scheduling is cooperative, not parallel threads.
+fully asynchronous file operations, socket readiness adapters, general worker
+operations and joins. Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 
 Extend the self-hosted path with the remaining accepted capabilities:

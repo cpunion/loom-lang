@@ -1,0 +1,34 @@
+import std.file.tasks.read_bytes
+import std.file.tasks.write_bytes
+import std.file.FileError
+import std.result.Result
+import std.process.arguments
+import std.process.exit_code
+import std.list.length
+import std.int.to_text
+import std.text.concat
+import std.io.write_text
+import std.io.write_error
+
+async fn copy_file(source Text, destination Text) Result[Int, FileError] {
+    let bytes = read_bytes(source).await?
+    write_bytes(destination, bytes).await
+}
+
+async fn main() {
+    let args = arguments()
+    if length(args) != 3 {
+        discard write_error("usage: async-files INPUT OUTPUT\n")
+        exit_code(2)
+        return
+    }
+    match copy_file(args[1], args[2]).await {
+        Result.Ok(count) => {
+            discard write_text(concat(to_text(count), " bytes copied\n"))
+        }
+        Result.Err(_) => {
+            discard write_error("file copy failed\n")
+            exit_code(1)
+        }
+    }
+}

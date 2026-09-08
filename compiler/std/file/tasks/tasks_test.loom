@@ -1,0 +1,10 @@
+test async fn invalid_paths_return_file_errors() {
+    assert match read_text("\0invalid").await {
+        Result.Err(error) => error == FileError.Open
+        Result.Ok(_) => false
+    }
+    assert match write_text("\0invalid", "unused").await {
+        Result.Err(error) => error == FileError.Open
+        Result.Ok(_) => false
+    }
+}

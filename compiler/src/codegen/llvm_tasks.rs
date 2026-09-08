@@ -126,11 +126,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     &[values[0], values[1], bytes.into(), length],
                 )
             }
-            Primitive::TaskAwait | Primitive::TaskWaitTimer => {
-                let operation = if operation == Primitive::TaskAwait {
-                    "task_await"
-                } else {
-                    "task_wait_timer"
+            Primitive::TaskAwait
+            | Primitive::TaskWaitTimer
+            | Primitive::TaskWaitFileRead
+            | Primitive::TaskWaitFileWrite
+            | Primitive::TaskWaitFileWriteBytes => {
+                let operation = match operation {
+                    Primitive::TaskAwait => "task_await",
+                    Primitive::TaskWaitFileRead => "task_wait_file_read",
+                    Primitive::TaskWaitFileWrite => "task_wait_file_write",
+                    Primitive::TaskWaitFileWriteBytes => "task_wait_file_write_bytes",
+                    _ => "task_wait_timer",
                 };
                 let ready = self
                     .runtime_call(operation, Some(self.context.i32_type().into()), values)?
@@ -164,6 +170,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )?))
             }
             Primitive::TaskRelease => self.runtime_call("task_release", None, values),
+            Primitive::TaskFileResult | Primitive::TaskFileReadResult => {
+                let name = if operation == Primitive::TaskFileResult {
+                    "task_file_result"
+                } else {
+                    "task_file_read_result"
+                };
+                let output =
+                    self.runtime_call(name, Some(self.context.i64_type().into()), values)?;
+                if operation == Primitive::TaskFileReadResult {
+                    self.restore_locals()?;
+                }
+                Ok(output)
+            }
             Primitive::TaskAdopt => self.runtime_call("task_adopt", None, values),
             Primitive::TaskCleanupPush => self.runtime_call("task_cleanup_push", None, values),
             Primitive::TaskCleanupPop => self.runtime_call("task_cleanup_pop", None, values),
