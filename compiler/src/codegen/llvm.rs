@@ -638,6 +638,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::TaskCreate
             | Primitive::TaskAdopt
             | Primitive::TaskReturn
+            | Primitive::TaskCleanupPush
+            | Primitive::TaskCleanupPop
             | Primitive::TaskAwait
             | Primitive::TaskResult
             | Primitive::TaskRelease

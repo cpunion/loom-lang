@@ -1,0 +1,78 @@
+import std.resource.Dispose
+import std.resource.MustScope
+import std.list.push
+import std.list.length
+import std.text.concat
+import std.time.sleep_ms
+import std.io.write_text
+
+record Guard {
+    trace List[Int]
+}
+
+impl MustScope for Guard {
+}
+
+impl Dispose for Guard {
+    fn dispose(self Guard) {
+        push(self.trace, 9)
+    }
+}
+
+fn acquire(trace List[Int]) Guard {
+    Guard {
+        trace = trace
+    }
+}
+
+record Packet {
+    text Text
+    values List[Int]
+}
+
+async fn work(trace List[Int], early Bool) Packet {
+    scoped guard = acquire(trace)
+    var value = 1
+    var packet = Packet {
+        text = concat("before ", "wait")
+        values = [3]
+    }
+    defer {
+        push(trace, value)
+        packet = Packet {
+            text = concat("cleanup ", "replacement")
+            values = [99]
+        }
+    }
+    {
+        defer {
+            value = value + 10
+            push(trace, value)
+        }
+        sleep_ms(1).await
+        value = 2
+        packet = Packet {
+            text = concat("after ", "wait")
+            values = [7, 11]
+        }
+    }
+    assert value == 12
+    assert length(trace) == 1 && trace[0] == 12
+    sleep_ms(1).await
+    if early {
+        return packet
+    }
+    packet
+}
+
+async fn exercise() {
+    let trace List[Int] = []
+    let packet = work(trace, false).await
+    assert packet.text == "after wait" && packet.values[1] == 11
+    assert length(trace) == 3 && trace[0] == 12 && trace[1] == 12 && trace[2] == 9
+    discard write_text("cleanup finished\n")
+}
+
+async fn main() {
+    exercise().await
+}

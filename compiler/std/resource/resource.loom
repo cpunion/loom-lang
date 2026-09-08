@@ -5,3 +5,6 @@ pub concept Dispose {
 }
 
 pub concept MustScope {}
+
+// Independent of disposal: values carrying this marker cannot cross suspension.
+pub concept NoSuspend {}

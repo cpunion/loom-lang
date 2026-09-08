@@ -1,0 +1,178 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Function
+import std.loom.typed.Program
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Field
+import std.loom.typed.Variant
+import std.loom.typed.Local
+import std.loom.typed.Arm
+import std.loom.typed.Interface
+import std.loom.typed.Witness
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+
+fn cleanup_find(value Expr, kind ExprKind, id Int, found List[Expr]) {
+    if value.kind == kind &&(id < 0 || value.index == id) {
+        push(found, value)
+    }
+    var index = 0
+    while index < length(value.children) {
+        cleanup_find(get(value.children, index), kind, id, found)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            cleanup_find(get(body, item), kind, id, found)
+            item = item + 1
+        }
+        index = index + 1
+    }
+}
+
+fn cleanup_nodes(value Expr, kind ExprKind, id Int) List[Expr] {
+    let found = new[Expr]()
+    cleanup_find(value, kind, id, found)
+    found
+}
+
+fn cleanup_program(types List[Type], function Function) Program {
+    let functions = new[Function]()
+    push(functions, function)
+    Program {
+        types = types
+        functions = functions
+        entry = -1
+        tests = new[Int]()
+        test_names = new[Text]()
+        exports = new[Int]()
+        interfaces = new[Interface]()
+        witnesses = new[Witness]()
+    }
+}
+
+test fn async_cleanup_captures_are_authoritative_and_callback_locals_stay_native() {
+    let span = test_span()
+    let types = test_types()
+    let task = shape(types, TypeKind.Task, ints(0))
+    let params = ints(1)
+    push(params, task)
+    let locals = new[Local]()
+    push(locals, test_local(1))
+    push(locals, test_local(task))
+    push(locals, test_local(3))
+    push(locals, test_local(1))
+    let callback_values = one(node(ExprKind.Let, 0, span, 2,
+            one(labeled(node(ExprKind.Text, 3, span, -1, new[Expr]()), "callback local"))))
+    // An assignment-only capture is just as authoritative as a read capture.
+    push(callback_values, node(ExprKind.Assign, 0, span, 0, one(integer(4, span))))
+    let callback = block(callback_values, 0, span, true)
+    let body = one(node(ExprKind.Defer, 0, span, 0, one(callback)))
+    push(body, node(ExprKind.Assign, 0, span, 0, one(integer(2, span))))
+    push(body, node(ExprKind.Await, 0, span, -1, one(node(ExprKind.Local, task, span, 1, new[Expr]()))))
+    push(body, node(ExprKind.Assign, 0, span, 0, one(integer(3, span))))
+    push(body, node(ExprKind.Let, 0, span, 3, one(node(ExprKind.Local, 1, span, 0, new[Expr]()))))
+    push(body, node(ExprKind.Cleanup, 0, span, 0, one(callback)))
+    push(body, node(ExprKind.Local, 1, span, 3, new[Expr]()))
+    let lowered = lower(cleanup_program(types, test_function(params, 1, locals, block(body, 1, span, true))))
+    assert length(lowered.functions) == 3
+    let constructor = get(lowered.functions, 0)
+    let cleaned = get(lowered.functions, 1)
+    let resume = get(lowered.functions, 2)
+    assert length(cleaned.params) == 1 && length(cleaned.locals) == 2
+    assert get(cleaned.locals, 1).ty == 3
+    assert get(get(cleaned.body.children, 0).children, 0).text == "callback local"
+    let assigned = get(cleaned.body.children, 1)
+    assert assigned.kind == ExprKind.FrameStore && assigned.index == 2
+    assert get(assigned.children, 1).text == "4"
+    let frame = get(lowered.types, get(cleaned.params, 0))
+    var index = 0
+    while index < length(frame.fields) {
+        assert get(frame.fields, index).ty != 3
+        index = index + 1
+    }
+    assert operations(resume.body, "task_cleanup_push") == 1 && operations(resume.body, "task_cleanup_pop") == 1
+    assert length(cleanup_nodes(resume.body, ExprKind.Defer, -1)) == 0
+    assert length(cleanup_nodes(resume.body, ExprKind.Cleanup, -1)) == 0
+    assert length(cleanup_nodes(resume.body, ExprKind.Local, 1)) == 0
+    assert length(cleanup_nodes(resume.body, ExprKind.Let, 1)) == 0
+    // Only source assignments, never a pending spill of a stale native copy.
+    assert length(cleanup_nodes(resume.body, ExprKind.FrameStore, 2)) == 2
+    let snapshot = get(cleanup_nodes(resume.body, ExprKind.Let, 4), 0)
+    assert get(snapshot.children, 0).kind == ExprKind.Field && get(snapshot.children, 0).index == 2
+    let invocation = get(cleanup_nodes(resume.body, ExprKind.Call, 1), 0)
+    assert get(invocation.children, 0).index == 0
+    let reference = get(cleanup_nodes(resume.body, ExprKind.FunctionRef, 1), 0)
+    assert get(lowered.types, reference.ty).kind == TypeKind.Function
+    let initialized = get(cleanup_nodes(constructor.body, ExprKind.FrameNew, -1), 0)
+    assert get(initialized.children, 1).index == 2
+    assert get(get(initialized.children, 1).children, 0).index == 0
+}
+
+test fn captured_pattern_bindings_enter_the_frame_before_dispatching_the_arm() {
+    let span = test_span()
+    let types = test_types()
+    let task = shape(types, TypeKind.Task, ints(0))
+    let choice = length(types)
+    let variants = new[Variant]()
+    push(variants, Variant {
+            name = "Some"
+            fields = ints(1)
+        })
+    push(types, Type {
+            kind = TypeKind.Enum
+            symbol = -1
+            arguments = new[Int]()
+            fields = new[Field]()
+            variants = variants
+            constraint = new[Expr]()
+        })
+    let locals = new[Local]()
+    push(locals, test_local(choice))
+    push(locals, test_local(task))
+    push(locals, test_local(1))
+    let callback = block(one(node(ExprKind.Discard, 0, span, -1,
+                one(node(ExprKind.Local, 1, span, 2, new[Expr]())))), 0, span, true)
+    let body = one(node(ExprKind.Defer, 0, span, 0, one(callback)))
+    push(body, node(ExprKind.Await, 0, span, -1, one(node(ExprKind.Local, task, span, 1, new[Expr]()))))
+    push(body, node(ExprKind.Cleanup, 0, span, 0, one(callback)))
+    push(body, node(ExprKind.Local, 1, span, 2, new[Expr]()))
+    let arms = new[Arm]()
+    push(arms, Arm {
+            variant = 0
+            bindings = ints(2)
+            whole = -1
+            body = body
+        })
+    let matched = Expr {
+        kind = ExprKind.Match
+        ty = 1
+        span = span
+        text = ""
+        index = -1
+        children = one(node(ExprKind.Local, choice, span, 0, new[Expr]()))
+        arms = arms
+        falls = true
+    }
+    let params = ints(choice)
+    push(params, task)
+    let lowered = lower(cleanup_program(types, test_function(params, 1, locals, block(one(matched), 1, span, true))))
+    let resume = get(lowered.functions, 2)
+    let select = get(cleanup_nodes(resume.body, ExprKind.Match, -1), 0)
+    let arm = get(select.arms, 0)
+    assert get(arm.bindings, 0) == 3
+    assert length(arm.body) == 1 && get(arm.body, 0).kind == ExprKind.Block
+    let saved = get(get(arm.body, 0).children, 0)
+    assert saved.kind == ExprKind.FrameStore && saved.index == 4
+    assert get(saved.children, 1).kind == ExprKind.Local && get(saved.children, 1).index == 3
+    assert length(cleanup_nodes(resume.body, ExprKind.Local, 3)) == 1
+    assert length(cleanup_nodes(resume.body, ExprKind.FrameStore, 4)) == 1
+    assert get(get(lowered.functions, 1).body.children, 0).kind == ExprKind.Discard
+    assert operations(resume.body, "task_cleanup_push") == 1
+}

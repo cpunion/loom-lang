@@ -1,0 +1,28 @@
+import std.loom.ast.Node
+import std.list.new
+import std.list.get
+import std.result.Result
+
+fn no_suspend(context Context, ty Int, marker Int) Result[Bool, Failure] {
+    marker_type(context.env, context.signature.symbol, context.signature.requirements, ty, marker, new[Int]())
+}
+
+// Bindings are lexical, including shadowed outer bindings and defer captures.
+// The whole locals table also contains completed scopes and cleanup-only locals.
+fn suspension_bindings(context Context, node Node) Result[Bool, Failure] {
+    let marker = resource_concept(context.env, "NoSuspend")
+    if marker < 0 {
+        return Result.Ok(true)
+    }
+    let seen = new[Int]()
+    var head = context.head
+    while head >= 0 {
+        let binding = get(context.bindings, head)
+        if binding.local >= 0 && marker_type(context.env, context.signature.symbol,
+            context.signature.requirements, get(context.locals, binding.local).ty, marker, seen)? {
+            return Result.Err(error(context, node, "a NoSuspend value is still in scope; leave its block before awaiting"))
+        }
+        head = binding.previous
+    }
+    Result.Ok(true)
+}

@@ -2,11 +2,11 @@
 //! A compiler-defined moving frame stores its typed result at byte zero; task
 //! identities and static creation labels contain no managed pointers. Resumes
 //! root/reload their frame across allocation and return 0 (done) or 1 (waiting).
-//! This initial suspension ABI permits no live lexical cleanup registrations:
-//! cancelling a queued/waiting subtree retires waits and releases its frames,
-//! not user callbacks. The reactor is created only on the first external wait.
+//! Async cleanup captures are authoritative frame fields, never suspended stack
+//! slots. Cancellation retires waits and drains children before parent cleanup.
+//! The reactor is created only on the first external wait.
 
-use super::cleanup::{OwnedFault, catch_fault, raise_owned};
+use super::cleanup::{OwnedFault, catch_fault, catch_fault_before_drain, raise_owned};
 use super::frame_roots::{FrameRootId, FrameRoots, with_frame_roots};
 use super::wait::{KIND_TIMER, Reactor, ReadyNotification, Registration, WaitSource};
 use super::{fatal, fault};
@@ -16,6 +16,13 @@ use std::{io, ptr, time::Duration};
 
 type Resume = unsafe extern "C-unwind" fn(*mut u8) -> i64;
 type Constructor = unsafe extern "C-unwind" fn() -> u64;
+type CleanupCallback = unsafe extern "C-unwind" fn(*mut u8);
+
+#[derive(Clone, Copy)]
+struct TaskCleanup {
+    site: i64,
+    callback: CleanupCallback,
+}
 
 enum State {
     Queued,
@@ -41,6 +48,7 @@ struct Task {
     // A Task-valued result stays in this subtree until result extraction. Keep
     // its identity afterward too, so a second extraction cannot copy a handle.
     returned: Option<u64>,
+    cleanups: Vec<TaskCleanup>,
     waiter: Option<u64>,
     state: State,
     external: Option<ExternalWait>,
@@ -129,17 +137,49 @@ impl Owner {
         Ok(())
     }
 
-    // Cancellation has no callback in this slice. Visit only live descendants,
-    // children before parents; removed queued identities are skipped on dequeue.
-    fn cancel_tree(&self, core: &mut Core, id: u64) {
+    fn drain_cleanups(&self, id: u64, first: &mut Option<OwnedFault>) {
+        loop {
+            let next = {
+                let mut core = self.core.borrow_mut();
+                let task = core.tasks.get_mut(&id).expect("live task cleanup");
+                task.cleanups
+                    .pop()
+                    .map(|cleanup| (cleanup, task.frame, task.creation))
+            };
+            let Some((cleanup, frame, creation)) = next else {
+                return;
+            };
+            // Pop before invocation and reload after every prior cleanup/GC.
+            // No task, heap or root-store borrow crosses generated code.
+            let frame = self.roots().get(frame).expect("rooted task cleanup frame");
+            let previous = self.core.borrow_mut().current.take();
+            // SAFETY: Generated cleanup roots this frame parameter, cannot
+            // suspend or use Task operations, and obeys the native fault ABI.
+            let outcome = unsafe { catch_fault(|| (cleanup.callback)(frame)) };
+            self.core.borrow_mut().current = previous;
+            if let Err(mut failure) = outcome {
+                if first.is_none() {
+                    append_creation(&mut failure, creation);
+                    *first = Some(failure);
+                }
+            }
+        }
+    }
+
+    // Visit only live descendants, children before parents. Native traversal
+    // contains IDs only; callbacks run with every Core borrow released.
+    fn cancel_tree(&self, id: u64, first: &mut Option<OwnedFault>) {
         let mut pending = vec![(id, false)];
         while let Some((id, expanded)) = pending.pop() {
             if !expanded {
+                let core = self.core.borrow();
                 let task = core.tasks.get(&id).expect("live cancelled task");
                 pending.push((id, true));
                 pending.extend(task.children.iter().map(|child| (*child, false)));
             } else {
-                self.cancel_wait(core, id);
+                self.cancel_wait(&mut self.core.borrow_mut(), id);
+                self.drain_cleanups(id, first);
+                let mut core = self.core.borrow_mut();
                 let task = core.tasks.remove(&id).expect("live cancelled task");
                 if let Some(parent) = task.parent {
                     core.tasks
@@ -153,9 +193,13 @@ impl Owner {
         }
     }
 
-    fn cancel_descendants(&self, core: &mut Core, id: u64) {
-        while let Some(child) = core.tasks[&id].children.first().copied() {
-            self.cancel_tree(core, child);
+    fn cancel_descendants(&self, id: u64, first: &mut Option<OwnedFault>) {
+        loop {
+            let child = self.core.borrow().tasks[&id].children.first().copied();
+            let Some(child) = child else {
+                return;
+            };
+            self.cancel_tree(child, first);
         }
     }
 
@@ -167,7 +211,11 @@ impl Owner {
             None => task.children.is_empty(),
         };
         match (status, &task.state) {
-            (0, State::Running) if children_done && task.external.is_none() => Ok(()),
+            (0, State::Running)
+                if children_done && task.external.is_none() && task.cleanups.is_empty() =>
+            {
+                Ok(())
+            }
             (0, _) => Err("task completed with outstanding children or wait"),
             (1, State::Waiting(_)) if task.external.is_none() && task.returned.is_none() => Ok(()),
             (1, State::ExternalWaiting)
@@ -181,8 +229,19 @@ impl Owner {
     }
 
     fn finish_resume(&self, id: u64, outcome: Result<i64, OwnedFault>) {
+        self.core.borrow_mut().current = None;
+        let outcome = match outcome {
+            Err(failure) => {
+                // The pre-drain hook already retired this wait and all children;
+                // live synchronous helper cleanup ran before catch returned.
+                // Async captures remain authoritative in the rooted frame.
+                let mut first = Some(failure);
+                self.drain_cleanups(id, &mut first);
+                Err(first.unwrap())
+            }
+            other => other,
+        };
         let mut core = self.core.borrow_mut();
-        core.current = None;
         let terminal = match outcome {
             Ok(0) => {
                 core.tasks.get_mut(&id).unwrap().state = State::Completed;
@@ -191,19 +250,8 @@ impl Owner {
             Ok(1) => false,
             Ok(_) => fatal("unchecked task resume state"),
             Err(mut failure) => {
-                self.cancel_descendants(&mut core, id);
-                // Registration may have succeeded before this activation
-                // faults, even if it never returned Pending.
-                self.cancel_wait(&mut core, id);
                 let task = core.tasks.get_mut(&id).unwrap();
-                if task.creation.1 != 0 {
-                    failure.message.push(b'\n');
-                    // SAFETY: task_create retains only compiler-owned static
-                    // labels, never moving Text or a native stack byte buffer.
-                    failure.message.extend_from_slice(unsafe {
-                        std::slice::from_raw_parts(task.creation.0, task.creation.1)
-                    });
-                }
+                append_creation(&mut failure, task.creation);
                 task.state = State::Faulted(failure);
                 true
             }
@@ -283,15 +331,20 @@ impl Owner {
             // Reload after every previous callback/collection. Neither Core nor
             // the root store remains borrowed while generated code executes.
             let frame = self.roots().get(frame).expect("rooted task frame");
-            // SAFETY: Generated resumes obey catch_fault's stack/unwind contract
-            // and leave no lexical cleanup live when returning Pending.
+            // SAFETY: Generated resumes keep their own cleanup captures in the
+            // rooted frame. Native helper cleanup balances before Pending; on a
+            // fault, the hook drains children before live helper stacks unwind.
             let outcome = unsafe {
-                catch_fault(|| {
-                    let status = resume(frame);
-                    self.validate_return(id, status)
-                        .unwrap_or_else(|message| fault(message));
-                    status
-                })
+                catch_fault_before_drain(
+                    || {
+                        let status = resume(frame);
+                        self.validate_return(id, status)
+                            .unwrap_or_else(|message| fault(message));
+                        status
+                    },
+                    before_resume_fault,
+                    ptr::from_ref(self).cast_mut().cast(),
+                )
             };
             self.finish_resume(id, outcome);
         }
@@ -302,11 +355,37 @@ impl Owner {
         // not propagate it through an installed owner or its outer root scope.
         // SAFETY: No activation, cleanup, or heap borrow is live here.
         let failure = unsafe { catch_fault(|| wait_fault(error)) }.unwrap_err();
+        let mut first = Some(failure);
+        self.cancel_tree(root, &mut first);
         let mut core = self.core.borrow_mut();
-        self.cancel_tree(&mut core, root);
         core.root = None;
         core.ready.clear();
+        first.unwrap()
+    }
+}
+
+unsafe fn before_resume_fault(data: *mut u8) {
+    // SAFETY: drive retains this fixed owner through the entire resume/catch.
+    let owner = unsafe { &*data.cast::<Owner>() };
+    let id = owner
+        .core
+        .borrow()
+        .current
+        .expect("faulting task activation");
+    // The parent diagnostic is already owned by catch_fault. Secondary cleanup
+    // faults cannot replace it, but every descendant still must drain.
+    let mut secondary = None;
+    owner.cancel_descendants(id, &mut secondary);
+    owner.cancel_wait(&mut owner.core.borrow_mut(), id);
+}
+
+fn append_creation(failure: &mut OwnedFault, creation: (*const u8, usize)) {
+    if creation.1 != 0 {
+        failure.message.push(b'\n');
+        // SAFETY: task_create accepts executable-lifetime native labels only.
         failure
+            .message
+            .extend_from_slice(unsafe { std::slice::from_raw_parts(creation.0, creation.1) });
     }
 }
 
@@ -412,6 +491,39 @@ fn parent(core: &Core, child: u64) -> Result<u64, &'static str> {
     Ok(parent)
 }
 
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_cleanup_push(site: i64, callback: CleanupCallback) {
+    edit(|_, core| {
+        let id = core.current.ok_or("task cleanup outside a resume")?;
+        let task = core.tasks.get_mut(&id).unwrap();
+        if site < 0 || !matches!(task.state, State::Running) {
+            return Err("invalid task cleanup registration");
+        }
+        task.cleanups.push(TaskCleanup { site, callback });
+        Ok(())
+    });
+}
+
+// Normal lexical exit pops before a generated direct call to callback(frame).
+// Only fault/cancellation dispatches callbacks indirectly through this stack.
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_cleanup_pop(site: i64) {
+    edit(|_, core| {
+        let id = core.current.ok_or("task cleanup outside a resume")?;
+        let task = core.tasks.get_mut(&id).unwrap();
+        if !matches!(task.state, State::Running)
+            || task
+                .cleanups
+                .last()
+                .is_none_or(|cleanup| cleanup.site != site)
+        {
+            return Err("invalid task cleanup registration order");
+        }
+        task.cleanups.pop();
+        Ok(())
+    });
+}
+
 // Callers validate the old parent and distinct, noncyclic destination before
 // editing. IDs, ready entries, registrations and the entire child subtree stay
 // unchanged; this transfers an obligation, not a frame or a running activation.
@@ -508,6 +620,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
                 parent,
                 children: BTreeSet::new(),
                 returned: None,
+                cleanups: Vec::new(),
                 waiter: None,
                 state: State::Queued,
                 external: None,
@@ -634,12 +747,13 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor
             // SAFETY: Each resume runs under its own live-stack fault boundary.
             Ok(root) => unsafe { owner.drive(root) },
             Err(failure) => {
-                let mut core = owner.core.borrow_mut();
-                if let Some(root) = core.root.take() {
-                    owner.cancel_tree(&mut core, root);
+                let mut first = Some(failure);
+                let root = owner.core.borrow_mut().root.take();
+                if let Some(root) = root {
+                    owner.cancel_tree(root, &mut first);
                 }
-                core.ready.clear();
-                Err(failure)
+                owner.core.borrow_mut().ready.clear();
+                Err(first.unwrap())
             }
         };
         OWNER.set(ptr::null());
@@ -659,3 +773,7 @@ mod wait_tests;
 #[cfg(test)]
 #[path = "tasks_transfer_tests.rs"]
 mod transfer_tests;
+
+#[cfg(test)]
+#[path = "tasks_cleanup_tests.rs"]
+mod cleanup_tests;

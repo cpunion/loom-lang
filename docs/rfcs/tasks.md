@@ -93,11 +93,19 @@ call arguments remain obligations until the call executes.
 Consumption through an unselected `comptime if` remains unsupported: abstract
 checking must establish the transfer rather than drop a live parameter's obligation.
 
-Active `defer`/`scoped` cleanup cannot yet cross an await. Task-bearing aggregates,
+Active `defer`/`scoped` cleanup now crosses await through frame-backed captures.
+The independent `std.resource.NoSuspend` marker forbids live lexical bindings,
+stored aggregate members and already-evaluated operands across await. It also
+rejects async parameters, Task payloads and marker-erasing dyn conversion.
+Function signatures alone do not retain their parameter/result values. Cleanup
+bodies cannot suspend or create/consume Tasks. See the
+[cleanup example](../../compiler/examples/async_cleanup).
+
+Task-bearing aggregates,
 async methods, Task-bearing function values/dynamic calls, asynchronous
 file/socket/worker I/O and joins are explicitly unfinished, not removed requirements.
-Synchronous I/O still blocks the owner thread. Public outcome inspection and
-cleanup across suspended activations remain future work.
+Synchronous I/O still blocks the owner thread. Public outcome inspection remains
+future work.
 
 Loom lowers suspension into ordinary typed constructor/resume functions, using
 private frame/task primitives and control flow; LLVM does not lower source await.
@@ -130,9 +138,20 @@ is installed; without a boundary, a fault still terminates the process. Unknown
 Rust panics, OOM and runtime corruption are not task outcomes. The runtime requires
 `panic=unwind`; this is not a general foreign-exception recovery mechanism.
 
-Captured diagnostics contain no managed pointers and must be released after
-materializing an outcome. The scheduler uses this boundary to propagate task
-faults; it does not preserve stack cleanup across suspended activations.
+Async cleanup captures use authoritative frame fields throughout the resume,
+not snapshots saved only at suspension. Each task retains only cleanup site IDs
+and code pointers. Normal exit pops before a direct callback; cancellation pops,
+reloads the moving frame and catches each callback's faults independently.
+Cleanup-local variables stay ordinary native locals. Unstarted tasks register
+no cleanup and acquire no body-local resources.
+
+On a resume fault, a take-once hook first retires descendants and the current
+wait, before live synchronous-helper cleanup may close borrowed handles. Native
+helper cleanup then drains before stack unwind; the catcher finally drains the
+current task's frame cleanup. All task/root borrows are released across generated
+callbacks. Captured diagnostics contain no managed pointers; secondary cleanup
+faults cannot replace the first failure. No native stack registration survives
+a returned suspension.
 
 Wait registration is a private runtime boundary for absolute monotonic timers,
 borrowed native readiness handles, and externally completed operations. A

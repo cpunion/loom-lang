@@ -51,9 +51,7 @@ fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {
     if !async_signature(context.env, context.signature) {
         return Result.Err(error(context, node, "await requires an async function"))
     }
-    if context.cleanup_head >= 0 {
-        return Result.Err(error(context, node, "await with active scoped or defer cleanup is not yet implemented"))
-    }
+    discard suspension_bindings(context, node)?
     let hint = if expected >= 0 {
         intern(context.env, TypeKind.Task, -1, ints(expected))
     } else {
@@ -106,7 +104,9 @@ fn contains_task(env Environment, ty Int, seen List[Int]) Bool {
 }
 
 fn task_transfer_type(env Environment, signature Signature, ty Int, node Node) Result[Bool, Failure] {
-    if ty <= 5 { return Result.Ok(true) }
+    if ty <= 5 {
+        return Result.Ok(true)
+    }
     var payload = ty
     while direct_task(env, payload) {
         payload = get(get(env.types, payload).arguments, 0)
@@ -117,18 +117,34 @@ fn task_transfer_type(env Environment, signature Signature, ty Int, node Node) R
     if payload != ty && resource_type(env, signature.symbol, signature.requirements, payload, new[Int]())? {
         return Result.Err(failure(env, signature.symbol, node, "Task results containing MustScope resources are not yet implemented"))
     }
+    if payload != ty && marker_type(env, signature.symbol, signature.requirements, payload,
+        resource_concept(env, "NoSuspend"), new[Int]())? {
+        return Result.Err(failure(env, signature.symbol, node, "Task results cannot contain NoSuspend values"))
+    }
     Result.Ok(true)
 }
 
 fn task_signature(env Environment, signature Signature, node Node) Result[Bool, Failure] {
+    let asynchronous = async_signature(env, signature)
+    let marker = if asynchronous {
+        resource_concept(env, "NoSuspend")
+    } else {
+        -1
+    }
     var index = 0
     while index < length(signature.params) {
         discard task_transfer_type(env, signature, get(signature.params, index), node)?
+        if marker >= 0 && !is_static(signature, index) && marker_type(env, signature.symbol,
+            signature.requirements, get(signature.params, index), marker, new[Int]())? {
+            return Result.Err(failure(env, signature.symbol, node, "async parameters cannot contain NoSuspend values"))
+        }
         index = index + 1
     }
-    let output = if async_signature(env, signature) {
+    let output = if asynchronous {
         intern(env, TypeKind.Task, -1, ints(signature.result))
-    } else { signature.result }
+    } else {
+        signature.result
+    }
     task_transfer_type(env, signature, output, node)
 }
 

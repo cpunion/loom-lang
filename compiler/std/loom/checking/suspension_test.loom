@@ -1,0 +1,67 @@
+fn suspension_header() Text {
+    "import std.resource.NoSuspend\nrecord Token { id Int }\nimpl NoSuspend for Token {}\nfn token() Token { Token { id = 1 } }\nasync fn tick() Int { 1 }\n"
+}
+
+fn suspension_reject(source Text, message Text) {
+    match resource_checked(source) {
+        Result.Err(failed) => {
+            if failed.diagnostic.message != message {
+                discard write_error(failed.diagnostic.message)
+                discard write_error(source)
+            }
+            assert failed.diagnostic.message == message
+        }
+        Result.Ok(_) => {
+            discard write_error(source)
+            assert false
+        }
+    }
+}
+
+test fn scoped_and_late_bound_cleanup_can_cross_await() {
+    resource_accept(concat(resource_header(), "async fn tick() Int { 1 }\nasync fn main() { let log = [0]\nscoped guard = make(log)\nvar last = 1\ndefer { push(log, last) }\nassert tick().await == 1\nlast = 2\nassert guard.use() == 7 }"))
+    resource_accept(concat(resource_header(), "import std.result.Result\nasync fn tick() Int { 1 }\nasync fn work() Result[Int, Text] { scoped guard = make([0])\ndiscard tick().await\nlet number Result[Int, Text] = Result.Err(\"failed\")\nResult.Ok(number?) }"))
+    resource_accept(concat(resource_header(), "async fn tick() Int { 1 }\nasync fn main() { var n = 0\nwhile n < 2 { scoped guard = make([0])\ndiscard tick().await\nn = n + 1\nif n == 1 { continue }\nbreak } }"))
+    resource_reject(concat(resource_header(), "async fn tick() Int { 1 }\nasync fn bad() { scoped guard = make([0])\ndiscard tick().await\nlet copied = guard }"))
+    resource_reject(concat(resource_header(), "async fn tick() Int { 1 }\nasync fn bad() { scoped guard = make([0])\ndiscard tick().await\nguard.dispose() }"))
+}
+
+test fn no_suspend_checks_lexical_bindings_without_extending_completed_scopes() {
+    let scope_message = "a NoSuspend value is still in scope; leave its block before awaiting"
+    suspension_reject(concat(suspension_header(), "async fn main() { let held = token()\ndiscard tick().await }"), scope_message)
+    suspension_reject(concat(suspension_header(), "async fn main() { let held = token()\ndefer { discard held.id }\n{ let held = 0\ndiscard tick().await } }"), scope_message)
+    suspension_reject(concat(resource_header(), "import std.resource.NoSuspend\nimpl NoSuspend for Handle {}\nasync fn tick() Int { 1 }\nasync fn main() { scoped held = make([0])\ndiscard tick().await }"), scope_message)
+    suspension_reject(concat(suspension_header(), "record Wrapped[T] { value T }\nasync fn main() { let held = Wrapped { value = token() }\ndiscard tick().await }"), scope_message)
+    resource_accept(concat(suspension_header(), "async fn main() { { let held = token()\ndiscard held.id }\ndefer { let created_at_exit = token()\ndiscard created_at_exit.id }\ndiscard tick().await }"))
+    resource_accept(concat(suspension_header(), "record Metadata[T] { id Int }\nasync fn main() { let metadata = Metadata[Token] { id = 1 }\ndiscard tick().await\nassert metadata.id == 1 }"))
+    resource_accept(concat(resource_header(), "import std.resource.NoSuspend\nimpl NoSuspend for Handle {}\nasync fn tick() Int { 1 }\nasync fn main() { { scoped held = make([0]) }\ndiscard tick().await }"))
+}
+
+test fn no_suspend_operands_cannot_hide_before_a_later_await() {
+    let pending = "a NoSuspend operand is still pending; finish its operation before awaiting"
+    let calls = concat(suspension_header(), "fn consume(value Token, extra Int) Int { value.id + extra }\n")
+    suspension_reject(concat(calls, "async fn main() { discard consume(token(), tick().await) }"), pending)
+    suspension_reject(concat(calls, "async fn main() { let callback = consume\ndiscard callback(token(), { if true { tick().await } else { 0 } }) }"), pending)
+    suspension_reject(concat(calls, "record Pair { first Token\nsecond Int }\nasync fn main() { discard Pair { first = token()\nsecond = tick().await } }"), pending)
+    suspension_reject(concat(calls, "async fn main() { discard [token(), { discard tick().await\ntoken() }] }"), pending)
+    suspension_reject(concat(calls, "async fn main() { discard [token()][tick().await] }"), pending)
+    resource_accept(concat(calls, "async fn main() { discard consume({ discard tick().await\ntoken() }, 0)\ndiscard token()\ndiscard tick().await }"))
+}
+
+test fn no_suspend_cannot_enter_task_frames_or_lose_its_marker_in_dyn() {
+    let parameter = "async parameters cannot contain NoSuspend values"
+    let output = "Task results cannot contain NoSuspend values"
+    suspension_reject(concat(suspension_header(), "async fn bad(value Token) {}"), parameter)
+    suspension_reject(concat(suspension_header(), "async fn bad[T NoSuspend](value T) {}"), parameter)
+    suspension_reject(concat(suspension_header(), "async fn identity[T](value T) T { value }\nasync fn main() { discard identity(token()).await }"), output)
+    suspension_reject(concat(suspension_header(), "async fn bad() Token { token() }"), output)
+    suspension_reject(concat(suspension_header(), "fn bad(value Task[Task[Token]]) Task[Task[Token]] { value }"), output)
+    suspension_reject(concat(suspension_header(), "concept Read { fn read(self Self) Int }\nimpl Read for Token { fn read(self Token) Int { self.id } }\nfn erased() dyn Read { token() }"), "NoSuspend values cannot be erased into dyn")
+    resource_accept(concat(suspension_header(), "fn identity(value Token) Token { value }\nasync fn work(factory fn() Token) { discard tick().await\ndiscard identity(factory()) }\nasync fn main() { work(token).await }"))
+    let files = source_files("import std.resource.NoSuspend\nfn main() {}")
+    push(files, source_file("std.resource", "pub concept NoSuspend { fn invalid(self Self) }", true))
+    assert match checked(files) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+}

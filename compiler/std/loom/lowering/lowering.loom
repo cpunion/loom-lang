@@ -131,6 +131,10 @@ fn async_function(program Program, id Int) {
         result = source.result
         span = source.span
     }
+    let source_body = remap(source.body, 1)
+    let captures = flags(length(locals))
+    let cleanups = new[CleanupPlan]()
+    cleanup_plans(source_body, locals, cleanups, captures)
     let first = state(graph)
     index = 0
     while index < length(source.preconditions) {
@@ -138,7 +142,7 @@ fn async_function(program Program, id Int) {
         append(graph, first, guard)
         index = index + 1
     }
-    let output = evaluate(graph, remap(source.body, 1), first, Loop {
+    let output = evaluate(graph, source_body, first, Loop {
             exit = -1
             again = -1
         })
@@ -158,6 +162,13 @@ fn async_function(program Program, id Int) {
     }
     let live = flows(graph)
     let needed = flags(length(graph.locals))
+    index = 0
+    while index < length(captures) {
+        if get(captures, index) {
+            set(needed, index, true)
+        }
+        index = index + 1
+    }
     index = 0
     while index < length(source.params) {
         set(needed, index + 1, true)
@@ -209,8 +220,40 @@ fn async_function(program Program, id Int) {
             variants = new[Variant]()
             constraint = new[Expr]()
         })
+    let resume_body = if length(cleanups) == 0 {
+        emitted(graph, spills, live)
+    } else {
+        let saved = clone(spills)
+        index = 0
+        while index < length(captures) {
+            // These fields are authoritative, not snapshots. Never restore a
+            // stale local or save it over a cleanup's write to the frame.
+            if get(captures, index) {
+                set(saved, index, -1)
+            }
+            index = index + 1
+        }
+        let callbacks = new[Int]()
+        index = 0
+        while index < length(cleanups) {
+            push(callbacks, length(program.functions) + index)
+            index = index + 1
+        }
+        let rewrite = CleanupRewrite {
+            frame = frame
+            callback_type = function_type(program.types, ints(frame), 0)
+            fields = spills
+            captures = captures
+            source_locals = graph.locals
+            locals = new[Int]()
+            plans = cleanups
+            callbacks = callbacks
+        }
+        cleanup_callbacks(program, source, rewrite)
+        cleanup_rewrite(rewrite, emitted(graph, saved, live))
+    }
     let resume = length(program.functions)
-    push(program.functions, generated(source, ints(frame), 1, graph.locals, emitted(graph, spills, live)))
+    push(program.functions, generated(source, ints(frame), 1, graph.locals, resume_body))
     let task = shape(program.types, TypeKind.Task, ints(source.result))
     let callback = node(ExprKind.FunctionRef, function_type(program.types, ints(frame), 1), source.span, resume, new[Expr]())
     let initializers = new[Expr]()

@@ -30,6 +30,7 @@ same-directory tests, and format/check/build/test/run tasks. See the
 - [Write and test a multi-package file tool](compiler/examples/wordcount/README.md)
 - [Try typed tasks and postfix await](compiler/examples/tasks/README.md)
 - [Suspend tasks with real timers](compiler/examples/timers/README.md)
+- [Keep scoped cleanup across await](compiler/examples/async_cleanup/README.md)
 - [Build and run the compiler](compiler/README.md)
 - [Use Loom syntax and analysis libraries](compiler/loom/README.md#public-syntax-libraries)
 - [Format source and get editor feedback](compiler/loom/README.md#formatting-and-editor-feedback)

@@ -89,6 +89,8 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TaskCreate
         | Primitive::TaskAdopt
         | Primitive::TaskReturn
+        | Primitive::TaskCleanupPush
+        | Primitive::TaskCleanupPop
         | Primitive::TaskWaitTimer
         | Primitive::MonotonicNs
         | Primitive::TaskAwait
