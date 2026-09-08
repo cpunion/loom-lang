@@ -14,7 +14,7 @@ test fn development_tools_use_one_executable_relative_checkout() {
     let invoked = join_path(join_path(root, "target"), compiler_name)
     match development_tools(invoked, "", "", true) {
         Result.Ok(value) => {
-            assert value.std_root == join_path(root, "compiler/std")
+            assert value.std_root == join_path(join_path(root, "compiler"), "std")
             let native_name = if is_windows_path(root) {
                 "loom-native.exe"
             } else {
@@ -53,4 +53,6 @@ test fn executable_directory_keeps_native_root_spelling() {
     assert executable_directory("/loom") == "/"
     assert executable_directory("C:\\checkout\\target\\loom.exe") == "C:\\checkout\\target\\"
     assert executable_directory("\\\\?\\C:\\checkout\\target\\loom.exe") == "\\\\?\\C:\\checkout\\target\\"
+    assert checkout_source("\\\\?\\C:\\checkout", "std") == "\\\\?\\C:\\checkout\\compiler\\std"
+    assert checkout_source("\\\\?\\UNC\\server\\share", "loom") == "\\\\?\\UNC\\server\\share\\compiler\\loom"
 }
