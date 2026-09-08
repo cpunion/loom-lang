@@ -133,6 +133,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/bytes",
         "std/hash/sha256",
         "std/list",
+        "std/list/transfer",
         "std/map",
         "std/set",
         "std/option",

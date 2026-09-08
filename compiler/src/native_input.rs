@@ -871,6 +871,12 @@ impl Converter<'_> {
                     .map(|child| self.expr(child))
                     .collect::<Result<Vec<_>>>()?;
                 self.task_operation(operation, &arguments, ty)?;
+                if operation == Primitive::ListPop {
+                    match arguments[0].ty {
+                        Type::List(id) if self.program.lists[id] == ty => {}
+                        _ => return Err("checked list pop type mismatch".into()),
+                    }
+                }
                 if matches!(
                     operation,
                     Primitive::ProcessCaptureConfigured | Primitive::ProcessCaptureInputConfigured
@@ -1205,6 +1211,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "list_get" => P::ListGet,
         "list_push" => P::ListPush,
         "list_set" => P::ListSet,
+        "list_pop" => P::ListPop,
         "open" => P::Open,
         "create" => P::Create,
         "read" => P::Read,
@@ -1267,6 +1274,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::BytesUtf8
         | P::BytesTextCopy
         | P::ListLen
+        | P::ListPop
         | P::Open
         | P::Create
         | P::Close

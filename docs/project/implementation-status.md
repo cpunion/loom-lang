@@ -54,8 +54,16 @@ Native typed matches adopt and retain only the active variant's Tasks, including
 nested records/tuples and Task-bearing errors. Empty variants create no tasks.
 Classification caches follow each checking/evaluation/lowering session, not
 persistent compiler state. See the [enum example](../../compiler/examples/task_enums).
-Socket adapters, general worker operations, joins and Task-bearing Lists
-remain unfinished; tuple transfer does not implement tuple-await sugar.
+Task-bearing Lists transfer one dynamic group of obligations. Source
+`std.list.transfer.append` returns the same header; `take_last` returns
+`Option[(T, List[T])]`, consuming an empty group or transferring its last element
+and remaining group. Ordinary Lists retain shared mutation; Task-bearing elements
+cannot be copied through indexing or ordinary get/push/set. Memoized typed helper
+functions visit recursive enum/List layouts without a runtime container visitor.
+Unconditional loops merge actual break states and may consume the group before
+breaking or returning. See the [list example](../../compiler/examples/task_lists).
+Socket adapters, general worker operations and joins remain unfinished; sequential
+await loops do not provide multi-task fault observation or tuple-await sugar.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;

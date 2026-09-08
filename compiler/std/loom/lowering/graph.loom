@@ -320,7 +320,7 @@ fn evaluate(graph Graph, source Expr, start Int, loop Loop) Value {
             jump(graph, iteration.state, condition)
         }
         return Value {
-            state = if checked.state < 0 {
+            state = if checked.state < 0 || !source.falls {
                 -1
             } else {
                 after

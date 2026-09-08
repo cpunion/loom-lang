@@ -749,6 +749,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::ListNew => {
                 return Ok(Some(self.list_new(result, 0)?.into()));
             }
+            Primitive::ListPop => {
+                return Ok(Some(self.list_pop(values[0].into_pointer_value(), result)?));
+            }
             Primitive::ListGet | Primitive::ListSet => {
                 let element = if operation == Primitive::ListGet {
                     native_type(self.context, self.program, result)?
@@ -906,12 +909,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 }
             }
         }
-        if self.live()
+        let value = if self.live()
             && let Some(tail) = &block.tail
         {
-            return self.expr(tail);
+            self.expr(tail)?
+        } else {
+            None
+        };
+        if self.live() && !block.falls_through {
+            self.builder.build_unreachable()?;
+            return Ok(None);
         }
-        Ok(None)
+        Ok(value)
     }
 
     fn expr(&mut self, expr: &checked::Expr) -> NativeResult<Option<BasicValueEnum<'ctx>>> {

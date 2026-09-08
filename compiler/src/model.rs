@@ -89,6 +89,7 @@ pub enum Primitive {
     ListGet,
     ListPush,
     ListSet,
+    ListPop,
     Open,
     Create,
     Read,

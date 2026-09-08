@@ -1,0 +1,37 @@
+fn unconditional_loop(condition Expr) Bool {
+    condition.kind == ExprKind.Bool && condition.text == "true"
+}
+
+// A nested loop owns breaks in its body, but its condition is evaluated in
+// the enclosing loop. Cleanup cannot transfer control to that enclosing loop.
+fn breaks_loop(value Expr) Bool {
+    if value.kind == ExprKind.Break {
+        return true
+    }
+    if value.kind == ExprKind.Defer || value.kind == ExprKind.Cleanup {
+        return false
+    }
+    if value.kind == ExprKind.While {
+        return breaks_loop(get(value.children, 0))
+    }
+    var index = 0
+    while index < length(value.children) {
+        if breaks_loop(get(value.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var child = 0
+        while child < length(body) {
+            if breaks_loop(get(body, child)) {
+                return true
+            }
+            child = child + 1
+        }
+        index = index + 1
+    }
+    false
+}

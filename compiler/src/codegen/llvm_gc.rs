@@ -124,6 +124,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::ListLen
         | Primitive::ListGet
         | Primitive::ListSet
+        | Primitive::ListPop
         | Primitive::Open
         | Primitive::Create
         | Primitive::Write

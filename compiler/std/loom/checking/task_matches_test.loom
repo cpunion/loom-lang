@@ -30,5 +30,5 @@ test fn task_enums_preserve_owner_purity_and_resource_rules() {
     task_rejected(concat(task_enum_header(), "fn main() { discard comptime { pass[Choice[Task[Int]]] } }"), "compile-time evaluation cannot transfer tasks")
     resource_reject(concat(resource_header(), "enum Held { Some(Task[Handle]) None }\nfn transfer(value Held) Held { value }"))
     suspension_reject(concat(suspension_header(), "enum Held { Some(Task[Token]) None }\nfn transfer(value Held) Held { value }"), "Task results cannot contain NoSuspend values")
-    rejects(concat(task_enum_header(), "enum Shared { Some(List[Task[Int]]) None }\nfn transfer(value Shared) Shared { value }"))
+    discard accepted(concat(task_enum_header(), "enum Shared { Some(List[Task[Int]]) None }\nfn transfer(value Shared) Shared { value }"))
 }

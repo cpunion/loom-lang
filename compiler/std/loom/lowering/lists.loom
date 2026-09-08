@@ -1,0 +1,33 @@
+// Preserve library-owned names/policy. The private operations expand to normal
+// typed control flow; the backend only needs checked removal of a final slot.
+fn list_function(types List[Type], source Function) Function {
+    let name = source.runtime_name
+    if name != "list_append" && name != "list_take" {
+        return source
+    }
+    let list = node(ExprKind.Local, get(source.params, 0), source.span, 0, new[Expr]())
+    if name == "list_append" {
+        let element = node(ExprKind.Local, get(source.params, 1), source.span, 1, new[Expr]())
+        return function_body(source, block(pair(operation("list_push", 0, source.span, pair(list, element)), list),
+                source.result, source.span, true))
+    }
+    let shape = get(types, source.result)
+    let present = if length(get(shape.variants, 0).fields) == 1 {
+        0
+    } else {
+        1
+    }
+    let pair_type = get(get(shape.variants, present).fields, 0)
+    let element = get(get(types, pair_type).fields, 0).ty
+    let fields = pair(node(ExprKind.Field, element, source.span, 0,
+            one(operation("list_pop", element, source.span, one(list)))),
+        node(ExprKind.Field, list.ty, source.span, 1, one(list)))
+    let pair_value = node(ExprKind.Record, pair_type, source.span, -1, fields)
+    let yes = node(ExprKind.Variant, source.result, source.span, present, one(pair_value))
+    let no = node(ExprKind.Variant, source.result, source.span, 1 - present, new[Expr]())
+    let condition = labeled(node(ExprKind.Binary, 2, source.span, -1,
+            pair(operation("list_len", 1, source.span, one(list)), integer(0, source.span))), ">")
+    let branches = pair(condition, block(one(yes), source.result, source.span, true))
+    push(branches, block(one(no), source.result, source.span, true))
+    function_body(source, block(one(node(ExprKind.If, source.result, source.span, -1, branches)), source.result, source.span, true))
+}

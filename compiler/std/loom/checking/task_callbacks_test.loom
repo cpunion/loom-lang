@@ -26,7 +26,7 @@ test fn indirect_task_calls_preserve_owner_and_one_shot_boundaries() {
 test fn task_callbacks_do_not_erase_resource_or_private_wait_rules() {
     suspension_reject(concat(suspension_header(), "async fn wrong(value Token) Int { value.id }\nfn main() { discard wrong }"), "async parameters cannot contain NoSuspend values")
     resource_reject(concat(resource_header(), "async fn wrong(value Handle) Int { 1 }\nfn main() { discard wrong }"))
-    rejects(concat(task_callback_header(), "fn wrong(callback fn() Task[List[Task[Int]]]) Task[List[Task[Int]]] { callback() }"))
+    discard accepted(concat(task_callback_header(), "fn forward(callback fn() Task[List[Task[Int]]]) Task[List[Task[Int]]] { callback() }"))
     let files = source_files("import std.time.bad\nfn main() { bad() }")
     push(files, source_file("std.time", "async intrinsic fn timer_until_ns(deadline Int)\npub fn bad() { discard timer_until_ns }", true))
     assert match checked(files) {

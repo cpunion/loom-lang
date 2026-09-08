@@ -22,6 +22,7 @@ record TaskFlow {
     pending List[Int]
     no_suspend Int
     loop_entry List[Int]
+    loop_exits List[List[Int]]
     loop_pending Int
     cleanup Bool
 }
@@ -54,6 +55,7 @@ fn task_branch(flow TaskFlow) TaskFlow {
         pending = task_states(flow.pending)
         no_suspend = flow.no_suspend
         loop_entry = flow.loop_entry
+        loop_exits = flow.loop_exits
         loop_pending = flow.loop_pending
         cleanup = flow.cleanup
     }
@@ -156,9 +158,6 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     if value.kind == ExprKind.Suspend && shape.kind == TypeKind.Task {
         return Result.Err(task_error(flow, value, "private async intrinsics must be awaited directly"))
     }
-    if !task && contains_task(flow.context.env, value.ty, new[Int]()) {
-        return Result.Err(task_error(flow, value, "storing tasks in lists is not yet implemented"))
-    }
     if flow.cleanup &&(task || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend) {
         return Result.Err(task_error(flow, value, "task creation, reading or transfer in cleanup is not yet implemented"))
     }
@@ -187,7 +186,8 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     }
     // A deferred call retains its runtime arguments during abstract checking.
     // Other Deferred expressions have no children and cannot hide transfers.
-    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall || value.kind == ExprKind.IndirectCall || value.kind == ExprKind.Deferred || value.kind == ExprKind.Record || value.kind == ExprKind.Variant {
+    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall || value.kind == ExprKind.IndirectCall || value.kind == ExprKind.Deferred || value.kind == ExprKind.Record || value.kind == ExprKind.Variant || value.kind == ExprKind.List ||
+        (value.kind == ExprKind.Intrinsic && (value.text == "list_append" || value.text == "list_take")) {
         return task_arguments(flow, value)
     }
     if value.kind == ExprKind.Let || value.kind == ExprKind.Assign {
@@ -288,6 +288,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         if !same(before, flow.locals) || pending != get(flow.pending, 0) {
             return Result.Err(task_error(flow, value, "loop conditions must preserve existing task consumption state"))
         }
+        let exits = new[List[Int]]()
         let branch = TaskFlow {
             context = flow.context
             locals = task_states(before)
@@ -295,6 +296,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
             pending = task_states(flow.pending)
             no_suspend = flow.no_suspend
             loop_entry = before
+            loop_exits = exits
             loop_pending = pending
             cleanup = flow.cleanup
         }
@@ -303,11 +305,37 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         if body.falls &&(!same(before, branch.locals) || pending != get(branch.pending, 0)) {
             return Result.Err(task_error(flow, value, "loop bodies must consume their own tasks and preserve tasks from outside the loop"))
         }
+        var selected = !unconditional_loop(get(value.children, 0))
+        var exit = 0
+        while exit < length(exits) {
+            let state = get(exits, exit)
+            if selected && !same(flow.locals, state) {
+                return Result.Err(task_error(flow, value, "task consumption must agree on all continuing loop exits"))
+            }
+            var local = 0
+            while local < length(state) {
+                set(flow.locals, local, get(state, local))
+                local = local + 1
+            }
+            selected = true
+            exit = exit + 1
+        }
         return Result.Ok(false)
     }
     if value.kind == ExprKind.Break || value.kind == ExprKind.Continue {
-        if !same(flow.locals, flow.loop_entry) || get(flow.pending, 0) != flow.loop_pending {
+        if get(flow.pending, 0) != flow.loop_pending ||
+            (value.kind == ExprKind.Continue && !same(flow.locals, flow.loop_entry)) {
             return Result.Err(task_error(flow, value, "loop exits must consume loop-local tasks and preserve outer tasks"))
+        }
+        if value.kind == ExprKind.Break {
+            var index = 0
+            while index < length(flow.locals) {
+                if get(flow.locals, index) != 0 && get(flow.loop_entry, index) == 0 {
+                    return Result.Err(task_error(flow, value, "loop exits must consume loop-local tasks and preserve outer tasks"))
+                }
+                index = index + 1
+            }
+            push(flow.loop_exits, task_states(flow.locals))
         }
         return Result.Ok(false)
     }
@@ -319,6 +347,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
             pending = task_states(flow.pending)
             no_suspend = flow.no_suspend
             loop_entry = flow.loop_entry
+            loop_exits = new[List[Int]]()
             loop_pending = flow.loop_pending
             cleanup = true
         }
@@ -400,6 +429,7 @@ fn task_flow(context Context, function Function) Result[Bool, Failure] {
             -1
         }
         loop_entry = new[Int]()
+        loop_exits = new[List[Int]]()
         loop_pending = 0
         cleanup = false
     }

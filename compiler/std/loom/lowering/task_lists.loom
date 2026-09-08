@@ -1,0 +1,88 @@
+// One typed helper per List/owner shape prevents recursively expanding an
+// indirect source layout. The loop visits elements; inline fields remain direct.
+fn task_list_visit(visits TaskVisits, value Expr, owner Expr, returning Bool) Expr {
+    let owner_type = if returning {
+        0
+    } else {
+        owner.ty
+    }
+    var index = 0
+    while index < length(visits.helpers) {
+        let helper = get(visits.helpers, index)
+        if helper.list == value.ty && helper.owner == owner_type {
+            return node(ExprKind.Call, 0, value.span, helper.function,
+                if returning {
+                    one(value)
+                } else {
+                    pair(value, owner)
+                })
+        }
+        index = index + 1
+    }
+    let functions = visits.program.functions
+    let id = length(functions)
+    let params = ints(value.ty)
+    if !returning {
+        push(params, owner.ty)
+    }
+    let locals = new[Local]()
+    index = 0
+    while index < length(params) {
+        push(locals, Local {
+                name = ""
+                ty = get(params, index)
+                mutable = false
+                is_scoped = false
+            })
+        index = index + 1
+    }
+    let position = length(locals)
+    push(locals, Local {
+            name = ""
+            ty = 1
+            mutable = true
+            is_scoped = false
+        })
+    let template = Function {
+        is_async = false
+        symbol = -1
+        arguments = new[Int]()
+        params = params
+        result = 0
+        locals = locals
+        preconditions = new[Expr]()
+        postconditions = new[Expr]()
+        result_local = -1
+        body = empty(value.span)
+        runtime_name = ""
+        span = value.span
+    }
+    push(functions, template)
+    push(visits.helpers, TaskVisitor {
+            list = value.ty
+            owner = owner_type
+            function = id
+        })
+    let list = node(ExprKind.Local, value.ty, value.span, 0, new[Expr]())
+    let offset = node(ExprKind.Local, 1, value.span, position, new[Expr]())
+    let owner_value = if returning {
+        empty(value.span)
+    } else {
+        node(ExprKind.Local, owner.ty, value.span, 1, new[Expr]())
+    }
+    let element = get(get(visits.program.types, value.ty).arguments, 0)
+    let actions = one(task_visit(visits, locals,
+            operation("list_get", element, value.span, pair(list, offset)), owner_value, returning))
+    let increment = labeled(node(ExprKind.Binary, 1, value.span, -1, pair(offset, integer(1, value.span))), "+")
+    push(actions, node(ExprKind.Assign, 0, value.span, position, one(increment)))
+    let condition = labeled(node(ExprKind.Binary, 2, value.span, -1,
+            pair(offset, operation("list_len", 1, value.span, one(list)))), "<")
+    let body = one(node(ExprKind.Let, 0, value.span, position, one(integer(0, value.span))))
+    push(body, node(ExprKind.While, 0, value.span, -1, pair(condition, block(actions, 0, value.span, true))))
+    set(functions, id, function_body(template, block(body, 0, value.span, true)))
+    node(ExprKind.Call, 0, value.span, id, if returning {
+            one(value)
+        } else {
+            pair(value, owner)
+        })
+}

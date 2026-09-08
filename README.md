@@ -36,6 +36,7 @@ same-directory tests, and format/check/build/test/run tasks. See the
 - [Pass and store Task callbacks](compiler/examples/task_callbacks/README.md)
 - [Transfer Task fields through tuples and records](compiler/examples/task_aggregates/README.md)
 - [Match and propagate Tasks in enums](compiler/examples/task_enums/README.md)
+- [Create and consume dynamic Task lists](compiler/examples/task_lists/README.md)
 - [Build and run the compiler](compiler/README.md)
 - [Use Loom syntax and analysis libraries](compiler/loom/README.md#public-syntax-libraries)
 - [Format source and get editor feedback](compiler/loom/README.md#formatting-and-editor-feedback)

@@ -1,0 +1,53 @@
+import std.list.get
+import std.list.push
+import std.list.length
+
+// Follow stored values, not nominal parameters or callback/dyn signatures.
+// The caller owns a fresh scratch set for each independent reachability query.
+pub fn contains_tasks(types List[Type], ty Int, seen List[Int]) Bool {
+    if ty <= 5 {
+        return false
+    }
+    var index = 0
+    while index < length(seen) {
+        if get(seen, index) == ty {
+            return false
+        }
+        index = index + 1
+    }
+    push(seen, ty)
+    let shape = get(types, ty)
+    if shape.kind == TypeKind.Task {
+        return true
+    }
+    if shape.kind == TypeKind.List {
+        index = 0
+        while index < length(shape.arguments) {
+            if contains_tasks(types, get(shape.arguments, index), seen) {
+                return true
+            }
+            index = index + 1
+        }
+        return false
+    }
+    index = 0
+    while index < length(shape.fields) {
+        if contains_tasks(types, get(shape.fields, index).ty, seen) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if contains_tasks(types, get(fields, field), seen) {
+                return true
+            }
+            field = field + 1
+        }
+        index = index + 1
+    }
+    false
+}

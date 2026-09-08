@@ -1,0 +1,61 @@
+fn task_list_files(text Text) List[TestFile] {
+    let files = source_files(concat("import std.transfer.append\nimport std.transfer.take\nimport std.transfer.Option\nasync fn item(value Int) Int { value }\n", text))
+    push(files, source_file("std.transfer", "pub enum Option[T] { None Some(T) }\nintrinsic fn list_append[T](values List[T], value T) List[T]\nintrinsic fn list_take[T](values List[T]) Option[(T, List[T])]\npub fn append[T](values List[T], value T) List[T] { list_append(values, value) }\npub fn take[T](values List[T]) Option[(T, List[T])] { list_take(values) }", true))
+    files
+}
+
+fn task_list_checked(text Text, valid Bool) {
+    match checked(task_list_files(text)) {
+        Result.Ok(_) => {
+            assert valid
+        }
+        Result.Err(failed) => {
+            if valid {
+                discard write_error(failed.diagnostic.message)
+            }
+            assert !valid
+        }
+    }
+}
+
+test fn task_lists_transfer_dynamic_groups_without_copying_elements() {
+    task_list_checked("fn start() List[Task[Int]] { append[Task[Int]]([], item(1)) }\nasync fn drain(values List[Task[Int]]) { var pending = values\nwhile true { match take(pending) { Option.Some(pair) => { let task, rest = pair\npending = rest\ndiscard task.await }, Option.None => { break } } } }\nasync fn main() { drain(start()).await }", true)
+    discard accepted("enum Tree { Branch(List[Tree]) Leaf(Task[Int]) }\nfn pass(value List[Tree]) List[Tree] { value }\nfn nested(value Task[List[Tree]]) Task[List[Tree]] { value }")
+    rejects("enum Tree { Branch(List[Tree]) Leaf(Task[Int]) }\nfn pass(value List[Tree]) List[Tree] { value }\nfn drop(value List[Tree]) {}")
+    task_list_checked("fn drop(values List[Task[Int]]) {}", false)
+    task_list_checked("fn copy(values List[Task[Int]]) (List[Task[Int]], List[Task[Int]]) { (values, values) }", false)
+    task_list_checked("async fn wrong() { var values = [item(1)]\nvalues = [] }", false)
+    task_list_checked("async fn wrong() { let values = [item(1)]\ndiscard values[0].await }", false)
+    task_list_checked("async fn wrong() { let values = [item(1)]\nmatch take(values) { Option.Some(_) => {}, Option.None => {} } }", false)
+    task_list_checked("async fn wrong(flag Bool) List[Task[Int]] { [item(1), { if flag { return [] }\nitem(2) }] }", false)
+    task_list_checked("fn empty() List[Task[Int]] { [] }\nasync fn wrong() List[Task[Int]] { comptime { empty() } }", false)
+    resource_reject(concat(resource_header(), "fn pass(value List[Task[Handle]]) List[Task[Handle]] { value }"))
+    suspension_reject(concat(suspension_header(), "fn pass(value List[Task[Token]]) List[Task[Token]] { value }"), "Task results cannot contain NoSuspend values")
+}
+
+test fn task_loops_merge_consumption_at_their_actual_exits() {
+    let prefix = "async fn item() Int { 1 }\n"
+    discard accepted(concat(prefix, "async fn run(flag Bool) { let task = item()\nwhile true { if flag { discard task.await\nbreak } else { discard task.await\nbreak } } }"))
+    discard accepted(concat(prefix, "async fn run() Int { let task = item()\nwhile true { return task.await } }"))
+    discard accepted(concat(prefix, "async fn run(flag Bool) { let task = item()\nwhile true { while flag { break }\ndiscard task.await\nbreak } }"))
+    let exits = "task consumption must agree on all continuing loop exits"
+    task_rejected(concat(prefix, "async fn run(flag Bool) { let task = item()\nwhile flag { discard task.await\nbreak } }"), exits)
+    task_rejected(concat(prefix, "async fn run(flag Bool) { let task = item()\nwhile true { if flag { break }\ndiscard task.await\nbreak } }"), exits)
+    rejects(concat(prefix, "async fn run() { let task = item()\nwhile true { discard task.await\ncontinue } }"))
+    rejects(concat(prefix, "async fn run() { let task = item()\nwhile true { discard task.await } }"))
+}
+
+test fn list_take_intrinsic_validates_structure_not_enum_spelling() {
+    let files = source_files("import std.transfer.take\nfn main() { discard take([1]) }")
+    push(files, source_file("std.transfer", "enum Taken[T] { Value((T, List[T])) Empty }\nintrinsic fn list_take[T](values List[T]) Taken[T]\npub fn take[T](values List[T]) Taken[T] { list_take(values) }", true))
+    assert match checked(files) {
+        Result.Ok(_) => true,
+        Result.Err(_) => false
+    }
+    let invalid = new[TestFile]()
+    push(invalid, source_file("std.transfer", "enum Bad[T] { Value((List[T], T)) Empty }\nintrinsic fn list_take[T](values List[T]) Bad[T]", true))
+    assert match checked(invalid) {
+        Result.Err(failed) => failed.diagnostic.message == "list_take requires an optional (element, remaining List) result",
+        Result.Ok(_) => false
+    }
+}

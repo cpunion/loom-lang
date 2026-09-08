@@ -1,0 +1,17 @@
+import std.option.Option
+
+intrinsic fn list_append[T](values List[T], value T) List[T]
+
+intrinsic fn list_take[T](values List[T]) Option[(T, List[T])]
+
+// Both operations mutate the shared header. Returning it also permits transfer
+// of a one-shot List without copying its Task-bearing elements.
+pub fn append[T](values List[T], value T) List[T] {
+    list_append(values, value)
+}
+
+// Empty consumes an empty list; Some returns the last element and the same
+// shortened header. Removed elements are no longer traced by the list.
+pub fn take_last[T](values List[T]) Option[(T, List[T])] {
+    list_take(values)
+}

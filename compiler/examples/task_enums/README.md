@@ -30,4 +30,5 @@ no Task. A named catchall binding keeps the whole enum's ordinary obligations.
 
 `Result?` uses the same matching rules: it can extract a Task from `Ok` or return
 a Task-bearing `Err` without awaiting it. Ordinary errors are values, not Task
-faults. Task-bearing Lists and join APIs remain unfinished.
+faults. [Task-bearing Lists](../task_lists) also support transfer; join APIs remain
+unfinished.

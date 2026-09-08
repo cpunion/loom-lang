@@ -4,6 +4,8 @@ import std.loom.typed.ExprKind
 import std.loom.typed.Local
 import std.loom.typed.TypeKind
 import std.loom.eval.Value
+import std.loom.eval.list_length
+import std.loom.eval.list_element
 import std.list.new
 import std.list.get
 import std.list.set
@@ -56,8 +58,10 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
     // revisit an ID, while aggregate fields retain ordinary value semantics.
     if shared || kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum || kind == TypeKind.Dyn {
         var index = 0
-        while index < length(value.items) {
-            discard reify_visit(state, get(value.items, index), depth + 1)?
+        let count = if kind == TypeKind.List { list_length(value) } else { length(value.items) }
+        while index < count {
+            let item = if kind == TypeKind.List { list_element(value, index) } else { get(value.items, index) }
+            discard reify_visit(state, item, depth + 1)?
             index = index + 1
         }
     }
@@ -156,9 +160,11 @@ fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
     while index < length(state.objects) {
         let object = get(state.objects, index)
         var item = 0
-        while item < length(object.value.items) {
+        let count = if object.value.ty == 4 { length(object.value.items) } else { list_length(object.value) }
+        while item < count {
             discard reify_spend(state, 0, 2)?
-            let content = reify_value(state, get(object.value.items, item), 0)?
+            let value = if object.value.ty == 4 { get(object.value.items, item) } else { list_element(object.value, item) }
+            let content = reify_value(state, value, 0)?
             let reference = atom(ExprKind.Local, object.value.ty, node, object.local)
             push(body, expression(ExprKind.Intrinsic, 0, node,
                 if object.value.ty == 4 { "bytes_push" } else { "list_push" }, -1, pair(reference, content), true))

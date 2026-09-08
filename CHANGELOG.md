@@ -5,6 +5,13 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Transfer Task-bearing Lists, including recursive enum/List payloads. Add
+  source `std.list.transfer.append/take_last`, retaining ordinary shared-header
+  semantics and compile-time removal. Typed visitor functions adopt/retain each
+  child without a new runtime ABI. Merge Task consumption across actual loop
+  exits; a non-returning `while true` needs no unreachable return. Joins remain
+  separate work requiring multi-task completion observation.
+
 - Support Task-bearing enum payloads through ordinary matching, Option/Result
   and error propagation. Transfer only active-variant children using typed
   matches; empty variants create no Tasks. Reject wildcard drops and duplicate
@@ -12,14 +19,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 - Support Task fields in tuples and records, with independent field consumption,
   whole-value transfer, tuple destructuring and multiple returned subtrees.
-  Reuse typed native projections and the existing child set; keep shared Lists
-  and join APIs as open composition work.
+  Reuse typed native projections and the existing child set.
 
 - Support named async function values and synchronous Task factories with the
   same structural callable type. Preserve one-shot transfers and indirect creation
   locations through native code pointers, including record/List storage and
-  suspension. Ordinary callbacks keep their ABI; capturing closures and stored
-  Task-bearing Lists remain unfinished.
+  suspension. Ordinary callbacks keep their ABI; capturing closures remain open.
 
 - Retain lexical cleanup across suspension, add worker-backed file Tasks, and
   support async methods through concrete, generic and sparse dynamic witnesses.
@@ -46,8 +51,7 @@ implementation, not a compatibility ledger for previous prototypes.
   `test async fn`, postfix `.await`/`.await?`, and one-shot local obligations.
   Loom lowers typed frames and resume functions for a single-threaded CPU ready
   queue, with fault propagation and cancellation of queued/suspended descendants.
-  Socket adapters, general worker operations, joins and Task-bearing Lists
-  remain unfinished.
+  Socket adapters, general worker operations and joins remain unfinished.
 
 - Add a private native resume fault boundary: drain live lexical cleanups,
   restore GC roots, then unwind through LLVM frames into an owned diagnostic.

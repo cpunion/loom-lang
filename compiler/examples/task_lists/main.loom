@@ -1,0 +1,150 @@
+import std.list.new
+import std.list.transfer.append
+import std.list.transfer.take_last
+import std.option.Option
+import std.int.parse
+import std.env.get
+import std.result.Result
+import std.time.sleep_ms
+import std.io.write_text
+
+async fn item(value Int) Int {
+    sleep_ms(1).await
+    value
+}
+
+fn start(count Int) List[Task[Int]] {
+    var pending = new[Task[Int]]()
+    var index = 0
+    while index < count {
+        pending = append(pending, item(index + 1))
+        index = index + 1
+    }
+    pending
+}
+
+async fn forward[T](value T) T {
+    value
+}
+
+async fn payload() List[Text] {
+    sleep_ms(1).await
+    ["left", "right"]
+}
+
+// This demonstrates consumption, not the prompt fault observation of `all`.
+// No recursive async chain or extra task per extracted element is needed.
+async fn total(tasks List[Task[Int]]) Int {
+    var pending = tasks
+    var sum = 0
+    while true {
+        match take_last(pending) {
+            Option.Some(pair) => {
+                let task, rest = pair
+                pending = rest
+                sum = sum + task.await
+            }
+            Option.None => {
+                break
+            }
+        }
+    }
+    sum
+}
+
+enum Tree {
+    Leaf(Task[Int])
+    Branch(List[Tree])
+}
+
+async fn tree_total(tree Tree) Int {
+    match tree {
+        Tree.Leaf(task) => task.await
+        Tree.Branch(children) => {
+            var pending = children
+            var sum = 0
+            while true {
+                match take_last(pending) {
+                    Option.Some(pair) => {
+                        let child, rest = pair
+                        pending = rest
+                        sum = sum + tree_total(child).await
+                    }
+                    Option.None => {
+                        break
+                    }
+                }
+            }
+            sum
+        }
+    }
+}
+
+async fn exercise(count Int) {
+    let pending = forward(start(count)).await
+    assert total(pending).await == count *(count + 1) / 2
+    assert total(forward(start(0)).await).await == 0
+    let tree = Tree.Branch([Tree.Leaf(item(1)), Tree.Branch([Tree.Leaf(item(2))])])
+    assert tree_total(forward(tree).await).await == 3
+    var texts = forward([payload(), payload()]).await
+    while true {
+        match take_last(texts) {
+            Option.Some(pair) => {
+                let task, rest = pair
+                texts = rest
+                let value = task.await
+                sleep_ms(1).await
+                assert value[0] == "left" && value[1] == "right"
+            }
+            Option.None => {
+                break
+            }
+        }
+    }
+    let jobs = [sleep_ms(1), sleep_ms(1)]
+    var remaining = forward(jobs).await
+    while true {
+        match take_last(remaining) {
+            Option.Some(pair) => {
+                let task, rest = pair
+                remaining = rest
+                task.await
+            }
+            Option.None => {
+                return
+            }
+        }
+    }
+}
+
+fn count() Int {
+    match get("LOOM_TASK_COUNT") {
+        Result.Ok(found) => {
+            match found {
+                Option.Some(text) => {
+                    match parse(text) {
+                        Result.Ok(value) => {
+                            assert value >= 0 && value <= 1000
+                            value
+                        }
+                        Result.Err(_) => {
+                            assert false
+                            0
+                        }
+                    }
+                }
+                Option.None => 5
+            }
+        }
+        _ => 5
+    }
+}
+
+async fn main() {
+    exercise(count()).await
+    discard write_text("lists finished\n")
+}
+
+test async fn dynamic_lists_and_recursive_payloads() {
+    exercise(5).await
+}

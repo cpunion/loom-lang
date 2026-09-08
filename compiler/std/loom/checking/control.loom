@@ -79,7 +79,8 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
         let condition = expr(context, child(node, 0), 2)?
         let body_context = loop_context(assuming(context, condition, true, 0), context.cleanup_head)
         let body = block(body_context, child(node, 1), 0, true)?
-        expression(ExprKind.While, 0, node, "", -1, pair(condition, body), condition.falls)
+        expression(ExprKind.While, 0, node, "", -1, pair(condition, body),
+            condition.falls && (!unconditional_loop(condition) || breaks_loop(body)))
     } else { return Result.Err(error(context, node, "unknown statement")) }
     } } } }
     Result.Ok(Step { context = context expression = value })
