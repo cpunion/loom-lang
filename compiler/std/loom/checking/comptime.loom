@@ -78,7 +78,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
         index = index + 1 }
     Result.Ok(Context { env = env signature = context.signature arguments = context.arguments
         constants = context.constants locals = locals bindings = bindings head = context.head
-        cleanups = new[Cleanup]() cleanup_head = -1 facts = new[Fact]() fact_head = -1 emit = true })
+        cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2 facts = new[Fact]() fact_head = -1 emit = true })
 }
 fn isolated(context Context, node Node, value Expr, boundary Int) Result[Bool, Failure] {
     if value.kind == ExprKind.Local && value.index < boundary {
@@ -196,7 +196,7 @@ fn selected(context Context, node Node, source Node, expected Int, enforce Bool)
             let stage = staging(context, node)?
             let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
                 constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head
-                cleanups = stage.cleanups cleanup_head = stage.cleanup_head
+                cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
                 facts = stage.facts fact_head = stage.fact_head emit = false }
             let value = expr(validation, condition, 2)?
             discard isolated(context, node, value, length(context.locals))?
@@ -216,7 +216,7 @@ fn compile_time(context Context, node Node, expected Int, enforce Bool) Result[E
         let stage = staging(context, node)?
         let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
             constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head
-            cleanups = stage.cleanups cleanup_head = stage.cleanup_head
+            cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
             facts = stage.facts fact_head = stage.fact_head emit = false }
         let value = block(validation, source, expected, enforce)?
         discard isolated(context, node, value, length(context.locals))?

@@ -255,7 +255,9 @@ impl TemporarySlots {
                     self.may_allocate(allocating, condition)
                         || self.block_allocates(allocating, body)
                 }
-                checked::StmtKind::Return(None) => false,
+                checked::StmtKind::Return(None)
+                | checked::StmtKind::Break
+                | checked::StmtKind::Continue => false,
             })
             || body
                 .tail
@@ -411,7 +413,9 @@ impl TemporarySlots {
                     self.expression(program, allocating, condition, false);
                     self.block(program, allocating, body);
                 }
-                checked::StmtKind::Return(None) => {}
+                checked::StmtKind::Return(None)
+                | checked::StmtKind::Break
+                | checked::StmtKind::Continue => {}
             }
             // Let/Assign have copied into permanent local roots; other completed
             // statements retain no value. A return never reaches the next one.
@@ -561,7 +565,9 @@ fn block_expressions<'a>(value: &'a checked::Block, values: &mut Vec<&'a checked
                 expressions(condition, values);
                 block_expressions(body, values);
             }
-            checked::StmtKind::Return(None) => {}
+            checked::StmtKind::Return(None)
+            | checked::StmtKind::Break
+            | checked::StmtKind::Continue => {}
         }
     }
     if let Some(tail) = &value.tail {

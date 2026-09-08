@@ -203,6 +203,7 @@ fn emit_checked(
             size_type,
             roots,
             tracers: &mut tracers,
+            loop_targets: Vec::new(),
         };
         for requirement in &source.requires {
             let condition = emitter
@@ -423,6 +424,8 @@ struct FunctionEmitter<'a, 'ctx> {
     size_type: IntType<'ctx>,
     roots: gc::RootFrame<'ctx>,
     tracers: &'a mut HashMap<Type, FunctionValue<'ctx>>,
+    /// Nearest loop body first via `last()`: (continue target, break target).
+    loop_targets: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
@@ -754,6 +757,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 checked::StmtKind::Discard(value) | checked::StmtKind::Expr(value) => {
                     self.expr(value)?;
                 }
+                checked::StmtKind::Break | checked::StmtKind::Continue => {
+                    let &(test, done) = self
+                        .loop_targets
+                        .last()
+                        .ok_or("checked loop control requires an enclosing loop body")?;
+                    let target = if matches!(statement.kind, checked::StmtKind::Break) {
+                        done
+                    } else {
+                        test
+                    };
+                    self.builder.build_unconditional_branch(target)?;
+                }
                 checked::StmtKind::While { condition, body } => {
                     let test = self.context.append_basic_block(self.function, "while.test");
                     let run = self.context.append_basic_block(self.function, "while.body");
@@ -767,7 +782,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                             done,
                         )?;
                         self.builder.position_at_end(run);
+                        self.loop_targets.push((test, done));
                         self.block(body)?;
+                        self.loop_targets.pop();
                         if self.live() {
                             self.builder.build_unconditional_branch(test)?;
                         }
@@ -1778,7 +1795,9 @@ fn reachable_functions(
                     expr(condition, calls, witnesses, slots);
                     block(body, calls, witnesses, slots);
                 }
-                checked::StmtKind::Return(None) => {}
+                checked::StmtKind::Return(None)
+                | checked::StmtKind::Break
+                | checked::StmtKind::Continue => {}
             }
         }
         if let Some(tail) = &value.tail {

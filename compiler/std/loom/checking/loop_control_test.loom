@@ -1,0 +1,16 @@
+test fn loop_control_executes_at_compile_time_with_lexical_cleanup() {
+    discard accepted("fn trace() Int { var value = 0\nvar index = 0\n{ defer { value = value * 10 + 9 }\nwhile index < 3 { index = index + 1\ndefer { value = value * 10 + 1 }\n{ defer { value = value * 10 + 2 }\nif index == 1 { continue }\nbreak } }\nassert value == 2121 }\nvalue }\nfn main() { assert comptime { trace() } == 21219 }")
+    discard accepted("fn nested() Int { var outer = 0\nvar total = 0\nwhile outer < 3 { outer = outer + 1\nvar inner = 0\nwhile inner < 5 { inner = inner + 1\nif inner == 1 { continue }\nif inner == 3 { break }\ntotal = total + 1 } }\ntotal }\nfn main() { assert comptime { nested() } == 3 }")
+    // A selected comptime-if body is runtime code, unlike an evaluated comptime block.
+    discard accepted("fn selected() Int { var count = 0\nwhile true { count = count + 1\ncomptime if Int == Int { break } }\ncount }\nfn main() { assert comptime { selected() } == 1 }")
+}
+
+test fn loop_control_cannot_escape_function_staging_or_cleanup_boundaries() {
+    rejects("fn f() { break }")
+    rejects("fn f() { if false { continue } }")
+    rejects("fn helper() { break }\nfn main() { while true { helper() } }")
+    rejects("fn main() { while true { discard comptime { break\n1 } } }")
+    rejects("fn main() { while true { defer { break } } }")
+    rejects("fn main() { while true { defer { if false { continue } } } }")
+    discard accepted("fn clean() Int { var count = 0\n{ defer { while true { count = count + 1\nif count < 3 { continue }\nbreak } } }\ncount }\nfn main() { assert comptime { clean() } == 3 }")
+}

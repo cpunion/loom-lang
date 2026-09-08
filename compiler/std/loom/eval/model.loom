@@ -19,7 +19,8 @@ import std.result.Result
 // in items; these survive reification into a different function queue.
 pub record Value { ty Int number Int floating Float text Text items List[Value] }
 pub record Failure { span Span message Text }
-record Step { value Value returned Bool }
+enum Control { Normal Return Break Continue }
+record Step { value Value control Control }
 record Frame { locals List[Value] calls Int }
 // Shared work/allocation counters and next container ID cover all calls.
 record State { program Program budget List[Int] partial Bool }
@@ -31,8 +32,14 @@ pub fn flag(value Bool) Value { Value { ty = 2 number = if value { 1 } else { 0 
 fn unit() Value { Value { ty = 0 number = 0 floating = 0.0 text = "" items = new[Value]() } }
 fn string(value Text) Value { Value { ty = 3 number = 0 floating = 0.0 text = value items = new[Value]() } }
 fn aggregate(ty Int, tag Int, items List[Value]) Value { Value { ty = ty number = tag floating = 0.0 text = "" items = items } }
-fn step(value Value) Step { Step { value = value returned = false } }
+fn step(value Value) Step { Step { value = value control = Control.Normal } }
 fn failure(expr Expr, message Text) Failure { Failure { span = expr.span message = message } }
+fn finished(expr Expr, value Step) Result[Value, Failure] {
+    if value.control == Control.Break || value.control == Control.Continue {
+        return Result.Err(failure(expr, "compile-time loop control escaped its loop"))
+    }
+    Result.Ok(value.value)
+}
 fn state(program Program, partial Bool) State {
     let budget = new[Int]()
     push(budget, 100000)
@@ -85,14 +92,14 @@ fn boolean(expr Expr, value Value) Result[Bool, Failure] {
 // supplies checked IR and establishes input isolation; this is not a general
 // effect proof for functions that receive externally shared mutable objects.
 pub fn validate(program Program, expression Expr) Result[Bool, Failure] {
-    scan(state(program, false), expression, new[Int](), 0)
+    scan(state(program, false), expression, new[Int](), 0, 0)
 }
 
 pub fn evaluate(program Program, expression Expr, locals Int) Result[Value, Failure] {
     let state = state(program, false)
-    discard scan(state, expression, new[Int](), 0)?
+    discard scan(state, expression, new[Int](), 0, 0)?
     let frame = Frame { locals = slots(state, expression, locals)? calls = 0 }
-    Result.Ok(execute(state, expression, frame, 0)?.value)
+    finished(expression, execute(state, expression, frame, 0)?)
 }
 
 // Optional constraint folding shares execution/arithmetic but cannot invoke a
@@ -101,8 +108,8 @@ pub fn scalar(expression Expr, self_value Value) Result[Value, Failure] {
     let program = Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() exports = new[Int]()
         interfaces = new[Interface]() witnesses = new[Witness]() }
     let state = state(program, true)
-    discard scan(state, expression, new[Int](), 0)?
+    discard scan(state, expression, new[Int](), 0, 0)?
     let locals = new[Value]()
     push(locals, self_value)
-    Result.Ok(execute(state, expression, Frame { locals = locals calls = 0 }, 0)?.value)
+    finished(expression, execute(state, expression, Frame { locals = locals calls = 0 }, 0)?)
 }

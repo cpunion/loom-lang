@@ -317,7 +317,7 @@ timings; local variables remain conservatively rooted for the function.
   infinities and signed zero are retained. No implicit Int/Float conversion or
   fast-math reassociation is permitted. Scalar Float programs need no Loom runtime.
 - `let`, `var`, assignment, final-expression returns, early return, `if`/`else`,
-  `while`, `assert`, and explicit `discard`. Boolean operators short-circuit.
+  `while`, `break`, `continue`, `assert`, and explicit `discard`. Boolean operators short-circuit.
 - Parameter-type/arity overloads with explicit ambiguity errors.
 - Named function values with structural `fn(Int) Int` types, contextual overload
   selection, generic specialization, and native indirect calls. Functions can
@@ -1076,7 +1076,8 @@ unsupported and reject; successful evaluation is not an algebraic proof.
 
 `defer { ... }` registers a synchronous block in its containing lexical scope,
 including `if`/`else`, match arms and each loop iteration. Registered blocks run
-once in reverse order on normal completion, `return`, or `Result?` propagation.
+once in reverse order on normal completion, `return`, `Result?` propagation,
+`break`, or `continue`.
 Bindings are resolved at registration, but their values are read at cleanup:
 
 ```loom
@@ -1091,7 +1092,8 @@ assert value == 5
 A tail or returned value is saved before cleanup, including managed aggregates.
 Cleanup must have no value result; ordinary `discard` remains explicit. Its
 body cannot contain `return`, `?`, or another `defer`, even in an unselected
-compile-time branch. Called functions have their own ordinary return scopes.
+compile-time branch. Loop control is allowed only for loops inside the cleanup;
+it cannot leave the cleanup. Called functions have their own ordinary return scopes.
 Pure cleanup also executes during compile-time evaluation. Lowering uses
 ordinary checked blocks, locals and calls, without a runtime cleanup executor.
 Required proofs still inspect the lowered function; unsupported proofs reject.
@@ -1100,6 +1102,15 @@ The [cleanup example](examples/cleanup/main.loom) exercises these exits and GC
 snapshots. This synchronous slice does **not** unwind `RuntimeFault`/process abort
 or task cancellation, and does not yet implement `scoped`/`MustScope`. Those
 remain requirements, not guarantees supplied by this initial lowering.
+
+`break` exits the nearest enclosing `while` body; `continue` reevaluates that
+loop's condition. Both run the defers of scopes they leave, but not defers
+outside the loop. A loop condition is outside its own body's control scope.
+Labels and values on loop-control statements are not supported. A `comptime`
+block evaluates its own loops and cannot jump into a runtime loop; a selected
+`comptime if` branch is ordinary code at its insertion point. Loop execution is
+supported at compile time, but general loop-invariant proofs remain unsupported.
+The [loops example](examples/loops/main.loom) includes same-package unit tests.
 
 ## Next boundary
 

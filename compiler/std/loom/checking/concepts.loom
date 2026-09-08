@@ -239,7 +239,7 @@ fn with_evidence(context Context, ty Int, capability Int) Context {
     let updated = Signature { symbol = current.symbol parameters = current.parameters params = current.params compile_time = current.compile_time result = current.result requirements = obligations }
     Context { env = context.env signature = updated arguments = context.arguments locals = context.locals
         constants = context.constants bindings = context.bindings head = context.head
-        cleanups = context.cleanups cleanup_head = context.cleanup_head
+        cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
         facts = context.facts fact_head = context.fact_head emit = context.emit }
 }
 fn implementation(context Context, ty Int, capability Int) Result[Int, Failure] {

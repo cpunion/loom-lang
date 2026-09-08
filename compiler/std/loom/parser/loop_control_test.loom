@@ -1,0 +1,12 @@
+import std.loom.ast.NodeKind
+
+test fn loop_controls_are_bare_statements() {
+    let tree = parsed("fn f() { while true { if false { continue }\nbreak } }")
+    let loop_body = child(child(body(child(tree, 0)), 0), 1)
+    assert child(child(child(loop_body, 0), 1), 0).kind == NodeKind.Continue
+    assert child(loop_body, 1).kind == NodeKind.Break
+    discard rejected("fn f() { while true { break 1 } }")
+    discard rejected("fn f() { while true { continue outer } }")
+    discard rejected("fn break() {}")
+    discard rejected("fn f() { let continue = 1 }")
+}

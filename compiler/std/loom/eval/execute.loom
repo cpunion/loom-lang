@@ -14,7 +14,7 @@ fn sequence(state State, expressions List[Expr], frame Frame, depth Int) Result[
     var index = 0
     while index < length(expressions) {
         value = execute(state, get(expressions, index), frame, depth + 1)?
-        if value.returned { return Result.Ok(value) }
+        if value.control != Control.Normal { return Result.Ok(value) }
         index = index + 1
     }
     Result.Ok(value)
@@ -24,7 +24,7 @@ fn arguments(state State, expr Expr, frame Frame, depth Int) Result[Step, Failur
     var index = 0
     while index < length(expr.children) {
         let value = execute(state, get(expr.children, index), frame, depth + 1)?
-        if value.returned { return Result.Ok(value) }
+        if value.control != Control.Normal { return Result.Ok(value) }
         push(values, value.value)
         index = index + 1
     }
@@ -49,7 +49,7 @@ fn equal(state State, expr Expr, left Value, right Value, depth Int) Result[Bool
 }
 fn operation(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
     let left = execute(state, child(expr, 0)?, frame, depth + 1)?
-    if left.returned { return Result.Ok(left) }
+    if left.control != Control.Normal { return Result.Ok(left) }
     let a = left.value
     if expr.kind == ExprKind.Unary {
         if a.ty < 0 { return Result.Ok(step(unknown())) }
@@ -67,7 +67,7 @@ fn operation(state State, expr Expr, frame Frame, depth Int) Result[Step, Failur
         if (expr.text == "&&" && !truth) || (expr.text == "||" && truth) { return Result.Ok(left) }
     }
     let right = execute(state, child(expr, 1)?, frame, depth + 1)?
-    if right.returned { return Result.Ok(right) }
+    if right.control != Control.Normal { return Result.Ok(right) }
     let b = right.value
     if a.ty < 0 || b.ty < 0 { return Result.Ok(step(unknown())) }
     if logical { return Result.Ok(step(flag(boolean(expr, b)?))) }
@@ -94,17 +94,17 @@ fn call(state State, expr Expr, target Int, values List[Value], start Int, paren
     index = 0
     while index < length(function.preconditions) {
         let condition = get(function.preconditions, index)
-        if !boolean(condition, execute(state, condition, frame, depth + 1)?.value)? {
+        if !boolean(condition, finished(condition, execute(state, condition, frame, depth + 1)?)?)? {
             return Result.Err(failure(condition, "compile-time precondition failed"))
         }
         index = index + 1
     }
-    let computed = execute(state, function.body, frame, depth + 1)?.value
+    let computed = finished(function.body, execute(state, function.body, frame, depth + 1)?)?
     if function.result_local >= 0 { discard stored(frame, expr, function.result_local, computed)? }
     index = 0
     while index < length(function.postconditions) {
         let condition = get(function.postconditions, index)
-        if !boolean(condition, execute(state, condition, frame, depth + 1)?.value)? {
+        if !boolean(condition, finished(condition, execute(state, condition, frame, depth + 1)?)?)? {
             return Result.Err(failure(condition, "compile-time postcondition failed"))
         }
         index = index + 1
@@ -147,7 +147,7 @@ fn record_value(state State, expr Expr, frame Frame, depth Int) Result[Step, Fai
         let field = get(expr.children, index)
         if field.kind != ExprKind.Field || field.index < 0 || field.index >= length(fields) { return Result.Err(failure(field, "invalid checked record field")) }
         let value = execute(state, child(field, 0)?, frame, depth + 1)?
-        if value.returned { return Result.Ok(value) }
+        if value.control != Control.Normal { return Result.Ok(value) }
         set(fields, field.index, value.value)
         index = index + 1
     }
@@ -155,7 +155,7 @@ fn record_value(state State, expr Expr, frame Frame, depth Int) Result[Step, Fai
 }
 fn matched(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
     let value = execute(state, child(expr, 0)?, frame, depth + 1)?
-    if value.returned { return Result.Ok(value) }
+    if value.control != Control.Normal { return Result.Ok(value) }
     var index = 0
     while index < length(expr.arms) {
         let arm = get(expr.arms, index)
@@ -195,9 +195,9 @@ fn atomic(state State, expr Expr, frame Frame) Result[Step, Failure] {
     Result.Ok(step(value))
 }
 fn projected_or_stored(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
-    if expr.kind == ExprKind.Return && length(expr.children) == 0 { return Result.Ok(Step { value = unit() returned = true }) }
+    if expr.kind == ExprKind.Return && length(expr.children) == 0 { return Result.Ok(Step { value = unit() control = Control.Return }) }
     let value = execute(state, child(expr, 0)?, frame, depth + 1)?
-    if value.returned { return Result.Ok(value) }
+    if value.control != Control.Normal { return Result.Ok(value) }
     if expr.kind == ExprKind.Coerce {
         if value.value.ty < 0 { return Result.Ok(value) }
         return Result.Ok(step(Value { ty = expr.ty number = value.value.number floating = value.value.floating text = value.value.text items = value.value.items }))
@@ -206,7 +206,7 @@ fn projected_or_stored(state State, expr Expr, frame Frame, depth Int) Result[St
         if expr.index < 0 || expr.index >= length(value.value.items) { return Result.Err(failure(expr, "compile-time field index out of bounds")) }
         return Result.Ok(step(get(value.value.items, expr.index)))
     }
-    if expr.kind == ExprKind.Return { return Result.Ok(Step { value = value.value returned = true }) }
+    if expr.kind == ExprKind.Return { return Result.Ok(Step { value = value.value control = Control.Return }) }
     if expr.kind == ExprKind.Let || expr.kind == ExprKind.Assign { discard stored(frame, expr, expr.index, value.value)? }
     if expr.kind == ExprKind.Assert && !boolean(expr, value.value)? { return Result.Err(failure(expr, "compile-time assertion failed")) }
     Result.Ok(step(unit()))
@@ -214,7 +214,7 @@ fn projected_or_stored(state State, expr Expr, frame Frame, depth Int) Result[St
 fn controlled(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
     if expr.kind == ExprKind.If {
         let condition = execute(state, child(expr, 0)?, frame, depth + 1)?
-        if condition.returned { return Result.Ok(condition) }
+        if condition.control != Control.Normal { return Result.Ok(condition) }
         if boolean(expr, condition.value)? { return execute(state, child(expr, 1)?, frame, depth + 1) }
         if length(expr.children) == 3 { return execute(state, child(expr, 2)?, frame, depth + 1) }
         return Result.Ok(step(unit()))
@@ -222,17 +222,20 @@ fn controlled(state State, expr Expr, frame Frame, depth Int) Result[Step, Failu
     if expr.kind == ExprKind.While {
         while true {
             let condition = execute(state, child(expr, 0)?, frame, depth + 1)?
-            if condition.returned { return Result.Ok(condition) }
+            // The condition belongs to the enclosing context, not this body.
+            if condition.control != Control.Normal { return Result.Ok(condition) }
             if !boolean(expr, condition.value)? { return Result.Ok(step(unit())) }
             let value = execute(state, child(expr, 1)?, frame, depth + 1)?
-            if value.returned { return Result.Ok(value) }
+            if value.control == Control.Return { return Result.Ok(value) }
+            if value.control == Control.Break { return Result.Ok(step(unit())) }
+            // Normal completion and continue both reevaluate the condition.
         }
     }
     Result.Err(failure(expr, "unsupported checked expression in compile-time evaluation"))
 }
 fn invoked(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
     let values = arguments(state, expr, frame, depth)?
-    if values.returned { return Result.Ok(values) }
+    if values.control != Control.Normal { return Result.Ok(values) }
     if expr.kind == ExprKind.Call { return call(state, expr, expr.index, values.value.items, 0, frame, depth) }
     if expr.kind == ExprKind.IndirectCall {
         let target = function_target(state, expr, get(values.value.items, 0))?
@@ -248,6 +251,9 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
     discard spend(state, expr, 0, 1)?
     discard spend(state, expr, 1, 128)?
+    if expr.kind == ExprKind.Break || expr.kind == ExprKind.Continue {
+        return Result.Ok(Step { value = unit() control = if expr.kind == ExprKind.Break { Control.Break } else { Control.Continue } })
+    }
     if expr.kind == ExprKind.FunctionRef { return function_value(state, expr) }
     if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text || expr.kind == ExprKind.Local {
         return atomic(state, expr, frame)

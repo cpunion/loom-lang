@@ -71,7 +71,7 @@ fn fact_operator(value Expr, text Text, children List[Expr]) Expr {
 fn fact_context(context Context, head Int) Context {
     Context { env = context.env signature = context.signature arguments = context.arguments
         constants = context.constants locals = context.locals bindings = context.bindings head = context.head
-        cleanups = context.cleanups cleanup_head = context.cleanup_head
+        cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
         facts = context.facts fact_head = head emit = context.emit }
 }
 fn remembered_fact(context Context, value Expr, truth Bool) Context {

@@ -9,26 +9,30 @@ import std.list.push
 import std.list.length
 import std.result.Result
 
-fn cleanup_form(context Context, node Node) Result[Bool, Failure] {
+fn cleanup_form(context Context, node Node, loops Int) Result[Bool, Failure] {
     if node.kind == NodeKind.Return || node.kind == NodeKind.Try || node.kind == NodeKind.Defer {
         return Result.Err(error(context, node, "defer blocks cannot contain return, ? or another defer"))
     }
+    if loops == 0 && (node.kind == NodeKind.Break || node.kind == NodeKind.Continue) {
+        return Result.Err(error(context, node, "loop control cannot leave a defer block"))
+    }
     var index = 0
     while index < length(node.children) {
-        discard cleanup_form(context, child(node, index))?
+        let nested = if node.kind == NodeKind.While && index == 1 { loops + 1 } else { loops }
+        discard cleanup_form(context, child(node, index), nested)?
         index = index + 1
     }
     Result.Ok(true)
 }
 fn registered_cleanup(context Context, node Node) Result[Step, Failure] {
     let source = child(node, 0)
-    discard cleanup_form(context, source)?
+    discard cleanup_form(context, source, 0)?
     // Binding resolution happens now, but Local reads execute at scope exit.
-    let body = block(context, source, 0, true)?
+    let body = block(loop_context(context, -2), source, 0, true)?
     let head = length(context.cleanups)
     push(context.cleanups, Cleanup { body = body previous = context.cleanup_head })
     let next = Context { env = context.env signature = context.signature arguments = context.arguments constants = context.constants
-        locals = context.locals bindings = context.bindings head = context.head cleanups = context.cleanups cleanup_head = head
+        locals = context.locals bindings = context.bindings head = context.head cleanups = context.cleanups cleanup_head = head loop_boundary = context.loop_boundary
         facts = context.facts fact_head = context.fact_head emit = context.emit }
     Result.Ok(Step { context = next expression = expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true) })
 }

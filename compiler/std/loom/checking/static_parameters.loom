@@ -118,7 +118,7 @@ fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] 
     let stage = staging(context, node)?
     let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
         locals = stage.locals bindings = stage.bindings head = stage.head
-        cleanups = stage.cleanups cleanup_head = stage.cleanup_head
+        cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
         facts = stage.facts fact_head = stage.fact_head emit = false }
     expr(validation, node, expected)
 }

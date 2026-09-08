@@ -75,6 +75,8 @@ record Context {
     head Int
     cleanups List[Cleanup]
     cleanup_head Int
+    // -2 outside a loop; otherwise the cleanup head just outside its body.
+    loop_boundary Int
     facts List[Fact]
     fact_head Int
     emit Bool
@@ -160,7 +162,13 @@ fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Fail
 fn context_at(context Context, head Int) Context {
     Context { env = context.env signature = context.signature arguments = context.arguments
         constants = context.constants locals = context.locals bindings = context.bindings head = head
-        cleanups = context.cleanups cleanup_head = context.cleanup_head
+        cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
+        facts = context.facts fact_head = context.fact_head emit = context.emit }
+}
+fn loop_context(context Context, boundary Int) Context {
+    Context { env = context.env signature = context.signature arguments = context.arguments
+        constants = context.constants locals = context.locals bindings = context.bindings head = context.head
+        cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = boundary
         facts = context.facts fact_head = context.fact_head emit = context.emit }
 }
 fn lookup(context Context, value Text) Int {

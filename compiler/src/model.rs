@@ -171,7 +171,7 @@ pub mod checked {
     pub struct Block {
         pub statements: Vec<Stmt>,
         pub tail: Option<Box<Expr>>,
-        /// True if execution can reach the end without returning from the function.
+        /// True if execution can reach the end without an abrupt control transfer.
         pub falls_through: bool,
     }
 
@@ -190,6 +190,8 @@ pub mod checked {
         Discard(Expr),
         Expr(Expr),
         While { condition: Expr, body: Block },
+        Break,
+        Continue,
     }
 
     #[derive(Clone, Debug)]

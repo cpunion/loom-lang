@@ -16,10 +16,18 @@ import std.result.Result
 
 fn statement_kind(kind NodeKind) Bool {
     kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign || kind == NodeKind.Return ||
-    kind == NodeKind.Assert || kind == NodeKind.Discard || kind == NodeKind.While || kind == NodeKind.Destructure || kind == NodeKind.Defer
+    kind == NodeKind.Assert || kind == NodeKind.Discard || kind == NodeKind.While || kind == NodeKind.Destructure || kind == NodeKind.Defer ||
+    kind == NodeKind.Break || kind == NodeKind.Continue
 }
 fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
     let kind = node.kind
+    if kind == NodeKind.Break || kind == NodeKind.Continue {
+        if context.loop_boundary == -2 { return Result.Err(error(context, node, "loop control requires an enclosing while body")) }
+        let empty = expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true)
+        let cleanup = cleaned(context, node, context.loop_boundary, empty)
+        let exit = expression(if kind == NodeKind.Break { ExprKind.Break } else { ExprKind.Continue }, 0, node, "", -1, new[Expr](), false)
+        return Result.Ok(Step { context = context expression = expression(ExprKind.Block, 0, node, "", -1, pair(cleanup, exit), false) })
+    }
     if kind == NodeKind.Defer { return registered_cleanup(context, node) }
     if kind == NodeKind.Destructure { return destructure(context, node, boundary) }
     if kind == NodeKind.Let || kind == NodeKind.Var {
@@ -57,7 +65,8 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
     } else {
     if kind == NodeKind.While {
         let condition = expr(context, child(node, 0), 2)?
-        let body = block(assuming(context, condition, true, 0), child(node, 1), 0, true)?
+        let body_context = loop_context(assuming(context, condition, true, 0), context.cleanup_head)
+        let body = block(body_context, child(node, 1), 0, true)?
         expression(ExprKind.While, 0, node, "", -1, pair(condition, body), condition.falls)
     } else { return Result.Err(error(context, node, "unknown statement")) }
     } } } }

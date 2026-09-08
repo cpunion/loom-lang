@@ -1,0 +1,80 @@
+import std.loom.source.Span
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Function
+import std.loom.typed.Local
+import std.list.new
+import std.list.push
+
+fn transfer(kind ExprKind) Expr {
+    node(kind, 0, "", -1, new[Expr]())
+}
+
+fn assigned(index Int, value Expr) Expr {
+    node(ExprKind.Assign, 0, "", index, one(value))
+}
+
+fn grouped(children List[Expr]) Expr {
+    node(ExprKind.Block, 0, "", -1, children)
+}
+
+fn looped(condition Expr, body Expr) Expr {
+    node(ExprKind.While, 0, "", -1, two(condition, body))
+}
+
+fn when(condition Expr, body Expr) Expr {
+    node(ExprKind.If, 0, "", -1, two(condition, body))
+}
+
+test fn loop_control_consumes_only_the_nearest_body() {
+    let statements = two(assigned(0, literal(0)), assigned(1, literal(0)))
+    let body = two(assigned(0, binary("+", 1, local(0, 1), literal(1))),
+        when(binary("==", 2, local(0, 1), literal(2)), transfer(ExprKind.Continue)))
+    let nested = two(assigned(1, binary("+", 1, local(1, 1), local(0, 1))), transfer(ExprKind.Break))
+    push(body, looped(truth(true), grouped(nested)))
+    push(body, when(binary("==", 2, local(0, 1), literal(4)), transfer(ExprKind.Break)))
+    push(body, assigned(1, binary("+", 1, local(1, 1), literal(10))))
+    push(statements, looped(binary("<", 2, local(0, 1), literal(8)), grouped(body)))
+    push(statements, local(1, 1))
+    assert accepted(empty(), grouped(statements), 2).number == 28
+
+    // The inner condition's continue/break target the outer body. Neither is
+    // consumed by the while whose condition is still being evaluated.
+    let outer = two(assigned(0, literal(0)), assigned(1, literal(0)))
+    let condition = grouped(two(when(binary("==", 2, local(0, 1), literal(1)), transfer(ExprKind.Continue)),
+            transfer(ExprKind.Break)))
+    let iteration = two(assigned(0, binary("+", 1, local(0, 1), literal(1))),
+        looped(condition, assigned(1, literal(999))))
+    push(iteration, assigned(1, literal(999)))
+    push(outer, looped(binary("<", 2, local(0, 1), literal(3)), grouped(iteration)))
+    push(outer, binary("+", 1, binary("*", 1, local(0, 1), literal(10)), local(1, 1)))
+    assert accepted(empty(), grouped(outer), 2).number == 20
+}
+
+test fn loop_control_cannot_escape_evaluation_or_called_functions() {
+    let escaped = "compile-time loop control escaped its loop"
+    assert rejected(empty(), transfer(ExprKind.Break), 0).message == escaped
+    assert rejected(empty(), transfer(ExprKind.Continue), 0).message == escaped
+    assert rejected(empty(), looped(transfer(ExprKind.Break), grouped(new[Expr]())), 0).message == escaped
+    let program = empty()
+    push(program.functions, Function {
+            symbol = 0
+            arguments = new[Int]()
+            params = new[Int]()
+            result = 0
+            locals = new[Local]()
+            preconditions = new[Expr]()
+            postconditions = new[Expr]()
+            result_local = -1
+            body = transfer(ExprKind.Break)
+            runtime_name = ""
+            span = Span {
+                start = 7
+                end = 8
+            }
+        })
+    let call = node(ExprKind.Call, 0, "", 0, new[Expr]())
+    assert rejected(program, looped(truth(true), call), 0).message == escaped
+    let returned = looped(truth(true), node(ExprKind.Return, 0, "", -1, one(literal(42))))
+    assert accepted(empty(), returned, 0).number == 42
+}

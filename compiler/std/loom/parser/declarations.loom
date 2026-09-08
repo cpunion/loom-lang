@@ -220,6 +220,10 @@ fn block(cursor Cursor) Result[Step, Diagnostic] {
 }
 fn statement(cursor Cursor) Result[Step, Diagnostic] {
     var rest = cursor
+    if word(rest, "break") || word(rest, "continue") {
+        let kind = if word(rest, "break") { NodeKind.Break } else { NodeKind.Continue }
+        return Result.Ok(done(cursor, next(rest), kind, "", new[Node]()))
+    }
     if word(rest, "defer") {
         let body = block(next(rest))?
         return Result.Ok(done(cursor, body.rest, NodeKind.Defer, "", one(body.node)))
