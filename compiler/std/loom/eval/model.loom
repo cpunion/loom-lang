@@ -47,12 +47,13 @@ fn state(program Program, partial Bool) State {
     push(budget, 0)
     State { program = program budget = budget partial = partial }
 }
-fn fresh(state State, ty Int) Value {
+fn fresh(state State, ty Int, items List[Value]) Value {
     // execute's work budget bounds the number of allocations well below Int.
     let id = get(state.budget, 2) + 1
     set(state.budget, 2, id)
-    aggregate(ty, id, new[Value]())
+    aggregate(ty, id, items)
 }
+fn fresh(state State, ty Int) Value { fresh(state, ty, new[Value]()) }
 fn spend(state State, expr Expr, index Int, amount Int) Result[Bool, Failure] {
     let remaining = get(state.budget, index)
     if amount < 0 || amount > remaining {

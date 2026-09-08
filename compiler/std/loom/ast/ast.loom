@@ -13,10 +13,10 @@ pub enum NodeKind {
     Match Arm Pattern Bindings Wildcard If Comptime
     TupleType Tuple Destructure Float
     Concept Impl Implements MethodCall DynType AssociatedType FunctionType Invoke
-    Defer Bounds Break Continue
+    Defer Bounds Break Continue List
 }
 
-// TupleType/Tuple children are ordered elements. Destructure stores "let" or
+// TupleType/Tuple/List children are ordered elements. Destructure stores "let" or
 // "var", with children [Bindings(Name...), initializer]. Numeric Select values
 // identify tuple positions; a parenthesized single item without a comma groups.
 // Concept children include flags, associated types and functions with optional

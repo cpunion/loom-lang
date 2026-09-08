@@ -1,0 +1,18 @@
+import std.loom.ast.NodeKind
+import std.list.length
+
+test fn list_literals_preserve_brackets_elements_and_generic_calls() {
+    let tree = parsed("fn f() List[Int] { [1, 2,] }\nfn g() { let values = [[1], [2, 3]]\ndiscard use[List[Int]]([]) }")
+    let values = child(body(child(tree, 0)), 0)
+    assert values.kind == NodeKind.List && length(values.children) == 2
+    assert child(values, 1).value == "2"
+    assert child(child(child(body(child(tree, 1)), 0), 0), 0).kind == NodeKind.List
+    let invocation = child(child(body(child(tree, 1)), 1), 0)
+    assert invocation.kind == NodeKind.Call
+    assert child(child(invocation, 1), 0).kind == NodeKind.List
+    discard parsed("fn f() { discard [\n1, // item\n2,\n] }")
+    discard rejected("fn f() { discard [1 2] }")
+    discard rejected("fn f() { discard [1\n2] }")
+    discard rejected("fn f() { discard [,] }")
+    discard rejected("fn f() { discard [1; 3] }")
+}

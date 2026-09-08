@@ -3,6 +3,76 @@
 use super::*;
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    pub(super) fn list_new(
+        &mut self,
+        ty: Type,
+        capacity: usize,
+    ) -> NativeResult<PointerValue<'ctx>> {
+        let Type::List(id) = ty else {
+            return Err("invalid list constructor type".into());
+        };
+        let element = self.program.lists[id];
+        let native = native_type(self.context, self.program, element)?;
+        let stride = self.builder.build_int_cast(
+            native.size_of().ok_or("unsized list element")?,
+            self.size_type,
+            "element.stride",
+        )?;
+        let pointer = self.context.ptr_type(AddressSpace::default());
+        let trace = if gc::managed(self.program, element) {
+            gc::tracer(
+                self.context,
+                self.module,
+                self.program,
+                element,
+                self.tracers,
+            )?
+            .as_global_value()
+            .as_pointer_value()
+        } else {
+            pointer.const_null()
+        };
+        let list = self
+            .runtime_call(
+                "list_new",
+                Some(pointer.into()),
+                &[
+                    stride.into(),
+                    trace.into(),
+                    self.size_type.const_int(capacity as u64, false).into(),
+                ],
+            )?
+            .ok_or("missing list allocation")?
+            .into_pointer_value();
+        self.restore_locals()?;
+        Ok(list)
+    }
+
+    pub(super) fn list_literal(
+        &mut self,
+        ty: Type,
+        elements: &[checked::Expr],
+    ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
+        let Some(values) = self.operands(elements)? else {
+            return Ok(None);
+        };
+        let list = self.list_new(ty, elements.len())?;
+        for (index, (element, value)) in elements.iter().zip(values).enumerate() {
+            let value = self.reload(element, value)?;
+            let slot = self.buffer_slot(
+                list,
+                self.size_type.const_int(index as u64, false),
+                value.get_type(),
+            )?;
+            self.builder.build_store(slot, value)?;
+        }
+        // No allocation or user code occurs after list_new. Publish only fully
+        // initialized elements; the runtime sees length zero while allocating.
+        self.builder
+            .build_store(list, self.size_type.const_int(elements.len() as u64, false))?;
+        Ok(Some(list.into()))
+    }
+
     pub(super) fn memory_len(&self, header: PointerValue<'ctx>) -> NativeResult<IntValue<'ctx>> {
         // Text, Bytes and List begin with a target-sized length. Do not mark
         // this load invariant: Bytes/List aliases may mutate the same header.
@@ -142,7 +212,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_load(pointer, field, "buffer.data")?
             .into_pointer_value();
         // SAFETY: The allocation uses this native element layout. Callers
-        // either check index < len or ensure spare capacity for index == len.
+        // either check index < len or ensure spare capacity for initialization.
         // All argument evaluation and any allocating reserve call precedes
         // this load; no user call/GC occurs before the slot is consumed.
         #[allow(unsafe_code)]

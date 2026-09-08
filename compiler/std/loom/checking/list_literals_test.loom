@@ -1,0 +1,16 @@
+test fn lists_infer_elements_and_consume_explicit_contexts() {
+    discard accepted("record Box[T] { values List[T] }\nfn empty[T]() List[T] { [] }\nfn singleton[T](value T) List[T] { [value] }\nfn accept(values List[Int]) { discard values }\nfn main() { let ints = [1, 2, 3]\nlet floats = [1.5, 2.5]\nlet texts = [\"one\", \"two\"]\nlet pairs = [(1, true), (2, false)]\nlet nested List[List[Int]] = [[], [1, 2]]\nlet box Box[Int] = Box { values = [] }\ndiscard ints\ndiscard floats\ndiscard texts\ndiscard pairs\ndiscard nested\ndiscard box\ndiscard empty[Int]()\ndiscard singleton(true)\naccept([]) }")
+    discard accepted("type Positive = Int where self > 0\nfn identity(value Int) Int { value }\nfn identity(value Bool) Bool { value }\nfn main() { let values List[Int] = [Positive(1), 2]\nlet functions List[fn(Int) Int] = [identity]\ndiscard values\ndiscard functions }")
+    discard accepted("concept Display { fn display(self Self) Text }\nimpl Display for Int { fn display(self Int) Text { \"int\" } }\nimpl Display for Bool { fn display(self Bool) Text { \"bool\" } }\nfn main() { let values List[dyn Display] = [1, true]\ndiscard values }")
+}
+
+test fn lists_reject_missing_or_inconsistent_element_types() {
+    rejects("fn main() { discard [] }")
+    rejects("fn main() { discard [1, true] }")
+    rejects("fn main() { discard [1, 2.0] }")
+    rejects("fn nothing() {}\nfn main() { discard [nothing()] }")
+    rejects("fn main() { let value Int = [1]\ndiscard value }")
+    rejects("type Positive = Int where self > 0\nfn main() { let values List[Positive] = [1]\ndiscard values }")
+    // A new List may widen each element; an existing shared List is invariant.
+    rejects("type Positive = Int where self > 0\nfn main() { let strict = [Positive(1)]\nlet loose List[Int] = strict\ndiscard loose }")
+}

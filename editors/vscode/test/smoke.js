@@ -36,11 +36,14 @@ async function main() {
     assert.match(edits[0].newText, /fn main\(\) \{/);
     await client.change(file, 'fn main(){break}\n', 3);
     assert.ok((await client.wait(file, 3)).diagnostics.some(item => item.message.includes('enclosing while body')));
-    await client.change(file, 'fn main(){while true{if false{continue}\nbreak}}\n', 4);
+    await client.change(file, 'fn main(){let values=[1,2]\ndiscard values\nwhile true{if false{continue}\nbreak}}\n', 4);
     assert.deepEqual((await client.wait(file, 4)).diagnostics, []);
+    const listHover = await client.rpc.sendRequest('textDocument/hover', { ...params, position: { line: 1, character: 9 } });
+    assert.ok(listHover.contents.some(item => item.value === 'List[Int]'));
     const loops = await client.rpc.sendRequest('textDocument/formatting', { textDocument: { uri: URI.file(file).toString() }, options: { tabSize: 4, insertSpaces: true } });
     assert.match(loops[0].newText, /\n {12}continue\n/);
     assert.match(loops[0].newText, /\n {8}break\n/);
+    assert.match(loops[0].newText, /let values = \[1, 2\]/);
     assert.equal(await fs.readFile(file, 'utf8'), saved);
     await assert.rejects(fs.access(helper), { code: 'ENOENT' });
     console.log('Real compiler LSP smoke passed: unsaved diagnostics, sibling overlay, type hover, definition, loop scope/formatting, no source writes.');

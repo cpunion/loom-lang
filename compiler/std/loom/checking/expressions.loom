@@ -91,6 +91,7 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
         child(node, 1).children, child(node, 2).children, -1, expected)? } else {
     if kind == NodeKind.Construct { construct(context, node, expected)? } else {
     if kind == NodeKind.Tuple { tuple_literal(context, node, expected)? } else {
+    if kind == NodeKind.List { list_literal(context, node, expected)? } else {
     if kind == NodeKind.Select { member(context, node, expr(context, child(node, 0), -1)?, node.value)? } else {
     if kind == NodeKind.Unary {
         let operand = expr(context, child(node, 0), -1)?
@@ -121,6 +122,6 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Try { propagated(context, node, expected)? } else {
     if kind == NodeKind.Comptime { compile_time(context, node, expected, enforce)? } else {
         return Result.Err(error(context, node, "unsupported expression in source checker"))
-    } } } } } } } } } } } } } } } } } } }
+    } } } } } } } } } } } } } } } } } } } }
     if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
 }

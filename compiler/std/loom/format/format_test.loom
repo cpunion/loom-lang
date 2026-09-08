@@ -45,6 +45,9 @@ test fn inline_members_and_blocks_get_structural_line_breaks() {
 }
 
 test fn imports_generics_contracts_and_control_flow_preserve_meaning() {
+    assert round_trip("fn f() List[Int]{return[1,2]}\nfn g(){let xs List[List[Int]]=[[],[1]]\ndiscard xs}") ==
+    "fn f() List[Int] {\n    return [1, 2]\n}\n\nfn g() {\n    let xs List[List[Int]] = [[], [1]]\n    discard xs\n}\n"
+    discard round_trip("fn f() { discard [\n1, // first\n2,\n] }")
     discard round_trip("fn f(){ while true { if false { continue }\nbreak } }")
     discard round_trip("import std.list.new\nimport std.list.push\npub concept C { type Item[T]\nfn map[T](self Self, value T) T }\nimpl C for Int { type Item[T] = List[T]\nfn map[T](self Int,value T) T { value } }\nfn twice(x Int) Int requires x>=0 ensures result==x+x { x+x }\nfn f[T](x T) (T,Int) {\nvar n=0\nwhile n<2 { n=n+1 }\ndefer { discard n }\n(x, n)\n}\n")
     discard round_trip("fn f(x Int) Int { match x { _ => if true { 1 } else { 2 } } }\nfn g(){ comptime if Int==Int { } else if false { } }")

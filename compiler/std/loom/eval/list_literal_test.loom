@@ -1,0 +1,103 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Program
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Field
+import std.loom.typed.Variant
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+fn list_fixture() Program {
+    let program = empty()
+    var index = 0
+    while index < 6 {
+        push(program.types, shape(TypeKind.Int))
+        index = index + 1
+    }
+    push(program.types, shape(TypeKind.List))
+    push(program.types, shape(TypeKind.List))
+    let fields = new[Field]()
+    push(fields, Field {
+            name = "scalar"
+            ty = 1
+        })
+    push(fields, Field {
+            name = "shared"
+            ty = 6
+        })
+    push(program.types, Type {
+            kind = TypeKind.Record
+            symbol = 0
+            arguments = new[Int]()
+            fields = fields
+            variants = new[Variant]()
+            constraint = new[Expr]()
+        })
+    push(program.types, shape(TypeKind.List))
+    program
+}
+
+fn list_literal(ty Int, children List[Expr]) Expr {
+    node(ExprKind.List, ty, "", -1, children)
+}
+
+test fn list_elements_execute_once_in_order_and_propagate_control() {
+    let program = list_fixture()
+    let increment = node(ExprKind.Block, 1, "", -1,
+        two(assigned(0, binary("+", 1, local(0, 1), literal(1))), local(0, 1)))
+    let list = list_literal(6, two(increment, increment))
+    let computed = accepted(program, node(ExprKind.Block, 6, "", -1, two(assigned(0, literal(0)), list)), 1)
+    assert get(computed.items, 0).number == 1 && get(computed.items, 1).number == 2
+    let returned = node(ExprKind.Return, 0, "", -1, one(literal(42)))
+    let skipped = binary("/", 1, literal(1), literal(0))
+    assert accepted(program, list_literal(6, two(returned, skipped)), 0).number == 42
+    let empty = accepted(program, list_literal(6, new[Expr]()), 0)
+    assert empty.number > 0 && length(empty.items) == 0
+
+    let state = state(program, false)
+    set(state.budget, 1, 511)
+    let frame = Frame {
+        locals = new[Value]()
+        calls = 0
+    }
+    let checked = list_literal(6, two(literal(1), literal(2)))
+    assert match execute(state, checked, frame, 0) {
+        Result.Err(error) => error.message == "compile-time allocation budget exhausted"
+        _ => false
+    }
+}
+
+test fn list_literals_preserve_nested_sharing_and_record_snapshots() {
+    let program = list_fixture()
+    let initial = list_literal(6, one(literal(1)))
+    let elements = two(local(0, 6), local(0, 6))
+    push(elements, initial)
+    let nested = list_literal(7, elements)
+    let computed = accepted(program, node(ExprKind.Block, 7, "", -1, two(assigned(0, initial), nested)), 1)
+    let first = get(computed.items, 0)
+    let alias = get(computed.items, 1)
+    let independent = get(computed.items, 2)
+    assert first.number > 0 && first.number == alias.number && first.number != independent.number
+    push(first.items, number(9))
+    assert length(alias.items) == 2 && length(independent.items) == 1
+
+    let old = node(ExprKind.Record, 8, "", -1, two(node(ExprKind.Field, 1, "", 0, one(literal(1))),
+            node(ExprKind.Field, 6, "", 1, one(initial))))
+    let shared = node(ExprKind.Field, 6, "", 1, one(local(0, 8)))
+    let updated = node(ExprKind.Record, 8, "", -1, two(node(ExprKind.Field, 1, "", 0, one(literal(2))),
+            node(ExprKind.Field, 6, "", 1, one(shared))))
+    let body = two(assigned(0, old), assigned(1, list_literal(9, one(local(0, 8)))))
+    push(body, assigned(0, updated))
+    let arguments = two(shared, literal(0))
+    push(arguments, literal(20))
+    push(body, node(ExprKind.Intrinsic, 0, "list_set", -1, arguments))
+    push(body, local(1, 9))
+    let snapshot = get(accepted(program, node(ExprKind.Block, 9, "", -1, body), 2).items, 0)
+    assert get(snapshot.items, 0).number == 1
+    assert get(get(snapshot.items, 1).items, 0).number == 20
+}

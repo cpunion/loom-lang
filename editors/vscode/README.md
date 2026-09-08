@@ -51,8 +51,9 @@ For a second exercise, open [loops/main.loom](../../compiler/examples/loops/main
 Run `target/loom test compiler/examples/loops` and `target/loom run compiler/examples/loops`
 from the repository root; the program prints `8`. Change the limit from `10` to
 `4` and run it again to get `4`. Move `break` outside the loop to see its scope
-diagnostic, then restore it. Lists currently use `new` and `push`; list literals
-are not implemented.
+diagnostic, then restore it. The example uses `[1, -9, 3, 4, 8]`; the tests also
+pass `[]` to a `List[Int]` parameter. Try replacing one integer with `true` to
+see an element-type diagnostic.
 
 ## Behavior and tests
 

@@ -332,8 +332,11 @@ Fault unwinding, task cancellation and `scoped`/`MustScope` remain unimplemented
 Unlabeled loop control lowers directly to native branches and shares compile-time
 execution, including cleanup at the nearest loop boundary. The
 [loops example](../../compiler/examples/loops/main.loom) exercises check/build/test/run.
-General loop-invariant proofs and list literal syntax are not implemented;
-lists are currently populated through `std.list.new` and `push`.
+General loop-invariant proofs remain unsupported. List literals now use `[a, b]`
+and context-typed `[]`, including generic, constrained and dynamic elements.
+Runtime construction reserves the known capacity and writes elements directly;
+moving-GC tests cover earlier element snapshots and nested sharing. General
+compile-time graph materialization still uses allocate-then-fill construction.
 
 Normal compiler iteration can use a [single development rebuild](../../compiler/README.md#build-and-try-it);
 CI retains full bootstrap generation checks. The initial

@@ -242,6 +242,12 @@ fn invoked(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
         return call(state, expr, target, values.value.items, 1, frame, depth)
     }
     if expr.kind == ExprKind.Intrinsic { return Result.Ok(step(primitive(state, expr, values.value.items)?)) }
+    if expr.kind == ExprKind.List {
+        // The work budget bounds this multiplication. Reuse the collected
+        // elements directly: aggregate values copy, nested containers share.
+        discard spend(state, expr, 1, length(values.value.items) * 64)?
+        return Result.Ok(step(fresh(state, expr.ty, values.value.items)))
+    }
     Result.Ok(step(aggregate(expr.ty, expr.index, values.value.items)))
 }
 
@@ -267,7 +273,7 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     if expr.kind == ExprKind.If || expr.kind == ExprKind.While { return controlled(state, expr, frame, depth) }
     if expr.kind == ExprKind.Match { return matched(state, expr, frame, depth) }
     if expr.kind == ExprKind.Record { return record_value(state, expr, frame, depth) }
-    if expr.kind == ExprKind.Call || expr.kind == ExprKind.IndirectCall || expr.kind == ExprKind.Intrinsic || expr.kind == ExprKind.Variant {
+    if expr.kind == ExprKind.Call || expr.kind == ExprKind.IndirectCall || expr.kind == ExprKind.Intrinsic || expr.kind == ExprKind.Variant || expr.kind == ExprKind.List {
         return invoked(state, expr, frame, depth)
     }
     Result.Err(failure(expr, "unsupported checked expression in compile-time evaluation"))

@@ -126,6 +126,9 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
     if at(cursor, Kind.LParen) {
         return fields(cursor, parenthesized(cursor, Items.Arguments, NodeKind.Tuple)?)
     }
+    if at(cursor, Kind.LBracket) {
+        return fields(cursor, sequence(cursor, Kind.LBracket, Kind.RBracket, NodeKind.List, Items.Arguments, false)?)
+    }
     if at(cursor, Kind.LBrace) { return fields(cursor, block(cursor)?) }
     Result.Err(error(cursor, "expected an expression"))
 }

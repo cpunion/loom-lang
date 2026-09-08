@@ -2,8 +2,6 @@ import std.int.to_text
 import std.io.write_text
 import std.list.get
 import std.list.length
-import std.list.new
-import std.list.push
 import std.process.exit_code
 import std.result.Result
 import std.text.concat
@@ -26,18 +24,8 @@ fn sum_until(values List[Int], limit Int) Int {
     total
 }
 
-fn sample() List[Int] {
-    let values = new[Int]()
-    push(values, 1)
-    push(values, -9)
-    push(values, 3)
-    push(values, 4)
-    push(values, 8)
-    values
-}
-
 fn main() {
-    let total = sum_until(sample(), 10)
+    let total = sum_until([1, -9, 3, 4, 8], 10)
     match write_text(concat(to_text(total), "\n")) {
         Result.Ok(_) => {
         }

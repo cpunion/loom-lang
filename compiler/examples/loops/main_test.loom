@@ -1,11 +1,9 @@
-import std.list.new
-
 test fn skips_negative_entries_and_stops_at_the_limit() {
-    assert sum_until(sample(), 10) == 8
-    assert sum_until(sample(), 0) == 0
+    assert sum_until([1, -9, 3, 4, 8], 10) == 8
+    assert sum_until([11, 1], 10) == 0
 }
 
 test fn accepts_empty_input_and_exact_limits() {
-    assert sum_until(new[Int](), 10) == 0
-    assert sum_until(sample(), 8) == 8
+    assert sum_until([], 10) == 0
+    assert sum_until([1, -9, 3, 4], 8) == 8
 }
