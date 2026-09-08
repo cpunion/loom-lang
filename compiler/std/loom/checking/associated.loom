@@ -38,7 +38,8 @@ fn header_environment(env Environment) Environment {
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
         concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses
         associations = env.associations association_depth = env.association_depth
-        family_applications = env.family_applications promise_path = env.promise_path promise_depth = env.promise_depth }
+        family_applications = env.family_applications promise_path = env.promise_path promise_depth = env.promise_depth
+        dynamic_interfaces = env.dynamic_interfaces }
 }
 fn association_environment(env Environment, member Int, receiver Int, arguments List[Int]) Result[Environment, Failure] {
     let node = symbol(env, member).node
@@ -57,7 +58,8 @@ fn association_environment(env Environment, member Int, receiver Int, arguments 
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
         concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses
         associations = env.associations association_depth = env.association_depth + 1
-        family_applications = env.family_applications promise_path = env.promise_path promise_depth = env.promise_depth })
+        family_applications = env.family_applications promise_path = env.promise_path promise_depth = env.promise_depth
+        dynamic_interfaces = env.dynamic_interfaces })
 }
 fn implementation_type(env Environment, index Int, depth Int) Result[Int, Failure] {
     let header = get(env.implementations, index)

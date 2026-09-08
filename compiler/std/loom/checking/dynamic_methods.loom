@@ -1,0 +1,60 @@
+// Generic method instances are checker-only metadata. Each materialized slot
+// has an ordinary concrete signature in typed IR and the existing witness ABI.
+record DynamicSlot { signature Int arguments List[Int] }
+record DynamicInterface { initialized Bool filling Bool slots List[DynamicSlot] }
+
+fn dynamic_slot(context Context, node Node, receiver Int, method Int, arguments List[Int]) Result[Int, Failure] {
+    let env = context.env
+    let interface = get(env.types, receiver).symbol
+    var slots = get(env.dynamic_interfaces, interface).slots
+    let local = argument_tail(arguments, 1)
+    var slot = 0
+    var instances = 0
+    while slot < length(slots) {
+        let previous = get(slots, slot)
+        if previous.signature == method {
+            instances = instances + 1
+            if same(previous.arguments, local) { return Result.Ok(slot) }
+        }
+        slot = slot + 1
+    }
+    if instances >= 1024 {
+        return Result.Err(error(context, node, "dynamic method specialization budget exceeded; expansion must be finite"))
+    }
+    var argument = 0
+    while argument < length(arguments) {
+        let ty = get(arguments, argument)
+        if !concrete(env, ty) { return Result.Err(error(context, node, "dynamic method type arguments must be concrete")) }
+        if type_depth(env, ty) >= 64 { return Result.Err(error(context, node, "dynamic method specialization depth exceeded; expansion must be finite")) }
+        argument = argument + 1
+    }
+    let specialized = signature(env, method, arguments, node)?
+    let params = argument_tail(specialized.params, 1)
+    let seen = new[Int]()
+    argument = 0
+    while argument < length(params) {
+        discard emitted_type(env, context.signature.symbol, get(params, argument), node, seen)?
+        argument = argument + 1
+    }
+    discard emitted_type(env, context.signature.symbol, specialized.result, node, seen)?
+    // Type expansion can initialize other interfaces, including cyclic
+    // signatures. Resolve the final position from the published registry.
+    slots = get(env.dynamic_interfaces, interface).slots
+    slot = 0
+    while slot < length(slots) {
+        let previous = get(slots, slot)
+        if previous.signature == method && same(previous.arguments, local) { return Result.Ok(slot) }
+        slot = slot + 1
+    }
+    push(get(env.interfaces, interface).methods, Method { name = symbol(env, specialized.symbol).name params = params result = specialized.result })
+    push(slots, DynamicSlot { signature = method arguments = local })
+    // A box may have been reached before the first use of this specialization.
+    // Keep every existing table aligned; future boxes use the current length.
+    var witness = 0
+    while witness < length(env.witnesses) {
+        let current = get(env.witnesses, witness)
+        if current.interface == interface { push(current.methods, -1) }
+        witness = witness + 1
+    }
+    Result.Ok(slot)
+}

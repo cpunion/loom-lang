@@ -23,6 +23,12 @@ fn supplied(context Context, node Node, values List[Node], count Int) Result[Lis
     }
     Result.Ok(output)
 }
+// Method calls infer Self from the receiver; explicit arguments describe only
+// the method's own parameters, independent of the selected implementation.
+fn supplied_call(context Context, node Node, values List[Node], current Signature) Result[List[Int], Failure] {
+    if !prototype(context.env, current.symbol) { return supplied(context, node, values, current.parameters) }
+    Result.Ok(member_arguments(ints(-1), supplied(context, node, values, current.parameters - 1)?))
+}
 fn complete(arguments List[Int]) Bool {
     var index = 0
     while index < length(arguments) {
@@ -192,7 +198,7 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
     while index < length(prefix) { push(values, get(prefix, index))
         if probing { push(probes, false) }
         index = index + 1 }
-    let inferred = if length(options) == 1 { supplied(context, node, types, get(context.env.signatures, get(options, 0)).parameters)? } else { new[Int]() }
+    let inferred = if length(options) == 1 { supplied_call(context, node, types, get(context.env.signatures, get(options, 0)))? } else { new[Int]() }
     if length(options) == 1 {
         var previous = 0
         while previous < length(prefix) {
@@ -229,7 +235,7 @@ fn matching_overloads(context Context, node Node, options List[Int], types List[
     while index < length(options) {
         let id = get(options, index)
         let candidate_signature = get(context.env.signatures, id)
-        let args = supplied(context, node, types, candidate_signature.parameters)?
+        let args = supplied_call(context, node, types, candidate_signature)?
         var matched = true
         var widened = false
         var argument = 0
@@ -302,7 +308,7 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
         return Result.Ok(expression(ExprKind.Deferred, output, node, "", -1, runtime_values, all_fall(runtime_values)))
     }
     if prototype(context.env, signature.symbol) && length(runtime_values) != 0 && get(context.env.types, get(runtime_values, 0).ty).kind == TypeKind.Dyn {
-        return dynamic_call(context, node, instance.signature, output, runtime_values)
+        return dynamic_call(context, node, instance.signature, instance.arguments, output, runtime_values)
     }
     let target = if context.emit { schedule(context.env, instance.signature, instance.arguments, constants, node)? } else { -1 }
     Result.Ok(expression(ExprKind.Call, output, node, "", target, runtime_values, all_fall(runtime_values)))

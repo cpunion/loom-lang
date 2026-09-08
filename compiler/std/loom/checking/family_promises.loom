@@ -19,7 +19,7 @@ fn promise_environment(env Environment, ty Int, capability Int) Environment {
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
         concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses
         associations = env.associations association_depth = env.association_depth family_applications = env.family_applications
-        promise_path = env.promise_path promise_depth = env.promise_depth + 1 }
+        promise_path = env.promise_path promise_depth = env.promise_depth + 1 dynamic_interfaces = env.dynamic_interfaces }
 }
 fn family_parameter_bounds(env Environment, owner Int, member Int, arguments List[Int], obligations List[Requirement]) Result[Bool, Failure] {
     if length(arguments) != length(member_parameters(env, member)) { return Result.Ok(false) }

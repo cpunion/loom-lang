@@ -47,8 +47,9 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
         let id = get(options, index)
         let candidate = get(context.env.signatures, id)
         static_only = static_only || has_static(candidate)
-        if !has_static(candidate) && (length(supplied_types) == 0 || length(supplied_types) == candidate.parameters) {
-            let inferred = supplied(context, node, supplied_types, candidate.parameters)?
+        let count = candidate.parameters - parameter_offset(context.env, candidate.symbol)
+        if !has_static(candidate) && (length(supplied_types) == 0 || length(supplied_types) == count) {
+            let inferred = supplied_call(context, node, supplied_types, candidate)?
             if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments
                 if length(shape) == length(candidate.params) + 1 {

@@ -595,6 +595,25 @@ later work.
 Concept method contracts and extra implementation preconditions currently reject;
 implementation postconditions still require proof.
 
+Methods can declare their own type parameters, independently of the receiver:
+
+```loom
+concept Select {
+    fn choose[T](self Self, first T, second T) T { first }
+}
+impl Select for Bool {
+    fn choose[U](self Bool, first U, second U) U { second }
+}
+fn selected(source dyn Select) Int { source.choose[Int](1, 2) }
+```
+
+`source.choose(...)` infers method arguments; `source.choose[Int](...)` and
+`Select.choose[Int](source, ...)` supply them explicitly. `Self` and enclosing
+implementation arguments come from the receiver, not the explicit list.
+Implementation methods inherit the concept method's parameter requirements;
+they may rename parameters or restate requirements but cannot strengthen them.
+Overloads still require a unique match. Defaults call the selected overrides.
+
 ### Associated types and bounded data
 
 A concept can name a type supplied by each implementation. Static instances
@@ -672,7 +691,6 @@ Normalization uses ordinary concrete layouts, with no runtime type functions.
 Dynamic values still require explicit bindings for every nongeneric associated
 member, including defaulted members; bindings must satisfy the member requirements.
 Concepts with generic associated members cannot yet be used as `dyn` types.
-Generic concept methods remain unsupported.
 
 ### Dynamic values
 
@@ -699,6 +717,14 @@ Dynamic method parameters and results may use those bound associated types.
 Default methods and generic callers share the same statically checked bindings.
 The [binding example](examples/dynamic/bindings.loom) exercises managed results,
 generic erasure and shared Lists without runtime type discovery.
+
+Generic methods use one ordinary witness slot per concrete method instance
+reached by this build. Even instances with identical native signatures remain
+distinct when their type arguments differ. Unused generic methods have no slots;
+there is no runtime specialization or type registry. This remains a source-package,
+selected-build model: native objects do not promise arbitrary new generic
+instances to a separately compiled consumer. `Self` outside the receiver remains
+invalid for dynamic methods; method-local parameters are allowed.
 
 The representation is a GC-owned concrete snapshot plus a read-only witness
 table; copying a dyn value does not allocate another box. Contained lists retain

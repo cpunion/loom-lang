@@ -1,0 +1,63 @@
+fn generic_method_definitions() Text {
+    "concept C { type Item\nfn pair[T](self Self, value T) (Self.Item, T)\nfn choose[T](self Self, first T, second T) T { first }\nfn forward[T](self Self, first T, second T) T { self.choose[T](first, second) } }\nrecord Box[X] { value X }\nimpl[X] C for Box[X] { type Item = X\nfn pair[U](self Box[X], value U) (X, U) { (self.value, value) }\nfn choose[U](self Box[X], first U, second U) U { second } }\nimpl C for Bool { type Item = Bool\nfn pair[T](self Bool, value T) (Bool, T) { (self, value) } }\nfn pair[S C, T](source S, value T) (S.Item, T) { source.pair[T](value) }\n"
+}
+
+test fn generic_methods_specialize_defaults_overrides_and_impl_header_parameters() {
+    discard accepted("record Holder { pick fn(Int) Int }\nconcept C { fn pick[T](self Self, value T) T { value } }\nimpl C for Holder {}\nfn next(value Int) Int { value + 1 }\nfn main() { let holder = Holder { pick = next }\nassert holder.pick[Int](1) == 1 }")
+    discard accepted(concat(generic_method_definitions(), "fn main() { let source = Box { value = \"managed\" }\nlet direct = source.pair(7)\nassert direct.0 == \"managed\" && direct.1 == 7\nlet qualified = C.pair[Bool](source, true)\nassert qualified.0 == \"managed\" && qualified.1\nassert source.forward(1, 2) == 2 && true.forward[Int](1, 2) == 1\nlet constant = comptime { pair(Box { value = 3 }, (\"text\", true)) }\nassert constant.0 == 3 && constant.1.0 == \"text\" && constant.1.1 }"))
+    discard accepted("concept Value { fn value(self Self) Int }\nimpl Value for Int { fn value(self Int) Int { self } }\nconcept C { fn read[T Value](self Self, value T) Int }\nimpl C for Bool { fn read[U](self Bool, value U) Int { value.value() } }\nimpl C for Int { fn read[U Value](self Int, value U) Int { value.value() } }\nfn main() { assert true.read(7) == 7 && 0.read[Int](9) == 9 }")
+    discard accepted("concept A { fn pick[T](self Self, value T) T { value } }\nconcept B { fn pick(self Self, value Int) Int }\nimpl A for Bool {}\nimpl B for Bool { fn pick(self Bool, value Int) Int { self.pick[Int](value) } }\nfn main() { assert B.pick(true, 7) == 7 }")
+}
+
+test fn generic_dynamic_methods_use_finite_concrete_instantiations() {
+    let program = accepted(concat(generic_method_definitions(), "fn read[T](source dyn C[Item = Text], value T) (Text, T) { source.pair(value) }\nfn main() { let source dyn C[Item = Text] = Box { value = \"boxed\" }\nlet number = read(source, 7)\nlet text = C.pair[Text](source, \"payload\")\nassert number.0 == \"boxed\" && number.1 == 7 && text.1 == \"payload\"\nassert source.forward(1, 2) == 2\nlet fallback dyn C[Item = Bool] = true\nassert fallback.forward[Int](1, 2) == 1 }"))
+    assert length(program.witnesses) == 2
+}
+
+test fn generic_methods_reject_invalid_signatures_bounds_and_arguments() {
+    rejects("concept C { fn pick[T](self Self, value T) T }\nimpl C for Int { fn pick(self Int, value Int) Int { value } }")
+    rejects("concept C { fn pick[T](self Self, value T) T }\nimpl C for Int { fn pick[U](self Int, value U) Bool { true } }")
+    rejects("concept D {}\nconcept C { fn pick[T](self Self, value T) T }\nimpl C for Int { fn pick[U D](self Int, value U) U { value } }")
+    rejects("concept D {}\nconcept C { fn pick[T D](self Self, value T) T { value } }\npub fn missing[S C, T](source S, value T) T { source.pick(value) }")
+    rejects("concept D {}\nconcept C { fn pick[T D](self Self, value T) T { value } }\nimpl C for Int {}\nfn main() { discard 1.pick(true) }")
+    rejects(concat(generic_method_definitions(), "fn main() { discard true.pair[Int, Bool](1) }"))
+    let overloads = "concept C { fn pick[T](self Self, value T) T { value }\nfn pick(self Self, value Int) Int { value } }\nimpl C for Bool {}\n"
+    discard accepted(concat(overloads, "fn main() { assert true.pick[Int](1) == 1 }"))
+    rejects(concat(overloads, "fn main() { discard true.pick(1) }"))
+}
+
+test fn overloaded_method_headers_inherit_only_the_matching_projection_domain() {
+    let declarations = "concept A { type Item }\nconcept B { type Item }\nconcept C { fn take[T A](self Self, value T.A.Item) Int\nfn take[T B](self Self, value List[T.B.Item]) Int }\nimpl A for Int { type Item = Int }\nimpl B for Bool { type Item = Int }\n"
+    let methods = "impl C for Bool { fn take[V](self Bool, value List[V.B.Item]) Int { 22 }\nfn take[U](self Bool, value U.A.Item) Int { 11 } }\n"
+    let files = source_files(concat("import std.list.new\n", concat(declarations, concat(methods,
+        "fn first() Int ensures result == 11 { comptime { true.take[Int](7) } }\nfn second() Int ensures result == 22 { comptime { C.take[Bool](true, new[Int]()) } }\nfn main() { assert first() == 11 && second() == 22 }"))))
+    push(files, source_file("std.list", "intrinsic fn list_new[T]() List[T]\npub fn new[T]() List[T] { list_new[T]() }", true))
+    match checked(files) {
+        Result.Ok(_) => {}
+        Result.Err(failed) => { show_failure(fixture_project(files), failed)
+            assert false }
+    }
+    rejects(concat(declarations, "concept Extra {}\nimpl C for Bool { fn take[U A + Extra](self Bool, value U.A.Item) Int { 11 }\nfn take[V](self Bool, value List[V.B.Item]) Int { 22 } }"))
+    rejects(concat(declarations, "impl C for Bool { fn take[U](self Bool, value U.A.Item) Missing { 11 }\nfn take[V](self Bool, value List[V.B.Item]) Int { 22 } }"))
+}
+
+test fn generic_method_input_evidence_crosses_calls_without_production_discovery() {
+    let declarations = "concept D { fn value(self Self) Int }\nrecord Item {}\nconcept C { fn read[T D](self Self, value T) Int { value.value() } }\nimpl C for Int {}\nfn forward[S C, T D](source S, value T) Int { source.read[T](value) }\nfn probe[S C](source S) Bool { comptime if Item implements D { missing() } else { false } }\n"
+    let testing = source_file("app", "impl D for Item { fn value(self Item) Int { 7 } }\ntest fn check_evidence() { assert forward(1, Item {}) == 7\nassert !probe(1) }", false)
+    let test_file = TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false }
+    let files = source_files(declarations)
+    push(files, test_file)
+    match bind(fixture_project(files), true) {
+        Result.Ok(bound) => match check(bound) { Result.Ok(_) => {}
+            Result.Err(failed) => { show_failure(fixture_project(files), failed)
+                assert false } }
+        Result.Err(_) => { assert false }
+    }
+    let invalid = source_files(concat(declarations, "pub fn production() Int { 1.read(Item {}) }"))
+    push(invalid, test_file)
+    match bind(fixture_project(invalid), true) {
+        Result.Ok(bound) => match check(bound) { Result.Err(_) => {}
+            Result.Ok(_) => { assert false } }
+        Result.Err(_) => { assert false }
+    }
+}

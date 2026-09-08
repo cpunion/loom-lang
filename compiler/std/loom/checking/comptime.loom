@@ -66,6 +66,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
         concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces
         associations = context.env.associations association_depth = context.env.association_depth
         family_applications = context.env.family_applications promise_path = context.env.promise_path promise_depth = context.env.promise_depth
+        dynamic_interfaces = context.env.dynamic_interfaces
         witnesses = new[Witness]() uses = new[SlotUse]() }
     let locals = new[Local]()
     var index = 0
