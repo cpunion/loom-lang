@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add private owner-scoped frame roots over the existing moving collector,
+  with dense scanning, generation-checked reuse and noncollecting handoff.
+  Coroutine lowering, scheduling and suspended cleanup remain unfinished.
+
 - Add a private portable wait ABI for timers, native readiness and worker
   completion, with one-shot delivery and generation-checked cancellation.
   Task syntax, scheduling and state-machine lowering remain unfinished.

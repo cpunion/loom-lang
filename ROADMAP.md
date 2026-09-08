@@ -108,9 +108,12 @@ compiler correctness.
 
 The private wait-registration substrate is implemented; it queues timer,
 readiness and completion identities without running user code. The next async
-gate is typed task-frame lowering and persistent GC rooting, followed by
+gate is typed task-frame lowering and integration with the owner-scoped frame-root
+set, followed by
 scheduling, task-local faults, cancellation and source I/O/composition. See the
 [accepted Task design](docs/rfcs/tasks.md); reactor tests alone do not close it.
+Frame-root storage now reuses one outer root frame and a dense live set; ordinary
+functions gain no executor or per-call persistent-root registration.
 
 Extend the self-hosted path with the remaining accepted capabilities:
 

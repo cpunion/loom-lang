@@ -72,6 +72,21 @@ program. Ordinary functions retain direct code without a scheduler or frame.
 Suspended state and results need persistent, updateable GC roots; stack root
 slots and interior pointers cannot outlive their native activation.
 
+The [frame-root ABI](../../compiler/runtime/src/frame_roots_abi.rs) reuses one
+outer GC root frame for the owner's entire run/drain scope. Its dense collection
+holds updateable allocation-base pointers and permits non-LIFO removal. Identity
+slots may be reused only with a new generation; collection scans live entries,
+not the historical slot capacity. No vector element address is registered as a
+root. The root set itself remains native, owner-thread state and does not escape
+the scope. This is not a general root handle valid after its owner returns.
+
+Frame payloads reuse the existing zeroed typed GC allocation and tracer, without
+changing ordinary record semantics. Allocation-crossing code reloads the frame
+base before deriving field addresses. A completed result stays rooted until its
+receiver has registered a typed snapshot; removing the producer's root does not
+perform cleanup or collect. This storage boundary does not implement Task
+checking, spill selection, state transitions or suspended cleanup.
+
 Wait registration is a private runtime boundary for absolute monotonic timers,
 borrowed native readiness handles, and externally completed operations. A
 registration carries a reusable slot and non-wrapping generation. It is retired
