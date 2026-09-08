@@ -210,6 +210,12 @@ Selected bodies retain abstract checking without emitting unused callers. Functi
 references to partially specialized static declarations, capturing closures
 and heterogeneous packs remain open.
 
+Pure dynamic construction, calls and returned values now share the compile-time
+evaluator, with exact associated/generic/static witness slots. Purity follows the
+called slot's checked targets; reification rebuilds admitted witnesses without
+leaking evaluation queues, preserving shared/cyclic receiver data. Dynamic
+required proofs and cross-dyn conversions remain open.
+
 Lexical `defer` handles block completion, return, `Result?`, `break` and `continue`,
 preserving LIFO order and saved result values. Native stack registrations also
 drain synchronous language faults before process termination, preserving the

@@ -1,0 +1,92 @@
+import std.loom.source.Span
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Field
+import std.loom.typed.Variant
+import std.loom.typed.Function
+import std.loom.typed.Local
+import std.loom.typed.Method
+import std.loom.typed.Interface
+import std.loom.typed.Witness
+import std.loom.typed.Program
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+
+fn dynamic_method(receiver Int, body Expr, preconditions List[Expr], postconditions List[Expr]) Function {
+    let params = new[Int]()
+    push(params, receiver)
+    push(params, 1)
+    let locals = new[Local]()
+    push(locals, Local { name = "self" ty = receiver mutable = false is_scoped = false })
+    push(locals, Local { name = "n" ty = 1 mutable = false is_scoped = false })
+    push(locals, Local { name = "result" ty = 1 mutable = false is_scoped = false })
+    Function { symbol = receiver arguments = new[Int]() params = params result = 1 locals = locals
+        preconditions = preconditions postconditions = postconditions result_local = 2 body = body runtime_name = ""
+        span = Span { start = 7 end = 8 } }
+}
+fn dynamic_program() Program {
+    let program = empty()
+    var index = 0
+    while index < 6 { push(program.types, shape(TypeKind.Int))
+        index = index + 1 }
+    push(program.types, Type { kind = TypeKind.Dyn symbol = 0 arguments = new[Int]()
+        fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() })
+    let params = new[Int]()
+    push(params, 1)
+    let methods = new[Method]()
+    push(methods, Method { name = "apply" params = params result = 1 })
+    push(program.interfaces, Interface { symbol = 0 methods = methods })
+    let targets = new[Int]()
+    push(targets, 0)
+    push(program.witnesses, Witness { interface = 0 concrete = 1 methods = targets })
+    let computed = binary("+", 1, binary("*", 1, local(0, 1), literal(10)), local(1, 1))
+    push(program.functions, dynamic_method(1, computed, one(binary(">=", 2, local(1, 1), literal(0))),
+        one(binary("==", 2, local(2, 1), computed))))
+    program
+}
+fn dynamic_boxed(value Expr) Expr { node(ExprKind.DynBox, 6, "", 0, one(value)) }
+fn dynamic_called(receiver Expr, argument Expr) Expr { node(ExprKind.DynCall, 1, "", 0, two(receiver, argument)) }
+
+test fn dynamic_values_capture_once_and_calls_snapshot_arguments() {
+    let program = dynamic_program()
+    let boxed = accepted(program, dynamic_boxed(literal(7)), 0)
+    assert boxed.ty == 6 && boxed.number == 1 && get(boxed.items, 0).number == 7
+    let receiver = node(ExprKind.Block, 1, "", -1,
+        two(node(ExprKind.Assign, 0, "", 0, one(binary("+", 1, local(0, 1), literal(1)))), local(0, 1)))
+    let statements = two(node(ExprKind.Let, 0, "", 0, one(literal(0))),
+        node(ExprKind.Let, 0, "", 1, one(dynamic_boxed(receiver))))
+    let argument = node(ExprKind.Block, 1, "", -1,
+        two(node(ExprKind.Assign, 0, "", 1, one(dynamic_boxed(literal(99)))), local(0, 1)))
+    push(statements, dynamic_called(local(1, 6), argument))
+    assert accepted(program, node(ExprKind.Block, 1, "", -1, statements), 2).number == 11
+    assert rejected(program, dynamic_called(dynamic_boxed(literal(7)), literal(-1)), 0).message == "compile-time precondition failed"
+    set(program.functions, 0, dynamic_method(1, literal(1), new[Expr](), one(truth(false))))
+    assert rejected(program, dynamic_called(dynamic_boxed(literal(7)), literal(0)), 0).message == "compile-time postcondition failed"
+}
+
+test fn dynamic_purity_checks_every_target_and_its_contracts() {
+    let program = dynamic_program()
+    let targets = new[Int]()
+    push(targets, 1)
+    push(program.witnesses, Witness { interface = 0 concrete = 2 methods = targets })
+    let branches = two(truth(false), node(ExprKind.Intrinsic, 0, "write", -1, new[Expr]()))
+    push(branches, literal(0))
+    push(program.functions, dynamic_method(2, node(ExprKind.If, 1, "", -1, branches), new[Expr](), new[Expr]()))
+    let expression = dynamic_called(dynamic_boxed(literal(7)), literal(0))
+    assert rejected(program, expression, 0).message == "compile-time evaluation forbids intrinsic write"
+    let impure = node(ExprKind.Intrinsic, 2, "write", -1, new[Expr]())
+    set(program.functions, 1, dynamic_method(2, literal(0), one(impure), new[Expr]()))
+    assert rejected(program, expression, 0).message == "compile-time evaluation forbids intrinsic write"
+    set(program.functions, 1, dynamic_method(2, literal(0), new[Expr](), one(impure)))
+    assert rejected(program, expression, 0).message == "compile-time evaluation forbids intrinsic write"
+    // Merely holding a capability does not execute any of its methods.
+    assert accepted(program, dynamic_boxed(literal(7)), 0).number == 1
+    set(program.functions, 1, dynamic_method(2, literal(0), new[Expr](), new[Expr]()))
+    assert accepted(program, expression, 0).number == 70
+    set(targets, 0, -1)
+    assert rejected(program, expression, 0).message == "compile-time call has no checked function body"
+}

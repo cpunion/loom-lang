@@ -54,7 +54,7 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
     }
     // Register containers before walking their contents: aliases and cycles
     // revisit an ID, while aggregate fields retain ordinary value semantics.
-    if shared || kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum {
+    if shared || kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum || kind == TypeKind.Dyn {
         var index = 0
         while index < length(value.items) {
             discard reify_visit(state, get(value.items, index), depth + 1)?
@@ -79,6 +79,12 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
         while index < length(value.items) { push(arguments, get(value.items, index).number)
             index = index + 1 }
         return reify_function(state.context, node, value.ty, value.number, arguments)
+    }
+    if kind == TypeKind.Dyn {
+        let receiver = reify_value(state, get(value.items, 0), depth + 1)?
+        // Queue-local witness indices never survive compile-time evaluation.
+        // Reuse the exact admitted interface/receiver pair in the output queue.
+        return witness_box(state.context, node, receiver, value.ty)
     }
     if kind == TypeKind.Int || kind == TypeKind.Float || kind == TypeKind.Refined {
         let base = base_type(state.context.env, value.ty)

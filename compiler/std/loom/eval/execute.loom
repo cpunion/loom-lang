@@ -237,6 +237,7 @@ fn invoked(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     let values = arguments(state, expr, frame, depth)?
     if values.control != Control.Normal { return Result.Ok(values) }
     if expr.kind == ExprKind.Call { return call(state, expr, expr.index, values.value.items, 0, frame, depth) }
+    if expr.kind == ExprKind.DynCall { return dynamic_invoke(state, expr, values.value.items, frame, depth) }
     if expr.kind == ExprKind.IndirectCall {
         let target = function_target(state, expr, get(values.value.items, 0))?
         return call(state, expr, target, values.value.items, 1, frame, depth)
@@ -277,7 +278,8 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     if expr.kind == ExprKind.If || expr.kind == ExprKind.While { return controlled(state, expr, frame, depth) }
     if expr.kind == ExprKind.Match { return matched(state, expr, frame, depth) }
     if expr.kind == ExprKind.Record { return record_value(state, expr, frame, depth) }
-    if expr.kind == ExprKind.Call || expr.kind == ExprKind.IndirectCall || expr.kind == ExprKind.Intrinsic || expr.kind == ExprKind.Variant || expr.kind == ExprKind.List {
+    if expr.kind == ExprKind.DynBox { return dynamic_box(state, expr, frame, depth) }
+    if expr.kind == ExprKind.Call || expr.kind == ExprKind.IndirectCall || expr.kind == ExprKind.DynCall || expr.kind == ExprKind.Intrinsic || expr.kind == ExprKind.Variant || expr.kind == ExprKind.List {
         return invoked(state, expr, frame, depth)
     }
     Result.Err(failure(expr, "unsupported checked expression in compile-time evaluation"))

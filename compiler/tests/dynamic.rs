@@ -58,7 +58,7 @@ fn erased_values_require_explicit_evidence_and_do_not_enable_type_discovery() {
         "concept C {}\nimpl C for Int {}\nfn recover(value dyn C) Int { value }",
         "concept C { fn copy(self Self) Self }\nfn erased(value dyn C) {}",
         "concept C { fn copy[T](self Self, value T) (Self, T) }\nfn erased(value dyn C) {}",
-        "concept C {}\nimpl C for Int {}\nfn main() { discard comptime { let value dyn C = 1\nvalue } }",
+        "concept C {}\nimpl C for Int {}\nfn main() { let value dyn C = 1\ndiscard comptime { value } }",
         "concept C { type Item }\nimpl C for Int { type Item = Int }\nfn main() { let value dyn C[Item = Bool] = 1 }",
         "concept C { type Item }\nfn change(value dyn C[Item = Int]) dyn C[Item = Bool] { value }",
     ] {

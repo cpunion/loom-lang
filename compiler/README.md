@@ -701,7 +701,8 @@ under their declared generic requirements, including known implementations in
 unused functions with generic nominal receivers. An override does not instantiate
 the default body it replaces. The [method example](examples/comptime_parameters/methods.loom)
 combines defaults, recursive static callbacks, Text/Bool options and dynamic calls.
-This does not add concept contracts or compile-time execution of dyn values.
+Concept contracts remain unsupported. Pure static and dynamic calls can also
+execute inside an isolated `comptime` computation.
 
 ### Associated types and bounded data
 
@@ -823,10 +824,25 @@ receivers, heterogeneous lists, records/enums/tuples and allocating call argumen
 
 Closed native builds retain reachable witnesses and used method slots. Library
 exports retain complete callable tables. No runtime type lookup or `any`
-conversion supplies evidence. Cross-dyn conversion, concrete recovery, and
-compile-time dynamic execution currently reject. A dyn-compatible method can use
+conversion supplies evidence. Cross-dyn conversion and concrete recovery
+currently reject. A dyn-compatible method can use
 bare `Self` only as its first receiver parameter; bound `Self.Item` projections
 are allowed elsewhere. Static-only concepts may also use bare `Self` elsewhere.
+
+Pure `comptime` code can construct, call and return dyn values, including methods
+with associated bindings, generic parameters, defaults and static arguments.
+The evaluator dispatches through the checked build's witnesses, not runtime type
+discovery. Purity checking examines every possible checked target for a called
+interface slot, including its body and contracts. An unexecuted runtime branch
+cannot hide I/O; unrelated interfaces and unused method slots are not invoked or
+included merely to evaluate another method.
+
+Returned dyn values retain their admitted conformance and receiver snapshot.
+Reification registers new output-queue witnesses and preserves shared/cyclic
+containers, rather than retaining evaluation-local indices. Only methods needed
+by the runtime program survive. The [compile-time dynamic example](examples/comptime_dynamic/main.loom)
+exercises both computed scalar results and managed receivers used after compilation.
+This does not permit runtime-local capture or add required proofs over dyn values.
 
 ## Module dependencies
 
