@@ -64,6 +64,9 @@ fn fill_interface(env Environment, receiver Int) Result[Bool, Failure] {
     }
 }
 fn fill_interface_methods(env Environment, receiver Int, capability Concept, methods List[Method], slots List[DynamicSlot]) Result[Bool, Failure] {
+    // Compare complete source signatures, including comptime parameters, before
+    // omitting demand-specialized methods from the initial runtime table.
+    let headers = new[Method]()
     var method = 0
     while method < length(capability.methods) {
         let current = get(env.signatures, get(capability.methods, method))
@@ -79,21 +82,25 @@ fn fill_interface_methods(env Environment, receiver Int, capability Concept, met
         if !dynamic_member_type(env, current.result, capability.symbol) {
             return Result.Err(failure(env, current.symbol, symbol(env, current.symbol).node, "dyn concept methods cannot return Self or a type containing Self"))
         }
-        // A generic declaration is checked now but has no unspecialized ABI
-        // slot. Concrete calls append only the instances this build needs.
+        // Generic and static declarations have no unspecialized ABI slot.
+        // Concrete calls append only the instances this build needs.
         if current.parameters == 1 {
             let specialized = signature(env, get(capability.methods, method), ints(receiver), node)?
             let params = argument_tail(specialized.params, 1)
             var previous = 0
-            while previous < length(methods) {
-                let other = get(methods, previous)
+            while previous < length(headers) {
+                let other = get(headers, previous)
                 if other.name == symbol(env, current.symbol).name && same(other.params, params) {
                     return Result.Err(failure(env, current.symbol, node, "dynamic bindings produce overlapping method signatures"))
                 }
                 previous = previous + 1
             }
-            push(methods, Method { name = symbol(env, current.symbol).name params = params result = specialized.result })
-            push(slots, DynamicSlot { signature = get(capability.methods, method) arguments = new[Int]() })
+            let header = Method { name = symbol(env, current.symbol).name params = params result = specialized.result }
+            push(headers, header)
+            if !has_static(current) {
+                push(methods, header)
+                push(slots, DynamicSlot { signature = get(capability.methods, method) arguments = new[Int]() constants = new[StaticValue]() })
+            }
         }
         method = method + 1
     }
@@ -237,7 +244,7 @@ fn boxed(context Context, node Node, value Expr, target Int) Result[Expr, Failur
     }
     Result.Ok(expression(ExprKind.DynBox, target, node, "", witness, expressions(value), value.falls))
 }
-fn dynamic_call(context Context, node Node, signature Int, arguments List[Int], output Int, values List[Expr]) Result[Expr, Failure] {
+fn dynamic_call(context Context, node Node, signature Int, arguments List[Int], constants List[StaticValue], output Int, values List[Expr]) Result[Expr, Failure] {
     let receiver = get(values, 0)
     discard fill_interface(context.env, receiver.ty)?
     let interface = get(context.env.types, receiver.ty).symbol
@@ -249,7 +256,7 @@ fn dynamic_call(context Context, node Node, signature Int, arguments List[Int], 
     var slot = -1
     if context.emit {
         if !concrete(context.env, receiver.ty) { return Result.Err(error(context, node, "dynamic calls require concrete associated bindings")) }
-        slot = dynamic_slot(context, node, receiver.ty, signature, arguments)?
+        slot = dynamic_slot(context, node, receiver.ty, signature, arguments, constants)?
         var index = 0
         while index < length(context.env.uses) &&
             (get(context.env.uses, index).interface != interface || get(context.env.uses, index).slot != slot) { index = index + 1 }
@@ -290,7 +297,7 @@ fn activate_witnesses(env Environment, retain Bool) Result[Bool, Failure] {
                 let current = get(env.signatures, method)
                 let declaration = symbol(env, current.symbol)
                 let arguments = member_arguments(if prototype(env, current.symbol) { ints(witness.concrete) } else { provided.arguments }, instance.arguments)
-                set(witness.methods, slot, schedule(env, method, arguments, new[StaticValue](), declaration.node)?)
+                set(witness.methods, slot, schedule(env, method, arguments, instance.constants, declaration.node)?)
                 changed = true
             }
             slot = slot + 1

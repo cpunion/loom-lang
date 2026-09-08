@@ -110,6 +110,9 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
     let declarations = new[Node]()
     push(declarations, source)
     let values = expressions(receiver)
+    let probing = static_options(context, options)
+    let probes = new[Bool]()
+    if probing { push(probes, false) }
     var index = 0
     while index < length(inputs) {
         let input = get(inputs, index)
@@ -121,7 +124,11 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
             let method_type = hint(context, get(method.params, index + 1), arguments, node)?
             if count != length(inputs) || method_type == get(shape, index) { expected_argument = method_type }
         }
-        let value = expr(context, input, expected_argument)?
+        let probe = probing && static_position(context, options, index + 1)
+        let value = if probe { static_probe(context, input, expected_argument)? } else {
+            expr(context, input, expected_argument)?
+        }
+        if probing { push(probes, probe) }
         push(declarations, input)
         push(values, value)
         if field_matches {
@@ -137,10 +144,13 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
         let arguments = expressions(callee)
         index = 0
         while index < count {
-            push(arguments, typed(context, get(inputs, index), get(values, index + 1), get(shape, index))?)
+            let argument = if probing && get(probes, index + 1) {
+                expr(context, get(inputs, index), get(shape, index))?
+            } else { typed(context, get(inputs, index), get(values, index + 1), get(shape, index))? }
+            push(arguments, argument)
             index = index + 1
         }
         return Result.Ok(expression(ExprKind.IndirectCall, get(shape, count), node, "", -1, arguments, all_fall(arguments)))
     }
-    invoke_selected(context, node, choose_overload(context, node, methods)?, declarations, values, new[Bool]())
+    invoke_selected(context, node, choose_overload(context, node, methods)?, declarations, values, probes)
 }

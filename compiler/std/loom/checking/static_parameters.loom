@@ -9,6 +9,7 @@ import std.list.get
 import std.list.push
 import std.list.set
 import std.list.length
+import std.list.clone
 import std.result.Result
 
 fn has_static(signature Signature) Bool { length(signature.compile_time) != 0 }
@@ -116,10 +117,12 @@ fn static_position(context Context, options List[Int], position Int) Bool {
 }
 fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] {
     let stage = staging(context, node)?
+    // This contender may become a runtime argument. Preserve its lexical
+    // proofs and exits while keeping speculative locals and queues private.
     let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
         locals = stage.locals bindings = stage.bindings head = stage.head
-        cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
-        facts = stage.facts fact_head = stage.fact_head emit = false }
+        cleanups = clone(context.cleanups) cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
+        facts = clone(context.facts) fact_head = context.fact_head emit = false }
     expr(validation, node, expected)
 }
 fn static_argument(context Context, node Node, checked Expr, expected Int) Result[StaticValue, Failure] {
@@ -127,8 +130,14 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
         (abstract_context(context) && depends_on_type(context, node)) {
         // Later runtime arguments may have appended block locals since the
         // overload probe. Check isolation against this fresh staging boundary.
-        let validation = static_probe(context, node, expected)?
-        discard isolated(context, node, validation, length(context.locals))?
+        // Unlike overload probing, a selected static argument cannot use an
+        // enclosing runtime loop, cleanup or proof context.
+        let stage = staging(context, node)?
+        let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
+            locals = stage.locals bindings = stage.bindings head = stage.head
+            cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
+            facts = stage.facts fact_head = stage.fact_head emit = false }
+        discard isolated(context, node, expr(validation, node, expected)?, length(context.locals))?
         return Result.Ok(StaticValue { ty = expected known = false number = 0 text = "" arguments = new[Int]() })
     }
     if get(context.env.types, expected).kind == TypeKind.Function {
@@ -158,6 +167,10 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
 // declaration's bounds. Concrete incidental implementations grant no evidence.
 fn validate_static(env Environment, id Int, constants List[StaticValue], node Node) Result[Bool, Failure] {
     if length(constants) == 0 || !known_constants(constants) { return Result.Ok(true) }
+    let original = get(env.signatures, id)
+    if prototype(env, original.symbol) && !has(symbol(env, original.symbol).node, NodeKind.Block) {
+        return Result.Ok(true)
+    }
     var index = 0
     while index < length(env.validations) {
         let previous = get(env.validations, index)
@@ -168,7 +181,6 @@ fn validate_static(env Environment, id Int, constants List[StaticValue], node No
         }
         index = index + 1
     }
-    let original = get(env.signatures, id)
     if env.stage_depth >= 32 { return Result.Err(failure(env, original.symbol, node, "comptime specialization depth exceeded; expansion must be finite")) }
     if length(env.validations) >= 1024 { return Result.Err(failure(env, original.symbol, node, "comptime specialization budget exceeded; expansion must be finite")) }
     let selected = length(env.validations)

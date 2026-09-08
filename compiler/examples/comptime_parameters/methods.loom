@@ -1,0 +1,46 @@
+import std.text.concat
+import std.int.to_text
+
+concept Processor {
+    fn label(self Self, comptime prefix Text, value Int, comptime verbose Bool) Text {
+        comptime if verbose {
+            concat(prefix, to_text(value))
+        } else {
+            prefix
+        }
+    }
+
+    fn repeat[T](self Self, value T, comptime action fn(T) T, comptime count Int) T {
+        comptime if count <= 0 {
+            value
+        } else {
+            self.repeat(action(value), action, count - 1)
+        }
+    }
+}
+
+impl Processor for Bool {
+}
+
+fn process[P Processor](processor P, value Int, comptime count Int) Int {
+    processor.repeat(value, increment, count)
+}
+
+fn exercise_methods() {
+    let concrete = true
+    assert concrete.label("value=", 7, true) == "value=7"
+    assert process(concrete, 39, 3) == 42
+    assert comptime {
+        let processor = true
+        processor.repeat(39, increment, 3)
+    } == 42
+
+    // Only the selected method instances enter this build's witness table.
+    // Static values and callbacks do not become runtime arguments.
+    let processor dyn Processor = concrete
+    assert processor.label("value=", 8, true) == "value=8"
+    assert processor.label("quiet", 9, false) == "quiet"
+    assert processor.repeat(39, increment, 3) == 42
+    assert processor.repeat(3, double, 4) == 48
+    assert processor.repeat("shared", identity, 2) == "shared"
+}

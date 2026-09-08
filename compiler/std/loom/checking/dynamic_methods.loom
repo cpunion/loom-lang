@@ -1,20 +1,23 @@
-// Generic method instances are checker-only metadata. Each materialized slot
+// Type/static method instances are checker-only metadata. Each materialized slot
 // has an ordinary concrete signature in typed IR and the existing witness ABI.
-record DynamicSlot { signature Int arguments List[Int] }
+record DynamicSlot { signature Int arguments List[Int] constants List[StaticValue] }
 record DynamicInterface { initialized Bool filling Bool slots List[DynamicSlot] }
 
-fn dynamic_slot(context Context, node Node, receiver Int, method Int, arguments List[Int]) Result[Int, Failure] {
+fn dynamic_slot(context Context, node Node, receiver Int, method Int, arguments List[Int], constants List[StaticValue]) Result[Int, Failure] {
     let env = context.env
     let interface = get(env.types, receiver).symbol
     var slots = get(env.dynamic_interfaces, interface).slots
     let local = argument_tail(arguments, 1)
+    if !known_constants(constants) {
+        return Result.Err(error(context, node, "dynamic method comptime arguments must be determined"))
+    }
     var slot = 0
     var instances = 0
     while slot < length(slots) {
         let previous = get(slots, slot)
         if previous.signature == method {
             instances = instances + 1
-            if same(previous.arguments, local) { return Result.Ok(slot) }
+            if same(previous.arguments, local) && same_constants(previous.constants, constants) { return Result.Ok(slot) }
         }
         slot = slot + 1
     }
@@ -29,7 +32,12 @@ fn dynamic_slot(context Context, node Node, receiver Int, method Int, arguments 
         argument = argument + 1
     }
     let specialized = signature(env, method, arguments, node)?
-    let params = argument_tail(specialized.params, 1)
+    let params = new[Int]()
+    argument = 1
+    while argument < length(specialized.params) {
+        if !is_static(specialized, argument) { push(params, get(specialized.params, argument)) }
+        argument = argument + 1
+    }
     let seen = new[Int]()
     argument = 0
     while argument < length(params) {
@@ -43,11 +51,11 @@ fn dynamic_slot(context Context, node Node, receiver Int, method Int, arguments 
     slot = 0
     while slot < length(slots) {
         let previous = get(slots, slot)
-        if previous.signature == method && same(previous.arguments, local) { return Result.Ok(slot) }
+        if previous.signature == method && same(previous.arguments, local) && same_constants(previous.constants, constants) { return Result.Ok(slot) }
         slot = slot + 1
     }
     push(get(env.interfaces, interface).methods, Method { name = symbol(env, specialized.symbol).name params = params result = specialized.result })
-    push(slots, DynamicSlot { signature = method arguments = local })
+    push(slots, DynamicSlot { signature = method arguments = local constants = constants })
     // A box may have been reached before the first use of this specialization.
     // Keep every existing table aligned; future boxes use the current length.
     var witness = 0

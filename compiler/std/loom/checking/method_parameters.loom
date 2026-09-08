@@ -51,8 +51,11 @@ fn source_signature(env Environment, owner Int, arguments List[Int], obligations
         let declaration = get(declarations, parameter)
         let ty = resolve_bound(env, owner, child(declaration, 0), arguments, obligations, 0)?
         let constant = has(declaration, NodeKind.Comptime)
-        if constant && (item.owner >= 0 || has(item.node, NodeKind.Intrinsic)) {
-            return Result.Err(failure(env, owner, declaration, "comptime parameters are not supported on concept, implementation or intrinsic methods"))
+        if constant && has(item.node, NodeKind.Intrinsic) {
+            return Result.Err(failure(env, owner, declaration, "intrinsic parameters cannot be comptime"))
+        }
+        if constant && item.owner >= 0 && parameter == 0 {
+            return Result.Err(failure(env, owner, declaration, "the method receiver cannot be comptime"))
         }
         if constant && ty != 1 && ty != 2 && ty != 3 && get(env.types, ty).kind != TypeKind.Function {
             return Result.Err(failure(env, owner, declaration, "comptime parameters require Int, Bool, Text or a function type"))
@@ -151,7 +154,7 @@ fn implementation_method(env Environment, header Implementation, owner Int, expe
                 }
                 match trial {
                     Result.Ok(current) => {
-                        if same(current.params, target.params) && current.result == target.result {
+                        if same(current.params, target.params) && same(current.compile_time, target.compile_time) && current.result == target.result {
                             push(matches, MethodMatch { slot = slot signature = current })
                         }
                     }

@@ -1,0 +1,74 @@
+test fn static_methods_specialize_defaults_and_dynamic_slots_without_runtime_constants() {
+    let declarations = "concept Apply { type Item\nfn apply(self Self, value Self.Item, comptime amount Int) Self.Item\nfn forward(self Self, value Self.Item, comptime amount Int) Self.Item { self.apply(value, amount) }\nfn echo[T](self Self, value T, comptime selected Bool) T { comptime if selected { value } else { value } }\nfn unused(self Self, comptime amount Int) Int { 9001 } }\nimpl Apply for Int { type Item = Int\nfn apply(self Int, value Int, comptime amount Int) Int { self + value + amount } }\n"
+    let program = accepted(concat(declarations, "fn main() { assert 1.forward(2, 3) == 6\nassert comptime { 1.forward(2, 3) } == 6\nlet value dyn Apply[Item = Int] = 1\nassert value.apply(2, 3) == 6 && value.apply(3, 3) == 7\nassert value.apply(2, 4) == 7\nassert value.forward(2, 3) == 6\nassert value.echo[Int](7, true) == 7 && value.echo[Bool](true, false) }"))
+    assert length(program.interfaces) == 1 && length(program.witnesses) == 1
+    let methods = get(program.interfaces, 0).methods
+    // Two apply constants, one forwarding slot and two generic echo instances.
+    assert length(methods) == 5
+    var index = 0
+    while index < length(methods) {
+        let method = get(methods, index)
+        assert method.name != "unused" && length(method.params) == 1
+        assert get(get(program.witnesses, 0).methods, index) >= 0
+        index = index + 1
+    }
+    index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        assert length(function.params) == 0 || length(function.params) == 2
+        var local = 0
+        while local < length(function.locals) {
+            let name = get(function.locals, local).name
+            assert name != "amount" && name != "selected"
+            local = local + 1
+        }
+        index = index + 1
+    }
+    // Callable fields compete by type, not by whether a value can be evaluated.
+    discard accepted("record Hook { pick fn(Int) Int }\nconcept C { fn pick(self Self, comptime value Bool) Bool { value } }\nimpl C for Hook {}\nfn next(value Int) Int { value + 1 }\nfn main() { let hook = Hook { pick = next }\nlet number = 2\nassert hook.pick(number) == 3 && hook.pick(true) }")
+    discard accepted("record Hook { pick fn(Bool) Bool }\nconcept C { fn pick(self Self, comptime value Int) Int { value } }\nimpl C for Hook {}\nfn flip(value Bool) Bool { !value }\nfn main() { let hook = Hook { pick = flip }\nlet flag = false\nassert hook.pick(flag) && hook.pick(3) == 3 }")
+}
+
+test fn static_overload_probes_preserve_runtime_context_without_granting_ctfe_captures() {
+    let refined = "type Positive = Int where self > 0\nrecord Hook { pick fn(Positive) Int }\nconcept C { fn pick(self Self, comptime value Bool) Bool { value } }\nimpl C for Hook {}\nfn identity(value Positive) Int { value }\n"
+    discard flow_program(concat(refined, "fn run(value Int) Int { assert value > 0\nlet hook = Hook { pick = identity }\nhook.pick(Positive(value)) }\nfn main() { assert run(2) == 2 }"))
+    rejects_result(concat(refined, "fn run(value Int) Int { let hook = Hook { pick = identity }\nhook.pick(Positive(value)) }\nfn main() { discard run(2) }"))
+    let runtime = "record Hook { pick fn(Int) Int }\nconcept C { fn pick(self Self, comptime value Bool) Bool { value } }\nimpl C for Hook {}\nfn identity(value Int) Int { value }\n"
+    discard accepted(concat(runtime, "fn trace() Int { let hook = Hook { pick = identity }\nvar count = 0\nvar cleaned = 0\nwhile true { count = count + 1\ndefer { cleaned = cleaned + 1 }\ndiscard hook.pick({ if count < 2 { continue }\nbreak\n1 }) }\nassert count == 2\ncleaned }\nfn main() { assert trace() == 2\nassert comptime { trace() } == 2 }"))
+    let constant = "concept C { fn pick(self Self, comptime value Int) Int { value } }\nimpl C for Bool {}\n"
+    rejects(concat(constant, "fn main() { let value = 1\ndiscard true.pick(value) }"))
+    rejects(concat(constant, "fn main() { while true { discard true.pick({ break\n1 }) } }"))
+    rejects(concat(constant, "fn unknown(comptime value Int) { while true { discard true.pick({ continue\nvalue }) } }"))
+    discard accepted(concat(constant, "fn main() { assert true.pick({ var value = 0\nwhile true { value = 1\nbreak }\nvalue }) == 1 }"))
+}
+
+test fn static_methods_preserve_signature_requirements_and_proof_boundaries() {
+    let declarations = "concept C { fn pick(self Self, value Int, comptime amount Int) Int { value + amount } }\nimpl C for Bool {}\n"
+    rejects(concat(declarations, "fn bad(amount Int) Int { true.pick(1, amount) }\nfn main() { discard bad(2) }"))
+    rejects(concat(declarations, "fn bad(value dyn C, amount Int) Int { value.pick(1, amount) }\nfn main() { discard bad(true, 2) }"))
+    rejects("concept C { fn pick(comptime self Self) Int { 1 } }\nimpl C for Int {}")
+    rejects("concept C { fn pick(self Self, value Int, comptime amount Int) Int }\nimpl C for Bool { fn pick(self Bool, comptime value Int, amount Int) Int { value + amount } }")
+    rejects("concept C { fn pick(self Self, value Int) Int }\nimpl C for Bool { fn pick(self Bool, comptime value Int) Int { value } }")
+    let capability = "concept Value { fn value(self Self) Int }\nimpl Value for Int { fn value(self Int) Int { self } }\n"
+    rejects(concat(capability, "concept C { fn read[T](self Self, value T, comptime enabled Bool) Int { comptime if enabled { value.value() } else { 0 } } }\nimpl C for Bool {}\nfn main() { discard true.read(1, true) }"))
+    rejects(concat(capability, "concept C { fn read[T](self Self, value T, comptime enabled Bool) Int }\nimpl C for Bool { fn read[T](self Bool, value T, comptime enabled Bool) Int { comptime if enabled { value.value() } else { 0 } } }\nfn main() { discard true.read(1, true) }"))
+    rejects(concat(capability, "concept C { fn read[T](self Self, value T, comptime enabled Bool) Int }\nimpl C for Bool { fn read[T](self Bool, value T, comptime enabled Bool) Int { comptime if enabled { value.value() } else { 0 } } }\nfn unused() { discard true.read(1, true) }\nfn main() {}"))
+    rejects("concept C { fn pick(self Self, comptime amount Int) Int }\nimpl C for Bool { fn pick(self Bool, comptime amount Int) Int ensures result == amount { amount } }\nfn main() { discard true.pick(1) }")
+    rejects("concept C { fn apply(self Self, value Int, comptime action fn(Int) Int) Int { action(value) } }\nimpl C for Bool {}\nfn identity(value Int) Int { value }\nfn main() { let action = identity\ndiscard true.apply(1, action) }")
+    rejects("concept C { type Item\nfn pick(self Self, value Self.Item, comptime amount Int) Int\nfn pick(self Self, value Int, comptime amount Int) Int }\nfn bad(value dyn C[Item = Int]) {}")
+    rejects("record Hook { pick fn(Int) Int }\nconcept C { fn pick(self Self, comptime value Int) Int { value } }\nimpl C for Hook {}\nfn identity(value Int) Int { value }\nfn main() { let hook = Hook { pick = identity }\ndiscard hook.pick(1) }")
+}
+
+test fn static_methods_validate_the_selected_body_with_abstract_types() {
+    let capability = "concept Value { fn value(self Self) Int }\nimpl Value for Int { fn value(self Int) Int { self } }\n"
+    let defaulted = concat(capability, "concept C { fn read[T](self Self, value T, comptime enabled Bool) Int { comptime if enabled { value.value() } else { 0 } } }\n")
+    let overridden = concat(defaulted, "impl C for Bool { fn read[T](self Bool, value T, comptime enabled Bool) Int { 7 } }\n")
+    discard accepted(concat(overridden, "fn read[S C](source S) Int { source.read(1, true) }\nfn main() { assert true.read(1, true) == 7\nassert read(true) == 7\nlet erased dyn C = true\nassert erased.read(1, true) == 7 }"))
+    // Evidence-only receivers leave selection to scheduling or witness use.
+    discard accepted(concat(defaulted, "impl C for Bool {}\nfn unused[S C](source S) Int { source.read(1, true) }\nfn unused_dyn(source dyn C) Int { source.read(1, true) }\nfn main() { assert true.read(1, false) == 0 }"))
+    rejects(concat(defaulted, "impl C for Bool {}\nfn unused() { discard true.read(1, true) }\nfn main() {}"))
+    rejects(concat(defaulted, "record Box[U] { value U }\nimpl[U] C for Box[U] {}\nfn unused[U](source Box[U]) Int { source.read(1, true) }\nfn main() {}"))
+    let declared = concat(capability, "concept C { fn read[T](self Self, value T, comptime enabled Bool) Int }\nrecord Box[U] { value U }\n")
+    rejects(concat(declared, "impl[U] C for Box[U] { fn read[T](self Box[U], value T, comptime enabled Bool) Int { comptime if enabled { value.value() } else { 0 } } }\nfn unused[U](source Box[U]) Int { source.read(1, true) }\nfn main() {}"))
+    discard accepted(concat(defaulted, "record Box[U] { value U }\nimpl[U] C for Box[U] { fn read[T](self Box[U], value T, comptime enabled Bool) Int { 7 } }\nfn unused[U](source Box[U]) Int { source.read(1, true) }\nfn main() {}"))
+}

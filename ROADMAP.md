@@ -194,7 +194,10 @@ Compile-time parameters now specialize named calls with Int/Bool/Text values or
 known source-function identities and leave only runtime arguments in the native
 ABI. Static callbacks become direct calls; generic forwarding and pure selectors
 preserve target preconditions and reject compile-time effects. Selected branches
-retain explicit generic requirements and mandatory abstract proofs. Function
+retain explicit generic requirements and mandatory abstract proofs. Concept and
+implementation methods use the same static parameters; dynamic slots include
+static values in their identity and erase them from the runtime signature.
+Selected bodies retain abstract checking without emitting unused callers. Function
 references to partially specialized static declarations, capturing closures
 and heterogeneous packs remain open.
 
