@@ -1,4 +1,6 @@
 import codec.parser.answer
 import other.answer
 
-fn main() { assert codec.parser.answer() == 42 && other.answer() == 99 }
+fn main() {
+    assert codec.parser.answer() == 42 && other.answer() == 99
+}

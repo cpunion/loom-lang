@@ -1,0 +1,17 @@
+// Transport fixture only: this is not a Loom parser or checker.
+const fs = require('node:fs');
+const paths = process.argv.slice(2);
+const diagnostics = [];
+let delayed = false;
+for (let index = 0; index < paths.length; index++) {
+  if (paths[index] !== '--overlay') continue;
+  const path = paths[++index];
+  const text = fs.readFileSync(paths[++index], 'utf8');
+  delayed ||= text.includes('SLOW');
+  const offset = text.indexOf('BROKEN');
+  if (offset >= 0) {
+    const start = Buffer.byteLength(text.slice(0, offset));
+    diagnostics.push({ path, message: 'fixture diagnostic', start, end: start + 6 });
+  }
+}
+setTimeout(() => { process.stdout.write(JSON.stringify({ diagnostics })); process.exitCode = diagnostics.length ? 1 : 0; }, delayed ? 1000 : 0);

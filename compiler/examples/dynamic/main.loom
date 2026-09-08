@@ -7,25 +7,55 @@ import std.list.get
 import std.list.set
 import std.list.length
 
-record Label { parts List[Text] }
-impl Display for Label {
-    fn display(self Label) Text { get(self.parts, 0) }
+record Label {
+    parts List[Text]
 }
+
+impl Display for Label {
+    fn display(self Label) Text {
+        get(self.parts, 0)
+    }
+}
+
 fn label(value Text) Label {
     let parts = new[Text]()
     push(parts, concat(value, "!"))
-    Label { parts = parts }
+    Label {
+        parts = parts
+    }
 }
-fn escaped(value Text) dyn Display { label(value) }
-fn choose(flag Bool) dyn Display { if flag { 42 } else { "text" } }
 
-record Holder { value dyn Display }
-enum Maybe { Some(dyn Display) None }
+fn escaped(value Text) dyn Display {
+    label(value)
+}
 
-concept Join { fn joined(self Self, suffix Text) Text }
+fn choose(flag Bool) dyn Display {
+    if flag {
+        42
+    } else {
+        "text"
+    }
+}
+
+record Holder {
+    value dyn Display
+}
+
+enum Maybe {
+    Some(dyn Display)
+    None
+}
+
+concept Join {
+    fn joined(self Self, suffix Text) Text
+}
+
 impl Join for Label {
-    fn joined(self Label, suffix Text) Text { concat(get(self.parts, 0), suffix) }
+    fn joined(self Label, suffix Text) Text {
+        concat(get(self.parts, 0), suffix)
+    }
 }
+
 fn replace(values List[dyn Join]) Text {
     set(values, 0, label("new"))
     concat("+", "suffix")
@@ -47,11 +77,16 @@ fn exercise() {
     push(values, label("list"))
     assert length(values) == 3 && get(values, 0).display() == "7"
     assert get(values, 1).display() == "1.25" && get(values, 2).display() == "list!"
-    let holder = Holder { value = label("record") }
+    let holder = Holder {
+        value = label("record")
+    }
     assert holder.value.display() == "record!"
     let wrapped = Maybe.Some(escaped("enum"))
-    assert match wrapped { Maybe.Some(inner) => inner.display() == "enum!", _ => false }
-    let pair (dyn Display, dyn Display) = (true, label("tuple"))
+    assert match wrapped {
+        Maybe.Some(inner) => inner.display() == "enum!",
+        _ => false
+    }
+    let pair (dyn Display, dyn Display) =(true, label("tuple"))
     assert pair.0.display() == "true" && pair.1.display() == "tuple!"
 
     // The receiver snapshot must survive replacement and allocation in the next
@@ -62,4 +97,6 @@ fn exercise() {
     assert get(joined, 0).joined("") == "new!"
 }
 
-fn main() { exercise() }
+fn main() {
+    exercise()
+}

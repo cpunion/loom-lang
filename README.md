@@ -17,6 +17,8 @@ in Git history.
 
 - [Build and run the compiler](compiler/README.md)
 - [Use Loom syntax and analysis libraries](compiler/loom/README.md#public-syntax-libraries)
+- [Format source and get editor feedback](compiler/loom/README.md#formatting-and-editor-feedback)
+- [Try the VS Code development extension](editors/vscode/README.md)
 - [Project goals](docs/project/charter.md)
 - [Language decisions](docs/rfcs/language-foundation.md)
 - [Changes and deployment decisions](docs/rfcs/change-and-deployment.md)
@@ -34,6 +36,7 @@ the complete language, standard library, or tooling design is implemented.
 - `compiler/std`: source libraries, including the shared compiler analysis layers.
 - `compiler/runtime`: managed-memory and private platform primitives in Rust.
 - `compiler/examples` and `compiler/tests`: runnable examples and focused tests.
+- `editors/vscode`: highlighting, compiler-backed diagnostics, and formatting.
 - `docs`: goals, decisions, and current status.
 
 All changes use pull requests. See [Contributing](CONTRIBUTING.md),

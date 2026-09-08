@@ -1,0 +1,179 @@
+import std.loom.format.format
+import std.loom.project.join_path
+import std.fs.FileKind
+import std.fs.entries
+import std.fs.entry_kind
+import std.fs.kind
+import std.file.write_text
+import std.io.read_text
+import std.list.new
+import std.list.push
+import std.text.byte
+import std.text.slice
+
+record FormatOptions {
+    paths List[Text]
+    check Bool
+    stdout Bool
+    stdin Bool
+    recursive Bool
+}
+
+fn format_options(args List[Text]) Result[FormatOptions, Text] {
+    let paths = new[Text]()
+    var checking = false
+    var stdout = false
+    var stdin = false
+    var recursive = false
+    var index = 2
+    while index < length(args) {
+        let argument = get(args, index)
+        if argument == "--check" {
+            checking = true
+        } else {
+            if argument == "--stdout" {
+                stdout = true
+            } else {
+                if argument == "--stdin" {
+                    stdin = true
+                } else {
+                    if argument == "--recursive" {
+                        recursive = true
+                    } else {
+                        if std.text.length(argument) > 0 && byte(argument, 0) == 45 {
+                            return Result.Err("unknown fmt option; use --help")
+                        }
+                        push(paths, argument)
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    if stdin &&(length(paths) != 0 || checking || recursive || stdout) {
+        return Result.Err("fmt --stdin cannot be combined with paths or other modes")
+    }
+    if stdout &&(checking || recursive || length(paths) != 1) {
+        return Result.Err("fmt --stdout requires exactly one source file")
+    }
+    if !stdin && length(paths) == 0 {
+        push(paths, ".")
+    }
+    Result.Ok(FormatOptions {
+            paths = paths
+            check = checking
+            stdout = stdout
+            stdin = stdin
+            recursive = recursive
+        })
+}
+
+fn format_source_path(path Text) Bool {
+    let size = std.text.length(path)
+    size >= 5 && slice(path, size - 5, size) == ".loom"
+}
+
+fn format_files(path Text, recursive Bool, files List[Text]) Result[Bool, Text] {
+    let metadata = match kind(path) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(concat("cannot read format path: ", path))
+        }
+    }
+    if metadata == FileKind.File {
+        if !format_source_path(path) {
+            return Result.Err(concat("fmt expects a .loom source file: ", path))
+        }
+        push(files, path)
+        return Result.Ok(true)
+    }
+    if metadata != FileKind.Directory {
+        return Result.Err(concat("unsupported format path: ", path))
+    }
+    let names = match entries(path) {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            return Result.Err(concat("cannot list format directory: ", path))
+        }
+    }
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        let child = join_path(path, name)
+        let entry = match entry_kind(child) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(concat("cannot inspect format path: ", child))
+            }
+        }
+        if entry == FileKind.File && format_source_path(name) {
+            push(files, child)
+        }
+        if recursive && entry == FileKind.Directory && byte(name, 0) != 46 && name != "target" && name != "node_modules" {
+            discard format_files(child, true, files)?
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn formatted_source(path Text, text Text) Result[Text, Text] {
+    match format(text) {
+        Result.Ok(output) => Result.Ok(output)
+        Result.Err(error) => Result.Err(render(path, text, error))
+    }
+}
+
+fn format_execute(args List[Text]) Result[Text, Text] {
+    let options = format_options(args)?
+    if options.stdin {
+        let text = match std.io.read_text() {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("cannot read UTF-8 standard input")
+            }
+        }
+        return formatted_source("<stdin>", text)
+    }
+    let files = new[Text]()
+    var index = 0
+    while index < length(options.paths) {
+        discard format_files(get(options.paths, index), options.recursive, files)?
+        index = index + 1
+    }
+    if options.stdout && length(files) != 1 {
+        return Result.Err("fmt --stdout requires exactly one source file")
+    }
+    var changed = ""
+    index = 0
+    while index < length(files) {
+        let path = get(files, index)
+        let original = match read_text(path) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(concat("cannot read UTF-8 source: ", path))
+            }
+        }
+        let output = formatted_source(path, original)?
+        if options.stdout {
+            return Result.Ok(output)
+        }
+        if output != original {
+            changed = concat(changed, concat(path, "\n"))
+            if !options.check {
+                match std.file.write_text(path, output) {
+                    Result.Ok(_) => {
+                    }
+                    Result.Err(_) => {
+                        return Result.Err(concat("cannot write formatted source: ", path))
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    if options.check && changed != "" {
+        return Result.Err(concat("formatting required:\n", changed))
+    }
+    Result.Ok(changed)
+}

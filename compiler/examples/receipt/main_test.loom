@@ -1,0 +1,15 @@
+test fn total_multiplies_price_and_quantity() {
+    let item = Item {
+        price = 12
+        quantity = 3
+    }
+    assert total(item) == 36
+}
+
+test fn zero_quantity_has_no_cost() {
+    let item = Item {
+        price = 12
+        quantity = 0
+    }
+    assert total(item) == 0
+}

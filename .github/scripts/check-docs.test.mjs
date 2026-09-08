@@ -47,6 +47,7 @@ test("ignores generated and version-control directories", async (context) => {
   const root = await fixture({
     "README.md": "# Project\n",
     "target/generated.md": "中文\n",
+    "editors/vscode/node_modules/dependency/README.md": "third-party documentation\n",
     ".git/internal.md": "中文\n",
   });
   context.after(() => rm(root, { recursive: true, force: true }));

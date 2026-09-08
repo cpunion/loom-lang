@@ -6,8 +6,13 @@ import std.list.length
 import std.text.concat
 import std.int.to_text
 
-fn increment(value Int) Int { value + 1 }
-fn double(value Int) Int { value * 2 }
+fn increment(value Int) Int {
+    value + 1
+}
+
+fn double(value Int) Int {
+    value * 2
+}
 
 fn repeat[T](value T, action fn(T) T, comptime count Int) T {
     comptime if count <= 0 {
@@ -16,45 +21,90 @@ fn repeat[T](value T, action fn(T) T, comptime count Int) T {
         repeat(action(value), action, count - 1)
     }
 }
+
 fn forwarded[T](value T, action fn(T) T, comptime count Int) T {
     repeat(value, action, count)
 }
+
 fn choose(comptime doubled Bool) fn(Int) Int {
-    comptime if doubled { double } else { increment }
+    comptime if doubled {
+        double
+    } else {
+        increment
+    }
 }
+
 fn decorate(comptime prefix Text, value Int, comptime suffix Text) Text {
     concat(concat(prefix, to_text(value)), suffix)
 }
+
 fn render[T](value T, comptime verbose Bool) Text {
     comptime if verbose {
-        comptime if T implements Display { value.display() } else { "<value>" }
-    } else { "quiet" }
+        comptime if T implements Display {
+            value.display()
+        } else {
+            "<value>"
+        }
+    } else {
+        "quiet"
+    }
 }
+
 fn bias() Int {
     let values = new[Int]()
     push(values, 5)
     get(values, 0)
 }
-fn observed(trace List[Int], value Int) Int { push(trace, value)
+
+fn observed(trace List[Int], value Int) Int {
+    push(trace, value)
     value
 }
-fn sum(left Int, comptime extra Int, right Int) Int { left + extra + right }
-fn staged(comptime count Int) Int { comptime { count + 1 } }
+
+fn sum(left Int, comptime extra Int, right Int) Int {
+    left + extra + right
+}
+
+fn staged(comptime count Int) Int {
+    comptime {
+        count + 1
+    }
+}
+
 fn shadowed(comptime count Int) Int {
     let original = count
-    { let count = 40
-        assert count == 40 }
+    {
+        let count = 40
+        assert count == 40
+    }
     original + count
 }
-fn unchanged(value Int, comptime label Bool) Int ensures result == value { value }
 
-fn apply[T](value T, comptime action fn(T) T) T { action(value) }
-fn static_repeat[T](value T, comptime action fn(T) T, comptime count Int) T {
-    comptime if count <= 0 { value } else { static_repeat(action(value), action, count - 1) }
+fn unchanged(value Int, comptime label Bool) Int
+ensures result == value {
+    value
 }
-fn identity[T](value T) T { value }
-fn append(values List[Text]) List[Text] { push(values, "added")
-    values }
+
+fn apply[T](value T, comptime action fn(T) T) T {
+    action(value)
+}
+
+fn static_repeat[T](value T, comptime action fn(T) T, comptime count Int) T {
+    comptime if count <= 0 {
+        value
+    } else {
+        static_repeat(action(value), action, count - 1)
+    }
+}
+
+fn identity[T](value T) T {
+    value
+}
+
+fn append(values List[Text]) List[Text] {
+    push(values, "added")
+    values
+}
 
 fn exercise() {
     assert repeat(39, increment, 3) == 42
@@ -63,9 +113,13 @@ fn exercise() {
     let first = choose(false)
     let second = choose(true)
     assert first(4) == 5 && second(4) == 8
-    let prepared = comptime { choose(true) }
+    let prepared = comptime {
+        choose(true)
+    }
     assert prepared(5) == 10
-    assert comptime { repeat(39, increment, 3) } == 42
+    assert comptime {
+        repeat(39, increment, 3)
+    } == 42
     assert staged(2) == 3 && staged(8) == 9
     assert shadowed(4) == 8
     assert decorate("item:", 7, "!") == "item:7!"
@@ -77,16 +131,24 @@ fn exercise() {
     assert apply(4, choose(true)) == 8
     assert apply("text", identity) == "text" && apply(true, identity[Bool])
     assert static_repeat(3, double, 4) == 48
-    assert comptime { static_repeat(39, increment, 3) } == 42
+    assert comptime {
+        static_repeat(39, increment, 3)
+    } == 42
     let shared = new[Text]()
     let alias = static_repeat(shared, append, 3)
     assert length(shared) == 3 && get(alias, 2) == "added"
     let trace = new[Int]()
     assert sum(observed(trace, 1), bias(), observed(trace, 2)) == 8
-    assert sum(1, { let fresh = 2
-        fresh }, { let later = 3
-        later }) == 6
+    assert sum(1, {
+            let fresh = 2
+            fresh
+        }, {
+            let later = 3
+            later
+        }) == 6
     assert length(trace) == 2 && get(trace, 0) == 1 && get(trace, 1) == 2
 }
 
-fn main() { exercise() }
+fn main() {
+    exercise()
+}

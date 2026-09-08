@@ -39,10 +39,24 @@ fn describe(program Program) Text {
         let symbol = get(program.symbols, index)
         let source = get(program.files, symbol.file)
         if source.package == program.root {
-            let visibility = if symbol.public { "pub " } else { "" }
-            let kind = if symbol.node.kind == NodeKind.Function { "fn " } else { "type " }
-            let mode = if has(symbol.node, NodeKind.Test) { "test " } else {
-                if symbol.test_only { "test-only " } else { "" }
+            let visibility = if symbol.public {
+                "pub "
+            } else {
+                ""
+            }
+            let kind = if symbol.node.kind == NodeKind.Function {
+                "fn "
+            } else {
+                "type "
+            }
+            let mode = if has(symbol.node, NodeKind.Test) {
+                "test "
+            } else {
+                if symbol.test_only {
+                    "test-only "
+                } else {
+                    ""
+                }
             }
             let declaration = concat(visibility, concat(mode, concat(kind, qualify(package_label(program.modules, program.packages, source.package), symbol.name))))
             let location = position(source.text, symbol.node.span.start)
@@ -73,10 +87,20 @@ fn main() {
         exit_code(2)
         return
     }
-    let path = if count == 1 { "compiler/examples/data" } else { get(args, 1) }
-    let standard = if count == 1 { "compiler/std" } else { get(args, 2) }
+    let path = if count == 1 {
+        "compiler/examples/data"
+    } else {
+        get(args, 1)
+    }
+    let standard = if count == 1 {
+        "compiler/std"
+    } else {
+        get(args, 2)
+    }
     match inspect(path, standard, count == 4) {
-        Result.Ok(summary) => { discard write_text(summary) }
+        Result.Ok(summary) => {
+            discard write_text(summary)
+        }
         Result.Err(error) => {
             discard write_error(concat(error, "\n"))
             exit_code(1)

@@ -1,1 +1,3 @@
-test fn source_collections() { exercise() }
+test fn source_collections() {
+    exercise()
+}

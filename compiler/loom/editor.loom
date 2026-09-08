@@ -1,0 +1,176 @@
+import std.loom.project.SourceOverlay
+import std.loom.project.load_overlaid
+import std.loom.binding.bind
+import std.loom.checking.check
+import std.loom.source.Diagnostic
+import std.loom.source.Span
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+import std.text.starts_with
+
+record EditorOptions {
+    path Text
+    std_root Text
+    tests Bool
+    overlays List[SourceOverlay]
+}
+
+record EditorOutput {
+    text Text
+    failed Bool
+}
+
+// This fixed editor protocol belongs to the compiler driver, not the runtime
+// or a general JSON API. UTF-8 bytes stay intact; JSON control bytes are escaped.
+fn editor_quoted(value Text) Text {
+    let bytes = std.bytes.new()
+    std.bytes.push(bytes, 34)
+    var index = 0
+    while index < std.text.length(value) {
+        let current = std.text.byte(value, index)
+        if current == 34 || current == 92 {
+            std.bytes.push(bytes, 92)
+            std.bytes.push(bytes, current)
+        } else {
+            if current < 32 {
+                std.bytes.push(bytes, 92)
+                std.bytes.push(bytes, 117)
+                std.bytes.push(bytes, 48)
+                std.bytes.push(bytes, 48)
+                std.bytes.push(bytes, std.text.byte("0123456789abcdef", current / 16))
+                std.bytes.push(bytes, std.text.byte("0123456789abcdef", current % 16))
+            } else {
+                std.bytes.push(bytes, current)
+            }
+        }
+        index = index + 1
+    }
+    std.bytes.push(bytes, 34)
+    std.bytes.to_text(bytes)
+}
+
+fn editor_error(message Text) EditorOutput {
+    EditorOutput {
+        text = concat("{\"diagnostics\":[],\"error\":", concat(editor_quoted(message), "}\n"))
+        failed = true
+    }
+}
+
+fn editor_diagnostic(path Text, diagnostic Diagnostic) EditorOutput {
+    let fields = concat("{\"diagnostics\":[{\"path\":", concat(editor_quoted(path), concat(",\"message\":", editor_quoted(diagnostic.message))))
+    let start = concat(fields, concat(",\"start\":", to_text(diagnostic.span.start)))
+    EditorOutput {
+        text = concat(start, concat(",\"end\":", concat(to_text(diagnostic.span.end), "}]}\n")))
+        failed = true
+    }
+}
+
+fn editor_options(args List[Text]) Result[EditorOptions, Text] {
+    var path = ""
+    var standard = "compiler/std"
+    var tests = false
+    let overlays = std.list.new[SourceOverlay]()
+    var index = 2
+    while index < std.list.length(args) {
+        let argument = get(args, index)
+        if argument == "--tests" {
+            if tests {
+                return Result.Err("duplicate --tests")
+            }
+            tests = true
+        } else {
+            if argument == "--std" {
+                index = index + 1
+                if index == std.list.length(args) {
+                    return Result.Err("--std needs a path")
+                }
+                standard = get(args, index)
+            } else {
+                if argument == "--overlay" {
+                    if index + 2 >= std.list.length(args) {
+                        return Result.Err("--overlay needs an original file path and a UTF-8 snapshot file")
+                    }
+                    let original = get(args, index + 1)
+                    let snapshot = get(args, index + 2)
+                    let text = match read_text(snapshot) {
+                        Result.Ok(value) => value
+                        Result.Err(_) => {
+                            return Result.Err(concat(original, ": cannot read UTF-8 overlay snapshot"))
+                        }
+                    }
+                    std.list.push(overlays, SourceOverlay {
+                            path = original
+                            text = text
+                        })
+                    index = index + 2
+                } else {
+                    if starts_with(argument, "-") {
+                        return Result.Err(concat("unknown editor-check option ", argument))
+                    }
+                    if path != "" {
+                        return Result.Err("editor-check selects one package directory")
+                    }
+                    path = argument
+                }
+            }
+        }
+        index = index + 1
+    }
+    if path == "" {
+        return Result.Err("editor-check requires an absolute package directory")
+    }
+    if !starts_with(path, "/") && !is_windows_path(path) {
+        return Result.Err("editor-check requires an absolute package directory")
+    }
+    Result.Ok(EditorOptions {
+            path = path
+            std_root = standard
+            tests = tests
+            overlays = overlays
+        })
+}
+
+fn editor_execute(args List[Text]) EditorOutput {
+    let options = match editor_options(args) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            return editor_error(message)
+        }
+    }
+    let project = match load_overlaid(options.path, options.std_root, options.tests, options.overlays) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return if failed.path == "" {
+                editor_error(failed.diagnostic.message)
+            } else {
+                editor_diagnostic(failed.path, failed.diagnostic)
+            }
+        }
+    }
+    let bound = match bind(project, options.tests) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
+        }
+    }
+    match check(bound) {
+        Result.Ok(_) => EditorOutput {
+            text = "{\"diagnostics\":[]}\n"
+            failed = false
+        }
+        Result.Err(failed) => editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
+    }
+}
+
+test fn editor_protocol_quotes_control_bytes_without_reencoding_unicode() {
+    assert editor_quoted("a\n\t\"\\😀") == "\"a\\u000a\\u0009\\\"\\\\😀\""
+    let output = editor_diagnostic("/a\".loom", Diagnostic {
+            span = Span {
+                start = 4
+                end = 8
+            }
+            message = "bad\ntext"
+        })
+    assert output.failed && output.text == "{\"diagnostics\":[{\"path\":\"/a\\\".loom\",\"message\":\"bad\\u000atext\",\"start\":4,\"end\":8}]}\n"
+}

@@ -1,1 +1,3 @@
-test fn float_values_comptime_and_money_boundaries() { exercise() }
+test fn float_values_comptime_and_money_boundaries() {
+    exercise()
+}

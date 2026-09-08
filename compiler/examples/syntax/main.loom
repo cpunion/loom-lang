@@ -19,8 +19,14 @@ fn describe(source Text) Result[Text, Diagnostic] {
     var index = 0
     while index < length(file.children) {
         let declaration = get(file.children, index)
-        let kind = if declaration.kind == NodeKind.Record { "record" } else {
-            if declaration.kind == NodeKind.Function { "fn" } else { "declaration" }
+        let kind = if declaration.kind == NodeKind.Record {
+            "record"
+        } else {
+            if declaration.kind == NodeKind.Function {
+                "fn"
+            } else {
+                "declaration"
+            }
         }
         let span = concat(to_text(declaration.span.start), concat("..", to_text(declaration.span.end)))
         let name = concat(kind, concat(" ", declaration.value))
@@ -33,7 +39,9 @@ fn describe(source Text) Result[Text, Diagnostic] {
 fn main() {
     let source = "pub record Point { x Int }\nfn answer() Int { 42 }\n"
     match describe(source) {
-        Result.Ok(summary) => { discard write_text(summary) }
+        Result.Ok(summary) => {
+            discard write_text(summary)
+        }
         Result.Err(error) => {
             discard write_error(concat(render("memory.loom", source, error), "\n"))
             exit_code(1)

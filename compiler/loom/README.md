@@ -60,6 +60,30 @@ Agreement is evidence, not a proof of compiler correctness. Native bootstrap and
 tests pass on macOS, Linux and Windows through the same LLVM 22 bridge.
 Manifest helpers still implement the documented subset, not general TOML.
 
+## Formatting and editor feedback
+
+```sh
+target/loom fmt path/to/package
+target/loom fmt --check --recursive path/to/module
+target/loom fmt --stdin < main.loom
+```
+
+`fmt` rewrites `.loom` files in the selected directory, or explicit source files;
+the default path is `.`. `--recursive` includes nested directories. `--check`
+does not write and fails when formatting is needed. `--stdin` formats supplied
+UTF-8 source to stdout without touching files. Formatting preserves AST structure,
+comments, and literal spelling, with four-space indentation and one field or
+statement per line. It separates top-level declarations and retains at most one
+user blank line. This changes layout, not grammar; semicolons remain invalid.
+
+The [VS Code development extension](../../editors/vscode/README.md) provides
+highlighting, document formatting, and diagnostics for unsaved buffers. Its
+language server sends source snapshots to the same Loom package/type/contract
+checker; it does not implement another parser or checker in JavaScript.
+Completion, navigation, rename, and incremental semantic caching remain open.
+An isolated macOS VS Code extension-host test covers activation, unsaved errors,
+error clearing, and applied formatting. Broader interactive usability review remains open.
+
 ## Public syntax libraries
 
 The compiler and ordinary Loom programs use the same source implementation:
@@ -70,6 +94,7 @@ The compiler and ordinary Loom programs use the same source implementation:
 | `std.loom.lexer` | `lex`, `Token`, `Kind` |
 | `std.loom.ast` | `Node`, `NodeKind`, `has` (direct-child lookup), `same` (exact structural equality) |
 | `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]` |
+| `std.loom.format` | `format(Text) Result[Text, Diagnostic]` |
 
 Import, for example, `std.loom.parser.parse` and `std.loom.ast.NodeKind` in
 any package. Parsing supplied text returns a file node or the first diagnostic;
@@ -94,6 +119,8 @@ identity-aware or formatting-preserving comparison.
 This is an evolving public API, not a stable node schema or lossless editor
 tree: comments and formatting trivia are discarded, and string token values are
 decoded. Preserve original source when tooling needs its spelling and layout.
+The formatter uses that original text alongside token and AST spans to preserve
+comments and literal spelling; it does not require a separate lossless AST.
 Typed analysis is an opt-in layer below. Typed metaprogramming and identity-aware
 editing remain later library boundaries in the [roadmap](../../ROADMAP.md).
 

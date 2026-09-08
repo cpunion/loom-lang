@@ -1,1 +1,3 @@
-test fn associated_types_normalize_without_changing_sharing() { exercise() }
+test fn associated_types_normalize_without_changing_sharing() {
+    exercise()
+}

@@ -1,0 +1,133 @@
+import std.loom.source.Diagnostic
+import std.loom.source.Span
+import std.fs.entry_kind
+import std.fs.FsError
+
+// Text snapshots replace files in the ordinary package graph. Paths are
+// absolute; new documents belong to an existing package directory.
+pub record SourceOverlay {
+    path Text
+    text Text
+}
+
+pub record LoadFailure {
+    path Text
+    diagnostic Diagnostic
+}
+
+record OverlayFile {
+    path Text
+    key Text
+    directory Text
+    name Text
+    text Text
+    exists Bool
+}
+
+fn overlay_files(overlays List[SourceOverlay]) Result[List[OverlayFile], Text] {
+    let files = new[OverlayFile]()
+    var index = 0
+    while index < length(overlays) {
+        let overlay = get(overlays, index)
+        if !starts_with(overlay.path, "/") && !is_windows_path(overlay.path) {
+            return Result.Err("overlay source paths must be absolute")
+        }
+        if !ends_with(overlay.path, ".loom") {
+            return Result.Err("overlays replace .loom source files only")
+        }
+        let base = parent(overlay.path)
+        let directory = canonical(base)?
+        let filename = slice(overlay.path, length(join_path(base, "")), length(overlay.path))
+        let exists = match entry_kind(overlay.path) {
+            Result.Ok(_) => {
+                if !is_file(overlay.path) {
+                    return Result.Err(concat(overlay.path, ": overlay source is not a file"))
+                }
+                true
+            }
+            Result.Err(error) => {
+                if error != FsError.NotFound {
+                    return Result.Err(concat(overlay.path, ": cannot inspect overlay source"))
+                }
+                false
+            }
+        }
+        let key = if exists {
+            canonical(overlay.path)?
+        } else {
+            join_path(directory, filename)
+        }
+        var previous = 0
+        while previous < length(files) {
+            if get(files, previous).key == key {
+                return Result.Err(concat(overlay.path, ": duplicate source overlay"))
+            }
+            previous = previous + 1
+        }
+        push(files, OverlayFile {
+                path = overlay.path
+                key = key
+                directory = directory
+                name = filename
+                text = overlay.text
+                exists = exists
+            })
+        index = index + 1
+    }
+    Result.Ok(files)
+}
+
+fn overlay_index(overlays List[OverlayFile], path Text) Int {
+    var index = 0
+    while index < length(overlays) {
+        if get(overlays, index).key == path {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn overlay_names(overlays List[OverlayFile], directory Text, names List[Text]) {
+    var index = 0
+    while index < length(overlays) {
+        let overlay = get(overlays, index)
+        if !overlay.exists && overlay.directory == directory {
+            include(names, overlay.name)
+        }
+        index = index + 1
+    }
+}
+
+fn load_failure(message Text) LoadFailure {
+    LoadFailure {
+        path = ""
+        diagnostic = Diagnostic {
+            span = Span {
+                start = 0
+                end = 0
+            }
+            message = message
+        }
+    }
+}
+
+// No resolution/fetch mode: inspecting editor buffers cannot publish locks or
+// populate dependency caches. Parser errors retain their original byte spans.
+pub fn load_overlaid(path Text, std_root Text, tests Bool, overlays List[SourceOverlay]) Result[Project, LoadFailure] {
+    let files = match overlay_files(overlays) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            return Result.Err(load_failure(message))
+        }
+    }
+    let failures = new[LoadFailure]()
+    match load_selected(path, std_root, tests, false, "git", files, failures) {
+        Result.Ok(project) => Result.Ok(project)
+        Result.Err(message) => Result.Err(if length(failures) == 0 {
+                load_failure(message)
+            } else {
+                get(failures, 0)
+            })
+    }
+}

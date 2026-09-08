@@ -18,14 +18,16 @@ fn total(raw Text) Result[Int, Text] {
         Result.Ok(value) => value
         Result.Err(error) => {
             return Result.Err(match error {
-                ParseError.Invalid => "expected a decimal integer"
-                ParseError.OutOfRange => "integer is out of range"
-            })
+                    ParseError.Invalid => "expected a decimal integer"
+                    ParseError.OutOfRange => "integer is out of range"
+                })
         }
     }
     let count = match Count(value) {
         Result.Ok(count) => count
-        Result.Err(_) => { return Result.Err("count must be between 0 and 10000") }
+        Result.Err(_) => {
+            return Result.Err("count must be between 0 and 10000")
+        }
     }
     var sum = 0
     var index = 1
@@ -46,8 +48,11 @@ fn main() {
     match total(get(args, 1)) {
         Result.Ok(value) => {
             match write_text(concat(to_text(value), "\n")) {
-                Result.Ok(_) => {}
-                Result.Err(_) => { exit_code(1) }
+                Result.Ok(_) => {
+                }
+                Result.Err(_) => {
+                    exit_code(1)
+                }
             }
         }
         Result.Err(error) => {

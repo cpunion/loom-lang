@@ -8,64 +8,107 @@ import std.int.to_text
 
 fn ordered(trace List[Int]) Int {
     var value = 3
-    defer { push(trace, value)
-        value = 99 }
+    defer {
+        push(trace, value)
+        value = 99
+    }
     {
-        defer { push(trace, 2) }
-        defer { push(trace, 1) }
+        defer {
+            push(trace, 2)
+        }
+        defer {
+            push(trace, 1)
+        }
     }
     value = 4
     value
 }
+
 fn early(trace List[Int]) Int {
-    defer { push(trace, 6) }
+    defer {
+        push(trace, 6)
+    }
     if true {
-        defer { push(trace, 5) }
+        defer {
+            push(trace, 5)
+        }
         return 7
     }
     0
 }
+
 fn stopped(trace List[Int]) {
-    defer { push(trace, 9) }
+    defer {
+        push(trace, 9)
+    }
     return
-    defer { push(trace, 0) }
+    defer {
+        push(trace, 0)
+    }
 }
-fn failure() Result[Int, Text] { Result.Err("expected") }
+
+fn failure() Result[Int, Text] {
+    Result.Err("expected")
+}
+
 fn propagated(trace List[Int]) Result[Int, Text] {
-    defer { push(trace, 8) }
+    defer {
+        push(trace, 8)
+    }
     return {
-        defer { push(trace, 7) }
+        defer {
+            push(trace, 7)
+        }
         discard failure()?
         Result.Ok(0)
     }
 }
+
 fn iterations(trace List[Int]) {
     var index = 0
     while index < 3 {
         if index == 1 {
-            defer { push(trace, 10) }
+            defer {
+                push(trace, 10)
+            }
         } else {
-            defer { push(trace, 20) }
+            defer {
+                push(trace, 20)
+            }
         }
-        defer { push(trace, index) }
+        defer {
+            push(trace, index)
+        }
         index = index + 1
     }
 }
 
-record Payload { text Text values List[Text] }
+record Payload {
+    text Text
+    values List[Text]
+}
+
 fn snapshot(early Bool) Payload {
     let values = new[Text]()
     push(values, "saved")
-    var payload = Payload { text = concat("live", " value") values = values }
+    var payload = Payload {
+        text = concat("live", " value")
+        values = values
+    }
     defer {
-        payload = Payload { text = "replacement" values = new[Text]() }
+        payload = Payload {
+            text = "replacement"
+            values = new[Text]()
+        }
         var index = 0
         while index < 20 {
             push(payload.values, concat("allocated ", to_text(index)))
             index = index + 1
         }
     }
-    if early { return payload }
+    if early {
+        return payload
+    }
     payload
 }
 
@@ -76,8 +119,12 @@ fn exercise() {
     assert early(trace) == 7
     assert get(trace, 3) == 5 && get(trace, 4) == 6
     match propagated(trace) {
-        Result.Err(message) => { assert message == "expected" }
-        Result.Ok(_) => { assert false }
+        Result.Err(message) => {
+            assert message == "expected"
+        }
+        Result.Ok(_) => {
+            assert false
+        }
     }
     assert length(trace) == 7 && get(trace, 5) == 7 && get(trace, 6) == 8
     stopped(trace)
@@ -91,7 +138,12 @@ fn exercise() {
     let returned = snapshot(true)
     assert tail.text == "live value" && get(tail.values, 0) == "saved"
     assert returned.text == "live value" && get(returned.values, 0) == "saved"
-    assert comptime { let events = new[Int]()
-        ordered(events) + get(events, 2) } == 8
+    assert comptime {
+        let events = new[Int]()
+        ordered(events) + get(events, 2)
+    } == 8
 }
-fn main() { exercise() }
+
+fn main() {
+    exercise()
+}

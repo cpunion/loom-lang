@@ -4,7 +4,7 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ignoredDirectories = new Set([".git", "target"]);
+const ignoredDirectories = new Set([".git", "target", "node_modules"]);
 const hanPattern = /\p{Script=Han}/u;
 const inlineLinkPattern = /!?\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+[^)]*)?\)/g;
 const referenceLinkPattern = /^\s*\[[^\]]+\]:\s*(?:<([^>]+)>|(\S+))/gm;

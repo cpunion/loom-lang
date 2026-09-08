@@ -1,1 +1,3 @@
-pub fn value() Int { 40 }
+pub fn value() Int {
+    40
+}

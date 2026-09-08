@@ -39,16 +39,24 @@ test fn windows_drive_and_unc_roots_preserve_canonical_spelling() {
     }
     assert match dependency_directory("\\\\?\\C:\\app\\parser", "../..") {
         Result.Ok(value) => value == "\\\\?\\C:\\"
-        Result.Err(_) => false }
+        Result.Err(_) => false
+    }
     assert match dependency_directory("\\\\?\\C:\\app\\parser", "..\\.") {
         Result.Ok(value) => value == "\\\\?\\C:\\app"
-        Result.Err(_) => false }
+        Result.Err(_) => false
+    }
     assert match dependency_directory("\\\\?\\C:\\app", "C:codec") {
-        Result.Err(_) => true, Result.Ok(_) => false }
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
     assert match dependency_directory("\\\\?\\C:\\app", "\\codec") {
-        Result.Err(_) => true, Result.Ok(_) => false }
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
     assert match dependency_directory("\\\\?\\C:\\app", "/codec") {
-        Result.Err(_) => true, Result.Ok(_) => false }
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
 }
 
 test fn imports_are_unique_and_deterministic() {
@@ -66,8 +74,15 @@ test fn test_dependencies_can_import_the_completed_production_package() {
     // std.list tests import std.text, whose production code imports std.list.
     let project = match load("compiler/std/list", "compiler/std", true) {
         Result.Ok(value) => value
-        Result.Err(_) => { assert false
-            Project { files = new[SourceFile]() modules = new[ModuleInstance]() packages = new[Package]() root = -1 } }
+        Result.Err(_) => {
+            assert false
+            Project {
+                files = new[SourceFile]()
+                modules = new[ModuleInstance]()
+                packages = new[Package]()
+                root = -1
+            }
+        }
     }
     assert package_label(project.modules, project.packages, project.root) == "std.list"
     var root_tests = false
@@ -76,7 +91,9 @@ test fn test_dependencies_can_import_the_completed_production_package() {
     while index < length(project.files) {
         let file = get(project.files, index)
         if file.package == project.root {
-            if file.test_only { root_tests = true }
+            if file.test_only {
+                root_tests = true
+            }
         } else {
             assert !file.test_only
             var item = 0
@@ -85,20 +102,111 @@ test fn test_dependencies_can_import_the_completed_production_package() {
                 item = item + 1
             }
         }
-        if package_label(project.modules, project.packages, file.package) == "std.text" { text_loaded = true }
+        if package_label(project.modules, project.packages, file.package) == "std.text" {
+            text_loaded = true
+        }
         index = index + 1
     }
     assert root_tests && text_loaded
 }
 
+test fn overlays_follow_imports_and_test_selection_without_writing_source() {
+    let directory = match canonical("compiler/examples/scalar") {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+    let main = join_path(directory, "main.loom")
+    let fresh = join_path(directory, "overlay_unsaved.loom")
+    let testing = join_path(directory, "overlay_unsaved_test.loom")
+    let original = match read(main) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+    assert !is_file(fresh) && !is_file(testing)
+    let overlays = new[SourceOverlay]()
+    push(overlays, SourceOverlay {
+            path = main
+            text = "fn main() { helper() }"
+        })
+    push(overlays, SourceOverlay {
+            path = fresh
+            text = "import scalar.math.fib\nfn helper() { assert fib(8) == 21 }"
+        })
+    push(overlays, SourceOverlay {
+            path = testing
+            text = "fn broken("
+        })
+    match load_overlaid(directory, "compiler/std", false, overlays) {
+        Result.Ok(project) => {
+            var found = false
+            var imported = false
+            var index = 0
+            while index < length(project.files) {
+                let file = get(project.files, index)
+                if file.path == fresh {
+                    found = true
+                    assert file.text == get(overlays, 1).text && !file.test_only
+                }
+                if package_label(project.modules, project.packages, file.package) == "scalar.math" {
+                    imported = true
+                }
+                assert file.path != testing
+                index = index + 1
+            }
+            assert found && imported
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    match load_overlaid(directory, "compiler/std", true, overlays) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(failed) => {
+            assert failed.path == testing && failed.diagnostic.span.start <= length(get(overlays, 2).text)
+        }
+    }
+    assert match read(main) {
+        Result.Ok(value) => value == original,
+        Result.Err(_) => false
+    }
+    assert !is_file(fresh) && !is_file(testing)
+}
+
 test fn production_cycles_still_reject_before_loading_files() {
     let loader = Loader {
-        files = new[SourceFile]() modules = new[ModuleRoot]() packages = new[Package]()
-        std_root = "" active = new[Int]() complete = new[Int]()
-        resolution = Resolution { root = "/app" tool = "git" locks = new[LockedSource]() snapshots = new[Snapshot]() }
+        files = new[SourceFile]()
+        modules = new[ModuleRoot]()
+        packages = new[Package]()
+        std_root = ""
+        active = new[Int]()
+        complete = new[Int]()
+        resolution = Resolution {
+            root = "/app"
+            tool = "git"
+            locks = new[LockedSource]()
+            snapshots = new[Snapshot]()
+        }
+        overlays = new[OverlayFile]()
+        failures = new[LoadFailure]()
     }
-    push(loader.modules, ModuleRoot { name = "app" base = "/app" dependencies = new[Dependency]() })
-    push(loader.packages, Package { instance = 0 relative = "" imports = new[PackageImport]() })
+    push(loader.modules, ModuleRoot {
+            name = "app"
+            base = "/app"
+            dependencies = new[Dependency]()
+        })
+    push(loader.packages, Package {
+            instance = 0
+            relative = ""
+            imports = new[PackageImport]()
+        })
     push(loader.active, 0)
     assert match visit(loader, 0, "not-read", false, 1, false) {
         Result.Err(message) => message == "package import cycle through app"
@@ -112,31 +220,96 @@ test fn production_cycles_still_reject_before_loading_files() {
 }
 
 test fn module_roots_reuse_identity_independently_of_display_names() {
-    let loader = Loader { files = new[SourceFile]() modules = new[ModuleRoot]() packages = new[Package]()
-        std_root = "/std" active = new[Int]() complete = new[Int]()
-        resolution = Resolution { root = "/app" tool = "git" locks = new[LockedSource]() snapshots = new[Snapshot]() } }
-    let standard = ModuleRoot { name = "std" base = "/std" dependencies = new[Dependency]() }
-    let app = ModuleRoot { name = "app" base = "/app" dependencies = new[Dependency]() }
-    let codec = ModuleRoot { name = "codec" base = "/codec" dependencies = new[Dependency]() }
-    assert match register_module(loader, standard) { Result.Ok(index) => index == 0, Result.Err(_) => false }
-    assert match register_module(loader, app) { Result.Ok(index) => index == 1, Result.Err(_) => false }
-    assert match register_module(loader, codec) { Result.Ok(index) => index == 2, Result.Err(_) => false }
-    assert match register_module(loader, codec) { Result.Ok(index) => index == 2, Result.Err(_) => false }
+    let loader = Loader {
+        files = new[SourceFile]()
+        modules = new[ModuleRoot]()
+        packages = new[Package]()
+        std_root = "/std"
+        active = new[Int]()
+        complete = new[Int]()
+        resolution = Resolution {
+            root = "/app"
+            tool = "git"
+            locks = new[LockedSource]()
+            snapshots = new[Snapshot]()
+        }
+        overlays = new[OverlayFile]()
+        failures = new[LoadFailure]()
+    }
+    let standard = ModuleRoot {
+        name = "std"
+        base = "/std"
+        dependencies = new[Dependency]()
+    }
+    let app = ModuleRoot {
+        name = "app"
+        base = "/app"
+        dependencies = new[Dependency]()
+    }
+    let codec = ModuleRoot {
+        name = "codec"
+        base = "/codec"
+        dependencies = new[Dependency]()
+    }
+    assert match register_module(loader, standard) {
+        Result.Ok(index) => index == 0,
+        Result.Err(_) => false
+    }
+    assert match register_module(loader, app) {
+        Result.Ok(index) => index == 1,
+        Result.Err(_) => false
+    }
+    assert match register_module(loader, codec) {
+        Result.Ok(index) => index == 2,
+        Result.Err(_) => false
+    }
+    assert match register_module(loader, codec) {
+        Result.Ok(index) => index == 2,
+        Result.Err(_) => false
+    }
     assert length(loader.modules) == 3
-    assert match register_module(loader, ModuleRoot { name = "codec" base = "/fork" dependencies = new[Dependency]() }) {
-        Result.Ok(index) => index == 3, Result.Err(_) => false }
-    assert match register_module(loader, ModuleRoot { name = "renamed" base = "/codec" dependencies = new[Dependency]() }) {
-        Result.Err(_) => true, Result.Ok(_) => false }
-    assert match imported_module(loader, 1, "app", false) { Result.Ok(index) => index == 1, Result.Err(_) => false }
-    assert match imported_module(loader, 1, "std", false) { Result.Ok(index) => index == 0, Result.Err(_) => false }
+    assert match register_module(loader, ModuleRoot {
+            name = "codec"
+            base = "/fork"
+            dependencies = new[Dependency]()
+        }) {
+        Result.Ok(index) => index == 3,
+        Result.Err(_) => false
+    }
+    assert match register_module(loader, ModuleRoot {
+            name = "renamed"
+            base = "/codec"
+            dependencies = new[Dependency]()
+        }) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert match imported_module(loader, 1, "app", false) {
+        Result.Ok(index) => index == 1,
+        Result.Err(_) => false
+    }
+    assert match imported_module(loader, 1, "std", false) {
+        Result.Ok(index) => index == 0,
+        Result.Err(_) => false
+    }
     // Already loaded does not mean directly declared by this importer.
     assert match imported_module(loader, 1, "codec", false) {
         Result.Err(message) => message == "module is not a declared direct dependency: codec"
-        Result.Ok(_) => false }
-    let first = match registered_package(loader, 2, "/codec/parser") { Result.Ok(index) => index, Result.Err(_) => -1 }
-    let second = match registered_package(loader, 3, "/fork/parser") { Result.Ok(index) => index, Result.Err(_) => -1 }
+        Result.Ok(_) => false
+    }
+    let first = match registered_package(loader, 2, "/codec/parser") {
+        Result.Ok(index) => index,
+        Result.Err(_) => -1
+    }
+    let second = match registered_package(loader, 3, "/fork/parser") {
+        Result.Ok(index) => index,
+        Result.Err(_) => -1
+    }
     assert first >= 0 && second >= 0 && first != second
-    assert match registered_package(loader, 2, "/codec/parser") { Result.Ok(index) => index == first, Result.Err(_) => false }
+    assert match registered_package(loader, 2, "/codec/parser") {
+        Result.Ok(index) => index == first,
+        Result.Err(_) => false
+    }
     push(loader.active, first)
     assert !package_seen(loader.active, second, 1)
 }

@@ -1,10 +1,23 @@
-concept Family { type Item[T] }
-record FamilyBox[X] { value X }
+concept Family {
+    type Item[T]
+}
 
-impl Family for Bool { type Item[T] = List[T] }
-impl[X] Family for FamilyBox[X] { type Item[T] = (X, T) }
+record FamilyBox[X] {
+    value X
+}
 
-fn family_echo[S Family, T](source S, value S.Item[T]) S.Family.Item[T] { value }
+impl Family for Bool {
+    type Item[T] = List[T]
+}
+
+impl[X] Family for FamilyBox[X] {
+    type Item[T] = (X, T)
+}
+
+fn family_echo[S Family, T](source S, value S.Item[T]) S.Family.Item[T] {
+    value
+}
+
 fn family_forward[S Family, T](source S, value S.Item[T]) S.Item[T] {
     family_echo[S, T](source, value)
 }
@@ -18,8 +31,10 @@ fn exercise_families() {
 
     let words = new[Text]()
     push(words, concat("family", "!"))
-    let source = FamilyBox { value = words }
-    let pair = family_forward[FamilyBox[List[Text]], List[Text]](source, (words, words))
+    let source = FamilyBox {
+        value = words
+    }
+    let pair = family_forward[FamilyBox[List[Text]], List[Text]](source,(words, words))
     set(words, 0, concat("shared", "!"))
     assert get(pair.0, 0) == "shared!" && get(pair.1, 0) == "shared!"
 
@@ -29,8 +44,14 @@ fn exercise_families() {
         family_forward[Bool, Int](false, values)
     }
     assert get(prepared, 0) == 42
-    let constant = comptime { family_forward[FamilyBox[Int], Bool](FamilyBox { value = 3 }, (3, true)) }
+    let constant = comptime {
+        family_forward[FamilyBox[Int], Bool](FamilyBox {
+                value = 3
+            },(3, true))
+    }
     assert constant.0 == 3 && constant.1
 }
 
-test fn generic_associated_families_preserve_concrete_values() { exercise_families() }
+test fn generic_associated_families_preserve_concrete_values() {
+    exercise_families()
+}

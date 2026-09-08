@@ -1,53 +1,104 @@
-record Wrapped[T] { value T }
+record Wrapped[T] {
+    value T
+}
 
 impl[T Display] Display for Wrapped[T] {
-    fn display(self Wrapped[T]) Text { self.value.display() }
+    fn display(self Wrapped[T]) Text {
+        self.value.display()
+    }
 }
+
 impl[T Rank] Rank for Wrapped[T] {
-    fn rank(self Wrapped[T], offset Int) Int { self.value.rank(offset) }
+    fn rank(self Wrapped[T], offset Int) Int {
+        self.value.rank(offset)
+    }
 }
+
 impl[T] Source for Wrapped[T] {
     type Item = T
-    fn first(self Wrapped[T]) T { self.value }
+    fn first(self Wrapped[T]) T {
+        self.value
+    }
 }
 
 fn exercise_generic_conformances() {
-    assert forward(Wrapped { value = 42 }) == "42"
-    assert forward(Wrapped { value = Wrapped { value = "nested" } }) == "nested"
-    assert (Wrapped { value = true }).copy()
-    let person = Wrapped { value = Person { name = "Ada" score = 10 } }
+    assert forward(Wrapped {
+            value = 42
+        }) == "42"
+    assert forward(Wrapped {
+            value = Wrapped {
+                value = "nested"
+            }
+        }) == "nested"
+    assert (Wrapped {
+            value = true
+        }).copy()
+    let person = Wrapped {
+        value = Person {
+            name = "Ada"
+            score = 10
+        }
+    }
     assert person.doubled() == 20 && person.copy().name == "Ada"
     let displayed dyn Display = person
     let ranked dyn Rank = person
     assert displayed.display() == "Ada" && ranked.doubled() == 20
-    assert comptime { forward(Wrapped { value = 7 }) } == "7"
-    assert render_any(Wrapped { value = Hidden { value = 1 } }) == "<value>"
+    assert comptime {
+        forward(Wrapped {
+                value = 7
+            })
+    } == "7"
+    assert render_any(Wrapped {
+            value = Hidden {
+                value = 1
+            }
+        }) == "<value>"
 }
 
 concept Mixer {
     type Item
     fn pair[T](self Self, value T) (Self.Item, T)
-    fn choose[T](self Self, first T, second T) T { first }
-    fn forward[T](self Self, first T, second T) T { self.choose[T](first, second) }
-    fn label[T Display](self Self, value T) Text { value.display() }
-}
-impl[X] Mixer for Wrapped[X] {
-    type Item = X
-    fn pair[U](self Wrapped[X], value U) (X, U) { (self.value, value) }
-    fn choose[U](self Wrapped[X], first U, second U) U { second }
-    fn label[U](self Wrapped[X], value U) Text { value.display() }
-}
-impl Mixer for Bool {
-    type Item = Bool
-    fn pair[T](self Bool, value T) (Bool, T) { (self, value) }
+    fn choose[T](self Self, first T, second T) T {
+        first
+    }
+    fn forward[T](self Self, first T, second T) T {
+        self.choose[T](first, second)
+    }
+    fn label[T Display](self Self, value T) Text {
+        value.display()
+    }
 }
 
-fn mixed[S Mixer, T](source S, value T) (S.Item, T) { source.pair[T](value) }
+impl[X] Mixer for Wrapped[X] {
+    type Item = X
+    fn pair[U](self Wrapped[X], value U) (X, U) {
+        (self.value, value)
+    }
+    fn choose[U](self Wrapped[X], first U, second U) U {
+        second
+    }
+    fn label[U](self Wrapped[X], value U) Text {
+        value.display()
+    }
+}
+
+impl Mixer for Bool {
+    type Item = Bool
+    fn pair[T](self Bool, value T) (Bool, T) {
+        (self, value)
+    }
+}
+
+fn mixed[S Mixer, T](source S, value T) (S.Item, T) {
+    source.pair[T](value)
+}
 
 fn exercise_generic_methods() {
     let words = new[Text]()
     push(words, concat("shared", "!"))
-    let source = Wrapped { value = words }
+    let source = Wrapped {
+        value = words
+    }
     let direct = mixed(source, words)
     let erased dyn Mixer[Item = List[Text]] = source
     let dynamic = Mixer.pair[List[Text]](erased, words)
@@ -57,6 +108,10 @@ fn exercise_generic_methods() {
     assert erased.label(42) == "42"
     let fallback dyn Mixer[Item = Bool] = true
     assert fallback.forward[Int](1, 2) == 1
-    let constant = comptime { mixed(Wrapped { value = 7 }, ("text", true)) }
+    let constant = comptime {
+        mixed(Wrapped {
+                value = 7
+            },("text", true))
+    }
     assert constant.0 == 7 && constant.1.0 == "text" && constant.1.1
 }
