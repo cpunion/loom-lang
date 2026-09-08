@@ -1,0 +1,33 @@
+fn task_fields_header() Text {
+    "async fn item[T](value T) T { value }\nrecord Pair { first Task[Int]\nsecond Task[Text]\nlabel Text }\nfn start() Pair { Pair { first = item(7)\nsecond = item(\"yes\")\nlabel = \"pair\" } }\nfn pass[T](value T) T { value }\n"
+}
+
+test fn task_fields_transfer_independently_through_values_calls_and_destructuring() {
+    discard accepted(concat(task_fields_header(), "async fn main() { let pair = start()\nlet first = pair.first\nassert pair.label == \"pair\"\nlet second = pass(pair.second)\nassert first.await == 7\nassert second.await == \"yes\"\nlet a, nested = (item(1), (item(\"two\"), item(true)))\nlet b, c = nested\nassert c.await\nassert a.await == 1\nassert b.await == \"two\" }") )
+    discard accepted(concat(task_fields_header(), "async fn wrap(value Pair) Pair { value }\nasync fn main() { let pair = wrap(pass(start())).await\nassert pair.first.await == 7\nassert pair.second.await == \"yes\" }") )
+    discard accepted(concat(task_fields_header(), "async fn branch(flag Bool) { var pair = start()\nif flag { discard pair.first.await } else { discard pair.first.await }\ndiscard pair.second.await\npair = start()\ndiscard pair.first.await\ndiscard pair.second.await }") )
+    discard accepted(concat(task_fields_header(), "async fn main() { assert (item(1), \"metadata\").0.await == 1 }") )
+}
+
+test fn task_field_obligations_cannot_be_copied_dropped_or_hidden_in_control_flow() {
+    let prefix = task_fields_header()
+    let used = "this task was already awaited or transferred"
+    task_rejected(concat(prefix, "async fn main() { let pair = start()\ndiscard pair.first.await\ndiscard pair.first.await\ndiscard pair.second.await }"), used)
+    task_rejected(concat(prefix, "async fn main() { let pair = start()\nlet moved = pair\ndiscard pair.first.await\ndiscard moved.first.await\ndiscard moved.second.await }"), used)
+    task_rejected(concat(prefix, "async fn main() { let pair = start()\ndiscard pair.first.await\nlet moved = pair\ndiscard moved.first.await\ndiscard moved.second.await }"), used)
+    rejects(concat(prefix, "async fn main() { let pair = start()\ndiscard pair.first.await }"))
+    rejects(concat(prefix, "async fn main() { discard start() }"))
+    rejects(concat(prefix, "async fn wrong(flag Bool) { let pair = start()\nif flag { discard pair.first.await } else { discard pair.second.await } }"))
+    rejects(concat(prefix, "async fn main() { var pair = start()\ndiscard pair.first.await\npair = start()\ndiscard pair.first.await\ndiscard pair.second.await }"))
+    task_rejected(concat(prefix, "async fn main() { discard start().first.await }"), "bind the aggregate before selecting a field; this projection would discard other tasks")
+    task_rejected(concat(prefix, "async fn wrong(flag Bool) { let pair = (item(1), { if flag { return }\nitem(2) })\ndiscard pair.0.await\ndiscard pair.1.await }"), "a task argument is still pending; finish its call before returning")
+}
+
+test fn task_fields_keep_storage_owner_and_resource_boundaries() {
+    task_rejected(concat(task_fields_header(), "fn hidden() { let pair = start() }"), "task creation or transfer requires an async function or a Task-bearing parameter or return type")
+    rejects(concat(task_fields_header(), "fn ignored(value List[Pair]) List[Pair] { value }"))
+    rejects(concat(task_fields_header(), "enum Choice { Some(Pair) None }\nfn ignored(value Choice) Choice { value }"))
+    task_rejected(concat(task_fields_header(), "fn main() { discard comptime { pass[Pair] } }"), "compile-time evaluation cannot transfer tasks")
+    resource_reject(concat(resource_header(), "record Held { task Task[Handle] }\nfn transfer(value Held) Held { value }"))
+    suspension_reject(concat(suspension_header(), "record Held { task Task[Token] }\nfn transfer(value Held) Held { value }"), "Task results cannot contain NoSuspend values")
+}

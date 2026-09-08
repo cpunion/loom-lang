@@ -28,15 +28,15 @@ fn direct_task(env Environment, ty Int) Bool {
     ty >= 0 && get(env.types, ty).kind == TypeKind.Task
 }
 
-// A synchronous helper exposes its owner requirement through its Task inputs
+// A synchronous helper exposes its owner requirement through its Task-bearing inputs
 // or output. No hidden effect or source ownership annotation is introduced.
 fn task_owner(context Context) Bool {
-    if async_signature(context.env, context.signature) || direct_task(context.env, context.signature.result) {
+    if async_signature(context.env, context.signature) || task_value(context.env, context.signature.result) {
         return true
     }
     var index = 0
     while index < length(context.signature.params) {
-        if !is_static(context.signature, index) && direct_task(context.env, get(context.signature.params, index)) {
+        if !is_static(context.signature, index) && task_value(context.env, get(context.signature.params, index)) {
             return true
         }
         index = index + 1
@@ -120,12 +120,29 @@ fn task_transfer_type(env Environment, signature Signature, ty Int, node Node) R
     if ty <= 5 {
         return Result.Ok(true)
     }
+    task_transfer_visit(env, signature, ty, node, new[Int]())
+}
+
+fn task_transfer_visit(env Environment, signature Signature, ty Int, node Node, seen List[Int]) Result[Bool, Failure] {
+    if ty <= 5 || resource_seen(seen, ty) {
+        return Result.Ok(true)
+    }
+    push(seen, ty)
     var payload = ty
     while direct_task(env, payload) {
         payload = get(get(env.types, payload).arguments, 0)
     }
-    if contains_task(env, payload, new[Int]()) {
-        return Result.Err(failure(env, signature.symbol, node, "Task-bearing aggregates are not yet implemented"))
+    let nested = contains_task(env, payload, new[Int]())
+    if nested {
+        if !task_storage(env, payload) {
+            return Result.Err(failure(env, signature.symbol, node, "Task-bearing lists and enums are not yet implemented"))
+        }
+        let fields = get(env.types, payload).fields
+        var index = 0
+        while index < length(fields) {
+            discard task_transfer_visit(env, signature, get(fields, index).ty, node, seen)?
+            index = index + 1
+        }
     }
     if payload != ty && resource_type(env, signature.symbol, signature.requirements, payload, new[Int]())? {
         return Result.Err(failure(env, signature.symbol, node, "Task results containing MustScope resources are not yet implemented"))
@@ -162,21 +179,21 @@ fn task_signature(env Environment, signature Signature, node Node) Result[Bool, 
 }
 
 fn task_call_context(context Context, node Node, values List[Expr], output Int, asynchronous Bool) Result[Bool, Failure] {
-    if direct_task(context.env, output) {
+    if task_value(context.env, output) {
         discard task_transfer_type(context.env, context.signature, output, node)?
     }
-    var transfers = asynchronous || direct_task(context.env, output)
+    var transfers = asynchronous || task_value(context.env, output)
     var index = 0
     while index < length(values) {
         let value = get(values, index)
-        if direct_task(context.env, value.ty) {
+        if task_value(context.env, value.ty) {
             discard task_transfer_type(context.env, context.signature, value.ty, node)?
         }
-        transfers = transfers || direct_task(context.env, value.ty)
+        transfers = transfers || task_value(context.env, value.ty)
         index = index + 1
     }
     if transfers && !task_owner(context) {
-        return Result.Err(error(context, node, "task creation or transfer requires an async function or a direct Task parameter or return type"))
+        return Result.Err(error(context, node, "task creation or transfer requires an async function or a Task-bearing parameter or return type"))
     }
     Result.Ok(true)
 }

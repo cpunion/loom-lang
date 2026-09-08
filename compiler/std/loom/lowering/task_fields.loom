@@ -1,0 +1,54 @@
+// Visit only actual value fields, stopping at each Task handle. The same
+// typed projections implement parameter adoption and returned-subtree marking.
+fn task_members(types List[Type], value Expr, members List[Expr]) {
+    let shape = get(types, value.ty)
+    if shape.kind == TypeKind.Task {
+        push(members, value)
+        return
+    }
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+        return
+    }
+    var index = 0
+    while index < length(shape.fields) {
+        let ty = get(shape.fields, index).ty
+        let kind = get(types, ty).kind
+        if kind == TypeKind.Task || kind == TypeKind.Record || kind == TypeKind.Tuple {
+            task_members(types, node(ExprKind.Field, ty, value.span, index, one(value)), members)
+        }
+        index = index + 1
+    }
+}
+
+fn task_results(program Program, graph Graph) {
+    var index = 0
+    while index < length(graph.states) {
+        let current = get(graph.states, index)
+        if current.exit == Exit.Complete {
+            if get(program.types, graph.result).kind == TypeKind.Task {
+                finish(graph, index, Exit.Complete,
+                    operation("task_return", graph.result, graph.span, one(current.value)), current.edges, current.arms)
+            } else {
+                let members = new[Expr]()
+                let saved = length(graph.locals)
+                let snapshot = node(ExprKind.Local, graph.result, graph.span, saved, new[Expr]())
+                task_members(program.types, snapshot, members)
+                if length(members) > 0 {
+                    // Evaluate once, including lexical cleanup, before projecting
+                    // the retained result. No generated return marker allocates.
+                    discard temporary(graph, graph.result)
+                    save(graph, index, saved, current.value)
+                    var field = 0
+                    while field < length(members) {
+                        let member = get(members, field)
+                        append(graph, index, node(ExprKind.Discard, 0, graph.span, -1,
+                                one(operation("task_return", member.ty, graph.span, one(member)))))
+                        field = field + 1
+                    }
+                    finish(graph, index, Exit.Complete, snapshot, current.edges, current.arms)
+                }
+            }
+        }
+        index = index + 1
+    }
+}

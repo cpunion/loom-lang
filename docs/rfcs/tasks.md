@@ -85,7 +85,7 @@ See the [timer example](../../compiler/examples/timers).
 
 Direct Task parameters and returns now transfer one-shot obligations, including
 nested `Task[Task[T]]`. Sync helpers expose their owner requirement through a
-direct Task parameter/result and use the caller's owner; async constructors adopt
+Task-bearing parameter/result and use the caller's owner; async constructors adopt
 Task parameters without running their bodies. A Task-valued result stays below
 its completed producer until the actual consumer extracts it, preserving subtree
 cancellation even when that producer is transferred again. Already-evaluated
@@ -118,7 +118,14 @@ actual indirect call location. A synchronous factory runs inline and creates any
 children at its own body call sites. The [callback example](../../compiler/examples/task_callbacks)
 covers both. Compile-time Task references and capturing closures remain unsupported.
 
-Task-bearing aggregates,
+Task-bearing tuples/records now transfer whole values or individual fields,
+including nested tuple destructuring. Async parameters adopt each contained Task;
+completed producers retain all returned subtrees until extraction. Metadata-only
+fields remain readable after Task fields move. Copying a consumed Task field,
+dropping other fields through a temporary projection, or replacing a live field
+group rejects. See the [aggregate example](../../compiler/examples/task_aggregates).
+
+Task-bearing Lists/enums,
 socket adapters, general worker operations
 and joins are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread. Public outcome inspection remains

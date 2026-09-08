@@ -2,7 +2,9 @@
 
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 pub fn root() -> &'static Path {
@@ -45,6 +47,25 @@ pub fn success(output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+// Bound task-drain regressions while stressing only the emitted program.
+pub fn run_tasks(executable: &Path) -> Output {
+    let mut child = Command::new(executable)
+        .env("LOOM_GC_STRESS", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let limit = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= limit {
+            child.kill().unwrap();
+            panic!("tasks failed to drain: {:?}", child.wait_with_output());
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    child.wait_with_output().unwrap()
 }
 
 // Stress only the emitted program, not every allocation in the compiler itself.

@@ -52,9 +52,10 @@ struct Task {
     resume: Resume,
     parent: Option<u64>,
     children: BTreeSet<u64>,
-    // A Task-valued result stays in this subtree until result extraction. Keep
-    // its identity afterward too, so a second extraction cannot copy a handle.
-    returned: Option<u64>,
+    // Returned Tasks stay in the existing child set until extraction. Retain
+    // the count afterward to reject a second extraction without another set.
+    returned: usize,
+    returned_to_parent: bool,
     cleanups: Vec<TaskCleanup>,
     waiter: Option<u64>,
     state: State,
@@ -242,10 +243,7 @@ impl Owner {
     fn validate_return(&self, id: u64, status: i64) -> Result<(), &'static str> {
         let core = self.core.borrow();
         let task = &core.tasks[&id];
-        let children_done = match task.returned {
-            Some(child) => task.children.len() == 1 && task.children.contains(&child),
-            None => task.children.is_empty(),
-        };
+        let children_done = task.children.len() == task.returned;
         match (status, &task.state) {
             (0, State::Running)
                 if children_done
@@ -256,10 +254,9 @@ impl Owner {
                 Ok(())
             }
             (0, _) => Err("task completed with outstanding children or wait"),
-            (1, State::Waiting(_)) if task.external.is_none() && task.returned.is_none() => Ok(()),
+            (1, State::Waiting(_)) if task.external.is_none() && task.returned == 0 => Ok(()),
             (1, State::ExternalWaiting)
-                if task.returned.is_none()
-                    && task.external.is_some_and(|wait| wait.ready.is_none()) =>
+                if task.returned == 0 && task.external.is_some_and(|wait| wait.ready.is_none()) =>
             {
                 Ok(())
             }
@@ -576,11 +573,13 @@ fn reparent(core: &mut Core, child: u64, previous: u64, next: u64) {
             .remove(&child)
     );
     assert!(core.tasks.get_mut(&next).unwrap().children.insert(child));
-    core.tasks.get_mut(&child).unwrap().parent = Some(next);
+    let task = core.tasks.get_mut(&child).unwrap();
+    task.parent = Some(next);
+    task.returned_to_parent = false;
 }
 
 /// Lowering calls this immediately after creating the queued callee, once for
-/// each direct Task parameter. Current direct children are disjoint subtrees.
+/// each Task in its parameters. Current direct children are disjoint subtrees.
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_task_adopt(callee: u64, child: u64) {
     edit(|_, core| {
@@ -597,6 +596,7 @@ pub(super) extern "C-unwind" fn loom_rt_task_adopt(callee: u64, child: u64) {
         if !matches!(core.tasks[&callee].state, State::Queued)
             || core.tasks[&callee].waiter.is_some()
             || core.tasks[&child].waiter.is_some()
+            || core.tasks[&child].returned_to_parent
         {
             return Err("task adoption requires a queued callee and unawaited child");
         }
@@ -605,8 +605,8 @@ pub(super) extern "C-unwind" fn loom_rt_task_adopt(callee: u64, child: u64) {
     });
 }
 
-/// Mark the direct logical Task result, but retain it under this producer until
-/// its actual consumer extracts the outer result. No user callback runs here.
+/// Mark one Task in the logical result, retaining it under this producer until
+/// its actual consumer extracts the result. No allocation or user callback.
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_task_return(child: u64) -> u64 {
     edit(|_, core| {
@@ -618,10 +618,11 @@ pub(super) extern "C-unwind" fn loom_rt_task_return(child: u64) -> u64 {
         if !matches!(task.state, State::Running) || task.external.is_some() {
             return Err("task return requires a running producer");
         }
-        if task.returned.is_some() || core.tasks[&child].waiter.is_some() {
-            return Err("task return requires one unawaited child");
+        if core.tasks[&child].returned_to_parent || core.tasks[&child].waiter.is_some() {
+            return Err("task return requires a distinct unawaited child");
         }
-        core.tasks.get_mut(&current).unwrap().returned = Some(child);
+        core.tasks.get_mut(&child).unwrap().returned_to_parent = true;
+        core.tasks.get_mut(&current).unwrap().returned += 1;
         Ok(child)
     })
 }
@@ -659,7 +660,8 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
                 resume,
                 parent,
                 children: BTreeSet::new(),
-                returned: None,
+                returned: 0,
+                returned_to_parent: false,
                 cleanups: Vec::new(),
                 waiter: None,
                 state: State::Queued,
@@ -692,6 +694,9 @@ pub(super) extern "C-unwind" fn loom_rt_task_await(child: u64) -> i32 {
             return Err("task already awaits another child");
         }
         let task = core.tasks.get_mut(&child).unwrap();
+        if task.returned_to_parent {
+            return Err("cannot await a returned task before extraction");
+        }
         if task.waiter.is_some_and(|waiter| waiter != parent) {
             return Err("task already has a waiter");
         }
@@ -715,15 +720,20 @@ pub(super) extern "C-unwind" fn loom_rt_task_result(child: u64) -> *mut u8 {
         match &task.state {
             State::Completed => {
                 let frame = task.frame;
-                if let Some(returned) = task.returned {
-                    if !task.children.contains(&returned) {
+                if task.returned != 0 {
+                    if task.children.len() != task.returned {
                         return Err("task result already extracted");
                     }
-                    let result = &core.tasks[&returned];
-                    if result.parent != Some(child) || result.waiter.is_some() {
-                        return Err("task result is not an unawaited child");
+                    while let Some(returned) = core.tasks[&child].children.first().copied() {
+                        let result = &core.tasks[&returned];
+                        if result.parent != Some(child)
+                            || result.waiter.is_some()
+                            || !result.returned_to_parent
+                        {
+                            return Err("task result is not an unawaited child");
+                        }
+                        reparent(core, returned, child, parent);
                     }
-                    reparent(core, returned, child, parent);
                 }
                 Ok(Ok(owner.roots().get(frame).expect("rooted task result")))
             }

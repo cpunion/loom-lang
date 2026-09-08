@@ -1,0 +1,104 @@
+import std.time.sleep_ms
+import std.io.write_text
+import std.list.push
+import std.list.length
+import std.text.concat
+
+record Work[A, B] {
+    pair (Task[A], Task[B])
+    label Text
+}
+
+async fn delayed[T](value T) T {
+    sleep_ms(3).await
+    value
+}
+
+fn start(values List[Int]) Work[List[Int], Text] {
+    Work {
+        pair =(delayed(values), delayed("ready"))
+        label = concat("ba", "tch")
+    }
+}
+
+fn forward[T](value T) T {
+    value
+}
+
+concept Source {
+    fn begin(self Self, values List[Int]) Work[List[Int], Text]
+
+    async fn relay(self Self, work Work[List[Int], Text]) Work[List[Int], Text] {
+        work
+    }
+}
+
+record Local {
+}
+
+impl Source for Local {
+    fn begin(self Local, values List[Int]) Work[List[Int], Text] {
+        start(values)
+    }
+}
+
+async fn produce(values List[Int], trace List[Int]) Work[List[Int], Text] {
+    defer {
+        push(trace, 1)
+    }
+    start(values)
+}
+
+async fn transfer[T](value T) T {
+    sleep_ms(1).await
+    value
+}
+
+async fn consume(work Work[List[Int], Text]) Int {
+    let first, second = work.pair
+    let values = first.await
+    assert second.await == "ready"
+    // Ordinary metadata remains readable after the Task fields transfer.
+    assert work.label == "batch"
+    values[0]
+}
+
+async fn exercise() {
+    let values = [41]
+    let trace List[Int] = []
+    let producer = produce(values, trace)
+    sleep_ms(1).await
+    assert length(trace) == 1
+    values[0] = 42
+    // The completed producer still owns both child subtrees until extraction,
+    // including while the producer itself crosses another Task boundary.
+    let pending = transfer(producer).await
+    let work = pending.await
+    let callback = consume
+    assert callback(forward(work)).await == 42
+    let source dyn Source = Local {
+    }
+    let relayed = source.relay(source.begin(values)).await
+    assert consume(relayed).await == 42
+
+    var pair =(delayed(1), delayed("two"))
+    let first = pair.0
+    assert pair.1.await == "two"
+    assert first.await == 1
+    pair =(delayed(3), delayed("four"))
+    let a, b = pair
+    assert a.await == 3
+    assert b.await == "four"
+    let left, right =(sleep_ms(1), sleep_ms(1))
+    left.await
+    right.await
+}
+
+async fn main() {
+    exercise().await
+    discard write_text("aggregates finished\n")
+}
+
+test async fn task_fields_and_returned_subtrees() {
+    exercise().await
+}

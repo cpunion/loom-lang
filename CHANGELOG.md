@@ -5,11 +5,16 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Support Task fields in tuples and records, with independent field consumption,
+  whole-value transfer, tuple destructuring and multiple returned subtrees.
+  Reuse typed native projections and the existing child set; keep shared Lists,
+  Task-bearing enums and join APIs as open composition work.
+
 - Support named async function values and synchronous Task factories with the
   same structural callable type. Preserve one-shot transfers and indirect creation
   locations through native code pointers, including record/List storage and
   suspension. Ordinary callbacks keep their ABI; capturing closures and stored
-  Task aggregates remain unfinished.
+  Task-bearing Lists/enums remain unfinished.
 
 - Retain lexical cleanup across suspension, add worker-backed file Tasks, and
   support async methods through concrete, generic and sparse dynamic witnesses.
@@ -18,7 +23,7 @@ implementation, not a compatibility ledger for previous prototypes.
   nested Task results. Async callees adopt argument subtrees; completed producers
   retain returned children until extraction. Check one-shot obligations at entry,
   returns and partially evaluated calls, without source ownership syntax or an
-  executor for synchronous helpers. Task-bearing aggregates remain unfinished.
+  executor for synchronous helpers. Task-bearing Lists/enums remain unfinished.
 
 - Launch the VS Code programming trial directly with `npm run try` in
   `editors/vscode`, with format/check/build/test/run tasks and a feature-writing
@@ -36,7 +41,7 @@ implementation, not a compatibility ledger for previous prototypes.
   `test async fn`, postfix `.await`/`.await?`, and one-shot local obligations.
   Loom lowers typed frames and resume functions for a single-threaded CPU ready
   queue, with fault propagation and cancellation of queued/suspended descendants.
-  Socket adapters, general worker operations, joins and Task-bearing aggregates
+  Socket adapters, general worker operations, joins and Task-bearing Lists/enums
   remain unfinished.
 
 - Add a private native resume fault boundary: drain live lexical cleanups,

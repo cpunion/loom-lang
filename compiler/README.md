@@ -1388,7 +1388,27 @@ records/Lists or returned through Tasks. Calling them retains owner requirements
 and one-shot Task transfers; code pointers are not Task obligations. Only
 Task-returning callback signatures carry a private creation label, with no extra
 runtime dispatch. Compile-time Task references, capturing closures and actual
-Task-bearing aggregates remain unsupported. See the [callback example](examples/task_callbacks).
+Task-bearing Lists/enums remain unsupported. See the [callback example](examples/task_callbacks).
+
+Tuples and records now transfer Task fields individually or as whole values:
+
+```loom
+async fn item(value Int) Int { value }
+fn start() (Task[Int], Task[Int]) { (item(1), item(2)) }
+async fn main() {
+    let first, second = start()
+    assert first.await == 1
+    assert second.await == 2
+}
+```
+
+Each Task field must be consumed exactly once, including nested fields and all
+continuing branches. Whole-value transfer requires every field to remain available;
+ordinary metadata can still be read after Task fields transfer. Bind a temporary
+before extracting one field if other Task fields would be discarded. Async calls
+adopt all parameter Tasks, and completed producers retain all returned subtrees
+until extraction. This is not tuple-await sugar or a join API. See the
+[aggregate example](examples/task_aggregates).
 
 `std.file.tasks.read_bytes/read_text/write_bytes/write_text` return ordinary Tasks
 and run open/create, read/write and normal close on a native pool of at most four threads per

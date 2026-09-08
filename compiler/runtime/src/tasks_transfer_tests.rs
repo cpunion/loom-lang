@@ -13,6 +13,7 @@ enum Case {
     ProducerFault,
     ReturnedChildFault,
     RootReturn,
+    DuplicateReturn,
 }
 
 thread_local! {
@@ -83,6 +84,9 @@ unsafe extern "C-unwind" fn producer(frame: *mut u8) -> i64 {
     rooted([frame], |slots| unsafe {
         let child = task(inner, 0);
         (*(*slots).cast::<Frame>()).result = loom_rt_task_return(child);
+        if CASE.get() == Case::DuplicateReturn {
+            loom_rt_task_return(child);
+        }
         if CASE.get() == Case::ProducerFault {
             fault("producer failed after marking result");
         }
@@ -112,7 +116,8 @@ unsafe extern "C-unwind" fn consumer(frame: *mut u8) -> i64 {
             inspect(|core| {
                 assert_eq!(core.tasks[&inner].parent, core.current);
                 assert!(core.tasks[&outer].children.is_empty());
-                assert_eq!(core.tasks[&outer].returned, Some(inner));
+                assert_eq!(core.tasks[&outer].returned, 1);
+                assert!(!core.tasks[&inner].returned_to_parent);
             });
             loom_rt_task_release(outer);
             (*(*slots).cast::<Frame>()).state = 1;
@@ -149,12 +154,14 @@ unsafe extern "C-unwind" fn parent_resume(frame: *mut u8) -> i64 {
             let outer = (*(*slots).cast::<Frame>()).first;
             inspect(|core| {
                 let producer = &core.tasks[&outer];
-                if CASE.get() == Case::ProducerFault {
+                if matches!(CASE.get(), Case::ProducerFault | Case::DuplicateReturn) {
                     assert!(matches!(producer.state, State::Faulted(_)));
                     assert!(producer.children.is_empty());
                 } else {
                     assert!(matches!(producer.state, State::Completed));
-                    let inner = producer.returned.unwrap();
+                    assert_eq!(producer.returned, 1);
+                    let inner = *producer.children.first().unwrap();
+                    assert!(core.tasks[&inner].returned_to_parent);
                     assert_eq!(core.tasks[&inner].parent, Some(outer));
                     if CASE.get() == Case::ReturnedChildFault {
                         // The outer completed normally; its child's failure
@@ -237,4 +244,8 @@ fn partial_adoption_and_return_faults_drain_without_escaping_tasks() {
     );
     run(Case::ReturnedChildFault, Some(b"returned child failed"));
     run(Case::RootReturn, Some(b"async entry cannot return a Task"));
+    run(
+        Case::DuplicateReturn,
+        Some(b"task return requires a distinct unawaited child"),
+    );
 }
