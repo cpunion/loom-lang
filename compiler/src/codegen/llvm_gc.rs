@@ -455,8 +455,13 @@ pub(super) fn root_function<'ctx>(
 ) -> NativeResult<RootFrame<'ctx>> {
     let mut slots = Vec::new();
     let mut rooted_locals = borrowed.clone();
+    let handoffs = immediate_match_handoffs(program, source);
     for (index, ty) in source.locals.iter().enumerate() {
-        if managed(program, *ty) && locals[index].is_some() && !borrowed.contains_key(&index) {
+        if managed(program, *ty)
+            && locals[index].is_some()
+            && !borrowed.contains_key(&index)
+            && !handoffs.contains(&index)
+        {
             // Keep normal locals nonescaping so LLVM can promote them to SSA.
             // The collector rewrites a separate shadow slot; allocating calls
             // restore ordinary locals from it before source execution resumes.
@@ -511,12 +516,84 @@ pub(super) fn root_function<'ctx>(
 }
 
 fn expressions<'a>(value: &'a checked::Expr, values: &mut Vec<&'a checked::Expr>) {
-    values.push(value);
+    walk_expression(value, &mut |value| values.push(value), &mut |_| {});
+}
+
+fn block_expressions<'a>(value: &'a checked::Block, values: &mut Vec<&'a checked::Expr>) {
+    walk_block(value, &mut |value| values.push(value), &mut |_| {});
+}
+
+/// Pattern extraction followed immediately by its sole local read has no safe
+/// point. The enclosing expression's TemporarySlots handle the result handoff.
+/// Count the whole function: checked input can reuse IDs outside lexical scope.
+fn immediate_match_handoffs(
+    program: &checked::Program,
+    source: &checked::Function,
+) -> BTreeSet<usize> {
+    let mut reads = vec![0usize; source.locals.len()];
+    let mut bindings = vec![0usize; source.locals.len()];
+    let mut handoffs = BTreeSet::new();
+    let mut writes = BTreeSet::new();
+    let mut expression = |value: &checked::Expr| match &value.kind {
+        checked::ExprKind::Local(id) => {
+            if let Some(count) = reads.get_mut(*id) {
+                *count += 1;
+            }
+        }
+        checked::ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                for id in arm.bindings.iter().flatten().chain(arm.whole.iter()) {
+                    if let Some(count) = bindings.get_mut(*id) {
+                        *count += 1;
+                    }
+                    if arm.body.statements.is_empty()
+                        && arm.body.falls_through
+                        && arm.body.tail.as_ref().is_some_and(|tail| {
+                            matches!(tail.kind, checked::ExprKind::Local(tail_id) if tail_id == *id)
+                        })
+                    {
+                        handoffs.insert(*id);
+                    }
+                }
+            }
+        }
+        _ => {}
+    };
+    let mut statement = |value: &checked::Stmt| {
+        if let checked::StmtKind::Let { local, .. } | checked::StmtKind::Assign { local, .. } =
+            &value.kind
+        {
+            writes.insert(*local);
+        }
+    };
+    for value in &source.requires {
+        walk_expression(value, &mut expression, &mut statement);
+    }
+    walk_block(&source.body, &mut expression, &mut statement);
+    handoffs.retain(|id| {
+        *id >= source.params.len()
+            && !writes.contains(id)
+            && source
+                .locals
+                .get(*id)
+                .is_some_and(|ty| managed(program, *ty))
+            && reads[*id] == 1
+            && bindings[*id] == 1
+    });
+    handoffs
+}
+
+fn walk_expression<'a>(
+    value: &'a checked::Expr,
+    expression: &mut impl FnMut(&'a checked::Expr),
+    statement: &mut impl FnMut(&'a checked::Stmt),
+) {
+    expression(value);
     match &value.kind {
         checked::ExprKind::Unary(_, value)
         | checked::ExprKind::Field(value, _)
         | checked::ExprKind::Coerce(value)
-        | checked::ExprKind::DynBox { value, .. } => expressions(value, values),
+        | checked::ExprKind::DynBox { value, .. } => walk_expression(value, expression, statement),
         checked::ExprKind::DynCall {
             receiver,
             arguments,
@@ -526,33 +603,33 @@ fn expressions<'a>(value: &'a checked::Expr, values: &mut Vec<&'a checked::Expr>
             callee: receiver,
             arguments,
         } => {
-            expressions(receiver, values);
+            walk_expression(receiver, expression, statement);
             for argument in arguments {
-                expressions(argument, values);
+                walk_expression(argument, expression, statement);
             }
         }
         checked::ExprKind::Binary(_, left, right) => {
-            expressions(left, values);
-            expressions(right, values);
+            walk_expression(left, expression, statement);
+            walk_expression(right, expression, statement);
         }
         checked::ExprKind::Call(_, args)
         | checked::ExprKind::Primitive(_, args)
         | checked::ExprKind::List(args)
         | checked::ExprKind::Variant { fields: args, .. } => {
             for arg in args {
-                expressions(arg, values);
+                walk_expression(arg, expression, statement);
             }
         }
         checked::ExprKind::Record(fields) => {
             for (_, field) in fields {
-                expressions(field, values);
+                walk_expression(field, expression, statement);
             }
         }
-        checked::ExprKind::Block(body) => block_expressions(body, values),
+        checked::ExprKind::Block(body) => walk_block(body, expression, statement),
         checked::ExprKind::Match { value, arms } => {
-            expressions(value, values);
+            walk_expression(value, expression, statement);
             for arm in arms {
-                block_expressions(&arm.body, values);
+                walk_block(&arm.body, expression, statement);
             }
         }
         checked::ExprKind::If {
@@ -560,19 +637,24 @@ fn expressions<'a>(value: &'a checked::Expr, values: &mut Vec<&'a checked::Expr>
             then_body,
             else_body,
         } => {
-            expressions(condition, values);
-            block_expressions(then_body, values);
+            walk_expression(condition, expression, statement);
+            walk_block(then_body, expression, statement);
             if let Some(body) = else_body {
-                block_expressions(body, values);
+                walk_block(body, expression, statement);
             }
         }
         _ => {}
     }
 }
 
-fn block_expressions<'a>(value: &'a checked::Block, values: &mut Vec<&'a checked::Expr>) {
-    for statement in &value.statements {
-        match &statement.kind {
+fn walk_block<'a>(
+    value: &'a checked::Block,
+    expression: &mut impl FnMut(&'a checked::Expr),
+    statement: &mut impl FnMut(&'a checked::Stmt),
+) {
+    for item in &value.statements {
+        statement(item);
+        match &item.kind {
             checked::StmtKind::Let { value, .. }
             | checked::StmtKind::Assign { value, .. }
             | checked::StmtKind::Assert {
@@ -580,13 +662,15 @@ fn block_expressions<'a>(value: &'a checked::Block, values: &mut Vec<&'a checked
             }
             | checked::StmtKind::Discard(value)
             | checked::StmtKind::Expr(value)
-            | checked::StmtKind::Return(Some(value)) => expressions(value, values),
+            | checked::StmtKind::Return(Some(value)) => {
+                walk_expression(value, expression, statement)
+            }
             checked::StmtKind::While { condition, body } => {
-                expressions(condition, values);
-                block_expressions(body, values);
+                walk_expression(condition, expression, statement);
+                walk_block(body, expression, statement);
             }
             checked::StmtKind::Defer { body, .. } | checked::StmtKind::Cleanup { body, .. } => {
-                block_expressions(body, values);
+                walk_block(body, expression, statement);
             }
             checked::StmtKind::Return(None)
             | checked::StmtKind::Break
@@ -594,7 +678,7 @@ fn block_expressions<'a>(value: &'a checked::Block, values: &mut Vec<&'a checked
         }
     }
     if let Some(tail) = &value.tail {
-        expressions(tail, values);
+        walk_expression(tail, expression, statement);
     }
 }
 
@@ -910,6 +994,121 @@ mod tests {
             ),
             Type::Text,
         )
+    }
+
+    #[test]
+    fn match_handoffs_require_one_binding_one_read_and_no_intervening_code() {
+        let source = || checked::Function {
+            name: "handoff".into(),
+            params: vec![],
+            result: Type::Text,
+            locals: vec![Type::Text],
+            requires: vec![],
+            span: Span::default(),
+            body: block(
+                vec![],
+                expr(
+                    checked::ExprKind::Match {
+                        value: Box::new(expr(
+                            checked::ExprKind::Variant {
+                                variant: 0,
+                                fields: vec![expr(
+                                    checked::ExprKind::Text("text".into()),
+                                    Type::Text,
+                                )],
+                            },
+                            Type::Data(0),
+                        )),
+                        arms: vec![checked::MatchArm {
+                            variant: Some(0),
+                            bindings: vec![Some(0)],
+                            whole: None,
+                            body: block(vec![], local(Type::Text)),
+                        }],
+                    },
+                    Type::Text,
+                ),
+            ),
+        };
+        assert_eq!(
+            immediate_match_handoffs(&program(), &source()),
+            BTreeSet::from([0])
+        );
+
+        // Checked input may reuse IDs in ways the source checker never emits.
+        for case in 0..9 {
+            let mut function = source();
+            let checked::ExprKind::Match { arms, .. } =
+                &mut function.body.tail.as_mut().unwrap().kind
+            else {
+                panic!();
+            };
+            match case {
+                0 => function.params.push(Type::Text),
+                1 => arms.push(arms[0].clone()),
+                2 => arms[0].bindings.push(Some(0)),
+                3 => {
+                    arms[0].body = block(
+                        vec![expr(
+                            checked::ExprKind::Text("statement".into()),
+                            Type::Text,
+                        )],
+                        local(Type::Text),
+                    );
+                }
+                4 => function.requires.push(local(Type::Text)),
+                5 | 6 => function.body.statements.push(checked::Stmt {
+                    kind: if case == 5 {
+                        checked::StmtKind::Let {
+                            local: 0,
+                            value: expr(checked::ExprKind::Text("write".into()), Type::Text),
+                        }
+                    } else {
+                        checked::StmtKind::Assign {
+                            local: 0,
+                            value: expr(checked::ExprKind::Text("write".into()), Type::Text),
+                        }
+                    },
+                    span: Span::default(),
+                }),
+                7 | 8 => function.body.statements.push(checked::Stmt {
+                    kind: if case == 7 {
+                        checked::StmtKind::Defer {
+                            id: 0,
+                            body: block(vec![local(Type::Text)], concat()),
+                        }
+                    } else {
+                        checked::StmtKind::Cleanup {
+                            id: 0,
+                            body: block(vec![local(Type::Text)], concat()),
+                        }
+                    },
+                    span: Span::default(),
+                }),
+                _ => unreachable!(),
+            }
+            assert!(
+                immediate_match_handoffs(&program(), &function).is_empty(),
+                "case {case}"
+            );
+        }
+
+        let mut whole = source();
+        whole.locals[0] = Type::Data(0);
+        whole.result = Type::Data(0);
+        let tail = whole.body.tail.as_mut().unwrap();
+        tail.ty = Type::Data(0);
+        let checked::ExprKind::Match { arms, .. } = &mut tail.kind else {
+            panic!();
+        };
+        arms[0].variant = None;
+        arms[0].bindings.clear();
+        arms[0].whole = Some(0);
+        arms[0].body = block(vec![], local(Type::Data(0)));
+        assert_eq!(
+            immediate_match_handoffs(&program(), &whole),
+            BTreeSet::from([0])
+        );
     }
 
     #[test]
