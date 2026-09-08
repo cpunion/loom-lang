@@ -32,8 +32,10 @@ test fn contract_helpers_preserve_parameter_and_result_identity() {
     let goal = helper_call(0, 2, [local(2), local(1)])
     assert helpers_verified(program, contract_fixture([1, 1], 1, local(0), [premise], [goal]))
     assert !helpers_verified(program, contract_fixture([1, 1], 1, local(1), [premise], [helper_call(0, 2, [local(2), local(0)])]))
-    // Calls in the ordinary body are not rescued by contract-only expansion.
-    assert !helpers_verified(program, contract_fixture([1, 1], 2, helper_call(0, 2, [local(0), local(1)]), [], [expression(ExprKind.Bool, 2, "true", -1, [])]))
+    let called = contract_fixture([1, 1], 2, helper_call(0, 2, [local(0), local(1)]), [], [expression(ExprKind.Bool, 2, "true", -1, [])])
+    assert helpers_verified(program, called)
+    // The independent call-free public verifier still has no helper closure.
+    assert !verified(called)
 }
 
 test fn contract_helper_requirements_are_entry_facts_not_goal_assumptions() {

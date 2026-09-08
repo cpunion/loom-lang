@@ -7,3 +7,8 @@ test fn bounds_include_their_endpoints() {
     assert bounded(10, 10, 20) == 10
     assert bounded(20, 10, 20) == 20
 }
+
+test fn forwarding_uses_the_proved_result_contract() {
+    assert forward(1) == 1
+    assert forward(9223372036854775807) == 9223372036854775807
+}

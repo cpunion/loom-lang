@@ -1,0 +1,254 @@
+import std.loom.typed.Program
+import std.loom.typed.Function
+import std.loom.typed.Type
+import std.loom.typed.Interface
+import std.loom.typed.Witness
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Local
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+record CallArguments { state State values List[Value] }
+
+fn empty_proof_program() Program {
+    Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() test_names = new[Text]()
+        exports = new[Int]() interfaces = new[Interface]() witnesses = new[Witness]() }
+}
+fn verification(function Function, program Program) Verification {
+    let fresh = new[Int]()
+    push(fresh, length(function.locals))
+    let budget = new[Int]()
+    push(budget, 4096)
+    Verification { function = function program = program fresh = fresh budget = budget }
+}
+fn snapshot_values(values List[Value], value Value) List[Value] {
+    let copied = new[Value]()
+    var index = 0
+    while index < length(values) { push(copied, get(values, index))
+        index = index + 1 }
+    push(copied, value)
+    copied
+}
+fn call_arguments(proof Verification, call Expr, state State, depth Int) Result[List[CallArguments], Text] {
+    var paths = new[CallArguments]()
+    push(paths, CallArguments { state = state values = new[Value]() })
+    var index = 0
+    while index < length(call.children) {
+        let next = new[CallArguments]()
+        var path = 0
+        while path < length(paths) {
+            let earlier = get(paths, path)
+            let values = execute(proof, get(call.children, index), earlier.state, depth - 1)?
+            var value = 0
+            while value < length(values) {
+                if length(next) >= 4096 { return Result.Err("proof path budget exhausted") }
+                let current = get(values, value)
+                // Keep the evaluated value, not its source expression: a later
+                // argument may assign a mutable caller local that it read.
+                push(next, CallArguments { state = current.state values = snapshot_values(earlier.values, current.value) })
+                value = value + 1
+            }
+            path = path + 1
+        }
+        paths = next
+        index = index + 1
+    }
+    Result.Ok(paths)
+}
+fn fresh_result(proof Verification, ty Int) Value {
+    let identity = get(proof.fresh, 0)
+    set(proof.fresh, 0, identity + 1)
+    if ty == 1 { Value.Number(variable(identity)) } else { Value.Boolean(Predicate.Variable(identity)) }
+}
+fn call_scope(state State, values List[Value]) State {
+    let locals = new[Value]()
+    var index = 0
+    while index < length(state.locals) { push(locals, get(state.locals, index))
+        index = index + 1 }
+    index = 0
+    while index < length(values) { push(locals, get(values, index))
+        index = index + 1 }
+    State { locals = locals facts = state.facts }
+}
+fn caller_state(state State, boundary Int) State {
+    let locals = new[Value]()
+    var index = 0
+    while index < boundary { push(locals, get(state.locals, index))
+        index = index + 1 }
+    State { locals = locals facts = state.facts }
+}
+
+// These facts are established by real entry/arithmetic checks, or by a callee's
+// already verified postconditions. They are never hypothetical caller goals.
+// Execute only their call-free scalar expressions through the existing prover.
+fn established_checks(proof Verification, checks List[Evaluation], state State, depth Int) Result[List[Outcome], Text] {
+    var paths = outcomes(state, Value.Empty)
+    var index = 0
+    while index < length(checks) {
+        let check = get(checks, index)
+        if !bounded_contract(check.guard) || !bounded_contract(check.value) {
+            return Result.Err("body helper proof expansion budget exhausted")
+        }
+        if check.required || !total_scalar(check.value) {
+            let value = if check.required { check.value } else {
+                proof_expr(check.value, ExprKind.Binary, 2, "==", -1, proof_children(check.value, check.value))
+            }
+            let predicate = guarded_value(check.guard, value)
+            if !bounded_contract(predicate) { return Result.Err("body helper proof expansion budget exhausted") }
+            let children = new[Expr]()
+            push(children, predicate)
+            let step = proof_expr(predicate, if check.required { ExprKind.Assert } else { ExprKind.Discard }, 0, "", -1, children)
+            let next = new[Outcome]()
+            var path = 0
+            while path < length(paths) {
+                discard append(next, execute(proof, step, get(paths, path).state, depth - 1)?)?
+                path = path + 1
+            }
+            paths = next
+        }
+        index = index + 1
+    }
+    Result.Ok(paths)
+}
+fn summary_conditions(context Expansion, function Function, conditions List[Expr], bindings List[ExpansionBinding]) Result[Bool, Text] {
+    var index = 0
+    while index < length(conditions) {
+        let source = get(conditions, index)
+        let guard = proof_bool(source, true)
+        let value = expanded(context, source, guard, bindings, function.locals, false, 0, 0)?
+        discard evaluated(context, guard, value, true)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn mentions_result(value Expr, result_local Int) Bool {
+    if value.kind == ExprKind.Local && value.index == result_local { return true }
+    var index = 0
+    while index < length(value.children) {
+        if mentions_result(get(value.children, index), result_local) { return true }
+        index = index + 1
+    }
+    false
+}
+fn result_definition(value Expr, result_local Int, output List[Expr]) {
+    if length(output) != 0 { return }
+    if value.kind == ExprKind.Binary && value.text == "&&" {
+        result_definition(get(value.children, 0), result_local, output)
+        result_definition(get(value.children, 1), result_local, output)
+    } else { if value.kind == ExprKind.Binary && value.text == "==" {
+        var index = 0
+        while index < 2 {
+            let left = get(value.children, index)
+            let right = get(value.children, 1 - index)
+            if left.kind == ExprKind.Local && left.index == result_local && !mentions_result(right, result_local) {
+                push(output, right)
+                return
+            }
+            index = index + 1
+        }
+    } }
+}
+fn applied_call(proof Verification, call Expr, function Function, arguments CallArguments, depth Int) Result[List[Outcome], Text] {
+    let boundary = length(arguments.state.locals)
+    var state = call_scope(arguments.state, arguments.values)
+    let expressions = new[Expr]()
+    let bindings = new[ExpansionBinding]()
+    var index = 0
+    while index < length(function.params) {
+        let reference = proof_expr(call, ExprKind.Local, get(function.params, index), "", boundary + index, new[Expr]())
+        push(expressions, reference)
+        push(bindings, ExpansionBinding { local = index value = reference })
+        index = index + 1
+    }
+    let context = Expansion { program = proof.program budget = proof.budget active = new[Int]() checks = new[Evaluation]() }
+    discard expansion_step(context, 0)?
+    let summary = length(function.postconditions) != 0
+    var exact_summary = false
+    var value = proof_bool(call, false)
+    var result_value = Value.Empty
+    if summary {
+        // The counter is shared by every path and call in this proof, not keyed
+        // by callee, local-slot position, or source call-site identity.
+        result_value = fresh_result(proof, function.result)
+        push(state.locals, result_value)
+        state = bounded(result_value, state)
+        let reference = proof_expr(call, ExprKind.Local, function.result, "", boundary + length(function.params), new[Expr]())
+        push(bindings, ExpansionBinding { local = function.result_local value = reference })
+        discard summary_conditions(context, function, function.preconditions, bindings)?
+        discard summary_conditions(context, function, function.postconditions, bindings)?
+        // A proved result == expression is a definition, not an extra body
+        // assumption. Keep exact identities composable without demanding a
+        // general multi-variable equality solver for intermediate fresh values.
+        let definitions = new[Expr]()
+        index = 0
+        while index < length(function.postconditions) {
+            let condition = get(function.postconditions, index)
+            if !bounded_contract(condition) { return Result.Err("body helper proof expansion budget exhausted") }
+            result_definition(condition, function.result_local, definitions)
+            index = index + 1
+        }
+        if length(definitions) != 0 {
+            value = expanded(context, get(definitions, 0), proof_bool(call, true), bindings, function.locals, false, 0, 0)?
+            if !bounded_contract(value) { return Result.Err("body helper proof expansion budget exhausted") }
+            exact_summary = true
+        }
+    } else {
+        // The call's actual arguments have already executed once. Expand only
+        // their immutable snapshot references and the finite scalar helper.
+        let references = new[ExpansionBinding]()
+        index = 0
+        while index < length(expressions) {
+            let reference = get(expressions, index)
+            push(references, ExpansionBinding { local = reference.index value = reference })
+            index = index + 1
+        }
+        let prepared = proof_expr(call, ExprKind.Call, call.ty, call.text, call.index, expressions)
+        value = expanded_call(context, prepared, proof_bool(call, true), references, proof.function.locals, false, 0, 0)?
+        if !bounded_contract(value) { return Result.Err("body helper proof expansion budget exhausted") }
+    }
+    let paths = established_checks(proof, context.checks, state, depth)?
+    let output = new[Outcome]()
+    index = 0
+    while index < length(paths) {
+        let current = get(paths, index).state
+        if !holds(Predicate.Constant(false), current.facts) {
+            let results = if summary && !exact_summary { outcomes(current, result_value) } else { execute(proof, value, current, depth - 1)? }
+            var item = 0
+            while item < length(results) {
+                let returned = get(results, item)
+                discard add_outcome(output, Outcome { state = caller_state(returned.state, boundary) value = returned.value })?
+                item = item + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[Outcome], Text] {
+    if call.index < 0 || call.index >= length(proof.program.functions) {
+        return Result.Err("body proof call has no checked helper instance")
+    }
+    let function = get(proof.program.functions, call.index)
+    if function.runtime_name != "" || (function.result != 1 && function.result != 2) || length(function.params) != length(call.children) {
+        return Result.Err("body proof needs a checked scalar source function")
+    }
+    var index = 0
+    while index < length(function.params) {
+        let ty = get(function.params, index)
+        if ty != 1 && ty != 2 { return Result.Err("body proof helper parameters must be Int or Bool") }
+        index = index + 1
+    }
+    let arguments = call_arguments(proof, call, state, depth)?
+    let output = new[Outcome]()
+    index = 0
+    while index < length(arguments) {
+        discard append(output, applied_call(proof, call, function, get(arguments, index), depth)?)?
+        index = index + 1
+    }
+    Result.Ok(output)
+}

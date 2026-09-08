@@ -1054,6 +1054,14 @@ bodies and own contracts are still checked in their defining scope, including
 when the caller is unused. Verified postconditions retain call-free checked
 expressions for compile-time execution.
 
+Direct `Int`/`Bool` calls in a body requiring proof use the callee's verified
+postconditions as a summary. For example, `identity(value)` with
+`ensures result == value` lets a forwarding function prove the same contract.
+Without a summary, the prover can expand a finite pure scalar body. Arguments
+are evaluated in order and their values captured before applying the summary;
+separate call results are not equated merely because they share a callee. The
+emitted function keeps its ordinary calls and original locals.
+
 The current proof fragment supports scalar linear arithmetic, comparisons,
 Boolean facts, local assignments, and acyclic branches/returns. It reasons from
 preconditions and successful checked operations. A source-written `assert`
@@ -1061,8 +1069,8 @@ provides a fact only after that assertion succeeds; the compiler never inserts
 an assertion to rescue a failed postcondition proof. Postcondition arithmetic
 must itself be defined within `Int` bounds.
 
-General calls in the function body, helper loops/recursion, dynamic or indirect
-helper calls, nonlinear arithmetic and nonconstant division remain outside this
+Unexpanded helper control flow, recursive proof dependencies, dynamic or indirect
+calls, nonlinear arithmetic and nonconstant division remain outside this
 proof fragment. Required Float proofs remain unsupported, while pure Float entry
 predicates can run normally. Solver work is bounded; exhaustion is a diagnostic,
 not permission to trust an obligation. These are normal-return guarantees, not

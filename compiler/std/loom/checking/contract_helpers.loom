@@ -2,6 +2,7 @@ import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.ast.has
 import std.loom.typed.Expr
+import std.loom.typed.ExprKind
 import std.loom.typed.Function
 import std.loom.proof.verify
 import std.loom.proof.verify_with_helpers
@@ -32,8 +33,20 @@ fn with_contracts(function Function, preconditions List[Expr], postconditions Li
         locals = function.locals preconditions = preconditions postconditions = postconditions result_local = function.result_local
         body = function.body runtime_name = function.runtime_name span = function.span }
 }
-fn checked_contracts(context Context, node Node, function Function) Result[Function, Failure] {
-    if !contract_helpers(node) {
+fn proof_body_calls(value Expr) Bool {
+    if value.kind == ExprKind.Defer { return false }
+    if value.kind == ExprKind.Call { return true }
+    var index = 0
+    while index < length(value.children) {
+        if proof_body_calls(get(value.children, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+fn checked_contracts(context Context, id Int, function Function) Result[Function, Failure] {
+    let node = symbol(context.env, context.signature.symbol).node
+    let body_calls = has(node, NodeKind.Ensures) && proof_body_calls(function.body)
+    if !contract_helpers(node) && !body_calls {
         if !has(node, NodeKind.Ensures) { return Result.Ok(function) }
         let checked = with_contracts(function, function.preconditions, contracts(context, node, NodeKind.Ensures)?)
         match verify(checked) {
@@ -41,13 +54,17 @@ fn checked_contracts(context Context, node Node, function Function) Result[Funct
             Result.Err(message) => Result.Err(error(context, node, message))
         }
     } else {
-        // Check-only calls have no executable indices. Recheck the predicates
-        // in their declaration scope with a private queue of actual helpers.
-        // No concrete caller substitutes for an abstract generic declaration.
         let stage = staging(context, node)?
-        let preconditions = contracts(stage, node, NodeKind.Requires)?
-        let postconditions = contracts(stage, node, NodeKind.Ensures)?
-        let proof = with_contracts(function, preconditions, postconditions)
+        let proof = if body_calls {
+            // Call-free declaration checking needs no queue. For a body proof,
+            // rebuild once from a fresh entry scope, retaining its actual type
+            // arguments, not one later concrete caller. Every direct Call now
+            // addresses this private queue. Callees still verify normally.
+            let built = function_body(stage.env, id, context.arguments, context.constants, true)?
+            with_contracts(built.function, built.function.preconditions, contracts(built.context, node, NodeKind.Ensures)?)
+        } else {
+            with_contracts(function, contracts(stage, node, NodeKind.Requires)?, contracts(stage, node, NodeKind.Ensures)?)
+        }
         match verify_with_helpers(prepared(stage)?, proof) {
             Result.Ok(conditions) => {
                 // Ensures are already proved; retain call-free checked clauses

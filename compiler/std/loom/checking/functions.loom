@@ -15,6 +15,7 @@ import std.list.length
 import std.result.Result
 
 record RuntimeSignature { parameters Int params List[Int] result Int }
+record CheckedBody { context Context function Function }
 
 fn signature(env Environment, id Int, arguments List[Int], node Node) Result[Signature, Failure] {
     signature_in(env, id, arguments, node, get(env.signatures, id).symbol)
@@ -90,9 +91,6 @@ fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticV
     while index < length(arguments) {
         if type_depth(env, get(arguments, index)) >= 64 {
             return Result.Err(failure(env, current.symbol, declaration, "function specialization depth exceeded; expansion must be finite"))
-        }
-        if !concrete(env, get(arguments, index)) {
-            return Result.Err(failure(env, current.symbol, declaration, "cannot emit unresolved type parameters"))
         }
         index = index + 1
     }
@@ -213,7 +211,9 @@ fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failu
     Result.Ok(clauses)
 }
 
-fn function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
+// Construction and mandatory verification share one binder/body checker. A
+// private proof closure can construct its caller without verifying it recursively.
+fn function_body(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[CheckedBody, Failure] {
     let original = get(env.signatures, id)
     let item = symbol(env, original.symbol)
     let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
@@ -274,5 +274,9 @@ fn function(env Environment, id Int, arguments List[Int], constants List[StaticV
     let checked_function = Function { symbol = current.symbol arguments = arguments params = runtime_params result = current.result
         locals = context.locals preconditions = preconditions postconditions = new[Expr]() result_local = result_local
         body = body runtime_name = runtime_name span = item.node.span }
-    checked_contracts(context, item.node, checked_function)
+    Result.Ok(CheckedBody { context = context function = checked_function })
+}
+fn function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
+    let checked = function_body(env, id, arguments, constants, emit)?
+    checked_contracts(checked.context, id, checked.function)
 }
