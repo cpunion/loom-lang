@@ -6,6 +6,7 @@ guide and executable tests describe current implementation evidence.
 ## Accepted direction
 
 - [Language foundation](language-foundation.md)
+- [Tasks and suspension](tasks.md)
 - [Changes, library evolution, and deployment](change-and-deployment.md)
 
 These records govern the [roadmap](../../ROADMAP.md). The former typed-codegen

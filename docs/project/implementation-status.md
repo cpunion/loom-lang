@@ -4,6 +4,14 @@ Only the native compiler under `compiler/` is maintained. Its
 [guide](../../compiler/README.md) lists the tested subset and commands.
 The former workspace compiler and its feature matrices have been removed.
 
+The private wait ABI now provides one-shot timers, borrowed socket readiness and
+cross-thread completion notifications through `polling`. Generation checks reject
+stale completion; cancellation removes active registrations before handles may
+close. Focused tests exercise actual timers and localhost sockets. This is not
+an async executor: source Task checking/lowering, persistent frame roots,
+task-local faults and structured cancellation remain unimplemented. The accepted
+[Task design](../rfcs/tasks.md) remains the target.
+
 The active compiler has a real source-to-native check/build/test/run path,
 package/test isolation, concrete generic records/enums, shared lists, UTF-8
 text, real file reads/writes and stdout, scalar constrained construction, and

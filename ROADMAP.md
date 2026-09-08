@@ -106,6 +106,12 @@ compiler correctness.
 
 ## N2 — Complete the language and source library
 
+The private wait-registration substrate is implemented; it queues timer,
+readiness and completion identities without running user code. The next async
+gate is typed task-frame lowering and persistent GC rooting, followed by
+scheduling, task-local faults, cancellation and source I/O/composition. See the
+[accepted Task design](docs/rfcs/tasks.md); reactor tests alone do not close it.
+
 Extend the self-hosted path with the remaining accepted capabilities:
 
 - application-grade source collections, text, error, and I/O libraries;
