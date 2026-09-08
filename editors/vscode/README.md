@@ -8,13 +8,17 @@ implemented.
 
 ## Try it
 
-Build the [compiler](../../compiler/README.md#build-and-try-it), then:
+Build the [compiler](../../compiler/README.md#build-and-try-it). With Node.js,
+npm, and VS Code installed, run from the repository root:
 
 ```sh
 cd editors/vscode
 npm ci
 code .
 ```
+
+If the `code` shell command is unavailable, use VS Code's **File > Open Folder**
+to open `editors/vscode` after `npm ci`.
 
 Press F5 to launch the **Loom extension** development host with the
 [trial workspace](try-loom.code-workspace). Compiler paths and Loom-only

@@ -26,10 +26,10 @@ Try these edits:
 2. In `stats/stats.loom`, change `var words = 0` to `var words = false`.
    Check the diagnostic, then undo the change.
 3. In `stats/stats_test.loom`, change the expected word count from `3` to `4`.
-   Run `loom test stats` to see a real failing test, then restore `3`.
-4. Compact the fields in `Summary`, then run `loom fmt stats` (or save in
+   Run `../../../target/loom test stats` to see a real failing test, then restore `3`.
+4. Compact the fields in `Summary`, then run `../../../target/loom fmt stats` (or save in
    the development extension). Formatting restores one field per line.
-5. Run `loom run -- missing.txt` to check the file-error path.
+5. Run `../../../target/loom run -- missing.txt` to check the file-error path.
 6. In the editor, add `fn scratch() Int { true }` to `main.loom`. Check that
    the error appears but hover and navigation in `main` still work, then remove it.
 
