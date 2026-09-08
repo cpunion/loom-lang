@@ -43,6 +43,11 @@ not an installed Marketplace release.
 
 `loom.executable` defaults to `loom` on PATH; relative paths containing a separator
 and relative `loom.stdRoot` paths resolve from the containing workspace folder.
+Files outside a single-folder workspace use that folder's configuration and path
+base, including standard-library files opened through navigation. For external
+files in a multi-root workspace, use absolute paths or a compiler on PATH; the
+server does not guess a folder for relative settings. With no workspace folder,
+relative paths resolve from the document's directory.
 The configured compiler must support `editor-check`, `editor-query`, and `fmt --stdin`. Compiler
 execution requires a trusted, local-filesystem workspace; highlighting also works
 in restricted mode. Remote VS Code workspaces run the extension on the remote host.
@@ -125,6 +130,8 @@ absolute `Code.exe` path on Windows). No VS Code download is performed.
 `Loom` in the Output panel contains server messages. Protocol tracing is opt-in
 and can contain source text. Checks currently stop at the compiler's first error;
 they are fresh checks, not a persistent compiler session.
+Failure to start a package check is reported for that package and does not clear
+diagnostics from other successfully checked packages.
 
 The adapter calls:
 

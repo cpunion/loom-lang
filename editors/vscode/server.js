@@ -31,12 +31,21 @@ connection.onInitialized(() => {
 });
 
 async function settings(uri) {
-  const raw = configuration ? await connection.workspace.getConfiguration({ scopeUri: uri, section: 'loom' }) : defaults;
   const file = URI.parse(uri).fsPath;
-  const folder = folders.filter(root => file === root || file.startsWith(root + path.sep)).sort((a, b) => b.length - a.length)[0] || path.dirname(file);
+  const containing = folders.filter(root => file === root || file.startsWith(root + path.sep)).sort((a, b) => b.length - a.length)[0];
+  const folder = containing || (folders.length === 1 ? folders[0] : folders.length === 0 ? path.dirname(file) : undefined);
+  // Navigation can open a dependency outside the workspace. A sole folder
+  // still owns its toolchain settings; multiple roots provide no such answer.
+  const scopeUri = !containing && folders.length === 1 ? URI.file(folder).toString() : uri;
+  const raw = configuration ? await connection.workspace.getConfiguration({ scopeUri, section: 'loom' }) : defaults;
   let executable = raw?.executable || 'loom';
-  if (!path.isAbsolute(executable) && /[/\\]/.test(executable)) executable = path.resolve(folder, executable);
-  return { executable, stdRoot: raw?.stdRoot ? path.resolve(folder, raw.stdRoot) : '' };
+  const relativeExecutable = !path.isAbsolute(executable) && /[/\\]/.test(executable);
+  const relativeStd = raw?.stdRoot && !path.isAbsolute(raw.stdRoot);
+  if (!folder && (relativeExecutable || relativeStd)) {
+    throw new Error('A file outside a multi-root workspace needs absolute Loom toolchain paths (or an executable on PATH); add its directory as a workspace folder to use relative settings.');
+  }
+  if (relativeExecutable) executable = path.resolve(folder, executable);
+  return { executable, stdRoot: relativeStd ? path.resolve(folder, raw.stdRoot) : raw?.stdRoot || '' };
 }
 
 function schedule() {
@@ -78,7 +87,14 @@ async function validate(ticket) {
     if (buffers.length) overlays = await compiler.snapshots(buffers);
     for (const [directory, uri] of roots) {
       if (ticket !== generation) return;
-      const report = await compiler.check(await settings(uri), directory, overlays.args, controller.signal);
+      let report;
+      try { report = await compiler.check(await settings(uri), directory, overlays.args, controller.signal); }
+      catch (error) {
+        if (ticket !== generation || controller.signal.aborted) return;
+        // A missing toolchain for one package must not erase other packages'
+        // diagnostics or stop their checks. Report the failure at its buffer.
+        report = { diagnostics: [], error: error.message };
+      }
       for (const item of report.diagnostics) {
         const file = path.resolve(directory, item.path);
         const target = URI.file(file).toString();

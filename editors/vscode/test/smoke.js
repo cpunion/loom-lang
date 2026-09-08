@@ -13,7 +13,10 @@ async function main() {
   const folder = path.join(__dirname, 'fixtures/project');
   const file = path.join(folder, 'main.loom');
   const saved = await fs.readFile(file, 'utf8');
-  const client = await session({ executable, stdRoot }, folder);
+  const folderUri = URI.file(folder).toString();
+  const scoped = { executable: path.relative(folder, executable), stdRoot: path.relative(folder, stdRoot) };
+  const client = await session({}, folder, uri =>
+    uri === folderUri || uri.startsWith(folderUri + '/') ? scoped : { executable: './missing-external-toolchain' });
   try {
     await client.open(file, 'fn main() { let value Int = true\ndiscard value }\n');
     assert.ok((await client.wait(file, 1)).diagnostics.length > 0);
@@ -93,10 +96,22 @@ async function main() {
     assert.equal(recoveredDefinitions.length, 1);
     assert.equal(recoveredDefinitions[0].uri, URI.file(file).toString());
     assert.equal(TextDocument.create(recoveredDefinitions[0].uri, 'loom', 10, repaired).getText(recoveredDefinitions[0].range), 'broken');
+    // Following a dependency outside this folder retains its folder-scoped,
+    // relative toolchain settings for diagnostics, hover and formatting.
+    const external = path.join(stdRoot, 'loom/source/source.loom');
+    const externalText = await fs.readFile(external, 'utf8');
+    await client.open(external, externalText);
+    assert.deepEqual((await client.wait(external, 1)).diagnostics, []);
+    const externalHover = await client.rpc.sendRequest('textDocument/hover', at(external, externalText, 'current == 13'));
+    assert.ok(externalHover.contents.some(item => item.value === 'Int'));
+    assert.ok(Array.isArray(await client.rpc.sendRequest('textDocument/formatting', {
+      textDocument: { uri: URI.file(external).toString() }, options: { tabSize: 4, insertSpaces: true },
+    })));
+    assert.equal(await fs.readFile(external, 'utf8'), externalText);
     assert.equal(await fs.readFile(file, 'utf8'), saved);
     await assert.rejects(fs.access(helper), { code: 'ENOENT' });
     await assert.rejects(fs.access(bad), { code: 'ENOENT' });
-    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition with unrelated errors, dependency rejection and repair, loops, indexing, formatting, no source writes.');
+    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition with unrelated errors, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

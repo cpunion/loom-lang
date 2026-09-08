@@ -107,3 +107,38 @@ test('LSP checks unsaved/new buffers, suppresses stale results, and formats with
   await assert.rejects(client.rpc.sendRequest('textDocument/formatting', { textDocument: { uri: URI.file(file).toString() }, options: { tabSize: 4, insertSpaces: true } }), /fixture formatting error/);
   assert.equal(await fs.readFile(file, 'utf8'), saved);
 });
+
+test('external multi-root files do not guess a toolchain or erase another package diagnostic', async t => {
+  const other = path.resolve(__dirname, '../syntaxes');
+  const outside = path.join(__dirname, 'outside.loom');
+  const external = { executable: './missing-loom', stdRoot: '../std' };
+  const client = await session({}, [folder, other], uri =>
+    uri === URI.file(file).toString() ? { executable: process.execPath } : external);
+  t.after(() => client.close());
+  await client.open(file, 'BROKEN');
+  assert.equal((await client.wait(file, 1)).diagnostics[0].message, 'fixture diagnostic');
+  await client.open(outside, 'fn main() {}');
+  const failed = await client.wait(outside, 1);
+  assert.match(failed.diagnostics[0].message, /outside a multi-root workspace/);
+  assert.equal(client.diagnostics.filter(report => report.uri === URI.file(file).toString()).at(-1).diagnostics[0].message, 'fixture diagnostic');
+  const request = { textDocument: { uri: URI.file(outside).toString() }, options: { tabSize: 4, insertSpaces: true } };
+  await assert.rejects(client.rpc.sendRequest('textDocument/formatting', request), /absolute Loom toolchain paths/);
+  // Absolute settings are not tied to either folder. A real launch failure is
+  // also isolated to its package, rather than clearing the useful diagnostic.
+  external.executable = path.join(__dirname, 'missing-loom');
+  external.stdRoot = '';
+  await client.change(outside, 'fn main() {}', 2);
+  assert.match((await client.wait(outside, 2)).diagnostics[0].message, /ENOENT/);
+  assert.equal(client.diagnostics.filter(report => report.uri === URI.file(file).toString()).at(-1).diagnostics[0].message, 'fixture diagnostic');
+  await assert.rejects(fs.access(outside), { code: 'ENOENT' });
+});
+
+test('standalone files keep their directory as the relative executable base', async t => {
+  const client = await session({ executable: path.relative(folder, process.execPath) }, []);
+  t.after(() => client.close());
+  await client.open(file, 'fn main(){}');
+  const edits = await client.rpc.sendRequest('textDocument/formatting', {
+    textDocument: { uri: URI.file(file).toString() }, options: { tabSize: 4, insertSpaces: true },
+  });
+  assert.match(edits[0].newText, /fn main\(\) \{/);
+});
