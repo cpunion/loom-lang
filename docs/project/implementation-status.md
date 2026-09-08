@@ -141,7 +141,10 @@ Source `std.file.read_bytes/write_bytes` preserve NUL and non-UTF-8 contents,
 handle chunked reads/partial writes and close explicitly. Text reading reuses
 the binary loop and then validates UTF-8. A pinned source checkpoint precedes
 the new intrinsic declarations; no frozen frontend or runtime policy layer is
-added. These file writes truncate their destination, not atomically publish it.
+added. Source `std.bytes.decode_utf8` now exposes that strict validation as
+`Result[Text, Utf8Error]`; successful Text is isolated from later Bytes mutation.
+`std.file.read_text` reuses it and maps errors, without a second private decoding
+path. These file writes truncate their destination, not atomically publish it.
 
 Source `std.fs` now exposes exclusive directory creation, native rename/replacement,
 nonrecursive removal and no-follow entry classification. Native rename never

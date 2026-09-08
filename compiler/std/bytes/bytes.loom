@@ -1,9 +1,14 @@
+import std.result.Result
+
 intrinsic fn bytes_new() Bytes
 intrinsic fn bytes_len(value Bytes) Int
 intrinsic fn bytes_get(value Bytes, index Int) Int
 intrinsic fn bytes_set(value Bytes, index Int, byte Int)
 intrinsic fn bytes_push(value Bytes, byte Int)
+intrinsic fn bytes_utf8(value Bytes) Bool
 intrinsic fn bytes_text_copy(value Bytes) Text
+
+pub enum Utf8Error { Invalid }
 
 // Bytes is a shared mutable buffer; Text construction takes an isolated copy.
 pub fn new() Bytes { bytes_new() }
@@ -27,3 +32,10 @@ requires byte >= 0 && byte <= 255
 
 // Invalid UTF-8 is a runtime fault; this never creates an invalid Text.
 pub fn to_text(value Bytes) Text { bytes_text_copy(value) }
+
+// Decodes strictly without replacing invalid bytes. Success is an isolated
+// Text copy; neither result changes the input or includes its bytes in errors.
+pub fn decode_utf8(value Bytes) Result[Text, Utf8Error] {
+    if !bytes_utf8(value) { return Result.Err(Utf8Error.Invalid) }
+    Result.Ok(to_text(value))
+}
