@@ -113,7 +113,10 @@ The smoke command accepts `LOOM_EDITOR_COMPILER` and `LOOM_EDITOR_STD` overrides
 The optional host test opens and closes its own Development Host with a temporary
 project and user-data/extensions directories. It also verifies format-on-save and
 same-directory tests plus execution; it neither installs the extension nor changes
-your settings or sources. `VSCODE_EXECUTABLE` selects an installed VS Code launcher (use the
+your settings or sources. Success requires both app exit and an explicit completion
+report written after every host assertion and cleanup; extension activation alone
+is not a pass. The launcher captures VS Code logs and prints their tail on failure.
+`VSCODE_EXECUTABLE` selects an installed VS Code launcher (use the
 absolute `Code.exe` path on Windows). No VS Code download is performed.
 `Loom` in the Output panel contains server messages. Protocol tracing is opt-in
 and can contain source text. Checks currently stop at the compiler's first error;

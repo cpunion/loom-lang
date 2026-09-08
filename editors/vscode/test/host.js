@@ -18,7 +18,7 @@ function diagnostics(uri, predicate) {
   });
 }
 
-exports.run = async function run() {
+async function run() {
   const settings = vscode.workspace.getConfiguration('loom');
   await settings.update('executable', process.env.LOOM_EDITOR_COMPILER, vscode.ConfigurationTarget.Global);
   await settings.update('stdRoot', process.env.LOOM_EDITOR_STD, vscode.ConfigurationTarget.Global);
@@ -68,4 +68,14 @@ exports.run = async function run() {
       });
     }
   } finally { await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor'); }
+}
+
+exports.run = async function () {
+  try {
+    await run();
+    await fs.writeFile(process.env.LOOM_EDITOR_HOST_RESULT, JSON.stringify({ passed: true }));
+  } catch (error) {
+    await fs.writeFile(process.env.LOOM_EDITOR_HOST_RESULT, JSON.stringify({ passed: false, error: error.stack || String(error) }));
+    throw error;
+  }
 };
