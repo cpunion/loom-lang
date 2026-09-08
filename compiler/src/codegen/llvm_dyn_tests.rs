@@ -103,10 +103,13 @@ fn explicit_witnesses_dispatch_and_keep_sparse_reachability() {
         ),
     ] {
         main.body.statements.push(checked::Stmt {
-            kind: checked::StmtKind::Assert(value(
-                Type::Bool,
-                E::Binary(Binary::Eq, Box::new(actual), Box::new(expected)),
-            )),
+            kind: checked::StmtKind::Assert {
+                condition: value(
+                    Type::Bool,
+                    E::Binary(Binary::Eq, Box::new(actual), Box::new(expected)),
+                ),
+                message: String::new(),
+            },
             span: Span::default(),
         });
     }
@@ -117,6 +120,7 @@ fn explicit_witnesses_dispatch_and_keep_sparse_reachability() {
         function_types: vec![],
         entry: Some(3),
         tests: vec![],
+        test_names: vec![],
         // Public functions can make the source metadata retain full tables,
         // but an executable still starts only at main (or selected tests).
         exports: vec![2],

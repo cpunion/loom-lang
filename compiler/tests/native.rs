@@ -542,9 +542,17 @@ fn type_predicates_cannot_hide_external_effects_or_skip_helper_contracts() {
 
 #[test]
 fn production_library_excludes_both_test_forms() {
-    let dir = source("pub fn answer() Int { 42 }\ntest fn ignored() { absent() }\n");
+    let dir = source(
+        "pub fn answer(value Int) Int { assert value > 0\n42 }\n\
+         test fn inline_test_only_diagnostic_marker() {\n\
+         discard \"TEST_ONLY_SOURCE_SENTINEL\"\nabsent() }\n",
+    );
     // A test file is not even parsed during a production build.
-    fs::write(dir.path().join("broken_test.loom"), "not valid source").unwrap();
+    fs::write(
+        dir.path().join("excluded_diagnostic_test.loom"),
+        "not valid source TEST_FILE_ONLY_SENTINEL",
+    )
+    .unwrap();
     let object = dir.path().join("library.o");
     let ir = dir.path().join("library.ll");
     success(&loom(&[
@@ -559,6 +567,24 @@ fn production_library_excludes_both_test_forms() {
     let llvm = fs::read_to_string(ir).unwrap();
     assert!(!llvm.contains("@main("));
     assert!(!llvm.contains("absent"));
+    let object_bytes = fs::read(&object).unwrap();
+    for marker in [
+        "inline_test_only_diagnostic_marker",
+        "TEST_ONLY_SOURCE_SENTINEL",
+        "excluded_diagnostic_test.loom",
+        "TEST_FILE_ONLY_SENTINEL",
+    ] {
+        assert!(
+            !llvm.contains(marker),
+            "test content in production IR: {marker}"
+        );
+        assert!(
+            !object_bytes
+                .windows(marker.len())
+                .any(|part| part == marker.as_bytes()),
+            "test content in production object: {marker}"
+        );
+    }
     assert_eq!(
         llvm.lines()
             .filter(|line| line.starts_with("define "))

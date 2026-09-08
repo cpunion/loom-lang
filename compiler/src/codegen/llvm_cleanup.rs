@@ -28,7 +28,9 @@ fn walk<'a>(
             checked::StmtKind::Let { value, .. }
             | checked::StmtKind::Assign { value, .. }
             | checked::StmtKind::Return(Some(value))
-            | checked::StmtKind::Assert(value)
+            | checked::StmtKind::Assert {
+                condition: value, ..
+            }
             | checked::StmtKind::Discard(value)
             | checked::StmtKind::Expr(value) => walk_expr(value, statement, expression),
             checked::StmtKind::While { condition, body } => {

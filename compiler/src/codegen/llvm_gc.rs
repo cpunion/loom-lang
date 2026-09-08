@@ -249,7 +249,9 @@ impl TemporarySlots {
             .any(|statement| match &statement.kind {
                 checked::StmtKind::Let { value, .. }
                 | checked::StmtKind::Assign { value, .. }
-                | checked::StmtKind::Assert(value)
+                | checked::StmtKind::Assert {
+                    condition: value, ..
+                }
                 | checked::StmtKind::Discard(value)
                 | checked::StmtKind::Expr(value)
                 | checked::StmtKind::Return(Some(value)) => self.may_allocate(allocating, value),
@@ -410,7 +412,9 @@ impl TemporarySlots {
             match &statement.kind {
                 checked::StmtKind::Let { value, .. }
                 | checked::StmtKind::Assign { value, .. }
-                | checked::StmtKind::Assert(value)
+                | checked::StmtKind::Assert {
+                    condition: value, ..
+                }
                 | checked::StmtKind::Discard(value)
                 | checked::StmtKind::Expr(value)
                 | checked::StmtKind::Return(Some(value)) => {
@@ -571,7 +575,9 @@ fn block_expressions<'a>(value: &'a checked::Block, values: &mut Vec<&'a checked
         match &statement.kind {
             checked::StmtKind::Let { value, .. }
             | checked::StmtKind::Assign { value, .. }
-            | checked::StmtKind::Assert(value)
+            | checked::StmtKind::Assert {
+                condition: value, ..
+            }
             | checked::StmtKind::Discard(value)
             | checked::StmtKind::Expr(value)
             | checked::StmtKind::Return(Some(value)) => expressions(value, values),
@@ -857,6 +863,7 @@ mod tests {
             functions: vec![],
             entry: None,
             tests: vec![],
+            test_names: vec![],
             exports: vec![],
         }
     }

@@ -14,6 +14,10 @@ fn int(number: i64) -> checked::Expr {
 fn text(string: &str) -> checked::Expr {
     value(Type::Text, E::Text(string.into()))
 }
+fn diagnostic_text(bytes: &[u8]) -> String {
+    // Host CRT diagnostics may use CRLF; binary I/O remains byte-exact.
+    std::str::from_utf8(bytes).unwrap().replace("\r\n", "\n")
+}
 fn local(ty: Type, index: usize) -> checked::Expr {
     value(ty, E::Local(index))
 }
@@ -39,10 +43,13 @@ fn statement(kind: S) -> checked::Stmt {
     }
 }
 fn equal(actual: checked::Expr, expected: checked::Expr) -> checked::Stmt {
-    statement(S::Assert(value(
-        Type::Bool,
-        E::Binary(Binary::Eq, Box::new(actual), Box::new(expected)),
-    )))
+    statement(S::Assert {
+        condition: value(
+            Type::Bool,
+            E::Binary(Binary::Eq, Box::new(actual), Box::new(expected)),
+        ),
+        message: String::new(),
+    })
 }
 fn body(statements: Vec<checked::Stmt>, tail: Option<checked::Expr>) -> checked::Block {
     checked::Block {
@@ -75,6 +82,7 @@ fn program(
         witnesses: vec![],
         entry: Some(2),
         tests: vec![],
+        test_names: vec![],
         exports: vec![],
     }
 }
@@ -126,6 +134,40 @@ fn emit_run(
         .output()
         .unwrap();
     (std::fs::read_to_string(ir).unwrap(), output)
+}
+
+#[test]
+fn assertion_locations_and_active_test_names_do_not_instrument_plain_entries() {
+    let passed = function(vec![], Type::Unit, None);
+    let mut helper = function(vec![], Type::Unit, None);
+    helper.body.statements.push(statement(S::Assert {
+        condition: value(Type::Bool, E::Bool(false)),
+        message: "helpers.loom:4:5: assertion failed".into(),
+    }));
+    let mut failed = function(vec![], Type::Unit, None);
+    failed
+        .body
+        .statements
+        .push(statement(S::Expr(value(Type::Unit, E::Call(1, vec![])))));
+    let mut program = program(vec![passed, helper, failed], vec![]);
+    program.tests = vec![0, 2];
+    program.test_names = vec!["sample.passes".into(), "sample.fails".into()];
+    let (ir, output) = emit_run(&program, false, false);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        diagnostic_text(&output.stderr),
+        "loom: helpers.loom:4:5: assertion failed\n"
+    );
+    assert!(!ir.contains("loom_rt_"));
+    assert!(!ir.contains("sample.fails"));
+    let (ir, output) = emit_run(&program, true, true);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        diagnostic_text(&output.stderr),
+        "FAIL sample.fails\nRuntimeFault: helpers.loom:4:5: assertion failed\n"
+    );
+    assert!(ir.contains("loom_rt_test_enter"));
+    assert!(ir.contains("loom_rt_test_leave"));
 }
 
 #[test]
@@ -272,6 +314,7 @@ fn named_callbacks_keep_direct_abi_dce_and_scalar_paths_runtime_free() {
         },
     ];
     program.tests = vec![7];
+    program.test_names = vec!["package.callback_failure".into()];
     program.exports = vec![1];
     assert_eq!(
         reachable_functions(&program, &[2], false)
@@ -289,10 +332,13 @@ fn named_callbacks_keep_direct_abi_dce_and_scalar_paths_runtime_free() {
     );
     assert!(!ir.contains("@loom.fn.1("));
     assert!(!ir.contains("loom_rt_"));
+    assert!(!ir.contains("package.callback_failure"));
     assert!(ir.contains("indirect.call"));
-    let (_, output) = emit_run(&program, true, false);
+    let (ir, output) = emit_run(&program, true, true);
+    assert!(ir.contains("loom_rt_test_enter"));
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("precondition failed"));
+    assert!(diagnostic_text(&output.stderr).starts_with("FAIL package.callback_failure\n"));
 }
 
 #[test]

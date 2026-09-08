@@ -5,6 +5,13 @@ use std::cell::Cell;
 use std::ptr;
 
 type Callback = unsafe extern "C" fn(*mut u8);
+type DiagnosticBytes = (*const u8, usize);
+
+#[derive(Clone, Copy)]
+struct Fault {
+    message: DiagnosticBytes,
+    test_name: Option<DiagnosticBytes>,
+}
 
 #[repr(C)]
 pub(super) struct Cleanup {
@@ -15,7 +22,21 @@ pub(super) struct Cleanup {
 
 thread_local! {
     static HEAD: Cell<*mut Cleanup> = const { Cell::new(ptr::null_mut()) };
-    static FIRST_FAULT: Cell<Option<(*const u8, usize)>> = const { Cell::new(None) };
+    static TEST_NAME: Cell<Option<DiagnosticBytes>> = const { Cell::new(None) };
+    static FIRST_FAULT: Cell<Option<Fault>> = const { Cell::new(None) };
+}
+
+// Only the generated test entry calls these, once around each selected test.
+// Ordinary functions and executable entries have no test instrumentation.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_test_enter(name: *const u8, length: usize) {
+    // Generated labels are static UTF-8 bytes, never managed heap pointers.
+    TEST_NAME.set(Some((name, length)));
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn loom_rt_test_leave() {
+    TEST_NAME.set(None);
 }
 
 #[unsafe(no_mangle)]
@@ -85,7 +106,10 @@ fn drain() {
 
 pub(super) fn fault(message: &[u8]) -> ! {
     let first = FIRST_FAULT.get().unwrap_or_else(|| {
-        let first = (message.as_ptr(), message.len());
+        let first = Fault {
+            message: (message.as_ptr(), message.len()),
+            test_name: TEST_NAME.get(),
+        };
         FIRST_FAULT.set(Some(first));
         first
     });
@@ -100,7 +124,13 @@ pub(super) fn fault(message: &[u8]) -> ! {
     // SAFETY: Diagnostic bytes are static or Rust-owned, never managed interior
     // pointers. The original faulting frame cannot return or unwind, including
     // when a cleanup faults recursively. Retain that first message until exit.
-    report(unsafe { std::slice::from_raw_parts(first.0, first.1) });
+    if let Some((name, length)) = first.test_name {
+        write(b"FAIL ");
+        // SAFETY: Test labels are static and snapshotted before any cleanup.
+        write(unsafe { std::slice::from_raw_parts(name, length) });
+        write(b"\n");
+    }
+    report(unsafe { std::slice::from_raw_parts(first.message.0, first.message.1) });
     std::process::exit(1)
 }
 
@@ -122,6 +152,10 @@ mod tests {
 
     #[test]
     fn lexical_records_pop_before_invocation_and_can_be_reused() {
+        unsafe { loom_rt_test_enter(b"package.test".as_ptr(), 12) };
+        assert_eq!(TEST_NAME.get().unwrap().1, 12);
+        loom_rt_test_leave();
+        assert!(TEST_NAME.get().is_none());
         let mut calls = 0usize;
         let captures = ptr::addr_of_mut!(calls).cast();
         let mut outer = MaybeUninit::<Cleanup>::uninit();
@@ -153,6 +187,8 @@ mod tests {
         }
         unsafe extern "C" fn inner(_: *mut u8) {
             write_stdout(b"inner.cleanup\n");
+            // Even a host callback changing context cannot relabel the first fault.
+            loom_rt_test_leave();
             fault(b"secondary");
         }
         fn write_stdout(bytes: &[u8]) {
@@ -163,10 +199,13 @@ mod tests {
             );
         }
 
-        if std::env::var_os(CHILD).is_some() {
+        if let Some(mode) = std::env::var_os(CHILD) {
             // Rust's test harness ignores SIGPIPE; native Loom starts with its
             // default disposition. Exercise that native behavior explicitly.
             unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+            if mode == "named" {
+                unsafe { loom_rt_test_enter(b"package.test".as_ptr(), 12) };
+            }
             let mut first = MaybeUninit::<Cleanup>::uninit();
             let mut second = MaybeUninit::<Cleanup>::uninit();
             unsafe {
@@ -177,7 +216,7 @@ mod tests {
             fault(&message);
         }
 
-        for broken in [false, true] {
+        for mode in ["plain", "named", "broken"] {
             let mut child = Command::new(std::env::current_exe().unwrap());
             child
                 .args([
@@ -185,8 +224,8 @@ mod tests {
                     "cleanup::tests::fault_cleanup_precedes_terminal_diagnostics",
                     "--nocapture",
                 ])
-                .env(CHILD, "1");
-            if broken {
+                .env(CHILD, mode);
+            if mode == "broken" {
                 let mut pipe = [-1; 2];
                 // SAFETY: pipe initializes two distinct owned descriptors.
                 assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
@@ -200,8 +239,13 @@ mod tests {
             let stdout = String::from_utf8(output.stdout).unwrap();
             assert!(stdout.ends_with("inner.cleanup\nouter.cleanup\n"));
             assert_eq!(stdout.matches(".cleanup\n").count(), 2);
-            if !broken {
-                assert_eq!(output.stderr, b"RuntimeFault: primary\n");
+            if mode != "broken" {
+                let expected: &[u8] = if mode == "named" {
+                    b"FAIL package.test\nRuntimeFault: primary\n"
+                } else {
+                    b"RuntimeFault: primary\n"
+                };
+                assert_eq!(output.stderr, expected);
             }
         }
     }

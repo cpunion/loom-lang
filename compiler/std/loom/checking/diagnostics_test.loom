@@ -1,0 +1,50 @@
+test fn emitted_assertions_keep_the_declaration_path_and_scalar_column() {
+    let files = source_files("import util.检查\nfn main() { 检查(1)\n检查(true) }")
+    let helper = source_file("util", "pub fn 检查[T](value T) { assert true\r\n    discard value\r    assert true\n}", false)
+    push(files, TestFile { package = helper.package path = "util/測定.loom" text = helper.text tree = helper.tree test_only = false trusted_std = false })
+    let program = match checked(files) {
+        Result.Ok(program) => program
+        Result.Err(_) => { assert false
+            accepted("") }
+    }
+    var instances = 0
+    var index = 0
+    while index < length(program.functions) {
+        let current = get(program.functions, index)
+        if length(current.arguments) == 1 {
+            let first = get(current.body.children, 0)
+            let last = get(current.body.children, 2)
+            assert first.kind == ExprKind.Assert && first.text == "util/測定.loom:1:25: assertion failed"
+            assert last.kind == ExprKind.Assert && last.text == "util/測定.loom:3:5: assertion failed"
+            instances = instances + 1
+        }
+        index = index + 1
+    }
+    assert instances == 2
+}
+
+test fn test_names_follow_selected_root_entries_without_dependency_tests() {
+    let files = source_files("import util.help\nfn main() { help() }\ntest fn 检验() { assert true }")
+    push(files, source_file("util", "pub fn help() {}\ntest fn excluded() { assert true }", false))
+    let dedicated = source_file("app", "test fn dedicated() { assert true }", false)
+    push(files, TestFile { package = dedicated.package path = "app/check_test.loom" text = dedicated.text tree = dedicated.tree test_only = true trusted_std = false })
+    let project = fixture_project(files)
+    let program = match bind(project, true) {
+        Result.Ok(bound) => match check(bound) { Result.Ok(program) => program
+            Result.Err(_) => { assert false
+                accepted("") } }
+        Result.Err(_) => { assert false
+            accepted("") }
+    }
+    assert length(program.tests) == 2 && length(program.test_names) == 2
+    assert get(program.test_names, 0) == "app.检验"
+    assert get(program.test_names, 1) == "app.dedicated"
+    let first = get(program.functions, get(program.tests, 0))
+    let second = get(program.functions, get(program.tests, 1))
+    assert get(first.body.children, 0).text == "app:3:16: assertion failed"
+    assert get(second.body.children, 0).text == "app/check_test.loom:1:23: assertion failed"
+    match checked(files) {
+        Result.Ok(production) => { assert length(production.tests) == 0 && length(production.test_names) == 0 }
+        Result.Err(_) => { assert false }
+    }
+}

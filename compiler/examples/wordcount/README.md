@@ -46,5 +46,7 @@ explicit `--std` and `--native-tool` paths. The compiler does not yet provide
 See the [VS Code trial](../../../editors/vscode/README.md#try-it) for unsaved
 diagnostics, formatting, hover, and definition navigation. Completion and
 rename are not implemented; a package error currently suppresses semantic
-queries even in its otherwise valid files. Failed native assertions currently
-report `assertion failed`, without the test name or source location.
+queries even in its otherwise valid files. A failed native assertion reports
+the test name and the assertion's original file, line and Unicode column,
+including when it fails inside a helper. The test process stops at its first
+fault; cleanup runs before the diagnostic is printed.

@@ -122,7 +122,7 @@ fn isolated(context Context, node Node, value Expr, boundary Int) Result[Bool, F
 }
 fn prepared(stage Context) Result[std.loom.typed.Program, Failure] {
     let functions = emit_functions(stage.env, false)?
-    Result.Ok(std.loom.typed.Program { types = stage.env.types functions = functions entry = -1 tests = new[Int]() exports = new[Int]()
+    Result.Ok(std.loom.typed.Program { types = stage.env.types functions = functions entry = -1 tests = new[Int]() test_names = new[Text]() exports = new[Int]()
         interfaces = stage.env.interfaces witnesses = stage.env.witnesses })
 }
 fn computed(context Context, node Node, input Node, expected Int) Result[Value, Failure] {

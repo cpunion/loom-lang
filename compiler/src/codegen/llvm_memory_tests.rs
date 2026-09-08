@@ -30,10 +30,13 @@ fn effect(operation: Primitive, args: Vec<checked::Expr>) -> checked::Stmt {
     statement(S::Expr(primitive(Type::Unit, operation, args)))
 }
 fn equal(actual: checked::Expr, expected: checked::Expr) -> checked::Stmt {
-    statement(S::Assert(value(
-        Type::Bool,
-        E::Binary(Binary::Eq, Box::new(actual), Box::new(expected)),
-    )))
+    statement(S::Assert {
+        condition: value(
+            Type::Bool,
+            E::Binary(Binary::Eq, Box::new(actual), Box::new(expected)),
+        ),
+        message: String::new(),
+    })
 }
 fn program(locals: Vec<Type>, statements: Vec<checked::Stmt>) -> checked::Program {
     checked::Program {
@@ -63,6 +66,7 @@ fn program(locals: Vec<Type>, statements: Vec<checked::Stmt>) -> checked::Progra
         witnesses: vec![],
         entry: Some(0),
         tests: vec![],
+        test_names: vec![],
         exports: vec![],
     }
 }

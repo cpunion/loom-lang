@@ -252,6 +252,9 @@ buffers to the same compiler for diagnostics, formatting, type hovers and checke
 definition navigation. An actual VS Code extension-host smoke passes on macOS.
 Completion, rename, and incremental
 semantic reuse are subsequent tooling work, not completed language features.
+Native failing assertions now report their source location and current test,
+including helper assertions and standalone test executables. The first fault
+remains authoritative across cleanup; this does not add stack traces or recovery.
 
 Bounded [compile-time execution](compiler/README.md#compile-time-execution) now
 uses the same checked model and a Loom-written evaluator. Explicit blocks

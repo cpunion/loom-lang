@@ -108,6 +108,16 @@ without creating a binary. Ordinary `loom test` still compiles and runs its test
 Try the [multi-package file tool](examples/wordcount/README.md) for a complete
 edit, format, test, and run exercise.
 
+A failed native assertion reports the current test name and the assertion's
+definition file, line and Unicode-scalar column, including assertions in called
+helpers. The diagnostic is compiled into the executable: `test --no-run`
+artifacts do not need source files at execution time. Successful test output is
+unchanged. The first fault's message and test name survive cleanup, even if
+cleanup also fails. Other faults do not yet carry source locations; this is not
+a stack trace or a recover-and-continue test runner. Ordinary executables have
+no test-entry instrumentation, and production builds exclude test-only names
+and source contents.
+
 ## Windows bootstrap
 
 The Windows x64/MSVC path passes the full bootstrap and native CI gate.

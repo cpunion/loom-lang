@@ -257,6 +257,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
     }
     var entry = -1
     let tests = new[Int]()
+    let test_names = new[Text]()
     let exports = new[Int]()
     index = 0
     while index < length(env.signatures) {
@@ -266,13 +267,16 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
         if signature.parameters == 0 && !has_static(signature) && root && item.owner < 0 {
             if item.name == "main" && !item.test_only { entry = schedule(env, index, new[Int](), new[StaticValue](), item.node)? }
             if item.public && !item.test_only { push(exports, schedule(env, index, new[Int](), new[StaticValue](), item.node)?) }
-            if has(item.node, NodeKind.Test) { push(tests, schedule(env, index, new[Int](), new[StaticValue](), item.node)?) }
+            if has(item.node, NodeKind.Test) {
+                push(tests, schedule(env, index, new[Int](), new[StaticValue](), item.node)?)
+                push(test_names, std.loom.project.qualify(package_label(source.modules, source.packages, source.root), item.name))
+            }
         }
         index = index + 1
     }
     let functions = emit_functions(env, entry < 0 || length(exports) != 0)?
     discard resource_unreached(env, resource_roots)?
     discard layouts(env)?
-    Result.Ok(std.loom.typed.Program { types = env.types functions = functions entry = entry tests = tests exports = exports
+    Result.Ok(std.loom.typed.Program { types = env.types functions = functions entry = entry tests = tests test_names = test_names exports = exports
         interfaces = env.interfaces witnesses = env.witnesses })
 }

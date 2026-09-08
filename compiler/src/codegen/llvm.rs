@@ -127,7 +127,11 @@ fn emit_checked(
         .iter()
         .map(|id| cleanup::plans(&program.functions[*id]).map(|plans| (*id, plans)))
         .collect::<NativeResult<HashMap<_, _>>>()?;
-    let runtime_fault = library || cleanup_plans.values().any(|plans| !plans.is_empty());
+    let runtime_fault =
+        test_mode || library || cleanup_plans.values().any(|plans| !plans.is_empty());
+    if !program.test_names.is_empty() && program.test_names.len() != program.tests.len() {
+        return Err("checked test-name count mismatch".into());
+    }
     trace_phase("target");
     let native = NativeTarget::new(optimization)?;
     let machine = &native.machine;
@@ -278,12 +282,40 @@ fn emit_checked(
                 "",
             )?;
         }
-        for root in roots {
+        for (index, root) in roots.into_iter().enumerate() {
             let function = &program.functions[root];
             if !function.params.is_empty() || function.result != Type::Unit {
                 return Err("entry points must take no arguments and return no value".into());
             }
+            if test_mode {
+                let name = program
+                    .test_names
+                    .get(index)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(&function.name);
+                let name_pointer = builder.build_global_string_ptr(name, "test.name")?;
+                let size_type = context.ptr_sized_int_type(&machine.get_target_data(), None);
+                let enter = gc::runtime_function(
+                    &context,
+                    &module,
+                    "test_enter",
+                    None,
+                    &[pointer.into(), size_type.into()],
+                );
+                builder.build_call(
+                    enter,
+                    &[
+                        name_pointer.as_pointer_value().into(),
+                        size_type.const_int(name.len() as u64, false).into(),
+                    ],
+                    "",
+                )?;
+            }
             builder.build_call(functions[root].ok_or("missing entry point")?, &[], "")?;
+            if test_mode {
+                let leave = gc::runtime_function(&context, &module, "test_leave", None, &[]);
+                builder.build_call(leave, &[], "")?;
+            }
         }
         builder.build_return(Some(&context.i32_type().const_zero()))?;
     }
@@ -751,9 +783,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         }
                     }
                 }
-                checked::StmtKind::Assert(value) => {
-                    if let Some(value) = self.expr(value)? {
-                        self.guard(value.into_int_value(), "assertion failed")?;
+                checked::StmtKind::Assert { condition, message } => {
+                    if let Some(value) = self.expr(condition)? {
+                        self.guard(
+                            value.into_int_value(),
+                            if message.is_empty() {
+                                "assertion failed"
+                            } else {
+                                message
+                            },
+                        )?;
                     }
                 }
                 checked::StmtKind::Discard(value) | checked::StmtKind::Expr(value) => {
@@ -1808,7 +1847,9 @@ fn reachable_functions(
             match &statement.kind {
                 checked::StmtKind::Let { value, .. }
                 | checked::StmtKind::Assign { value, .. }
-                | checked::StmtKind::Assert(value)
+                | checked::StmtKind::Assert {
+                    condition: value, ..
+                }
                 | checked::StmtKind::Discard(value)
                 | checked::StmtKind::Expr(value)
                 | checked::StmtKind::Return(Some(value)) => expr(value, calls, witnesses, slots),
@@ -1968,6 +2009,7 @@ mod tests {
             functions: vec![],
             entry: None,
             tests: vec![],
+            test_names: vec![],
             exports: vec![],
         };
         let context = Context::create();

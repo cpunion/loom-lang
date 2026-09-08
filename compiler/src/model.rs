@@ -118,6 +118,8 @@ pub mod checked {
         pub witnesses: Vec<Witness>,
         pub entry: Option<usize>,
         pub tests: Vec<usize>,
+        /// Optional diagnostic labels, in tests order. Empty means stripped IR.
+        pub test_names: Vec<String>,
         /// Public functions of the selected package, for a library object.
         pub exports: Vec<usize>,
     }
@@ -186,7 +188,7 @@ pub mod checked {
         Let { local: usize, value: Expr },
         Assign { local: usize, value: Expr },
         Return(Option<Expr>),
-        Assert(Expr),
+        Assert { condition: Expr, message: String },
         Discard(Expr),
         Expr(Expr),
         While { condition: Expr, body: Block },
