@@ -251,6 +251,7 @@ Suspension uses postfix `.await`, including chaining with result propagation.
 results; List joins support dynamically sized homogeneous task sets. Join
 policies belong to `std`, over narrow scheduler primitives. A Task is not a
 durable workflow, deployment record, or persistent execution receipt.
+The [Task design](tasks.md) specifies scheduling, outcomes, cancellation and joins.
 
 ## Library boundary and acceptance stories
 

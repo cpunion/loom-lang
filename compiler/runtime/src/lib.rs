@@ -16,6 +16,10 @@ mod cleanup;
 mod file_io;
 mod fs_ops;
 mod process_io;
+mod wait;
+mod wait_abi;
+#[cfg(test)]
+mod wait_tests;
 
 type Trace = unsafe extern "C" fn(*mut u8);
 

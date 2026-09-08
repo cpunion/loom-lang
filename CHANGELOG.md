@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add a private portable wait ABI for timers, native readiness and worker
+  completion, with one-shot delivery and generation-checked cancellation.
+  Task syntax, scheduling and state-machine lowering remain unfinished.
+  Final executable links discard unreferenced runtime sections; library objects
+  keep their existing export/reachability policy.
+
 - Add native and compile-time Int bitwise operations and checked shift counts,
   without additional runtime operations or changes to arithmetic overflow rules.
 
