@@ -30,6 +30,8 @@ Try these edits:
 4. Compact the fields in `Summary`, then run `loom fmt stats` (or save in
    the development extension). Formatting restores one field per line.
 5. Run `loom run -- missing.txt` to check the file-error path.
+6. In the editor, add `fn scratch() Int { true }` to `main.loom`. Check that
+   the error appears but hover and navigation in `main` still work, then remove it.
 
 For a standalone executable:
 
@@ -45,8 +47,9 @@ explicit `--std` and `--native-tool` paths. The compiler does not yet provide
 
 See the [VS Code trial](../../../editors/vscode/README.md#try-it) for unsaved
 diagnostics, formatting, hover, and definition navigation. Completion and
-rename are not implemented; a package error currently suppresses semantic
-queries even in its otherwise valid files. A failed native assertion reports
+rename are not implemented. Independent ordinary functions remain queryable
+despite unrelated body errors; syntax and template errors can still block queries.
+A failed native assertion reports
 the test name and the assertion's original file, line and Unicode column,
 including when it fails inside a helper. The test process stops at its first
 fault; cleanup runs before the diagnostic is printed.

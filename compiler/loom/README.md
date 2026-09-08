@@ -85,7 +85,10 @@ navigation for unsaved buffers. Its
 language server sends source snapshots to the same Loom package/type/contract
 checker; it does not implement another parser or checker in JavaScript.
 Completion, rename, and incremental semantic caching remain open. Semantic
-queries currently require a successfully checked package and concrete body instances.
+queries use concrete body instances. If package checking fails, an independently
+checked ordinary function can still provide hover and navigation; its own errors
+or a failing dependency suppress the result. Syntax, global declaration, and
+generic/comptime template errors can still block queries.
 An isolated macOS VS Code extension-host test covers activation, unsaved errors,
 error clearing, and applied formatting. The
 [file-tool trial](../examples/wordcount/README.md) exercises a multi-package
@@ -210,6 +213,7 @@ without the CLI, LLVM backend, or filesystem loading:
 | `type_name(analysis, ty)` | Display name for a type in that analysis |
 | `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
+| `inspect_independent(bindings, file, offset)` | Isolated inspection of a concrete function and its checked dependencies; no executable program |
 | `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
 
 The [semantic example](../examples/semantic/main.loom) creates an in-memory
@@ -241,6 +245,14 @@ Local navigation follows checked local IDs, including shadowing. Calls use
 resolved targets; dynamic calls point only to an identifiable concept signature,
 never a guessed implementation. Comments, punctuation and unavailable semantic
 identity return no answer. Match bindings currently have hover types only.
+
+`inspect_independent` retains the complete bindings and starts a fresh checker
+session; it does not remove erroneous declarations or reuse a failed check's
+tables. Global declarations and generic/comptime templates must still pass.
+Only a containing non-generic, non-comptime-parameter function can be selected.
+Its concrete dependency closure, contracts and resource flows must pass before
+any facts are returned. Normal `analyze`, `check` and `build` remain whole-package
+checks. Query tables are a separate `CheckedQuery`, not a partial `typed.Program`.
 
 `Type.constraint` is predicate-template metadata, not executable IR: `self`
 uses local 0 and call indices are `-1` until rebound at a construction boundary.

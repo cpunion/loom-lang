@@ -12,7 +12,7 @@ const text = buffers.get(file);
 const target = [...buffers.keys()].find(file => file.endsWith('query_target.loom'));
 const failed = [...buffers.values()].some(text => text.includes('BROKEN'));
 const report = { diagnostics: failed ? [{ path: file, message: 'fixture diagnostic', start: 0, end: 1 }] : [], hover: null, definitions: [] };
-if (!failed && Buffer.from(text).subarray(offset, offset + 5).toString() === 'QUERY') {
+if ((!failed || text.includes('PARTIAL')) && Buffer.from(text).subarray(offset, offset + 5).toString() === 'QUERY') {
   report.hover = { start: offset, end: offset + 5, types: ['Int', 'Bool'] };
   if (target) {
     const start = Buffer.byteLength('// é😀\nfn ');

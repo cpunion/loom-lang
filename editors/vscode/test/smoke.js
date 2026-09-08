@@ -56,9 +56,47 @@ async function main() {
     const indexing = await client.rpc.sendRequest('textDocument/formatting', { textDocument: { uri: URI.file(file).toString() }, options: { tabSize: 4, insertSpaces: true } });
     assert.match(indexing[0].newText, /values\[0\] = 4/);
     assert.match(indexing[0].newText, /let first = values\[0\]/);
+
+    const at = (target, text, fragment) => {
+      const offset = text.indexOf(fragment);
+      assert.notEqual(offset, -1);
+      const uri = URI.file(target).toString();
+      return { textDocument: { uri }, position: TextDocument.create(uri, 'loom', 0, text).positionAt(offset) };
+    };
+    const bad = path.join(folder, 'overlay_bad.loom');
+    const broken = 'fn broken() Int { let n Int = true\nn }\n';
+    await client.open(bad, broken);
+    for (const sameFile of [false, true]) {
+      if (sameFile) await client.rpc.sendNotification('textDocument/didClose', { textDocument: { uri: URI.file(bad).toString() } });
+      const mixed = sameFile ? source + broken : source;
+      await client.change(file, mixed, sameFile ? 8 : 7);
+      assert.ok((await client.wait(sameFile ? file : bad, sameFile ? 8 : 1)).diagnostics.length > 0);
+      const retained = await client.rpc.sendRequest('textDocument/hover', at(file, mixed, 'value=='));
+      assert.ok(retained.contents.some(item => item.value === 'Int'));
+      assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', at(file, mixed, 'helper()')), definitions);
+      const invalid = at(sameFile ? file : bad, sameFile ? mixed : broken, 'n }');
+      assert.equal(await client.rpc.sendRequest('textDocument/hover', invalid), null);
+      assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', invalid), []);
+    }
+    // A declared return type is not a checked result when the callee fails.
+    const dependent = source.replace('helper()', 'broken()') + broken;
+    await client.change(file, dependent, 9);
+    assert.ok((await client.wait(file, 9)).diagnostics.length > 0);
+    assert.equal(await client.rpc.sendRequest('textDocument/hover', at(file, dependent, 'value==')), null);
+    assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', at(file, dependent, 'broken()')), []);
+    const repaired = dependent.replace('Int = true', 'Int = 42');
+    await client.change(file, repaired, 10);
+    assert.deepEqual((await client.wait(file, 10)).diagnostics, []);
+    const recovered = await client.rpc.sendRequest('textDocument/hover', at(file, repaired, 'value=='));
+    assert.ok(recovered.contents.some(item => item.value === 'Int'));
+    const recoveredDefinitions = await client.rpc.sendRequest('textDocument/definition', at(file, repaired, 'broken()'));
+    assert.equal(recoveredDefinitions.length, 1);
+    assert.equal(recoveredDefinitions[0].uri, URI.file(file).toString());
+    assert.equal(TextDocument.create(recoveredDefinitions[0].uri, 'loom', 10, repaired).getText(recoveredDefinitions[0].range), 'broken');
     assert.equal(await fs.readFile(file, 'utf8'), saved);
     await assert.rejects(fs.access(helper), { code: 'ENOENT' });
-    console.log('Real compiler LSP smoke passed: unsaved diagnostics, sibling overlay, type hover, definition, loops, indexed reads/writes, formatting, no source writes.');
+    await assert.rejects(fs.access(bad), { code: 'ENOENT' });
+    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition with unrelated errors, dependency rejection and repair, loops, indexing, formatting, no source writes.');
   } finally { await client.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

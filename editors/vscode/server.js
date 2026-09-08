@@ -136,7 +136,7 @@ async function semanticQuery(params, token, kind) {
     overlays = await compiler.snapshots(buffers);
     const report = await compiler.query(await settings(document.uri), directory, file,
       compiler.byteOffset(document, params.position), overlays.args, controller.signal);
-    if (report.error || report.diagnostics.length) return null;
+    if (report.error) return null;
     if (kind === 'hover') {
       const hover = report.hover;
       value = hover?.types.length ? { contents: hover.types.map(type => ({ language: 'loom', value: type })),

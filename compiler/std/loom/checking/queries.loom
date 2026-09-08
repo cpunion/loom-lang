@@ -1,0 +1,60 @@
+import std.loom.binding.Program
+import std.loom.binding.Failure
+import std.loom.ast.has
+import std.loom.ast.NodeKind
+import std.loom.typed.Type
+import std.loom.typed.Interface
+import std.loom.typed.Function
+import std.list.new
+import std.list.get
+import std.list.length
+import std.result.Result
+
+// Query-local IDs describe a checked function closure, not a compilable package.
+// Call/FunctionRef indices retain the complete closure's function ordering.
+pub record CheckedQuery { types List[Type] interfaces List[Interface] functions List[Function] }
+
+fn query_templates(env Environment) Result[Bool, Failure] {
+    var index = 0
+    while index < length(env.signatures) {
+        let current = get(env.signatures, index)
+        if (current.parameters != 0 || has_static(current)) &&
+            (!prototype(env, current.symbol) || has(symbol(env, current.symbol).node, NodeKind.Block)) {
+            discard function(env, index, abstract_arguments(env, current.parameters), unknown_constants(current), false)?
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+// Recover only from unrelated ordinary function-body failures. Binding and
+// global declaration failures remain fatal. This first version also validates
+// every generic/comptime template: a concrete instance must not substitute for
+// its declaration's abstract legality, including helpers reached only by CTFE.
+// Consequently an unrelated invalid template still prevents semantic queries.
+// Generic/comptime source owners have no concrete query instance and return an
+// empty function list; no arbitrary type or static arguments are invented.
+pub fn check_query(source std.loom.binding.Program, file Int, offset Int) Result[CheckedQuery, Failure] {
+    let env = prepare(source)?
+    discard query_templates(env)?
+    var selected = -1
+    var index = 0
+    while index < length(env.signatures) {
+        let current = get(env.signatures, index)
+        let item = symbol(env, current.symbol)
+        if item.file == file && offset >= item.node.span.start && offset < item.node.span.end {
+            if current.parameters == 0 && !has_static(current) && has(item.node, NodeKind.Block) { selected = index }
+        }
+        index = index + 1
+    }
+    if selected < 0 {
+        return Result.Ok(CheckedQuery { types = env.types interfaces = env.interfaces functions = new[Function]() })
+    }
+    let current = get(env.signatures, selected)
+    discard schedule(env, selected, new[Int](), new[StaticValue](), symbol(env, current.symbol).node)?
+    // A produced dyn value can be used outside this query. Check its witness
+    // methods too, while retaining no unrelated application roots.
+    let functions = emit_functions(env, true)?
+    discard layouts(env)?
+    Result.Ok(CheckedQuery { types = env.types interfaces = env.interfaces functions = functions })
+}

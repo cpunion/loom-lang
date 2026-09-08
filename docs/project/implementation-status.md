@@ -292,8 +292,11 @@ and definition navigation, not a
 parallel language implementation. Real LSP transport and macOS VS Code
 extension-host tests cover unsaved edits, cleared errors, applied formatting,
 checked types and cross-file targets. `std.loom.analysis.inspect_at` shares the
-token-aware queries with ordinary Loom consumers. Results require a successful
-check and concrete body instances; dynamic calls never guess an implementation.
+token-aware queries with ordinary Loom consumers. On package errors,
+`inspect_independent` can check an ordinary function and its dependency closure
+in isolation, retaining hover/navigation alongside diagnostics. Global declaration
+and template errors can still block this fallback; failed functions produce no
+partial facts. Normal builds stay strict; dynamic calls never guess an implementation.
 Completion, rename, and incremental semantic caching are not implemented.
 
 [Compile-time execution](../../compiler/README.md#compile-time-execution) uses a
@@ -348,8 +351,9 @@ same-directory tests, a separate library package, Unicode text and file I/O.
 Development compiler paths resolve std/native from their checkout, allowing
 check/build/test/run from the application's own directory; `run --` forwards
 program arguments. The VS Code development host has a dedicated trial workspace.
-Real host/protocol smoke tests pass, but completion and error-tolerant semantic
-queries remain programming-experience gaps. Native assertions now carry static
+Real host/protocol smoke tests cover the editing loop. Completion, syntax-error
+recovery and queries within erroneous functions remain programming-experience
+gaps. Native assertions now carry static
 definition-file/line/Unicode-column diagnostics. Test entries set one current
 test name, retained with the first fault across cleanup. Standalone test binaries
 need no source files, and production builds emit no test context or test-only
