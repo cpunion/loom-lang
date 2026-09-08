@@ -83,10 +83,15 @@ and are removed after completion/cancellation; user source files are never chang
 An edit cancels outstanding checking and semantic queries, including queries in
 other open files. Configuration and watched-file changes also invalidate queries.
 Formatting edits are discarded if the document changes or the request is canceled.
-Hover and definition perform fresh compiler checks with the same snapshots. If
-checking fails or no checked information exists, they return no result rather than
-guessing from names. When checked generic instances have different types or
-targets, all results are retained.
+Hover and definition perform fresh compiler checks with the same snapshots.
+Diagnostics can coexist with checked query results: an unrelated non-generic
+function-body error, even in the same file, need not hide an independently checked
+concrete function and its dependencies. Errors in that function or its dependencies
+return no result; there is no recovery within an erroneous function. Syntax,
+global declaration, and template errors can still prevent queries. The compiler
+keeps the original bindings and never guesses from names. After a successful
+whole-package check, all differing types and targets from checked generic instances
+are retained.
 
 This is checked-body navigation, not a complete symbol index. Signatures, type
 annotations, uninstantiated bodies, and folded code without source identity have
@@ -125,9 +130,10 @@ loom fmt --stdin
 Check output is `{ "diagnostics": [{ "path", "message", "start", "end" }],
 "error"?: "project error" }`. Query output also includes `"hover": null | {
 "start", "end", "types": ["Int", ...] }` and `"definitions": [{ "path", "start",
-"end" }]`. Spans and query offsets use UTF-8 bytes; the server maps them to/from
-LSP UTF-16 positions using the captured text. Formatting reads and writes source
-on stdin/stdout.
+"end" }]`. A response with diagnostics (exit code 1) may still contain checked
+query results; a project `"error"` has none. Spans and query offsets use UTF-8 bytes;
+the server maps them to/from LSP UTF-16 positions using the captured text.
+Formatting reads and writes source on stdin/stdout.
 
 The client/server use Microsoft's [Language Server SDK](https://github.com/microsoft/vscode-languageserver-node)
 and follow the [VS Code extension guide](https://code.visualstudio.com/api/language-extensions/language-server-extension-guide).

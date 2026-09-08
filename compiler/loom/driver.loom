@@ -171,7 +171,7 @@ fn diagnostic(files List[SourceFile], failure Failure) Text {
     render(source.path, source.text, failure.diagnostic)
 }
 
-fn prepared(options Options) Result[Program, Text] {
+fn prepared(options Options) Result[std.loom.typed.Program, Text] {
     let loaded = load(options.path, options.std_root, options.command == "test")?
     let bound = match bind(loaded, options.command == "test") {
         Result.Ok(value) => value
@@ -192,7 +192,7 @@ fn child_status(arguments List[Text]) Result[Int, Text] {
     }
 }
 
-fn compile(options Options, program Program, output Text) Result[Bool, Text] {
+fn compile(options Options, program std.loom.typed.Program, output Text) Result[Bool, Text] {
     let input = encode(program)
     if options.object_cache != "" && options.ir == "" {
         if compile_cached(options, input, options.command != "test" && program.entry < 0, output)? {

@@ -34,17 +34,25 @@ test('LSP semantic queries preserve all checked types/targets and cancel on sibl
   const hover = await client.rpc.sendRequest('textDocument/hover', params);
   assert.deepEqual(hover.contents, [{ language: 'loom', value: 'Int' }, { language: 'loom', value: 'Bool' }]);
   assert.deepEqual(hover.range, { start: position, end: { line: 0, character: position.character + 5 } });
-  assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', params), [{ uri: URI.file(target).toString(),
-    range: { start: { line: 1, character: 3 }, end: { line: 1, character: 9 } } }, { uri: URI.file(file).toString(), range: hover.range }]);
+  const definitions = [{ uri: URI.file(target).toString(),
+    range: { start: { line: 1, character: 3 }, end: { line: 1, character: 9 } } }, { uri: URI.file(file).toString(), range: hover.range }];
+  assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', params), definitions);
   assert.equal(await client.rpc.sendRequest('textDocument/hover', { ...params, position: { line: 0, character: 0 } }), null);
   assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', { ...params, position: { line: 0, character: 0 } }), []);
 
-  await client.change(file, text + ' SLOW', 2);
+  // Exit code 1 can carry both diagnostics and independently checked results.
+  await client.change(file, text + ' BROKEN PARTIAL', 2);
+  assert.equal((await client.wait(file, 2)).diagnostics.length, 1);
+  assert.deepEqual(await client.rpc.sendRequest('textDocument/hover', params), hover);
+  assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', params), definitions);
+  assert.equal(client.diagnostics.filter(report => report.uri === params.textDocument.uri).at(-1).diagnostics.length, 1);
+
+  await client.change(file, text + ' SLOW', 3);
   const stale = client.rpc.sendRequest('textDocument/hover', params);
   await pause(200);
   await client.change(target, 'BROKEN', 2);
   assert.equal(await stale, null);
-  assert.equal(await client.rpc.sendRequest('textDocument/definition', params), null);
+  assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', params), []);
   await client.change(target, '// é😀\nfn chosen() Int { 2 }', 3);
   const cancellation = new CancellationTokenSource();
   const canceled = client.rpc.sendRequest('textDocument/hover', params, cancellation.token);

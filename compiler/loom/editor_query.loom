@@ -1,13 +1,32 @@
 import std.loom.analysis.inspect_at
+import std.loom.analysis.inspect_independent
+import std.loom.analysis.Analysis
+import std.loom.analysis.Inspection
 import std.option.Option
+import std.loom.binding.Program
 
-fn editor_inspection(analysis Analysis, file Int, offset Int) EditorOutput {
-    let information = match inspect_at(analysis, file, offset) {
+fn editor_query(bindings std.loom.binding.Program, file Int, offset Int) EditorOutput {
+    match check(bindings) {
+        Result.Ok(program) => editor_inspection(bindings,
+            inspect_at(Analysis {
+                    bindings = bindings
+                    program = program
+                }, file, offset), "")
+        Result.Err(failed) => {
+            let diagnostic = editor_diagnostic_json(get(bindings.files, failed.source).path, failed.diagnostic)
+            editor_inspection(bindings, inspect_independent(bindings, file, offset), diagnostic)
+        }
+    }
+}
+
+fn editor_inspection(bindings std.loom.binding.Program, inspection Option[Inspection], diagnostic Text) EditorOutput {
+    let prefix = concat("{\"diagnostics\":[", concat(diagnostic, "],\"hover\":"))
+    let information = match inspection {
         Option.Some(value) => value
         Option.None => {
             return EditorOutput {
-                text = "{\"diagnostics\":[],\"hover\":null,\"definitions\":[]}\n"
-                failed = false
+                text = concat(prefix, "null,\"definitions\":[]}\n")
+                failed = diagnostic != ""
             }
         }
     }
@@ -28,17 +47,17 @@ fn editor_inspection(analysis Analysis, file Int, offset Int) EditorOutput {
             definitions = concat(definitions, ",")
         }
         let target = get(information.definitions, index)
-        let path = get(analysis.bindings.files, target.file).path
+        let path = get(bindings.files, target.file).path
         let location = concat("{\"path\":", concat(editor_quoted(path), concat(",\"start\":", to_text(target.span.start))))
         definitions = concat(definitions, concat(location, concat(",\"end\":", concat(to_text(target.span.end), "}"))))
         index = index + 1
     }
     definitions = concat(definitions, "]")
     let hover = concat("{\"start\":", concat(to_text(information.span.start), concat(",\"end\":", to_text(information.span.end))))
-    let payload = concat("{\"diagnostics\":[],\"hover\":", concat(hover, concat(",\"types\":", concat(types, "},\"definitions\":"))))
+    let payload = concat(prefix, concat(hover, concat(",\"types\":", concat(types, "},\"definitions\":"))))
     EditorOutput {
         text = concat(payload, concat(definitions, "}\n"))
-        failed = false
+        failed = diagnostic != ""
     }
 }
 

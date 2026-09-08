@@ -9,7 +9,6 @@ import std.bytes.push
 import std.bytes.to_text
 import std.text.starts_with
 import std.int.parse
-import std.loom.analysis.Analysis
 
 record EditorOptions {
     path Text
@@ -61,11 +60,15 @@ fn editor_error(message Text) EditorOutput {
     }
 }
 
-fn editor_diagnostic(path Text, diagnostic Diagnostic) EditorOutput {
-    let fields = concat("{\"diagnostics\":[{\"path\":", concat(editor_quoted(path), concat(",\"message\":", editor_quoted(diagnostic.message))))
+fn editor_diagnostic_json(path Text, diagnostic Diagnostic) Text {
+    let fields = concat("{\"path\":", concat(editor_quoted(path), concat(",\"message\":", editor_quoted(diagnostic.message))))
     let start = concat(fields, concat(",\"start\":", to_text(diagnostic.span.start)))
+    concat(start, concat(",\"end\":", concat(to_text(diagnostic.span.end), "}")))
+}
+
+fn editor_diagnostic(path Text, diagnostic Diagnostic) EditorOutput {
     EditorOutput {
-        text = concat(start, concat(",\"end\":", concat(to_text(diagnostic.span.end), "}]}\n")))
+        text = concat("{\"diagnostics\":[", concat(editor_diagnostic_json(path, diagnostic), "]}\n"))
         failed = true
     }
 }
@@ -186,12 +189,6 @@ fn editor_execute(args List[Text]) EditorOutput {
             return editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
         }
     }
-    let checked = match check(bound) {
-        Result.Ok(value) => value
-        Result.Err(failed) => {
-            return editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
-        }
-    }
     if options.query_path != "" {
         var index = 0
         while index < length(project.files) {
@@ -200,14 +197,18 @@ fn editor_execute(args List[Text]) EditorOutput {
                 if options.offset > std.text.length(file.text) {
                     return editor_error("query byte offset is outside the source")
                 }
-                return editor_inspection(Analysis {
-                        bindings = bound
-                        program = checked
-                    }, index, options.offset)
+                return editor_query(bound, index, options.offset)
             }
             index = index + 1
         }
         return editor_error("query source is outside the selected package and import closure")
+    }
+    match check(bound) {
+        Result.Ok(_) => {
+        }
+        Result.Err(failed) => {
+            return editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
+        }
     }
     EditorOutput {
         text = "{\"diagnostics\":[]}\n"

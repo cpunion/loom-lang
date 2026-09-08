@@ -47,6 +47,99 @@ fn absent(analysis Analysis, position Int) {
     }
 }
 
+fn query_bindings(project Project) std.loom.binding.Program {
+    match bind(project, false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            query_bindings(project)
+        }
+    }
+}
+
+fn independent_found(bindings std.loom.binding.Program, text Text, fragment Text) Inspection {
+    match inspect_independent(bindings, 0, query_offset(text, fragment)) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            independent_found(bindings, text, fragment)
+        }
+    }
+}
+
+test fn independent_queries_keep_good_functions_despite_same_or_sibling_file_errors() {
+    let good = "fn identity(value Int) Int { value }\nfn identity(value Bool) Bool { value }\nfn good() { let count = identity(3)\nassert count == 3 }\nfn main() { good() }"
+    let bad = "fn broken() Int { true }\n"
+    var index = 0
+    while index < 2 {
+        let text = if index == 0 {
+            concat(bad, good)
+        } else {
+            good
+        }
+        let project = input(text)
+        if index == 1 {
+            push(project.files, SourceFile {
+                    package = 0
+                    path = "broken.loom"
+                    text = bad
+                    tree = get(input(bad).files, 0).tree
+                    test_only = false
+                    trusted_std = false
+                })
+        }
+        let bindings = query_bindings(project)
+        assert match check(bindings) {
+            Result.Err(_) => true,
+            Result.Ok(_) => false
+        }
+        let local = independent_found(bindings, text, "count ==")
+        only_type(local, "Int")
+        let declaration = query_offset(text, "count =")
+        only_definition(local, declaration, declaration + 5)
+        let call = independent_found(bindings, text, "identity(3)")
+        only_type(call, "fn(Int) Int")
+        let target = query_offset(text, "identity(value Int)")
+        only_definition(call, target, target + 8)
+        index = index + 1
+    }
+}
+
+test fn independent_queries_require_the_selected_function_and_its_complete_dependency_closure() {
+    let programs = [
+        "fn selected() { let count = 3\nlet wrong Bool = count }\nfn main() { selected() }",
+        "fn bad() Int { true }\nfn selected() { let count = bad()\nassert count == 3 }\nfn main() { selected() }",
+        "fn first(value Int) Int { second(value) }\nfn second(value Int) Int { if value > 0 { first(value - 1) } else { true } }\nfn selected() { let count = first(3)\nassert count == 3 }\nfn main() { selected() }"
+    ]
+    var index = 0
+    while index < length(programs) {
+        let text = get(programs, index)
+        let bindings = query_bindings(input(text))
+        assert match check(bindings) {
+            Result.Err(_) => true,
+            Result.Ok(_) => false
+        }
+        assert match inspect_independent(bindings, 0, query_offset(text, "count =")) {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn independent_queries_do_not_bypass_invalid_generic_declarations() {
+    let text = "fn invalid[T](value T) Int { true }\nfn main() { let count = 3\nassert count == 3 }"
+    let bindings = query_bindings(input(text))
+    assert match check(bindings) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert match inspect_independent(bindings, 0, query_offset(text, "count ==")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
+
 test fn inspections_follow_local_ids_through_shadowing_and_inference() {
     let text = "fn main() {\nlet value = 3\nif true {\nlet value = true\nassert value\n}\nassert value == 3\n}"
     let analysis = accepted(input(text))

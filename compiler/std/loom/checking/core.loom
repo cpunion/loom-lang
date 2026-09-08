@@ -211,7 +211,9 @@ fn bind_name(context Context, node Node, value Text, local Int, constant Int, bo
     Result.Ok(context_at(context, next))
 }
 
-pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
+// Global declarations keep one meaning in production checks and editor queries.
+// Every invocation owns fresh mutable checking tables; failures are discarded.
+fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
     let env = Environment { source = source types = new[Type]() type_states = new[Int]() expand_data = true
         has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
@@ -245,8 +247,13 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
     discard fill_interfaces(env)?
     discard refinements(env)?
     discard layouts(env)?
+    Result.Ok(env)
+}
+
+pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
+    let env = prepare(source)?
     let resource_roots = new[Int]()
-    index = 0
+    var index = 0
     while index < length(env.signatures) {
         let signature = get(env.signatures, index)
         if !prototype(env, signature.symbol) || has(symbol(env, signature.symbol).node, NodeKind.Block) {

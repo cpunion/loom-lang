@@ -1,0 +1,71 @@
+fn query_named(files List[TestFile], name Text) Result[CheckedQuery, Failure] {
+    let bound = bind(fixture_project(files), false)?
+    var index = 0
+    while index < length(bound.symbols) {
+        let item = get(bound.symbols, index)
+        if item.file == 0 && item.name == name { return check_query(bound, 0, item.node.span.start) }
+        index = index + 1
+    }
+    assert false
+    check_query(bound, 0, -1)
+}
+fn query_reject(source Text) {
+    match query_named(source_files(source), "good") { Result.Err(_) => {}
+        Result.Ok(_) => { discard write_error(source)
+            assert false } }
+}
+
+test fn local_queries_keep_full_bindings_and_stable_call_indices_after_failures() {
+    let files = source_files("fn bad() Int { false }\nfn leaf(value Int) Int { value }\nfn good() Int { let number = leaf(3)\nnumber }")
+    let bound = match bind(fixture_project(files), false) {
+        Result.Ok(bound) => bound
+        Result.Err(_) => { assert false
+            get(new[std.loom.binding.Program](), 0) }
+    }
+    match check(bound) { Result.Err(_) => {}, Result.Ok(_) => { assert false } }
+    match check_query(bound, 0, get(bound.symbols, 0).node.span.start) {
+        Result.Err(_) => {}, Result.Ok(_) => { assert false }
+    }
+    var attempt = 0
+    while attempt < 2 {
+        match check_query(bound, 0, get(bound.symbols, 2).node.span.start) {
+            Result.Ok(query) => {
+                assert length(query.functions) == 2
+                let current = get(query.functions, 0)
+                assert current.symbol == 2 && get(current.locals, 0).ty == 1
+                let call = get(get(current.body.children, 0).children, 0)
+                assert call.kind == ExprKind.Call
+                assert get(query.functions, call.index).symbol == 1
+            }
+            Result.Err(_) => { assert false }
+        }
+        attempt = attempt + 1
+    }
+    query_reject("fn bad() Int { false }\nfn good() Int { bad() }")
+    query_reject("fn leaf(value Int) Int { value }\nfn leaf(value Int) Int { value + 1 }\nfn good() Int { leaf(3) }")
+}
+
+test fn local_queries_preserve_template_legality_ctfe_and_required_proofs() {
+    query_reject("fn invalid[T](value T) Int { value + 1 }\nfn good() Int { invalid(3) }")
+    query_reject("fn invalid[T](value T) Int { value + 1 }\nfn good() Int { comptime { invalid(3) } }")
+    // Deliberate V1 boundary: unrelated bad templates still prevent queries.
+    query_reject("fn invalid[T](value T) Int { value + 1 }\nfn good() Int { 3 }")
+    query_reject("fn invalid() Int { false }\nfn good() Int { comptime { invalid() } }")
+    query_reject("fn invalid() Int ensures result == 2 { 1 }\nfn good() Int { invalid() }")
+    query_reject("fn predicate(value Int) Bool { 1 }\ntype Valid = Int where predicate(self)\nfn good() Int { 3 }")
+    match query_named(source_files("fn identity[T](value T) T { value }"), "identity") {
+        Result.Ok(query) => { assert length(query.functions) == 0 }
+        Result.Err(_) => { assert false }
+    }
+    match query_named(source_files("fn choose(comptime value Int) Int { value }"), "choose") {
+        Result.Ok(query) => { assert length(query.functions) == 0 }
+        Result.Err(_) => { assert false }
+    }
+}
+
+test fn local_queries_validate_resource_and_dynamic_witness_dependencies() {
+    let files = source_files("import std.resource.Dispose\nrecord Item {}\nimpl Dispose for Item { fn dispose(self Item) {} }\nconcept Copy { fn copy(self Self) Self }\nimpl Copy for Item { fn copy(self Item) Item { self } }\nfn good() { scoped value = Item {}\ndiscard value.copy() }")
+    push(files, source_file("std.resource", "pub concept Dispose { fn dispose(self Self) }", true))
+    match query_named(files, "good") { Result.Err(_) => {}, Result.Ok(_) => { assert false } }
+    query_reject("concept C { fn inspect(self Self) Int }\nimpl C for Int { fn inspect(self Int) Int { false } }\nfn good() dyn C { 1 }")
+}
