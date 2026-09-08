@@ -40,6 +40,16 @@ fn describe(choice Choice) Text {
     }
 }
 fn join(first Text, second Text) Text { concat(first, second) }
+fn cleaned(early Bool) (Text, Text) {
+    let first = concat("clean", "up")
+    let second = concat("sav", "ed")
+    defer {
+        discard concat("collect", "-in-cleanup")
+        assert first == "cleanup" && second == "saved"
+    }
+    if early { return (first, second) }
+    (first, second)
+}
 fn main() {
     var saved = concat("or", "iginal")
     discard concat("replace", "-old-temporaries")
@@ -49,6 +59,20 @@ fn main() {
         concat("!", "")
     })
     assert combined == "original!" && saved == "replaced"
+    let forwarded = join({
+        discard concat("collect", "-in-first-operand")
+        saved
+    }, {
+        discard concat("collect", "-in-later-operand")
+        saved
+    })
+    assert forwarded == "replacedreplaced"
+
+    let first, second = cleaned(false)
+    let early_first, early_second = cleaned(true)
+    discard concat("collect", "-after-destructuring")
+    assert first == "cleanup" && second == "saved"
+    assert early_first == first && early_second == second
 
     let fields = Packet {
         label = concat("fi", "rst")
@@ -72,8 +96,10 @@ fn main() {
         }
         Outer.Empty(_) => { assert false }
     }
+    let carried = concat("loop", "-carried")
     var index = 0
     while index < 6 {
+        assert carried == "loop-carried"
         let choice = choose(index % 2 == 0, index == 2)
         discard concat("collect", "-after-choice")
         let text = describe(choice)

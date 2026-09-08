@@ -26,6 +26,8 @@ mod dynamic;
 mod gc;
 #[path = "llvm_gc_lower.rs"]
 mod gc_lower;
+#[path = "llvm_liveness.rs"]
+mod liveness;
 #[path = "llvm_memory.rs"]
 mod memory;
 
@@ -198,6 +200,7 @@ fn emit_checked(
         } else {
             gc::RootFrame::empty()
         };
+        let liveness = liveness::plan(source, roots.locals.keys().copied());
         let mut emitter = FunctionEmitter {
             context: &context,
             module: &module,
@@ -211,6 +214,7 @@ fn emit_checked(
             program,
             size_type,
             roots,
+            liveness,
             tracers: &mut tracers,
         };
         for requirement in &source.requires {
@@ -219,6 +223,7 @@ fn emit_checked(
                 .ok_or("invalid checked precondition")?;
             emitter.guard(condition.into_int_value(), "precondition failed")?;
         }
+        emitter.clear_locals(&emitter.liveness.after_requires)?;
         let result = emitter.block(&source.body)?;
         if emitter.live() {
             emitter.leave_roots()?;
@@ -431,6 +436,7 @@ struct FunctionEmitter<'a, 'ctx> {
     program: &'a checked::Program,
     size_type: IntType<'ctx>,
     roots: gc::RootFrame<'ctx>,
+    liveness: liveness::Plan,
     tracers: &'a mut HashMap<Type, FunctionValue<'ctx>>,
 }
 
@@ -465,6 +471,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     fn leave_roots(&self) -> NativeResult<()> {
         for slot in &self.roots.slots {
             gc_lower::end(self.context, self.module, self.builder, *slot)?;
+        }
+        Ok(())
+    }
+
+    fn clear_locals(&self, locals: &[usize]) -> NativeResult<()> {
+        for local in locals {
+            if let Some(slot) = self.roots.locals.get(local) {
+                // Clear, not unregister: a later assignment can reuse this
+                // slot, and expression snapshots have independent lifetimes.
+                gc_lower::end(self.context, self.module, self.builder, *slot)?;
+            }
         }
         Ok(())
     }
@@ -786,13 +803,33 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     }
                 }
             }
+            if self.live()
+                && let Some(locals) = self
+                    .liveness
+                    .after_statement
+                    .get(&(statement as *const checked::Stmt))
+            {
+                self.clear_locals(locals)?;
+            }
         }
-        if self.live()
+        let value = if self.live()
             && let Some(tail) = &block.tail
         {
-            return self.expr(tail);
+            self.expr(tail)?
+        } else {
+            None
+        };
+        if self.live()
+            && let Some(locals) = self
+                .liveness
+                .after_block
+                .get(&(block as *const checked::Block))
+        {
+            // A returned value is already evaluated. These nonallocating
+            // clears precede the enclosing expression's snapshot publication.
+            self.clear_locals(locals)?;
         }
-        Ok(None)
+        Ok(value)
     }
 
     fn expr(&mut self, expr: &checked::Expr) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
