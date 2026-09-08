@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Fresh compiler processes; optional paired native object-cache comparison.
+// Fresh compiler processes; optional paired compiler or native cache comparison.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -9,10 +9,12 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let compiler = join(root, "target/loom");
+let baseline = null;
 let reportPath = join(root, "target/performance/compiler.json");
 let runs = 3;
 let extended = false;
 let compareCache = false;
+let checkOnly = false;
 let sizes = [10, 50, 200];
 const args = process.argv.slice(2);
 for (let index = 0; index < args.length; index += 1) {
@@ -20,32 +22,41 @@ for (let index = 0; index < args.length; index += 1) {
   if (option === "--help" || option === "-h") {
     console.log(`Usage: node scripts/benchmark-compiler.mjs [options]
   --compiler path  Compiler executable (default: target/loom)
+  --baseline path  Pair candidate checks with this compiler; requires --check-only
   --output path    JSON report (default: target/performance/compiler.json)
   --runs N         Fresh measured processes per case, 1..20 (default: 3)
   --extended       Add startup, test --no-run, and generated package growth
   --compare-cache  Pair native builds with and without a warm object cache
+  --check-only     Only check packages; no native builds, tests, or startup timing
   --sizes N,N,...  Generated helper counts, 1..512 (default: 10,50,200);
                    implies --extended, at most eight distinct sizes
 
 macOS only: one unmeasured warmup per case, warm OS caches. --compare-cache
 also records an initial cache miss separately, then alternates measured order.
-Both variants start fresh processes, check sources, and link current artifacts.
+Both cache variants check sources and link current artifacts. --baseline checks
+the same inputs with both compilers, warming each once and alternating measured
+baseline/candidate order. It cannot be combined with --compare-cache.
 Generated packages exercise multiple files, an imported package, records,
-generic calls and Lists. Their tests compile without running. Native phase
-timings and OS peak RSS are reported separately. Temporary inputs are removed.`);
+generic calls and Lists. Outside --check-only, their tests compile without
+running. Native phase timings, CPU time, and OS peak RSS are reported separately.
+Temporary inputs are removed.`);
     process.exit(0);
   }
   if (option === "--extended") { extended = true; continue; }
   if (option === "--compare-cache") { compareCache = true; continue; }
+  if (option === "--check-only") { checkOnly = true; continue; }
   const value = args[++index];
   if (!value || value.startsWith("--")) throw new Error(`${option} needs a value`);
   if (option === "--compiler") compiler = resolve(value);
+  else if (option === "--baseline") baseline = resolve(value);
   else if (option === "--output") reportPath = resolve(value);
   else if (option === "--runs") runs = Number(value);
   else if (option === "--sizes") { sizes = value.split(",").map(Number); extended = true; }
   else throw new Error(`unknown option ${option}`);
 }
 if (!Number.isInteger(runs) || runs < 1 || runs > 20) throw new Error("--runs must be 1..20");
+if (baseline && !checkOnly) throw new Error("--baseline requires --check-only");
+if (compareCache && (baseline || checkOnly)) throw new Error("--compare-cache cannot be combined with --baseline or --check-only");
 if (sizes.length > 8 || new Set(sizes).size !== sizes.length ||
     sizes.some(size => !Number.isInteger(size) || size < 1 || size > 512)) {
   throw new Error("--sizes needs one to eight distinct integers in 1..512");
@@ -84,31 +95,43 @@ const report = {
   compiler,
   compilerVersion: output(compiler, ["--version"]),
   compilerSha256: hash(readFileSync(compiler)),
+  ...(baseline ? {
+    baselineCompiler: baseline,
+    baselineVersion: output(baseline, ["--version"]),
+    baselineSha256: hash(readFileSync(baseline)),
+  } : {}),
   harnessSha256: hash(readFileSync(fileURLToPath(import.meta.url))),
   sourceSha256: hash(JSON.stringify(sourceFiles.map(path => [relative(root, path), hash(readFileSync(path))]))),
   sourceFiles: sourceFiles.length,
-  nativeToolSha256: hash(readFileSync(join(root, "target/debug/loom-native"))),
-  runtimeArchiveSha256: hash(readFileSync(process.env.LOOM_RUNTIME_LIBRARY ?? join(root, "target/debug/libloom_runtime.a"))),
-  nativeOptimization: process.env.LOOM_OPT_LEVEL ?? "2",
+  ...(!checkOnly ? {
+    nativeToolSha256: hash(readFileSync(join(root, "target/debug/loom-native"))),
+    runtimeArchiveSha256: hash(readFileSync(process.env.LOOM_RUNTIME_LIBRARY ?? join(root, "target/debug/libloom_runtime.a"))),
+    nativeOptimization: process.env.LOOM_OPT_LEVEL ?? "2",
+  } : {}),
   extended,
   compareCache,
+  checkOnly,
   generatedSizes: extended ? sizes : [],
   host: { os: platform(), release: release(), arch: arch(), cpu: cpus()[0]?.model },
-  method: compareCache
+  method: baseline
+    ? "fresh processes; same source inputs; one warmup per compiler per case; paired samples alternate baseline/candidate order; sample indexes identify pairs; no incremental compiler cache"
+    : compareCache
     ? "fresh processes; one uncached warmup and one initial cache miss per native case; paired samples alternate uncached/cache order; sample indexes identify pairs; source checking and linking always run"
     : "fresh processes; one warmup; warmed OS caches; no incremental compiler cache",
   wall: "elapsed around /usr/bin/time launch, including process launch and output; startup runs --version without loading a package",
   rss: "maximum RSS reported by macOS time, not a sum of simultaneous process memory",
+  cpu: "user and system CPU time reported by macOS time, converted from seconds to milliseconds; short runs are limited by time's reporting precision",
   cases: [],
 };
 const temporary = mkdtempSync(join(root, "target/performance/run-"));
 
-function measure(mode, packagePath, cache = null, expectedCache = null) {
+function measure(mode, packagePath, cache = null, expectedCache = null, executable = compiler) {
   const nativeMode = mode === "build" || mode === "test --no-run";
-  const command = [compiler, ...mode.split(" ")];
+  const command = [executable, ...mode.split(" ")];
   if (packagePath) command.push(resolve(root, packagePath),
-    "--std", join(root, "compiler/std"), "--native-tool", join(root, "target/debug/loom-native"));
-  if (nativeMode) command.push("--output", join(temporary, "program"));
+    "--std", join(root, "compiler/std"));
+  if (nativeMode) command.push("--native-tool", join(root, "target/debug/loom-native"),
+    "--output", join(temporary, "program"));
   if (cache) command.push("--object-cache", cache);
   const started = process.hrtime.bigint();
   const result = spawnSync("/usr/bin/time", ["-l", ...command], {
@@ -116,9 +139,11 @@ function measure(mode, packagePath, cache = null, expectedCache = null) {
   });
   const wallMs = Number(process.hrtime.bigint() - started) / 1e6;
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${mode} ${packagePath} failed:\n${result.stdout}${result.stderr}`);
+  if (result.status !== 0) throw new Error(`${executable} ${mode} ${packagePath} failed:\n${result.stdout}${result.stderr}`);
   const rss = result.stderr.match(/(\d+)\s+maximum resident set size/);
   if (!rss) throw new Error("missing macOS peak RSS measurement");
+  const cpu = result.stderr.match(/([\d.]+)\s+real\s+([\d.]+)\s+user\s+([\d.]+)\s+sys/);
+  if (!cpu) throw new Error("missing macOS CPU time measurement");
   const phases = Object.fromEntries([...result.stderr.matchAll(/^loom-native timings: (.+)$/gm)]
     .flatMap(line => [...line[1].matchAll(/(decode|codegen|link)_ms=([\d.]+)/g)].map(field => [field[1], Number(field[2])])));
   if (expectedCache) {
@@ -132,7 +157,7 @@ function measure(mode, packagePath, cache = null, expectedCache = null) {
     throw new Error("missing native phase timings; rebuild loom-native and ensure the package has tests");
   }
   return {
-    wallMs, peakRssBytes: Number(rss[1]),
+    wallMs, peakRssBytes: Number(rss[1]), userCpuMs: Number(cpu[2]) * 1000, systemCpuMs: Number(cpu[3]) * 1000,
     ...(nativeMode ? { decodeMs: phases.decode ?? 0, codegenMs: phases.codegen ?? 0, linkMs: phases.link } : {}),
   };
 }
@@ -186,17 +211,41 @@ ${Array.from({ length: size }, (_, index) => `    assert step_${index}(0) == ${i
   };
 }
 
+function pairedSamples(measureVariant) {
+  const samples = [[], []];
+  const positions = [[], []];
+  for (let pair = 0; pair < runs; pair += 1) {
+    const order = pair % 2 === 0 ? [0, 1] : [1, 0];
+    for (const [position, variant] of order.entries()) {
+      samples[variant].push(measureVariant(variant));
+      positions[variant].push(position);
+    }
+  }
+  return { samples, positions };
+}
+
 function benchmark(name, mode, packagePath, generated) {
-  measure(mode, packagePath);
   const display = (summary, variant = "—") => {
     const number = value => value === undefined ? "—" : value.toFixed(2);
-    console.log(`| ${name} | ${mode} |${compareCache ? ` ${variant} |` : ""} ${number(summary.wallMs)} | ${number(summary.peakRssBytes / 1048576)} | ${number(summary.decodeMs)} | ${number(summary.codegenMs)} | ${number(summary.linkMs)} |`);
+    const timings = checkOnly
+      ? ` ${number(summary.userCpuMs)} | ${number(summary.systemCpuMs)} |`
+      : ` ${number(summary.decodeMs)} | ${number(summary.codegenMs)} | ${number(summary.linkMs)} |`;
+    console.log(`| ${name} | ${mode} |${compareCache || baseline ? ` ${variant} |` : ""} ${number(summary.wallMs)} | ${number(summary.peakRssBytes / 1048576)} |${timings}`);
   };
   const record = (samples, extra = {}) => {
     const summary = Object.fromEntries(Object.keys(samples[0]).map(key => [key, median(samples.map(sample => sample[key]))]));
     report.cases.push({ name, command: mode, package: packagePath, ...(generated ? { generated } : {}), ...extra, median: summary, samples });
     display(summary, extra.variant);
   };
+  if (baseline) {
+    const compilers = [baseline, compiler];
+    for (const executable of compilers) measure(mode, packagePath, null, null, executable);
+    const { samples, positions } = pairedSamples(variant => measure(mode, packagePath, null, null, compilers[variant]));
+    record(samples[0], { variant: "baseline", samplePositions: positions[0] });
+    record(samples[1], { variant: "candidate", samplePositions: positions[1] });
+    return;
+  }
+  measure(mode, packagePath);
   if (!compareCache || (mode !== "build" && mode !== "test --no-run")) {
     record(Array.from({ length: runs }, () => measure(mode, packagePath)));
     return;
@@ -204,29 +253,21 @@ function benchmark(name, mode, packagePath, generated) {
   const cache = join(temporary, `cache-${report.cases.length}`);
   const firstMiss = measure(mode, packagePath, cache, "miss");
   display(firstMiss, "initial miss (observation)");
-  const samples = [[], []];
-  const positions = [[], []];
-  for (let pair = 0; pair < runs; pair += 1) {
-    const order = pair % 2 === 0 ? [0, 1] : [1, 0];
-    for (const [position, variant] of order.entries()) {
-      samples[variant].push(measure(mode, packagePath, variant ? cache : null, variant ? "hit" : null));
-      positions[variant].push(position);
-    }
-  }
+  const { samples, positions } = pairedSamples(variant => measure(mode, packagePath, variant ? cache : null, variant ? "hit" : null));
   record(samples[0], { variant: "uncached", flags: [], samplePositions: positions[0] });
   record(samples[1], { variant: "warm-object-cache", flags: ["--object-cache", cache], samplePositions: positions[1], firstMiss });
 }
 
 try {
-  console.log(`| Case | Command |${compareCache ? " Variant |" : ""} Wall ms | RSS MiB | Decode ms | Codegen ms | Link ms |`);
-  console.log(`| --- | --- |${compareCache ? " --- |" : ""} ---: | ---: | ---: | ---: | ---: |`);
-  if (extended) benchmark("startup", "--version", null);
+  console.log(`| Case | Command |${compareCache || baseline ? " Variant |" : ""} Wall ms | RSS MiB |${checkOnly ? " User CPU ms | System CPU ms |" : " Decode ms | Codegen ms | Link ms |"}`);
+  console.log(`| --- | --- |${compareCache || baseline ? " --- |" : ""} ---: | ---: | ---: | ---: |${checkOnly ? "" : " ---: |"}`);
+  if (extended && !checkOnly) benchmark("startup", "--version", null);
   const packages = [
     ["scalar", "compiler/examples/scalar"], ["data", "compiler/examples/data"], ["compiler", "compiler/loom"],
   ].map(([name, packagePath]) => ({ name, package: packagePath }));
   if (extended) packages.push(...sizes.map(generated));
   for (const item of packages) {
-    for (const mode of extended ? ["check", "build", "test --no-run"] : ["check", "build"]) {
+    for (const mode of checkOnly ? ["check"] : extended ? ["check", "build", "test --no-run"] : ["check", "build"]) {
       benchmark(item.name, mode, item.package, item.generated);
     }
   }

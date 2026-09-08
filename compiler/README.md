@@ -164,6 +164,13 @@ macOS peak RSS for scalar, data, and compiler packages, with raw samples in
 `target/performance/compiler.json`. `--compiler`, `--output`, and `--runs`
 select the binary, report, and sample count.
 
+`--check-only --baseline path/to/previous/loom` compares two frontend binaries
+against the same sources, alternating their order within each pair after one
+warmup each. It records both binary hashes and per-sample wall/CPU time and RSS,
+without compiling native artifacts or using object caching. Combine it with
+`--sizes` to include generated package growth; `--compare-cache` is a separate,
+mutually exclusive comparison.
+
 Every sample starts a fresh process after one warmup; OS caches are warm.
 The harness does not enable the opt-in object cache described below. Native decode, codegen, and linker
 timings separate backend costs; remaining build wall time also includes

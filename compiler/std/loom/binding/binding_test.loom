@@ -15,6 +15,7 @@ import std.text.byte
 import std.text.length
 import std.text.slice
 import std.text.concat
+import std.int.to_text
 import std.result.Result
 
 record TestFile { package Text path Text text Text tree Node test_only Bool trusted_std Bool }
@@ -222,15 +223,22 @@ test fn same_name_module_instances_keep_imports_privacy_and_tests_separate() {
     }
 }
 
-test fn indexed_names_preserve_order_without_duplicates_or_shared_results() {
+test fn indexed_names_survive_growth_without_reordering_or_shared_results() {
     let files = one_source("import tools.util.pick\nimport extra.pick\nfn pick(x Text) Text { x }")
     push(files, source("tools.util", "util/pick.loom", "pub fn pick(x Int) Int { x }", false, false))
     push(files, source("app", "app/pick.loom", "import tools.util.pick\nfn pick(x Bool) Bool { x }", false, false))
     push(files, source("extra", "extra/pick.loom", "pub fn pick(x Text) Text { x }", false, false))
+    var declarations = ""
+    var index = 0
+    while index < 96 {
+        declarations = concat(declarations, concat("fn item_", concat(to_text(index), "() {}\n")))
+        index = index + 1
+    }
+    push(files, source("app", "app/names.loom", declarations, false, false))
     let program = bound(files, false)
     let picks = candidates(program, 0, false, "pick")
     assert length(picks) == 4
-    var index = 0
+    index = 0
     while index < length(picks) {
         assert get(picks, index) == index
         index = index + 1
@@ -240,8 +248,25 @@ test fn indexed_names_preserve_order_without_duplicates_or_shared_results() {
     assert get(local, 0) == 0 && get(local, 1) == 2
     let imported = candidates(program, 2, false, "tools.util.pick")
     assert length(imported) == 1 && get(imported, 0) == 1
+    index = 0
+    while index < 96 {
+        let name = concat("item_", to_text(index))
+        let short = candidates(program, 0, false, name)
+        let qualified = candidates(program, 0, false, concat("app.", name))
+        assert length(short) == 1 && length(qualified) == 1
+        assert get(short, 0) == index + 4 && get(qualified, 0) == index + 4
+        index = index + 1
+    }
     set(picks, 0, 99)
+    push(picks, 100)
+    assert length(candidates(program, 0, false, "pick")) == 4
     assert get(candidates(program, 0, false, "pick"), 0) == 0
+    let missing = candidates(program, 0, false, "missing")
+    assert length(missing) == 0
+    push(missing, 0)
+    assert length(candidates(program, 0, false, "missing")) == 0
+    assert length(candidates(program, 0, false, "app.missing")) == 0
+    assert length(candidates(program, 0, false, "other.item_0")) == 0
 }
 
 test fn tests_cannot_extend_production_scope_or_select_dependency_tests() {

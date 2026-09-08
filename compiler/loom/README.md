@@ -138,6 +138,10 @@ symbol table, respecting the supplied file's visibility and test context.
 These are name/overload candidates, not the selected function at a call site;
 binding does not type-check expressions or prove contracts. `Symbol.file`
 indexes `Program.files`, and `Symbol.node.span` locates the declaration there.
+Package scopes use source `std.map` for name lookup, with separate production
+and test maps. Candidate lists preserve declaration order and are copied on
+return; changing a returned list cannot change later lookups. Hash-table order
+never determines overload precedence.
 The project's `name`, `package`, and `qualify` helpers manipulate qualified
 names, not filesystem paths.
 
