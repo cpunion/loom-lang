@@ -235,8 +235,9 @@ Prioritize ordinary programming feedback alongside language work. Source
 formatting now has a shared `std.loom.format` implementation and `loom fmt`
 file, recursive, check-only, and stdin modes. The
 [VS Code development extension](editors/vscode/README.md) connects unsaved
-buffers to the same compiler for diagnostics and formatting. An actual VS Code
-extension-host smoke passes on macOS. Completion, navigation, rename, and incremental
+buffers to the same compiler for diagnostics, formatting, type hovers and checked
+definition navigation. An actual VS Code extension-host smoke passes on macOS.
+Completion, rename, and incremental
 semantic reuse are subsequent tooling work, not completed language features.
 
 Bounded [compile-time execution](compiler/README.md#compile-time-execution) now

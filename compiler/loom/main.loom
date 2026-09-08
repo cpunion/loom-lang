@@ -19,7 +19,7 @@ fn report(message Text) {
 
 fn inspect(text Text, parse_mode Bool) Result[Text, Diagnostic] {
     if parse_mode {
-        let tree = parse(text)?
+        let tree = std.loom.parser.parse(text)?
         Result.Ok(concat(to_text(length(tree.children)), " declarations\n"))
     } else {
         let tokens = lex(text)?
@@ -43,7 +43,7 @@ fn main() {
         discard write_text("loom source compiler (development)\n")
         return
     }
-    if mode == "editor-check" {
+    if mode == "editor-check" || mode == "editor-query" {
         let output = editor_execute(args)
         match write_text(output.text) {
             Result.Ok(_) => {

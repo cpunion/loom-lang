@@ -1169,8 +1169,10 @@ language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Mutable record fields, broader proofs,
 fault-aware/scoped resources, Tasks, complete compile-time programming,
-Git/version resolution, lockfile/cache behavior, deployment and semantic-change
-tools remain outside this slice. No complete language or `std` claim is made.
+version normalization, authenticated Git sources, graph-wide fork policies,
+persistent frontend/proof reuse, deployment and semantic-change tools remain
+outside this slice. Exact HTTPS Git/fork resolution, verified source locks and
+trusted-local object reuse are implemented. No complete language or `std` claim is made.
 
 Unsupported syntax and manifest features reject explicitly. In particular,
 unsupported dependency sources and target declarations are not silently ignored. The accepted

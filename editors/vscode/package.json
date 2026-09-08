@@ -1,7 +1,7 @@
 {
   "name": "loom-language",
   "displayName": "Loom",
-  "description": "Loom syntax highlighting, compiler diagnostics, and formatting.",
+  "description": "Loom highlighting, compiler diagnostics, type hover, go to definition, and formatting.",
   "version": "0.0.1",
   "publisher": "cpunion",
   "license": "MIT",

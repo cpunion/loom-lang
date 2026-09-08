@@ -20,7 +20,7 @@ async function main() {
     } });
     const code = await new Promise((resolve, reject) => { child.on('error', reject); child.on('exit', resolve); });
     if (code !== 0) throw new Error(`VS Code extension-host smoke exited ${code}`);
-    console.log('VS Code activation, unsaved diagnostics, and Format Document passed.');
+    console.log('VS Code activation, unsaved diagnostics, hover, definition, and Format Document passed.');
   } finally { await fs.rm(profile, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -11,6 +11,7 @@ const documents = new TextDocuments(TextDocument);
 let folders = [], configuration = false, folderChanges = false, defaults = {}, generation = 0, timer, checking, lastError;
 const published = new Set();
 const pending = new Set();
+const queries = new Set();
 
 connection.onInitialize(params => {
   folders = params.workspaceFolders?.map(folder => URI.parse(folder.uri).fsPath) || (params.rootUri ? [URI.parse(params.rootUri).fsPath] : []);
@@ -18,6 +19,7 @@ connection.onInitialize(params => {
   folderChanges = !!params.capabilities.workspace?.workspaceFolders;
   defaults = params.initializationOptions?.settings || {};
   return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, documentFormattingProvider: true,
+    hoverProvider: true, definitionProvider: true,
     workspace: { workspaceFolders: { supported: true, changeNotifications: true } } } };
 });
 connection.onInitialized(() => {
@@ -41,6 +43,7 @@ function schedule() {
   generation++;
   clearTimeout(timer);
   checking?.abort();
+  for (const controller of queries) controller.abort();
   timer = setTimeout(() => {
     const task = validate(generation);
     pending.add(task);
@@ -53,11 +56,21 @@ function diagnostic(document, item) {
     range: { start: compiler.bytePosition(document, item.start), end: compiler.bytePosition(document, item.end) } };
 }
 
+function capturedBuffers() {
+  return documents.all().filter(document => URI.parse(document.uri).scheme === 'file')
+    .map(document => ({ path: URI.parse(document.uri).fsPath, text: document.getText(), version: document.version, uri: document.uri }));
+}
+
+async function sourceDocument(file, buffers) {
+  const saved = buffers.find(buffer => buffer.path === file);
+  const text = saved?.text ?? await fs.readFile(file, 'utf8');
+  return TextDocument.create(URI.file(file).toString(), 'loom', saved?.version ?? 0, text);
+}
+
 async function validate(ticket) {
   const controller = new AbortController();
   checking = controller;
-  const buffers = documents.all().filter(document => URI.parse(document.uri).scheme === 'file')
-    .map(document => ({ path: URI.parse(document.uri).fsPath, text: document.getText(), version: document.version, uri: document.uri }));
+  const buffers = capturedBuffers();
   const roots = new Map(buffers.map(buffer => [path.dirname(buffer.path), buffer.uri]));
   const reports = new Map();
   let overlays;
@@ -108,6 +121,51 @@ documents.onDidChangeContent(schedule);
 documents.onDidClose(schedule);
 connection.onDidChangeWatchedFiles(schedule);
 connection.onDidChangeConfiguration(change => { defaults = change.settings?.loom || {}; schedule(); });
+
+async function semanticQuery(params, token, kind) {
+  const current = documents.get(params.textDocument.uri);
+  if (!current || URI.parse(current.uri).scheme !== 'file') return null;
+  const document = TextDocument.create(current.uri, 'loom', current.version, current.getText());
+  const file = URI.parse(document.uri).fsPath;
+  const directory = path.dirname(file), ticket = generation, buffers = capturedBuffers();
+  const controller = new AbortController();
+  queries.add(controller);
+  const cancellation = token.onCancellationRequested(() => controller.abort());
+  let overlays, value;
+  try {
+    overlays = await compiler.snapshots(buffers);
+    const report = await compiler.query(await settings(document.uri), directory, file,
+      compiler.byteOffset(document, params.position), overlays.args, controller.signal);
+    if (report.error || report.diagnostics.length) return null;
+    if (kind === 'hover') {
+      const hover = report.hover;
+      value = hover?.types.length ? { contents: hover.types.map(type => ({ language: 'loom', value: type })),
+        range: { start: compiler.bytePosition(document, hover.start), end: compiler.bytePosition(document, hover.end) } } : null;
+    } else {
+      value = await Promise.all((report.definitions || []).map(async item => {
+        const target = await sourceDocument(path.resolve(directory, item.path), buffers);
+        return { uri: target.uri, range: { start: compiler.bytePosition(target, item.start), end: compiler.bytePosition(target, item.end) } };
+      }));
+    }
+  } catch (error) {
+    if (token.isCancellationRequested || controller.signal.aborted || ticket !== generation) return null;
+    throw new ResponseError(LSPErrorCodes.RequestFailed, error.message);
+  } finally {
+    cancellation.dispose();
+    queries.delete(controller);
+    await overlays?.dispose();
+  }
+  return token.isCancellationRequested || controller.signal.aborted || ticket !== generation ? null : value;
+}
+
+function queryRequest(params, token, kind) {
+  const task = semanticQuery(params, token, kind);
+  pending.add(task);
+  task.then(() => pending.delete(task), () => pending.delete(task));
+  return task;
+}
+connection.onHover((params, token) => queryRequest(params, token, 'hover'));
+connection.onDefinition((params, token) => queryRequest(params, token, 'definition'));
 connection.onDocumentFormatting(async (params, token) => {
   const document = documents.get(params.textDocument.uri);
   if (!document) return [];
@@ -124,6 +182,11 @@ connection.onDocumentFormatting(async (params, token) => {
     throw new ResponseError(LSPErrorCodes.RequestFailed, error.message);
   } finally { cancellation.dispose(); }
 });
-connection.onShutdown(async () => { clearTimeout(timer); checking?.abort(); await Promise.allSettled(pending); });
+connection.onShutdown(async () => {
+  clearTimeout(timer);
+  checking?.abort();
+  for (const controller of queries) controller.abort();
+  await Promise.allSettled(pending);
+});
 documents.listen(connection);
 connection.listen();

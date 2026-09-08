@@ -5,7 +5,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { URI } = require('vscode-uri');
 const { TextDocument } = require('vscode-languageserver-textdocument');
-const { bytePosition, snapshots } = require('../compiler');
+const { bytePosition, byteOffset, snapshots } = require('../compiler');
+const { CancellationTokenSource } = require('vscode-languageserver-protocol/node');
 const { session } = require('./session');
 const folder = path.join(__dirname, 'fixtures/project');
 const file = path.join(folder, 'main.loom');
@@ -15,6 +16,43 @@ test('UTF-8 compiler spans become UTF-16 LSP positions', () => {
   const document = TextDocument.create('file:///unicode.loom', 'loom', 1, 'é😀\r\n名x');
   assert.deepEqual(bytePosition(document, 6), { line: 0, character: 3 });
   assert.deepEqual(bytePosition(document, 11), { line: 1, character: 1 });
+  assert.equal(byteOffset(document, { line: 0, character: 3 }), 6);
+  assert.equal(byteOffset(document, { line: 1, character: 1 }), 11);
+});
+
+test('LSP semantic queries preserve all checked types/targets and cancel on sibling edits', async t => {
+  const client = await session({ executable: process.execPath }, folder);
+  t.after(() => client.close());
+  assert.equal(client.initialized.capabilities.hoverProvider, true);
+  assert.equal(client.initialized.capabilities.definitionProvider, true);
+  const target = path.join(folder, 'query_target.loom');
+  const text = '// é😀 QUERY';
+  await client.open(file, text);
+  await client.open(target, '// é😀\nfn chosen() Int { 1 }');
+  const position = { line: 0, character: text.indexOf('QUERY') };
+  const params = { textDocument: { uri: URI.file(file).toString() }, position };
+  const hover = await client.rpc.sendRequest('textDocument/hover', params);
+  assert.deepEqual(hover.contents, [{ language: 'loom', value: 'Int' }, { language: 'loom', value: 'Bool' }]);
+  assert.deepEqual(hover.range, { start: position, end: { line: 0, character: position.character + 5 } });
+  assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', params), [{ uri: URI.file(target).toString(),
+    range: { start: { line: 1, character: 3 }, end: { line: 1, character: 9 } } }, { uri: URI.file(file).toString(), range: hover.range }]);
+  assert.equal(await client.rpc.sendRequest('textDocument/hover', { ...params, position: { line: 0, character: 0 } }), null);
+  assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', { ...params, position: { line: 0, character: 0 } }), []);
+
+  await client.change(file, text + ' SLOW', 2);
+  const stale = client.rpc.sendRequest('textDocument/hover', params);
+  await pause(200);
+  await client.change(target, 'BROKEN', 2);
+  assert.equal(await stale, null);
+  assert.equal(await client.rpc.sendRequest('textDocument/definition', params), null);
+  await client.change(target, '// é😀\nfn chosen() Int { 2 }', 3);
+  const cancellation = new CancellationTokenSource();
+  const canceled = client.rpc.sendRequest('textDocument/hover', params, cancellation.token);
+  await pause(200);
+  cancellation.cancel();
+  assert.equal(await canceled, null);
+  cancellation.dispose();
+  await assert.rejects(fs.access(target), { code: 'ENOENT' });
 });
 
 test('overlay snapshots preserve bytes and remove only their private directory', async () => {

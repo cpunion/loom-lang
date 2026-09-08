@@ -33,8 +33,14 @@ exports.run = async function run() {
     await replace('fn main() { let 值 Int = true\ndiscard 值 }\n');
     const errors = await diagnostics(document.uri, values => values.some(value => value.source === 'loom'));
     assert.equal(errors[0].severity, vscode.DiagnosticSeverity.Error);
-    await replace('fn main(){assert true}\n');
+    await replace('fn amount() Int { 42 }\nfn main(){discard "é😀"\nlet value=amount()\nassert value==42}\n');
     await diagnostics(document.uri, values => values.length === 0);
+    const hovers = await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, new vscode.Position(3, 7));
+    assert.ok(hovers.some(hover => hover.contents.some(content => /\bInt\b/.test(content.value))));
+    const definitions = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, new vscode.Position(2, 11));
+    assert.equal(definitions.length, 1);
+    assert.equal((definitions[0].uri || definitions[0].targetUri).toString(), document.uri.toString());
+    assert.match(document.getText(definitions[0].range || definitions[0].targetSelectionRange), /amount/);
     const edits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { tabSize: 4, insertSpaces: true });
     assert.ok(edits.length > 0);
     const change = new vscode.WorkspaceEdit();
