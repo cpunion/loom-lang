@@ -190,3 +190,46 @@ temporary old/new storage; this memory cost remains visible, not an achieved
 memory-efficiency target. Small allocations are batched, obsolete arena slices
 remain charged until collection, and private pointer-map entries avoid redundant
 metadata. Ordinary access still needs no read barrier or executor.
+
+## Main-based refresh — 2026-09-08
+
+The source-only UTF-8 change at `49ad5e8` uses the main backend, not the local-root
+experiment. Ten rotated rounds on the same M4 Max compare it with the archived
+compiler at `fbf9f0f`. The [complete report](results/2026-09-08-macos-arm64-basic.json)
+records all samples and toolchain hashes. C uses LLVM 22.1.8, Go 1.27.0,
+Rust 1.95.0-nightly (`eda76d9d1`, LLVM 21.1.8), and Zig 0.16.0. The Loom backend
+itself is built with Rust 1.88; that is separate from the comparison's Rust tool.
+
+Build-manifest revisions describe the benchmark driver's checkout, not necessarily
+the selected compiler. The baseline manifest records a dirty `356de6e1` checkout,
+but explicitly uses the pre-experiment archived compiler (`98821abe...`) and
+native tool (`804621a6...`); their full hashes identify the measured tools.
+The candidate's dirty flag reflects a roadmap-only edit at measurement time.
+The raw metadata is retained unchanged, rather than presenting clean-checkout runs.
+
+Milliseconds, median of ten:
+
+| Case | Loom O3 | C O3 | Go | Rust O3 | Zig ReleaseFast |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Integer LCG | 74.395 | 73.633 | 79.154 | 68.379 | 74.166 |
+| Recursive fib | 90.002 | 68.777 | 89.860 | 67.419 | 71.616 |
+| Record value | 54.185 | 56.992 | 50.273 | 56.790 | 66.926 |
+| List build + scan | 58.830 | 53.813 | 79.063 | 51.328 | 57.000 |
+| Function value | 72.050 | 68.634 | 87.809 | 69.207 | 90.165 |
+
+Loom's five kernel deltas against its same-session baseline range from -0.65%
+to +0.60%; this library change is not a runtime optimization. Do not interpret
+lower absolute times than the previous day's session as a compiler speedup.
+Safety still differs: checked C/Rust fib are 90.539/92.235 ms, near Loom's
+90.002 ms. The unchecked ranking is not a whole-language performance conclusion.
+
+A [fixed-source ten-pair check](results/2026-09-08-macos-arm64-check.json) measures
+the same 145 source files: median CPU is 340/340 ms, wall 351.682/356.978 ms,
+and peak RSS 219.61/229.37 MiB. These are fresh source checks with warm OS caches,
+not LLVM builds or incremental reuse. No frontend-memory improvement is claimed.
+
+The separate [local-root experiment](https://github.com/cpunion/loom-lang/pull/240)
+was not integrated: it demonstrably reclaims dead graphs, but its initial RSS
+measurements did not improve and its final fixed-LCIR codegen cost remained
++4.63%. Its code, test evidence and measurements remain on the experiment branch;
+the early-reclamation goal is still open without adding that layer to main.
