@@ -1,0 +1,73 @@
+test fn comptime_dynamic_dispatch_specializes_defaults_and_erases_evaluation_only_targets() {
+    let definitions = "concept Source { type Item\nfn read(self Self) Self.Item\nfn forward(self Self) Self.Item { self.read() }\nfn echo[T](self Self, value T, comptime selected Bool) T { comptime if selected { value } else { value } }\nfn apply[T](self Self, value T, comptime action fn(T) T) T { action(value) } }\nimpl Source for Int { type Item = Int\nfn read(self Int) Int { self } }\nfn increment(value Int) Int { value + 1 }\n"
+    let program = accepted(concat(definitions, "fn main() { assert comptime { let value dyn Source[Item = Int] = 7\nvalue.forward() == 7 && value.echo[Text](\"text\", true) == \"text\" && value.apply[Int](4, increment) == 5 } }"))
+    assert length(program.functions) == 1
+    assert length(program.witnesses) == 0
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.DynCall) == 0
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.DynBox) == 0
+}
+
+test fn comptime_dynamic_results_preserve_managed_receiver_aliases() {
+    let definitions = "concept Counter { fn read(self Self) Int }\nrecord Cell { values List[Int] }\nimpl Counter for Cell { fn read(self Cell) Int { self.values[0] } }\nfn make() (dyn Counter, List[Int]) { let values = [1]\nlet value dyn Counter = Cell { values = values }\n(value, values) }\nfn baked() (dyn Counter, List[Int]) { comptime { make() } }\n"
+    let program = accepted(concat(definitions, "fn main() { assert comptime { let value, alias = make()\nalias[0] = 9\nvalue.read() == 9 }\nlet value, alias = baked()\nalias[0] = 9\nassert value.read() == 9\nlet second, untouched = baked()\nassert second.read() == 1 && untouched[0] == 1 }"))
+    assert length(program.witnesses) == 1
+    var calls = 0
+    var index = 0
+    while index < length(program.functions) {
+        calls = calls + dynamic_count(get(program.functions, index).body, ExprKind.DynCall)
+        index = index + 1
+    }
+    assert calls == 2
+}
+
+fn comptime_dynamic_io_files(body Text) List[TestFile] {
+    let files = source_files(concat("import std.io.effect\nconcept C { fn read(self Self) Int\nfn noisy(self Self) Int }\nimpl C for Int { fn read(self Int) Int { self }\nfn noisy(self Int) Int { effect() } }\n", body))
+    push(files, source_file("std.io", "intrinsic fn write(handle Int, value Text, offset Int) Int\npub fn effect() Int { discard write(1, \"bad\", 0)\n1 }", true))
+    files
+}
+
+test fn comptime_dynamic_purity_checks_called_slots_including_dead_runtime_branches() {
+    let allowed = comptime_dynamic_io_files("fn main() { assert comptime { let value dyn C = 7\nvalue.read() } == 7 }")
+    match checked(allowed) {
+        Result.Ok(program) => { assert length(program.functions) == 1 && length(program.witnesses) == 0 }
+        Result.Err(failed) => { show_failure(fixture_project(allowed), failed)
+            assert false }
+    }
+    let bodies = ["fn main() { discard comptime { let value dyn C = 7\nvalue.noisy() } }", "fn main() { discard comptime { let value dyn C = 7\nif true { value.read() } else { value.noisy() } } }", "fn hidden(value dyn C) Int { if true { value.read() } else { effect() } }\nfn main() { discard comptime { hidden(7) } }"]
+    var index = 0
+    while index < length(bodies) {
+        match checked(comptime_dynamic_io_files(get(bodies, index))) {
+            Result.Err(_) => {}
+            Result.Ok(_) => { discard write_error(get(bodies, index))
+                assert false }
+        }
+        index = index + 1
+    }
+    rejects("concept C { fn read(self Self) Int }\nimpl C for Int { fn read(self Int) Int { self } }\nfn main() { let value dyn C = 1\ndiscard comptime { value.read() } }")
+}
+
+test fn comptime_dynamic_reification_preserves_encapsulated_test_only_evidence() {
+    let declarations = "concept C { fn value(self Self) Int }\nrecord Item { number Int }\nfn precompute(comptime factory fn() dyn C) dyn C { comptime { factory() } }\nfn production() Int { comptime if Item implements C { 1 } else { 0 } }\n"
+    let files = source_files(declarations)
+    let testing = source_file("app", "impl C for Item { fn value(self Item) Int { self.number } }\nfn factory() dyn C { Item { number = 7 } }\ntest fn checked() { let value = precompute(factory)\nassert value.value() == 7\nassert comptime { production() } == 0 }", false)
+    let test_file = TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false }
+    push(files, test_file)
+    match bind(fixture_project(files), true) {
+        Result.Ok(bound) => match check(bound) {
+            Result.Ok(program) => { assert length(program.witnesses) == 1 }
+            Result.Err(failed) => { show_failure(fixture_project(files), failed)
+                assert false }
+        }
+        Result.Err(failed) => { show_failure(fixture_project(files), failed)
+            assert false }
+    }
+    let direct = source_files(concat(declarations, "fn illegal() dyn C { Item { number = 1 } }"))
+    push(direct, test_file)
+    match bind(fixture_project(direct), true) {
+        Result.Ok(bound) => match check(bound) {
+            Result.Err(_) => {}
+            Result.Ok(_) => { assert false }
+        }
+        Result.Err(_) => { assert false }
+    }
+}

@@ -66,7 +66,8 @@ fn static_expression(context Context, node Node, index Int) Result[Expr, Failure
     Result.Ok(expression(kind, value.ty, node, text, -1, new[Expr](), true))
 }
 fn unknown_static(context Context, node Node) Bool {
-    if node.kind == NodeKind.Name {
+    // A direct call stores its callee spelling on Call, not a child Name.
+    if node.kind == NodeKind.Name || node.kind == NodeKind.Call {
         let index = lookup(context, slice(node.value, 0, first_dot(node.value)))
         if index >= 0 {
             let binding = get(context.bindings, index)

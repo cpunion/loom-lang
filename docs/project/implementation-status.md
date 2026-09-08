@@ -118,8 +118,8 @@ check declared prerequisites and substitute associated bindings. They reuse
 ordinary method instances and dynamic witnesses; structurally overlapping
 implementations reject rather than selecting by order. Explicit dynamic associated
 bindings participate in type/interface identity, normalize generic projections
-and check boxing exactly. They use the existing native witness ABI; compile-time
-dynamic execution and cross-dyn conversions remain unsupported.
+and check boxing exactly. They use the existing native witness ABI;
+cross-dyn conversions remain unsupported.
 
 Associated member bounds and default bindings extend that same model. Explicit
 bindings override defaults; defaults keep their declaration's name scope and
@@ -154,7 +154,17 @@ bodies cannot hide an invalid selected branch. Overrides do not instantiate the
 default body they replace. Dynamic slots distinguish static
 values and omit those arguments from their native signatures. Default forwarding,
 generic methods and static-method compile-time execution use the same checked
-model. Concept contracts and compile-time dyn execution remain unsupported.
+model. Concept contracts remain unsupported.
+
+Pure compile-time dynamic construction/calls now use those same checked witnesses,
+including associated, generic, default and static method instances. Purity checking
+follows all possible targets of a called interface slot, retaining the ban on I/O
+even in an unexecuted runtime branch. Reified dyn results preserve admitted evidence,
+receiver values and shared/cyclic containers while rebuilding witnesses in the
+output queue; compile-time-only methods do not become runtime roots. The
+[dynamic computation example](../../compiler/examples/comptime_dynamic/main.loom)
+also runs natively under forced moving collection. Runtime capture and required
+proofs over dynamic values remain unsupported.
 
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The

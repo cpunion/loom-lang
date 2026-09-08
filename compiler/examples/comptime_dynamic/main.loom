@@ -1,0 +1,98 @@
+import std.list.new
+import std.list.push
+
+concept Source {
+    type Item
+    fn read(self Self) Self.Item
+    fn forward(self Self) Self.Item {
+        self.read()
+    }
+    fn choose[T](self Self, first T, second T, comptime selected Bool) T {
+        comptime if selected {
+            first
+        } else {
+            second
+        }
+    }
+    fn apply[T](self Self, value T, comptime action fn(T) T) T {
+        action(value)
+    }
+}
+
+impl Source for Int {
+    type Item = Int
+    fn read(self Int) Int {
+        self
+    }
+}
+
+fn increment(value Int) Int {
+    value + 1
+}
+
+concept Link {
+    fn name(self Self) Text
+    fn edges(self Self) List[dyn Link]
+}
+
+record Node {
+    label Text
+    links List[dyn Link]
+}
+
+impl Link for Node {
+    fn name(self Node) Text {
+        self.label
+    }
+    fn edges(self Node) List[dyn Link] {
+        self.links
+    }
+}
+
+fn make_cycle() (dyn Link, List[dyn Link]) {
+    let links = new[dyn Link]()
+    let root dyn Link = Node {
+        label = "root"
+        links = links
+    }
+    push(links, root)
+    (root, links)
+}
+
+fn baked_cycle() (dyn Link, List[dyn Link]) {
+    comptime {
+        make_cycle()
+    }
+}
+
+fn exercise() {
+    assert comptime {
+        let value dyn Source[Item = Int] = 7
+        value.forward() == 7 && value.choose[Text]("first", "second", true) == "first" && value.choose[Text]("first", "second", false) == "second" && value.apply[Int](4, increment) == 5
+    }
+    assert comptime {
+        let root, links = make_cycle()
+        links[0] = Node {
+            label = "computed"
+            links = links
+        }
+        root.edges()[0].name() == "computed"
+    }
+
+    let root, links = baked_cycle()
+    assert root.edges()[0].name() == "root"
+    links[0] = Node {
+        label = "replacement"
+        links = links
+    }
+    assert root.edges()[0].name() == "replacement"
+    assert root.edges()[0].edges()[0].name() == "replacement"
+
+    // Every runtime call materializes a fresh graph, preserving its internal aliases.
+    let second, untouched = baked_cycle()
+    assert second.edges()[0].name() == "root" && untouched[0].name() == "root"
+}
+
+fn main() {
+    exercise()
+}

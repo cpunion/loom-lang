@@ -162,6 +162,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/collections",
         "examples/modules/app",
         "examples/comptime_parameters",
+        "examples/comptime_dynamic",
         "examples/cleanup",
     ] {
         let output = source_compiler(stage3, &["test", compiler.join(package).to_str().unwrap()]);

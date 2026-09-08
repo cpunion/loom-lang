@@ -1,0 +1,76 @@
+import std.loom.typed.Expr
+import std.loom.typed.TypeKind
+import std.loom.typed.Witness
+import std.list.get
+import std.list.length
+import std.list.set
+import std.result.Result
+
+fn dynamic_interface(state State, expr Expr, ty Int) Result[Int, Failure] {
+    if ty < 0 || ty >= length(state.program.types) { return Result.Err(failure(expr, "invalid checked dynamic type")) }
+    let shape = get(state.program.types, ty)
+    if shape.kind != TypeKind.Dyn || shape.symbol < 0 || shape.symbol >= length(state.program.interfaces) {
+        return Result.Err(failure(expr, "invalid checked dynamic interface"))
+    }
+    Result.Ok(shape.symbol)
+}
+fn dynamic_witness(state State, expr Expr, ty Int, concrete Int) Result[Witness, Failure] {
+    let interface = dynamic_interface(state, expr, ty)?
+    var index = 0
+    while index < length(state.program.witnesses) {
+        discard spend(state, expr, 0, 1)?
+        let witness = get(state.program.witnesses, index)
+        if witness.interface == interface && witness.concrete == concrete { return Result.Ok(witness) }
+        index = index + 1
+    }
+    Result.Err(failure(expr, "compile-time dynamic value has no checked witness"))
+}
+fn dynamic_box(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
+    let computed = execute(state, child(expr, 0)?, frame, depth + 1)?
+    if computed.control != Control.Normal { return Result.Ok(computed) }
+    let value = computed.value
+    discard dynamic_witness(state, expr, expr.ty, value.ty)?
+    let items = slots(state, expr, 1)?
+    set(items, 0, value)
+    Result.Ok(step(aggregate(expr.ty, value.ty, items)))
+}
+fn dynamic_invoke(state State, expr Expr, values List[Value], frame Frame, depth Int) Result[Step, Failure] {
+    if length(values) == 0 { return Result.Err(failure(expr, "invalid checked dynamic call arguments")) }
+    let boxed = get(values, 0)
+    if length(boxed.items) != 1 || get(boxed.items, 0).ty != boxed.number {
+        return Result.Err(failure(expr, "invalid compile-time dynamic receiver"))
+    }
+    let witness = dynamic_witness(state, expr, boxed.ty, boxed.number)?
+    if expr.index < 0 || expr.index >= length(witness.methods) {
+        return Result.Err(failure(expr, "compile-time dynamic call has no checked method slot"))
+    }
+    // arguments already captured the receiver and each argument in source
+    // order. Unwrap only that snapshot, not a caller local changed by an arg.
+    set(values, 0, get(boxed.items, 0))
+    call(state, expr, get(witness.methods, expr.index), values, 0, frame, depth)
+}
+fn scan_dynamic(state State, expr Expr, seen List[Int], depth Int) Result[Bool, Failure] {
+    let receiver = child(expr, 0)?
+    let interface = dynamic_interface(state, expr, receiver.ty)?
+    if expr.index < 0 || expr.index >= length(get(state.program.interfaces, interface).methods) {
+        return Result.Err(failure(expr, "compile-time dynamic call has no checked method slot"))
+    }
+    var found = false
+    var index = 0
+    while index < length(state.program.witnesses) {
+        discard spend(state, expr, 0, 1)?
+        let witness = get(state.program.witnesses, index)
+        if witness.interface == interface {
+            found = true
+            if expr.index >= length(witness.methods) {
+                return Result.Err(failure(expr, "compile-time dynamic call has no checked method slot"))
+            }
+            // Purity covers every checked target of this interface slot,
+            // including targets not selected by this particular receiver.
+            discard scan_function(state, expr, get(witness.methods, expr.index), seen, depth)?
+        }
+        index = index + 1
+    }
+    if !found { return Result.Err(failure(expr, "compile-time dynamic call has no checked witness")) }
+    Result.Ok(true)
+}

@@ -15,6 +15,32 @@ fn pure_intrinsic(name Text) Bool {
     name == "bytes_new" || name == "bytes_len" || name == "bytes_push" || name == "bytes_get" || name == "bytes_set" ||
     name == "bytes_utf8" || name == "bytes_text_copy"
 }
+fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) Result[Bool, Failure] {
+    if target < 0 || target >= length(state.program.functions) {
+        return Result.Err(failure(expr, "compile-time call has no checked function body"))
+    }
+    var index = 0
+    while index < length(seen) && get(seen, index) != target { index = index + 1 }
+    if index < length(seen) { return Result.Ok(true) }
+    push(seen, target)
+    let function = get(state.program.functions, target)
+    if function.runtime_name != "" && !pure_intrinsic(function.runtime_name) {
+        return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", function.runtime_name)))
+    }
+    // A called function cannot transfer control into its caller's loop.
+    discard scan(state, function.body, seen, depth + 1, 0)?
+    index = 0
+    while index < length(function.preconditions) {
+        discard scan(state, get(function.preconditions, index), seen, depth + 1, 0)?
+        index = index + 1
+    }
+    index = 0
+    while index < length(function.postconditions) {
+        discard scan(state, get(function.postconditions, index), seen, depth + 1, 0)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
 fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Bool, Failure] {
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
     discard spend(state, expr, 0, 1)?
@@ -25,10 +51,6 @@ fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Boo
     if expr.ty >= 0 && expr.ty < length(state.program.types) && get(state.program.types, expr.ty).kind == TypeKind.Associated {
         return Result.Err(failure(expr, "compile-time expression still has an unresolved associated type"))
     }
-    if expr.kind == ExprKind.DynBox || expr.kind == ExprKind.DynCall ||
-        (expr.ty >= 0 && expr.ty < length(state.program.types) && get(state.program.types, expr.ty).kind == TypeKind.Dyn) {
-        return Result.Err(failure(expr, "dynamic concept values and calls are not supported at compile time"))
-    }
     if state.partial && expr.kind != ExprKind.Integer && expr.kind != ExprKind.Float && expr.kind != ExprKind.Bool && expr.kind != ExprKind.Text &&
         expr.kind != ExprKind.Local && expr.kind != ExprKind.Unary && expr.kind != ExprKind.Binary && expr.kind != ExprKind.Coerce {
         return Result.Err(failure(expr, "expression is not a call-free scalar constant"))
@@ -37,31 +59,9 @@ fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Boo
         return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", expr.text)))
     }
     if expr.kind == ExprKind.Call || expr.kind == ExprKind.FunctionRef {
-        if expr.index < 0 || expr.index >= length(state.program.functions) {
-            return Result.Err(failure(expr, "compile-time call has no checked function body"))
-        }
-        var index = 0
-        while index < length(seen) && get(seen, index) != expr.index { index = index + 1 }
-        if index == length(seen) {
-            push(seen, expr.index)
-            let function = get(state.program.functions, expr.index)
-            if function.runtime_name != "" && !pure_intrinsic(function.runtime_name) {
-                return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", function.runtime_name)))
-            }
-            // A called function cannot transfer control into its caller's loop.
-            discard scan(state, function.body, seen, depth + 1, 0)?
-            index = 0
-            while index < length(function.preconditions) {
-                discard scan(state, get(function.preconditions, index), seen, depth + 1, 0)?
-                index = index + 1
-            }
-            index = 0
-            while index < length(function.postconditions) {
-                discard scan(state, get(function.postconditions, index), seen, depth + 1, 0)?
-                index = index + 1
-            }
-        }
+        discard scan_function(state, expr, expr.index, seen, depth)?
     }
+    if expr.kind == ExprKind.DynCall { discard scan_dynamic(state, expr, seen, depth)? }
     var index = 0
     while index < length(expr.children) {
         // Registration does not execute the body, but its effects still belong

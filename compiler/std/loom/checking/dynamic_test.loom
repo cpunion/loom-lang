@@ -72,7 +72,7 @@ test fn dynamic_object_safety_and_compile_time_boundaries_fail_closed() {
     rejects("concept Same { fn same(self Self, other List[Self]) Bool }\nfn invalid(value dyn Same) {}")
     rejects("concept C {}\nconcept D {}\nimpl D for dyn C {}")
     let definitions = "concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\n"
-    rejects(concat(definitions, "fn invalid() Int { comptime { let value dyn C = 1\nvalue.value() } }"))
+    discard accepted(concat(definitions, "fn computed() Int { comptime { let value dyn C = 1\nvalue.value() } }"))
     rejects(concat(definitions, "fn invalid(value dyn C) Int ensures result >= 0 { value.value() }"))
     discard accepted(concat(definitions, "fn selected[T](value T) Int { comptime if T implements C { value.value() } else { 0 } }\nfn main() { let value dyn C = 7\nassert selected(value) == 7 }"))
 }

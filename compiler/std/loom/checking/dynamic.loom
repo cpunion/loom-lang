@@ -220,15 +220,24 @@ fn boxed(context Context, node Node, value Expr, target Int) Result[Expr, Failur
     if !can_widen(context, value.ty, target)? {
         return Result.Err(error(context, node, "dyn conversion needs an explicit conformance; conversions between different dyn concepts are not supported"))
     }
+    if context.emit {
+        let capability = get(context.env.interfaces, get(context.env.types, target).symbol)
+        if implementation(context, value.ty, capability.symbol)? < 0 {
+            return Result.Err(error(context, node, "dynamic construction has no concrete implementation"))
+        }
+    }
+    witness_box(context, node, value, target)
+}
+// Source boxing establishes conformance above. Reification preserves evidence
+// already encapsulated by a checked compile-time value, even when its receiver
+// implementation is not directly visible in the consuming function's scope.
+fn witness_box(context Context, node Node, value Expr, target Int) Result[Expr, Failure] {
     var witness = -1
     discard fill_interface(context.env, target)?
     if context.emit {
         if !concrete(context.env, target) { return Result.Err(error(context, node, "dynamic construction requires concrete associated bindings")) }
         let interface = get(context.env.types, target).symbol
         let capability = get(context.env.interfaces, interface)
-        if implementation(context, value.ty, capability.symbol)? < 0 {
-            return Result.Err(error(context, node, "dynamic construction has no concrete implementation"))
-        }
         witness = 0
         while witness < length(context.env.witnesses) &&
             (get(context.env.witnesses, witness).interface != interface || get(context.env.witnesses, witness).concrete != value.ty) {
