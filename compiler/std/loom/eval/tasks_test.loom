@@ -30,3 +30,31 @@ test fn compile_time_purity_rejects_tasks_and_async_function_values() {
     assert rejected(program, node(ExprKind.Call, 1, "", 0, new[Expr]()), 0).message ==
     "compile-time evaluation cannot create or await tasks"
 }
+
+test fn compile_time_purity_rejects_synchronous_task_parameters_and_results() {
+    let program = empty()
+    var index = 0
+    while index < 6 {
+        push(program.types, shape(TypeKind.Int))
+        index = index + 1
+    }
+    let arguments = new[Int]()
+    push(arguments, 1)
+    push(program.types, Type { kind = TypeKind.Task symbol = -1 arguments = arguments
+        fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() })
+    let params = new[Int]()
+    push(params, 6)
+    let locals = new[Local]()
+    push(locals, Local { name = "task" ty = 6 mutable = false is_scoped = false })
+    push(program.functions, Function { is_async = false symbol = 0 arguments = new[Int]() params = params result = 6 locals = locals
+        preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1 body = local(0, 6)
+        runtime_name = "" span = Span { start = 7 end = 8 } })
+    push(program.functions, Function { is_async = false symbol = 1 arguments = new[Int]() params = params result = 1 locals = locals
+        preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1 body = literal(1)
+        runtime_name = "" span = Span { start = 7 end = 8 } })
+    assert rejected(program, node(ExprKind.FunctionRef, 1, "", 0, new[Expr]()), 0).message ==
+    "compile-time evaluation cannot transfer tasks"
+    assert rejected(program, node(ExprKind.Call, 1, "", 1, new[Expr]()), 0).message ==
+    "compile-time evaluation cannot transfer tasks"
+    assert rejected(program, local(0, 6), 1).message == "compile-time evaluation cannot transfer tasks"
+}

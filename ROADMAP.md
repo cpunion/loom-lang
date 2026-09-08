@@ -119,8 +119,12 @@ the idle owner blocks without spinning or creating per-task threads. Relative
 sleeps start in their task body; the clock origin is process-local and scheduling
 promises no fairness. See the [timer example](compiler/examples/timers).
 
-The next async gates are suspended lexical cleanup, Task transfers through
-parameters/returns/aggregates, async methods/function values, asynchronous
+Direct Task parameters and returns now support reusable functions and nested Task
+results, with one-shot argument obligations and lazy returned-subtree handoff.
+Sync helpers do not install an executor; they expose Task inputs or an output.
+
+The next async gates are suspended lexical cleanup, Task-bearing aggregates,
+async methods, Task-bearing function values/dynamic calls, asynchronous
 file/socket/worker I/O and joins. Task scheduling is cooperative, not parallel threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 

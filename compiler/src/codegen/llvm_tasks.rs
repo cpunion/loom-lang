@@ -164,6 +164,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )?))
             }
             Primitive::TaskRelease => self.runtime_call("task_release", None, values),
+            Primitive::TaskAdopt => self.runtime_call("task_adopt", None, values),
+            Primitive::TaskReturn => {
+                self.runtime_call("task_return", Some(self.context.i64_type().into()), values)
+            }
             Primitive::TaskRun => {
                 let output = self.runtime_call("task_run", None, values)?;
                 self.restore_locals()?;

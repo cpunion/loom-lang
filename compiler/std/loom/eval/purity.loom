@@ -15,6 +15,9 @@ fn pure_intrinsic(name Text) Bool {
     name == "bytes_new" || name == "bytes_len" || name == "bytes_push" || name == "bytes_get" || name == "bytes_set" ||
     name == "bytes_utf8" || name == "bytes_text_copy"
 }
+fn task_type(state State, ty Int) Bool {
+    ty >= 0 && ty < length(state.program.types) && get(state.program.types, ty).kind == TypeKind.Task
+}
 fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) Result[Bool, Failure] {
     if target < 0 || target >= length(state.program.functions) {
         return Result.Err(failure(expr, "compile-time call has no checked function body"))
@@ -25,6 +28,16 @@ fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) 
     push(seen, target)
     let function = get(state.program.functions, target)
     if function.is_async { return Result.Err(failure(expr, "compile-time evaluation cannot create or await tasks")) }
+    if task_type(state, function.result) {
+        return Result.Err(failure(expr, "compile-time evaluation cannot transfer tasks"))
+    }
+    index = 0
+    while index < length(function.params) {
+        if task_type(state, get(function.params, index)) {
+            return Result.Err(failure(expr, "compile-time evaluation cannot transfer tasks"))
+        }
+        index = index + 1
+    }
     if function.runtime_name != "" && !pure_intrinsic(function.runtime_name) {
         return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", function.runtime_name)))
     }
@@ -45,6 +58,9 @@ fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) 
 fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Bool, Failure] {
     if expr.kind == ExprKind.TaskCall || expr.kind == ExprKind.Await || expr.kind == ExprKind.Suspend {
         return Result.Err(failure(expr, "compile-time evaluation cannot create or await tasks"))
+    }
+    if task_type(state, expr.ty) {
+        return Result.Err(failure(expr, "compile-time evaluation cannot transfer tasks"))
     }
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
     discard spend(state, expr, 0, 1)?

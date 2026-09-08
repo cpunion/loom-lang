@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Support direct Task parameters and returns, including generic forwarding and
+  nested Task results. Async callees adopt argument subtrees; completed producers
+  retain returned children until extraction. Check one-shot obligations at entry,
+  returns and partially evaluated calls, without source ownership syntax or an
+  executor for synchronous helpers. Task-bearing aggregates remain unfinished.
+
 - Launch the VS Code programming trial directly with `npm run try` in
   `editors/vscode`, with format/check/build/test/run tasks and a feature-writing
   exercise. Demonstrate both same-directory test forms in the file-tool library.
@@ -21,8 +27,8 @@ implementation, not a compatibility ledger for previous prototypes.
   `test async fn`, postfix `.await`/`.await?`, and one-shot local obligations.
   Loom lowers typed frames and resume functions for a single-threaded CPU ready
   queue, with fault propagation and cancellation of queued/suspended descendants.
-  Asynchronous file/socket/worker I/O, joins, suspended cleanup, Task transfers
-  through parameters/returns/aggregates, and async methods/function values remain
+  Asynchronous file/socket/worker I/O, joins, suspended cleanup, Task-bearing
+  aggregates, and async methods/function values remain
   unfinished.
 
 - Add a private native resume fault boundary: drain live lexical cleanups,

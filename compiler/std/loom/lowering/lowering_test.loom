@@ -75,6 +75,30 @@ fn has_high(value Expr) Bool {
     false
 }
 
+fn operations(value Expr, name Text) Int {
+    var count = if value.kind == ExprKind.Intrinsic && value.text == name {
+        1
+    } else {
+        0
+    }
+    var index = 0
+    while index < length(value.children) {
+        count = count + operations(get(value.children, index), name)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            count = count + operations(get(body, item), name)
+            item = item + 1
+        }
+        index = index + 1
+    }
+    count
+}
+
 test fn lowers_hot_constructors_and_spills_only_values_crossing_await() {
     let span = test_span()
     let types = new[Type]()
@@ -159,6 +183,56 @@ test fn lowers_hot_constructors_and_spills_only_values_crossing_await() {
         assert !function.is_async && !has_high(function.body)
         index = index + 1
     }
+
+    let text_task = shape(types, TypeKind.Task, ints(3))
+    let parameters = ints(task)
+    push(parameters, 1)
+    push(parameters, text_task)
+    let transfer_locals = new[Local]()
+    push(transfer_locals, test_local(task))
+    push(transfer_locals, test_local(1))
+    push(transfer_locals, test_local(text_task))
+    let transfer_body = one(node(ExprKind.Discard, 0, span, -1,
+            one(node(ExprKind.Await, 3, span, -1, one(node(ExprKind.Local, text_task, span, 2, new[Expr]()))))))
+    push(transfer_body, node(ExprKind.Local, task, span, 0, new[Expr]()))
+    let transferred_functions = new[Function]()
+    let transfer = test_function(parameters, task, transfer_locals, block(transfer_body, task, span, true))
+    push(transferred_functions, transfer)
+    let identity_locals = new[Local]()
+    push(identity_locals, test_local(task))
+    push(transferred_functions, generated(transfer, ints(task), task, identity_locals,
+            block(one(node(ExprKind.Local, task, span, 0, new[Expr]())), task, span, true)))
+    let transferred = lower(Program {
+            types = types
+            functions = transferred_functions
+            entry = -1
+            tests = new[Int]()
+            test_names = new[Text]()
+            exports = new[Int]()
+            interfaces = new[Interface]()
+            witnesses = new[Witness]()
+        })
+    let constructor = get(transferred.functions, 0)
+    assert operations(constructor.body, "task_create") == 1
+    assert operations(constructor.body, "task_adopt") == 2
+    let constructed = get(constructor.body.children, 0)
+    assert constructed.kind == ExprKind.Let && get(constructed.children, 0).text == "task_create"
+    assert length(constructor.body.children) == 4
+    let first_adopt = get(constructor.body.children, 1)
+    let second_adopt = get(constructor.body.children, 2)
+    assert get(first_adopt.children, 0).index == constructed.index
+    assert get(second_adopt.children, 0).index == constructed.index
+    assert get(first_adopt.children, 1).index == 0 && get(second_adopt.children, 1).index == 2
+    assert get(constructor.body.children, 3).index == constructed.index
+    assert get(get(transferred.types, constructor.result).arguments, 0) == task
+    let resume = get(transferred.functions, 2)
+    assert operations(resume.body, "task_return") == 1
+    assert operations(resume.body, "task_result") == 1 && operations(resume.body, "task_release") == 1
+    let ordinary = get(transferred.functions, 1)
+    assert ordinary.result == task && length(ordinary.locals) == 1
+    assert operations(ordinary.body, "task_adopt") == 0 && operations(ordinary.body, "task_return") == 0
+    assert operations(get(lowered.functions, 0).body, "task_adopt") == 0
+    assert operations(get(lowered.functions, 2).body, "task_return") == 0
 }
 
 test fn edge_bindings_and_argument_snapshots_are_live_at_the_correct_point() {

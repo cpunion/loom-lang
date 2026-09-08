@@ -16,7 +16,10 @@ import std.result.Result
 record TaskFlow {
     context Context
     locals List[Int]
+    pending List[Int]
     loop_entry List[Int]
+    loop_pending Int
+    cleanup Bool
 }
 
 fn task_error(flow TaskFlow, value Expr, message Text) Failure {
@@ -43,7 +46,10 @@ fn task_branch(flow TaskFlow) TaskFlow {
     TaskFlow {
         context = flow.context
         locals = task_states(flow.locals)
+        pending = ints(get(flow.pending, 0))
         loop_entry = flow.loop_entry
+        loop_pending = flow.loop_pending
+        cleanup = flow.cleanup
     }
 }
 
@@ -53,13 +59,21 @@ fn task_join(flow TaskFlow, branch TaskFlow) {
         set(flow.locals, index, get(branch.locals, index))
         index = index + 1
     }
+    set(flow.pending, 0, get(branch.pending, 0))
+}
+
+fn same_task_state(left TaskFlow, right TaskFlow) Bool {
+    same(left.locals, right.locals) && get(left.pending, 0) == get(right.pending, 0)
 }
 
 fn tasks_consumed(flow TaskFlow, value Expr) Result[Bool, Failure] {
+    if get(flow.pending, 0) != 0 {
+        return Result.Err(task_error(flow, value, "a task argument is still pending; finish its call before returning"))
+    }
     var index = 0
     while index < length(flow.locals) {
         if get(flow.locals, index) != 0 {
-            return Result.Err(task_error(flow, value, "a task is still live at function exit; await it before returning"))
+            return Result.Err(task_error(flow, value, "a task is still live at function exit; await or transfer it before returning"))
         }
         index = index + 1
     }
@@ -80,14 +94,33 @@ fn task_sequence(flow TaskFlow, values List[Expr], allowed Bool) Result[Bool, Fa
     Result.Ok(task)
 }
 
+// Earlier argument values remain our obligations until the actual call. An
+// exit while evaluating a later argument must not silently abandon them.
+fn task_arguments(flow TaskFlow, value Expr) Result[Bool, Failure] {
+    let before = get(flow.pending, 0)
+    var index = 0
+    while index < length(value.children) {
+        let argument = get(value.children, index)
+        let transferred = task_expression(flow, argument, direct_task(flow.context.env, argument.ty))?
+        if !argument.falls { return Result.Ok(false) }
+        if transferred { set(flow.pending, 0, get(flow.pending, 0) + 1) }
+        index = index + 1
+    }
+    set(flow.pending, 0, before)
+    Result.Ok(direct_task(flow.context.env, value.ty))
+}
+
 fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure] {
     let shape = get(flow.context.env.types, value.ty)
     let task = shape.kind == TypeKind.Task
     if !task && contains_task(flow.context.env, value.ty, new[Int]()) {
         return Result.Err(task_error(flow, value, "storing tasks in aggregates is not yet implemented"))
     }
+    if flow.cleanup && (task || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend) {
+        return Result.Err(task_error(flow, value, "task creation, reading or transfer in cleanup is not yet implemented"))
+    }
     if task && !allowed {
-        return Result.Err(task_error(flow, value, "a task must be awaited or transferred to a local; it cannot be copied, discarded or passed as an argument"))
+        return Result.Err(task_error(flow, value, "a task must be awaited or transferred; it cannot be copied or discarded"))
     }
     if value.kind == ExprKind.Local && task {
         if get(flow.locals, value.index) == 0 {
@@ -98,7 +131,12 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     }
     if value.kind == ExprKind.Await {
         discard task_expression(flow, get(value.children, 0), true)?
-        return Result.Ok(false)
+        return Result.Ok(task)
+    }
+    // A deferred call retains its runtime arguments during abstract checking.
+    // Other Deferred expressions have no children and cannot hide transfers.
+    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.Deferred {
+        return task_arguments(flow, value)
     }
     if value.kind == ExprKind.Let || value.kind == ExprKind.Assign {
         let destination = get(flow.context.locals, value.index).ty
@@ -113,7 +151,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         return Result.Ok(false)
     }
     if value.kind == ExprKind.Return {
-        discard task_sequence(flow, value.children, false)?
+        discard task_sequence(flow, value.children, direct_task(flow.context.env, flow.context.signature.result))?
         discard tasks_consumed(flow, value)?
         return Result.Ok(false)
     }
@@ -136,7 +174,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
             discard task_expression(no, otherwise, allowed)?
             no_falls = otherwise.falls
         }
-        if then.falls && no_falls && !same(yes.locals, no.locals) {
+        if then.falls && no_falls && !same_task_state(yes, no) {
             return Result.Err(task_error(flow, value, "task consumption must agree on all continuing branches"))
         }
         if then.falls {
@@ -158,7 +196,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
             let body = get(value.arms, index).body
             discard task_sequence(branch, body, allowed)?
             if all_fall(body) {
-                if found && !same(merged.locals, branch.locals) {
+                if found && !same_task_state(merged, branch) {
                     return Result.Err(task_error(flow, value, "task consumption must agree on all continuing match arms"))
                 }
                 task_join(merged, branch)
@@ -176,39 +214,50 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         let branch = task_branch(flow)
         let right = get(value.children, 1)
         discard task_expression(branch, right, false)?
-        if right.falls && !same(flow.locals, branch.locals) {
+        if right.falls && !same_task_state(flow, branch) {
             return Result.Err(task_error(flow, value, "a short-circuit operand cannot conditionally consume a live task"))
         }
         return Result.Ok(false)
     }
     if value.kind == ExprKind.While {
         let before = task_states(flow.locals)
+        let pending = get(flow.pending, 0)
         discard task_expression(flow, get(value.children, 0), false)?
-        if !same(before, flow.locals) {
+        if !same(before, flow.locals) || pending != get(flow.pending, 0) {
             return Result.Err(task_error(flow, value, "loop conditions must preserve existing task consumption state"))
         }
         let branch = TaskFlow {
             context = flow.context
             locals = task_states(before)
+            pending = ints(pending)
             loop_entry = before
+            loop_pending = pending
+            cleanup = flow.cleanup
         }
         let body = get(value.children, 1)
         discard task_expression(branch, body, false)?
-        if body.falls && !same(before, branch.locals) {
+        if body.falls && (!same(before, branch.locals) || pending != get(branch.pending, 0)) {
             return Result.Err(task_error(flow, value, "loop bodies must consume their own tasks and preserve tasks from outside the loop"))
         }
         return Result.Ok(false)
     }
     if value.kind == ExprKind.Break || value.kind == ExprKind.Continue {
-        if !same(flow.locals, flow.loop_entry) {
+        if !same(flow.locals, flow.loop_entry) || get(flow.pending, 0) != flow.loop_pending {
             return Result.Err(task_error(flow, value, "loop exits must consume loop-local tasks and preserve outer tasks"))
         }
         return Result.Ok(false)
     }
     if value.kind == ExprKind.Defer || value.kind == ExprKind.Cleanup {
-        let branch = task_branch(flow)
+        let branch = TaskFlow {
+            context = flow.context
+            locals = task_states(flow.locals)
+            pending = ints(get(flow.pending, 0))
+            loop_entry = flow.loop_entry
+            loop_pending = flow.loop_pending
+            cleanup = true
+        }
         discard task_sequence(branch, value.children, false)?
-        if !same(branch.locals, flow.locals) {
+        if !same_task_state(branch, flow) {
             return Result.Err(task_error(flow, value, "task transfer from cleanup is not yet implemented"))
         }
         return Result.Ok(false)
@@ -217,13 +266,15 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     Result.Ok(task)
 }
 
-fn task_nodes(value Expr, env Environment) Bool {
-    if value.kind == ExprKind.TaskCall || value.kind == ExprKind.Await || get(env.types, value.ty).kind == TypeKind.Task {
+// One seen set covers the whole body, including otherwise empty generic
+// aggregates. Ordinary calls do not repeatedly traverse the same type graph.
+fn task_nodes(value Expr, env Environment, seen List[Int]) Bool {
+    if value.kind == ExprKind.TaskCall || value.kind == ExprKind.Await || contains_task(env, value.ty, seen) {
         return true
     }
     var index = 0
     while index < length(value.children) {
-        if task_nodes(get(value.children, index), env) {
+        if task_nodes(get(value.children, index), env, seen) {
             return true
         }
         index = index + 1
@@ -233,7 +284,7 @@ fn task_nodes(value Expr, env Environment) Bool {
         let body = get(value.arms, index).body
         var member = 0
         while member < length(body) {
-            if task_nodes(get(body, member), env) {
+            if task_nodes(get(body, member), env, seen) {
                 return true
             }
             member = member + 1
@@ -244,21 +295,30 @@ fn task_nodes(value Expr, env Environment) Bool {
 }
 
 fn task_flow(context Context, function Function) Result[Bool, Failure] {
-    if !task_nodes(function.body, context.env) {
+    var parameters = false
+    var index = 0
+    while index < length(function.params) {
+        parameters = parameters || direct_task(context.env, get(function.params, index))
+        index = index + 1
+    }
+    if !parameters && !direct_task(context.env, function.result) && !task_nodes(function.body, context.env, new[Int]()) {
         return Result.Ok(true)
     }
     let locals = new[Int]()
-    var index = 0
+    index = 0
     while index < length(function.locals) {
-        push(locals, 0)
+        push(locals, if index < length(function.params) && direct_task(context.env, get(function.params, index)) { 1 } else { 0 })
         index = index + 1
     }
     let flow = TaskFlow {
         context = context
         locals = locals
+        pending = ints(0)
         loop_entry = new[Int]()
+        loop_pending = 0
+        cleanup = false
     }
-    discard task_expression(flow, function.body, false)?
+    discard task_expression(flow, function.body, direct_task(context.env, function.result))?
     if function.body.falls {
         discard tasks_consumed(flow, function.body)?
     }

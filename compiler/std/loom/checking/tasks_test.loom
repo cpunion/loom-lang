@@ -50,7 +50,6 @@ test fn tasks_cannot_be_lost_duplicated_or_escaped() {
     rejects("async fn item() Int { 1 }\nasync fn main() { var task = item()\ntask = item()\ndiscard task.await }")
     rejects("async fn item() Int { 1 }\nasync fn main() { let task = item()\nreturn }")
     rejects("async fn item() Int { 1 }\nfn pass(value Task[Int]) {}")
-    rejects("async fn item() Int { 1 }\nfn produce() Task[Int] { item() }")
     rejects("async fn item() Int { 1 }\nasync fn main() { let values = [item()]\ndiscard values }")
     rejects("async fn item() Int { 1 }\nasync fn main() { let pair = (item(), 1)\ndiscard pair }")
     rejects("async fn item() Int { 1 }\nfn main() { let f = item\ndiscard f }")
@@ -72,4 +71,66 @@ test fn async_contracts_keep_mandatory_logical_result_proofs() {
     discard accepted("async fn twice(value Int) Int requires value >= 0 ensures result == value + value { value + value }\nasync fn main() { assert twice(2).await == 4 }")
     rejects("async fn wrong(value Int) Int ensures result == value + 1 { value }")
     rejects("async fn item() Int { 1 }\nasync fn uncertain() Int ensures result == 1 { item().await }")
+}
+
+fn task_rejected(text Text, message Text) {
+    match checked(source_files(text)) {
+        Result.Err(failed) => {
+            if failed.diagnostic.message != message { discard write_error(failed.diagnostic.message) }
+            assert failed.diagnostic.message == message
+        }
+        Result.Ok(_) => { assert false }
+    }
+}
+
+test fn direct_task_parameters_returns_and_nested_awaits_transfer_once() {
+    discard accepted("async fn item[T](value T) T { value }\nfn make[T](value T) Task[T] { item(value) }\nfn pass[T](task Task[T]) Task[T] { task }\nfn identity[T](value T) T { value }\nasync fn wrap[T](task Task[T]) Task[T] { task }\nasync fn read[T](task Task[T]) T { task.await }\nasync fn main() { let outer Task[Task[Int]] = wrap(identity(pass(make(7))))\nlet inner = outer.await\nassert read(inner).await == 7\nassert wrap(make(\"text\")).await.await == \"text\" }")
+    discard accepted("enum Choice { Yes No }\nasync fn item() Int { 7 }\nfn pick(task Task[Int], flag Bool) Task[Int] { if flag { return task }\ntask }\nfn branch(task Task[Int], flag Bool) Task[Int] { if flag { task } else { task } }\nfn matched(task Task[Int], flag Choice) Task[Int] { match flag { Choice.Yes => task, Choice.No => task } }\nasync fn main() { assert matched(branch(pick(item(), true), false), Choice.Yes()).await == 7 }")
+    discard accepted("async fn item[T](value T) T { value }\nfn pass(task Task[Int], comptime selected Bool) Task[Int] { task }\nasync fn empty() {}\nfn forward[T](task Task[T]) Task[T] { return task }\nasync fn main() { assert pass(item(3), true).await == 3\nforward(empty()).await }")
+    discard accepted("async fn item() Int { 7 }\nfn pick(task Task[Int], comptime flag Bool) Task[Int] { if flag { task } else { task } }\nasync fn main() { assert pick(item(), true).await == 7 }")
+    task_rejected("fn pick(task Task[Int], comptime flag Bool) Task[Int] { comptime if flag { task } else { task } }", "a task is still live at function exit; await or transfer it before returning")
+}
+
+test fn task_call_arguments_preserve_pending_obligations_across_control_flow() {
+    let prefix = "async fn item() Int { 7 }\nasync fn read(task Task[Int], extra Int) Int { task.await + extra }\n"
+    let pending = "a task argument is still pending; finish its call before returning"
+    task_rejected(concat(prefix, "async fn work(flag Bool) { let task = item()\ndiscard read(task, { if flag { return }\n0 }).await }"), pending)
+    task_rejected(concat(prefix, "async fn work(flag Bool) { discard read(item(), { if flag { return }\n0 }).await }"), pending)
+    let loops = "loop exits must consume loop-local tasks and preserve outer tasks"
+    task_rejected(concat(prefix, "async fn main() { while true { discard read(item(), { if true { break }\n0 }).await } }"), loops)
+    task_rejected(concat(prefix, "async fn main() { while true { discard read(item(), { if true { continue }\n0 }).await } }"), loops)
+    discard accepted(concat(prefix, "async fn main() { assert read(item(), { var n = 0\nwhile n < 1 { n = n + 1\nbreak }\nn }).await == 8\nassert read(item(), item().await).await == 14 }"))
+}
+
+test fn task_transfers_reject_unused_parameters_duplicate_arguments_and_hidden_cleanup() {
+    let prefix = "async fn item() Int { 7 }\nfn pass(task Task[Int]) Task[Int] { task }\nasync fn pair(a Task[Int], b Task[Int]) Int { a.await + b.await }\n"
+    let live = "a task is still live at function exit; await or transfer it before returning"
+    task_rejected("fn unused(task Task[Int]) {}", live)
+    task_rejected(concat(prefix, "fn drop[T](value T) {}\nasync fn main() { drop(item()) }"), live)
+    rejects(concat(prefix, "async fn main() { let task = item()\ndiscard pair(task, task).await }"))
+    rejects(concat(prefix, "async fn outer() Task[Int] { item() }\nasync fn main() { discard outer().await }"))
+    rejects(concat(prefix, "async fn outer() Task[Int] { item() }\nasync fn main() { let nested = outer()\nlet inner = nested.await }"))
+    rejects(concat(prefix, "async fn wrong(flag Bool) Task[Int] { let a = item()\nlet b = item()\nif flag { a } else { b } }"))
+    let cleanup = "task creation, reading or transfer in cleanup is not yet implemented"
+    task_rejected(concat(prefix, "fn wrong(task Task[Int]) Task[Int] { var saved = task\ndefer { saved = pass(saved) }\nsaved }"), cleanup)
+    task_rejected(concat(prefix, "fn sink(task Task[Int]) { sink(task) }\nfn wrong(task Task[Int]) Task[Int] { defer { sink(item()) }\ntask }"), cleanup)
+    discard accepted(concat(prefix, "fn clean(task Task[Int]) Task[Int] { defer { assert true }\ntask }\nasync fn main() { assert clean(item()).await == 7 }"))
+}
+
+test fn task_owner_requirements_cannot_escape_through_dynamic_or_compile_time_values() {
+    let prefix = "async fn item() Int { 7 }\nfn factory() Task[Int] { item() }\nfn pass[T](value T) T { value }\n"
+    let owner = "task creation or transfer requires an async function or a direct Task parameter or return type"
+    task_rejected(concat(prefix, "fn main() { let task = factory() }"), owner)
+    task_rejected(concat(prefix, "fn sink(task Task[Int]) { sink(task) }\nfn main() { sink(item()) }"), owner)
+    let reference = "Task-bearing function values are not yet implemented; call the function directly"
+    task_rejected(concat(prefix, "async fn main() { let callback = factory\ndiscard callback }"), reference)
+    task_rejected(concat(prefix, "fn main() { discard comptime { pass[Task[Int]] } }"), reference)
+    rejects(concat(prefix, "fn ignored(value List[Task[Int]]) {}"))
+    task_rejected("fn empty[T]() List[T] { [] }\nfn unused() { discard empty[Task[Int]]() }", "storing tasks in aggregates is not yet implemented")
+    rejects(concat(prefix, "fn ignored(value Task[List[Task[Int]]]) Task[List[Task[Int]]] { value }"))
+    rejects(concat(prefix, "record Held { task Task[Int] }\nfn ignored(value Task[Held]) Task[Held] { value }"))
+    rejects(concat(prefix, "concept Factory { fn create(self Self) Task[Int] }\nimpl Factory for Int { fn create(self Int) Task[Int] { factory() } }\nasync fn main() { let provider dyn Factory = 1\ndiscard provider.create().await }"))
+    rejects(concat(prefix, "async fn main() { discard comptime { factory() } }"))
+    resource_reject(concat(resource_header(), "async fn acquire() Handle { make([0]) }"))
+    resource_reject(concat(resource_header(), "fn forward(task Task[Handle]) Task[Handle] { task }"))
 }

@@ -38,6 +38,9 @@ struct Task {
     resume: Resume,
     parent: Option<u64>,
     children: BTreeSet<u64>,
+    // A Task-valued result stays in this subtree until result extraction. Keep
+    // its identity afterward too, so a second extraction cannot copy a handle.
+    returned: Option<u64>,
     waiter: Option<u64>,
     state: State,
     external: Option<ExternalWait>,
@@ -159,12 +162,17 @@ impl Owner {
     fn validate_return(&self, id: u64, status: i64) -> Result<(), &'static str> {
         let core = self.core.borrow();
         let task = &core.tasks[&id];
+        let children_done = match task.returned {
+            Some(child) => task.children.len() == 1 && task.children.contains(&child),
+            None => task.children.is_empty(),
+        };
         match (status, &task.state) {
-            (0, State::Running) if task.children.is_empty() && task.external.is_none() => Ok(()),
+            (0, State::Running) if children_done && task.external.is_none() => Ok(()),
             (0, _) => Err("task completed with outstanding children or wait"),
-            (1, State::Waiting(_)) if task.external.is_none() => Ok(()),
+            (1, State::Waiting(_)) if task.external.is_none() && task.returned.is_none() => Ok(()),
             (1, State::ExternalWaiting)
-                if task.external.is_some_and(|wait| wait.ready.is_none()) =>
+                if task.returned.is_none()
+                    && task.external.is_some_and(|wait| wait.ready.is_none()) =>
             {
                 Ok(())
             }
@@ -404,6 +412,68 @@ fn parent(core: &Core, child: u64) -> Result<u64, &'static str> {
     Ok(parent)
 }
 
+// Callers validate the old parent and distinct, noncyclic destination before
+// editing. IDs, ready entries, registrations and the entire child subtree stay
+// unchanged; this transfers an obligation, not a frame or a running activation.
+fn reparent(core: &mut Core, child: u64, previous: u64, next: u64) {
+    assert!(
+        core.tasks
+            .get_mut(&previous)
+            .unwrap()
+            .children
+            .remove(&child)
+    );
+    assert!(core.tasks.get_mut(&next).unwrap().children.insert(child));
+    core.tasks.get_mut(&child).unwrap().parent = Some(next);
+}
+
+/// Lowering calls this immediately after creating the queued callee, once for
+/// each direct Task parameter. Current direct children are disjoint subtrees.
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_adopt(callee: u64, child: u64) {
+    edit(|_, core| {
+        let current = parent(core, callee)?;
+        parent(core, child)?;
+        if !matches!(core.tasks[&current].state, State::Running)
+            || core.tasks[&current].external.is_some()
+        {
+            return Err("task transfer requires a running caller");
+        }
+        if callee == child {
+            return Err("task cannot adopt itself");
+        }
+        if !matches!(core.tasks[&callee].state, State::Queued)
+            || core.tasks[&callee].waiter.is_some()
+            || core.tasks[&child].waiter.is_some()
+        {
+            return Err("task adoption requires a queued callee and unawaited child");
+        }
+        reparent(core, child, current, callee);
+        Ok(())
+    });
+}
+
+/// Mark the direct logical Task result, but retain it under this producer until
+/// its actual consumer extracts the outer result. No user callback runs here.
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_return(child: u64) -> u64 {
+    edit(|_, core| {
+        let current = parent(core, child)?;
+        let task = &core.tasks[&current];
+        if task.parent.is_none() {
+            return Err("async entry cannot return a Task");
+        }
+        if !matches!(task.state, State::Running) || task.external.is_some() {
+            return Err("task return requires a running producer");
+        }
+        if task.returned.is_some() || core.tasks[&child].waiter.is_some() {
+            return Err("task return requires one unawaited child");
+        }
+        core.tasks.get_mut(&current).unwrap().returned = Some(child);
+        Ok(child)
+    })
+}
+
 /// The frame is an initialized GC allocation base; creation is a fully rendered
 /// static native UTF-8 diagnostic valid for the executable lifetime (null only
 /// if empty), not a moving Text pointer.
@@ -437,6 +507,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
                 resume,
                 parent,
                 children: BTreeSet::new(),
+                returned: None,
                 waiter: None,
                 state: State::Queued,
                 external: None,
@@ -488,10 +559,20 @@ pub(super) extern "C-unwind" fn loom_rt_task_result(child: u64) -> *mut u8 {
             return Err("task result requires await");
         }
         match &task.state {
-            State::Completed => Ok(Ok(owner
-                .roots()
-                .get(task.frame)
-                .expect("rooted task result"))),
+            State::Completed => {
+                let frame = task.frame;
+                if let Some(returned) = task.returned {
+                    if !task.children.contains(&returned) {
+                        return Err("task result already extracted");
+                    }
+                    let result = &core.tasks[&returned];
+                    if result.parent != Some(child) || result.waiter.is_some() {
+                        return Err("task result is not an unawaited child");
+                    }
+                    reparent(core, returned, child, parent);
+                }
+                Ok(Ok(owner.roots().get(frame).expect("rooted task result")))
+            }
             State::Faulted(failure) => Ok(Err(OwnedFault {
                 message: failure.message.clone(),
                 test_name: failure.test_name.clone(),
@@ -514,8 +595,10 @@ pub(super) extern "C-unwind" fn loom_rt_task_release(child: u64) {
         if task.waiter != Some(parent) || !matches!(task.state, State::Completed) {
             return Err("task release requires a completed awaited result");
         }
+        if !task.children.is_empty() {
+            return Err("task release requires extracting its Task result");
+        }
         let task = core.tasks.remove(&child).unwrap();
-        assert!(task.children.is_empty());
         core.tasks.get_mut(&parent).unwrap().children.remove(&child);
         assert!(owner.roots().remove(task.frame));
         Ok(())
@@ -572,3 +655,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor
 #[cfg(test)]
 #[path = "tasks_wait_tests.rs"]
 mod wait_tests;
+
+#[cfg(test)]
+#[path = "tasks_transfer_tests.rs"]
+mod transfer_tests;
