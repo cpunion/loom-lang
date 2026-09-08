@@ -287,10 +287,14 @@ structure, comments, and literal spelling; native tests and real-source
 roundtrips check parseability and idempotence. `--check` is read-only,
 `--recursive` visits nested source directories, and `--stdin` serves editor
 buffers. The [VS Code development extension](../../editors/vscode/README.md)
-uses the same compiler for unsaved-buffer diagnostics and formatting, not a
+uses the same compiler for unsaved-buffer diagnostics, formatting, type hovers
+and definition navigation, not a
 parallel language implementation. Real LSP transport and macOS VS Code
-extension-host tests cover unsaved edits, cleared errors, and applied formatting.
-Completion, navigation, rename, and incremental semantic caching are not implemented.
+extension-host tests cover unsaved edits, cleared errors, applied formatting,
+checked types and cross-file targets. `std.loom.analysis.inspect_at` shares the
+token-aware queries with ordinary Loom consumers. Results require a successful
+check and concrete body instances; dynamic calls never guess an implementation.
+Completion, rename, and incremental semantic caching are not implemented.
 
 [Compile-time execution](../../compiler/README.md#compile-time-execution) uses a
 bounded Loom evaluator over the native compiler's checked model. Explicit

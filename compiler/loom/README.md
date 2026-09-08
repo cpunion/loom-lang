@@ -77,10 +77,12 @@ statement per line. It separates top-level declarations and retains at most one
 user blank line. This changes layout, not grammar; semicolons remain invalid.
 
 The [VS Code development extension](../../editors/vscode/README.md) provides
-highlighting, document formatting, and diagnostics for unsaved buffers. Its
+highlighting, document formatting, diagnostics, type hovers and definition
+navigation for unsaved buffers. Its
 language server sends source snapshots to the same Loom package/type/contract
 checker; it does not implement another parser or checker in JavaScript.
-Completion, navigation, rename, and incremental semantic caching remain open.
+Completion, rename, and incremental semantic caching remain open. Semantic
+queries currently require a successfully checked package and concrete body instances.
 An isolated macOS VS Code extension-host test covers activation, unsaved errors,
 error clearing, and applied formatting. Broader interactive usability review remains open.
 
@@ -202,6 +204,7 @@ without the CLI, LLVM backend, or filesystem loading:
 | `analyze(project, tests)` | `Result[Analysis, Failure]`, with bindings and a checked program |
 | `type_name(analysis, ty)` | Display name for a type in that analysis |
 | `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
+| `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
 | `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
 
 The [semantic example](../examples/semantic/main.loom) creates an in-memory
@@ -224,6 +227,15 @@ addresses `analysis.program.functions`; local indices address that function's
 locals. Uninstantiated generic templates and signature-only positions have no
 typed result. The evolving checked model is not a stable public schema or a
 typed macro API.
+
+`inspect_at` selects the source token's role, so a receiver and its selected field
+have distinct answers even when lowering shares their spans. `Inspection.types`
+and `.definitions` retain deduplicated answers across concrete instances;
+each `Location.file` indexes the analysis files, with an identifier byte span.
+Local navigation follows checked local IDs, including shadowing. Calls use
+resolved targets; dynamic calls point only to an identifiable concept signature,
+never a guessed implementation. Comments, punctuation and unavailable semantic
+identity return no answer. Match bindings currently have hover types only.
 
 `Type.constraint` is predicate-template metadata, not executable IR: `self`
 uses local 0 and call indices are `-1` until rebound at a construction boundary.

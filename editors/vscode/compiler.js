@@ -31,16 +31,24 @@ async function snapshots(documents) {
   }
 }
 
-async function check(settings, directory, overlayArgs, signal) {
-  const args = ['editor-check', directory, '--tests', ...overlayArgs];
+async function editorReport(settings, directory, mode, extraArgs, overlayArgs, signal) {
+  const args = [mode, directory, '--tests', ...extraArgs, ...overlayArgs];
   if (settings.stdRoot) args.push('--std', settings.stdRoot);
   const result = await run(settings.executable, args, directory, signal);
   if (result.code !== 0 && result.code !== 1) throw new Error(result.stderr || `Compiler exited ${result.code}`);
   let report;
   try { report = JSON.parse(result.stdout); }
-  catch { throw new Error(result.stderr || 'Compiler did not return editor-check JSON; check the configured Loom executable.'); }
-  if (!Array.isArray(report.diagnostics)) throw new Error('Invalid editor-check diagnostics response.');
+  catch { throw new Error(result.stderr || `Compiler did not return ${mode} JSON; check the configured Loom executable.`); }
+  if (!Array.isArray(report.diagnostics)) throw new Error(`Invalid ${mode} diagnostics response.`);
   return report;
+}
+
+function check(settings, directory, overlayArgs, signal) {
+  return editorReport(settings, directory, 'editor-check', [], overlayArgs, signal);
+}
+
+function query(settings, directory, file, offset, overlayArgs, signal) {
+  return editorReport(settings, directory, 'editor-query', ['--at', file, String(offset)], overlayArgs, signal);
 }
 
 async function format(settings, directory, text, signal) {
@@ -54,4 +62,8 @@ function bytePosition(document, offset) {
   return document.positionAt(bytes.subarray(0, Math.max(0, offset)).toString('utf8').length);
 }
 
-module.exports = { snapshots, check, format, bytePosition };
+function byteOffset(document, position) {
+  return Buffer.byteLength(document.getText().slice(0, document.offsetAt(position)), 'utf8');
+}
+
+module.exports = { snapshots, check, query, format, bytePosition, byteOffset };

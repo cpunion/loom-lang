@@ -1,0 +1,74 @@
+import std.loom.analysis.inspect_at
+import std.option.Option
+
+fn editor_inspection(analysis Analysis, file Int, offset Int) EditorOutput {
+    let information = match inspect_at(analysis, file, offset) {
+        Option.Some(value) => value
+        Option.None => {
+            return EditorOutput {
+                text = "{\"diagnostics\":[],\"hover\":null,\"definitions\":[]}\n"
+                failed = false
+            }
+        }
+    }
+    var types = "["
+    var index = 0
+    while index < length(information.types) {
+        if index > 0 {
+            types = concat(types, ",")
+        }
+        types = concat(types, editor_quoted(get(information.types, index)))
+        index = index + 1
+    }
+    types = concat(types, "]")
+    var definitions = "["
+    index = 0
+    while index < length(information.definitions) {
+        if index > 0 {
+            definitions = concat(definitions, ",")
+        }
+        let target = get(information.definitions, index)
+        let path = get(analysis.bindings.files, target.file).path
+        let location = concat("{\"path\":", concat(editor_quoted(path), concat(",\"start\":", to_text(target.span.start))))
+        definitions = concat(definitions, concat(location, concat(",\"end\":", concat(to_text(target.span.end), "}"))))
+        index = index + 1
+    }
+    definitions = concat(definitions, "]")
+    let hover = concat("{\"start\":", concat(to_text(information.span.start), concat(",\"end\":", to_text(information.span.end))))
+    let payload = concat("{\"diagnostics\":[],\"hover\":", concat(hover, concat(",\"types\":", concat(types, "},\"definitions\":"))))
+    EditorOutput {
+        text = concat(payload, concat(definitions, "}\n"))
+        failed = false
+    }
+}
+
+test fn query_options_require_an_explicit_source_and_byte_offset() {
+    let args = cli_arguments("editor-query")
+    std.list.push(args, "/app")
+    match editor_options(args) {
+        Result.Err(_) => {
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+    std.list.push(args, "--at")
+    std.list.push(args, "/app/main.loom")
+    std.list.push(args, "12")
+    match editor_options(args) {
+        Result.Ok(value) => {
+            assert value.query_path == "/app/main.loom" && value.offset == 12
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    std.list.push(args, "--at")
+    match editor_options(args) {
+        Result.Err(_) => {
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+}

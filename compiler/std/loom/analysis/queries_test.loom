@@ -1,0 +1,166 @@
+import std.option.Option
+import std.text.byte
+
+fn query_offset(text Text, fragment Text) Int {
+    var index = 0
+    while index + length(fragment) <= length(text) {
+        var matched = 0
+        while matched < length(fragment) && byte(text, index + matched) == byte(fragment, matched) {
+            matched = matched + 1
+        }
+        if matched == length(fragment) {
+            return index
+        }
+        index = index + 1
+    }
+    assert false
+    -1
+}
+
+fn inspection(analysis Analysis, text Text, fragment Text) Inspection {
+    match inspect_at(analysis, 0, query_offset(text, fragment)) {
+        Option.Some(found) => found
+        Option.None => {
+            assert false
+            inspection(analysis, text, fragment)
+        }
+    }
+}
+
+fn only_type(found Inspection, expected Text) {
+    assert length(found.types) == 1 && get(found.types, 0) == expected
+}
+
+fn only_definition(found Inspection, start Int, end Int) {
+    assert length(found.definitions) == 1
+    let location = get(found.definitions, 0)
+    assert location.file == 0 && location.span.start == start && location.span.end == end
+}
+
+fn absent(analysis Analysis, position Int) {
+    match inspect_at(analysis, 0, position) {
+        Option.None => {
+        }
+        Option.Some(_) => {
+            assert false
+        }
+    }
+}
+
+test fn inspections_follow_local_ids_through_shadowing_and_inference() {
+    let text = "fn main() {\nlet value = 3\nif true {\nlet value = true\nassert value\n}\nassert value == 3\n}"
+    let analysis = accepted(input(text))
+    let inner = inspection(analysis, text, "value\n}")
+    only_type(inner, "Bool")
+    let inner_start = query_offset(text, "value = true")
+    only_definition(inner, inner_start, inner_start + 5)
+    let outer = inspection(analysis, text, "value ==")
+    only_type(outer, "Int")
+    let outer_start = query_offset(text, "value = 3")
+    only_definition(outer, outer_start, outer_start + 5)
+    only_type(inspection(analysis, text, "value = 3"), "Int")
+}
+
+test fn inspections_distinguish_field_paths_receivers_and_initializers() {
+    let text = "record Box[T] { value T }\nrecord Outer { inner Box[Int] }\nfn main() {\nlet item = Outer { inner = Box { value = 7 } }\nassert item.inner.value == 7\n}"
+    let analysis = accepted(input(text))
+    only_type(inspection(analysis, text, "item.inner.value"), "app.Outer")
+    only_type(inspection(analysis, text, "inner.value"), "app.Box[Int]")
+    let field = inspection(analysis, text, "value ==")
+    only_type(field, "Int")
+    only_definition(field, query_offset(text, "value T"), query_offset(text, "value T") + 5)
+    let initializer = inspection(analysis, text, "value = 7")
+    only_type(initializer, "Int")
+    only_definition(initializer, query_offset(text, "value T"), query_offset(text, "value T") + 5)
+    let constructor = inspection(analysis, text, "Box { value")
+    only_type(constructor, "app.Box[Int]")
+    only_definition(constructor, query_offset(text, "Box[T]"), query_offset(text, "Box[T]") + 3)
+}
+
+test fn inspections_use_resolved_overloads_function_references_and_all_instances() {
+    let text = "fn choose(value Int) Int { value }\nfn choose(value Bool) Bool { value }\nfn identity[T](item T) T { item }\nfn main() {\nlet number = choose(3)\nlet function fn(Bool) Bool = choose\nassert function(true)\nassert identity(number) == 3\nassert identity(true)\n}"
+    let analysis = accepted(input(text))
+    let call = inspection(analysis, text, "choose(3)")
+    only_type(call, "fn(Int) Int")
+    only_definition(call, 3, 9)
+    let reference = inspection(analysis, text, "choose\nassert")
+    only_type(reference, "fn(Bool) Bool")
+    let declaration = query_offset(text, "choose(value Bool)")
+    only_definition(reference, declaration, declaration + 6)
+    let generic = inspection(analysis, text, "item }")
+    assert length(generic.types) == 2
+    assert (get(generic.types, 0) == "Int" && get(generic.types, 1) == "Bool") ||
+    (get(generic.types, 1) == "Int" && get(generic.types, 0) == "Bool")
+    let parameter = query_offset(text, "item T")
+    only_definition(generic, parameter, parameter + 4)
+}
+
+test fn inspections_navigate_static_methods_and_dynamic_concept_signatures() {
+    let text = "concept Read { fn read(self Self) Int }\nimpl Read for Int { fn read(self Int) Int { self } }\nfn main() {\nlet item = 7\nassert item.read() == 7\nlet view dyn Read = item\nassert view.read() == 7\n}"
+    let analysis = accepted(input(text))
+    let static_call = inspection(analysis, text, "read() == 7")
+    only_type(static_call, "fn(Int) Int")
+    let implementation = query_offset(text, "read(self Int)")
+    only_definition(static_call, implementation, implementation + 4)
+    let dynamic = match inspect_at(analysis, 0, query_offset(text, "view.read()") + 5) {
+        Option.Some(found) => found
+        Option.None => {
+            assert false
+            static_call
+        }
+    }
+    only_type(dynamic, "fn() Int")
+    let prototype = query_offset(text, "read(self Self)")
+    only_definition(dynamic, prototype, prototype + 4)
+    only_type(inspection(analysis, text, "view.read()"), "dyn app.Read")
+}
+
+test fn inspections_do_not_invent_results_for_comments_punctuation_or_unchecked_bodies() {
+    let text = "fn unused[T](value T) T { value }\nfn main() {\nlet 数量 = 3\n// 数量 has no reference here\nassert 数量 == 3\n}"
+    let analysis = accepted(input(text))
+    let local = inspection(analysis, text, "数量 ==")
+    only_type(local, "Int")
+    let start = query_offset(text, "数量 =")
+    only_definition(local, start, start + length("数量"))
+    absent(analysis, query_offset(text, "数量 has"))
+    absent(analysis, query_offset(text, "=="))
+    absent(analysis, query_offset(text, "let 数量") + 3)
+    absent(analysis, query_offset(text, "value }"))
+    absent(analysis, query_offset(text, "value T"))
+    absent(analysis, length(text))
+}
+
+test fn inspections_do_not_guess_dynamic_overloads_or_generated_constraint_references() {
+    let overloaded = "concept Pick { fn pick(self Self, value Int) Int\nfn pick(self Self, value Bool) Bool }\nimpl Pick for Int { fn pick(self Int, value Int) Int { value }\nfn pick(self Int, value Bool) Bool { value } }\nfn main() { let view dyn Pick = 1\nassert view.pick(3) == 3 }"
+    let dynamic = inspection(accepted(input(overloaded)), overloaded, "pick(3)")
+    only_type(dynamic, "fn(Int) Int")
+    assert length(dynamic.definitions) == 0
+    let text = "import std.result.Result\nimport std.result.ConstraintError\ntype Positive = Int where valid(self)\nfn valid(value Int) Bool { value > 0 }\npub fn make(value Int) Result[Positive, ConstraintError] { Positive(value) }"
+    let project = input(text)
+    push(project.modules, ModuleInstance {
+            name = "std"
+            source = "/std"
+        })
+    push(project.packages, Package {
+            instance = 1
+            relative = "result"
+            imports = new[PackageImport]()
+        })
+    push(get(project.packages, 0).imports, PackageImport {
+            spelling = "std.result"
+            target = 1
+        })
+    let standard = "pub enum Result[T, E] { Ok(T) Err(E) }\npub enum ConstraintError { Rejected }"
+    let tree = get(input(standard).files, 0).tree
+    push(project.files, SourceFile {
+            package = 1
+            path = "/std/result.loom"
+            text = standard
+            tree = tree
+            test_only = false
+            trusted_std = true
+        })
+    let constructor = inspection(accepted(project), text, "Positive(value)")
+    only_type(constructor, "std.result.Result[app.Positive, std.result.ConstraintError]")
+    assert length(constructor.definitions) == 0
+}

@@ -8,12 +8,16 @@ import std.bytes.new
 import std.bytes.push
 import std.bytes.to_text
 import std.text.starts_with
+import std.int.parse
+import std.loom.analysis.Analysis
 
 record EditorOptions {
     path Text
     std_root Text
     tests Bool
     overlays List[SourceOverlay]
+    query_path Text
+    offset Int
 }
 
 record EditorOutput {
@@ -70,52 +74,78 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     var path = ""
     var standard = "compiler/std"
     var tests = false
+    var query_path = ""
+    var offset = -1
+    let query = get(args, 1) == "editor-query"
     let overlays = std.list.new[SourceOverlay]()
     var index = 2
     while index < std.list.length(args) {
         let argument = get(args, index)
-        if argument == "--tests" {
-            if tests {
-                return Result.Err("duplicate --tests")
+        if argument == "--at" {
+            if !query || query_path != "" || index + 2 >= std.list.length(args) {
+                return Result.Err("editor-query requires one --at source-path byte-offset")
             }
-            tests = true
-        } else {
-            if argument == "--std" {
-                index = index + 1
-                if index == std.list.length(args) {
-                    return Result.Err("--std needs a path")
+            query_path = get(args, index + 1)
+            if !starts_with(query_path, "/") && !is_windows_path(query_path) {
+                return Result.Err("editor-query requires an absolute source path")
+            }
+            offset = match std.int.parse(get(args, index + 2)) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Err("query byte offset must be a nonnegative integer")
                 }
-                standard = get(args, index)
+            }
+            if offset < 0 {
+                return Result.Err("query byte offset must be a nonnegative integer")
+            }
+            index = index + 2
+        } else {
+            if argument == "--tests" {
+                if tests {
+                    return Result.Err("duplicate --tests")
+                }
+                tests = true
             } else {
-                if argument == "--overlay" {
-                    if index + 2 >= std.list.length(args) {
-                        return Result.Err("--overlay needs an original file path and a UTF-8 snapshot file")
+                if argument == "--std" {
+                    index = index + 1
+                    if index == std.list.length(args) {
+                        return Result.Err("--std needs a path")
                     }
-                    let original = get(args, index + 1)
-                    let snapshot = get(args, index + 2)
-                    let text = match read_text(snapshot) {
-                        Result.Ok(value) => value
-                        Result.Err(_) => {
-                            return Result.Err(concat(original, ": cannot read UTF-8 overlay snapshot"))
-                        }
-                    }
-                    std.list.push(overlays, SourceOverlay {
-                            path = original
-                            text = text
-                        })
-                    index = index + 2
+                    standard = get(args, index)
                 } else {
-                    if starts_with(argument, "-") {
-                        return Result.Err(concat("unknown editor-check option ", argument))
+                    if argument == "--overlay" {
+                        if index + 2 >= std.list.length(args) {
+                            return Result.Err("--overlay needs an original file path and a UTF-8 snapshot file")
+                        }
+                        let original = get(args, index + 1)
+                        let snapshot = get(args, index + 2)
+                        let text = match read_text(snapshot) {
+                            Result.Ok(value) => value
+                            Result.Err(_) => {
+                                return Result.Err(concat(original, ": cannot read UTF-8 overlay snapshot"))
+                            }
+                        }
+                        std.list.push(overlays, SourceOverlay {
+                                path = original
+                                text = text
+                            })
+                        index = index + 2
+                    } else {
+                        if starts_with(argument, "-") {
+                            return Result.Err(concat("unknown editor-check option ", argument))
+                        }
+                        if path != "" {
+                            return Result.Err("editor-check selects one package directory")
+                        }
+                        path = argument
                     }
-                    if path != "" {
-                        return Result.Err("editor-check selects one package directory")
-                    }
-                    path = argument
                 }
             }
         }
         index = index + 1
+    }
+    if query && query_path == "" {
+        return Result.Err("editor-query requires --at source-path byte-offset")
     }
     if path == "" {
         return Result.Err("editor-check requires an absolute package directory")
@@ -128,6 +158,8 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
             std_root = standard
             tests = tests
             overlays = overlays
+            query_path = query_path
+            offset = offset
         })
 }
 
@@ -154,12 +186,32 @@ fn editor_execute(args List[Text]) EditorOutput {
             return editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
         }
     }
-    match check(bound) {
-        Result.Ok(_) => EditorOutput {
-            text = "{\"diagnostics\":[]}\n"
-            failed = false
+    let checked = match check(bound) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
         }
-        Result.Err(failed) => editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
+    }
+    if options.query_path != "" {
+        var index = 0
+        while index < length(project.files) {
+            let file = get(project.files, index)
+            if file.path == options.query_path {
+                if options.offset > std.text.length(file.text) {
+                    return editor_error("query byte offset is outside the source")
+                }
+                return editor_inspection(Analysis {
+                        bindings = bound
+                        program = checked
+                    }, index, options.offset)
+            }
+            index = index + 1
+        }
+        return editor_error("query source is outside the selected package and import closure")
+    }
+    EditorOutput {
+        text = "{\"diagnostics\":[]}\n"
+        failed = false
     }
 }
 

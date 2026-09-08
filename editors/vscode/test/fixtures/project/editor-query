@@ -1,0 +1,23 @@
+// Transport fixture only: canned query spans/types, not semantic inference.
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const at = args.indexOf('--at');
+const file = args[at + 1], offset = Number(args[at + 2]);
+const buffers = new Map();
+for (let index = 0; index < args.length; index++) {
+  if (args[index] !== '--overlay') continue;
+  buffers.set(args[++index], fs.readFileSync(args[++index], 'utf8'));
+}
+const text = buffers.get(file);
+const target = [...buffers.keys()].find(file => file.endsWith('query_target.loom'));
+const failed = [...buffers.values()].some(text => text.includes('BROKEN'));
+const report = { diagnostics: failed ? [{ path: file, message: 'fixture diagnostic', start: 0, end: 1 }] : [], hover: null, definitions: [] };
+if (!failed && Buffer.from(text).subarray(offset, offset + 5).toString() === 'QUERY') {
+  report.hover = { start: offset, end: offset + 5, types: ['Int', 'Bool'] };
+  if (target) {
+    const start = Buffer.byteLength('// é😀\nfn ');
+    report.definitions.push({ path: target, start, end: start + 6 });
+    report.definitions.push({ path: file, start: offset, end: offset + 5 });
+  }
+}
+setTimeout(() => { process.stdout.write(JSON.stringify(report)); process.exitCode = failed ? 1 : 0; }, text.includes('SLOW') ? 1000 : 0);

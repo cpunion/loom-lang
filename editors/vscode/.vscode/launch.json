@@ -4,6 +4,6 @@
     "name": "Loom extension",
     "type": "extensionHost",
     "request": "launch",
-    "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/test/fixtures/project"]
+    "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/../../compiler/examples/receipt"]
   }]
 }
