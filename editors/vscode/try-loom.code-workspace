@@ -1,0 +1,45 @@
+{
+  "folders": [{ "name": "receipt", "path": "../../compiler/examples/receipt" }],
+  "settings": {
+    "loom.executable": "../../../target/loom",
+    "loom.stdRoot": "../../std",
+    "[loom]": {
+      "editor.defaultFormatter": "cpunion.loom-language",
+      "editor.formatOnSave": true
+    }
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Loom: check receipt",
+        "type": "process",
+        "command": "${workspaceFolder:receipt}/../../../target/loom",
+        "windows": { "command": "${workspaceFolder:receipt}/../../../target/loom.exe" },
+        "args": ["check", "compiler/examples/receipt"],
+        "options": { "cwd": "${workspaceFolder:receipt}/../../.." },
+        "problemMatcher": [],
+        "group": { "kind": "build", "isDefault": true }
+      },
+      {
+        "label": "Loom: test receipt",
+        "type": "process",
+        "command": "${workspaceFolder:receipt}/../../../target/loom",
+        "windows": { "command": "${workspaceFolder:receipt}/../../../target/loom.exe" },
+        "args": ["test", "compiler/examples/receipt"],
+        "options": { "cwd": "${workspaceFolder:receipt}/../../.." },
+        "problemMatcher": [],
+        "group": { "kind": "test", "isDefault": true }
+      },
+      {
+        "label": "Loom: run receipt",
+        "type": "process",
+        "command": "${workspaceFolder:receipt}/../../../target/loom",
+        "windows": { "command": "${workspaceFolder:receipt}/../../../target/loom.exe" },
+        "args": ["run", "compiler/examples/receipt"],
+        "options": { "cwd": "${workspaceFolder:receipt}/../../.." },
+        "problemMatcher": []
+      }
+    ]
+  }
+}

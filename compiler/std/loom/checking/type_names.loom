@@ -1,0 +1,106 @@
+import std.loom.ast.NodeKind
+import std.loom.binding.Program
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Interface
+import std.loom.project.package_label
+import std.loom.project.qualify
+import std.list.get
+import std.list.length
+import std.text.concat
+import std.int.to_text
+
+// Type IDs belong to the supplied checked type table. () labels the internal no-value type;
+// abstract parameter labels are positional, not recovered source spellings.
+pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces List[Interface], ty Int) Text {
+    let value = get(types, ty)
+    if value.kind == TypeKind.Unit { return "()" }
+    if value.kind == TypeKind.Int { return "Int" }
+    if value.kind == TypeKind.Bool { return "Bool" }
+    if value.kind == TypeKind.Text { return "Text" }
+    if value.kind == TypeKind.Bytes { return "Bytes" }
+    if value.kind == TypeKind.Float { return "Float" }
+    if value.kind == TypeKind.Dyn {
+        let interface = get(interfaces, value.symbol)
+        let symbol = get(bindings.symbols, interface.symbol)
+        let package = package_label(bindings.modules, bindings.packages,
+            get(bindings.files, symbol.file).package)
+        var label = concat("dyn ", qualify(package, symbol.name))
+        if length(value.arguments) == 0 { return label }
+        label = concat(label, "[")
+        var index = 0
+        var binding = 0
+        while index < length(bindings.symbols) {
+            let member = get(bindings.symbols, index)
+            if member.owner == interface.symbol && member.node.kind == NodeKind.AssociatedType {
+                if binding > 0 { label = concat(label, ", ") }
+                label = concat(label, concat(member.name, concat(" = ", type_name(bindings, types, interfaces, get(value.arguments, binding)))))
+                binding = binding + 1
+            }
+            index = index + 1
+        }
+        return concat(label, "]")
+    }
+    if value.kind == TypeKind.Parameter { return concat("T", to_text(value.symbol)) }
+    if value.kind == TypeKind.Function {
+        var label = "fn("
+        var index = 0
+        while index + 1 < length(value.arguments) {
+            if index > 0 { label = concat(label, ", ") }
+            label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index)))
+            index = index + 1
+        }
+        label = concat(label, ")")
+        let output = get(value.arguments, index)
+        if output != 0 { label = concat(label, concat(" ", type_name(bindings, types, interfaces, output))) }
+        return label
+    }
+    if value.kind == TypeKind.Associated {
+        let member = get(bindings.symbols, value.symbol)
+        let capability = get(bindings.symbols, member.owner)
+        let package = package_label(bindings.modules, bindings.packages,
+            get(bindings.files, capability.file).package)
+        let owner = qualify(package, capability.name)
+        var label = concat(type_name(bindings, types, interfaces, get(value.arguments, 0)), concat(".", qualify(owner, member.name)))
+        if length(value.arguments) > 1 {
+            label = concat(label, "[")
+            var index = 1
+            while index < length(value.arguments) {
+                if index > 1 { label = concat(label, ", ") }
+                label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index)))
+                index = index + 1
+            }
+            label = concat(label, "]")
+        }
+        return label
+    }
+    if value.kind == TypeKind.Tuple {
+        var label = "("
+        var index = 0
+        while index < length(value.arguments) {
+            if index > 0 { label = concat(label, ", ") }
+            label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index)))
+            index = index + 1
+        }
+        if length(value.arguments) == 1 { label = concat(label, ",") }
+        return concat(label, ")")
+    }
+    var label = "List"
+    if value.kind != TypeKind.List {
+        let symbol = get(bindings.symbols, value.symbol)
+        let package = package_label(bindings.modules, bindings.packages,
+            get(bindings.files, symbol.file).package)
+        label = qualify(package, symbol.name)
+    }
+    if length(value.arguments) > 0 {
+        label = concat(label, "[")
+        var index = 0
+        while index < length(value.arguments) {
+            if index > 0 { label = concat(label, ", ") }
+            label = concat(label, type_name(bindings, types, interfaces, get(value.arguments, index)))
+            index = index + 1
+        }
+        label = concat(label, "]")
+    }
+    label
+}

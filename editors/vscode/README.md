@@ -16,13 +16,17 @@ npm ci
 code .
 ```
 
-Press F5 to launch the **Loom extension** development host with the receipt
-example folder. In that new window,
-set `loom.executable` to your absolute `target/loom` path (`loom.exe` on Windows)
-and `loom.stdRoot` to the repository's `compiler/std`. Open `main.loom`, introduce
-a type error without saving, then fix it. Use **Format Document** or enable
-format-on-save with `cpunion.loom-language` as the Loom default formatter.
-No extension is installed or published by these commands.
+Press F5 to launch the **Loom extension** development host with the
+[trial workspace](try-loom.code-workspace). Compiler paths and Loom-only
+format-on-save are already configured there; your user settings are unchanged.
+Open `main.loom`, introduce a type error without saving, then fix it. Hover over
+a value, use **Go to Definition**, and save to format. **Tasks: Run Task** offers
+**Loom: check receipt**, **Loom: test receipt**, and **Loom: run receipt**; the run
+task prints `36`. No extension is installed or published by these commands.
+
+For your own project, set workspace `loom.executable` to the absolute `target/loom`
+path (`loom.exe` on Windows) and `loom.stdRoot` to the repository's `compiler/std`.
+Run CLI commands from the repository root for now, passing your package directory.
 
 `loom.executable` defaults to `loom` on PATH; relative paths containing a separator
 and relative `loom.stdRoot` paths resolve from the containing workspace folder.
@@ -87,9 +91,10 @@ Node process fixtures for `npm test`, not generated compiler artifacts. They are
 excluded from extension packaging; both smoke commands use the real compiler.
 
 The smoke command accepts `LOOM_EDITOR_COMPILER` and `LOOM_EDITOR_STD` overrides.
-The optional host test opens and closes its own Development Host with temporary
-user-data/extensions directories; it neither installs the extension nor changes
-your settings. `VSCODE_EXECUTABLE` selects an installed VS Code launcher (use the
+The optional host test opens and closes its own Development Host with a temporary
+project and user-data/extensions directories. It also verifies format-on-save and
+same-directory tests plus execution; it neither installs the extension nor changes
+your settings or sources. `VSCODE_EXECUTABLE` selects an installed VS Code launcher (use the
 absolute `Code.exe` path on Windows). No VS Code download is performed.
 `Loom` in the Output panel contains server messages. Protocol tracing is opt-in
 and can contain source text. Checks currently stop at the compiler's first error;

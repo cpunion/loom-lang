@@ -12,6 +12,7 @@ import std.loom.binding.Program
 import std.loom.binding.Failure
 import std.loom.binding.bind
 import std.loom.checking.check
+import std.loom.checking.type_name
 import std.loom.typed.Program
 import std.loom.typed.Expr
 import std.loom.typed.TypeKind
@@ -118,99 +119,9 @@ pub fn is_current(analysis Analysis, project Project, tests Bool) Bool {
     true
 }
 
-// Type IDs must come from this analysis. () labels the internal no-value type;
-// abstract parameter labels are positional, not recovered source spellings.
+// Type IDs must come from this analysis.
 pub fn type_name(analysis Analysis, ty Int) Text {
-    let value = get(analysis.program.types, ty)
-    if value.kind == TypeKind.Unit { return "()" }
-    if value.kind == TypeKind.Int { return "Int" }
-    if value.kind == TypeKind.Bool { return "Bool" }
-    if value.kind == TypeKind.Text { return "Text" }
-    if value.kind == TypeKind.Bytes { return "Bytes" }
-    if value.kind == TypeKind.Float { return "Float" }
-    if value.kind == TypeKind.Dyn {
-        let interface = get(analysis.program.interfaces, value.symbol)
-        let symbol = get(analysis.bindings.symbols, interface.symbol)
-        let package = package_label(analysis.bindings.modules, analysis.bindings.packages,
-            get(analysis.bindings.files, symbol.file).package)
-        var label = concat("dyn ", qualify(package, symbol.name))
-        if length(value.arguments) == 0 { return label }
-        label = concat(label, "[")
-        var index = 0
-        var binding = 0
-        while index < length(analysis.bindings.symbols) {
-            let member = get(analysis.bindings.symbols, index)
-            if member.owner == interface.symbol && member.node.kind == NodeKind.AssociatedType {
-                if binding > 0 { label = concat(label, ", ") }
-                label = concat(label, concat(member.name, concat(" = ", type_name(analysis, get(value.arguments, binding)))))
-                binding = binding + 1
-            }
-            index = index + 1
-        }
-        return concat(label, "]")
-    }
-    if value.kind == TypeKind.Parameter { return concat("T", to_text(value.symbol)) }
-    if value.kind == TypeKind.Function {
-        var label = "fn("
-        var index = 0
-        while index + 1 < length(value.arguments) {
-            if index > 0 { label = concat(label, ", ") }
-            label = concat(label, type_name(analysis, get(value.arguments, index)))
-            index = index + 1
-        }
-        label = concat(label, ")")
-        let output = get(value.arguments, index)
-        if output != 0 { label = concat(label, concat(" ", type_name(analysis, output))) }
-        return label
-    }
-    if value.kind == TypeKind.Associated {
-        let member = get(analysis.bindings.symbols, value.symbol)
-        let capability = get(analysis.bindings.symbols, member.owner)
-        let package = package_label(analysis.bindings.modules, analysis.bindings.packages,
-            get(analysis.bindings.files, capability.file).package)
-        let owner = qualify(package, capability.name)
-        var label = concat(type_name(analysis, get(value.arguments, 0)), concat(".", qualify(owner, member.name)))
-        if length(value.arguments) > 1 {
-            label = concat(label, "[")
-            var index = 1
-            while index < length(value.arguments) {
-                if index > 1 { label = concat(label, ", ") }
-                label = concat(label, type_name(analysis, get(value.arguments, index)))
-                index = index + 1
-            }
-            label = concat(label, "]")
-        }
-        return label
-    }
-    if value.kind == TypeKind.Tuple {
-        var label = "("
-        var index = 0
-        while index < length(value.arguments) {
-            if index > 0 { label = concat(label, ", ") }
-            label = concat(label, type_name(analysis, get(value.arguments, index)))
-            index = index + 1
-        }
-        if length(value.arguments) == 1 { label = concat(label, ",") }
-        return concat(label, ")")
-    }
-    var label = "List"
-    if value.kind != TypeKind.List {
-        let symbol = get(analysis.bindings.symbols, value.symbol)
-        let package = package_label(analysis.bindings.modules, analysis.bindings.packages,
-            get(analysis.bindings.files, symbol.file).package)
-        label = qualify(package, symbol.name)
-    }
-    if length(value.arguments) > 0 {
-        label = concat(label, "[")
-        var index = 0
-        while index < length(value.arguments) {
-            if index > 0 { label = concat(label, ", ") }
-            label = concat(label, type_name(analysis, get(value.arguments, index)))
-            index = index + 1
-        }
-        label = concat(label, "]")
-    }
-    label
+    std.loom.checking.type_name(analysis.bindings, analysis.program.types, analysis.program.interfaces, ty)
 }
 
 fn covering(value Expr, offset Int, found List[Expr]) {

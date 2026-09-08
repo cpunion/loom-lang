@@ -1,3 +1,4 @@
 .vscode/**
+try-loom.code-workspace
 test/**
 package-lock.json
