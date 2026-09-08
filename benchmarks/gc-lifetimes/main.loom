@@ -1,0 +1,66 @@
+import std.int.parse
+import std.int.to_text
+import std.io.write_text
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+import std.process.arguments
+import std.result.Result
+
+fn payload(count Int) List[Int] {
+    let values = new[Int]()
+    var index = 0
+    while index < count {
+        push(values, index)
+        index = index + 1
+    }
+    values
+}
+
+fn main() {
+    let args = arguments()
+    assert length(args) == 2
+    let count = match parse(get(args, 1)) {
+        Result.Ok(value) => value
+        Result.Err(_) => { assert false
+            0 }
+    }
+    assert count > 0
+    var checksum = 0
+    // Distinct locals expose retention until function exit. A loop would reuse
+    // one local slot and could hide that problem even without last-read clearing.
+    {
+        let values = payload(count)
+        checksum = checksum + get(values, count - 1)
+    }
+    {
+        let values = payload(count)
+        checksum = checksum + get(values, count - 1)
+    }
+    {
+        let values = payload(count)
+        checksum = checksum + get(values, count - 1)
+    }
+    {
+        let values = payload(count)
+        checksum = checksum + get(values, count - 1)
+    }
+    {
+        let values = payload(count)
+        checksum = checksum + get(values, count - 1)
+    }
+    {
+        let values = payload(count)
+        checksum = checksum + get(values, count - 1)
+    }
+    {
+        let values = payload(count)
+        checksum = checksum + get(values, count - 1)
+    }
+    {
+        let values = payload(count)
+        checksum = checksum + get(values, count - 1)
+    }
+    discard write_text(to_text(checksum))
+}

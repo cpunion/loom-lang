@@ -883,8 +883,12 @@ Transitively nonallocating functions need no frame. Temporary snapshots protect
 managed results only across a later possible allocation; immediate local/return
 handoffs and nonallocating reads need no temporary root. Pending arguments and
 aggregate fields keep independent snapshots, while completed expressions and
-mutually exclusive branches reuse same-type slots. Locals remain function-wide
-roots; precise local liveness remains future work.
+mutually exclusive branches reuse same-type slots. A conservative backwards
+read analysis clears local shadow roots after their last possible read, including
+lowered cleanup and destructuring continuations. Loop reads remain rooted across
+the backedge; assignment kills and earlier temporary-snapshot clearing remain
+future work. Clearing makes data eligible for collection, not immediate release
+of memory to the operating system.
 Ordinary locals remain nonescaping SSA candidates; separate shadow slots mirror
 their source writes for the collector, including pattern bindings. After a
 possible allocation, used locals and pending expression snapshots reload updated

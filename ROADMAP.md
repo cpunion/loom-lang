@@ -186,7 +186,10 @@ Stop-the-world copying GC now rewrites precise typed roots and object fields,
 preserving shared aliases, cycles and allocation-crossing expression snapshots.
 Nonallocating functions remain root-free and collection adds no per-access
 barrier. This completes moving-memory support for the current native layouts,
-not precise local liveness, concurrent execution, Tasks or resource unwinding.
+not concurrent execution, Tasks or resource unwinding. Conservative last-read
+analysis now clears local shadow roots while preserving lowered cleanup,
+destructuring and loop backedges. More precise loop/assignment liveness and
+temporary-snapshot clearing remain open.
 
 The early syntax portion of the
 [compiler-library gate](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)
@@ -226,7 +229,9 @@ function contracts still use the documented call-free proof fragment.
 Explicit Int refinement conversion now reuses that fragment to eliminate a
 destination check only when both truth and definedness follow from the source
 predicate. Exact call-free conjunction reuse also handles Float without
-arithmetic rewriting. Local-flow facts and helper-call summaries remain later work.
+arithmetic rewriting. Immutable local-flow facts and bounded direct scalar-helper
+expansion extend this optional proof as described above; mutable/alias facts and
+general helper control flow remain open.
 
 Typed metaprogramming later reuses this infrastructure. Public analysis does not
 freeze the schemas or complete

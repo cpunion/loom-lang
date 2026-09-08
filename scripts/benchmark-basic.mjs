@@ -14,6 +14,8 @@ let reuse = false;
 let baseline;
 let output = join(root, "target/performance/basic.json");
 const compiler = resolve(process.env.BENCH_LOOM ?? join(root, "target/loom"));
+const nativeTool = resolve(process.env.BENCH_NATIVE_TOOL ?? join(root, "target/debug/loom-native"));
+const runtime = resolve(process.env.LOOM_RUNTIME_LIBRARY ?? join(dirname(nativeTool), platform() === "win32" ? "loom_runtime.lib" : "libloom_runtime.a"));
 const cc = process.env.BENCH_CC ?? process.env.LOOM_CC ?? "clang";
 const rustc = process.env.BENCH_RUSTC ?? "rustc";
 const go = process.env.BENCH_GO ?? "go";
@@ -28,7 +30,7 @@ for (let index = 0; index < args.length; index += 1) {
   else if (arg === "--baseline") baseline = resolve(args[++index]);
   else if (arg === "--help") {
     console.log(`Usage: node scripts/benchmark-basic.mjs [--runs 7] [--quick] [--reuse-build] [--output path] [--baseline directory]
-Tools: BENCH_LOOM, BENCH_CC, BENCH_RUSTC, BENCH_GO, BENCH_ZIG.
+Tools: BENCH_LOOM, BENCH_NATIVE_TOOL, BENCH_CC, BENCH_RUSTC, BENCH_GO, BENCH_ZIG.
 Native runtime comparison, not interpreter or compiler throughput. --quick only checks the harness.
 --reuse-build reruns existing binaries; provenance is retained from their build manifest.
 --baseline adds the archived Loom O3 binary and build.json for a same-session comparison.`);
@@ -39,7 +41,7 @@ if (!Number.isInteger(runs) || runs < 1 || runs > 30) throw new Error("--runs mu
 const directory = join(root, "target/performance/basic");
 mkdirSync(directory, { recursive: true });
 mkdirSync(dirname(output), { recursive: true });
-const env = { ...process.env };
+const env = { ...process.env, LOOM_RUNTIME_LIBRARY: runtime };
 delete env.LOOM_GC_STRESS;
 delete env.LOOM_NATIVE_TIMINGS;
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -61,12 +63,12 @@ const binary = id => join(directory, id + (platform() === "win32" ? ".exe" : "")
 const cFlags = ["-std=c17", "-O3", ...(arch() === "arm64" ? ["-mcpu=native"] : ["-march=native"])];
 const rustFlags = ["--edition", "2024", "-C", "opt-level=3", "-C", "target-cpu=native", "-C", "panic=abort"];
 const variants = [
-  { id: "loom-o3", label: "Loom O3", tool: compiler, args: ["build", dirname(source("loom")), "--output", binary("loom-o3")], env: { LOOM_OPT_LEVEL: "3" } },
+  { id: "loom-o3", label: "Loom O3", tool: compiler, args: ["build", dirname(source("loom")), "--native-tool", nativeTool, "--output", binary("loom-o3")], env: { LOOM_OPT_LEVEL: "3" } },
   { id: "c-o3", label: "C O3", tool: cc, args: [...cFlags, source("c"), "-o", binary("c-o3")] },
   { id: "go", label: "Go", tool: go, args: ["build", "-trimpath", "-o", binary("go"), source("go")] },
   { id: "rust-o3", label: "Rust O3", tool: rustc, args: [...rustFlags, "-C", "overflow-checks=off", source("rs"), "-o", binary("rust-o3")] },
   { id: "zig-fast", label: "Zig Fast", tool: zig, args: ["build-exe", source("zig"), "-O", "ReleaseFast", "-mcpu=native", "-lc", `-femit-bin=${binary("zig-fast")}`] },
-  { id: "loom-o2", label: "Loom O2", tool: compiler, args: ["build", dirname(source("loom")), "--output", binary("loom-o2")], env: { LOOM_OPT_LEVEL: "2" } },
+  { id: "loom-o2", label: "Loom O2", tool: compiler, args: ["build", dirname(source("loom")), "--native-tool", nativeTool, "--output", binary("loom-o2")], env: { LOOM_OPT_LEVEL: "2" } },
   { id: "c-checked", label: "C checked", tool: cc, args: [...cFlags, "-ftrapv", source("c"), "-o", binary("c-checked")] },
   { id: "rust-checked", label: "Rust checked", tool: rustc, args: [...rustFlags, "-C", "overflow-checks=on", source("rs"), "-o", binary("rust-checked")] },
   { id: "zig-safe", label: "Zig Safe", tool: zig, args: ["build-exe", source("zig"), "-O", "ReleaseSafe", "-mcpu=native", "-lc", `-femit-bin=${binary("zig-safe")}`] },
@@ -86,8 +88,8 @@ if (reuse) {
     dirty: execute("git", ["status", "--porcelain"]).stdout !== "",
     sources: Object.fromEntries(["loom", "c", "go", "rs", "zig"].map(ext => [ext, hash(readFileSync(source(ext)))])),
     loomCompilerSha256: hash(readFileSync(compiler)),
-    nativeToolSha256: hash(readFileSync(join(root, "target/debug/loom-native"))),
-    runtimeSha256: hash(readFileSync(process.env.LOOM_RUNTIME_LIBRARY ?? join(root, "target/debug", platform() === "win32" ? "loom_runtime.lib" : "libloom_runtime.a"))),
+    nativeToolSha256: hash(readFileSync(nativeTool)),
+    runtimeSha256: hash(readFileSync(runtime)),
     tools: {
       loom: execute(compiler, ["--version"]).stdout,
       c: execute(cc, ["--version"]).stdout,

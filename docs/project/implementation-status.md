@@ -117,8 +117,10 @@ roots cover records, active/nested enum payloads, dyn boxes, shared headers and
 backing buffers. Runtime copies and generated allocation-crossing snapshots
 reload relocated references; earlier arguments remain independent of later
 reassignments. Static Text is unchanged. This does not add ownership syntax,
-finalizers or a per-access barrier. Locals still have conservative root lifetimes;
-generational/concurrent collection and complete resource cleanup remain open.
+finalizers or a per-access barrier. Local shadow roots now clear after conservative
+last-read analysis, retaining cleanup continuations and loop backedges. Temporary
+snapshot lifetimes remain conservative; generational/concurrent collection and
+complete resource cleanup remain open.
 
 Ordinary `Float` values use IEEE binary64 arithmetic and native aggregate
 layouts, without implicit Int conversion. Source `std.float` owns decimal
