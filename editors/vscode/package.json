@@ -1,0 +1,42 @@
+{
+  "name": "loom-language",
+  "displayName": "Loom",
+  "description": "Loom syntax highlighting, compiler diagnostics, and formatting.",
+  "version": "0.0.1",
+  "publisher": "cpunion",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/cpunion/loom-lang", "directory": "editors/vscode" },
+  "engines": { "vscode": "^1.91.0" },
+  "categories": ["Programming Languages", "Formatters"],
+  "extensionKind": ["workspace"],
+  "main": "./client.js",
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": "limited", "description": "Highlighting works without trust; running the configured compiler requires workspace trust." },
+    "virtualWorkspaces": { "supported": false }
+  },
+  "contributes": {
+    "languages": [{ "id": "loom", "aliases": ["Loom", "loom"], "extensions": [".loom"], "configuration": "./language-configuration.json" }],
+    "grammars": [{ "language": "loom", "scopeName": "source.loom", "path": "./syntaxes/loom.tmLanguage.json" }],
+    "configuration": {
+      "title": "Loom",
+      "properties": {
+        "loom.executable": { "type": "string", "default": "loom", "scope": "resource", "description": "Loom compiler executable. Absolute paths are recommended; a bare name is found on PATH." },
+        "loom.stdRoot": { "type": "string", "default": "", "scope": "resource", "description": "Standard-library directory. Empty uses the compiler default; relative paths use the workspace folder." },
+        "loom.trace.server": { "type": "string", "enum": ["off", "messages", "verbose"], "default": "off", "description": "Language server protocol tracing (may include source text)." }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node --check client.js && node --check server.js && node --check compiler.js",
+    "test": "npm run check && node --test test/*.test.js",
+    "smoke": "node test/smoke.js",
+    "smoke:host": "node test/launch-host.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "10.1.1",
+    "vscode-languageserver": "10.1.1",
+    "vscode-languageserver-textdocument": "1.0.14",
+    "vscode-uri": "3.2.0"
+  },
+  "devDependencies": { "vscode-languageserver-protocol": "3.18.3" }
+}

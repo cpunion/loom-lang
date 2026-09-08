@@ -1,0 +1,282 @@
+import std.loom.parser.parse
+import std.loom.lexer.lex
+import std.loom.lexer.Token
+import std.loom.lexer.Kind
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.source.Diagnostic
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+import std.list.length
+import std.bytes.new
+import std.bytes.push
+import std.bytes.get
+import std.bytes.length
+import std.bytes.to_text
+import std.text.byte
+import std.text.length
+import std.text.slice
+import std.result.Result
+
+record Layout {
+    lines List[Int]
+    spaces List[Bool]
+    prefixes List[Bool]
+}
+
+record Output {
+    bytes Bytes
+    depth Int
+    line Bool
+}
+
+fn token_at(tokens List[Token], offset Int) Int {
+    var low = 0
+    var high = length(tokens) - 1
+    while low < high {
+        let middle = low +(high - low) / 2
+        if get(tokens, middle).span.start < offset {
+            low = middle + 1
+        } else {
+            high = middle
+        }
+    }
+    low
+}
+
+fn marks(node Node, tokens List[Token], layout Layout) {
+    let start = token_at(tokens, node.span.start)
+    var opening = start
+    while get(tokens, opening).kind == Kind.LParen || get(tokens, opening).kind == Kind.Newline {
+        opening = opening + 1
+    }
+    let actual_block = node.kind == NodeKind.Block && get(tokens, opening).kind == Kind.LBrace
+    if (node.kind == NodeKind.Type || node.kind == NodeKind.TupleType) && get(tokens, start).kind == Kind.LParen {
+        set(layout.spaces, start, true)
+    }
+    if node.kind == NodeKind.Unary ||(node.kind == NodeKind.Integer && length(node.value) > 0 && byte(node.value, 0) == 45) {
+        var prefix = start
+        while get(tokens, prefix).kind == Kind.LParen || get(tokens, prefix).kind == Kind.Newline {
+            prefix = prefix + 1
+        }
+        set(layout.prefixes, prefix, true)
+    }
+    // Joining an unparenthesized numeric receiver and numeric selector would
+    // turn two tokens into a Float literal: `1 .0` must not become `1.0`.
+    if node.kind == NodeKind.Select && length(node.value) > 0 && byte(node.value, 0) >= 48 && byte(node.value, 0) <= 57 {
+        let receiver = get(node.children, 0)
+        let token = get(tokens, token_at(tokens, receiver.span.start))
+        if (receiver.kind == NodeKind.Integer || receiver.kind == NodeKind.Float) &&(token.kind == Kind.Number || token.kind == Kind.Float) {
+            set(layout.spaces, token_at(tokens, receiver.span.end), true)
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if node.kind == NodeKind.File || actual_block ||
+        ((node.kind == NodeKind.Record || node.kind == NodeKind.Construct) && child.kind == NodeKind.Field) ||
+        (node.kind == NodeKind.Enum && child.kind == NodeKind.Variant) ||
+        ((node.kind == NodeKind.Concept || node.kind == NodeKind.Impl) &&(child.kind == NodeKind.Function || child.kind == NodeKind.AssociatedType)) ||
+        (node.kind == NodeKind.Match && child.kind == NodeKind.Arm) ||
+        child.kind == NodeKind.Requires || child.kind == NodeKind.Ensures {
+            let separation = if node.kind == NodeKind.File && index > 0 &&
+            (child.kind != NodeKind.Import || get(node.children, index - 1).kind != NodeKind.Import) {
+                2
+            } else {
+                1
+            }
+            set(layout.lines, token_at(tokens, child.span.start), separation)
+        }
+        marks(child, tokens, layout)
+        index = index + 1
+    }
+}
+
+fn append(buffer Bytes, text Text, start Int, end Int) {
+    var index = start
+    while index < end {
+        std.bytes.push(buffer, byte(text, index))
+        index = index + 1
+    }
+}
+
+fn newline(output Output) Output {
+    if !output.line {
+        std.bytes.push(output.bytes, 10)
+    }
+    Output {
+        bytes = output.bytes
+        depth = output.depth
+        line = true
+    }
+}
+
+fn blankline(output Output) Output {
+    let lined = newline(output)
+    let size = std.bytes.length(lined.bytes)
+    if size > 1 && std.bytes.get(lined.bytes, size - 2) != 10 {
+        std.bytes.push(lined.bytes, 10)
+    }
+    lined
+}
+
+fn finished(output Output) Text {
+    let text = to_text(newline(output).bytes)
+    var end = length(text)
+    while end > 1 && byte(text, end - 1) == 10 && byte(text, end - 2) == 10 {
+        end = end - 1
+    }
+    slice(text, 0, end)
+}
+
+fn write(output Output, text Text, start Int, end Int) Output {
+    if output.line {
+        var index = 0
+        while index < output.depth * 4 {
+            std.bytes.push(output.bytes, 32)
+            index = index + 1
+        }
+    }
+    append(output.bytes, text, start, end)
+    Output {
+        bytes = output.bytes
+        depth = output.depth
+        line = false
+    }
+}
+
+fn comment_start(text Text, start Int, end Int) Int {
+    var index = start
+    while index + 1 < end {
+        if byte(text, index) == 47 && byte(text, index + 1) == 47 {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn spaced(previous Token, current Token, force Bool, prefix Bool) Bool {
+    let left = previous.kind
+    let right = current.kind
+    if right == Kind.Dot {
+        return force
+    }
+    if left == Kind.Eof || right == Kind.Comma || right == Kind.RParen ||
+    right == Kind.RBracket || right == Kind.Question {
+        return false
+    }
+    if left == Kind.Dot || left == Kind.LParen || left == Kind.LBracket || prefix {
+        return false
+    }
+    if right == Kind.LBracket {
+        return false
+    }
+    if right == Kind.LParen {
+        return force ||(left == Kind.Name &&(previous.value == "if" || previous.value == "while" ||
+                previous.value == "match" || previous.value == "return" || previous.value == "assert" || previous.value == "discard"))
+    }
+    true
+}
+
+// Format parsed source without regenerating literals or comments from the AST.
+// Existing newlines remain statement/continuation boundaries. Preserve at most
+// one blank line; separate top-level declarations without detaching comments.
+pub fn format(text Text) Result[Text, Diagnostic] {
+    let tree = parse(text)?
+    let tokens = lex(text)?
+    let layout = Layout {
+        lines = new[Int]()
+        spaces = new[Bool]()
+        prefixes = new[Bool]()
+    }
+    var index = 0
+    while index < length(tokens) {
+        push(layout.lines, 0)
+        push(layout.spaces, false)
+        push(layout.prefixes, false)
+        index = index + 1
+    }
+    marks(tree, tokens, layout)
+    var output = Output {
+        bytes = std.bytes.new()
+        depth = 0
+        line = true
+    }
+    var previous = get(tokens, length(tokens) - 1)
+    var prefix = false
+    var pending = false
+    var offset = 0
+    var newlines = 0
+    index = 0
+    while index < length(tokens) {
+        let current = get(tokens, index)
+        let comment = comment_start(text, offset, current.span.start)
+        if comment >= 0 {
+            if output.line && output.depth == 0 {
+                var following = index
+                while get(tokens, following).kind == Kind.Newline {
+                    following = following + 1
+                }
+                if get(layout.lines, following) == 2 {
+                    output = blankline(output)
+                    set(layout.lines, following, 1)
+                }
+            }
+            if !output.line {
+                std.bytes.push(output.bytes, 32)
+            }
+            output = write(output, text, comment, current.span.start)
+            newlines = 0
+        }
+        offset = current.span.end
+        if current.kind == Kind.Newline {
+            newlines = newlines + 1
+            output = if newlines > 1 {
+                blankline(output)
+            } else {
+                newline(output)
+            }
+        } else {
+            if current.kind == Kind.Eof {
+                return Result.Ok(finished(output))
+            }
+            newlines = 0
+            let closing = current.kind == Kind.RBrace || current.kind == Kind.RParen || current.kind == Kind.RBracket
+            if closing {
+                output = Output {
+                    bytes = output.bytes
+                    depth = output.depth - 1
+                    line = output.line
+                }
+            }
+            let separation = get(layout.lines, index)
+            if separation == 2 {
+                output = blankline(output)
+            } else {
+                if pending || separation == 1 || current.kind == Kind.RBrace {
+                    output = newline(output)
+                }
+            }
+            if !output.line && spaced(previous, current, get(layout.spaces, index), prefix) {
+                std.bytes.push(output.bytes, 32)
+            }
+            output = write(output, text, current.span.start, current.span.end)
+            let opening = current.kind == Kind.LBrace || current.kind == Kind.LParen || current.kind == Kind.LBracket
+            if opening {
+                output = Output {
+                    bytes = output.bytes
+                    depth = output.depth + 1
+                    line = output.line
+                }
+            }
+            pending = current.kind == Kind.LBrace
+            previous = current
+            prefix = get(layout.prefixes, index)
+        }
+        index = index + 1
+    }
+    Result.Ok(finished(output))
+}

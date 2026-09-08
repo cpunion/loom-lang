@@ -1,0 +1,8 @@
+// Transport fixture only; real formatting is exercised by npm run smoke.
+let text = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { text += chunk; });
+process.stdin.on('end', () => {
+  if (text.includes('BAD_FORMAT')) { process.stderr.write('fixture formatting error'); process.exitCode = 1; return; }
+  setTimeout(() => process.stdout.write('fn main() {\n    assert true\n}\n'), text.includes('SLOW') ? 700 : 0);
+});

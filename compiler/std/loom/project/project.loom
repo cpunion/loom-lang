@@ -21,13 +21,38 @@ pub record SourceFile {
     test_only Bool
     trusted_std Bool
 }
-pub record ModuleInstance { name Text source Text }
-pub record PackageImport { spelling Text target Int }
-pub record Package { instance Int relative Text imports List[PackageImport] }
+
+pub record ModuleInstance {
+    name Text
+    source Text
+}
+
+pub record PackageImport {
+    spelling Text
+    target Int
+}
+
+pub record Package {
+    instance Int
+    relative Text
+    imports List[PackageImport]
+}
+
 // IDs belong to this selected-package closure, not to persistent source history.
 // A package is an instance plus a relative directory; names are display syntax.
-pub record Project { files List[SourceFile] modules List[ModuleInstance] packages List[Package] root Int }
-record ModuleRoot { name Text base Text dependencies List[Dependency] }
+pub record Project {
+    files List[SourceFile]
+    modules List[ModuleInstance]
+    packages List[Package]
+    root Int
+}
+
+record ModuleRoot {
+    name Text
+    base Text
+    dependencies List[Dependency]
+}
+
 record Loader {
     files List[SourceFile]
     modules List[ModuleRoot]
@@ -36,43 +61,65 @@ record Loader {
     active List[Int]
     complete List[Int]
     resolution Resolution
+    overlays List[OverlayFile]
+    failures List[LoadFailure]
 }
 
 pub fn package_label(modules List[ModuleInstance], packages List[Package], id Int) Text {
     let current = get(packages, id)
     let name = get(modules, current.instance).name
-    if current.relative == "" { name } else { qualify(name, current.relative) }
+    if current.relative == "" {
+        name
+    } else {
+        qualify(name, current.relative)
+    }
 }
+
 pub fn import_target(modules List[ModuleInstance], packages List[Package], owner Int, spelling Text) Int {
-    if package_label(modules, packages, owner) == spelling { return owner }
+    if package_label(modules, packages, owner) == spelling {
+        return owner
+    }
     let imports = get(packages, owner).imports
     var index = 0
     while index < length(imports) {
         let edge = get(imports, index)
-        if edge.spelling == spelling { return edge.target }
+        if edge.spelling == spelling {
+            return edge.target
+        }
         index = index + 1
     }
     -1
 }
+
 fn registered_package(loader Loader, owner Int, directory Text) Result[Int, Text] {
     let relative = package_name(directory, get(loader.modules, owner).base, "")?
     var index = 0
     while index < length(loader.packages) {
         let current = get(loader.packages, index)
-        if current.instance == owner && current.relative == relative { return Result.Ok(index) }
+        if current.instance == owner && current.relative == relative {
+            return Result.Ok(index)
+        }
         index = index + 1
     }
-    push(loader.packages, Package { instance = owner relative = relative imports = new[PackageImport]() })
+    push(loader.packages, Package {
+            instance = owner
+            relative = relative
+            imports = new[PackageImport]()
+        })
     Result.Ok(index)
 }
+
 fn package_seen(values List[Int], id Int, limit Int) Bool {
     var index = 0
     while index < limit {
-        if get(values, index) == id { return true }
+        if get(values, index) == id {
+            return true
+        }
         index = index + 1
     }
     false
 }
+
 fn imported_package(loader Loader, source Int, spelling Text, comptime fetch Bool) Result[(Int, Text), Text] {
     let current = get(loader.packages, source)
     let owner = imported_module(loader, current.instance, get(parts(spelling, 46), 0), fetch)?
@@ -80,10 +127,15 @@ fn imported_package(loader Loader, source Int, spelling Text, comptime fetch Boo
     let target = registered_package(loader, owner, directory)?
     var index = 0
     while index < length(current.imports) {
-        if get(current.imports, index).spelling == spelling { return Result.Ok((target, directory)) }
+        if get(current.imports, index).spelling == spelling {
+            return Result.Ok((target, directory))
+        }
         index = index + 1
     }
-    push(current.imports, PackageImport { spelling = spelling target = target })
+    push(current.imports, PackageImport {
+            spelling = spelling
+            target = target
+        })
     Result.Ok((target, directory))
 }
 
@@ -93,18 +145,21 @@ fn is_file(path Text) Bool {
         Result.Err(_) => false
     }
 }
+
 fn canonical(path Text) Result[Text, Text] {
     match canonicalize(path) {
         Result.Ok(value) => Result.Ok(value)
         Result.Err(_) => Result.Err(concat(path, ": cannot resolve filesystem path"))
     }
 }
+
 fn read(path Text) Result[Text, Text] {
     match read_text(path) {
         Result.Ok(value) => Result.Ok(value)
         Result.Err(_) => Result.Err(concat(path, ": cannot read UTF-8 source"))
     }
 }
+
 fn module_root(directory Text) Result[ModuleRoot, Text] {
     var current = directory
     while true {
@@ -113,25 +168,37 @@ fn module_root(directory Text) Result[ModuleRoot, Text] {
             return read_module(current)
         }
         let next = parent(current)
-        if next == current { return Result.Ok(ModuleRoot { name = "" base = directory dependencies = new[Dependency]() }) }
+        if next == current {
+            return Result.Ok(ModuleRoot {
+                    name = ""
+                    base = directory
+                    dependencies = new[Dependency]()
+                })
+        }
         current = next
     }
     Result.Err("unreachable module root")
 }
+
 fn package_name(directory Text, base Text, name Text) Result[Text, Text] {
-    if directory == base { return Result.Ok(name) }
+    if directory == base {
+        return Result.Ok(name)
+    }
     let relative = slice(directory, length(join_path(base, "")), length(directory))
     let segments = parts(relative, separator(directory))
     var index = 0
     var qualified = name
     while index < length(segments) {
         let part = get(segments, index)
-        if !segment(part) { return Result.Err(concat("invalid package directory ", part)) }
+        if !segment(part) {
+            return Result.Err(concat("invalid package directory ", part))
+        }
         qualified = qualify(qualified, part)
         index = index + 1
     }
     Result.Ok(qualified)
 }
+
 fn import_directory(loader Loader, owner Int, package Text) Result[Text, Text] {
     let segments = parts(package, 46)
     let module = get(loader.modules, owner)
@@ -142,7 +209,9 @@ fn import_directory(loader Loader, owner Int, package Text) Result[Text, Text] {
     var index = 1
     while index < length(segments) {
         let part = get(segments, index)
-        if !segment(part) { return Result.Err(concat("invalid package path ", package)) }
+        if !segment(part) {
+            return Result.Err(concat("invalid package path ", package))
+        }
         directory = join_path(directory, part)
         if is_file(join_path(directory, "loom.toml")) {
             return Result.Err(concat("import crosses a nested module boundary: ", package))
@@ -156,30 +225,56 @@ fn import_directory(loader Loader, owner Int, package Text) Result[Text, Text] {
     }
     Result.Ok(directory)
 }
+
 fn production(tree Node, tests Bool) Node {
-    if tests { return tree }
+    if tests {
+        return tree
+    }
     let children = new[Node]()
     var index = 0
     while index < length(tree.children) {
         let child = get(tree.children, index)
-        if child.kind != NodeKind.Function || !has(child, NodeKind.Test) { push(children, child) }
+        if child.kind != NodeKind.Function || !has(child, NodeKind.Test) {
+            push(children, child)
+        }
         index = index + 1
     }
-    Node { kind = tree.kind value = tree.value span = tree.span children = children }
+    Node {
+        kind = tree.kind
+        value = tree.value
+        span = tree.span
+        children = children
+    }
 }
+
 fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime fetch Bool) Result[Bool, Text] {
     let current = get(loader.packages, id)
     let owner = current.instance
     let module_name = get(loader.modules, owner).name
-    let package = if current.relative == "" { module_name } else { qualify(module_name, current.relative) }
+    let package = if current.relative == "" {
+        module_name
+    } else {
+        qualify(module_name, current.relative)
+    }
     if package_seen(loader.active, id, depth) {
         return Result.Err(concat("package import cycle through ", package))
     }
-    if package_seen(loader.complete, id, length(loader.complete)) { return Result.Ok(true) }
-    if depth == length(loader.active) { push(loader.active, id) } else { set(loader.active, depth, id) }
+    if package_seen(loader.complete, id, length(loader.complete)) {
+        return Result.Ok(true)
+    }
+    if depth == length(loader.active) {
+        push(loader.active, id)
+    } else {
+        set(loader.active, depth, id)
+    }
     let names = match entries(directory) {
         Result.Ok(value) => value
-        Result.Err(_) => { return Result.Err(concat(directory, ": cannot read directory")) }
+        Result.Err(_) => {
+            return Result.Err(concat(directory, ": cannot read directory"))
+        }
+    }
+    if length(loader.overlays) != 0 {
+        overlay_names(loader.overlays, directory, names)
     }
     let imports = new[Text]()
     let test_imports = new[Text]()
@@ -189,36 +284,82 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
         let name = get(names, index)
         let path = join_path(directory, name)
         let test_only = ends_with(name, "_test.loom")
-        if ends_with(name, ".loom") && (!test_only || tests) && is_file(path) {
-            let text = read(path)?
-            let tree = match std.loom.parser.parse(text) {
-                Result.Ok(value) => production(value, tests)
-                Result.Err(error) => { return Result.Err(render(path, text, error)) }
+        if ends_with(name, ".loom") &&(!test_only || tests) {
+            let physical = is_file(path)
+            let identity = if physical && length(loader.overlays) != 0 {
+                canonical(path)?
+            } else {
+                path
             }
-            let selected_imports = if test_only { test_imports } else { imports }
-            var item = 0
-            while item < length(tree.children) {
-                let node = get(tree.children, item)
-                if node.kind == NodeKind.Refined && package != "std.result" { include(selected_imports, "std.result") }
-                if node.kind == NodeKind.Import {
-                    let target = std.loom.project.package(node.value)
-                    if target == "" {
-                        return Result.Err(concat(path, ": imports name a module/package and declaration"))
-                    }
-                    if target != package { include(selected_imports, target) }
+            let overlay = if length(loader.overlays) == 0 {
+                -1
+            } else {
+                overlay_index(loader.overlays, identity)
+            }
+            if physical || overlay >= 0 {
+                let source_path = if overlay < 0 {
+                    path
+                } else {
+                    get(loader.overlays, overlay).path
                 }
-                item = item + 1
+                let text = if overlay < 0 {
+                    read(path)?
+                } else {
+                    get(loader.overlays, overlay).text
+                }
+                let tree = match std.loom.parser.parse(text) {
+                    Result.Ok(value) => production(value, tests)
+                    Result.Err(error) => {
+                        push(loader.failures, LoadFailure {
+                                path = source_path
+                                diagnostic = error
+                            })
+                        return Result.Err(render(source_path, text, error))
+                    }
+                }
+                let selected_imports = if test_only {
+                    test_imports
+                } else {
+                    imports
+                }
+                var item = 0
+                while item < length(tree.children) {
+                    let node = get(tree.children, item)
+                    if node.kind == NodeKind.Refined && package != "std.result" {
+                        include(selected_imports, "std.result")
+                    }
+                    if node.kind == NodeKind.Import {
+                        let target = std.loom.project.package(node.value)
+                        if target == "" {
+                            return Result.Err(concat(source_path, ": imports name a module/package and declaration"))
+                        }
+                        if target != package {
+                            include(selected_imports, target)
+                        }
+                    }
+                    item = item + 1
+                }
+                let resolved = if physical && length(loader.overlays) == 0 {
+                    canonical(path)?
+                } else {
+                    identity
+                }
+                push(loader.files, SourceFile {
+                        package = id
+                        path = source_path
+                        text = text
+                        tree = tree
+                        test_only = test_only
+                        trusted_std = inside(resolved, loader.std_root)
+                    })
+                count = count + 1
             }
-            let resolved = canonical(path)?
-            push(loader.files, SourceFile {
-                package = id path = path text = text tree = tree
-                test_only = test_only trusted_std = inside(resolved, loader.std_root)
-            })
-            count = count + 1
         }
         index = index + 1
     }
-    if count == 0 { return Result.Err(concat(directory, ": no selected Loom source files")) }
+    if count == 0 {
+        return Result.Err(concat(directory, ": no selected Loom source files"))
+    }
     index = 0
     while index < length(imports) {
         let target = get(imports, index)
@@ -242,46 +383,78 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
 // Only the selected root package contributes tests. Imports are directory
 // packages; compiler-owned intrinsic trust comes from each canonical file path.
 pub fn load(path Text, std_root Text, tests Bool) Result[Project, Text] {
-    load_selected(path, std_root, tests, false, "git")
+    load_selected(path, std_root, tests, false, "git", new[OverlayFile](), new[LoadFailure]())
 }
 
 // Resolve only this package's import closure. Tests are opt-in just as in load;
 // unrelated lock entries survive so resolving one package does not unlock others.
 pub fn resolve(path Text, std_root Text, tests Bool, git_tool Text) Result[Project, Text] {
-    load_selected(path, std_root, tests, true, git_tool)
+    load_selected(path, std_root, tests, true, git_tool, new[OverlayFile](), new[LoadFailure]())
 }
 
-fn load_selected(path Text, std_root Text, tests Bool, comptime fetch Bool, git_tool Text) Result[Project, Text] {
+fn load_selected(path Text, std_root Text, tests Bool, comptime fetch Bool, git_tool Text, overlays List[OverlayFile], failures List[LoadFailure]) Result[Project, Text] {
     let directory = canonical(path)?
     let is_directory = match kind(directory) {
         Result.Ok(value) => value == FileKind.Directory
         Result.Err(_) => false
     }
-    if !is_directory { return Result.Err("expected a package directory, not an individual source file") }
+    if !is_directory {
+        return Result.Err("expected a package directory, not an individual source file")
+    }
     let standard = canonical(std_root)?
     let discovered = module_root(directory)?
     let module = if discovered.name == "" && inside(directory, standard) {
-        ModuleRoot { name = "std" base = standard dependencies = new[Dependency]() }
-    } else { discovered }
-    let files = new[SourceFile]()
-    let resolution = Resolution { root = module.base tool = git_tool
-        locks = read_lock(module.base)? snapshots = new[Snapshot]() }
-    let loader = Loader {
-        files = files modules = new[ModuleRoot]() packages = new[Package]() std_root = standard
-        active = new[Int]() complete = new[Int]()
-        resolution = resolution
+        ModuleRoot {
+            name = "std"
+            base = standard
+            dependencies = new[Dependency]()
+        }
+    } else {
+        discovered
     }
-    discard register_module(loader, ModuleRoot { name = "std" base = standard dependencies = new[Dependency]() })?
+    let files = new[SourceFile]()
+    let resolution = Resolution {
+        root = module.base
+        tool = git_tool
+        locks = read_lock(module.base)?
+        snapshots = new[Snapshot]()
+    }
+    let loader = Loader {
+        files = files
+        modules = new[ModuleRoot]()
+        packages = new[Package]()
+        std_root = standard
+        active = new[Int]()
+        complete = new[Int]()
+        resolution = resolution
+        overlays = overlays
+        failures = failures
+    }
+    discard register_module(loader, ModuleRoot {
+            name = "std"
+            base = standard
+            dependencies = new[Dependency]()
+        })?
     let owner = register_module(loader, module)?
     let root = registered_package(loader, owner, directory)?
     discard visit(loader, root, directory, tests, 0, fetch)?
-    comptime if fetch { discard publish_lock(resolution)? }
+    comptime if fetch {
+        discard publish_lock(resolution)?
+    }
     let modules = new[ModuleInstance]()
     var index = 0
     while index < length(loader.modules) {
         let module = get(loader.modules, index)
-        push(modules, ModuleInstance { name = module.name source = module.base })
+        push(modules, ModuleInstance {
+                name = module.name
+                source = module.base
+            })
         index = index + 1
     }
-    Result.Ok(Project { files = files modules = modules packages = loader.packages root = root })
+    Result.Ok(Project {
+            files = files
+            modules = modules
+            packages = loader.packages
+            root = root
+        })
 }

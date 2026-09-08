@@ -1,11 +1,36 @@
 import std.result.Result
 import std.text.length
+import std.bytes.new
+import std.bytes.decode_utf8
 
 pub enum WriteError {
     Failed
 }
 
+pub enum ReadError {
+    Failed
+    Utf8
+}
+
 intrinsic fn write(handle Int, value Text, offset Int) Int
+
+intrinsic fn read(handle Int, buffer Bytes, limit Int) Int
+
+// Read standard input to EOF without closing the process-owned stream.
+pub fn read_text() Result[Text, ReadError] {
+    let buffer = new()
+    var count = read(0, buffer, 8192)
+    while count > 0 {
+        count = read(0, buffer, 8192)
+    }
+    if count < 0 {
+        return Result.Err(ReadError.Failed)
+    }
+    match decode_utf8(buffer) {
+        Result.Ok(text) => Result.Ok(text)
+        Result.Err(_) => Result.Err(ReadError.Utf8)
+    }
+}
 
 // Write UTF-8 to standard output without taking ownership of the stream.
 pub fn write_text(value Text) Result[Int, WriteError] {
@@ -21,7 +46,9 @@ fn write_all(handle Int, value Text) Result[Int, WriteError] {
     var offset = 0
     while offset < size {
         let count = write(handle, value, offset)
-        if count <= 0 { return Result.Err(WriteError.Failed) }
+        if count <= 0 {
+            return Result.Err(WriteError.Failed)
+        }
         offset = offset + count
     }
     Result.Ok(offset)

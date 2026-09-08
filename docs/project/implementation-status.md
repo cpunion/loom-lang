@@ -281,6 +281,17 @@ targets. Its ordinary semantic example uses only in-memory source and detects
 snapshot changes. Queries cover concrete instances; snapshot comparison does
 not monitor files or provide incremental reuse.
 
+Programming tools now include [`loom fmt`](../../compiler/loom/README.md#formatting-and-editor-feedback)
+and the reusable `std.loom.format.format` API. Formatting preserves parsed
+structure, comments, and literal spelling; native tests and real-source
+roundtrips check parseability and idempotence. `--check` is read-only,
+`--recursive` visits nested source directories, and `--stdin` serves editor
+buffers. The [VS Code development extension](../../editors/vscode/README.md)
+uses the same compiler for unsaved-buffer diagnostics and formatting, not a
+parallel language implementation. Real LSP transport and macOS VS Code
+extension-host tests cover unsaved edits, cleared errors, and applied formatting.
+Completion, navigation, rename, and incremental semantic caching are not implemented.
+
 [Compile-time execution](../../compiler/README.md#compile-time-execution) uses a
 bounded Loom evaluator over the native compiler's checked model. Explicit
 blocks support pure calls, local mutation, loops/recursion, and scalar or

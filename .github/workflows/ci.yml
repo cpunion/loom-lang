@@ -53,6 +53,13 @@ jobs:
           bash scripts/bootstrap.sh
           cargo test --locked --workspace
 
+      - name: Editor protocol and real compiler smoke
+        working-directory: editors/vscode
+        run: |
+          npm ci
+          npm test
+          npm run smoke
+
       - name: Export checked compiler for the Windows bootstrap
         run: target/loom emit-checked compiler/loom > target/compiler.checked
 

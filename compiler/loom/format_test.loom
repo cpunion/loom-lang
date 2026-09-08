@@ -1,0 +1,29 @@
+test fn formatter_modes_are_explicit_and_keep_standard_input_separate() {
+    let args = cli_arguments("fmt")
+    std.list.push(args, "--stdin")
+    match format_options(args) {
+        Result.Ok(options) => {
+            assert options.stdin && length(options.paths) == 0
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    std.list.push(args, "--check")
+    match format_options(args) {
+        Result.Err(_) => {
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+    let defaults = cli_arguments("fmt")
+    match format_options(defaults) {
+        Result.Ok(options) => {
+            assert length(options.paths) == 1 && get(options.paths, 0) == "."
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}

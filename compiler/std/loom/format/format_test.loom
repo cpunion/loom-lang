@@ -1,0 +1,77 @@
+fn formatted(text Text) Text {
+    match format(text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+fn tree(text Text) Node {
+    match parse(text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            tree("")
+        }
+    }
+}
+
+fn same_tree(left Node, right Node) Bool {
+    if left.kind != right.kind || left.value != right.value || length(left.children) != length(right.children) {
+        return false
+    }
+    var index = 0
+    while index < length(left.children) {
+        if !same_tree(get(left.children, index), get(right.children, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn round_trip(text Text) Text {
+    let output = formatted(text)
+    assert formatted(output) == output
+    assert same_tree(tree(text), tree(output))
+    output
+}
+
+test fn inline_members_and_blocks_get_structural_line_breaks() {
+    assert round_trip("record Pair[T] { first T second Int }\nenum Choice[T] { None Some(T) }\nfn main(){ let x=Pair { first=1 second=2 }\nif x.first==1 { assert true } else { discard x } }") ==
+    "record Pair[T] {\n    first T\n    second Int\n}\n\nenum Choice[T] {\n    None\n    Some(T)\n}\n\nfn main() {\n    let x = Pair {\n        first = 1\n        second = 2\n    }\n    if x.first == 1 {\n        assert true\n    } else {\n        discard x\n    }\n}\n"
+}
+
+test fn imports_generics_contracts_and_control_flow_preserve_meaning() {
+    discard round_trip("import std.list.new\nimport std.list.push\npub concept C { type Item[T]\nfn map[T](self Self, value T) T }\nimpl C for Int { type Item[T] = List[T]\nfn map[T](self Int,value T) T { value } }\nfn twice(x Int) Int requires x>=0 ensures result==x+x { x+x }\nfn f[T](x T) (T,Int) {\nvar n=0\nwhile n<2 { n=n+1 }\ndefer { discard n }\n(x, n)\n}\n")
+    discard round_trip("fn f(x Int) Int { match x { _ => if true { 1 } else { 2 } } }\nfn g(){ comptime if Int==Int { } else if false { } }")
+}
+
+test fn multiline_groups_postfix_and_unary_operators_stay_parseable() {
+    discard round_trip("fn call[T](value T) T { value }\nfn f(x Int) Int { let tuple=(\n-x,\n-(-1),\n)\nlet values List[\n(Int,Int),\n]=call[\nList[(Int,Int)]\n](\ncall[List[(Int,Int)]](missing()),\n)\ndiscard values\n(call(x)+\ntuple.0) }")
+    assert round_trip("fn f(x Int) Int { -x - -1 }\n") == "fn f(x Int) Int {\n    -x - -1\n}\n"
+    discard round_trip("fn f(){ discard 1 .0\ndiscard 1.0 .0\ndiscard ({ if true {} if false {} }) }")
+}
+
+test fn comments_unicode_and_literal_spelling_are_not_rewritten() {
+    assert round_trip("// 注释\r\nrecord 数据 { 值 Text // 字段\r\n}\r\nfn 名称(){ // body\r\nlet 文本=\"a\\n\\u{41}\\\"\" // tail\r\nlet 数值=00012\r\nlet 浮点=1.20e+03\r\ndiscard 文本\r\ndiscard 数值\r\ndiscard 浮点\r\n}// end") ==
+    "// 注释\nrecord 数据 {\n    值 Text // 字段\n}\n\nfn 名称() { // body\n    let 文本 = \"a\\n\\u{41}\\\"\" // tail\n    let 数值 = 00012\n    let 浮点 = 1.20e+03\n    discard 文本\n    discard 数值\n    discard 浮点\n} // end\n"
+    assert round_trip("// only\n\n") == "// only\n"
+    assert round_trip("") == ""
+    discard round_trip("fn f(){ // first\n// second\nlet x=(1, // item\n2)\ndiscard x\n}")
+    assert round_trip("fn f(){}\n// g documentation\nfn g(){\nlet x=1\n\n\ndiscard x\n}\n\n") ==
+    "fn f() {\n}\n\n// g documentation\nfn g() {\n    let x = 1\n\n    discard x\n}\n"
+}
+
+test fn invalid_source_reports_the_original_parser_diagnostic() {
+    match format("fn f() { let x: Int = 1 }") {
+        Result.Err(error) => {
+            assert error.span.start == 14
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+}

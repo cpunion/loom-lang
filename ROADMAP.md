@@ -231,6 +231,14 @@ and required prover without the compiler CLI/backend. Queries cover concrete
 instances, not every template or signature position; snapshot checks are not
 incremental reuse.
 
+Prioritize ordinary programming feedback alongside language work. Source
+formatting now has a shared `std.loom.format` implementation and `loom fmt`
+file, recursive, check-only, and stdin modes. The
+[VS Code development extension](editors/vscode/README.md) connects unsaved
+buffers to the same compiler for diagnostics and formatting. An actual VS Code
+extension-host smoke passes on macOS. Completion, navigation, rename, and incremental
+semantic reuse are subsequent tooling work, not completed language features.
+
 Bounded [compile-time execution](compiler/README.md#compile-time-execution) now
 uses the same checked model and a Loom-written evaluator. Explicit blocks
 support pure calls, local loops/recursion, and value results; `comptime if`

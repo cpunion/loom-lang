@@ -1,0 +1,28 @@
+import std.int.to_text
+import std.io.write_text
+import std.process.exit_code
+import std.result.Result
+import std.text.concat
+
+record Item {
+    price Int
+    quantity Int
+}
+
+fn total(item Item) Int {
+    item.price * item.quantity
+}
+
+fn main() {
+    let item = Item {
+        price = 12
+        quantity = 3
+    }
+    match write_text(concat(to_text(total(item)), "\n")) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            exit_code(1)
+        }
+    }
+}
