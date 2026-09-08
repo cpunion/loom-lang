@@ -4,6 +4,9 @@ import std.process.capture
 import std.process.SpawnError
 import std.list.new
 import std.list.push
+import std.list.get
+import std.list.length
+import std.option.Option
 import std.result.Result
 
 test fn empty_and_invalid_executables_are_errors() {
@@ -29,4 +32,33 @@ test fn empty_and_invalid_executables_are_errors() {
         Result.Err(error) => { assert error == SpawnError.Failed }
         Result.Ok(_) => { assert false }
     }
+}
+
+fn invalid_options(options Options) {
+    match capture(new[Text](), options) {
+        Result.Err(error) => { assert error == SpawnError.InvalidOptions }
+        Result.Ok(_) => { assert false }
+    }
+}
+
+test fn invalid_options_are_rejected_before_spawning() {
+    invalid_options(Options { directory = Option.Some("") clear_environment = false environment = new[EnvChange]() })
+    invalid_options(Options { directory = Option.Some("bad\0directory") clear_environment = false environment = new[EnvChange]() })
+    let names = new[Text]()
+    push(names, "")
+    push(names, "NAME=VALUE")
+    push(names, "NAME\0")
+    var index = 0
+    while index < length(names) {
+        let changes = new[EnvChange]()
+        push(changes, EnvChange.Set(get(names, index), "value"))
+        invalid_options(Options { directory = Option.None clear_environment = true environment = changes })
+        let removals = new[EnvChange]()
+        push(removals, EnvChange.Remove(get(names, index)))
+        invalid_options(Options { directory = Option.None clear_environment = false environment = removals })
+        index = index + 1
+    }
+    let changes = new[EnvChange]()
+    push(changes, EnvChange.Set("NAME", "bad\0value"))
+    invalid_options(Options { directory = Option.None clear_environment = false environment = changes })
 }

@@ -1,22 +1,34 @@
 import std.list.new
 import std.list.push
+import std.list.get
+import std.list.length
 import std.result.Result
 import std.bytes.new
+import std.option.Option
+import std.text.contains
+import std.text.concat
 
 intrinsic fn arg_count() Int
 intrinsic fn arg_text(index Int) Text
 intrinsic fn process_run(arguments List[Text]) Int
 intrinsic fn process_run_input(arguments List[Text], input Text) Int
-intrinsic fn process_capture(arguments List[Text], stdout Bytes, stderr Bytes) Int
+intrinsic fn process_capture_configured(arguments List[Text], directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int
 intrinsic fn exit(code Int)
 
-pub enum SpawnError { EmptyArguments Failed Terminated }
+pub enum SpawnError { EmptyArguments Failed Terminated InvalidOptions }
 pub enum ExitStatus { Exited(Int) Terminated }
 pub record Output { status ExitStatus stdout Bytes stderr Bytes }
+pub enum EnvChange { Set(Text, Text) Remove(Text) }
+pub record Options {
+    directory Option[Text]
+    clear_environment Bool
+    environment List[EnvChange]
+}
 
 fn outcome(status Int) Result[Int, SpawnError] {
     if status == -2 { return Result.Err(SpawnError.EmptyArguments) }
     if status == -3 { return Result.Err(SpawnError.Terminated) }
+    if status == -4 { return Result.Err(SpawnError.InvalidOptions) }
     if status < 0 { return Result.Err(SpawnError.Failed) }
     Result.Ok(status)
 }
@@ -33,9 +45,43 @@ pub fn run_input(arguments List[Text], input Text) Result[Int, SpawnError] {
 // Stdin is closed. Both streams are drained concurrently into fresh binary
 // buffers; nonzero exits and termination without an exit code preserve output.
 pub fn capture(arguments List[Text]) Result[Output, SpawnError] {
+    capture(arguments, Options { directory = Option.None clear_environment = false environment = new[EnvChange]() })
+}
+
+fn valid_name(name Text) Bool {
+    name != "" && !contains(name, "=") && !contains(name, "\0")
+}
+
+// Changes are applied in order, only to this child. None inherits the working
+// directory; Some("") is invalid. An absolute executable avoids platform-specific
+// relative-path lookup. Clearing the child environment is not a sandbox.
+pub fn capture(arguments List[Text], options Options) Result[Output, SpawnError] {
+    let directory = match options.directory {
+        Option.None => "",
+        Option.Some(value) => {
+            if value == "" || contains(value, "\0") { return Result.Err(SpawnError.InvalidOptions) }
+            value
+        }
+    }
+    let changes = new[Text]()
+    var index = 0
+    while index < length(options.environment) {
+        let entry = match get(options.environment, index) {
+            EnvChange.Set(name, value) => {
+                if !valid_name(name) || contains(value, "\0") { return Result.Err(SpawnError.InvalidOptions) }
+                concat(concat(name, "="), value)
+            }
+            EnvChange.Remove(name) => {
+                if !valid_name(name) { return Result.Err(SpawnError.InvalidOptions) }
+                name
+            }
+        }
+        push(changes, entry)
+        index = index + 1
+    }
     let stdout = std.bytes.new()
     let stderr = std.bytes.new()
-    let code = process_capture(arguments, stdout, stderr)
+    let code = process_capture_configured(arguments, directory, if options.clear_environment { 1 } else { 0 }, changes, stdout, stderr)
     let status = if code == -3 { ExitStatus.Terminated } else { ExitStatus.Exited(outcome(code)?) }
     Result.Ok(Output { status = status stdout = stdout stderr = stderr })
 }

@@ -163,6 +163,12 @@ back into precisely rooted Loom Bytes after the child is reaped. Failure cleanup
 handles the direct child, not a process tree. A support checkpoint precedes the
 public intrinsic declaration. This is synchronous tooling groundwork, not an
 async executor, streaming process API or completed Git dependency resolver.
+Its configuration overload now supplies child-local cwd and ordered environment
+edits, optionally starting from an empty environment. The old private capture
+operation is removed; both public forms share one native boundary. Source
+`std.env.get` distinguishes absent, empty and non-UTF-8 values without logging
+contents or mutating the process environment. Neither API implements Git
+authentication policy or admits external state into compile-time evaluation.
 
 The native toolchain uses Rust 1.88 and LLVM 22. macOS, Linux, and Windows pass
 the [full bootstrap and native gate](https://github.com/cpunion/loom-lang/actions/runs/34022948294).

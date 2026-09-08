@@ -133,6 +133,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/result",
         "std/unicode",
         "std/fs",
+        "std/env",
         "std/process",
         "examples/scalar",
         "examples/data",

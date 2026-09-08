@@ -1,0 +1,5 @@
+test fn invalid_names_are_not_missing_variables() {
+    assert match get("") { Result.Err(error) => error == EnvError.InvalidName, _ => false }
+    assert match get("name=value") { Result.Err(error) => error == EnvError.InvalidName, _ => false }
+    assert match get("name\0tail") { Result.Err(error) => error == EnvError.InvalidName, _ => false }
+}
