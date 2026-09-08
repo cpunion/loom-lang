@@ -141,6 +141,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/env",
         "std/process",
         "examples/scalar",
+        "examples/contracts",
         "examples/receipt",
         "examples/wordcount",
         "examples/wordcount/stats",

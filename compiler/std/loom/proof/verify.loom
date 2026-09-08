@@ -1,4 +1,5 @@
 import std.loom.typed.Function
+import std.loom.typed.Program
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.list.new
@@ -7,13 +8,29 @@ import std.list.push
 import std.list.length
 import std.result.Result
 
+fn postcondition_holds(condition Expr, state State, depth Int) Result[Bool, Text] {
+    if depth <= 0 { return Result.Err("proof predicate depth budget exhausted") }
+    if holds(Predicate.Constant(false), state.facts) { return Result.Ok(true) }
+    if condition.kind == ExprKind.Binary && (condition.text == "&&" || condition.text == "||") {
+        let left = get(condition.children, 0)
+        let right = get(condition.children, 1)
+        let fact = boolean(pure(left, state)?)?
+        if condition.text == "||" {
+            if holds(fact, state.facts) { return Result.Ok(true) }
+            return postcondition_holds(right, assume(state, not(fact)), depth - 1)
+        }
+        if !postcondition_holds(left, state, depth - 1)? { return Result.Ok(false) }
+        return postcondition_holds(right, assume(state, fact), depth - 1)
+    }
+    Result.Ok(holds(boolean(pure(condition, state)?)?, state.facts))
+}
 fn returned(function Function, state State, value Value) Result[Bool, Text] {
     let returned = assigned(state, function.result_local, value)
     var index = 0
     while index < length(function.postconditions) {
         let condition = get(function.postconditions, index)
         discard defined(condition, returned)?
-        if !holds(boolean(pure(condition, returned)?)?, returned.facts) {
+        if !postcondition_holds(condition, returned, 256)? {
             return Result.Err("required postcondition is not proved by the bounded scalar prover")
         }
         index = index + 1
@@ -164,4 +181,14 @@ pub fn verify(function Function) Result[Bool, Text] {
         index = index + 1
     }
     Result.Ok(true)
+}
+
+// Contract calls belong to this checked helper closure. Expansion is symbolic,
+// not evaluation of samples, and leaves ordinary function-body calls unchanged.
+// With no postconditions, entry predicates still validate their helper closure
+// but do not invoke the narrower required-proof arithmetic fragment.
+pub fn verify_with_helpers(program Program, function Function) Result[List[Expr], Text] {
+    let expanded = expanded_contracts(program, function)?
+    if length(function.postconditions) != 0 { discard verify(expanded)? }
+    Result.Ok(expanded.postconditions)
 }

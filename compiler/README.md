@@ -1037,12 +1037,22 @@ For example, replacing `self >= 0` above with `nonnegative(self)` can still remo
 the check when `nonnegative` returns `value >= 0`. A helper returning `true` after
 `let unused = value + 1` cannot discard a possible overflow. Unsupported helper
 control flow, indirect calls or exhausted expansion retain runtime checks.
-Required function contracts remain call-free; shared-container constraints,
-mutable flow facts and invariant-aware proofs over refined parameters remain open.
+Shared-container constraints, mutable flow facts and invariant-aware proofs over
+refined parameters remain open.
 
 `requires` is checked before the callee body. Every declared `ensures` must be
 proved; unknown or unsupported proofs reject the build, including for functions
 outside the emitted entry closure. There is no runtime postcondition fallback.
+
+Function contracts can reuse direct, acyclic scalar helpers with immutable locals
+and tail expressions/returns. The [contract example](examples/contracts/README.md)
+shows a predicate with its own `requires`: proving its returned Boolean alone is
+not enough; the caller must also establish that requirement. Expansion preserves
+multiple parameters, short-circuit guards, eager arguments and unused arithmetic.
+Helpers used only by `ensures` do not enter native reachability. Their actual
+bodies and own contracts are still checked in their defining scope, including
+when the caller is unused. Verified postconditions retain call-free checked
+expressions for compile-time execution.
 
 The current proof fragment supports scalar linear arithmetic, comparisons,
 Boolean facts, local assignments, and acyclic branches/returns. It reasons from
@@ -1051,9 +1061,10 @@ provides a fact only after that assertion succeeds; the compiler never inserts
 an assertion to rescue a failed postcondition proof. Postcondition arithmetic
 must itself be defined within `Int` bounds.
 
-Calls, loops, nonlinear arithmetic and division in a function requiring proof
-are outside this first proof fragment. Contracts themselves are call-free until
-the prover supports pure calls. Solver work is bounded; exhaustion is a diagnostic,
+General calls in the function body, helper loops/recursion, dynamic or indirect
+helper calls, nonlinear arithmetic and nonconstant division remain outside this
+proof fragment. Required Float proofs remain unsupported, while pure Float entry
+predicates can run normally. Solver work is bounded; exhaustion is a diagnostic,
 not permission to trust an obligation. These are normal-return guarantees, not
 proofs of termination or absence of runtime faults.
 
@@ -1167,8 +1178,8 @@ type and purity checks.
 
 The Loom-written evaluator consumes the same checked model as native lowering;
 constraint folding and pure-predicate validation use this engine too.
-Evaluation is not proof: function `requires`/`ensures` remain call-free and
-declared postconditions still require the existing prover. Variadics, typed
+Evaluation is not proof: helper calls in function contracts undergo symbolic
+expansion, and declared postconditions still require the prover. Variadics, typed
 macros, and broader compile-time reflection remain later work.
 Float compile-time operations and numeric codecs use the same IEEE behavior as
 native code, including NaN, infinity, signed zero and subnormals. Float/refined

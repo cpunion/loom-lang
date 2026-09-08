@@ -148,6 +148,6 @@ test fn required_postconditions_have_no_runtime_fallback() {
     rejects("fn wrong(x Int) Int ensures result > x { x }")
     rejects("fn unknown(x Int) Int ensures result >= 0 { x * x }")
     rejects("fn hidden(x Int) Int { x }\nfn unverifiable(x Int) Int ensures result == x { hidden(x) }")
-    rejects("fn effect() Bool { true }\nfn invalid() requires effect() {}")
+    discard accepted("fn allowed() Bool { true }\nfn valid() requires allowed() {}")
     rejects("fn f(result Int) Int { result }")
 }
