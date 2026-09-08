@@ -44,9 +44,21 @@ async function main() {
     assert.match(loops[0].newText, /\n {12}continue\n/);
     assert.match(loops[0].newText, /\n {8}break\n/);
     assert.match(loops[0].newText, /let values = \[1, 2\]/);
+    const indexed = 'fn main(){let values=[1,2]\nvalues[0]=true\nlet first=values[0]\nassert first==4}\n';
+    await client.change(file, indexed, 5);
+    assert.ok((await client.wait(file, 5)).diagnostics.length > 0);
+    await client.change(file, indexed.replace('=true', '=4'), 6);
+    assert.deepEqual((await client.wait(file, 6)).diagnostics, []);
+    const receiver = await client.rpc.sendRequest('textDocument/hover', { ...params, position: { line: 2, character: 12 } });
+    assert.ok(receiver.contents.some(item => item.value === 'List[Int]'));
+    const element = await client.rpc.sendRequest('textDocument/hover', { ...params, position: { line: 3, character: 7 } });
+    assert.ok(element.contents.some(item => item.value === 'Int'));
+    const indexing = await client.rpc.sendRequest('textDocument/formatting', { textDocument: { uri: URI.file(file).toString() }, options: { tabSize: 4, insertSpaces: true } });
+    assert.match(indexing[0].newText, /values\[0\] = 4/);
+    assert.match(indexing[0].newText, /let first = values\[0\]/);
     assert.equal(await fs.readFile(file, 'utf8'), saved);
     await assert.rejects(fs.access(helper), { code: 'ENOENT' });
-    console.log('Real compiler LSP smoke passed: unsaved diagnostics, sibling overlay, type hover, definition, loop scope/formatting, no source writes.');
+    console.log('Real compiler LSP smoke passed: unsaved diagnostics, sibling overlay, type hover, definition, loops, indexed reads/writes, formatting, no source writes.');
   } finally { await client.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

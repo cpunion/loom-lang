@@ -165,9 +165,11 @@ test fn composite_type_guards_preserve_type_arguments() {
     let condition = child(child(child(body(child(tree, 0)), 0), 0), 0)
     assert condition.kind == NodeKind.Binary && condition.value == "!="
     let left = child(condition, 0)
-    assert left.kind == NodeKind.Type && left.value == "List"
-    assert child(left, 0).kind == NodeKind.Type && child(left, 0).value == "Box"
-    assert child(child(left, 0), 0).value == "T"
-    assert child(child(child(condition, 1), 0), 0).value == "Text"
+    assert left.kind == NodeKind.Apply && child(left, 0).value == "List"
+    let nested = child(child(left, 1), 0)
+    assert nested.kind == NodeKind.Apply && child(nested, 0).value == "Box"
+    assert child(child(nested, 1), 0).value == "T"
+    let right_nested = child(child(child(condition, 1), 1), 0)
+    assert child(child(right_nested, 1), 0).value == "Text"
     assert rejected("fn f[T]() Int { comptime if T == List[Int] { 1 } else { let = 2 } }").message == "expected a name"
 }

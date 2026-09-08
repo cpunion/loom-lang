@@ -15,7 +15,7 @@ test fn tuple_types_cover_annotations_and_generic_arguments() {
     assert child(child(body(function), 0), 0).kind == NodeKind.TupleType
     let nested = child(body(function), 1)
     assert child(child(nested, 0), 0).kind == NodeKind.TupleType
-    assert child(child(child(nested, 1), 0), 0).kind == NodeKind.TupleType
+    assert child(child(child(nested, 1), 0), 0).kind == NodeKind.Tuple
     let grouped = child(tree, 3)
     assert child(child(child(grouped, 1), 0), 0).kind == NodeKind.Type
     assert child(child(grouped, 2), 0).value == "Int"

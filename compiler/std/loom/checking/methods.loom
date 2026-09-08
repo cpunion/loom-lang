@@ -111,9 +111,28 @@ fn method_call(context Context, node Node, source Node, method_name Text, types 
         var field = 0
         while field < length(receiver_type.fields) {
             let current = get(receiver_type.fields, field)
+            if current.name == method_name && get(context.env.types, current.ty).kind == TypeKind.List && length(types) != 0 {
+                // Brackets may index a function-valued field or specialize a
+                // concept method. A valid value reading does not require the
+                // index expression to also name a type.
+                let indexed = match member(context, node, receiver, method_name) {
+                    Result.Ok(value) => index_read(context, node, value, types)
+                    Result.Err(failed) => Result.Err(failed)
+                }
+                match indexed {
+                    Result.Ok(callee) => {
+                        if get(context.env.types, callee.ty).kind == TypeKind.Function {
+                            let methods = if index_type_arguments(context, types) { options } else { new[Int]() }
+                            return field_call(context, node, source, receiver, callee, inputs, methods, types, expected)
+                        }
+                        if length(options) == 0 { return call_value(context, node, callee, new[Node](), inputs) }
+                    }
+                    Result.Err(failed) => { if length(options) == 0 { return Result.Err(failed) } }
+                }
+            }
             if current.name == method_name && get(context.env.types, current.ty).kind == TypeKind.Function && length(types) == 0 {
                 let callee = member(context, node, receiver, method_name)?
-                return field_call(context, node, source, receiver, callee, inputs, options, expected)
+                return field_call(context, node, source, receiver, callee, inputs, options, new[Node](), expected)
             }
             field = field + 1
         }

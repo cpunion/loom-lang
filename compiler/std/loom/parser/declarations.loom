@@ -284,5 +284,13 @@ fn statement(cursor Cursor) Result[Step, Diagnostic] {
         let value = expr(next(named.rest), 0, false, true)?
         return Result.Ok(done(cursor, value.rest, NodeKind.Assign, named.node.value, one(value.node)))
     }
-    expr(cursor, 0, false, true)
+    let target = expr(cursor, 0, false, true)?
+    if at(target.rest, Kind.Assign) {
+        if target.node.kind != NodeKind.Apply && target.node.kind != NodeKind.Index {
+            return Result.Err(error(target.rest, "assignment requires a variable or container index"))
+        }
+        let value = expr(next(target.rest), 0, false, true)?
+        return Result.Ok(done(cursor, value.rest, NodeKind.IndexAssign, "", two(target.node, value.node)))
+    }
+    Result.Ok(target)
 }

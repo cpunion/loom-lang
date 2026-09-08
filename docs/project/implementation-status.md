@@ -340,6 +340,11 @@ and context-typed `[]`, including generic, constrained and dynamic elements.
 Runtime construction reserves the known capacity and writes elements directly;
 moving-GC tests cover earlier element snapshots and nested sharing. General
 compile-time graph materialization still uses allocate-then-fill construction.
+List/Bytes subscript reads and writes now reuse checked native/evaluation
+primitives. Shared `let` aliases can update elements; only rebinding needs `var`.
+Binding distinguishes indexing from generic application, including indexed
+function calls, and rejects genuinely ambiguous field/method calls. Tests cover
+operand order, alias growth, moving-GC snapshots, bounds/range faults and cleanup.
 
 Normal compiler iteration can use a [single development rebuild](../../compiler/README.md#build-and-try-it);
 CI retains full bootstrap generation checks. The initial

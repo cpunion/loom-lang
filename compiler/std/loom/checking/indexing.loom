@@ -1,0 +1,61 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.TypeKind
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+fn index_element(context Context, node Node, receiver Expr) Result[Int, Failure] {
+    let shape = get(context.env.types, receiver.ty)
+    if shape.kind == TypeKind.List { return Result.Ok(get(shape.arguments, 0)) }
+    if shape.kind == TypeKind.Bytes { return Result.Ok(1) }
+    Result.Err(error(context, node, "indexing requires a List or Bytes value"))
+}
+fn index_arguments(context Context, node Node, receiver Expr, indices List[Node]) Result[List[Expr], Failure] {
+    if length(indices) != 1 { return Result.Err(error(context, node, "indexing requires exactly one Int index")) }
+    Result.Ok(pair(receiver, expr(context, get(indices, 0), 1)?))
+}
+fn index_read(context Context, node Node, receiver Expr, indices List[Node]) Result[Expr, Failure] {
+    let element = index_element(context, node, receiver)?
+    let values = index_arguments(context, node, receiver, indices)?
+    let primitive = if receiver.ty == 4 { "bytes_get" } else { "list_get" }
+    Result.Ok(expression(ExprKind.Intrinsic, element, node, primitive, -1, values, all_fall(values)))
+}
+// Only used after a bracket expression has already checked as an Int index.
+// The alternate generic-method interpretation must independently resolve types.
+fn index_type_arguments(context Context, arguments List[Node]) Bool {
+    var index = 0
+    while index < length(arguments) {
+        match context_type(context, get(arguments, index)) {
+            Result.Ok(_) => {}
+            Result.Err(_) => { return false }
+        }
+        index = index + 1
+    }
+    true
+}
+fn application(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let receiver = child(node, 0)
+    let arguments = child(node, 1).children
+    let first = slice(receiver.value, 0, first_dot(receiver.value))
+    if lookup(context, first) >= 0 {
+        return index_read(context, node, expr(context, receiver, -1)?, arguments)
+    }
+    function_value(context, node, referenced_functions(context, receiver.value), arguments, expected)
+}
+fn index_assignment(context Context, node Node) Result[Expr, Failure] {
+    let target = child(node, 0)
+    let receiver = expr(context, child(target, 0), -1)?
+    let element = index_element(context, target, receiver)?
+    let indices = child(target, 1).children
+    let values = index_arguments(context, target, receiver, indices)?
+    push(values, expr(context, child(node, 1), element)?)
+    // Evaluate the container, index and replacement once, in source order. The
+    // existing primitive checks bounds after argument evaluation, as set() does.
+    let primitive = if receiver.ty == 4 { "bytes_set" } else { "list_set" }
+    Result.Ok(expression(ExprKind.Intrinsic, 0, node, primitive, -1, values, all_fall(values)))
+}

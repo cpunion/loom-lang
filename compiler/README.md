@@ -504,11 +504,35 @@ Runtime literals allocate one header and, when nonempty, one backing store of
 the known capacity. Generated code writes typed elements directly, without a
 push/growth check per element. Compile-time literals use the same sharing rules;
 materializing general compile-time object graphs still uses the existing
-allocate-then-fill path to preserve aliases and cycles. Access and mutation use
-`std.list.get`, `set`, and `push`; list indexing/repetition syntax is not included.
+allocate-then-fill path to preserve aliases and cycles. `std.list.push` grows a
+List; repetition syntax is not implemented.
 An element block currently needs a value-producing path: an unconditional
 `[{ return }]` is rejected even with a List type context. General typing of
 non-returning expressions remains incomplete, as it is for tuples and bindings.
+
+List and Bytes support `values[index]` and `values[index] = replacement`:
+
+```loom
+let values = [1, 2, 3]
+let alias = values
+alias[1] = 7
+assert values[1] == 7
+```
+
+`let` prevents rebinding, not shared element updates. Indices are Int; List
+updates check the element type and Bytes updates require an Int in `0..255`.
+Negative or out-of-range indices fault. Receiver, index and replacement evaluate
+once, left to right; final bounds checks follow operand evaluation, as in
+`std.list.set`. Nested targets first evaluate their intermediate reads. Growing
+an alias or triggering GC while evaluating an operand does not change the selected
+container or leave a stale element pointer. The same operations work at compile
+time and reuse direct native loads/stores without a new runtime dispatch layer.
+
+Binding distinguishes `functions[i](value)` from `identity[Int](value)`; spelling
+case is irrelevant. If an indexed function field and a generic concept method
+both match, select `(holder.callbacks)[i](value)` or
+`Concept.callbacks[T](holder, value)` explicitly. Text and Map indexing are not
+provided; their source-library APIs retain explicit encoding and missing-key policy.
 
 ## Hash collections
 

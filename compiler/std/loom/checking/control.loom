@@ -15,7 +15,7 @@ import std.list.length
 import std.result.Result
 
 fn statement_kind(kind NodeKind) Bool {
-    kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign || kind == NodeKind.Return ||
+    kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign || kind == NodeKind.IndexAssign || kind == NodeKind.Return ||
     kind == NodeKind.Assert || kind == NodeKind.Discard || kind == NodeKind.While || kind == NodeKind.Destructure || kind == NodeKind.Defer ||
     kind == NodeKind.Break || kind == NodeKind.Continue
 }
@@ -29,6 +29,7 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
         return Result.Ok(Step { context = context expression = expression(ExprKind.Block, 0, node, "", -1, pair(cleanup, exit), false) })
     }
     if kind == NodeKind.Defer { return registered_cleanup(context, node) }
+    if kind == NodeKind.IndexAssign { return Result.Ok(Step { context = context expression = index_assignment(context, node)? }) }
     if kind == NodeKind.Destructure { return destructure(context, node, boundary) }
     if kind == NodeKind.Let || kind == NodeKind.Var {
         let annotation = if length(node.children) == 2 { context_type(context, child(node, 0))? } else { -1 }

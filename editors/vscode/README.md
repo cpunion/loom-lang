@@ -60,6 +60,9 @@ from the repository root; the program prints `8`. Change the limit from `10` to
 diagnostic, then restore it. The example uses `[1, -9, 3, 4, 8]`; the tests also
 pass `[]` to a `List[Int]` parameter. Try replacing one integer with `true` to
 see an element-type diagnostic.
+The loop reads `values[index]`; its tests also update a shared alias with
+`alias[1] = 7`. Change that replacement to `true` to see a type error, then
+restore it and run the tests again.
 
 ## Behavior and tests
 

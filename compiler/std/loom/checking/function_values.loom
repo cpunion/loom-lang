@@ -102,7 +102,7 @@ fn call_value(context Context, node Node, callee Expr, types List[Node], inputs 
     }
     Result.Ok(expression(ExprKind.IndirectCall, get(shape.arguments, count), node, "", -1, values, all_fall(values)))
 }
-fn field_call(context Context, node Node, source Node, receiver Expr, callee Expr, inputs List[Node], options List[Int], expected Int) Result[Expr, Failure] {
+fn field_call(context Context, node Node, source Node, receiver Expr, callee Expr, inputs List[Node], options List[Int], types List[Node], expected Int) Result[Expr, Failure] {
     if length(options) == 0 { return call_value(context, node, callee, new[Node](), inputs) }
     let shape = get(context.env.types, callee.ty).arguments
     let count = length(shape) - 1
@@ -116,7 +116,7 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
         var expected_argument = -1
         if length(options) == 1 {
             let method = get(context.env.signatures, get(options, 0))
-            let arguments = supplied(context, node, new[Node](), method.parameters)?
+            let arguments = supplied_call(context, node, types, method)?
             discard infer(context.env, get(method.params, 0), receiver.ty, arguments)
             let method_type = hint(context, get(method.params, index + 1), arguments, node)?
             if count != length(inputs) || method_type == get(shape, index) { expected_argument = method_type }
@@ -129,9 +129,9 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
         }
         index = index + 1
     }
-    let methods = matching_overloads(context, node, options, new[Node](), values, expected)?
+    let methods = matching_overloads(context, node, options, types, values, expected)?
     if field_matches && length(methods.candidates) != 0 {
-        return Result.Err(error(context, node, "ambiguous function field and concept method; use (value.field)(...) or Concept.method(value, ...)"))
+        return Result.Err(error(context, node, "ambiguous function field and concept method; parenthesize the field or use Concept.method(value, ...)"))
     }
     if field_matches {
         let arguments = expressions(callee)

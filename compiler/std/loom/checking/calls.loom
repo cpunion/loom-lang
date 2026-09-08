@@ -144,6 +144,9 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         if package(node.value) == "" {
             let callee = Node { kind = NodeKind.Name value = node.value span = node.span children = new[Node]() }
             let value = expr(context, callee, -1)?
+            if length(types) != 0 && (get(context.env.types, value.ty).kind == TypeKind.List || value.ty == 4) {
+                return call_value(context, node, index_read(context, node, value, types)?, new[Node](), inputs)
+            }
             if get(context.env.types, value.ty).kind != TypeKind.Function { return Result.Err(error(context, node, "a local value is not callable")) }
             return call_value(context, node, value, types, inputs)
         }

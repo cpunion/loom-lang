@@ -32,8 +32,8 @@ test fn implements_conditions_and_expression_receivers_preserve_chaining() {
     let tree = parsed("fn select[T](value T) Text { comptime if List[T] implements app.Display { value.display() } else { unavailable() } }\nfn f() { make().display[Int](1)?.0\n(make().child).display()\n}")
     let condition = child(child(child(body(child(tree, 0)), 0), 0), 0)
     assert condition.kind == NodeKind.Implements
-    assert child(condition, 0).kind == NodeKind.Type && child(condition, 0).value == "List"
-    assert child(child(condition, 0), 0).value == "T"
+    assert child(condition, 0).kind == NodeKind.Apply && child(child(condition, 0), 0).value == "List"
+    assert child(child(child(condition, 0), 1), 0).value == "T"
     assert child(condition, 1).kind == NodeKind.Type && child(condition, 1).value == "app.Display"
     let selected = child(body(child(tree, 1)), 0)
     assert selected.kind == NodeKind.Select && selected.value == "0"
@@ -71,7 +71,8 @@ test fn concept_syntax_reports_incomplete_and_reserved_forms() {
     assert rejected("fn f[impl]() {}").message == "expected a name"
     assert rejected("fn f[T Display +]() {}").message == "expected a name"
     assert rejected("fn f() { let implements = 1 }").message == "expected a name"
-    assert rejected("fn f() { make().display[Int] }").message == "expected '(' after method type arguments"
+    // A field may now be indexed; binding decides whether it exists and is a List.
+    assert child(body(child(parsed("fn f() { make().display[Int] }"), 0)), 0).kind == NodeKind.Index
     assert rejected("fn f[T]() Int { comptime if T implements Display { 1 } else { let = 2 } }").message == "expected a name"
     let defaults = parsed("concept C { fn value(self Self) Int { 1 }\nfn reset(self Self)\n{}\nfn required(self Self) Int\n}")
     assert body(child(child(defaults, 0), 0)).kind == NodeKind.Block

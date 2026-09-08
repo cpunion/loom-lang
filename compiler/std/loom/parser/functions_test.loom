@@ -18,8 +18,8 @@ test fn arbitrary_callees_chain_without_changing_named_calls() {
     let tree = parsed("fn main() { let action = identity[Int]\nlet first = (action)(1)\nlet second = choose()(2)\nlet third = holder.action(3) }")
     let body = child(child(tree, 0), 2)
     let reference = child(child(body, 0), 0)
-    assert reference.kind == NodeKind.Type && reference.value == "identity"
-    assert child(reference, 0).value == "Int"
+    assert reference.kind == NodeKind.Apply && child(reference, 0).value == "identity"
+    assert child(child(reference, 1), 0).value == "Int"
     let first = child(child(body, 1), 0)
     assert first.kind == NodeKind.Invoke && child(first, 0).value == "action"
     let second = child(child(body, 2), 0)
