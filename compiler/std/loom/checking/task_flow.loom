@@ -16,7 +16,9 @@ import std.result.Result
 record TaskFlow {
     context Context
     locals List[Int]
+    // Task obligations and NoSuspend operands awaiting their enclosing operation.
     pending List[Int]
+    no_suspend Int
     loop_entry List[Int]
     loop_pending Int
     cleanup Bool
@@ -46,7 +48,8 @@ fn task_branch(flow TaskFlow) TaskFlow {
     TaskFlow {
         context = flow.context
         locals = task_states(flow.locals)
-        pending = ints(get(flow.pending, 0))
+        pending = task_states(flow.pending)
+        no_suspend = flow.no_suspend
         loop_entry = flow.loop_entry
         loop_pending = flow.loop_pending
         cleanup = flow.cleanup
@@ -60,6 +63,7 @@ fn task_join(flow TaskFlow, branch TaskFlow) {
         index = index + 1
     }
     set(flow.pending, 0, get(branch.pending, 0))
+    set(flow.pending, 1, get(branch.pending, 1))
 }
 
 fn same_task_state(left TaskFlow, right TaskFlow) Bool {
@@ -98,16 +102,45 @@ fn task_sequence(flow TaskFlow, values List[Expr], allowed Bool) Result[Bool, Fa
 // exit while evaluating a later argument must not silently abandon them.
 fn task_arguments(flow TaskFlow, value Expr) Result[Bool, Failure] {
     let before = get(flow.pending, 0)
+    let suspended = get(flow.pending, 1)
     var index = 0
     while index < length(value.children) {
         let argument = get(value.children, index)
         let transferred = task_expression(flow, argument, direct_task(flow.context.env, argument.ty))?
-        if !argument.falls { return Result.Ok(false) }
-        if transferred { set(flow.pending, 0, get(flow.pending, 0) + 1) }
+        if !argument.falls {
+            return Result.Ok(false)
+        }
+        if transferred {
+            set(flow.pending, 0, get(flow.pending, 0) + 1)
+        }
+        if flow.no_suspend >= 0 && no_suspend(flow.context, argument.ty, flow.no_suspend)? {
+            set(flow.pending, 1, get(flow.pending, 1) + 1)
+        }
         index = index + 1
     }
     set(flow.pending, 0, before)
+    set(flow.pending, 1, suspended)
     Result.Ok(direct_task(flow.context.env, value.ty))
+}
+
+// Eager operands retain earlier values through later operands. Blocks and
+// control flow use their own paths: completed statements are not retained.
+fn task_operands(flow TaskFlow, values List[Expr]) Result[Bool, Failure] {
+    let suspended = get(flow.pending, 1)
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        discard task_expression(flow, value, false)?
+        if !value.falls {
+            return Result.Ok(false)
+        }
+        if flow.no_suspend >= 0 && no_suspend(flow.context, value.ty, flow.no_suspend)? {
+            set(flow.pending, 1, get(flow.pending, 1) + 1)
+        }
+        index = index + 1
+    }
+    set(flow.pending, 1, suspended)
+    Result.Ok(true)
 }
 
 fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure] {
@@ -116,7 +149,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     if !task && contains_task(flow.context.env, value.ty, new[Int]()) {
         return Result.Err(task_error(flow, value, "storing tasks in aggregates is not yet implemented"))
     }
-    if flow.cleanup && (task || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend) {
+    if flow.cleanup &&(task || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend) {
         return Result.Err(task_error(flow, value, "task creation, reading or transfer in cleanup is not yet implemented"))
     }
     if task && !allowed {
@@ -131,6 +164,9 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     }
     if value.kind == ExprKind.Await {
         discard task_expression(flow, get(value.children, 0), true)?
+        if get(flow.pending, 1) != 0 {
+            return Result.Err(task_error(flow, value, "a NoSuspend operand is still pending; finish its operation before awaiting"))
+        }
         return Result.Ok(task)
     }
     // A deferred call retains its runtime arguments during abstract checking.
@@ -229,14 +265,15 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         let branch = TaskFlow {
             context = flow.context
             locals = task_states(before)
-            pending = ints(pending)
+            pending = task_states(flow.pending)
+            no_suspend = flow.no_suspend
             loop_entry = before
             loop_pending = pending
             cleanup = flow.cleanup
         }
         let body = get(value.children, 1)
         discard task_expression(branch, body, false)?
-        if body.falls && (!same(before, branch.locals) || pending != get(branch.pending, 0)) {
+        if body.falls &&(!same(before, branch.locals) || pending != get(branch.pending, 0)) {
             return Result.Err(task_error(flow, value, "loop bodies must consume their own tasks and preserve tasks from outside the loop"))
         }
         return Result.Ok(false)
@@ -251,7 +288,8 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         let branch = TaskFlow {
             context = flow.context
             locals = task_states(flow.locals)
-            pending = ints(get(flow.pending, 0))
+            pending = task_states(flow.pending)
+            no_suspend = flow.no_suspend
             loop_entry = flow.loop_entry
             loop_pending = flow.loop_pending
             cleanup = true
@@ -262,7 +300,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         }
         return Result.Ok(false)
     }
-    discard task_sequence(flow, value.children, false)?
+    discard task_operands(flow, value.children)?
     Result.Ok(task)
 }
 
@@ -307,13 +345,24 @@ fn task_flow(context Context, function Function) Result[Bool, Failure] {
     let locals = new[Int]()
     index = 0
     while index < length(function.locals) {
-        push(locals, if index < length(function.params) && direct_task(context.env, get(function.params, index)) { 1 } else { 0 })
+        push(locals, if index < length(function.params) && direct_task(context.env, get(function.params, index)) {
+                1
+            } else {
+                0
+            })
         index = index + 1
     }
+    let pending = ints(0)
+    push(pending, 0)
     let flow = TaskFlow {
         context = context
         locals = locals
-        pending = ints(0)
+        pending = pending
+        no_suspend = if function.is_async {
+            resource_concept(context.env, "NoSuspend")
+        } else {
+            -1
+        }
         loop_entry = new[Int]()
         loop_pending = 0
         cleanup = false

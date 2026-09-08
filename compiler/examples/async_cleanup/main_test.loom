@@ -1,0 +1,75 @@
+import std.list.new
+import std.result.Result
+import std.resource.NoSuspend
+
+test async fn returned_values_are_snapshots_before_cleanup() {
+    let trace = new[Int]()
+    let packet = work(trace, true).await
+    assert packet.text == "after wait" && packet.values[0] == 7
+    assert length(trace) == 3 && trace[0] == 12 && trace[1] == 12 && trace[2] == 9
+}
+
+async fn iterations(trace List[Int]) Result[Int, Text] {
+    var index = 0
+    while index < 3 {
+        scoped guard = acquire(trace)
+        defer {
+            push(trace, index)
+        }
+        sleep_ms(1).await
+        index = index + 1
+        if index == 1 {
+            continue
+        }
+        break
+    }
+    let outcome Result[Int, Text] = Result.Ok(4)
+    match outcome {
+        Result.Ok(value) => {
+            defer {
+                push(trace, value)
+            }
+            sleep_ms(1).await
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    defer {
+        push(trace, 5)
+    }
+    sleep_ms(1).await
+    let failed Result[Int, Text] = Result.Err("expected")
+    Result.Ok(failed?)
+}
+
+record Token {
+    id Int
+}
+
+impl NoSuspend for Token {
+}
+
+test async fn scopes_loops_patterns_and_error_returns_clean_up_once() {
+    {
+        let token = Token {
+            id = 1
+        }
+        assert token.id == 1
+    }
+    // Cleanup-only locals do not live across the await below.
+    defer {
+        let token = Token {
+            id = 2
+        }
+        assert token.id == 2
+    }
+    let trace = new[Int]()
+    assert match iterations(trace).await {
+        Result.Err(message) => message == "expected"
+        Result.Ok(_) => false
+    }
+    assert length(trace) == 6
+    assert trace[0] == 1 && trace[1] == 9 && trace[2] == 2 && trace[3] == 9
+    assert trace[4] == 4 && trace[5] == 5
+}

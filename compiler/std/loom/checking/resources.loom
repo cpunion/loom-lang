@@ -44,6 +44,13 @@ fn resource_protocols(env Environment) Result[Bool, Failure] {
             return Result.Err(failure(env, marker, symbol(env, marker).node, "MustScope must be an empty marker concept"))
         }
     }
+    let suspension = resource_concept(env, "NoSuspend")
+    if suspension >= 0 {
+        let protocol = get(env.concepts, concept_index(env, suspension))
+        if length(protocol.methods) != 0 || length(protocol.associated) != 0 {
+            return Result.Err(failure(env, suspension, symbol(env, suspension).node, "NoSuspend must be an empty marker concept"))
+        }
+    }
     Result.Ok(true)
 }
 
@@ -59,20 +66,25 @@ fn resource_seen(seen List[Int], ty Int) Bool {
 // Function signatures describe possible calls, not values retained in the
 // function reference. Data obligations follow every stored aggregate member.
 fn resource_type(env Environment, owner Int, obligations List[Requirement], ty Int, seen List[Int]) Result[Bool, Failure] {
-    let capability = resource_concept(env, "MustScope")
+    marker_type(env, owner, obligations, ty, resource_concept(env, "MustScope"), seen)
+}
+
+fn marker_type(env Environment, owner Int, obligations List[Requirement], ty Int, capability Int, seen List[Int]) Result[Bool, Failure] {
     if capability < 0 || resource_seen(seen, ty) { return Result.Ok(false) }
     push(seen, ty)
     if admitted(env, owner, obligations, ty, capability)? { return Result.Ok(true) }
     let shape = get(env.types, ty)
     if shape.kind == TypeKind.Function { return Result.Ok(false) }
+    // Nominal arguments and dyn associated bindings describe types, not stored
+    // values. Follow their concrete fields below; List/Task hold their payload.
     var index = 0
-    while index < length(shape.arguments) {
-        if resource_type(env, owner, obligations, get(shape.arguments, index), seen)? { return Result.Ok(true) }
+    while (shape.kind == TypeKind.List || shape.kind == TypeKind.Task) && index < length(shape.arguments) {
+        if marker_type(env, owner, obligations, get(shape.arguments, index), capability, seen)? { return Result.Ok(true) }
         index = index + 1
     }
     index = 0
     while index < length(shape.fields) {
-        if resource_type(env, owner, obligations, get(shape.fields, index).ty, seen)? { return Result.Ok(true) }
+        if marker_type(env, owner, obligations, get(shape.fields, index).ty, capability, seen)? { return Result.Ok(true) }
         index = index + 1
     }
     index = 0
@@ -80,7 +92,7 @@ fn resource_type(env Environment, owner Int, obligations List[Requirement], ty I
         let fields = get(shape.variants, index).fields
         var field = 0
         while field < length(fields) {
-            if resource_type(env, owner, obligations, get(fields, field), seen)? { return Result.Ok(true) }
+            if marker_type(env, owner, obligations, get(fields, field), capability, seen)? { return Result.Ok(true) }
             field = field + 1
         }
         index = index + 1

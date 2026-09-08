@@ -1246,8 +1246,9 @@ snapshots. Fault draining preserves the first diagnostic and runs remaining
 callbacks even if a cleanup faults. Ordinary source programs still terminate;
 the native resume catcher used by Tasks is not source-level recovery. OOM, internal
 runtime corruption, external process signals,
-and explicit process termination do not guarantee cleanup. Tasks can cancel
-queued or suspended descendants, but active lexical cleanup cannot cross await.
+and explicit process termination do not guarantee cleanup. Task cancellation
+drains queued or suspended descendants before parent cleanup. Async captures
+live in moving frame fields, not stack registrations retained across await.
 
 `scoped name [Type] = initializer` uses the same block cleanup mechanism. It
 evaluates its initializer once and registers the statically selected
@@ -1354,8 +1355,16 @@ tasks, and an idle owner blocks in a reactor created only on the first external
 wait: no spin loop or thread per task. Scheduling promises no fairness, and
 zero delays or past deadlines do not guarantee a yield.
 
-This slice rejects active `defer`/`scoped` cleanup across await, Task transfers
-through parameters/returns/aggregates, and async methods/function values.
+The [suspended cleanup package](examples/async_cleanup) keeps `scoped` guards and
+late-bound `defer` captures across real timer waits. Cleanup still cannot await
+or use Tasks. The independent `std.resource.NoSuspend` marker forbids live values
+across await, including aggregate members and pending operands; end their block
+before awaiting. NoSuspend values cannot enter Task parameters/results or lose
+their marker through dyn conversion.
+
+Direct Task parameters, returns and nested results preserve one-shot obligations.
+Task-bearing aggregates, async methods, and Task-bearing function values/dynamic
+calls remain unsupported.
 Asynchronous file/socket/worker I/O, joins and public task-outcome handling are not available
 yet. Existing synchronous I/O blocks the owner thread. These are implementation
 limits; the [accepted design](../docs/rfcs/tasks.md) remains the target.

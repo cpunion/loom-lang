@@ -56,10 +56,10 @@ test fn tasks_cannot_be_lost_duplicated_or_escaped() {
     rejects("concept C { async fn item(self Self) Int }")
 }
 
-test fn suspension_requires_async_and_an_implemented_cleanup_boundary() {
+test fn suspension_requires_async_and_cannot_run_inside_cleanup() {
     rejects("async fn item() Int { 1 }\nfn main() { discard item().await }")
     rejects("async fn main() { discard 1.await }")
-    rejects("async fn item() Int { 1 }\nasync fn main() { defer {}\ndiscard item().await }")
+    discard accepted("async fn item() Int { 1 }\nasync fn main() { defer {}\ndiscard item().await }")
     rejects("async fn item() Int { 1 }\nasync fn main() { defer { discard item().await } }")
     discard accepted("async fn item() Int { 1 }\nasync fn main() { if true { defer {} }\ndiscard item().await }")
     rejects("async fn item() Int { 1 }\nasync fn main() { discard comptime { item().await } }")

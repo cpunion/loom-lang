@@ -7,6 +7,7 @@ use std::ptr;
 
 type Callback = unsafe extern "C-unwind" fn(*mut u8);
 type DiagnosticBytes = (*const u8, usize);
+type BeforeDrain = (unsafe fn(*mut u8), *mut u8);
 
 #[derive(Clone, Copy)]
 struct Fault {
@@ -25,6 +26,7 @@ struct Boundary {
     cleanup: *mut Cleanup,
     roots: *mut super::RootFrame,
     first: RefCell<Option<OwnedFault>>,
+    before_drain: Cell<Option<BeforeDrain>>,
 }
 
 // The diagnostic stays in its owner boundary, never in an unwound stack frame.
@@ -56,6 +58,30 @@ thread_local! {
 /// on entry, and unwinding destructors cannot allocate Loom objects or call user
 /// code after the root chain has been restored.
 pub(super) unsafe fn catch_fault<R>(run: impl FnOnce() -> R) -> Result<R, OwnedFault> {
+    // SAFETY: The caller supplies the native stack/unwind contract above.
+    unsafe { catch_fault_inner(run, None) }
+}
+
+/// A task resume first retires descendants and its borrowed wait before native
+/// cleanup can close resources. The hook runs once, after owning the first
+/// diagnostic. It must catch its own cleanup faults and return normally.
+///
+/// # Safety
+/// The catch_fault contract applies. Data stays live through this activation;
+/// the hook holds no heap/root/task borrow while invoking generated cleanup.
+pub(super) unsafe fn catch_fault_before_drain<R>(
+    run: impl FnOnce() -> R,
+    before_drain: unsafe fn(*mut u8),
+    data: *mut u8,
+) -> Result<R, OwnedFault> {
+    // SAFETY: The caller retains data and supplies the hook contract above.
+    unsafe { catch_fault_inner(run, Some((before_drain, data))) }
+}
+
+unsafe fn catch_fault_inner<R>(
+    run: impl FnOnce() -> R,
+    before_drain: Option<BeforeDrain>,
+) -> Result<R, OwnedFault> {
     let roots = super::HEAP.with(|heap| {
         let heap = heap.borrow();
         if heap.collecting {
@@ -68,6 +94,7 @@ pub(super) unsafe fn catch_fault<R>(run: impl FnOnce() -> R) -> Result<R, OwnedF
         cleanup: HEAD.get(),
         roots,
         first: RefCell::new(None),
+        before_drain: Cell::new(before_drain),
     };
     let test_name = TEST_NAME.get();
     let first_fault = FIRST_FAULT.replace(None);
@@ -202,6 +229,11 @@ pub(super) fn fault(message: &[u8]) -> ! {
                 });
             }
         }
+        if let Some((before_drain, data)) = boundary.before_drain.take() {
+            // SAFETY: The resume owner remains live and the hook catches its
+            // own cleanup faults. Take first so recursive faults cannot repeat it.
+            unsafe { before_drain(data) };
+        }
         drain_to(boundary.cleanup);
         // Every user cleanup has finished while its root slots were valid.
         // Cut the abandoned chain before unwinding makes those stack addresses
@@ -267,6 +299,43 @@ unsafe extern "C-unwind" fn loom_rt_fault(message: *const u8, length: usize) -> 
 mod tests {
     use super::*;
     use std::mem::MaybeUninit;
+
+    unsafe fn before_drain_order(data: *mut u8) {
+        unsafe { (*data.cast::<Vec<u8>>()).push(1) };
+        let secondary = unsafe { catch_fault(|| fault(b"hook cleanup fault")) }.unwrap_err();
+        assert_eq!(secondary.message, b"hook cleanup fault");
+    }
+
+    unsafe extern "C-unwind" fn faulting_order(data: *mut u8) {
+        unsafe { (*data.cast::<Vec<u8>>()).push(2) };
+        fault(b"native cleanup fault");
+    }
+
+    unsafe extern "C-unwind" fn final_order(data: *mut u8) {
+        unsafe { (*data.cast::<Vec<u8>>()).push(3) };
+    }
+
+    #[test]
+    fn task_hook_runs_once_before_native_drain_with_first_diagnostic_owned() {
+        let mut order = Vec::<u8>::new();
+        let data = ptr::addr_of_mut!(order).cast();
+        let failure = unsafe {
+            catch_fault_before_drain(
+                || {
+                    let mut outer = MaybeUninit::uninit();
+                    let mut inner = MaybeUninit::uninit();
+                    loom_rt_cleanup_push(outer.as_mut_ptr(), final_order, data);
+                    loom_rt_cleanup_push(inner.as_mut_ptr(), faulting_order, data);
+                    fault(b"activation fault");
+                },
+                before_drain_order,
+                data,
+            )
+        }
+        .unwrap_err();
+        assert_eq!(failure.message, b"activation fault");
+        assert_eq!(order, [1, 2, 3]);
+    }
 
     unsafe extern "C-unwind" fn increment(value: *mut u8) {
         // SAFETY: Test captures point to this thread's live Int storage.

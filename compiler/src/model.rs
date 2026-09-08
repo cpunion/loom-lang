@@ -106,6 +106,8 @@ pub enum Primitive {
     TaskCreate,
     TaskAdopt,
     TaskReturn,
+    TaskCleanupPush,
+    TaskCleanupPop,
     TaskAwait,
     TaskResult,
     TaskRelease,

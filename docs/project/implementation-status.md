@@ -24,9 +24,19 @@ Direct Task parameters/returns, generic forwarding and nested Task results now
 preserve one-shot obligations. Async callees adopt argument subtrees; completed
 producers retain Task-valued results until extraction by the actual consumer.
 Sync helpers expose a direct Task parameter/result and use their caller's owner.
-Source asynchronous file/socket/worker I/O and joins remain unfinished. Active
-lexical cleanup cannot cross an await; Task-bearing aggregates, async methods,
+Source asynchronous file/socket/worker I/O and joins remain unfinished.
+Task-bearing aggregates, async methods,
 Task-bearing function values and dynamic calls remain unsupported.
+
+Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
+locals into authoritative frame fields, including writes before an await or fault;
+no suspended native stack pointer is retained. Normal exits pop and call cleanup
+directly. Cancellation retires descendants and waits before parent cleanup, reloads
+moving frames between callbacks, and preserves the first diagnostic while draining
+remaining callbacks. `std.resource.NoSuspend` independently rejects live bindings,
+stored members and pending operands across await, as well as Task-boundary transfer
+or marker-erasing dyn conversion. Cleanup cannot suspend or use Tasks. See the
+[suspended cleanup example](../../compiler/examples/async_cleanup).
 
 The private wait ABI now provides one-shot timers, borrowed socket readiness and
 cross-thread completion notifications through `polling`. Generation checks reject
@@ -42,8 +52,7 @@ native owner activation. A dense live set supports arbitrary removal and
 generation-checked reuse; the collector updates its typed payload bases without
 retaining vector element addresses. Forced-collection tests cover frames after
 their creator returns, shared/cyclic contents and rooted result handoff. This
-storage is now used by generated coroutine frames; suspended lexical cleanup
-remains unsupported.
+storage is now used by generated coroutine frames and their cleanup captures.
 
 The private resume fault boundary now drains live lexical cleanups before Rust
 C-unwind crosses LLVM frames with unwind tables. It restores the GC root chain
@@ -427,8 +436,8 @@ Runtime callbacks and dynamic factory methods preserve that result obligation:
 all selected implementations must establish freshness, including targets reached
 through stored or returned function values. Dispose-only callback results do not
 imply freshness. Unused concrete resource functions are checked without entering
-native reachability. Nested resource aggregates and cleanup across suspended
-Task activations remain unimplemented.
+native reachability. Async functions use frame-backed registrations for suspended
+cleanup; nested resource aggregates and transfer into Tasks remain unimplemented.
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
 same-directory tests, a separate library package, Unicode text and file I/O.

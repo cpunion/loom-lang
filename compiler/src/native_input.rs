@@ -569,6 +569,25 @@ impl Converter<'_> {
                     return Err("checked task adoption requires an empty result".into());
                 }
             }
+            Primitive::TaskCleanupPush => {
+                let Type::Function(id) = arguments[1].ty else {
+                    return Err("checked task cleanup requires a function pointer".into());
+                };
+                let signature = &self.program.function_types[id];
+                if arguments[0].ty != Type::Int
+                    || result != Type::Unit
+                    || signature.params.len() != 1
+                    || signature.result != Type::Unit
+                {
+                    return Err("checked task cleanup signature mismatch".into());
+                }
+                self.frame(signature.params[0])?;
+            }
+            Primitive::TaskCleanupPop => {
+                if arguments[0].ty != Type::Int || result != Type::Unit {
+                    return Err("checked task cleanup pop requires an Int identity".into());
+                }
+            }
             Primitive::TaskReturn => {
                 self.task_result(arguments[0].ty)?;
                 if result != arguments[0].ty {
@@ -1150,6 +1169,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_create" => P::TaskCreate,
         "task_adopt" => P::TaskAdopt,
         "task_return" => P::TaskReturn,
+        "task_cleanup_push" => P::TaskCleanupPush,
+        "task_cleanup_pop" => P::TaskCleanupPop,
         "task_await" => P::TaskAwait,
         "task_result" => P::TaskResult,
         "task_release" => P::TaskRelease,
@@ -1189,6 +1210,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::PathEntryKind
         | P::TaskAwait
         | P::TaskReturn
+        | P::TaskCleanupPop
         | P::TaskResult
         | P::TaskRelease
         | P::TaskRun => 1,
@@ -1205,6 +1227,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::PathCanonical
         | P::EnvGet
         | P::TaskAdopt
+        | P::TaskCleanupPush
         | P::PathRename => 2,
         P::TextSlice
         | P::BytesSet

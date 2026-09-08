@@ -99,8 +99,7 @@ fn operations(value Expr, name Text) Int {
     count
 }
 
-test fn lowers_hot_constructors_and_spills_only_values_crossing_await() {
-    let span = test_span()
+fn test_types() List[Type] {
     let types = new[Type]()
     let kinds = new[TypeKind]()
     push(kinds, TypeKind.Unit)
@@ -121,6 +120,13 @@ test fn lowers_hot_constructors_and_spills_only_values_crossing_await() {
             })
         index = index + 1
     }
+    types
+}
+
+test fn lowers_hot_constructors_and_spills_only_values_crossing_await() {
+    let span = test_span()
+    let types = test_types()
+    var index = 0
     let task = shape(types, TypeKind.Task, ints(1))
     let functions = new[Function]()
     let child_locals = new[Local]()

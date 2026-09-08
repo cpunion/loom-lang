@@ -1,0 +1,257 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Arm
+import std.loom.typed.Local
+import std.loom.typed.Program
+import std.loom.typed.Function
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+
+record CleanupPlan {
+    id Int
+    body Expr
+    declarations List[Bool]
+}
+
+record CleanupRewrite {
+    frame Int
+    callback_type Int
+    fields List[Int]
+    captures List[Bool]
+    source_locals List[Local]
+    locals List[Int]
+    plans List[CleanupPlan]
+    callbacks List[Int]
+}
+
+fn cleanup_bindings(value Expr, used List[Bool], declared List[Bool]) {
+    if value.kind == ExprKind.Local || value.kind == ExprKind.Assign {
+        set(used, value.index, true)
+    }
+    if value.kind == ExprKind.Let {
+        set(declared, value.index, true)
+    }
+    var index = 0
+    while index < length(value.children) {
+        cleanup_bindings(get(value.children, index), used, declared)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var field = 0
+        while field < length(arm.bindings) {
+            let id = get(arm.bindings, field)
+            if id >= 0 {
+                set(declared, id, true)
+            }
+            field = field + 1
+        }
+        if arm.whole >= 0 {
+            set(declared, arm.whole, true)
+        }
+        field = 0
+        while field < length(arm.body) {
+            cleanup_bindings(get(arm.body, field), used, declared)
+            field = field + 1
+        }
+        index = index + 1
+    }
+}
+
+fn cleanup_plans(value Expr, locals List[Local], plans List[CleanupPlan], captures List[Bool]) {
+    if value.kind == ExprKind.Cleanup {
+        return
+    }
+    if value.kind == ExprKind.Defer {
+        let used = flags(length(locals))
+        let declared = flags(length(locals))
+        let body = get(value.children, 0)
+        cleanup_bindings(body, used, declared)
+        var index = 0
+        while index < length(locals) {
+            if get(used, index) && !get(declared, index) && get(locals, index).ty != 0 {
+                set(captures, index, true)
+            }
+            index = index + 1
+        }
+        push(plans, CleanupPlan {
+                id = value.index
+                body = body
+                declarations = declared
+            })
+        return
+    }
+    var index = 0
+    while index < length(value.children) {
+        cleanup_plans(get(value.children, index), locals, plans, captures)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            cleanup_plans(get(body, item), locals, plans, captures)
+            item = item + 1
+        }
+        index = index + 1
+    }
+}
+
+fn cleanup_capture(context CleanupRewrite, id Int) Bool {
+    id >= 0 && id < length(context.captures) && get(context.captures, id)
+}
+
+fn cleanup_local(context CleanupRewrite, id Int) Int {
+    if id < 0 || length(context.locals) == 0 {
+        return id
+    }
+    let mapped = get(context.locals, id)
+    assert mapped >= 0
+    mapped
+}
+
+fn cleanup_frame(context CleanupRewrite, value Expr) Expr {
+    node(ExprKind.Local, context.frame, value.span, 0, new[Expr]())
+}
+
+fn cleanup_store(context CleanupRewrite, source Expr, id Int, value Expr) Expr {
+    node(ExprKind.FrameStore, 0, source.span, get(context.fields, id), pair(cleanup_frame(context, source), value))
+}
+
+// Run on the complete emitted resume, including synthesized match dispatch.
+// Captures are always frame-authoritative, even before the first suspension.
+fn cleanup_rewrite(context CleanupRewrite, value Expr) Expr {
+    if value.kind == ExprKind.Defer || value.kind == ExprKind.Cleanup {
+        var index = 0
+        while index < length(context.plans) && get(context.plans, index).id != value.index {
+            index = index + 1
+        }
+        assert index < length(context.plans)
+        let target = get(context.callbacks, index)
+        let site = integer(value.index, value.span)
+        if value.kind == ExprKind.Defer {
+            let callback = node(ExprKind.FunctionRef, context.callback_type, value.span, target, new[Expr]())
+            return operation("task_cleanup_push", 0, value.span, pair(site, callback))
+        }
+        return block(pair(operation("task_cleanup_pop", 0, value.span, one(site)),
+                node(ExprKind.Call, 0, value.span, target, one(cleanup_frame(context, value)))), 0, value.span, value.falls)
+    }
+    let captured = cleanup_capture(context, value.index)
+    if value.kind == ExprKind.Local && captured {
+        return node(ExprKind.Field, value.ty, value.span, get(context.fields, value.index), one(cleanup_frame(context, value)))
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, cleanup_rewrite(context, get(value.children, index)))
+        index = index + 1
+    }
+    if (value.kind == ExprKind.Let || value.kind == ExprKind.Assign) && captured {
+        let stored = cleanup_store(context, value, value.index, get(children, 0))
+        return changed(stored, "", stored.children, value.falls)
+    }
+    let arms = new[Arm]()
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let bindings = new[Int]()
+        let body = new[Expr]()
+        var field = 0
+        while field <= length(arm.bindings) {
+            let id = if field == length(arm.bindings) {
+                arm.whole
+            } else {
+                get(arm.bindings, field)
+            }
+            let mapped = cleanup_local(context, id)
+            if field < length(arm.bindings) {
+                push(bindings, mapped)
+            }
+            if cleanup_capture(context, id) {
+                // This is the fresh native pattern binding, not an old frame
+                // value. Insert it without recursively rewriting its Local.
+                push(body, cleanup_store(context, value, id,
+                        node(ExprKind.Local, get(context.source_locals, id).ty, value.span, mapped, new[Expr]())))
+            }
+            field = field + 1
+        }
+        field = 0
+        while field < length(arm.body) {
+            push(body, cleanup_rewrite(context, get(arm.body, field)))
+            field = field + 1
+        }
+        let tail = get(body, length(body) - 1)
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = bindings
+                whole = cleanup_local(context, arm.whole)
+                // Checked native arms retain one block, including capture stores.
+                body = if length(body) == 1 {
+                    body
+                } else {
+                    one(block(body, tail.ty, tail.span, tail.falls))
+                }
+            })
+        index = index + 1
+    }
+    Expr {
+        kind = value.kind
+        ty = value.ty
+        span = value.span
+        text = value.text
+        index = if value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign {
+            cleanup_local(context, value.index)
+        } else {
+            value.index
+        }
+        children = children
+        arms = arms
+        falls = value.falls
+    }
+}
+
+fn cleanup_callbacks(program Program, source Function, context CleanupRewrite) {
+    var index = 0
+    while index < length(context.plans) {
+        let plan = get(context.plans, index)
+        let locals = new[Local]()
+        push(locals, Local {
+                name = ""
+                ty = context.frame
+                mutable = false
+                is_scoped = false
+            })
+        let mapping = new[Int]()
+        var id = 0
+        while id < length(context.source_locals) {
+            let declared =(id < length(plan.declarations) && get(plan.declarations, id)) || get(context.source_locals, id).ty == 0
+            push(mapping, if declared {
+                    length(locals)
+                } else {
+                    -1
+                })
+            if declared {
+                push(locals, get(context.source_locals, id))
+            }
+            id = id + 1
+        }
+        let rewritten = CleanupRewrite {
+            frame = context.frame
+            callback_type = context.callback_type
+            fields = context.fields
+            captures = context.captures
+            source_locals = context.source_locals
+            locals = mapping
+            plans = context.plans
+            callbacks = context.callbacks
+        }
+        assert length(program.functions) == get(context.callbacks, index)
+        push(program.functions, generated(source, ints(context.frame), 0, locals, cleanup_rewrite(rewritten, plan.body)))
+        index = index + 1
+    }
+}

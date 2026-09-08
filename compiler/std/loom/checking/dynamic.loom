@@ -232,6 +232,10 @@ fn boxed(context Context, node Node, value Expr, target Int) Result[Expr, Failur
 // already encapsulated by a checked compile-time value, even when its receiver
 // implementation is not directly visible in the consuming function's scope.
 fn witness_box(context Context, node Node, value Expr, target Int) Result[Expr, Failure] {
+    let marker = resource_concept(context.env, "NoSuspend")
+    if marker >= 0 && no_suspend(context, value.ty, marker)? && !no_suspend(context, target, marker)? {
+        return Result.Err(error(context, node, "NoSuspend values cannot be erased into dyn"))
+    }
     var witness = -1
     discard fill_interface(context.env, target)?
     if context.emit {

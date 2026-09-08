@@ -123,7 +123,12 @@ Direct Task parameters and returns now support reusable functions and nested Tas
 results, with one-shot argument obligations and lazy returned-subtree handoff.
 Sync helpers do not install an executor; they expose Task inputs or an output.
 
-The next async gates are suspended lexical cleanup, Task-bearing aggregates,
+Lexical cleanup now survives suspension through frame-backed captures, with
+children and waits drained before parent cleanup. `NoSuspend` remains an
+independent capability restriction, without ownership syntax. See the
+[cleanup trial](compiler/examples/async_cleanup).
+
+The next async gates are Task-bearing aggregates,
 async methods, Task-bearing function values/dynamic calls, asynchronous
 file/socket/worker I/O and joins. Task scheduling is cooperative, not parallel threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
