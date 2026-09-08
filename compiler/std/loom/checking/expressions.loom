@@ -79,6 +79,10 @@ fn expr(context Context, node Node, expected Int) Result[Expr, Failure] {
 }
 fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let kind = node.kind
+    if kind == NodeKind.Await {
+        let value = awaited(context, node, expected)?
+        return if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+    }
     if kind == NodeKind.Apply || kind == NodeKind.Index {
         let value = if kind == NodeKind.Apply { application(context, node, expected)? } else {
             index_read(context, node, expr(context, child(node, 0), -1)?, child(node, 1).children)?

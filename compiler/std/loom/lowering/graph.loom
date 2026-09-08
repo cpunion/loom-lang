@@ -1,0 +1,283 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Arm
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.list.clone
+
+fn sequence(graph Graph, values List[Expr], start Int, loop Loop) Value {
+    var current = Value {
+        state = start
+        expression = empty(graph.span)
+    }
+    var index = 0
+    while index < length(values) && current.state >= 0 {
+        current = evaluate(graph, get(values, index), current.state, loop)
+        if index + 1 < length(values) {
+            append(graph, current.state, node(ExprKind.Discard, 0, graph.span, -1, one(current.expression)))
+        }
+        index = index + 1
+    }
+    current
+}
+
+fn conditional(graph Graph, source Expr, start Int, loop Loop) Value {
+    let condition = evaluate(graph, get(source.children, 0), start, loop)
+    if condition.state < 0 {
+        return condition
+    }
+    let yes = state(graph)
+    let no = state(graph)
+    let after = state(graph)
+    let target = if source.ty == 0 {
+        -1
+    } else {
+        temporary(graph, source.ty)
+    }
+    let targets = edges(yes)
+    push(targets, edge(no))
+    finish(graph, condition.state, Exit.Branch, condition.expression, targets, new[Arm]())
+    let accepted = evaluate(graph, get(source.children, 1), yes, loop)
+    if accepted.state >= 0 {
+        save(graph, accepted.state, target, accepted.expression)
+        jump(graph, accepted.state, after)
+    }
+    let rejected = if length(source.children) == 3 {
+        evaluate(graph, get(source.children, 2), no, loop)
+    }
+    else {
+        Value {
+            state = no
+            expression = empty(source.span)
+        }
+    }
+    if rejected.state >= 0 {
+        save(graph, rejected.state, target, rejected.expression)
+        jump(graph, rejected.state, after)
+    }
+    Value {
+        state = if accepted.state < 0 && rejected.state < 0 {
+            -1
+        } else {
+            after
+        }
+        expression = if target < 0 {
+            empty(source.span)
+        } else {
+            local(graph, target)
+        }
+    }
+}
+
+fn selection(graph Graph, source Expr, start Int, loop Loop) Value {
+    let selected = evaluate(graph, get(source.children, 0), start, loop)
+    if selected.state < 0 {
+        return selected
+    }
+    let after = state(graph)
+    let target = if source.ty == 0 {
+        -1
+    } else {
+        temporary(graph, source.ty)
+    }
+    let targets = new[Edge]()
+    var falls = false
+    var index = 0
+    while index < length(source.arms) {
+        let arm = get(source.arms, index)
+        let begin = state(graph)
+        let definitions = clone(arm.bindings)
+        if arm.whole >= 0 {
+            push(definitions, arm.whole)
+        }
+        push(targets, Edge {
+                target = begin
+                bindings = definitions
+            })
+        let branch = sequence(graph, arm.body, begin, loop)
+        if branch.state >= 0 {
+            save(graph, branch.state, target, branch.expression)
+            jump(graph, branch.state, after)
+            falls = true
+        }
+        index = index + 1
+    }
+    finish(graph, selected.state, Exit.Select, selected.expression, targets, source.arms)
+    Value {
+        state = if falls {
+            after
+        } else {
+            -1
+        }
+        expression = if target < 0 {
+            empty(source.span)
+        } else {
+            local(graph, target)
+        }
+    }
+}
+
+fn waiting(graph Graph, source Expr, start Int, loop Loop) Value {
+    let task = snapshot(graph, evaluate(graph, get(source.children, 0), start, loop))
+    if task.state < 0 {
+        return task
+    }
+    let wait = state(graph)
+    let after = state(graph)
+    jump(graph, task.state, wait)
+    finish(graph, wait, Exit.Wait, task.expression, edges(after), new[Arm]())
+    let output = operation("task_result", source.ty, source.span, one(task.expression))
+    let saved = if source.ty == 0 {
+        -1
+    } else {
+        temporary(graph, source.ty)
+    }
+    save(graph, after, saved, output)
+    append(graph, after, operation("task_release", 0, source.span, one(task.expression)))
+    Value {
+        state = after
+        expression = if saved < 0 {
+            empty(source.span)
+        } else {
+            local(graph, saved)
+        }
+    }
+}
+
+fn evaluate(graph Graph, source Expr, start Int, loop Loop) Value {
+    if start < 0 {
+        return Value {
+            state = -1
+            expression = empty(source.span)
+        }
+    }
+    if !split(source) {
+        if statement(source.kind) {
+            append(graph, start, source)
+            return Value {
+                state = start
+                expression = empty(source.span)
+            }
+        }
+        return Value {
+            state = start
+            expression = source
+        }
+    }
+    if source.kind == ExprKind.Block {
+        return sequence(graph, source.children, start, loop)
+    }
+    if source.kind == ExprKind.Await {
+        return waiting(graph, source, start, loop)
+    }
+    if source.kind == ExprKind.Return {
+        let output = if length(source.children) == 0 {
+            Value {
+                state = start
+                expression = empty(source.span)
+            }
+        }
+        else {
+            evaluate(graph, get(source.children, 0), start, loop)
+        }
+        finish(graph, output.state, Exit.Complete, output.expression, new[Edge](), new[Arm]())
+        return Value {
+            state = -1
+            expression = empty(source.span)
+        }
+    }
+    if source.kind == ExprKind.Break || source.kind == ExprKind.Continue {
+        let target = if source.kind == ExprKind.Break {
+            loop.exit
+        } else {
+            loop.again
+        }
+        assert target >= 0
+        jump(graph, start, target)
+        return Value {
+            state = -1
+            expression = empty(source.span)
+        }
+    }
+    if source.kind == ExprKind.If {
+        return conditional(graph, source, start, loop)
+    }
+    if source.kind == ExprKind.Match {
+        return selection(graph, source, start, loop)
+    }
+    if source.kind == ExprKind.While {
+        let condition = state(graph)
+        let body = state(graph)
+        let after = state(graph)
+        jump(graph, start, condition)
+        let checked = evaluate(graph, get(source.children, 0), condition, loop)
+        let targets = edges(body)
+        push(targets, edge(after))
+        finish(graph, checked.state, Exit.Branch, checked.expression, targets, new[Arm]())
+        let iteration = evaluate(graph, get(source.children, 1), body, Loop {
+                exit = after
+                again = condition
+            })
+        if iteration.state >= 0 {
+            append(graph, iteration.state, node(ExprKind.Discard, 0, source.span, -1, one(iteration.expression)))
+            jump(graph, iteration.state, condition)
+        }
+        return Value {
+            state = if checked.state < 0 {
+                -1
+            } else {
+                after
+            }
+            expression = empty(source.span)
+        }
+    }
+    if source.kind == ExprKind.Binary &&(source.text == "&&" || source.text == "||") {
+        let values = one(get(source.children, 0))
+        let short = boolean(source.text == "||", source.span)
+        push(values, if source.text == "&&" {
+                get(source.children, 1)
+            } else {
+                short
+            })
+        push(values, if source.text == "&&" {
+                short
+            } else {
+                get(source.children, 1)
+            })
+        return conditional(graph, node(ExprKind.If, 2, source.span, -1, values), start, loop)
+    }
+    let children = new[Expr]()
+    var current = start
+    var index = 0
+    while index < length(source.children) && current >= 0 {
+        let child = get(source.children, index)
+        // Record children are indexed initializer wrappers, not field reads.
+        let wrapped = source.kind == ExprKind.Record || source.kind == ExprKind.FrameNew
+        let value = snapshot(graph, evaluate(graph, if wrapped {
+                    get(child.children, 0)
+                } else {
+                    child
+                }, current, loop))
+        current = value.state
+        if wrapped {
+            push(children, changed(child, child.text, one(value.expression), child.falls))
+        } else {
+            push(children, value.expression)
+        }
+        index = index + 1
+    }
+    let output = changed(source, source.text, children, source.falls)
+    if statement(output.kind) {
+        append(graph, current, output)
+        return Value {
+            state = current
+            expression = empty(source.span)
+        }
+    }
+    Value {
+        state = current
+        expression = output
+    }
+}

@@ -238,7 +238,7 @@ fn resource_computation(context Context, functions List[Function], value Expr) R
     var index = 0
     while index < length(functions) { push(closure, get(functions, index))
         index = index + 1 }
-    push(closure, Function { symbol = context.signature.symbol arguments = context.arguments params = new[Int]() result = value.ty
+    push(closure, Function { is_async = false symbol = context.signature.symbol arguments = context.arguments params = new[Int]() result = value.ty
         locals = context.locals preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1
         body = value runtime_name = "" span = value.span })
     discard resource_function(ResourceAnalysis { env = context.env functions = closure summaries = new[ResourceSummary]() }, length(functions), -1)?

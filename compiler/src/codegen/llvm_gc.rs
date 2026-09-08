@@ -38,6 +38,7 @@ pub(super) fn allocating_functions(
                 checked::ExprKind::DynBox { .. }
                 | checked::ExprKind::DynCall { .. }
                 | checked::ExprKind::List(_)
+                | checked::ExprKind::FrameNew(_)
                 | checked::ExprKind::IndirectCall { .. } => {
                     allocating.insert(*id);
                 }
@@ -69,6 +70,7 @@ pub(super) fn allocating_functions(
 pub(super) fn allocates(operation: Primitive) -> bool {
     match operation {
         Primitive::FloatFormat
+        | Primitive::TaskRun
         | Primitive::TextConcat
         | Primitive::TextSlice
         | Primitive::ArgText
@@ -84,6 +86,10 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::DirectoryRead
         | Primitive::PathCanonical => true,
         Primitive::FloatFromInt
+        | Primitive::TaskCreate
+        | Primitive::TaskAwait
+        | Primitive::TaskResult
+        | Primitive::TaskRelease
         | Primitive::FloatToInt
         | Primitive::FloatParse
         | Primitive::TextLen
@@ -121,6 +127,8 @@ pub(super) fn managed(program: &checked::Program, ty: Type) -> bool {
     match ty {
         Type::Text | Type::Bytes | Type::List(_) | Type::Dyn(_) => true,
         Type::Data(id) => match &program.types[id].kind {
+            checked::DataKind::Task(_) => false,
+            checked::DataKind::Frame(_) => true,
             checked::DataKind::Refined(base) => managed(program, *base),
             checked::DataKind::Record(fields) => fields.iter().any(|(_, ty)| managed(program, *ty)),
             checked::DataKind::Enum(variants) => variants
@@ -216,6 +224,10 @@ impl TemporarySlots {
             checked::ExprKind::Variant { fields, .. } => fields
                 .iter()
                 .any(|field| self.may_allocate(allocating, field)),
+            checked::ExprKind::FrameNew(_) => true,
+            checked::ExprKind::FrameStore { frame, value, .. } => {
+                self.may_allocate(allocating, frame) || self.may_allocate(allocating, value)
+            }
             checked::ExprKind::Record(fields) => fields
                 .iter()
                 .any(|(_, field)| self.may_allocate(allocating, field)),
@@ -357,6 +369,17 @@ impl TemporarySlots {
                     fields.iter().map(|(_, field)| field),
                     false,
                 );
+            }
+            checked::ExprKind::FrameNew(fields) => {
+                self.siblings(
+                    program,
+                    allocating,
+                    fields.iter().map(|(_, field)| field),
+                    true,
+                );
+            }
+            checked::ExprKind::FrameStore { frame, value, .. } => {
+                self.siblings(program, allocating, [frame.as_ref(), value.as_ref()], false);
             }
             checked::ExprKind::Block(body) => self.block(program, allocating, body),
             checked::ExprKind::Match { value, arms } => {
@@ -519,7 +542,10 @@ fn expressions<'a>(value: &'a checked::Expr, values: &mut Vec<&'a checked::Expr>
     walk_expression(value, &mut |value| values.push(value), &mut |_| {});
 }
 
-fn block_expressions<'a>(value: &'a checked::Block, values: &mut Vec<&'a checked::Expr>) {
+pub(super) fn block_expressions<'a>(
+    value: &'a checked::Block,
+    values: &mut Vec<&'a checked::Expr>,
+) {
     walk_block(value, &mut |value| values.push(value), &mut |_| {});
 }
 
@@ -620,10 +646,14 @@ fn walk_expression<'a>(
                 walk_expression(arg, expression, statement);
             }
         }
-        checked::ExprKind::Record(fields) => {
+        checked::ExprKind::Record(fields) | checked::ExprKind::FrameNew(fields) => {
             for (_, field) in fields {
                 walk_expression(field, expression, statement);
             }
+        }
+        checked::ExprKind::FrameStore { frame, value, .. } => {
+            walk_expression(frame, expression, statement);
+            walk_expression(value, expression, statement);
         }
         checked::ExprKind::Block(body) => walk_block(body, expression, statement),
         checked::ExprKind::Match { value, arms } => {
@@ -718,6 +748,55 @@ pub(super) fn tracer<'ctx>(
     Ok(function)
 }
 
+pub(super) fn frame_tracer<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    program: &checked::Program,
+    ty: Type,
+) -> NativeResult<FunctionValue<'ctx>> {
+    let Type::Data(id) = ty else {
+        return Err("invalid generated frame type".into());
+    };
+    let checked::DataKind::Frame(fields) = &program.types[id].kind else {
+        return Err("invalid generated frame payload".into());
+    };
+    let name = format!("loom.frame.trace.{id}");
+    if let Some(function) = module.get_function(&name) {
+        return Ok(function);
+    }
+    let pointer = context.ptr_type(AddressSpace::default());
+    let function = module.add_function(
+        &name,
+        context.void_type().fn_type(&[pointer.into()], false),
+        Some(Linkage::Internal),
+    );
+    let builder = context.create_builder();
+    builder.position_at_end(context.append_basic_block(function, "entry"));
+    let payload = function.get_first_param().unwrap().into_pointer_value();
+    let layout = tasks::frame_layout(context, program, ty)?;
+    let trace = TraceEmitter {
+        context,
+        module,
+        program,
+        function,
+        builder: &builder,
+    };
+    for (index, (_, field)) in fields.iter().enumerate() {
+        if managed(program, *field) {
+            let address =
+                builder.build_struct_gep(layout, payload, index as u32, "frame.trace.field")?;
+            let value = builder.build_load(
+                native_type(context, program, *field)?,
+                address,
+                "frame.trace.value",
+            )?;
+            builder.build_store(address, trace.value(*field, value)?)?;
+        }
+    }
+    builder.build_return(None)?;
+    Ok(function)
+}
+
 struct TraceEmitter<'a, 'ctx> {
     context: &'ctx Context,
     module: &'a Module<'ctx>,
@@ -766,6 +845,8 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
                     .into()
             }
             Type::Data(id) => match &self.program.types[id].kind {
+                checked::DataKind::Task(_) => value,
+                checked::DataKind::Frame(_) => self.visit(value.into_pointer_value())?.into(),
                 checked::DataKind::Refined(base) => self.value(*base, value)?,
                 checked::DataKind::Record(fields) => {
                     let mut updated = value.into_struct_value();
@@ -903,6 +984,8 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
                     .into_array_value()
             }
             Type::Data(id) => match &self.program.types[id].kind {
+                checked::DataKind::Task(_) => payload,
+                checked::DataKind::Frame(_) => self.words(Type::Text, payload, offset)?,
                 checked::DataKind::Refined(base) => self.words(*base, payload, offset)?,
                 checked::DataKind::Record(fields) => {
                     let mut offset = offset;

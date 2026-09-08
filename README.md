@@ -17,6 +17,7 @@ in Git history.
 
 - [Try editing a small Loom program](editors/vscode/README.md#try-it)
 - [Write and test a multi-package file tool](compiler/examples/wordcount/README.md)
+- [Try typed tasks and postfix await](compiler/examples/tasks/README.md)
 - [Build and run the compiler](compiler/README.md)
 - [Use Loom syntax and analysis libraries](compiler/loom/README.md#public-syntax-libraries)
 - [Format source and get editor feedback](compiler/loom/README.md#formatting-and-editor-feedback)

@@ -1,0 +1,75 @@
+test fn async_calls_keep_logical_results_and_creation_locations() {
+    let program = accepted("async fn identity[T](value T) T { value }\nasync fn empty() {}\nasync fn main() { let first Task[Int] = identity(7)\nlet second = first\nassert second.await == 7\nassert identity(\"text\").await == \"text\"\nempty().await }")
+    let main = get(program.functions, program.entry)
+    assert main.is_async && main.result == 0
+    let creation = get(get(main.body.children, 0).children, 0)
+    assert creation.kind == ExprKind.TaskCall
+    let shape = get(program.types, creation.ty)
+    assert shape.kind == TypeKind.Task && get(shape.arguments, 0) == 1
+    assert creation.text == "app:3:41: task created here"
+    assert get(program.functions, creation.index).is_async
+    assert get(program.functions, creation.index).result == 1
+    let awaited = get(get(get(main.body.children, 2).children, 0).children, 0)
+    assert awaited.kind == ExprKind.Await && awaited.ty == 1
+    let last = get(main.body.children, length(main.body.children) - 1)
+    assert last.kind == ExprKind.Await && last.ty == 0
+    discard accepted_result("import std.result.Result\nasync fn item() Result[Int, Text] { Result.Ok(7) }\nasync fn answer() Result[Int, Text] { let value = item().await?\nResult.Ok(value + 1) }\nasync fn main() { discard answer().await }")
+    let project = fixture_project(source_files("async fn item() Int { 1 }\ntest async fn example() { assert item().await == 1 }"))
+    match bind(project, true) {
+        Result.Ok(bound) => {
+            match check(bound) {
+                Result.Ok(tested) => {
+                    assert length(tested.tests) == 1
+                    assert get(tested.functions, get(tested.tests, 0)).is_async
+                }
+                Result.Err(_) => {
+                    assert false
+                }
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
+test fn task_consumption_agrees_across_branches_and_loop_iterations() {
+    discard accepted("async fn item() Int { 7 }\nasync fn work(flag Bool) { let task = item()\nif flag { discard task.await } else { discard task.await }\nvar n = 0\nwhile n < 2 { let next = item()\nlet moved = next\ndiscard moved.await\nn = n + 1\nif n == 1 { continue }\nbreak } }\nasync fn main() { work(true).await }")
+    discard accepted("async fn item() Bool { true }\nasync fn work(flag Bool) { let task = item()\nif flag { discard task.await\nreturn }\ndiscard task.await\ndiscard flag && item().await }\nasync fn main() { work(false).await }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { let task = item()\nif true { discard task.await } }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { let task = item()\nwhile true { discard task.await\nbreak } }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { while true { let task = item()\nbreak } }")
+    rejects("async fn item() Bool { true }\nasync fn main() { let task = item()\ndiscard true && task.await }")
+}
+
+test fn tasks_cannot_be_lost_duplicated_or_escaped() {
+    rejects("async fn item() Int { 1 }\nasync fn unused() { let task = item() }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { discard item() }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { let task = item()\ndiscard task.await\ndiscard task.await }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { let task = item()\nlet moved = task\ndiscard task.await\ndiscard moved.await }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { var task = item()\ntask = item()\ndiscard task.await }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { let task = item()\nreturn }")
+    rejects("async fn item() Int { 1 }\nfn pass(value Task[Int]) {}")
+    rejects("async fn item() Int { 1 }\nfn produce() Task[Int] { item() }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { let values = [item()]\ndiscard values }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { let pair = (item(), 1)\ndiscard pair }")
+    rejects("async fn item() Int { 1 }\nfn main() { let f = item\ndiscard f }")
+    rejects("concept C { async fn item(self Self) Int }")
+}
+
+test fn suspension_requires_async_and_an_implemented_cleanup_boundary() {
+    rejects("async fn item() Int { 1 }\nfn main() { discard item().await }")
+    rejects("async fn main() { discard 1.await }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { defer {}\ndiscard item().await }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { defer { discard item().await } }")
+    discard accepted("async fn item() Int { 1 }\nasync fn main() { if true { defer {} }\ndiscard item().await }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { discard comptime { item().await } }")
+    rejects("async fn item() Int { 1 }\nfn main() { discard comptime { item } }")
+    rejects("async fn item() Int { 1 }\nfn main() { discard comptime { item() } }")
+}
+
+test fn async_contracts_keep_mandatory_logical_result_proofs() {
+    discard accepted("async fn twice(value Int) Int requires value >= 0 ensures result == value + value { value + value }\nasync fn main() { assert twice(2).await == 4 }")
+    rejects("async fn wrong(value Int) Int ensures result == value + 1 { value }")
+    rejects("async fn item() Int { 1 }\nasync fn uncertain() Int ensures result == 1 { item().await }")
+}

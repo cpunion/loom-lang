@@ -24,6 +24,7 @@ fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) 
     if index < length(seen) { return Result.Ok(true) }
     push(seen, target)
     let function = get(state.program.functions, target)
+    if function.is_async { return Result.Err(failure(expr, "compile-time evaluation cannot create or await tasks")) }
     if function.runtime_name != "" && !pure_intrinsic(function.runtime_name) {
         return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", function.runtime_name)))
     }
@@ -42,6 +43,9 @@ fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) 
     Result.Ok(true)
 }
 fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Bool, Failure] {
+    if expr.kind == ExprKind.TaskCall || expr.kind == ExprKind.Await {
+        return Result.Err(failure(expr, "compile-time evaluation cannot create or await tasks"))
+    }
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
     discard spend(state, expr, 0, 1)?
     if (expr.kind == ExprKind.Break || expr.kind == ExprKind.Continue) && loops == 0 {

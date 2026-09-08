@@ -148,6 +148,10 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
         push(args, resolve_bound(env, owner, child(node, index), arguments, obligations, depth + 1)?)
         index = index + 1
     }
+    if node.value == "Task" {
+        if length(args) != 1 { return Result.Err(failure(env, owner, node, "Task needs one result type argument")) }
+        return Result.Ok(intern(env, TypeKind.Task, -1, args))
+    }
     if node.value == "List" {
         if length(args) != 1 { return Result.Err(failure(env, owner, node, "List requires one element type")) }
         return Result.Ok(intern(env, TypeKind.List, -1, args))
@@ -246,6 +250,7 @@ fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node
         index = index + 1
     }
     if source.kind == TypeKind.List { return Result.Ok(intern(env, TypeKind.List, -1, args)) }
+    if source.kind == TypeKind.Task { return Result.Ok(intern(env, TypeKind.Task, -1, args)) }
     if source.kind == TypeKind.Function { return Result.Ok(intern(env, TypeKind.Function, -1, args)) }
     if source.kind == TypeKind.Dyn { return dynamic_instance(env, owner, get(env.interfaces, source.symbol).symbol, args, node) }
     if source.kind == TypeKind.Associated { return associated_type(env, owner, source.symbol, get(args, 0), argument_tail(args, 1), node, 0) }

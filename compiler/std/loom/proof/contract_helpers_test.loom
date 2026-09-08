@@ -11,7 +11,7 @@ fn contract_fixture(params List[Int], result_type Int, body Expr, preconditions 
         index = index + 1
     }
     push(locals, Local { name = "result" ty = result_type mutable = false is_scoped = false })
-    Function { symbol = 0 arguments = new[Int]() params = params result = result_type locals = locals
+    Function { is_async = false symbol = 0 arguments = new[Int]() params = params result = result_type locals = locals
         preconditions = preconditions postconditions = postconditions result_local = length(params)
         body = if body.kind == ExprKind.Block { body } else { expression(ExprKind.Block, result_type, "", -1, nodes(body)) }
         runtime_name = "" span = body.span }

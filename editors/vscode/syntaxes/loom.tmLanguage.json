@@ -3,9 +3,9 @@
   "patterns": [
     { "name": "comment.line.double-slash.loom", "begin": "//", "end": "$" },
     { "name": "string.quoted.double.loom", "begin": "\"", "end": "\"", "patterns": [{ "name": "constant.character.escape.loom", "match": "\\\\(?:u\\{[0-9a-fA-F]+\\}|.)" }] },
-    { "name": "keyword.control.loom", "match": "\\b(?:fn|pub|intrinsic|type|where|record|enum|match|test|import|let|var|return|assert|discard|while|break|continue|if|else|requires|ensures|comptime|defer|scoped|concept|impl|for|implements|dyn)\\b" },
+    { "name": "keyword.control.loom", "match": "\\b(?:fn|pub|intrinsic|type|where|record|enum|match|test|import|let|var|return|assert|discard|while|break|continue|if|else|requires|ensures|comptime|defer|scoped|concept|impl|for|implements|dyn|async|await)\\b" },
     { "name": "constant.language.loom", "match": "\\b(?:true|false)\\b" },
-    { "name": "support.type.loom", "match": "\\b(?:Int|Float|Bool|Text|Bytes|List|Self)\\b" },
+    { "name": "support.type.loom", "match": "\\b(?:Int|Float|Bool|Text|Bytes|List|Task|Self)\\b" },
     { "name": "constant.numeric.loom", "match": "\\b[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\\b" },
     { "name": "keyword.operator.loom", "match": "=>|==|!=|<=|>=|&&|\\|\\||<<|>>|[-+*/%=!<>&|^~?]" }
   ]

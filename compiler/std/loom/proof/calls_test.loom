@@ -2,7 +2,7 @@ fn mutable_caller(body Expr, goal Expr) Function {
     let locals = new[Local]()
     push(locals, Local { name = "value" ty = 1 mutable = true is_scoped = false })
     push(locals, Local { name = "result" ty = 1 mutable = false is_scoped = false })
-    Function { symbol = 1 arguments = new[Int]() params = new[Int]() result = 1 locals = locals
+    Function { is_async = false symbol = 1 arguments = new[Int]() params = new[Int]() result = 1 locals = locals
         preconditions = new[Expr]() postconditions = nodes(goal) result_local = 1 body = body runtime_name = "" span = body.span }
 }
 

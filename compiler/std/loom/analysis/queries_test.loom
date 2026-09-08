@@ -31,6 +31,17 @@ fn only_type(found Inspection, expected Text) {
     assert length(found.types) == 1 && get(found.types, 0) == expected
 }
 
+test fn async_calls_tasks_and_await_have_distinct_editor_types() {
+    let text = "async fn item() Int { 7 }\nasync fn main() { let task = item()\nassert task.await == 7 }"
+    let analysis = accepted(input(text))
+    only_type(inspection(analysis, text, "item()\n"), "async fn() Int")
+    only_type(inspection(analysis, text, "task.await"), "Task[Int]")
+    only_type(inspection(analysis, text, "await =="), "Int")
+    let call = inspection(analysis, text, "item()\n")
+    assert length(call.definitions) == 1
+    assert get(call.definitions, 0).span.start == 9
+}
+
 fn only_definition(found Inspection, start Int, end Int) {
     assert length(found.definitions) == 1
     let location = get(found.definitions, 0)

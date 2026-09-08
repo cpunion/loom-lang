@@ -1,0 +1,311 @@
+import std.loom.source.Span
+import std.loom.typed.Program
+import std.loom.typed.Function
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Field
+import std.loom.typed.Variant
+import std.loom.typed.Local
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Arm
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.set
+import std.list.length
+import std.list.clone
+
+fn arguments_equal(left List[Int], right List[Int]) Bool {
+    if length(left) != length(right) {
+        return false
+    }
+    var index = 0
+    while index < length(left) {
+        if get(left, index) != get(right, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn shape(types List[Type], kind TypeKind, arguments List[Int]) Int {
+    var index = 0
+    while index < length(types) {
+        let ty = get(types, index)
+        if ty.kind == kind && arguments_equal(ty.arguments, arguments) {
+            return index
+        }
+        index = index + 1
+    }
+    let id = length(types)
+    push(types, Type {
+            kind = kind
+            symbol = -1
+            arguments = arguments
+            fields = new[Field]()
+            variants = new[Variant]()
+            constraint = new[Expr]()
+        })
+    id
+}
+
+fn ints(value Int) List[Int] {
+    let values = new[Int]()
+    push(values, value)
+    values
+}
+
+fn function_type(types List[Type], params List[Int], output Int) Int {
+    let arguments = clone(params)
+    push(arguments, output)
+    shape(types, TypeKind.Function, arguments)
+}
+
+fn generated(source Function, params List[Int], output Int, locals List[Local], body Expr) Function {
+    Function {
+        is_async = false
+        symbol = -1
+        arguments = new[Int]()
+        params = params
+        result = output
+        locals = locals
+        preconditions = new[Expr]()
+        postconditions = new[Expr]()
+        result_local = -1
+        body = body
+        runtime_name = ""
+        span = source.span
+    }
+}
+
+fn function_body(source Function, body Expr) Function {
+    Function {
+        is_async = source.is_async
+        symbol = source.symbol
+        arguments = source.arguments
+        params = source.params
+        result = source.result
+        locals = source.locals
+        preconditions = source.preconditions
+        postconditions = source.postconditions
+        result_local = source.result_local
+        body = body
+        runtime_name = source.runtime_name
+        span = source.span
+    }
+}
+
+fn async_function(program Program, id Int) {
+    let source = get(program.functions, id)
+    let frame = length(program.types)
+    push(program.types, Type {
+            kind = TypeKind.Frame
+            symbol = -1
+            arguments = new[Int]()
+            fields = new[Field]()
+            variants = new[Variant]()
+            constraint = new[Expr]()
+        })
+    let locals = new[Local]()
+    push(locals, Local {
+            name = ""
+            ty = frame
+            mutable = false
+            is_scoped = false
+        })
+    let count = if source.result_local >= 0 {
+        source.result_local
+    } else {
+        length(source.locals)
+    }
+    var index = 0
+    while index < count {
+        push(locals, get(source.locals, index))
+        index = index + 1
+    }
+    let graph = Graph {
+        states = new[State]()
+        locals = locals
+        result = source.result
+        span = source.span
+    }
+    let first = state(graph)
+    index = 0
+    while index < length(source.preconditions) {
+        let guard = labeled(node(ExprKind.Assert, 0, source.span, -1, one(remap(get(source.preconditions, index), 1))), "precondition failed")
+        append(graph, first, guard)
+        index = index + 1
+    }
+    let output = evaluate(graph, remap(source.body, 1), first, Loop {
+            exit = -1
+            again = -1
+        })
+    finish(graph, output.state, Exit.Complete, output.expression, new[Edge](), new[Arm]())
+    let live = flows(graph)
+    let needed = flags(length(graph.locals))
+    index = 0
+    while index < length(source.params) {
+        set(needed, index + 1, true)
+        index = index + 1
+    }
+    index = 0
+    while index < length(graph.states) {
+        if get(graph.states, index).exit == Exit.Wait {
+            var local = 1
+            while local < length(needed) {
+                if get(get(live, index).live, local) {
+                    set(needed, local, true)
+                }
+                local = local + 1
+            }
+        }
+        index = index + 1
+    }
+    let fields = new[Field]()
+    push(fields, Field {
+            name = "result"
+            ty = source.result
+        })
+    push(fields, Field {
+            name = "pc"
+            ty = 1
+        })
+    let spills = new[Int]()
+    index = 0
+    while index < length(graph.locals) {
+        push(spills, if get(needed, index) {
+                length(fields)
+            } else {
+                -1
+            })
+        if get(needed, index) {
+            push(fields, Field {
+                    name = ""
+                    ty = get(graph.locals, index).ty
+                })
+        }
+        index = index + 1
+    }
+    set(program.types, frame, Type {
+            kind = TypeKind.Frame
+            symbol = -1
+            arguments = new[Int]()
+            fields = fields
+            variants = new[Variant]()
+            constraint = new[Expr]()
+        })
+    let resume = length(program.functions)
+    push(program.functions, generated(source, ints(frame), 1, graph.locals, emitted(graph, spills, live)))
+    let task = shape(program.types, TypeKind.Task, ints(source.result))
+    let callback = node(ExprKind.FunctionRef, function_type(program.types, ints(frame), 1), source.span, resume, new[Expr]())
+    let initializers = new[Expr]()
+    push(initializers, node(ExprKind.Field, 1, source.span, 1, one(integer(first, source.span))))
+    let constructor_locals = new[Local]()
+    index = 0
+    while index < length(source.params) {
+        let ty = get(source.params, index)
+        push(constructor_locals, get(source.locals, index))
+        push(initializers, node(ExprKind.Field, ty, source.span, get(spills, index + 1),
+                one(node(ExprKind.Local, ty, source.span, index, new[Expr]()))))
+        index = index + 1
+    }
+    let label = length(constructor_locals)
+    push(constructor_locals, Local {
+            name = ""
+            ty = 3
+            mutable = false
+            is_scoped = false
+        })
+    let values = pair(node(ExprKind.FrameNew, frame, source.span, -1, initializers), callback)
+    push(values, node(ExprKind.Local, 3, source.span, label, new[Expr]()))
+    let params = clone(source.params)
+    push(params, 3)
+    let constructor = Function {
+        is_async = false
+        symbol = source.symbol
+        arguments = source.arguments
+        params = params
+        result = task
+        locals = constructor_locals
+        preconditions = new[Expr]()
+        postconditions = new[Expr]()
+        result_local = -1
+        body = block(one(operation("task_create", task, source.span, values)), task, source.span, true)
+        runtime_name = ""
+        span = source.span
+    }
+    set(program.functions, id, constructor)
+}
+
+fn root_wrapper(program Program, original Int) Int {
+    let constructor = get(program.functions, original)
+    let span = constructor.span
+    let label = labeled(node(ExprKind.Text, 3, span, -1, new[Expr]()), "async entry")
+    let thunk = length(program.functions)
+    push(program.functions, generated(constructor, new[Int](), constructor.result, new[Local](),
+            block(one(node(ExprKind.Call, constructor.result, span, original, one(label))), constructor.result, span, true)))
+    let callback = node(ExprKind.FunctionRef, function_type(program.types, new[Int](), constructor.result), span, thunk, new[Expr]())
+    let wrapper = length(program.functions)
+    push(program.functions, generated(constructor, new[Int](), 0, new[Local](),
+            block(one(operation("task_run", 0, span, one(callback))), 0, span, true)))
+    wrapper
+}
+
+// Checking exposes high-level async IR. Only the native artifact boundary calls
+// this lowering; ordinary programs retain their existing representation.
+pub fn lower(source Program) Program {
+    var any = false
+    var index = 0
+    while index < length(source.functions) {
+        any = any || get(source.functions, index).is_async
+        index = index + 1
+    }
+    if !any {
+        return source
+    }
+    let program = Program {
+        types = clone(source.types)
+        functions = clone(source.functions)
+        entry = source.entry
+        tests = clone(source.tests)
+        test_names = source.test_names
+        exports = source.exports
+        interfaces = source.interfaces
+        witnesses = source.witnesses
+    }
+    index = 0
+    while index < length(source.functions) {
+        let function = get(source.functions, index)
+        if function.is_async {
+            async_function(program, index)
+        } else {
+            set(program.functions, index, function_body(function, remap(function.body, 0)))
+        }
+        index = index + 1
+    }
+    let entry = if source.entry >= 0 && get(source.functions, source.entry).is_async {
+        root_wrapper(program, source.entry)
+    } else {
+        source.entry
+    }
+    index = 0
+    while index < length(source.tests) {
+        let original = get(source.tests, index)
+        if get(source.functions, original).is_async {
+            set(program.tests, index, root_wrapper(program, original))
+        }
+        index = index + 1
+    }
+    Program {
+        types = program.types
+        functions = program.functions
+        entry = entry
+        tests = program.tests
+        test_names = program.test_names
+        exports = program.exports
+        interfaces = program.interfaces
+        witnesses = program.witnesses
+    }
+}

@@ -26,6 +26,9 @@ mod frame_roots_abi;
 mod frame_roots_tests;
 mod fs_ops;
 mod process_io;
+mod tasks;
+#[cfg(test)]
+mod tasks_tests;
 mod wait;
 mod wait_abi;
 #[cfg(test)]

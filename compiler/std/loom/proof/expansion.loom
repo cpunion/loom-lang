@@ -344,7 +344,7 @@ fn expanded_contracts(program Program, function Function) Result[Function, Text]
     push(budget, 4096)
     let preconditions = contract_predicates(program, function, function.preconditions, true, budget)?
     let postconditions = contract_predicates(program, function, function.postconditions, false, budget)?
-    Result.Ok(Function { symbol = function.symbol arguments = function.arguments params = function.params result = function.result
+    Result.Ok(Function { is_async = function.is_async symbol = function.symbol arguments = function.arguments params = function.params result = function.result
         locals = function.locals preconditions = preconditions postconditions = postconditions result_local = function.result_local
         body = function.body runtime_name = function.runtime_name span = function.span })
 }

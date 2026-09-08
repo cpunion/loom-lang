@@ -103,6 +103,11 @@ pub enum Primitive {
     FileRemove,
     DirectoryRemove,
     PathEntryKind,
+    TaskCreate,
+    TaskAwait,
+    TaskResult,
+    TaskRelease,
+    TaskRun,
 }
 
 pub mod checked {
@@ -155,6 +160,10 @@ pub mod checked {
         Record(Vec<(String, Type)>),
         Enum(Vec<(String, Vec<Type>)>),
         Refined(Type),
+        /// Opaque owner-scoped task identity; the argument is its logical result.
+        Task(Type),
+        /// Compiler-generated zeroed GC payload, never a source record value.
+        Frame(Vec<(String, Type)>),
     }
 
     #[derive(Debug)]
@@ -233,6 +242,12 @@ pub mod checked {
             arguments: Vec<Expr>,
         },
         Record(Vec<(usize, Expr)>),
+        FrameNew(Vec<(usize, Expr)>),
+        FrameStore {
+            frame: Box<Expr>,
+            field: usize,
+            value: Box<Expr>,
+        },
         List(Vec<Expr>),
         Field(Box<Expr>, usize),
         Variant {

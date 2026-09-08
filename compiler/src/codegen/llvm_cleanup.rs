@@ -82,10 +82,14 @@ fn walk_expr<'a>(
                 walk_expr(value, statement, expression);
             }
         }
-        checked::ExprKind::Record(fields) => {
+        checked::ExprKind::Record(fields) | checked::ExprKind::FrameNew(fields) => {
             for (_, value) in fields {
                 walk_expr(value, statement, expression);
             }
+        }
+        checked::ExprKind::FrameStore { frame, value, .. } => {
+            walk_expr(frame, statement, expression);
+            walk_expr(value, statement, expression);
         }
         checked::ExprKind::Block(body) => walk(body, statement, expression),
         checked::ExprKind::If {

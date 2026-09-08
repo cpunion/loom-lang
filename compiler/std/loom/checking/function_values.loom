@@ -42,13 +42,15 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
     var output = -1
     var arguments = new[Int]()
     var static_only = false
+    var async_only = false
     var index = 0
     while index < length(options) {
         let id = get(options, index)
         let candidate = get(context.env.signatures, id)
         static_only = static_only || has_static(candidate)
+        async_only = async_only || async_signature(context.env, candidate)
         let count = candidate.parameters - parameter_offset(context.env, candidate.symbol)
-        if !has_static(candidate) && (length(supplied_types) == 0 || length(supplied_types) == count) {
+        if !has_static(candidate) && !async_signature(context.env, candidate) && (length(supplied_types) == 0 || length(supplied_types) == count) {
             let inferred = supplied_call(context, node, supplied_types, candidate)?
             if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments
@@ -75,6 +77,7 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
         index = index + 1
     }
     if selected < 0 {
+        if async_only { return Result.Err(error(context, node, "async function values are not yet implemented; call the function directly")) }
         if static_only { return Result.Err(error(context, node, "functions with comptime parameters cannot be used as function values yet")) }
         return Result.Err(error(context, node, "no accessible function reference matches; provide an exact function type and required concept evidence"))
     }

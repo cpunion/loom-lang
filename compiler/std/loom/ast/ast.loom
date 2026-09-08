@@ -13,7 +13,7 @@ pub enum NodeKind {
     Match Arm Pattern Bindings Wildcard If Comptime
     TupleType Tuple Destructure Float
     Concept Impl Implements MethodCall DynType AssociatedType FunctionType Invoke
-    Defer Bounds Break Continue List Apply Index IndexAssign Scoped
+    Defer Bounds Break Continue List Apply Index IndexAssign Scoped Async Await
 }
 
 // TupleType/Tuple/List children are ordered elements. Destructure stores "let" or

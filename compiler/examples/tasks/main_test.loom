@@ -1,0 +1,9 @@
+test async fn queued_children_keep_their_result_types() {
+    assert joined().await == "42 ready"
+}
+
+test async fn a_local_binding_can_transfer_a_task() {
+    let original = joined()
+    let transferred = original
+    assert transferred.await == "42 ready"
+}

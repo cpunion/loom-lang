@@ -97,8 +97,8 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
         if length(value.arguments) == 1 { label = concat(label, ",") }
         return concat(label, ")")
     }
-    var label = "List"
-    if value.kind != TypeKind.List {
+    var label = if value.kind == TypeKind.Task { "Task" } else { "List" }
+    if value.kind != TypeKind.List && value.kind != TypeKind.Task {
         let symbol = get(bindings.symbols, value.symbol)
         label = qualified_type_name(bindings, symbol.file, symbol.name)
     }

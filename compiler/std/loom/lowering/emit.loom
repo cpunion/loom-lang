@@ -1,0 +1,127 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Arm
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.list.clone
+
+fn field(graph Graph, ty Int, index Int) Expr {
+    node(ExprKind.Field, ty, graph.span, index, one(local(graph, 0)))
+}
+
+fn store(graph Graph, index Int, value Expr) Expr {
+    node(ExprKind.FrameStore, 0, graph.span, index, pair(local(graph, 0), value))
+}
+
+fn returned(graph Graph, status Int) Expr {
+    nonfall(node(ExprKind.Return, 0, graph.span, -1, one(integer(status, graph.span))))
+}
+
+fn dispatch_to(graph Graph, pc Int, target Int) Expr {
+    let values = one(node(ExprKind.Assign, 0, graph.span, pc, one(integer(target, graph.span))))
+    let again = nonfall(node(ExprKind.Continue, 0, graph.span, -1, new[Expr]()))
+    push(values, again)
+    block(values, 0, graph.span, false)
+}
+
+fn branching(graph Graph, condition Expr, yes Expr, no Expr) Expr {
+    let values = pair(condition, yes)
+    push(values, no)
+    nonfall(node(ExprKind.If, 0, graph.span, -1, values))
+}
+
+fn ending(graph Graph, id Int, pc Int, spills List[Int], live List[Flow]) Expr {
+    let current = get(graph.states, id)
+    if current.exit == Exit.Unreachable {
+        let failed = one(node(ExprKind.Assert, 0, graph.span, -1, one(boolean(false, graph.span))))
+        push(failed, returned(graph, 0))
+        return block(failed, 0, graph.span, false)
+    }
+    if current.exit == Exit.Jump {
+        return dispatch_to(graph, pc, get(current.edges, 0).target)
+    }
+    if current.exit == Exit.Branch {
+        return branching(graph, current.value, dispatch_to(graph, pc, get(current.edges, 0).target),
+            dispatch_to(graph, pc, get(current.edges, 1).target))
+    }
+    if current.exit == Exit.Select {
+        let arms = new[Arm]()
+        var index = 0
+        while index < length(current.arms) {
+            let arm = get(current.arms, index)
+            push(arms, Arm {
+                    variant = arm.variant
+                    bindings = arm.bindings
+                    whole = arm.whole
+                    body = one(dispatch_to(graph, pc, get(current.edges, index).target))
+                })
+            index = index + 1
+        }
+        return Expr {
+            kind = ExprKind.Match
+            ty = 0
+            span = graph.span
+            text = ""
+            index = -1
+            children = one(current.value)
+            arms = arms
+            falls = false
+        }
+    }
+    if current.exit == Exit.Wait {
+        let pending = new[Expr]()
+        var index = 1
+        while index < length(spills) {
+            if get(spills, index) >= 0 && get(get(live, id).live, index) {
+                push(pending, store(graph, get(spills, index), local(graph, index)))
+            }
+            index = index + 1
+        }
+        push(pending, store(graph, 1, integer(id, graph.span)))
+        push(pending, returned(graph, 1))
+        return branching(graph, operation("task_await", 2, graph.span, one(current.value)),
+            dispatch_to(graph, pc, get(current.edges, 0).target), block(pending, 0, graph.span, false))
+    }
+    let completed = new[Expr]()
+    if graph.result == 0 {
+        push(completed, node(ExprKind.Discard, 0, graph.span, -1, one(current.value)))
+    }
+    else {
+        push(completed, store(graph, 0, current.value))
+    }
+    push(completed, returned(graph, 0))
+    block(completed, 0, graph.span, false)
+}
+
+fn emitted(graph Graph, spills List[Int], live List[Flow]) Expr {
+    let pc = temporary(graph, 1)
+    let values = one(node(ExprKind.Let, 0, graph.span, pc, one(field(graph, 1, 1))))
+    var index = 1
+    while index < length(spills) {
+        let slot = get(spills, index)
+        if slot >= 0 {
+            push(values, node(ExprKind.Let, 0, graph.span, index,
+                    one(field(graph, get(graph.locals, index).ty, slot))))
+        }
+        index = index + 1
+    }
+    let dispatch = new[Expr]()
+    index = 0
+    while index < length(graph.states) {
+        let condition = labeled(node(ExprKind.Binary, 2, graph.span, -1, pair(local(graph, pc), integer(index, graph.span))), "==")
+        let body = clone(get(graph.states, index).code)
+        push(body, ending(graph, index, pc, spills, live))
+        push(dispatch, node(ExprKind.If, 0, graph.span, -1,
+                pair(condition, block(body, 0, graph.span, false))))
+        index = index + 1
+    }
+    let invalid = labeled(node(ExprKind.Assert, 0, graph.span, -1, one(boolean(false, graph.span))), "invalid coroutine state")
+    push(dispatch, invalid)
+    push(dispatch, returned(graph, 0))
+    push(values, node(ExprKind.While, 0, graph.span, -1,
+            pair(boolean(true, graph.span), block(dispatch, 0, graph.span, false))))
+    push(values, returned(graph, 0))
+    block(values, 1, graph.span, false)
+}

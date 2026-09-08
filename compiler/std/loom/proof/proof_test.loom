@@ -33,7 +33,7 @@ fn fixture(body Expr, preconditions List[Expr], postcondition Expr) Function {
     let locals = new[Local]()
     push(locals, Local { name = "x" ty = 1 mutable = false is_scoped = false })
     push(locals, Local { name = "result" ty = 1 mutable = false is_scoped = false })
-    Function { symbol = 0 arguments = new[Int]() params = params result = 1 locals = locals
+    Function { is_async = false symbol = 0 arguments = new[Int]() params = params result = 1 locals = locals
         preconditions = preconditions postconditions = nodes(postcondition) result_local = 1
         body = body runtime_name = "" span = body.span }
 }

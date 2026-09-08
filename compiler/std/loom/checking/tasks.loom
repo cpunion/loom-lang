@@ -1,0 +1,100 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.ast.has
+import std.loom.typed.TypeKind
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.source.Diagnostic
+import std.loom.source.render
+import std.list.get
+import std.list.new
+import std.list.push
+import std.list.length
+import std.result.Result
+
+fn async_signature(env Environment, signature Signature) Bool {
+    has(symbol(env, signature.symbol).node, NodeKind.Async)
+}
+
+fn task_creation_message(context Context, node Node) Text {
+    if !context.emit {
+        return ""
+    }
+    let source = get(context.env.source.files, symbol(context.env, context.signature.symbol).file)
+    render(source.path, source.text, Diagnostic {
+            span = node.span
+            message = "task created here"
+        })
+}
+
+fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {
+    if !async_signature(context.env, context.signature) {
+        return Result.Err(error(context, node, "await requires an async function"))
+    }
+    if context.cleanup_head >= 0 {
+        return Result.Err(error(context, node, "await with active scoped or defer cleanup is not yet implemented"))
+    }
+    let hint = if expected >= 0 {
+        intern(context.env, TypeKind.Task, -1, ints(expected))
+    } else {
+        -1
+    }
+    let value = expr(context, child(node, 0), hint)?
+    let shape = get(context.env.types, value.ty)
+    if shape.kind != TypeKind.Task {
+        return Result.Err(error(context, node, "await requires a Task value"))
+    }
+    Result.Ok(expression(ExprKind.Await, get(shape.arguments, 0), node, "", -1, expressions(value), value.falls))
+}
+
+fn contains_task(env Environment, ty Int, seen List[Int]) Bool {
+    if ty < 0 || resource_seen(seen, ty) {
+        return false
+    }
+    push(seen, ty)
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Task {
+        return true
+    }
+    var index = 0
+    while index < length(shape.arguments) {
+        if contains_task(env, get(shape.arguments, index), seen) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.fields) {
+        if contains_task(env, get(shape.fields, index).ty, seen) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if contains_task(env, get(fields, field), seen) {
+                return true
+            }
+            field = field + 1
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn task_signature(env Environment, signature Signature, node Node) Result[Bool, Failure] {
+    var index = 0
+    while index < length(signature.params) {
+        if contains_task(env, get(signature.params, index), new[Int]()) {
+            return Result.Err(failure(env, signature.symbol, node, "Task parameters and aggregate task transfers are not yet implemented"))
+        }
+        index = index + 1
+    }
+    if contains_task(env, signature.result, new[Int]()) {
+        return Result.Err(failure(env, signature.symbol, node, "returning Task values or task-containing aggregates is not yet implemented; use async fn"))
+    }
+    Result.Ok(true)
+}

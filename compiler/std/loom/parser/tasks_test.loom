@@ -1,0 +1,15 @@
+import std.loom.ast.has
+
+test fn async_declarations_and_postfix_await_preserve_source_structure() {
+    let tree = parsed("pub async fn fetch[T](value T) T { value }\ntest async fn example() { let task = fetch(1)\ndiscard task.await }\nasync fn chained() Int { fetch(1).await? }")
+    assert has(child(tree, 0), NodeKind.Async) && has(child(tree, 0), NodeKind.Public)
+    assert has(child(tree, 1), NodeKind.Async) && has(child(tree, 1), NodeKind.Test)
+    let awaited = child(child(body(child(tree, 1)), 1), 0)
+    assert awaited.kind == NodeKind.Await && child(awaited, 0).kind == NodeKind.Name
+    let chained = child(body(child(tree, 2)), 0)
+    assert chained.kind == NodeKind.Try && child(chained, 0).kind == NodeKind.Await
+    assert child(child(chained, 0), 0).kind == NodeKind.Call
+    assert rejected("async fn f() { f().await() }").message == "await is a postfix keyword, not a method"
+    assert rejected("async fn f() { let await = 1 }").message == "expected a name"
+    assert rejected("fn async() {}").message == "expected a name"
+}

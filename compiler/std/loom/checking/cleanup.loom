@@ -10,6 +10,7 @@ import std.list.length
 import std.result.Result
 
 fn cleanup_form(context Context, node Node, loops Int) Result[Bool, Failure] {
+    if node.kind == NodeKind.Await { return Result.Err(error(context, node, "await in cleanup bodies is not yet implemented")) }
     if node.kind == NodeKind.Return || node.kind == NodeKind.Try || node.kind == NodeKind.Defer || node.kind == NodeKind.Scoped {
         return Result.Err(error(context, node, "defer blocks cannot contain return, ?, defer or scoped"))
     }
