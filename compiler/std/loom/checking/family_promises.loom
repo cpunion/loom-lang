@@ -1,0 +1,112 @@
+// Applications are normalization recipes, not conformance permission. Every
+// use proves its receiver and input requirements in the consuming scope.
+record FamilyApplication { member Int receiver Int arguments List[Int] result Int }
+
+fn register_family_application(env Environment, member Int, receiver Int, arguments List[Int], output Int) {
+    if length(arguments) == 0 || length(member_bounds(env, member)) == 0 { return }
+    var index = 0
+    while index < length(env.family_applications) {
+        let previous = get(env.family_applications, index)
+        if previous.member == member && previous.receiver == receiver && previous.result == output && same(previous.arguments, arguments) { return }
+        index = index + 1
+    }
+    push(env.family_applications, FamilyApplication { member = member receiver = receiver arguments = arguments result = output })
+}
+fn promise_environment(env Environment, ty Int, capability Int) Environment {
+    let here = Requirement { ty = ty capability = capability }
+    if env.promise_depth == length(env.promise_path) { push(env.promise_path, here) } else { set(env.promise_path, env.promise_depth, here) }
+    Environment { source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
+        signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
+        concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses
+        associations = env.associations association_depth = env.association_depth family_applications = env.family_applications
+        promise_path = env.promise_path promise_depth = env.promise_depth + 1 }
+}
+fn family_parameter_bounds(env Environment, owner Int, member Int, arguments List[Int], obligations List[Requirement]) Result[Bool, Failure] {
+    if length(arguments) != length(member_parameters(env, member)) { return Result.Ok(false) }
+    let bounds = new[Requirement]()
+    discard inherit_member_requirements(env, member, arguments, bounds)?
+    var index = 0
+    while index < length(bounds) {
+        let bound = get(bounds, index)
+        if !admitted(env, owner, obligations, bound.ty, bound.capability)? { return Result.Ok(false) }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+// Unlike declaration diagnostics, proof search returns false for absent
+// evidence. Expansion failures still propagate rather than being swallowed.
+fn family_argument_admitted(env Environment, owner Int, ty Int, obligations List[Requirement], node Node, depth Int) Result[Bool, Failure] {
+    if depth > 64 { return Result.Err(failure(env, owner, node, "type requirement expansion must be finite")) }
+    let shape = get(env.types, ty)
+    var index = 0
+    while index < length(shape.arguments) {
+        if !family_argument_admitted(env, owner, get(shape.arguments, index), obligations, node, depth + 1)? { return Result.Ok(false) }
+        index = index + 1
+    }
+    if shape.kind == TypeKind.Associated {
+        if !admitted(env, owner, obligations, get(shape.arguments, 0), symbol(env, shape.symbol).owner)? { return Result.Ok(false) }
+        if !family_parameter_bounds(env, owner, shape.symbol, argument_tail(shape.arguments, 1), obligations)? { return Result.Ok(false) }
+    }
+    if shape.kind == TypeKind.Dyn {
+        let declaration = get(env.concepts, concept_index(env, get(env.interfaces, shape.symbol).symbol))
+        index = 0
+        while index < length(shape.arguments) {
+            let bounds = get(declaration.bounds, index)
+            var bound = 0
+            while bound < length(bounds) {
+                if !admitted(env, owner, obligations, get(shape.arguments, index), get(bounds, bound))? { return Result.Ok(false) }
+                bound = bound + 1
+            }
+            index = index + 1
+        }
+    }
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
+        let bounds = requirements(env, shape.symbol, shape.arguments)?
+        index = 0
+        while index < length(bounds) {
+            let bound = get(bounds, index)
+            if !admitted(env, owner, obligations, bound.ty, bound.capability)? { return Result.Ok(false) }
+            index = index + 1
+        }
+    }
+    Result.Ok(true)
+}
+fn family_application_admitted(env Environment, owner Int, application FamilyApplication, obligations List[Requirement], node Node) Result[Bool, Failure] {
+    var index = 0
+    while index < length(application.arguments) {
+        if !family_argument_admitted(env, owner, get(application.arguments, index), obligations, node, 0)? { return Result.Ok(false) }
+        index = index + 1
+    }
+    family_parameter_bounds(env, owner, application.member, application.arguments, obligations)
+}
+fn expand_family_promises(env Environment, owner Int, given Requirement, pending List[Requirement], relevant List[Bool], node Node) Result[Bool, Failure] {
+    // Domain proofs may discover more recipes. The outer worklist revisits
+    // established facts when this snapshot grows.
+    let count = length(env.family_applications)
+    var index = 0
+    while index < count {
+        let application = get(env.family_applications, index)
+        if application.receiver == given.ty && symbol(env, application.member).owner == given.capability {
+            let bounds = member_bounds(env, application.member)
+            var needed = false
+            var bound = 0
+            while bound < length(bounds) {
+                let target = get(bounds, bound)
+                needed = needed || (get(relevant, concept_index(env, target)) && !required(pending, application.result, target))
+                bound = bound + 1
+            }
+            if needed && family_application_admitted(env, owner, application, pending, node)? {
+                bound = 0
+                while bound < length(bounds) {
+                    let target = get(bounds, bound)
+                    if get(relevant, concept_index(env, target)) && !required(pending, application.result, target) {
+                        push(pending, Requirement { ty = application.result capability = target })
+                    }
+                    bound = bound + 1
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

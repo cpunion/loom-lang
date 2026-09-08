@@ -13,7 +13,17 @@ record Implementation { symbol Int capability Int ty Int methods List[Int] assoc
 fn type_parameters(env Environment, owner Int) List[Node] {
     let item = symbol(env, owner)
     let declaration = if item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl { item.owner } else { owner }
-    group(symbol(env, declaration).node, NodeKind.TypeParameters)
+    let parameters = group(symbol(env, declaration).node, NodeKind.TypeParameters)
+    if declaration == owner || item.node.kind != NodeKind.AssociatedType { return parameters }
+    let joined = new[Node]()
+    var index = 0
+    while index < length(parameters) { push(joined, get(parameters, index))
+        index = index + 1 }
+    let local = group(item.node, NodeKind.TypeParameters)
+    index = 0
+    while index < length(local) { push(joined, get(local, index))
+        index = index + 1 }
+    joined
 }
 
 fn prototype(env Environment, owner Int) Bool {
@@ -47,25 +57,26 @@ fn requirements(env Environment, owner Int, arguments List[Int]) Result[List[Req
     let obligations = new[Requirement]()
     if prototype(env, owner) {
         push(obligations, Requirement { ty = get(arguments, 0) capability = symbol(env, owner).owner })
-        return function_requirements(env, owner, obligations)
     }
     let parameters = type_parameters(env, owner)
     var index = 0
     while index < length(parameters) {
         let parameter = get(parameters, index)
+        let ty = get(arguments, index + parameter_offset(env, owner))
         var bound = 0
         while bound < length(parameter.children) {
             let node = child(parameter, bound)
             let capability = required_concept(env, owner, node)?
             var previous = 0
-            while previous < length(obligations) {
-                let existing = get(obligations, previous)
-                if existing.ty == get(arguments, index) && existing.capability == capability {
+            // Duplicate declarations are errors; distinct parameters may
+            // legitimately become the same type during specialization.
+            while previous < bound {
+                if required_concept(env, owner, child(parameter, previous))? == capability {
                     return Result.Err(failure(env, owner, node, "duplicate concept requirement"))
                 }
                 previous = previous + 1
             }
-            push(obligations, Requirement { ty = get(arguments, index) capability = capability })
+            if !required(obligations, ty, capability) { push(obligations, Requirement { ty = ty capability = capability }) }
             bound = bound + 1
         }
         index = index + 1
@@ -74,7 +85,13 @@ fn requirements(env Environment, owner Int, arguments List[Int]) Result[List[Req
     if (item.node.kind == NodeKind.Function || item.node.kind == NodeKind.AssociatedType) &&
         item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl {
         let header = get(env.implementations, implementation_owner(env, item.owner))
-        push(obligations, Requirement { ty = self_type(env, owner, arguments, 0)? capability = header.capability })
+        let receiver = self_type(env, owner, arguments, 0)?
+        if !required(obligations, receiver, header.capability) { push(obligations, Requirement { ty = receiver capability = header.capability }) }
+        if item.node.kind == NodeKind.AssociatedType {
+            let declaration = associated_declaration(env, owner)
+            let offset = length(type_parameters(env, item.owner))
+            discard inherit_member_requirements(env, declaration, argument_tail(arguments, offset), obligations)?
+        }
     }
     function_requirements(env, owner, obligations)
 }
@@ -91,8 +108,8 @@ fn function_requirements(env Environment, owner Int, obligations List[Requiremen
         var member = 0
         while member < length(capability.associated) {
             let bounds = get(capability.bounds, member)
-            if length(bounds) != 0 {
-                let ty = associated_type(env, owner, get(capability.associated, member), obligation.ty, symbol(env, owner).node, 0)?
+            if length(bounds) != 0 && length(member_parameters(env, get(capability.associated, member))) == 0 {
+                let ty = associated_type(env, owner, get(capability.associated, member), obligation.ty, new[Int](), symbol(env, owner).node, 0)?
                 var bound = 0
                 while bound < length(bounds) {
                     let target = get(bounds, bound)

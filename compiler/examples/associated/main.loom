@@ -64,4 +64,5 @@ fn exercise() {
     assert match ready { Cached.Ready(value) => from_cache(value) == "shared!", Cached.Empty => false }
 }
 
-fn main() { exercise() }
+fn main() { exercise()
+    exercise_families() }

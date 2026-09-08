@@ -35,51 +35,71 @@ fn promise_concepts(env Environment, capability Int) List[Bool] {
 }
 fn promised(env Environment, owner Int, obligations List[Requirement], ty Int, capability Int) Result[Bool, Failure] {
     if symbol(env, owner).node.kind != NodeKind.Function || length(obligations) == 0 { return Result.Ok(false) }
+    var active = 0
+    while active < env.promise_depth {
+        let previous = get(env.promise_path, active)
+        if previous.ty == ty && previous.capability == capability { return Result.Ok(false) }
+        active = active + 1
+    }
+    let node = symbol(env, owner).node
+    if env.promise_depth >= 64 { return Result.Err(failure(env, owner, node, "associated evidence exceeds the type specialization budget")) }
+    let scoped = promise_environment(env, ty, capability)
     let relevant = promise_concepts(env, capability)
     let pending = new[Requirement]()
     var index = 0
     while index < length(obligations) {
         let given = get(obligations, index)
-        if get(relevant, concept_index(env, given.capability)) && !required(pending, given.ty, given.capability) {
+        // Keep domain evidence even when it cannot directly lead to the goal.
+        if !required(pending, given.ty, given.capability) {
             push(pending, given)
         }
         index = index + 1
     }
     // Breadth-first expansion finds finite evidence even if an earlier member
     // generates an unbounded family. Repeated (type, concept) pairs stop cycles.
-    let node = symbol(env, owner).node
     var exhausted = false
+    var applications = length(env.family_applications)
     index = 0
     while index < length(pending) {
         let given = get(pending, index)
-        if given.ty == ty && given.capability == capability { return concrete_methods(env, owner, ty, capability) }
+        if given.ty == ty && given.capability == capability { return concrete_methods(scoped, owner, ty, capability) }
         let shape = get(env.types, given.ty)
-        if shape.kind != TypeKind.Parameter && shape.kind != TypeKind.Associated {
+        if get(relevant, concept_index(env, given.capability)) {
             if type_depth(env, given.ty) >= 64 || length(env.types) >= 4096 { exhausted = true } else {
-            let declaration = get(env.concepts, concept_index(env, given.capability))
-            var member = 0
-            while member < length(declaration.associated) {
-                let bounds = get(declaration.bounds, member)
-                var bound = 0
-                var resolved = -1
-                while bound < length(bounds) {
-                    let target = get(bounds, bound)
-                    if get(relevant, concept_index(env, target)) {
-                        if resolved < 0 {
-                            resolved = associated_type(env, owner, get(declaration.associated, member), given.ty, node, 0)?
+                if shape.kind != TypeKind.Parameter && shape.kind != TypeKind.Associated {
+                    let declaration = get(env.concepts, concept_index(env, given.capability))
+                    var member = 0
+                    while member < length(declaration.associated) {
+                        let declaration_member = get(declaration.associated, member)
+                        if length(member_parameters(env, declaration_member)) == 0 {
+                            let bounds = get(declaration.bounds, member)
+                            var bound = 0
+                            var resolved = -1
+                            while bound < length(bounds) {
+                                let target = get(bounds, bound)
+                                if get(relevant, concept_index(env, target)) {
+                                    if resolved < 0 {
+                                        resolved = associated_type(scoped, owner, declaration_member, given.ty, new[Int](), node, 0)?
+                                    }
+                                    if resolved == ty && target == capability { return concrete_methods(scoped, owner, ty, capability) }
+                                    if !required(pending, resolved, target) {
+                                        push(pending, Requirement { ty = resolved capability = target })
+                                    }
+                                }
+                                bound = bound + 1
+                            }
                         }
-                        if resolved == ty && target == capability { return concrete_methods(env, owner, ty, capability) }
-                        if !required(pending, resolved, target) {
-                            push(pending, Requirement { ty = resolved capability = target })
-                        }
+                        member = member + 1
                     }
-                    bound = bound + 1
                 }
-                member = member + 1
-            }
+                discard expand_family_promises(scoped, owner, given, pending, relevant, node)?
             }
         }
         index = index + 1
+        if index == length(pending) && applications != length(env.family_applications) {
+            applications = length(env.family_applications)
+            index = 0
+        }
     }
     if exhausted { return Result.Err(failure(env, owner, node, "associated evidence exceeds the type specialization budget")) }
     Result.Ok(false)

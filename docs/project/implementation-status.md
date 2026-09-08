@@ -126,7 +126,18 @@ bindings override defaults; defaults keep their declaration's name scope and
 normalize against the effective implementation map. Generic callers and default
 methods use the declared member promises, but implementation establishment cannot
 assume an unproved promise. Required dyn bindings remain explicit, exact and
-bound-checked. Associated member type parameters are still unsupported.
+bound-checked.
+
+Static associated families extend this to `type Item[T]`, projected as `S.Item[T]`
+or `S.Concept.Item[T]`. Generic implementation arguments and member arguments
+remain distinct; normalization yields ordinary concrete types. Defaults can use
+member parameters, and implementations inherit their declared requirements even
+when renaming them. Arity, stronger implementation requirements, unproved result
+bounds and cyclic or growing expansion reject during abstract validation.
+The [family example](../../compiler/examples/associated/generic.loom) covers this
+without adopting the new syntax in the compiler's production sources. Generic
+concept methods and dynamic family bindings remain unsupported; ordinary exact
+dyn bindings keep the existing witness ABI.
 
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The

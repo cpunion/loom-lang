@@ -17,7 +17,7 @@ test fn associated_members_and_projections_preserve_their_source_shape() {
 
 test fn associated_types_do_not_change_top_level_refinements() {
     assert rejected("type Alias = Int\n").message == "expected 'where' before the type constraint"
-    discard rejected("concept C { type Item[T] }")
+    discard rejected("concept C { type Item[] }")
     discard rejected("impl C for Int { type Item }")
     discard rejected("impl C for Int { type Item = Int where self > 0 }")
     assert rejected("impl C for Int { pub type Item = Int }").message == "associated types inherit their owner's visibility"
@@ -35,4 +35,25 @@ test fn associated_bounds_and_defaults_have_separate_source_groups() {
     discard rejected("concept C { type Item: Display }")
     discard rejected("concept C { type Item Display + = Int }")
     discard rejected("impl C for Int { type Item Display = Int }")
+}
+
+test fn associated_parameters_keep_input_bounds_separate_from_result_bounds() {
+    let tree = parsed("concept C { type Item[T Display + other.Ordered, U] Sized = Pair[T, U]\ntype Required[T] }\nimpl[X] C for Box[X] { type Item[T Display + other.Ordered, U] = Pair[X, U] }\nfn use[T C](value T.Item[Int, Text]) T.C.Item[Int, Text] { value }")
+    let item = child(child(tree, 0), 0)
+    assert item.kind == NodeKind.AssociatedType && item.value == "Item"
+    assert length(item.children) == 3 && child(item, 0).kind == NodeKind.TypeParameters
+    let parameters = child(item, 0)
+    assert length(parameters.children) == 2 && child(parameters, 0).value == "T" && child(parameters, 1).value == "U"
+    assert child(child(parameters, 0), 0).value == "Display" && child(child(parameters, 0), 1).value == "other.Ordered"
+    assert child(item, 1).kind == NodeKind.Bounds && child(child(item, 1), 0).value == "Sized"
+    assert child(item, 2).value == "Pair" && child(child(item, 2), 0).value == "T"
+    assert length(child(child(tree, 0), 1).children) == 1
+    let binding = child(child(tree, 1), 3)
+    assert length(binding.children) == 2 && child(binding, 0).kind == NodeKind.TypeParameters
+    assert child(binding, 1).value == "Pair" && child(child(binding, 1), 0).value == "X"
+    let projected = child(child(child(child(tree, 2), 1), 0), 0)
+    assert projected.value == "T.Item" && length(projected.children) == 2
+    assert child(child(child(tree, 2), 2), 0).value == "T.C.Item"
+    discard rejected("impl C for Int { type Item[T] }")
+    discard rejected("impl C for Int { type Item[T] Display = Int }")
 }

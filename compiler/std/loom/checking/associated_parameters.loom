@@ -1,0 +1,103 @@
+// Member parameters follow Self in a concept default, or the enclosing impl's
+// parameters in an explicit binding. The compiler itself uses ordinary Lists.
+fn parameter_offset(env Environment, owner Int) Int { if prototype(env, owner) { 1 } else { 0 } }
+
+fn member_parameters(env Environment, member Int) List[Node] {
+    group(symbol(env, member).node, NodeKind.TypeParameters)
+}
+fn argument_tail(arguments List[Int], start Int) List[Int] {
+    let tail = new[Int]()
+    var index = start
+    while index < length(arguments) { push(tail, get(arguments, index))
+        index = index + 1 }
+    tail
+}
+fn member_arguments(outer List[Int], inner List[Int]) List[Int] {
+    let joined = argument_tail(outer, 0)
+    var index = 0
+    while index < length(inner) { push(joined, get(inner, index))
+        index = index + 1 }
+    joined
+}
+fn associated_declaration(env Environment, binding Int) Int {
+    let item = symbol(env, binding)
+    if prototype(env, binding) { return binding }
+    let header = get(env.implementations, implementation_owner(env, item.owner))
+    let members = get(env.concepts, concept_index(env, header.capability)).associated
+    var index = 0
+    while symbol(env, get(members, index)).name != item.name { index = index + 1 }
+    get(members, index)
+}
+fn inherit_member_requirements(env Environment, member Int, arguments List[Int], obligations List[Requirement]) Result[Bool, Failure] {
+    let parameters = member_parameters(env, member)
+    var index = 0
+    while index < length(parameters) {
+        let bounds = get(parameters, index).children
+        var bound = 0
+        while bound < length(bounds) {
+            let capability = required_concept(env, member, get(bounds, bound))?
+            let ty = get(arguments, index)
+            if !required(obligations, ty, capability) { push(obligations, Requirement { ty = ty capability = capability }) }
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn member_domain(env Environment, owner Int, member Int, arguments List[Int], obligations List[Requirement], node Node) Result[Bool, Failure] {
+    if length(arguments) != length(member_parameters(env, member)) {
+        return Result.Err(failure(env, owner, node, "wrong number of associated type arguments"))
+    }
+    let required = new[Requirement]()
+    discard inherit_member_requirements(env, member, arguments, required)?
+    var index = 0
+    while index < length(required) {
+        let bound = get(required, index)
+        if !admitted(env, owner, obligations, bound.ty, bound.capability)? {
+            return Result.Err(failure(env, owner, node, "associated type argument needs its declared concept requirement"))
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn member_parameter_headers(env Environment, declaration Int, binding Int) Result[Bool, Failure] {
+    let expected = member_parameters(env, declaration)
+    let actual = member_parameters(env, binding)
+    let node = symbol(env, binding).node
+    if length(actual) != length(expected) {
+        return Result.Err(failure(env, binding, node, "associated binding has the wrong number of type parameters"))
+    }
+    var index = 0
+    while index < length(expected) {
+        let declared = new[Int]()
+        let bounds = get(expected, index).children
+        var bound = 0
+        while bound < length(bounds) {
+            let capability = required_concept(env, declaration, get(bounds, bound))?
+            var previous = 0
+            while previous < length(declared) {
+                if get(declared, previous) == capability {
+                    return Result.Err(failure(env, declaration, get(bounds, bound), "duplicate concept requirement"))
+                }
+                previous = previous + 1
+            }
+            push(declared, capability)
+            bound = bound + 1
+        }
+        let supplied = get(actual, index).children
+        bound = 0
+        while bound < length(supplied) {
+            let capability = required_concept(env, binding, get(supplied, bound))?
+            var found = false
+            var candidate = 0
+            while candidate < length(declared) { found = found || get(declared, candidate) == capability
+                candidate = candidate + 1 }
+            if !found {
+                return Result.Err(failure(env, binding, get(supplied, bound), "an associated binding cannot strengthen its parameter requirements"))
+            }
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

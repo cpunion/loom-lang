@@ -95,6 +95,21 @@ and `dyn C` use statically established conformance evidence. No runtime
 evidence. Concrete representation remains a compiler choice, subject to the
 language's observable behavior and dead-code elimination.
 
+Associated types may form type families with their own parameters. A projection
+supplies those parameters independently of the receiver's generic arguments;
+concept qualification resolves an ambiguous member name. **Design synopsis:**
+
+```loom
+concept Family { type Item[T] }
+impl Family for Bool { type Item[T] = List[T] }
+fn identity[S Family, T](source S, value S.Item[T]) S.Family.Item[T] { value }
+```
+
+Member parameters can declare requirements, and the resulting type can have
+bounds and a default, as in `type Item[T Display] Display = T`. Implementations
+inherit parameter requirements, cannot strengthen them, and must establish the
+declared result bounds for every admitted argument, not just observed instances.
+
 ## Sharing and persistent constraints
 
 Ordinary data assignment shares mutable data; rebinding one variable does not

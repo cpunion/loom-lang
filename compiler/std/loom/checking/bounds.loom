@@ -20,6 +20,7 @@ fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement]
         if !admitted(env, owner, obligations, get(shape.arguments, 0), symbol(env, shape.symbol).owner)? {
             return Result.Err(failure(env, owner, node, "associated type needs its declared concept requirement"))
         }
+        discard member_domain(env, owner, shape.symbol, argument_tail(shape.arguments, 1), obligations, node)?
     }
     if shape.kind == TypeKind.Dyn {
         discard associated_bounds(env, owner, get(env.interfaces, shape.symbol).symbol, shape.arguments, obligations, node)?
@@ -78,7 +79,7 @@ fn declaration_types(env Environment) Result[Bool, Failure] {
             }
         }
         if item.node.kind == NodeKind.AssociatedType && prototype(env, owner) && type_part(item.node) >= 0 {
-            let arguments = abstract_arguments(env, 1)
+            let arguments = abstract_arguments(env, 1 + length(member_parameters(env, owner)))
             let obligations = requirements(env, owner, arguments)?
             let ty = resolve(env, owner, child(item.node, type_part(item.node)), arguments, 0)?
             discard well_formed(env, owner, ty, obligations, item.node, 0)?
@@ -109,15 +110,21 @@ fn declaration_types(env Environment) Result[Bool, Failure] {
         // assumed while proving those same bindings.
         push(obligations, Requirement { ty = header.ty capability = header.capability })
         let members = get(env.concepts, concept_index(env, header.capability)).associated
-        let bindings = new[Int]()
         var member = 0
         while member < length(members) {
-            let ty = associated_type(env, header.symbol, get(members, member), header.ty, node, 0)?
-            discard well_formed(env, header.symbol, ty, obligations, node, 0)?
-            push(bindings, ty)
+            let declaration = get(members, member)
+            let all = abstract_arguments(env, length(arguments) + length(member_parameters(env, declaration)))
+            let supplied = argument_tail(all, length(arguments))
+            let evidence = new[Requirement]()
+            var given = 0
+            while given < length(obligations) { push(evidence, get(obligations, given))
+                given = given + 1 }
+            discard inherit_member_requirements(env, declaration, supplied, evidence)?
+            let ty = associated_type(env, header.symbol, declaration, header.ty, supplied, node, 0)?
+            discard well_formed(env, header.symbol, ty, evidence, node, 0)?
+            discard member_requirements(env, header.symbol, ty, member_bounds(env, declaration), evidence, node)?
             member = member + 1
         }
-        discard associated_bounds(env, header.symbol, header.capability, bindings, obligations, node)?
         index = index + 1
     }
     Result.Ok(true)

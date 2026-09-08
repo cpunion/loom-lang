@@ -160,7 +160,10 @@ type discovery.
 Associated members also accept explicit concept requirements and default type
 bindings. Implementations establish the requirements; generic/default method
 bodies consume those promises without assuming an overridable default's equality.
-Effective binding cycles reject. Member type parameters remain open.
+Effective binding cycles reject. Generic associated members accept their own
+parameters, inherited input bounds and defaults; applications normalize into
+ordinary concrete types after input validation. Generic concept methods and
+dynamic associated type families remain open.
 
 Native binary64 `Float`, source numeric parsing/conversion, compile-time execution
 and Float-based constrained types now share the checked/native path. The compiler

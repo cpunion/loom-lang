@@ -80,6 +80,28 @@ test fn dynamic_binding_names_preserve_phantom_identity_and_snapshot_basis() {
     assert type_name(analysis, value.ty) == "dyn app.Marker[Item = Int, Tag = Bool]"
 }
 
+test fn associated_family_names_include_arguments_after_the_receiver() {
+    let analysis = accepted(input("concept Family { type Plain\ntype Item[T, U] }\nfn keep[F Family](value F.Item[Int, Bool]) F.Item[Int, Bool] { value }\nfn plain[F Family](value F.Plain) F.Plain { value }"))
+    var family = false
+    var plain = false
+    var index = 0
+    while index < length(analysis.program.types) {
+        let ty = get(analysis.program.types, index)
+        if ty.kind == TypeKind.Associated {
+            if length(ty.arguments) == 3 {
+                assert type_name(analysis, index) == "T0.app.Family.Item[Int, Bool]"
+                family = true
+            }
+            if length(ty.arguments) == 1 {
+                assert type_name(analysis, index) == "T0.app.Family.Plain"
+                plain = true
+            }
+        }
+        index = index + 1
+    }
+    assert family && plain
+}
+
 test fn snapshots_detect_metadata_text_and_nested_ast_edits() {
     let project = input("fn main() { let count = 3\nassert count == 3 }")
     let analysis = accepted(project)

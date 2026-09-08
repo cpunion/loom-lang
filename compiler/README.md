@@ -651,10 +651,28 @@ default. Default names resolve in the concept's defining scope, and `Self.Other`
 uses the implementation's effective bindings. Cycles reject unless an explicit
 override breaks them. Missing bindings without defaults remain errors.
 
-Bindings in generic implementations can use header parameters and projections.
-Dynamic values still require explicit bindings for every associated member,
-including defaulted members; those bindings must satisfy the member requirements.
-Associated members with their own type parameters remain future work.
+Associated members may also take type parameters:
+
+```loom
+concept Family { type Item[T] }
+impl Family for Bool { type Item[T] = List[T] }
+record PairWith[X] { value X }
+impl[X] Family for PairWith[X] { type Item[T] = (X, T) }
+fn echo[S Family, T](source S, value S.Item[T]) S.Family.Item[T] { value }
+```
+
+Member parameters are distinct from the enclosing implementation parameters.
+For `type Item[T Display] Display = T`, each application must establish its
+input's `Display` requirement before normalization; implementations must prove
+the result requirement for every admitted input. Bindings inherit the declared
+input requirements, may rename parameters, and cannot strengthen those requirements.
+Defaults and qualified projections follow the same rules as nongeneric members.
+Normalization uses ordinary concrete layouts, with no runtime type functions.
+
+Dynamic values still require explicit bindings for every nongeneric associated
+member, including defaulted members; bindings must satisfy the member requirements.
+Concepts with generic associated members cannot yet be used as `dyn` types.
+Generic concept methods remain unsupported.
 
 ### Dynamic values
 

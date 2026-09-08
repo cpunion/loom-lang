@@ -169,7 +169,18 @@ pub fn type_name(analysis Analysis, ty Int) Text {
         let package = package_label(analysis.bindings.modules, analysis.bindings.packages,
             get(analysis.bindings.files, capability.file).package)
         let owner = qualify(package, capability.name)
-        return concat(type_name(analysis, get(value.arguments, 0)), concat(".", qualify(owner, member.name)))
+        var label = concat(type_name(analysis, get(value.arguments, 0)), concat(".", qualify(owner, member.name)))
+        if length(value.arguments) > 1 {
+            label = concat(label, "[")
+            var index = 1
+            while index < length(value.arguments) {
+                if index > 1 { label = concat(label, ", ") }
+                label = concat(label, type_name(analysis, get(value.arguments, index)))
+                index = index + 1
+            }
+            label = concat(label, "]")
+        }
+        return label
     }
     if value.kind == TypeKind.Tuple {
         var label = "("

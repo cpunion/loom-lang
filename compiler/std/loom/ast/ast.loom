@@ -25,9 +25,9 @@ pub enum NodeKind {
 // children whose Type children are explicit bounds. Implements has [type,
 // concept Type]; MethodCall has [receiver, TypeArguments, Arguments].
 // DynType stores the concept path and source-ordered AssociatedType bindings.
-// AssociatedType stores its member name, optional Bounds(type nodes), and an
-// optional default type in a concept; impl/dyn bindings have one type child.
-// Projections retain ordinary dotted Types.
+// AssociatedType stores its name, optional TypeParameters and Bounds(type
+// nodes), then an optional concept default or required impl type. Dyn bindings
+// have one type child. Projections retain dotted Types with type arguments.
 // FunctionType has [Parameters(type nodes), ReturnType(empty or one type)].
 // A named Parameter has its type first, then an optional empty Comptime marker.
 // Invoke has [callee, Arguments]; named calls retain Call, and explicit generic
