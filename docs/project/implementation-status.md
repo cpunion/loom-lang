@@ -341,10 +341,13 @@ guarantee cleanup. Synchronous `scoped` now reuses those registrations with
 statically selected source Dispose methods. Resource-flow checking rejects
 copying, escape and manual disposal, including transitive receiver calls;
 ordinary shared fields retain their semantics. MustScope requires scoped
-handling or direct fresh return, with immediate single-payload Result/Option
-transfer. Unused concrete resource functions are checked without entering native
-reachability. Nested resource aggregates, indirect factories and Task
-cancellation remain unimplemented.
+handling or fresh return, with immediate single-payload Result/Option transfer.
+Runtime callbacks and dynamic factory methods preserve that result obligation:
+all selected implementations must establish freshness, including targets reached
+through stored or returned function values. Dispose-only callback results do not
+imply freshness. Unused concrete resource functions are checked without entering
+native reachability. Nested resource aggregates and Task cancellation remain
+unimplemented.
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
 same-directory tests, a separate library package, Unicode text and file I/O.

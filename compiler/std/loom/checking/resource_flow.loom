@@ -125,8 +125,14 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceVa
         index = index + 1
     }
     if expr.kind != ExprKind.Call || expr.index < 0 {
-        if flow_resource(flow, expr.ty)? { return Result.Err(resource_error(flow, expr, "resource factories require a statically known function")) }
-        return Result.Ok(resource_value(false, false, -1))
+        let resource = flow_resource(flow, expr.ty)?
+        if resource && expr.kind != ExprKind.IndirectCall && expr.kind != ExprKind.DynCall {
+            return Result.Err(resource_error(flow, expr, "resource factories require a checked function"))
+        }
+        // Every emitted function and activated witness must transfer fresh
+        // MustScope results. That obligation survives function-value dispatch;
+        // Dispose alone has no such promise and may return an ordinary alias.
+        return Result.Ok(resource_value(false, resource, -1))
     }
     let target = get(flow.analysis.functions, expr.index)
     if borrowed >= 0 {

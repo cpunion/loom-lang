@@ -116,6 +116,100 @@ fn main() {
 }
 
 #[test]
+fn indirect_resource_factories_keep_sharing_and_scope_cleanup() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(
+        package.path().join("main.loom"),
+        format!(
+            "{RESOURCES}{}",
+            r#"
+import std.process.arguments
+
+fn alternate(id Int, trace List[Int]) Required { required(id + 100, trace) }
+fn choose(first Bool) fn(Int, List[Int]) Required {
+    if first { required } else { alternate }
+}
+fn acquire[T MustScope](create fn(Int, List[Int]) T, id Int, trace List[Int]) T {
+    create(id, trace)
+}
+concept Factory {
+    fn open(self Self, id Int) Required
+    fn try_open(self Self, id Int, ok Bool) Result[Required, Text]
+}
+record Provider { trace List[Int] }
+impl Factory for Provider {
+    fn open(self Provider, id Int) Required { required(id, self.trace) }
+    fn try_open(self Provider, id Int, ok Bool) Result[Required, Text] {
+        attempt(id, self.trace, ok)
+    }
+}
+fn through_result(create fn(Int, List[Int], Bool) Result[Required, Text],
+    provider dyn Factory, trace List[Int], first_ok Bool, second_ok Bool) Result[Int, Text] {
+    scoped first = required(7, trace)
+    scoped second = create(8, trace, first_ok)?
+    scoped third = provider.try_open(9, second_ok)?
+    Result.Ok(42)
+}
+fn main() {
+    let trace List[Int] = []
+    let first = length(arguments()) == 1
+    let offset = if first { 0 } else { 100 }
+    let selected = choose(first)
+    let factories = [choose(!first), choose(first)]
+    let provider dyn Factory = Provider { trace = trace }
+    {
+        scoped one = selected(1, trace)
+        defer { push(trace, 50) }
+        scoped two = factories[0](2, trace)
+        scoped three = acquire[Required](factories[1], 3, trace)
+        scoped four = provider.open(4)
+        // Relocate the shared trace while every resource remains registered.
+        let aliases = [trace, []]
+        push(aliases[0], 90)
+    }
+    assert length(trace) == 6 && trace[0] == 90 && trace[1] == 4
+    assert trace[2] == 3 + offset && trace[3] == 102 - offset
+    assert trace[4] == 50 && trace[5] == 1 + offset
+    assert match through_result(attempt, provider, trace, true, true) {
+        Result.Ok(value) => value == 42, Result.Err(_) => false
+    }
+    assert length(trace) == 9 && trace[6] == 9 && trace[7] == 8 && trace[8] == 7
+    assert match through_result(attempt, provider, trace, false, true) {
+        Result.Err(message) => message == "unavailable", Result.Ok(_) => false
+    }
+    assert length(trace) == 10 && trace[9] == 7
+    assert match through_result(attempt, provider, trace, true, false) {
+        Result.Err(message) => message == "unavailable", Result.Ok(_) => false
+    }
+    assert length(trace) == 12 && trace[10] == 8 && trace[11] == 7
+}
+"#
+        ),
+    )
+    .unwrap();
+    let executable = common::executable(package.path(), "scoped-indirect");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                package.path().to_str().unwrap(),
+                "--output",
+                executable.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        success(
+            &Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
+}
+
+#[test]
 fn scoped_faults_clean_only_registered_values_and_reject_escape() {
     let package = tempfile::tempdir().unwrap();
     fs::write(
@@ -129,9 +223,9 @@ import std.text.slice
 import std.int.to_text
 import std.process.arguments
 
-fn failing(trace List[Int]) Guard {
+fn failing(trace List[Int]) Required {
     assert false
-    guard(2, trace)
+    required(2, trace)
 }
 fn report(trace List[Int]) {
     var index = 0
@@ -147,6 +241,9 @@ fn main() {
     scoped first = guard(1, trace)
     if mode == "initializer" {
         scoped absent = failing(trace)
+    } else if mode == "indirect-initializer" {
+        let create = failing
+        scoped absent = create(trace)
     } else {
         scoped second = guard(2, trace)
         defer { discard slice("é", 0, 1) }
@@ -170,7 +267,11 @@ fn main() {
             .output()
             .unwrap(),
         );
-        for (mode, expected) in [("initializer", "1|"), ("body", "2|1|")] {
+        for (mode, expected) in [
+            ("initializer", "1|"),
+            ("indirect-initializer", "1|"),
+            ("body", "2|1|"),
+        ] {
             let output = Command::new(&executable)
                 .arg(mode)
                 .env("LOOM_GC_STRESS", "1")

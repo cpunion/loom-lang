@@ -1224,8 +1224,24 @@ with `scoped`. Already shared bindings are not silently consumed. Checks follow
 receiver calls and also validate unused concrete resource functions without
 emitting them. No ownership, borrowing, or lifetime syntax is introduced.
 
+Runtime function values and dynamic factory methods may also return MustScope
+resources, including the supported Result/Option transfers. Each selected source
+implementation must satisfy the same fresh-return obligation; indirect calls do
+not bypass body checking. For example, with `Ticket` above:
+
+```loom
+fn create(trace List[Int]) Ticket { Ticket { trace = trace } }
+fn use_factory(make fn(List[Int]) Ticket, trace List[Int]) {
+    scoped ticket = make(trace)
+}
+```
+
+This guarantee follows MustScope, not Dispose alone. A function returning an
+ordinary Dispose-only value may return a shared alias, so its function type alone
+cannot justify a scoped initializer. Direct calls still use checked body evidence.
+
 This synchronous slice conservatively rejects nested resource aggregates and
-resource lists, indirect resource factories, and matching a resource itself.
+resource lists, and matching a resource itself.
 Pending aggregate-transfer cleanup and async delivery/cancellation remain open.
 
 `break` exits the nearest enclosing `while` body; `continue` reevaluates that

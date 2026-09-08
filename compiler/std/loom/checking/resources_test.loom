@@ -2,6 +2,7 @@ fn resource_checked(source Text) Result[std.loom.typed.Program, Failure] {
     let files = source_files(source)
     push(files, source_file("std.resource", "pub concept Dispose { fn dispose(self Self) }\npub concept MustScope {}", true))
     push(files, source_file("std.result", "pub enum Result[T, E] { Ok(T) Err(E) }", true))
+    push(files, source_file("std.option", "pub enum Option[T] { Some(T) None }", true))
     push(files, source_file("std.list", "intrinsic fn list_push[T](values List[T], value T)\npub fn push[T](values List[T], value T) { list_push(values, value) }", true))
     checked(files)
 }
@@ -25,6 +26,26 @@ test fn scoped_resources_borrow_methods_and_transfer_fresh_factory_results() {
     resource_accept(concat(resource_header(), "fn main() { let log = [0]\n{ scoped value = make(log)\nassert value.use() == 7 }\nassert log[2] == 9 }"))
     resource_accept(concat(resource_header(), "import std.result.Result\nfn open(log List[Int]) Result[Handle, Text] { Result.Ok(make(log)) }\nfn run(log List[Int]) Result[Int, Text] { scoped value = open(log)?\nResult.Ok(value.use()) }\nfn main() { discard run([0]) }"))
     resource_accept(concat(resource_header(), "import std.result.Result\nfn open(log List[Int]) Result[Handle, Text] { Result.Ok(make(log)) }\nfn main() { match open([0]) { Result.Ok(payload) => { scoped value = payload\nassert value.use() == 7 }, Result.Err(_) => {} } }"))
+}
+
+test fn indirect_resource_factories_preserve_type_level_transfer_obligations() {
+    let callbacks = "fn select(second Bool) fn(List[Int]) Handle { if second { make } else { make } }\nfn acquire[T MustScope](factory fn(List[Int]) T, log List[Int]) T { factory(log) }\nfn use_factory[T Dispose + MustScope](factory fn(List[Int]) T, log List[Int]) { scoped value = acquire(factory, log) }\n"
+    resource_accept(concat(resource_header(), concat(callbacks, "fn main() { let factory = select(true)\nlet factories = [factory, make]\nuse_factory(factories[1], [0])\nassert comptime { let callback = make\nscoped value = callback([0])\nvalue.use() } == 7 }")))
+    let wrapped = "import std.result.Result\nimport std.option.Option\nfn attempt(log List[Int]) Result[Handle, Text] { Result.Ok(make(log)) }\nfn optional(log List[Int]) Option[Handle] { Option.Some(make(log)) }\nfn run(factory fn(List[Int]) Result[Handle, Text]) Result[Int, Text] { scoped value = factory([0])?\nResult.Ok(value.use()) }\n"
+    resource_accept(concat(resource_header(), concat(wrapped, "fn main() { discard run(attempt)\nlet factory = optional\nmatch factory([0]) { Option.Some(payload) => { scoped value = payload\nassert value.use() == 7 }, Option.None => {} } }")))
+    let dynamic = "concept Factory { fn make(self Self, log List[Int]) Handle\nfn attempt(self Self, log List[Int]) Result[Handle, Text] }\nimpl Factory for Int { fn make(self Int, log List[Int]) Handle { make(log) }\nfn attempt(self Int, log List[Int]) Result[Handle, Text] { Result.Ok(make(log)) } }\n"
+    resource_accept(concat(resource_header(), concat("import std.result.Result\n", concat(dynamic, "fn run(factory dyn Factory) Result[Int, Text] { scoped first = factory.make([0])\nscoped second = factory.attempt([0])?\nResult.Ok(first.use() + second.use()) }\nfn main() { discard run(1) }"))))
+}
+
+test fn indirect_dispatch_cannot_hide_bad_resource_bodies_or_claim_dispose_only_freshness() {
+    let escaping = "fn invalid(log List[Int]) Handle { scoped value = make(log)\nvalue }\nfn use_factory(factory fn(List[Int]) Handle) { scoped value = factory([0]) }\n"
+    resource_reject(concat(resource_header(), concat(escaping, "fn main() { use_factory(invalid) }")))
+    resource_reject(concat(resource_header(), concat(escaping, "fn unused() { use_factory(invalid) }\nfn main() {}")))
+    resource_reject(concat(resource_header(), "concept Factory { fn make(self Self) Handle }\nimpl Factory for Int { fn make(self Int) Handle { scoped value = make([0])\nvalue } }\nfn run(factory dyn Factory) { scoped value = factory.make() }\nfn main() { run(1) }"))
+    resource_reject(concat(resource_header(), "fn take(value Handle) Handle { value }\nfn bad() { let callback = take\nscoped value = callback(make([0])) }"))
+    let optional = "import std.resource.Dispose\nrecord Item { id Int }\nimpl Dispose for Item { fn dispose(self Item) {} }\nfn fresh() Item { Item { id = 1 } }\n"
+    resource_reject(concat(optional, "fn bad() { let factory = fresh\nscoped value = factory() }"))
+    resource_reject(concat(optional, "concept Factory { fn make(self Self) Item }\nimpl Factory for Item { fn make(self Item) Item { self } }\nfn bad() { let factory dyn Factory = Item { id = 1 }\nscoped value = factory.make() }"))
 }
 
 test fn scoped_resources_reject_copy_discard_erasure_and_pending_aggregate_leaks() {
