@@ -205,8 +205,11 @@ first error if a cleanup faults. This is not exception unwinding; OOM and extern
 termination do not guarantee cleanup. Synchronous `scoped` now selects the source
 Dispose capability and checks resource escape; MustScope also rejects ordinary
 bindings and discard. Direct factories and immediate single-payload Result/Option
-transfer are supported. Nested resource aggregates, indirect factories, and async
-cancellation remain open; this is not the complete resource-cleanup gate.
+transfer are supported. MustScope results retain their fresh-return obligation
+through runtime function values and dynamic factory methods; every selected
+implementation is checked. A Dispose-only callback result has no such guarantee.
+Nested resource aggregates and async cancellation remain open; this is not the
+complete resource-cleanup gate.
 
 List literals now share typed/native/compile-time semantics. Runtime literals
 allocate known capacity once and store elements directly; general compile-time
