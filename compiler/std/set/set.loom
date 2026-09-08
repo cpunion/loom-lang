@@ -1,0 +1,56 @@
+import std.equal.Equal
+import std.hash.Hash
+import std.map.Map
+import std.map.new
+import std.map.length
+import std.map.is_empty
+import std.map.contains
+import std.map.insert
+import std.map.remove
+import std.map.clear
+import std.map.keys
+import std.option.Option
+
+pub record Set[T Equal + Hash] {
+    map Map[T, Bool]
+}
+
+pub fn new[T Equal + Hash]() Set[T] {
+    Set { map = std.map.new[T, Bool]() }
+}
+
+pub fn length[T Equal + Hash](values Set[T]) Int {
+    std.map.length(values.map)
+}
+
+pub fn is_empty[T Equal + Hash](values Set[T]) Bool {
+    std.map.is_empty(values.map)
+}
+
+pub fn contains[T Equal + Hash](values Set[T], value T) Bool {
+    std.map.contains(values.map, value)
+}
+
+// Returns true when value was not already present.
+pub fn insert[T Equal + Hash](values Set[T], value T) Bool {
+    match std.map.insert(values.map, value, true) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
+
+pub fn remove[T Equal + Hash](values Set[T], value T) Bool {
+    match std.map.remove(values.map, value) {
+        Option.None => false
+        Option.Some(_) => true
+    }
+}
+
+pub fn clear[T Equal + Hash](values Set[T]) {
+    std.map.clear(values.map)
+}
+
+// An unordered snapshot with a fresh outer list; contained shared data stays shared.
+pub fn values[T Equal + Hash](source Set[T]) List[T] {
+    std.map.keys(source.map)
+}

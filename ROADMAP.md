@@ -120,6 +120,12 @@ proofs remain mandatory even while the supported prover fragment grows. Exact
 overload ranking, macro spelling, solver choice, artifact encoding, and runtime
 layout belong to focused implementation designs, not new feature checklists.
 
+Basic source Map/Set now reuse bounded concepts, private nominal storage and
+shared Lists, including collision handling, removal, alias-preserving resizing,
+snapshots and compile-time execution. Native forced-GC tests cover managed keys
+and values. This is a library addition, not new compiler/runtime container
+dispatch; broader application I/O and collection APIs remain incremental work.
+
 Offline path dependencies now traverse importer-local manifest edges and reuse
 canonical source roots, with instance-qualified package/test isolation. Distinct
 roots with the same module name coexist without merging nominal types, scopes

@@ -1,0 +1,27 @@
+import std.text.concat
+
+record Identifier { value Int }
+
+impl Equal for Identifier {
+    fn equals(self Identifier, other Identifier) Bool { self.value == other.value }
+}
+
+test fn primitive_equality_uses_values() {
+    assert equals(-9223372036854775808, -9223372036854775808)
+    assert equals(9223372036854775807, 9223372036854775807)
+    assert !equals(-1, 1)
+    assert equals(true, true) && equals(false, false)
+    assert !equals(true, false)
+    assert equals("hé😀", concat("hé", "😀"))
+    assert !equals("é", "e\u{301}")
+}
+
+test fn explicit_implementations_work_at_compile_time_and_runtime() {
+    let same, different = comptime {
+        (equals(Identifier { value = 4 }, Identifier { value = 4 }),
+         equals(Identifier { value = 4 }, Identifier { value = 5 }))
+    }
+    assert same && !different
+    assert equals(Identifier { value = 4 }, Identifier { value = 4 }) == same
+    assert equals(Identifier { value = 4 }, Identifier { value = 5 }) == different
+}

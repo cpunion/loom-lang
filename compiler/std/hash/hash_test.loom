@@ -1,0 +1,30 @@
+import std.text.concat
+
+test fn hashes_cover_integer_bits_without_overflow() {
+    let minimum = hash(-9223372036854775808)
+    let maximum = hash(9223372036854775807)
+    assert minimum >= 0 && maximum >= 0
+    assert minimum != maximum
+    assert hash(0) != hash(-1)
+    assert hash(1) != hash(4294967296)
+    assert hash(1) != hash(2)
+    assert hash(true) != hash(false)
+}
+
+test fn text_hashes_use_immutable_byte_content() {
+    assert hash("hé😀") == hash(concat("hé", "😀"))
+    assert hash("") == hash(concat("", ""))
+    assert hash("ab") != hash("ba")
+    assert hash("é") != hash("e\u{301}")
+    assert hash("a\0b") != hash("ab")
+}
+
+test fn compile_time_hashes_agree_with_native_hashes() {
+    let minimum, maximum, text, boolean = comptime {
+        (hash(-9223372036854775808), hash(9223372036854775807),
+         hash(concat("hé", "😀")), hash(true))
+    }
+    assert minimum == hash(-9223372036854775808)
+    assert maximum == hash(9223372036854775807)
+    assert text == hash("hé😀") && boolean == hash(true)
+}

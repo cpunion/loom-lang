@@ -1,0 +1,79 @@
+import std.map.Map
+import std.map.new
+import std.map.get
+import std.map.insert
+import std.map.remove
+import std.map.entries
+import std.map.clear
+import std.map.length
+import std.set.new
+import std.set.insert
+import std.set.contains
+import std.equal.Equal
+import std.hash.Hash
+import std.option.Option
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.text.concat
+import std.int.to_text
+
+record Label { name Text }
+
+impl Equal for Label {
+    fn equals(self Label, other Label) Bool { self.name == other.name }
+}
+impl Hash for Label {
+    // An allocating implementation also exercises receiver/root preservation.
+    fn hash(self Label) Int { concat(self.name, "!").hash() }
+}
+
+fn prepared() Map[Text, Int] {
+    let counts = std.map.new[Text, Int]()
+    discard insert(counts, "Loom", 1)
+    discard insert(counts, "Loom", 2)
+    counts
+}
+
+fn exercise() {
+    let counts = comptime { prepared() }
+    assert match get(counts, "Loom") { Option.Some(value) => value == 2, Option.None => false }
+    discard insert(counts, "runtime", 3)
+    assert length(counts) == 2
+
+    let labels = std.map.new[Label, List[Text]]()
+    let alias = labels
+    var index = 0
+    while index < 40 {
+        let name = concat("label-", to_text(index))
+        let words = std.list.new[Text]()
+        push(words, concat(name, "-value"))
+        discard insert(alias, Label { name = name }, words)
+        index = index + 1
+    }
+    let found = match get(labels, Label { name = "label-7" }) {
+        Option.Some(words) => words
+        Option.None => { assert false
+            std.list.new[Text]() }
+    }
+    push(found, "shared")
+    assert match get(alias, Label { name = "label-7" }) {
+        Option.Some(words) => length(words) == 2 && get(words, 1) == "shared"
+        Option.None => false
+    }
+    assert match remove(alias, Label { name = "label-7" }) {
+        Option.Some(words) => get(words, 0) == "label-7-value"
+        Option.None => false
+    }
+    let snapshot = entries(labels)
+    clear(alias)
+    assert length(labels) == 0 && length(snapshot) == 39
+    assert length(get(snapshot, 0).1) == 1
+
+    let seen = std.set.new[Text]()
+    assert insert(seen, concat("Lo", "om"))
+    assert !insert(seen, "Loom") && contains(seen, "Loom")
+}
+
+fn main() { exercise() }

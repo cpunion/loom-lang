@@ -1,0 +1,182 @@
+import std.equal.Equal
+import std.hash.Hash
+import std.option.Option
+import std.list.new
+import std.list.length
+import std.list.get
+import std.list.push
+import std.list.set
+
+// Equal keys must have equal hashes. Both operations must be pure, and keys
+// must retain their equality and hash while stored. Iteration order is unspecified.
+pub record Map[K Equal + Hash, V] { state State[K, V] }
+
+// The private nominal wrapper keeps the mutable cell inaccessible to callers.
+record State[K, V] { cells List[Table[K, V]] }
+record Table[K, V] { slots List[Slot[K, V]] count Int used Int }
+enum Slot[K, V] { Empty Deleted Occupied(Int, K, V) }
+
+fn empty_table[K, V](capacity Int) Table[K, V] {
+    let slots = std.list.new[Slot[K, V]]()
+    var index = 0
+    while index < capacity {
+        push(slots, Slot.Empty)
+        index = index + 1
+    }
+    Table { slots = slots count = 0 used = 0 }
+}
+
+pub fn new[K Equal + Hash, V]() Map[K, V] {
+    let cells = std.list.new[Table[K, V]]()
+    push(cells, empty_table[K, V](8))
+    Map { state = State { cells = cells } }
+}
+
+pub fn length[K Equal + Hash, V](map Map[K, V]) Int {
+    std.list.get(map.state.cells, 0).count
+}
+
+pub fn is_empty[K Equal + Hash, V](map Map[K, V]) Bool { length(map) == 0 }
+
+// At least one slot is empty. An absent key uses the first deleted slot, if any.
+fn locate[K Equal + Hash, V](table Table[K, V], hash Int, key K) (Int, Bool) {
+    let mask = std.list.length(table.slots) - 1
+    var index = hash & mask
+    var deleted = -1
+    while true {
+        match std.list.get(table.slots, index) {
+            Slot.Empty => { return (if deleted >= 0 { deleted } else { index }, false) }
+            Slot.Deleted => { if deleted < 0 { deleted = index } }
+            Slot.Occupied(stored_hash, stored_key, _) => {
+                if stored_hash == hash && stored_key.equals(key) { return (index, true) }
+            }
+        }
+        index = (index + 1) & mask
+    }
+    (-1, false)
+}
+
+pub fn get[K Equal + Hash, V](map Map[K, V], key K) Option[V] {
+    let table = std.list.get(map.state.cells, 0)
+    let found = locate(table, key.hash(), key)
+    if !found.1 { return Option.None }
+    match std.list.get(table.slots, found.0) {
+        Slot.Occupied(_, _, value) => Option.Some(value)
+        Slot.Empty => Option.None
+        Slot.Deleted => Option.None
+    }
+}
+
+pub fn contains[K Equal + Hash, V](map Map[K, V], key K) Bool {
+    locate(std.list.get(map.state.cells, 0), key.hash(), key).1
+}
+
+// Rehash does not invoke user equality or hashing: each stored key is unique.
+fn rehash[K, V](table Table[K, V], capacity Int) Table[K, V] {
+    let fresh = empty_table[K, V](capacity)
+    let mask = capacity - 1
+    var source = 0
+    while source < std.list.length(table.slots) {
+        match std.list.get(table.slots, source) {
+            Slot.Occupied(hash, key, value) => {
+                var index = hash & mask
+                var occupied = true
+                while occupied {
+                    occupied = match std.list.get(fresh.slots, index) {
+                        Slot.Empty => false
+                        Slot.Deleted => false
+                        Slot.Occupied(_, _, _) => true
+                    }
+                    if occupied { index = (index + 1) & mask }
+                }
+                set(fresh.slots, index, Slot.Occupied(hash, key, value))
+            }
+            Slot.Empty => {}
+            Slot.Deleted => {}
+        }
+        source = source + 1
+    }
+    Table { slots = fresh.slots count = table.count used = table.count }
+}
+
+// Returns the previous value; replacing a key preserves its original key object.
+pub fn insert[K Equal + Hash, V](map Map[K, V], key K, value V) Option[V] {
+    var table = std.list.get(map.state.cells, 0)
+    let hash = key.hash()
+    var found = locate(table, hash, key)
+    if found.1 {
+        match std.list.get(table.slots, found.0) {
+            Slot.Occupied(stored_hash, stored_key, previous) => {
+                set(table.slots, found.0, Slot.Occupied(stored_hash, stored_key, value))
+                return Option.Some(previous)
+            }
+            Slot.Empty => {}
+            Slot.Deleted => {}
+        }
+    }
+    let capacity = std.list.length(table.slots)
+    if table.used >= capacity - capacity / 4 {
+        let next_capacity = if table.count >= capacity / 2 { capacity * 2 } else { capacity }
+        table = rehash(table, next_capacity)
+        found = locate(table, hash, key)
+    }
+    let extra_used = match std.list.get(table.slots, found.0) {
+        Slot.Empty => 1
+        Slot.Deleted => 0
+        Slot.Occupied(_, _, _) => 0
+    }
+    set(table.slots, found.0, Slot.Occupied(hash, key, value))
+    set(map.state.cells, 0, Table { slots = table.slots count = table.count + 1 used = table.used + extra_used })
+    Option.None
+}
+
+pub fn remove[K Equal + Hash, V](map Map[K, V], key K) Option[V] {
+    let table = std.list.get(map.state.cells, 0)
+    let found = locate(table, key.hash(), key)
+    if !found.1 { return Option.None }
+    match std.list.get(table.slots, found.0) {
+        Slot.Occupied(_, _, previous) => {
+            set(table.slots, found.0, Slot.Deleted)
+            set(map.state.cells, 0, Table { slots = table.slots count = table.count - 1 used = table.used })
+            Option.Some(previous)
+        }
+        Slot.Empty => Option.None
+        Slot.Deleted => Option.None
+    }
+}
+
+pub fn clear[K Equal + Hash, V](map Map[K, V]) {
+    set(map.state.cells, 0, empty_table[K, V](8))
+}
+
+// The outer list is a snapshot; shared data inside keys and values remains shared.
+pub fn entries[K Equal + Hash, V](map Map[K, V]) List[(K, V)] {
+    let table = std.list.get(map.state.cells, 0)
+    let copied = std.list.new[(K, V)]()
+    var index = 0
+    while index < std.list.length(table.slots) {
+        match std.list.get(table.slots, index) {
+            Slot.Occupied(_, key, value) => { push(copied, (key, value)) }
+            Slot.Empty => {}
+            Slot.Deleted => {}
+        }
+        index = index + 1
+    }
+    copied
+}
+
+// As with entries, keys are copied without cloning data inside each key.
+pub fn keys[K Equal + Hash, V](map Map[K, V]) List[K] {
+    let table = std.list.get(map.state.cells, 0)
+    let copied = std.list.new[K]()
+    var index = 0
+    while index < std.list.length(table.slots) {
+        match std.list.get(table.slots, index) {
+            Slot.Occupied(_, key, _) => { push(copied, key) }
+            Slot.Empty => {}
+            Slot.Deleted => {}
+        }
+        index = index + 1
+    }
+    copied
+}

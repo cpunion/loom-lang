@@ -1,0 +1,52 @@
+import std.text.length
+import std.text.byte
+
+// Equal keys must have equal hashes. Hash/equality inputs must stay unchanged
+// while used as collection keys. Hashes are not persistent identifiers or
+// cryptographic digests; neither their algorithm nor collision resistance is
+// promised. Use std.hash.sha256 for a cryptographic digest.
+pub concept Hash {
+    fn hash(self Self) Int
+}
+
+// Keep each intermediate word in 0..2^32-1. Both multipliers are small enough
+// that multiplication cannot overflow Int before the explicit low-word mask.
+fn append_byte(word Int, value Int) Int {
+    ((word ^ value) * 16777619) & 4294967295
+}
+
+fn finish(word Int) Int {
+    let first = ((word ^ (word >> 16)) * 73244475) & 4294967295
+    let second = ((first ^ (first >> 16)) * 73244475) & 4294967295
+    second ^ (second >> 16)
+}
+
+impl Hash for Int {
+    fn hash(self Int) Int {
+        var word = 2166136261
+        var offset = 0
+        while offset < 64 {
+            word = append_byte(word, (self >> offset) & 255)
+            offset = offset + 8
+        }
+        finish(word)
+    }
+}
+
+impl Hash for Bool {
+    fn hash(self Bool) Int { finish(if self { 1 } else { 0 }) }
+}
+
+impl Hash for Text {
+    fn hash(self Text) Int {
+        var word = 2166136261
+        var index = 0
+        while index < length(self) {
+            word = append_byte(word, byte(self, index))
+            index = index + 1
+        }
+        finish(word)
+    }
+}
+
+pub fn hash[T Hash](value T) Int { value.hash() }

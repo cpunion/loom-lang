@@ -80,6 +80,17 @@ snapshot and shared elements. It works with pure compile-time and allocating
 native comparators. `std.fs.entries` reuses it for deterministic byte ordering;
 comparator ordering laws remain a caller obligation, not a completed proof gate.
 
+Source `std.map` and `std.set` now use shared Lists and ordinary bounded generics
+for open-addressed hash tables. Explicit `std.equal.Equal`/`std.hash.Hash`
+implementations cover Int, Bool and Text; custom managed keys use the same direct
+method calls. Replacement, collisions, deletion/rehash, alias-preserving growth
+and clear, snapshots, and compile-time construction have source tests. The
+[collection example](../../compiler/examples/collections/main.loom) also runs
+under forced moving collection. Private nominal state hides mutable table
+storage without new syntax or runtime operations. Key equivalence/hash laws and
+stability remain caller obligations; adversarial collision protection, concurrent
+maps and iterator APIs are not implemented.
+
 Static concepts use explicit nominal `impl` declarations, generic bounds and
 ordinary direct-call specialization. Conditional `T implements C` tests select
 only that instance's branch; they do not add a public generic requirement.
