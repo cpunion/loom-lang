@@ -2,6 +2,11 @@ use std::{fs, process::Command};
 mod common;
 use common::success;
 
+fn diagnostic_text(bytes: &[u8]) -> String {
+    // The Windows CRT uses CRLF for stderr; source coordinates and UTF-8 stay exact.
+    std::str::from_utf8(bytes).unwrap().replace("\r\n", "\n")
+}
+
 #[test]
 fn test_failures_keep_names_and_helper_locations_without_sources() {
     let temporary = tempfile::tempdir().unwrap();
@@ -80,7 +85,7 @@ test fn 订单失败() {
             "O{level}: {standalone:?}"
         );
         assert_eq!(standalone.stdout, b"inner-cleanup\nouter-cleanup\n");
-        assert_eq!(standalone.stderr, expected.as_bytes(), "O{level}");
+        assert_eq!(diagnostic_text(&standalone.stderr), expected, "O{level}");
 
         let cli = common::command(&["test", package.to_str().unwrap()])
             .env("LOOM_OPT_LEVEL", level)
@@ -88,7 +93,7 @@ test fn 订单失败() {
             .unwrap();
         assert_eq!(cli.status.code(), Some(1), "O{level}: {cli:?}");
         assert_eq!(cli.stdout, standalone.stdout);
-        let diagnostic = String::from_utf8(cli.stderr).unwrap();
+        let diagnostic = diagnostic_text(&cli.stderr);
         assert!(diagnostic.starts_with(&expected), "O{level}: {diagnostic}");
         assert_eq!(diagnostic.matches("FAIL ").count(), 1, "{diagnostic}");
         assert_eq!(

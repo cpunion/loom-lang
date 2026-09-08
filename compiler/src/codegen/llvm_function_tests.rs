@@ -14,6 +14,10 @@ fn int(number: i64) -> checked::Expr {
 fn text(string: &str) -> checked::Expr {
     value(Type::Text, E::Text(string.into()))
 }
+fn diagnostic_text(bytes: &[u8]) -> String {
+    // Host CRT diagnostics may use CRLF; binary I/O remains byte-exact.
+    std::str::from_utf8(bytes).unwrap().replace("\r\n", "\n")
+}
 fn local(ty: Type, index: usize) -> checked::Expr {
     value(ty, E::Local(index))
 }
@@ -150,14 +154,17 @@ fn assertion_locations_and_active_test_names_do_not_instrument_plain_entries() {
     program.test_names = vec!["sample.passes".into(), "sample.fails".into()];
     let (ir, output) = emit_run(&program, false, false);
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(output.stderr, b"loom: helpers.loom:4:5: assertion failed\n");
+    assert_eq!(
+        diagnostic_text(&output.stderr),
+        "loom: helpers.loom:4:5: assertion failed\n"
+    );
     assert!(!ir.contains("loom_rt_"));
     assert!(!ir.contains("sample.fails"));
     let (ir, output) = emit_run(&program, true, true);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        output.stderr,
-        b"FAIL sample.fails\nRuntimeFault: helpers.loom:4:5: assertion failed\n"
+        diagnostic_text(&output.stderr),
+        "FAIL sample.fails\nRuntimeFault: helpers.loom:4:5: assertion failed\n"
     );
     assert!(ir.contains("loom_rt_test_enter"));
     assert!(ir.contains("loom_rt_test_leave"));
@@ -331,7 +338,7 @@ fn named_callbacks_keep_direct_abi_dce_and_scalar_paths_runtime_free() {
     assert!(ir.contains("loom_rt_test_enter"));
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("precondition failed"));
-    assert!(String::from_utf8_lossy(&output.stderr).starts_with("FAIL package.callback_failure\n"));
+    assert!(diagnostic_text(&output.stderr).starts_with("FAIL package.callback_failure\n"));
 }
 
 #[test]
