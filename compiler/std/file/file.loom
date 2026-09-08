@@ -1,6 +1,8 @@
 import std.result.Result
 import std.text.length
 import std.bytes.length
+import std.bytes.new
+import std.bytes.decode_utf8
 
 pub enum FileError {
     Open
@@ -16,16 +18,13 @@ intrinsic fn read(handle Int, buffer Bytes, limit Int) Int
 intrinsic fn write(handle Int, value Text, offset Int) Int
 intrinsic fn write_bytes(handle Int, value Bytes, offset Int) Int
 intrinsic fn close(handle Int) Int
-intrinsic fn bytes_new() Bytes
-intrinsic fn bytes_utf8(buffer Bytes) Bool
-intrinsic fn bytes_text_copy(buffer Bytes) Text
 
 // The source library owns the read loop, UTF-8 policy, and explicit close.
 // No file handle escapes and no GC finalizer owns an external resource.
 pub fn read_bytes(path Text) Result[Bytes, FileError] {
     let handle = open(path)
     if handle < 0 { return Result.Err(FileError.Open) }
-    let buffer = bytes_new()
+    let buffer = new()
     var count = read(handle, buffer, 8192)
     while count > 0 {
         count = read(handle, buffer, 8192)
@@ -38,8 +37,10 @@ pub fn read_bytes(path Text) Result[Bytes, FileError] {
 
 pub fn read_text(path Text) Result[Text, FileError] {
     let buffer = read_bytes(path)?
-    if !bytes_utf8(buffer) { return Result.Err(FileError.Utf8) }
-    Result.Ok(bytes_text_copy(buffer))
+    match decode_utf8(buffer) {
+        Result.Ok(text) => Result.Ok(text)
+        Result.Err(_) => Result.Err(FileError.Utf8)
+    }
 }
 
 // Create or replace a file, handling partial writes in source code.

@@ -42,6 +42,7 @@ fn rejects(text Text) {
 }
 
 test fn unsupported_and_ambiguous_manifests_reject() {
+    rejects("[module]\nname='a'\n[漢漢漢漢漢漢]")
     rejects("[module]\nname='std'")
     rejects("[module]\nname='Upper'")
     rejects("[module]\nname='a'\nname='b'")

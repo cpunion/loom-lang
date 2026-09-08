@@ -12,6 +12,7 @@ import std.text.length
 import std.text.slice
 import std.text.concat
 import std.text.from_codepoint
+import std.text.starts_with
 
 // Dependency paths remain relative to the declaring manifest; project loading
 // resolves them and verifies the target module identity.
@@ -155,7 +156,7 @@ pub fn parse(text Text) Result[Module, Text] {
                 if line == "[module]" { section = "module" } else {
                     if line == "[dependencies]" { section = "dependencies" } else {
                         let prefix = "[dependencies."
-                        if length(line) <= length(prefix) + 1 || slice(line, 0, length(prefix)) != prefix ||
+                        if length(line) <= length(prefix) + 1 || !starts_with(line, prefix) ||
                             byte(line, length(line) - 1) != 93 {
                             return Result.Err("unsupported manifest table or TOML syntax")
                         }

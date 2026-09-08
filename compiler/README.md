@@ -328,8 +328,11 @@ timings; local variables remain conservatively rooted for the function.
   not representable as UTF-8 return `Utf8`. Errors contain no values. This
   external read cannot execute at compile time and does not add global mutation.
 - `std.bytes.get/set` index shared buffers with bounds checks and unsigned
-  byte values (0–255). Both work at compile time; `to_text` still takes an
-  isolated, validated UTF-8 copy. `std.file.read_bytes/write_bytes` preserve
+  byte values (0–255). Both work at compile time. `decode_utf8` returns
+  `Result[Text, Utf8Error]`, strictly rejecting invalid bytes with `Invalid`;
+  `to_text` faults on invalid UTF-8. Both take an isolated copy on success,
+  including embedded NUL, and decoding also works at compile time.
+  `std.file.read_text` reuses the fallible decoder. Binary `read_bytes/write_bytes` preserve
   arbitrary binary contents and use the same source-owned read/write loops
   and explicit closure as text I/O. Both write APIs create or truncate a file;
   neither promises atomic publication or crash durability.
