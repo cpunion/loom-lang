@@ -45,7 +45,16 @@ impl Fixture {
         fs::create_dir(root.join("setup-home")).unwrap();
         fs::create_dir(root.join("setup-hooks")).unwrap();
         fs::write(root.join("setup-config"), "").unwrap();
-        let output = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        let mut rustc = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()));
+        // Direct rustc does not consume Cargo's linker setting. In Git Bash,
+        // PATH may otherwise select its unrelated coreutils link.exe.
+        #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
+        if let Some(linker) = std::env::var_os("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER") {
+            let mut option = std::ffi::OsString::from("linker=");
+            option.push(linker);
+            rustc.arg("-C").arg(option);
+        }
+        let output = rustc
             .arg(common::root().join("compiler/tests/fixtures/git_forwarder.rs"))
             .args(["--edition=2021", "-o"])
             .arg(&tool)
