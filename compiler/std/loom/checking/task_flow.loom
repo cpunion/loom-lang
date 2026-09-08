@@ -157,7 +157,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         return Result.Err(task_error(flow, value, "private async intrinsics must be awaited directly"))
     }
     if !task && contains_task(flow.context.env, value.ty, new[Int]()) {
-        return Result.Err(task_error(flow, value, "storing tasks in lists or enums is not yet implemented"))
+        return Result.Err(task_error(flow, value, "storing tasks in lists is not yet implemented"))
     }
     if flow.cleanup &&(task || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend) {
         return Result.Err(task_error(flow, value, "task creation, reading or transfer in cleanup is not yet implemented"))
@@ -187,7 +187,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     }
     // A deferred call retains its runtime arguments during abstract checking.
     // Other Deferred expressions have no children and cannot hide transfers.
-    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall || value.kind == ExprKind.IndirectCall || value.kind == ExprKind.Deferred || value.kind == ExprKind.Record {
+    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall || value.kind == ExprKind.IndirectCall || value.kind == ExprKind.Deferred || value.kind == ExprKind.Record || value.kind == ExprKind.Variant {
         return task_arguments(flow, value)
     }
     if value.kind == ExprKind.Let || value.kind == ExprKind.Assign {
@@ -243,15 +243,21 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         return Result.Ok(task)
     }
     if value.kind == ExprKind.Match {
-        discard task_sequence(flow, value.children, false)?
+        let input = get(value.children, 0)
+        discard task_sequence(flow, value.children, task_value(flow.context.env, input.ty))?
+        if !input.falls { return Result.Ok(false) }
+        let covered = new[Int]()
         let merged = task_branch(flow)
         var found = false
         var index = 0
         while index < length(value.arms) {
             let branch = task_branch(flow)
-            let body = get(value.arms, index).body
+            let arm = get(value.arms, index)
+            let body = arm.body
+            discard task_match_bindings(branch, value, input.ty, arm, covered)?
             discard task_sequence(branch, body, allowed)?
             if all_fall(body) {
+                discard task_match_consumed(branch, value, arm)?
                 if found && !same_task_state(merged, branch) {
                     return Result.Err(task_error(flow, value, "task consumption must agree on all continuing match arms"))
                 }

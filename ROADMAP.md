@@ -155,7 +155,12 @@ completed producers retain all returned subtrees until extraction. Ordinary
 metadata remains readable after Task fields transfer. See the
 [aggregate example](compiler/examples/task_aggregates).
 
-The next async gates are Task-bearing Lists/enums,
+Task-bearing enums now transfer their active payload through ordinary `match`,
+including Option and Result propagation. Typed matches adopt/return only the
+selected variant's Tasks; empty variants create no task obligation at runtime.
+See the [enum example](compiler/examples/task_enums).
+
+The next async gates are Task-bearing Lists,
 socket readiness adapters, general worker
 operations and joins. Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.

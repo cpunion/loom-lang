@@ -47,7 +47,14 @@ typed result projections mark every returned subtree before completion. The runt
 retains these in its existing child set until extraction, using a count and member
 flag rather than another allocation. Cancellation drains all children before parent
 cleanup. See the [aggregate example](../../compiler/examples/task_aggregates).
-Socket adapters, general worker operations, joins and Task-bearing Lists/enums
+Enums now carry Tasks through ordinary matching, including Option/Result and `?`.
+The whole enum transfers once; matching introduces obligations for its bound
+payloads. Wildcards may skip only variants with no remaining Task payload.
+Native typed matches adopt and retain only the active variant's Tasks, including
+nested records/tuples and Task-bearing errors. Empty variants create no tasks.
+Classification caches follow each checking/evaluation/lowering session, not
+persistent compiler state. See the [enum example](../../compiler/examples/task_enums).
+Socket adapters, general worker operations, joins and Task-bearing Lists
 remain unfinished; tuple transfer does not implement tuple-await sugar.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured

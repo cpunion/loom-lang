@@ -1,26 +1,89 @@
-// Visit only actual value fields, stopping at each Task handle. The same
-// typed projections implement parameter adoption and returned-subtree marking.
-fn task_members(types List[Type], value Expr, members List[Expr]) {
-    let shape = get(types, value.ty)
-    if shape.kind == TypeKind.Task {
-        push(members, value)
-        return
-    }
-    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
-        return
-    }
-    var index = 0
-    while index < length(shape.fields) {
-        let ty = get(shape.fields, index).ty
-        let kind = get(types, ty).kind
-        if kind == TypeKind.Task || kind == TypeKind.Record || kind == TypeKind.Tuple {
-            task_members(types, node(ExprKind.Field, ty, value.span, index, one(value)), members)
+// Completed inline layouts only: function signatures and nominal arguments
+// describe types, not stored Task handles. Share this cache across constructors.
+fn task_present(types List[Type], cache List[Int], ty Int) Bool {
+    if ty <= 5 { return false }
+    while length(cache) <= ty { push(cache, -1) }
+    if get(cache, ty) >= 0 { return get(cache, ty) == 1 }
+    let shape = get(types, ty)
+    var found = shape.kind == TypeKind.Task
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+        var field = 0
+        while !found && field < length(shape.fields) {
+            found = task_present(types, cache, get(shape.fields, field).ty)
+            field = field + 1
         }
-        index = index + 1
     }
+    if shape.kind == TypeKind.Enum {
+        var variant = 0
+        while !found && variant < length(shape.variants) {
+            let fields = get(shape.variants, variant).fields
+            var field = 0
+            while !found && field < length(fields) {
+                found = task_present(types, cache, get(fields, field))
+                field = field + 1
+            }
+            variant = variant + 1
+        }
+    }
+    set(cache, ty, if found { 1 } else { 0 })
+    found
 }
 
-fn task_results(program Program, graph Graph) {
+// Typed projections and ordinary matches visit only the active payload. These
+// private operations do not allocate or suspend, including empty enum branches.
+fn task_visit(types List[Type], cache List[Int], locals List[Local], value Expr, owner Expr, returning Bool) Expr {
+    let shape = get(types, value.ty)
+    if shape.kind == TypeKind.Task {
+        if returning {
+            return node(ExprKind.Discard, 0, value.span, -1,
+                one(operation("task_return", value.ty, value.span, one(value))))
+        }
+        return operation("task_adopt", 0, value.span, pair(owner, value))
+    }
+    let body = new[Expr]()
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+        var field = 0
+        while field < length(shape.fields) {
+            let ty = get(shape.fields, field).ty
+            if task_present(types, cache, ty) {
+                push(body, task_visit(types, cache, locals,
+                    node(ExprKind.Field, ty, value.span, field, one(value)), owner, returning))
+            }
+            field = field + 1
+        }
+    }
+    if shape.kind == TypeKind.Enum {
+        let arms = new[Arm]()
+        var variant = 0
+        while variant < length(shape.variants) {
+            let bindings = new[Int]()
+            let actions = new[Expr]()
+            let fields = get(shape.variants, variant).fields
+            var field = 0
+            while field < length(fields) {
+                let ty = get(fields, field)
+                var binding = -1
+                if task_present(types, cache, ty) {
+                    binding = length(locals)
+                    push(locals, Local { name = "" ty = ty mutable = false is_scoped = false })
+                    push(actions, task_visit(types, cache, locals,
+                        node(ExprKind.Local, ty, value.span, binding, new[Expr]()), owner, returning))
+                }
+                push(bindings, binding)
+                field = field + 1
+            }
+            push(arms, Arm { variant = variant bindings = bindings whole = -1
+                body = one(block(actions, 0, value.span, true)) })
+            variant = variant + 1
+        }
+        return Expr { kind = ExprKind.Match ty = 0 span = value.span text = ""
+            index = -1 children = one(value) arms = arms falls = true }
+    }
+    block(body, 0, value.span, true)
+}
+
+fn task_results(program Program, cache List[Int], graph Graph) {
+    if !task_present(program.types, cache, graph.result) { return }
     var index = 0
     while index < length(graph.states) {
         let current = get(graph.states, index)
@@ -29,24 +92,14 @@ fn task_results(program Program, graph Graph) {
                 finish(graph, index, Exit.Complete,
                     operation("task_return", graph.result, graph.span, one(current.value)), current.edges, current.arms)
             } else {
-                let members = new[Expr]()
-                let saved = length(graph.locals)
-                let snapshot = node(ExprKind.Local, graph.result, graph.span, saved, new[Expr]())
-                task_members(program.types, snapshot, members)
-                if length(members) > 0 {
-                    // Evaluate once, including lexical cleanup, before projecting
-                    // the retained result. No generated return marker allocates.
-                    discard temporary(graph, graph.result)
-                    save(graph, index, saved, current.value)
-                    var field = 0
-                    while field < length(members) {
-                        let member = get(members, field)
-                        append(graph, index, node(ExprKind.Discard, 0, graph.span, -1,
-                                one(operation("task_return", member.ty, graph.span, one(member)))))
-                        field = field + 1
-                    }
-                    finish(graph, index, Exit.Complete, snapshot, current.edges, current.arms)
-                }
+                // Evaluate once, including lexical cleanup, before visiting the
+                // retained result. Each completion visits its active variant.
+                let saved = temporary(graph, graph.result)
+                let snapshot = local(graph, saved)
+                save(graph, index, saved, current.value)
+                append(graph, index, task_visit(program.types, cache, graph.locals,
+                    snapshot, empty(graph.span), true))
+                finish(graph, index, Exit.Complete, snapshot, current.edges, current.arms)
             }
         }
         index = index + 1

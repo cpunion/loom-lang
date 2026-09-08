@@ -25,7 +25,7 @@ enum Control { Normal Return Break Continue }
 record Step { value Value control Control }
 record Frame { locals List[Value] calls Int }
 // Shared work/allocation counters and next container ID cover all calls.
-record State { program Program budget List[Int] partial Bool }
+record State { program Program budget List[Int] partial Bool task_types List[Int] }
 
 pub fn unknown() Value { Value { ty = -1 number = 0 floating = 0.0 text = "" items = new[Value]() } }
 pub fn number(value Int) Value { Value { ty = 1 number = value floating = 0.0 text = "" items = new[Value]() } }
@@ -47,7 +47,7 @@ fn state(program Program, partial Bool) State {
     push(budget, 100000)
     push(budget, 16777216)
     push(budget, 0)
-    State { program = program budget = budget partial = partial }
+    State { program = program budget = budget partial = partial task_types = new[Int]() }
 }
 fn fresh(state State, ty Int, items List[Value]) Value {
     // execute's work budget bounds the number of allocations well below Int.

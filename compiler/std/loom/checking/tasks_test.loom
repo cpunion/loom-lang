@@ -125,7 +125,7 @@ test fn task_owner_requirements_cannot_escape_through_function_or_compile_time_v
     discard accepted(concat(prefix, "fn main() { let callback = factory\ndiscard callback }"))
     task_rejected(concat(prefix, "fn main() { discard comptime { pass[Task[Int]] } }"), "compile-time evaluation cannot transfer tasks")
     rejects(concat(prefix, "fn ignored(value List[Task[Int]]) {}"))
-    task_rejected("fn empty[T]() List[T] { [] }\nfn unused() { discard empty[Task[Int]]() }", "storing tasks in lists or enums is not yet implemented")
+    task_rejected("fn empty[T]() List[T] { [] }\nfn unused() { discard empty[Task[Int]]() }", "storing tasks in lists is not yet implemented")
     rejects(concat(prefix, "fn ignored(value Task[List[Task[Int]]]) Task[List[Task[Int]]] { value }"))
     discard accepted(concat(prefix, "record Held { task Task[Int] }\nfn forward_held(value Task[Held]) Task[Held] { value }"))
     discard accepted(concat(prefix, "concept Factory { fn create(self Self) Task[Int] }\nimpl Factory for Int { fn create(self Int) Task[Int] { factory() } }\nasync fn main() { let provider dyn Factory = 1\ndiscard provider.create().await }"))

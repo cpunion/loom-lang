@@ -135,12 +135,23 @@ fn task_transfer_visit(env Environment, signature Signature, ty Int, node Node, 
     let nested = contains_task(env, payload, new[Int]())
     if nested {
         if !task_storage(env, payload) {
-            return Result.Err(failure(env, signature.symbol, node, "Task-bearing lists and enums are not yet implemented"))
+            return Result.Err(failure(env, signature.symbol, node, "Task-bearing lists are not yet implemented"))
         }
         let fields = get(env.types, payload).fields
         var index = 0
         while index < length(fields) {
             discard task_transfer_visit(env, signature, get(fields, index).ty, node, seen)?
+            index = index + 1
+        }
+        let variants = get(env.types, payload).variants
+        index = 0
+        while index < length(variants) {
+            let members = get(variants, index).fields
+            var field = 0
+            while field < length(members) {
+                discard task_transfer_visit(env, signature, get(members, field), node, seen)?
+                field = field + 1
+            }
             index = index + 1
         }
     }

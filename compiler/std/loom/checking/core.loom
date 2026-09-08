@@ -39,10 +39,15 @@ record Signature { symbol Int parameters Int params List[Int] compile_time List[
 record Instance { signature Int arguments List[Int] constants List[StaticValue] }
 record Validation { signature Int constants List[StaticValue] }
 record Association { receiver Int member Int arguments List[Int] }
+record TypeState {
+    phase Int
+    task_width Int
+}
+
 record Environment {
     source std.loom.binding.Program
     types List[Type]
-    type_states List[Int]
+    type_states List[TypeState]
     expand_data Bool
     has_refinements Bool
     expanding_helpers Bool
@@ -217,7 +222,7 @@ fn bind_name(context Context, node Node, value Text, local Int, constant Int, bo
 // Global declarations keep one meaning in production checks and editor queries.
 // Every invocation owns fresh mutable checking tables; failures are discarded.
 fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
-    let env = Environment { source = source types = new[Type]() type_states = new[Int]() expand_data = true
+    let env = Environment { source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
         has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         associations = new[Association]() association_depth = 0

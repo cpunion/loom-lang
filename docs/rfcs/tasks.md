@@ -125,7 +125,16 @@ fields remain readable after Task fields move. Copying a consumed Task field,
 dropping other fields through a temporary projection, or replacing a live field
 group rejects. See the [aggregate example](../../compiler/examples/task_aggregates).
 
-Task-bearing Lists/enums,
+Task-bearing enums transfer once and expose the active payload through ordinary
+`match`, including `Option`, `Result` and `?`. Bound Task-bearing payloads must be
+consumed; `_` cannot drop them. A whole wildcard may cover the remaining Task-free
+variants after Task-bearing variants have explicit arms. Named whole bindings
+transfer the enum and keep its type's obligations. Even a known empty value is
+matched or transferred at source level; native adoption/return visits only actual
+Tasks and creates none for empty branches. See the
+[enum example](../../compiler/examples/task_enums).
+
+Task-bearing Lists,
 socket adapters, general worker operations
 and joins are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread. Public outcome inspection remains

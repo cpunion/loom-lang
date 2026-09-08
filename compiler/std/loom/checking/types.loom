@@ -48,7 +48,7 @@ fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
         }
     }
     push(env.types, Type { kind = kind symbol = symbol arguments = arguments fields = fields variants = new[Variant]() constraint = new[Expr]() })
-    push(env.type_states, 2)
+    push(env.type_states, TypeState { phase = 2 task_width = -1 })
     length(env.types) - 1
 }
 fn tuple_type(env Environment, owner Int, node Node, elements List[Int]) Result[Int, Failure] {
@@ -176,7 +176,7 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
     while index < length(env.types) {
         let existing = get(env.types, index)
         if existing.symbol == declaration && (existing.kind == TypeKind.Record || existing.kind == TypeKind.Enum || existing.kind == TypeKind.Refined) && same(existing.arguments, arguments) {
-            if env.expand_data && get(env.type_states, index) == 0 { discard expand_type(env, index, depth)? }
+            if env.expand_data && get(env.type_states, index).phase == 0 { discard expand_type(env, index, depth)? }
             return Result.Ok(index)
         }
         index = index + 1
@@ -190,13 +190,13 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
     let id = length(env.types)
     let placeholder = simple_type(kind, declaration, arguments)
     push(env.types, placeholder)
-    push(env.type_states, 0)
+    push(env.type_states, TypeState { phase = 0 task_width = -1 })
     if env.expand_data { discard expand_type(env, id, depth)? }
     Result.Ok(id)
 }
 fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     if depth > 64 { return Result.Err(failure(env, get(env.types, id).symbol, symbol(env, get(env.types, id).symbol).node, "type specialization depth exceeded")) }
-    set(env.type_states, id, 1)
+    set(env.type_states, id, TypeState { phase = 1 task_width = -1 })
     let shape = get(env.types, id)
     let declaration = shape.symbol
     let kind = shape.kind
@@ -232,7 +232,7 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
         // Predicates are validated after every function signature is available.
     }
     set(env.types, id, Type { kind = kind symbol = declaration arguments = arguments fields = fields variants = variants constraint = constraints })
-    set(env.type_states, id, 2)
+    set(env.type_states, id, TypeState { phase = 2 task_width = -1 })
     Result.Ok(true)
 }
 fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node) Result[Int, Failure] {
@@ -240,7 +240,7 @@ fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node
     if source.kind == TypeKind.Parameter { return Result.Ok(get(arguments, source.symbol)) }
     if length(source.arguments) == 0 {
         // Header discovery may have interned nominal data without its fields.
-        if env.expand_data && get(env.type_states, ty) == 0 { discard expand_type(env, ty, 0)? }
+        if env.expand_data && get(env.type_states, ty).phase == 0 { discard expand_type(env, ty, 0)? }
         return Result.Ok(ty)
     }
     let args = new[Int]()

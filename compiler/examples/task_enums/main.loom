@@ -1,0 +1,195 @@
+import std.option.Option
+import std.result.Result
+import std.time.sleep_ms
+import std.io.write_text
+import std.list.push
+import std.list.length
+import std.text.concat
+
+record Batch {
+    first Task[List[Int]]
+    second Task[Text]
+    label Text
+}
+
+enum Work {
+    Empty
+    Single(Task[List[Int]])
+    Pair(Batch)
+    Failed(Text)
+}
+
+concept Router {
+    async fn route(self Self, value Work) Work {
+        value
+    }
+}
+
+record Local {
+}
+
+impl Router for Local {
+}
+
+async fn delayed[T](value T) T {
+    sleep_ms(3).await
+    value
+}
+
+async fn produce(kind Int, values List[Int], trace List[Int]) Work {
+    defer {
+        push(trace, kind)
+    }
+    if kind == 0 {
+        return Work.Empty()
+    }
+    if kind == 1 {
+        return Work.Single(delayed(values))
+    }
+    if kind == 2 {
+        return Work.Pair(Batch {
+                first = delayed(values)
+                second = delayed("ready")
+                label = concat("ba", "tch")
+            })
+    }
+    Work.Failed(concat("no ", "work"))
+}
+
+async fn relay[T](value T) T {
+    sleep_ms(1).await
+    value
+}
+
+async fn consume(value Work) Int {
+    match value {
+        Work.Single(task) => {
+            let values = task.await
+            values[0]
+        }
+        Work.Pair(batch) => {
+            let values = batch.first.await
+            assert batch.second.await == "ready"
+            assert batch.label == "batch"
+            values[0] + 1
+        }
+        rest => {
+            match rest {
+                Work.Empty => 0
+                Work.Failed(message) => {
+                    assert message == "no work"
+                    -1
+                }
+                Work.Single(task) => {
+                    discard task.await
+                    -2
+                }
+                Work.Pair(batch) => {
+                    discard batch.first.await
+                    discard batch.second.await
+                    -3
+                }
+            }
+        }
+    }
+}
+
+fn forward(value Result[Task[Int], Text]) Result[Task[Int], Text] {
+    Result.Ok(value?)
+}
+
+async fn answer(value Result[Task[Int], Text]) Result[Int, Text] {
+    let task = value?
+    Result.Ok(task.await)
+}
+
+// Propagation can also return a Task-bearing error without awaiting it here.
+fn forward_error(value Result[Int, Task[Text]]) Result[Int, Task[Text]] {
+    Result.Ok(value?)
+}
+
+async fn optional(value Option[Task[Int]]) Int {
+    match value {
+        Option.Some(task) => task.await
+        _ => 0
+    }
+}
+
+async fn exercise() {
+    let values = [41]
+    let trace List[Int] = []
+    let callback = consume
+    let router dyn Router = Local {
+    }
+    var kind = 0
+    while kind < 4 {
+        let pending = produce(kind, values, trace)
+        sleep_ms(1).await
+        assert length(trace) == kind + 1
+        values[0] = 42
+        // A completed producer retains only its active variant's children, even
+        // when the producer crosses another Task boundary before extraction.
+        let producer = relay(pending).await
+        let work = producer.await
+        let actual = callback(relay(router.route(work).await).await).await
+        assert actual == if kind == 0 {
+            0
+        } else {
+            if kind == 1 {
+                42
+            } else {
+                if kind == 2 {
+                    43
+                } else {
+                    -1
+                }
+            }
+        }
+        kind = kind + 1
+    }
+    assert optional(relay(Option.Some(delayed(7))).await).await == 7
+    let empty Option[Task[Int]] = Option.None()
+    assert optional(relay(empty).await).await == 0
+    match relay(Option.Some(sleep_ms(1))).await {
+        Option.Some(task) => {
+            task.await
+        }
+        Option.None => {
+            assert false
+        }
+    }
+    match answer(forward(Result.Ok(delayed(9)))).await {
+        Result.Ok(value) => {
+            assert value == 9
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    match answer(forward(Result.Err("missing"))).await {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert message == "missing"
+        }
+    }
+    let error = forward_error(Result.Err(delayed("recover")))
+    match relay(error).await {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(task) => {
+            assert task.await == "recover"
+        }
+    }
+}
+
+async fn main() {
+    exercise().await
+    discard write_text("enums finished\n")
+}
+
+test async fn active_variants_and_task_result_propagation() {
+    exercise().await
+}
