@@ -229,6 +229,7 @@ pub mod checked {
             arguments: Vec<Expr>,
         },
         Record(Vec<(usize, Expr)>),
+        List(Vec<Expr>),
         Field(Box<Expr>, usize),
         Variant {
             variant: usize,

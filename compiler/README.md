@@ -337,6 +337,7 @@ timings; local variables remain conservatively rooted for the function.
 - Immutable UTF-8 `Text` and shared mutable `List[T]`. Copying a list binding
   shares its header: aliases observe growth and element replacement. Scalar
   records remain native values; managed fields retain their sharing semantics.
+  List literals use `[a, b]`, with an optional trailing comma.
 - Directory packages, private helpers and `pub`, package-wide explicit imports,
   and importer-scoped path dependencies. A simple `loom.toml` supplies the module name;
   no `src/` is required. A directory without a manifest can use its own files
@@ -481,6 +482,30 @@ two or more plain names with exact arity; nested patterns, wildcards, and
 parallel reassignment are not implemented. Copying a tuple shares its managed
 fields just as copying a record does; compile-time results construct fresh graphs
 while preserving internal sharing.
+
+## List construction
+
+```loom
+let values = [1, 2, 3]
+let empty List[Int] = []
+let nested List[List[Int]] = [[], [1, 2]]
+```
+
+An expected `List[T]` supplies the element type; otherwise the first element
+determines it. Elements evaluate once from left to right. Each evaluation creates
+a fresh outer List; contained shared values keep their identity. Empty lists
+need a type context, such as a binding annotation, a function return type, or a
+known parameter type. Supply explicit generic arguments when a call cannot yet
+infer that context. There is no implicit numeric or container-wide conversion:
+a fresh `List[Int]` literal may weaken individual constrained integers, but an
+existing shared `List[Positive]` cannot become `List[Int]`.
+
+Runtime literals allocate one header and, when nonempty, one backing store of
+the known capacity. Generated code writes typed elements directly, without a
+push/growth check per element. Compile-time literals use the same sharing rules;
+materializing general compile-time object graphs still uses the existing
+allocate-then-fill path to preserve aliases and cycles. Access and mutation use
+`std.list.get`, `set`, and `push`; list indexing/repetition syntax is not included.
 
 ## Hash collections
 

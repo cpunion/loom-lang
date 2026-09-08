@@ -714,6 +714,21 @@ impl Converter<'_> {
                 }
                 E::Record(values)
             }
+            28 => {
+                let Type::List(id) = ty else {
+                    return Err("checked list literal requires a list type".into());
+                };
+                let element = self.program.lists[id];
+                let values = node
+                    .children
+                    .iter()
+                    .map(|value| self.expr(value))
+                    .collect::<Result<Vec<_>>>()?;
+                if values.iter().any(|value| value.ty != element) {
+                    return Err("checked list literal element type mismatch".into());
+                }
+                E::List(values)
+            }
             9 => {
                 let value = self.expr(self.child(node, 0, 1)?)?;
                 let id = index(node.index)?;
@@ -1006,6 +1021,37 @@ mod tests {
             children.len(),
             children.concat()
         )
+    }
+
+    #[test]
+    fn list_literals_validate_their_element_storage_type() {
+        let stream = |ty, children: &[String]| {
+            let value = node(28, ty, "", -1, children);
+            let body = node(11, 0, "", -1, &[node(16, 0, "", -1, &[value])]);
+            format!(
+                "loom-checked-1\n4\n0\n-1\n1\n-1\n2\n-1\n6\n-1\n1\n1\n0\n0\n0\n0\n0\n0\n0\n{body}-1\n0\n1\n0\n"
+            )
+        };
+        for children in [vec![], vec![node(0, 1, "7", -1, &[])]] {
+            let program = decode(&stream(3, &children)).unwrap();
+            let c::StmtKind::Discard(value) = &program.functions[0].body.statements[0].kind else {
+                panic!("expected discard")
+            };
+            let c::ExprKind::List(values) = &value.kind else {
+                panic!("expected list literal")
+            };
+            assert_eq!(values.len(), children.len());
+        }
+        assert!(
+            decode(&stream(1, &[]))
+                .unwrap_err()
+                .contains("requires a list type")
+        );
+        assert!(
+            decode(&stream(3, &[node(1, 2, "true", -1, &[])]))
+                .unwrap_err()
+                .contains("element type mismatch")
+        );
     }
 
     #[test]

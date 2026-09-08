@@ -982,14 +982,34 @@ unsafe extern "C" fn loom_rt_bytes_text_copy(bytes: *const u8) -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn loom_rt_list_new(stride: usize, trace_element: Option<Trace>) -> *mut u8 {
+extern "C" fn loom_rt_list_new(
+    stride: usize,
+    trace_element: Option<Trace>,
+    capacity: usize,
+) -> *mut u8 {
     let list = allocate(size_of::<List>(), Some(trace_list)).cast::<List>();
     // SAFETY: The allocation is a zeroed header and no GC occurs before return.
     unsafe {
         (*list).stride = stride;
         (*list).trace_element = trace_element;
     }
-    list.cast()
+    if capacity == 0 {
+        return list.cast();
+    }
+    let size = capacity
+        .checked_mul(stride)
+        .unwrap_or_else(|| fault("buffer size overflow"));
+    rooted([list.cast()], |slots| {
+        let data = allocate_storage(size, None, false);
+        // SAFETY: The rooted header may have moved while allocating storage.
+        // Its length remains zero until generated code initializes every item.
+        unsafe {
+            let list = (*slots).cast::<List>();
+            (*list).buffer.data = data;
+            (*list).buffer.cap = capacity;
+            list.cast()
+        }
+    })
 }
 
 unsafe fn list_push(list: *mut u8, item: *const u8) {
@@ -1292,11 +1312,11 @@ mod tests {
         use process_io::{TEST_BYTES, TEST_NAME, TEST_TOKEN};
         let executable = std::env::current_exe().unwrap();
         rooted([ptr::null_mut(); 6], |slots| unsafe {
-            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
+            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 0);
             *slots.add(1) = loom_rt_bytes_new();
             *slots.add(2) = loom_rt_bytes_new();
             *slots.add(4) = text("");
-            *slots.add(5) = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
+            *slots.add(5) = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 0);
             bytes_push(*slots.add(1), b'!');
             bytes_push(*slots.add(2), b'?');
             assert_eq!(
@@ -1325,7 +1345,7 @@ mod tests {
             );
             assert_eq!(buffer_bytes(*slots.add(1)), b"!");
             assert_eq!(buffer_bytes(*slots.add(2)), b"?");
-            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
+            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 0);
             for argument in [
                 executable.to_str().unwrap(),
                 "--ignored",
@@ -1374,11 +1394,11 @@ mod tests {
         let executable = std::env::current_exe().unwrap();
         let input = (0..TEST_BYTES).map(|index| index as u8).collect::<Vec<_>>();
         rooted([ptr::null_mut(); 7], |slots| unsafe {
-            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
+            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 0);
             *slots.add(1) = loom_rt_bytes_new();
             *slots.add(2) = loom_rt_bytes_new();
             *slots.add(4) = text("");
-            *slots.add(5) = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
+            *slots.add(5) = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 0);
             for argument in [
                 executable.to_str().unwrap(),
                 "--ignored",
@@ -1495,8 +1515,37 @@ mod tests {
     }
 
     #[test]
+    fn preallocated_lists_trace_only_initialized_elements() {
+        HEAP.with(|heap| heap.borrow_mut().stress = true);
+        // SAFETY: Root slots are rewritten by GC; reload the owner before each
+        // access and publish length only after storing an initialized pointer.
+        rooted([ptr::null_mut(); 2], |slots| unsafe {
+            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 3);
+            loom_rt_collect();
+            let list = (*slots).cast::<List>();
+            assert_eq!((*list).buffer.cap, 3);
+            assert_eq!((*list).buffer.len, 0);
+            assert!(!(*list).buffer.data.is_null());
+            *slots.add(1) = text("initialized");
+            let list = (*slots).cast::<List>();
+            *(*list).buffer.data.cast::<*mut u8>() = *slots.add(1);
+            (*list).buffer.len = 1;
+            *slots.add(1) = ptr::null_mut();
+            loom_rt_collect();
+            let list = (*slots).cast::<List>();
+            assert_eq!(
+                text_bytes(*(*list).buffer.data.cast::<*mut u8>()),
+                b"initialized"
+            );
+        });
+        HEAP.with(|heap| heap.borrow_mut().stress = false);
+        loom_rt_collect();
+        assert_eq!(live(), 0);
+    }
+
+    #[test]
     fn shared_list_growth_traces_elements_and_reclaims_old_buffers() {
-        let mut list = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
+        let mut list = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 0);
         let checkpoint = root(ptr::addr_of_mut!(list));
         let mut alias = list;
         let alias_root = root(ptr::addr_of_mut!(alias));

@@ -37,6 +37,7 @@ pub(super) fn allocating_functions(
             match value.kind {
                 checked::ExprKind::DynBox { .. }
                 | checked::ExprKind::DynCall { .. }
+                | checked::ExprKind::List(_)
                 | checked::ExprKind::IndirectCall { .. } => {
                     allocating.insert(*id);
                 }
@@ -197,6 +198,7 @@ impl TemporarySlots {
         let result = match &value.kind {
             checked::ExprKind::DynBox { .. }
             | checked::ExprKind::DynCall { .. }
+            | checked::ExprKind::List(_)
             | checked::ExprKind::IndirectCall { .. } => true,
             checked::ExprKind::Unary(_, value)
             | checked::ExprKind::Field(value, _)
@@ -340,6 +342,9 @@ impl TemporarySlots {
             }
             checked::ExprKind::Variant { fields, .. } => {
                 self.siblings(program, allocating, fields, false);
+            }
+            checked::ExprKind::List(elements) => {
+                self.siblings(program, allocating, elements, true);
             }
             checked::ExprKind::Record(fields) => {
                 self.siblings(
@@ -520,6 +525,7 @@ fn expressions<'a>(value: &'a checked::Expr, values: &mut Vec<&'a checked::Expr>
         }
         checked::ExprKind::Call(_, args)
         | checked::ExprKind::Primitive(_, args)
+        | checked::ExprKind::List(args)
         | checked::ExprKind::Variant { fields: args, .. } => {
             for arg in args {
                 expressions(arg, values);
@@ -1078,6 +1084,25 @@ mod tests {
                     .expressions
                     .contains_key(&(condition as *const checked::Expr))
             );
+        }
+    }
+
+    #[test]
+    fn list_literals_protect_managed_items_but_need_no_scalar_item_roots() {
+        for (ty, roots) in [(Type::Int, 0), (Type::Text, 2)] {
+            let value = expr(
+                checked::ExprKind::List(vec![local(ty), local(ty)]),
+                Type::List(0),
+            );
+            let mut slots = TemporarySlots::default();
+            slots.expression(&program(), &BTreeSet::new(), &value, false);
+            assert_eq!(slots.types.len(), roots);
+            assert!(slots.may_allocate(&BTreeSet::new(), &value));
+            if let checked::ExprKind::List(elements) = &value.kind
+                && roots > 0
+            {
+                assert_ne!(slot(&slots, &elements[0]), slot(&slots, &elements[1]));
+            }
         }
     }
 

@@ -527,7 +527,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         operation: Primitive,
         args: &[checked::Expr],
     ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
-        let Some(mut values) = self.operands(args)? else {
+        let Some(values) = self.operands(args)? else {
             return Ok(None);
         };
         let pointer = self.context.ptr_type(AddressSpace::default());
@@ -623,32 +623,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::BytesUtf8 => ("bytes_utf8", Some(self.context.i32_type().into())),
             Primitive::BytesTextCopy => ("bytes_text_copy", Some(pointer.into())),
             Primitive::ListNew => {
-                let Type::List(id) = result else {
-                    return Err("invalid list constructor type".into());
-                };
-                let element = self.program.lists[id];
-                let ty = native_type(self.context, self.program, element)?;
-                let stride = ty.size_of().ok_or("unsized list element")?;
-                let trace = if gc::managed(self.program, element) {
-                    gc::tracer(
-                        self.context,
-                        self.module,
-                        self.program,
-                        element,
-                        self.tracers,
-                    )?
-                    .as_global_value()
-                    .as_pointer_value()
-                } else {
-                    pointer.const_null()
-                };
-                values = vec![
-                    self.builder
-                        .build_int_cast(stride, self.size_type, "element.stride")?
-                        .into(),
-                    trace.into(),
-                ];
-                ("list_new", Some(pointer.into()))
+                return Ok(Some(self.list_new(result, 0)?.into()));
             }
             Primitive::ListGet | Primitive::ListSet => {
                 let element = if operation == Primitive::ListGet {
@@ -991,6 +966,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 }
                 result.into()
             }
+            checked::ExprKind::List(elements) => return self.list_literal(expr.ty, elements),
             checked::ExprKind::Field(value, index) => {
                 let Some(value) = self.expr(value)? else {
                     return Ok(None);
@@ -1741,7 +1717,7 @@ fn reachable_functions(
                     expr(argument, calls, witnesses, slots);
                 }
             }
-            checked::ExprKind::Primitive(_, args) => {
+            checked::ExprKind::Primitive(_, args) | checked::ExprKind::List(args) => {
                 for arg in args {
                     expr(arg, calls, witnesses, slots);
                 }

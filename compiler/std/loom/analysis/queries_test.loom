@@ -61,6 +61,16 @@ test fn inspections_follow_local_ids_through_shadowing_and_inference() {
     only_type(inspection(analysis, text, "value = 3"), "Int")
 }
 
+test fn inspections_keep_list_elements_and_local_types() {
+    let text = "fn identity(value Int) Int { value }\nfn main() { let values = [identity(3)]\ndiscard values }"
+    let analysis = accepted(input(text))
+    only_type(inspection(analysis, text, "values ="), "List[Int]")
+    only_type(inspection(analysis, text, "3)]"), "Int")
+    let call = inspection(analysis, text, "identity(3)")
+    only_type(call, "fn(Int) Int")
+    only_definition(call, 3, 11)
+}
+
 test fn inspections_distinguish_field_paths_receivers_and_initializers() {
     let text = "record Box[T] { value T }\nrecord Outer { inner Box[Int] }\nfn main() {\nlet item = Outer { inner = Box { value = 7 } }\nassert item.inner.value == 7\n}"
     let analysis = accepted(input(text))
