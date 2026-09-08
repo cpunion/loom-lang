@@ -1,0 +1,56 @@
+fn mutable_caller(body Expr, goal Expr) Function {
+    let locals = new[Local]()
+    push(locals, Local { name = "value" ty = 1 mutable = true is_scoped = false })
+    push(locals, Local { name = "result" ty = 1 mutable = false is_scoped = false })
+    Function { symbol = 1 arguments = new[Int]() params = new[Int]() result = 1 locals = locals
+        preconditions = new[Expr]() postconditions = nodes(goal) result_local = 1 body = body runtime_name = "" span = body.span }
+}
+
+test fn body_helpers_snapshot_eager_arguments_and_keep_caller_mutation() {
+    let first = contract_fixture([1, 1], 1, local(0), [], [])
+    let program = proof_helpers([first])
+    let initialize = expression(ExprKind.Let, 0, "", 0, [literal("1")])
+    let assign = expression(ExprKind.Assign, 0, "", 0, [literal("2")])
+    let second = expression(ExprKind.Block, 1, "", -1, [assign, local(0)])
+    let call = helper_call(0, 1, [local(0), second])
+    let body = expression(ExprKind.Block, 1, "", -1, [initialize, call])
+    assert helpers_verified(program, mutable_caller(body, operation("==", local(1), literal("1"))))
+    let discarded = expression(ExprKind.Discard, 0, "", -1, [call])
+    let changed = expression(ExprKind.Block, 1, "", -1, [initialize, discarded, local(0)])
+    assert helpers_verified(program, mutable_caller(changed, operation("==", local(1), literal("2"))))
+    assert !helpers_verified(program, mutable_caller(changed, operation("==", local(1), literal("1"))))
+}
+
+test fn body_calls_use_proved_summaries_without_colliding_return_symbols() {
+    let negative = expression(ExprKind.Unary, 1, "-", -1, [local(0)])
+    let absolute = expression(ExprKind.If, 1, "", -1, [operation(">=", local(0), literal("0")), local(0), negative])
+    let helper = contract_fixture([1], 1, absolute, [], [operation(">=", local(1), literal("0"))])
+    assert verified(helper)
+    let program = proof_helpers([helper])
+    assert helpers_verified(program, fixture(helper_call(0, 1, [local(0)]), [], operation(">=", local(1), literal("0"))))
+    let equal = operation("==", helper_call(0, 1, [literal("1")]), helper_call(0, 1, [literal("2")]))
+    let goal = expression(ExprKind.Local, 2, "", 0, [])
+    assert !helpers_verified(program, contract_fixture([], 2, equal, [], [goal]))
+    // A precise identity summary remains useful through another summarized call.
+    let identity = contract_fixture([1], 1, local(0), [], [operation("==", local(1), local(0))])
+    assert verified(identity)
+    let nested = helper_call(0, 1, [helper_call(0, 1, [local(0)])])
+    assert helpers_verified(proof_helpers([identity]), fixture(nested, [], operation("==", local(1), local(0))))
+}
+
+test fn body_helper_checks_are_established_only_on_the_executed_path() {
+    let yes = expression(ExprKind.Bool, 2, "true", -1, [])
+    let positive = operation(">", local(0), literal("0"))
+    let required = contract_fixture([1], 1, local(0), [positive], [])
+    assert helpers_verified(proof_helpers([required]), fixture(helper_call(0, 1, [local(0)]), [], operation(">", local(1), literal("0"))))
+    let increment = operation("+", local(0), literal("1"))
+    let touched = contract_fixture([1], 2, expression(ExprKind.Block, 2, "", -1, [expression(ExprKind.Discard, 0, "", -1, [increment]), yes]), [], [])
+    let program = proof_helpers([touched])
+    let call = helper_call(0, 2, [local(0)])
+    let safe = operation("<", local(1), literal("9223372036854775807"))
+    let body = expression(ExprKind.Block, 1, "", -1, [expression(ExprKind.Discard, 0, "", -1, [call]), local(0)])
+    assert helpers_verified(program, fixture(body, [], safe))
+    let guarded = operation("||", operation("==", local(0), literal("9223372036854775807")), call)
+    let skipped = expression(ExprKind.Block, 1, "", -1, [expression(ExprKind.Discard, 0, "", -1, [guarded]), local(0)])
+    assert !helpers_verified(program, fixture(skipped, [], safe))
+}

@@ -172,8 +172,11 @@ successful entry checks provide facts, while exit checks must be proved. Helpers
 used only by postconditions stay out of native reachability. The
 [contract example](../../compiler/examples/contracts/README.md) exercises this
 through the CLI and compile-time execution. Generic declarations still require
-abstract proofs. Helper loops/recursion, indirect/dynamic calls and general calls
-in a function body requiring proof remain unsupported; required proofs never
+abstract proofs. Direct scalar calls in a body requiring proof now compose
+verified callee postconditions, or expand a finite pure body without a summary.
+Argument snapshots preserve eager evaluation; proof-only temporaries do not
+change emitted calls or locals. Recursive proof dependencies, unexpanded helper
+control flow and indirect/dynamic calls remain unsupported; required proofs never
 fall back to runtime checks or sampled evaluation.
 
 Managed memory now uses stop-the-world copying collection with a traced

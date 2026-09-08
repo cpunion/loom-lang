@@ -8,6 +8,8 @@ import std.list.push
 import std.list.length
 import std.result.Result
 
+record Verification { function Function program Program fresh List[Int] budget List[Int] }
+
 fn postcondition_holds(condition Expr, state State, depth Int) Result[Bool, Text] {
     if depth <= 0 { return Result.Err("proof predicate depth budget exhausted") }
     if holds(Predicate.Constant(false), state.facts) { return Result.Ok(true) }
@@ -48,14 +50,14 @@ fn append(output List[Outcome], values List[Outcome]) Result[Bool, Text] {
         index = index + 1 }
     Result.Ok(true)
 }
-fn block(function Function, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+fn block(proof Verification, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
     var states = outcomes(state, Value.Empty)
     var index = 0
     while index < length(expr.children) {
         let next = new[Outcome]()
         var path = 0
         while path < length(states) {
-            discard append(next, execute(function, get(expr.children, index), get(states, path).state, depth - 1)?)?
+            discard append(next, execute(proof, get(expr.children, index), get(states, path).state, depth - 1)?)?
             path = path + 1
         }
         states = next
@@ -63,25 +65,25 @@ fn block(function Function, expr Expr, state State, depth Int) Result[List[Outco
     }
     Result.Ok(states)
 }
-fn conditional(function Function, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+fn conditional(proof Verification, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
     let output = new[Outcome]()
-    let conditions = execute(function, get(expr.children, 0), state, depth - 1)?
+    let conditions = execute(proof, get(expr.children, 0), state, depth - 1)?
     var index = 0
     while index < length(conditions) {
         let condition = get(conditions, index)
         let fact = boolean(condition.value)?
-        discard append(output, execute(function, get(expr.children, 1), assume(condition.state, fact), depth - 1)?)?
+        discard append(output, execute(proof, get(expr.children, 1), assume(condition.state, fact), depth - 1)?)?
         let alternative = assume(condition.state, not(fact))
         if length(expr.children) == 3 {
-            discard append(output, execute(function, get(expr.children, 2), alternative, depth - 1)?)?
+            discard append(output, execute(proof, get(expr.children, 2), alternative, depth - 1)?)?
         } else { discard add_outcome(output, Outcome { state = alternative value = Value.Empty })? }
         index = index + 1
     }
     Result.Ok(output)
 }
-fn operation(function Function, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+fn operation(proof Verification, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
     let output = new[Outcome]()
-    let left = execute(function, get(expr.children, 0), state, depth - 1)?
+    let left = execute(proof, get(expr.children, 0), state, depth - 1)?
     var index = 0
     while index < length(left) {
         let first = get(left, index)
@@ -95,9 +97,9 @@ fn operation(function Function, expr Expr, state State, depth Int) Result[List[O
                 let skipped = assume(first.state, if and { not(fact) } else { fact })
                 discard add_outcome(output, Outcome { state = skipped value = Value.Boolean(Predicate.Constant(!and)) })?
                 let next = assume(first.state, if and { fact } else { not(fact) })
-                discard append(output, execute(function, get(expr.children, 1), next, depth - 1)?)?
+                discard append(output, execute(proof, get(expr.children, 1), next, depth - 1)?)?
             } else {
-                let right = execute(function, get(expr.children, 1), first.state, depth - 1)?
+                let right = execute(proof, get(expr.children, 1), first.state, depth - 1)?
                 var other = 0
                 while other < length(right) {
                     let second = get(right, other)
@@ -111,27 +113,28 @@ fn operation(function Function, expr Expr, state State, depth Int) Result[List[O
     }
     Result.Ok(output)
 }
-fn execute(function Function, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
     if depth <= 0 { return Result.Err("proof depth budget exhausted") }
     if holds(Predicate.Constant(false), state.facts) { return Result.Ok(new[Outcome]()) }
     if expr.kind == ExprKind.Defer { return Result.Ok(outcomes(state, Value.Empty)) }
-    if expr.kind == ExprKind.Cleanup { return execute(function, get(expr.children, 0), state, depth - 1) }
-    if expr.kind == ExprKind.Block { return block(function, expr, state, depth) }
-    if expr.kind == ExprKind.If { return conditional(function, expr, state, depth) }
-    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary { return operation(function, expr, state, depth) }
-    if expr.kind == ExprKind.Coerce { return execute(function, get(expr.children, 0), state, depth - 1) }
+    if expr.kind == ExprKind.Cleanup { return execute(proof, get(expr.children, 0), state, depth - 1) }
+    if expr.kind == ExprKind.Block { return block(proof, expr, state, depth) }
+    if expr.kind == ExprKind.If { return conditional(proof, expr, state, depth) }
+    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary { return operation(proof, expr, state, depth) }
+    if expr.kind == ExprKind.Coerce { return execute(proof, get(expr.children, 0), state, depth - 1) }
+    if expr.kind == ExprKind.Call { return body_call(proof, expr, state, depth - 1) }
     if expr.kind == ExprKind.Return && length(expr.children) == 0 {
-        discard returned(function, state, Value.Empty)?
+        discard returned(proof.function, state, Value.Empty)?
         return Result.Ok(new[Outcome]())
     }
     if expr.kind == ExprKind.Let || expr.kind == ExprKind.Assign || expr.kind == ExprKind.Return || expr.kind == ExprKind.Assert || expr.kind == ExprKind.Discard {
-        let values = execute(function, get(expr.children, 0), state, depth - 1)?
+        let values = execute(proof, get(expr.children, 0), state, depth - 1)?
         let output = new[Outcome]()
         var index = 0
         while index < length(values) {
             let value = get(values, index)
             if expr.kind == ExprKind.Return {
-                discard returned(function, value.state, value.value)?
+                discard returned(proof.function, value.state, value.value)?
             } else {
                 let state = if expr.kind == ExprKind.Assert {
                     assume(value.state, boolean(value.value)?)
@@ -149,7 +152,8 @@ fn execute(function Function, expr Expr, state State, depth Int) Result[List[Out
     Result.Ok(outcomes(state, pure(expr, state)?))
 }
 
-pub fn verify(function Function) Result[Bool, Text] {
+fn verify_body(proof Verification) Result[Bool, Text] {
+    let function = proof.function
     if length(function.postconditions) == 0 { return Result.Ok(true) }
     let locals = new[Value]()
     var index = 0
@@ -173,7 +177,7 @@ pub fn verify(function Function) Result[Bool, Text] {
         state = assume(state, boolean(pure(get(function.preconditions, index), state)?)?)
         index = index + 1
     }
-    let exits = execute(function, function.body, state, 256)?
+    let exits = execute(proof, function.body, state, 256)?
     index = 0
     while index < length(exits) {
         let exit = get(exits, index)
@@ -183,12 +187,20 @@ pub fn verify(function Function) Result[Bool, Text] {
     Result.Ok(true)
 }
 
+pub fn verify(function Function) Result[Bool, Text] {
+    verify_body(verification(function, empty_proof_program()))
+}
+
 // Contract calls belong to this checked helper closure. Expansion is symbolic,
-// not evaluation of samples, and leaves ordinary function-body calls unchanged.
+// not evaluation of samples. Body calls use the same closure without changing
+// the caller's emitted body or exposing temporary proof-local bindings.
+// The caller must have independently verified every callee's postconditions in
+// program.functions: no pending or cyclic proof promises. This is not a verifier
+// for an arbitrary hand-built Program; callee summaries are trusted here.
 // With no postconditions, entry predicates still validate their helper closure
 // but do not invoke the narrower required-proof arithmetic fragment.
 pub fn verify_with_helpers(program Program, function Function) Result[List[Expr], Text] {
     let expanded = expanded_contracts(program, function)?
-    if length(function.postconditions) != 0 { discard verify(expanded)? }
+    if length(function.postconditions) != 0 { discard verify_body(verification(expanded, program))? }
     Result.Ok(expanded.postconditions)
 }

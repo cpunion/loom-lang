@@ -1,0 +1,48 @@
+test fn direct_body_calls_use_verified_summaries_or_pure_scalar_bodies() {
+    let program = accepted("fn identity(value Int) Int ensures result == value { value }\nfn forward(value Int) Int ensures result == value { identity(value) }\nfn main() { assert forward(7) == 7 }")
+    assert length(program.functions) == 3
+    var calls = 0
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        calls = calls + dynamic_count(function.body, ExprKind.Call)
+        // A source parameter and result binding only: the proof's call-result
+        // and argument snapshots never become emitted function locals.
+        if length(function.postconditions) != 0 { assert length(function.locals) == 2 }
+        index = index + 1
+    }
+    assert calls == 2
+    discard accepted("fn identity(value Int) Int { value }\npub fn forward(value Int) Int ensures result == value { identity(identity(value)) }")
+    let next = "fn next(value Int) Int { value + 1 }\n"
+    // Body arithmetic has already succeeded on a normal return. The same
+    // arithmetic inside a postcondition still needs a definedness proof.
+    discard accepted(concat(next, "pub fn advanced(value Int) Int ensures result > value { next(value) }"))
+    rejects(concat(next, "fn bad(value Int) Int ensures next(value) > value { value }"))
+    discard accepted(concat(next, "pub fn bounded(value Int) Int requires value < 9223372036854775807 ensures next(result) > result { value }"))
+}
+
+test fn call_proofs_snapshot_arguments_and_keep_distinct_results() {
+    let first = "fn first(left Int, right Int) Int ensures result == left { left }\n"
+    discard accepted(concat(first, "pub fn snapshot() Int ensures result == 3 { var value = 1\nlet before = first(value, { value = 2\nvalue })\nbefore + value }"))
+    let clamp = "fn nonnegative(value Int) Int ensures result >= 0 { if value < 0 { 0 } else { value } }\n"
+    discard accepted(concat(clamp, "pub fn keep(value Int) Int ensures result >= 0 { nonnegative(value) }"))
+    // A weak summary is not an equality between separate dynamic results.
+    rejects(concat(clamp, "fn bad() Int ensures result == 0 { nonnegative(1) - nonnegative(2) }"))
+}
+
+test fn body_call_summaries_do_not_skip_declaration_proofs() {
+    rejects("fn liar(value Int) Int ensures result == value { value + 1 }\nfn caller(value Int) Int ensures result == value { liar(value) }\nfn main() {}")
+    rejects("fn identity(value Int) Int ensures result == value { value }\nfn unused(value Int) Int ensures result != value { identity(value) }\nfn main() {}")
+    let identity = "fn identity(value Int) Int ensures result == value { value }\n"
+    discard accepted(concat(identity, "fn good[T](value Int) Int ensures result == value { identity(value) }\nfn main() { assert good[Int](3) == 3 }"))
+    let phantom = accepted("fn helper[T](value Int) Int ensures result == value { value }\nfn forward[T](value Int) Int ensures result == value { helper[T](value) }\nfn main() { assert forward[Int](1) == 1 && forward[Bool](2) == 2\nassert comptime { forward[Int](3) } == 3 }")
+    var index = 0
+    while index < length(phantom.functions) {
+        let arguments = get(phantom.functions, index).arguments
+        // T remains abstract during declaration proof, never in native roots.
+        assert length(arguments) == 0 || get(arguments, 0) == 1 || get(arguments, 0) == 2
+        index = index + 1
+    }
+    rejects(concat(identity, "fn hidden[T](value Int) Int ensures result == value { comptime if T == Int { identity(value) } else { 0 } }\nfn main() { discard hidden[Int](3) }"))
+    rejects("fn looping(value Int) Int { var count = value\nwhile count > 0 { count = count - 1 }\ncount }\nfn unsupported(value Int) Int ensures result <= value { looping(value) }")
+}

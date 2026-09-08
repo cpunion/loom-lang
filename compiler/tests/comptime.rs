@@ -112,7 +112,7 @@ fn main() {
         "fn bad(flag Bool) Int { comptime if true && flag { 1 } else { 0 } }\nfn main() {}",
         "import std.io.write_text\nfn effect() Bool { discard write_text(\"guard-side-effect\")\ntrue }\nfn main() { comptime if true && effect() {} }",
         "fn wrong[T](value T) Int ensures result == 1 { comptime if !(T == Bool) && T == Int { 2 } else { 1 } }\nfn main() { discard wrong(3) }",
-        "fn hidden(value Int) Int { value }\nfn unproved(value Int) Int ensures result == value { comptime if true && Int == Int { hidden(value) } else { value } }\nfn main() { discard unproved(3) }",
+        "fn hidden(value Int) Int { value + 1 }\nfn unproved(value Int) Int ensures result == value { comptime if true && Int == Int { hidden(value) } else { value } }\nfn main() { discard unproved(3) }",
     ] {
         fs::write(source.path().join("main.loom"), rejected).unwrap();
         let output = loom(&["check", source.path().to_str().unwrap()]);

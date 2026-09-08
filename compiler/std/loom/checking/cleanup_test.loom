@@ -16,7 +16,7 @@ test fn cleanup_control_is_explicit_and_contracts_still_require_proof() {
     rejects("fn invalid() { defer { discard later }\nlet later = 1 }")
     discard accepted("fn cleanup() { defer { assert true }\nreturn }\nfn answer() Int ensures result == 3 { defer { assert true }\n3 }\nfn main() { defer { cleanup() }\nassert answer() == 3 }")
     rejects("fn wrong() Int ensures result == 4 { defer { assert true }\n3 }")
-    rejects("fn opaque(value Int) Int { value }\nfn unproved(value Int) Int ensures result == value { defer { discard opaque(value) }\nvalue }")
+    discard accepted("fn identity(value Int) Int { value }\nfn proved(value Int) Int ensures result == value { defer { discard identity(value) }\nvalue }")
 }
 
 test fn required_proofs_observe_cleanup_effects_and_saved_results() {

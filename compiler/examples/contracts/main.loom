@@ -10,9 +10,16 @@ requires value > 0 {
 
 fn good(value Int) Int
 requires positive(value)
-ensures admitted(result)
+ensures result == value && admitted(result)
 {
     value
+}
+
+fn forward(value Int) Int
+requires positive(value)
+ensures result == value
+{
+    good(value)
 }
 
 fn between(value Int, low Int, high Int) Bool {
@@ -29,6 +36,7 @@ ensures between(result, low, high)
 
 fn main() {
     assert good(7) == 7
+    assert forward(7) == 7
     assert comptime {
         good(7)
     } == 7
