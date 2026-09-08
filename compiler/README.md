@@ -164,6 +164,13 @@ macOS peak RSS for scalar, data, and compiler packages, with raw samples in
 `target/performance/compiler.json`. `--compiler`, `--output`, and `--runs`
 select the binary, report, and sample count.
 
+`--check-only --baseline path/to/previous/loom` compares two frontend binaries
+against the same sources, alternating their order within each pair after one
+warmup each. It records both binary hashes and per-sample wall/CPU time and RSS,
+without compiling native artifacts or using object caching. Combine it with
+`--sizes` to include generated package growth; `--compare-cache` is a separate,
+mutually exclusive comparison.
+
 Every sample starts a fresh process after one warmup; OS caches are warm.
 The harness does not enable the opt-in object cache described below. Native decode, codegen, and linker
 timings separate backend costs; remaining build wall time also includes
@@ -175,6 +182,34 @@ cases exercise multiple files, an imported package, records, generics and Lists;
 the reported size is the helper count, not lines of code. Reports record input,
 compiler, backend, runtime and harness hashes. Startup includes process-launch
 overhead, and these synthetic packages do not substitute for large applications.
+
+### Source name indexes
+
+The compiler uses source `std.map` for package name indexes, retaining ordered
+overload lists and independent query results. Ten alternating baseline/candidate
+pairs on macOS arm64 (M4 Max, 2026-09-08) check identical current sources with
+fresh O2 compiler processes and warm OS caches. Baseline `54d3a410` and candidate
+`1c31f6dc` use the same native backend/runtime. The
+[raw report](../benchmarks/compiler/results/2026-09-08-macos-arm64-name-index.json)
+records both executable hashes, all samples, generated inputs and harness hash.
+
+| Check | Linear index ms | Source Map ms | Change |
+| --- | ---: | ---: | ---: |
+| Scalar | 10.25 | 10.20 | -0.5% |
+| Data | 6.08 | 5.80 | -4.6% |
+| Compiler | 516.03 | 509.84 | -1.2% |
+| 10 generated helpers | 11.86 | 11.80 | -0.5% |
+| 50 generated helpers | 17.23 | 16.87 | -2.1% |
+| 200 generated helpers | 35.88 | 32.55 | -9.3% |
+| 512 generated helpers | 97.56 | 76.46 | -21.6% |
+
+These are wall-time medians, not native build or application execution times.
+The compiler check changes only modestly: total CPU medians are 500/495 ms and
+peak RSS 222.20/215.82 MiB. The clearest gain is the larger single-package case;
+its wall MADs are 0.68/0.84 ms. Sub-millisecond changes in small cases are not
+broad speedup claims, and macOS CPU counters round those checks to zero.
+This removes linear name scans, not all binding/checking costs or the need for
+incremental frontend reuse.
 
 ### Native object cache
 

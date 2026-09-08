@@ -79,15 +79,19 @@ CI transfers that temporary input from the validated macOS job in the same
 workflow; no checked-IR snapshot or second frontend is maintained. Native MSVC
 linking, Unicode/binary I/O, and Windows package paths pass the full native gate.
 
-The minimum bootstrap language subset constrains the compiler's own source,
-not which features it can implement for user programs. Implement a new feature
-using the preceding stage's supported subset before adopting that feature in
-the compiler source itself. The selected seed must also support the library and
-checked-artifact interfaces used by that bootstrap; change those boundaries in
-verified steps, not through permanent compatibility adapters. Advance the seed
-after a verified bootstrap, using a pinned release/artifact when available.
-No release is required for the
-current historical-source fallback.
+Keep the compiler and its production library closure on a conservative bootstrap
+subset. Implementing a language feature does not justify using it in the compiler
+or adding another source checkpoint. Raise the minimum seed only for a substantial
+implementation simplification or measured performance benefit; batch necessary
+upgrades instead of extending the recovery chain for each feature. New user
+features and their test fixtures are not limited by this implementation policy.
+
+The selected seed must support both source syntax and the library/checked-artifact
+interfaces used by that closure. Verify new library adoption with the existing
+seed first; change a required boundary in a verified step without permanent
+compatibility adapters. A future pinned compiler artifact can shorten cold
+recovery without restricting the language. Daily development uses one-stage
+`--dev`; stage 2/3 comparison remains a bootstrap/CI gate, not a per-edit rebuild.
 
 Remove the replaced Rust parser, binder, checker, and prover from the active
 tree. The frozen history is a bootstrap input, not an old-language compatibility

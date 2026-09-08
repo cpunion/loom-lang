@@ -36,6 +36,12 @@ independent functions in an application. Unbounded specialization still rejects;
 declaration-anchored errors use that declaration's span rather than a caller span
 from another file.
 
+The binding library now uses source `std.map` for per-package name indexes,
+replacing linear name scans without adding a host-side table implementation.
+Each name retains declaration-ordered overload candidates; callers receive
+independent Lists. Production/test scopes and same-named dependency instances
+remain separate. This does not add persistent frontend or proof caching.
+
 Explicit Int refinement conversions also remove a destination check when the
 source predicate proves its truth and arithmetic definedness. The bounded,
 call-free implication proof preserves one evaluation of the input; unknown
