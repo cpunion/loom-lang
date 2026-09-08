@@ -118,8 +118,17 @@ fn dependency_visibility_and_module_identity_follow_the_declaring_manifest() {
     write(root, "app/main.loom", main);
     let output = loom(&["check", package]);
     assert_eq!(output.status.code(), Some(1));
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    let expected = format!(
+        "expected seed.Token (from {})",
+        root.join("alternate").canonicalize().unwrap().display()
+    );
+    let found = format!(
+        "found seed.Token (from {})",
+        root.join("seed").canonicalize().unwrap().display()
+    );
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("type does not match"),
+        diagnostic.contains(&expected) && diagnostic.contains(&found),
         "{output:?}"
     );
 }

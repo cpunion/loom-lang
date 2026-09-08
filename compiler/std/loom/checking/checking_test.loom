@@ -6,6 +6,7 @@ import std.list.push
 import std.list.get
 import std.list.length
 import std.result.Result
+import std.text.slice
 
 fn with_result(text Text) Result[std.loom.typed.Program, Failure] {
     let files = source_files(text)
@@ -22,6 +23,21 @@ fn accepted_result(text Text) std.loom.typed.Program {
 fn rejects_result(text Text) {
     match with_result(text) { Result.Err(_) => {}
         Result.Ok(_) => { assert false } }
+}
+
+test fn type_mismatches_name_types_and_only_unused_values_suggest_discard() {
+    let source = "record Item { quantity Int }\nfn main() { discard Item { quantity = \"three\" } }"
+    match checked(source_files(source)) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "expected Int, found Text"
+            assert slice(source, failed.diagnostic.span.start, failed.diagnostic.span.end) == "\"three\""
+        }
+        Result.Ok(_) => { assert false }
+    }
+    match checked(source_files("fn main() { 42 }")) {
+        Result.Err(failed) => { assert failed.diagnostic.message == "unused value of type Int; use discard to ignore it" }
+        Result.Ok(_) => { assert false }
+    }
 }
 
 test fn recursive_data_and_checked_control_flow() {

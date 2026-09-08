@@ -28,6 +28,7 @@ import std.list.get
 import std.list.set
 import std.list.length
 import std.result.Result
+import std.text.concat
 
 record Requirement { ty Int capability Int }
 // Function constants use a source symbol plus concrete type arguments, never
@@ -155,7 +156,14 @@ fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Fail
         return Result.Ok(expression(ExprKind.Coerce, expected, node, "", -1, expressions(value), value.falls))
     }
     if expected >= 0 && value.ty != expected && value.falls {
-        return Result.Err(error(context, node, "expression type does not match; use discard to ignore a value"))
+        let found = type_name(context.env.source, context.env.types, context.env.interfaces, value.ty)
+        let message = if expected == 0 {
+            concat("unused value of type ", concat(found, "; use discard to ignore it"))
+        } else {
+            let needed = type_name(context.env.source, context.env.types, context.env.interfaces, expected)
+            concat("expected ", concat(needed, concat(", found ", found)))
+        }
+        return Result.Err(error(context, node, message))
     }
     Result.Ok(value)
 }
