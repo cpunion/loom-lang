@@ -623,16 +623,21 @@ impl Converter<'_> {
                     .iter()
                     .map(|child| self.expr(child))
                     .collect::<Result<Vec<_>>>()?;
-                if operation == Primitive::ProcessCaptureConfigured {
+                if matches!(
+                    operation,
+                    Primitive::ProcessCaptureConfigured | Primitive::ProcessCaptureInputConfigured
+                ) {
                     let text_list =
                         |ty| matches!(ty, Type::List(id) if self.program.lists[id] == Type::Text);
+                    let input = usize::from(operation == Primitive::ProcessCaptureInputConfigured);
                     if ty != Type::Int
                         || !text_list(arguments[0].ty)
-                        || arguments[1].ty != Type::Text
-                        || arguments[2].ty != Type::Int
-                        || !text_list(arguments[3].ty)
-                        || arguments[4].ty != Type::Bytes
-                        || arguments[5].ty != Type::Bytes
+                        || (input == 1 && arguments[1].ty != Type::Bytes)
+                        || arguments[1 + input].ty != Type::Text
+                        || arguments[2 + input].ty != Type::Int
+                        || !text_list(arguments[3 + input].ty)
+                        || arguments[4 + input].ty != Type::Bytes
+                        || arguments[5 + input].ty != Type::Bytes
                     {
                         return Err("checked process capture type mismatch".into());
                     }
@@ -888,6 +893,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "process_run" => P::ProcessRun,
         "process_run_input" => P::ProcessRunInput,
         "process_capture_configured" => P::ProcessCaptureConfigured,
+        "process_capture_input_configured" => P::ProcessCaptureInputConfigured,
         "env_get" => P::EnvGet,
         "bytes_new" => P::BytesNew,
         "bytes_len" => P::BytesLen,
@@ -960,6 +966,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::PathRename => 2,
         P::TextSlice | P::BytesSet | P::ListSet | P::Read | P::Write | P::WriteBytes => 3,
         P::ProcessCaptureConfigured => 6,
+        P::ProcessCaptureInputConfigured => 7,
     }
 }
 
@@ -1045,6 +1052,10 @@ mod tests {
         };
         for (name, params) in [
             ("process_capture_configured", &[4, 2, 1, 4, 3, 3][..]),
+            (
+                "process_capture_input_configured",
+                &[4, 3, 2, 1, 4, 3, 3][..],
+            ),
             ("env_get", &[2, 3][..]),
         ] {
             let operation = primitive(name).unwrap();

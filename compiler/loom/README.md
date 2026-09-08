@@ -93,7 +93,8 @@ editing remain later library boundaries in the [roadmap](../../ROADMAP.md).
 Project analysis is opt-in; in-memory syntax users do not import these layers:
 
 - `std.loom.manifest.parse(text)` returns `Result[Module, Text]`, with module
-  name/version metadata and `dependencies List[Dependency]` (`name`, `path`). It
+  name/version metadata and `dependencies List[Dependency]` (`name`, `source`).
+  `DependencySource` is `Path(Text)` or `Git(Text, Text)` (URL, full commit ID). It
   parses the supported manifest subset, not general TOML or source resolution.
 - `std.loom.project.load(path, std_root, tests)` returns `Result[Project, Text]`.
   `Project` contains files, module instances, packages and a root package ID. It reads
@@ -102,6 +103,14 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
   Manifest-relative path dependencies resolve from each importing module's
   direct entries. Canonical roots are reused; distinct roots with the same name
   keep separate package and nominal type identities.
+- `std.loom.project.resolve(path, std_root, tests, git_tool)` uses that same
+  selected-package traversal, fetching exact Git sources and publishing the
+  root module's lock only after successful loading. Ordinary `load` is offline
+  and verifies selected cached snapshots against their locked contents and names.
+  A compile-time mode shares traversal without retaining fetch/write operations
+  in native consumers that use only `load`.
+  See [module dependencies](../README.md#module-dependencies) for source policies
+  and the remaining resolver limits.
 - `std.loom.binding.bind(project, tests)` returns `Result[Program, Failure]`
   after declaration/import validation. Inspect `Program.symbols` for
   declarations; `Failure.source` identifies the input file for its diagnostic.

@@ -35,6 +35,7 @@ record Loader {
     std_root Text
     active List[Int]
     complete List[Int]
+    resolution Resolution
 }
 
 pub fn package_label(modules List[ModuleInstance], packages List[Package], id Int) Text {
@@ -72,9 +73,9 @@ fn package_seen(values List[Int], id Int, limit Int) Bool {
     }
     false
 }
-fn imported_package(loader Loader, source Int, spelling Text) Result[(Int, Text), Text] {
+fn imported_package(loader Loader, source Int, spelling Text, comptime fetch Bool) Result[(Int, Text), Text] {
     let current = get(loader.packages, source)
-    let owner = imported_module(loader, current.instance, get(parts(spelling, 46), 0))?
+    let owner = imported_module(loader, current.instance, get(parts(spelling, 46), 0), fetch)?
     let directory = import_directory(loader, owner, spelling)?
     let target = registered_package(loader, owner, directory)?
     var index = 0
@@ -166,7 +167,7 @@ fn production(tree Node, tests Bool) Node {
     }
     Node { kind = tree.kind value = tree.value span = tree.span children = children }
 }
-fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int) Result[Bool, Text] {
+fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime fetch Bool) Result[Bool, Text] {
     let current = get(loader.packages, id)
     let owner = current.instance
     let module_name = get(loader.modules, owner).name
@@ -221,8 +222,8 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int) Result[Bo
     index = 0
     while index < length(imports) {
         let target = get(imports, index)
-        let target_id, target_directory = imported_package(loader, id, target)?
-        discard visit(loader, target_id, target_directory, false, depth + 1)?
+        let target_id, target_directory = imported_package(loader, id, target, fetch)?
+        discard visit(loader, target_id, target_directory, false, depth + 1, fetch)?
         index = index + 1
     }
     push(loader.complete, id)
@@ -231,8 +232,8 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int) Result[Bo
     index = 0
     while index < length(test_imports) {
         let target = get(test_imports, index)
-        let target_id, target_directory = imported_package(loader, id, target)?
-        discard visit(loader, target_id, target_directory, false, 0)?
+        let target_id, target_directory = imported_package(loader, id, target, fetch)?
+        discard visit(loader, target_id, target_directory, false, 0, fetch)?
         index = index + 1
     }
     Result.Ok(true)
@@ -241,6 +242,16 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int) Result[Bo
 // Only the selected root package contributes tests. Imports are directory
 // packages; compiler-owned intrinsic trust comes from each canonical file path.
 pub fn load(path Text, std_root Text, tests Bool) Result[Project, Text] {
+    load_selected(path, std_root, tests, false, "git")
+}
+
+// Resolve only this package's import closure. Tests are opt-in just as in load;
+// unrelated lock entries survive so resolving one package does not unlock others.
+pub fn resolve(path Text, std_root Text, tests Bool, git_tool Text) Result[Project, Text] {
+    load_selected(path, std_root, tests, true, git_tool)
+}
+
+fn load_selected(path Text, std_root Text, tests Bool, comptime fetch Bool, git_tool Text) Result[Project, Text] {
     let directory = canonical(path)?
     let is_directory = match kind(directory) {
         Result.Ok(value) => value == FileKind.Directory
@@ -253,14 +264,18 @@ pub fn load(path Text, std_root Text, tests Bool) Result[Project, Text] {
         ModuleRoot { name = "std" base = standard dependencies = new[Dependency]() }
     } else { discovered }
     let files = new[SourceFile]()
+    let resolution = Resolution { root = module.base tool = git_tool
+        locks = read_lock(module.base)? snapshots = new[Snapshot]() }
     let loader = Loader {
         files = files modules = new[ModuleRoot]() packages = new[Package]() std_root = standard
         active = new[Int]() complete = new[Int]()
+        resolution = resolution
     }
     discard register_module(loader, ModuleRoot { name = "std" base = standard dependencies = new[Dependency]() })?
     let owner = register_module(loader, module)?
     let root = registered_package(loader, owner, directory)?
-    discard visit(loader, root, directory, tests, 0)?
+    discard visit(loader, root, directory, tests, 0, fetch)?
+    comptime if fetch { discard publish_lock(resolution)? }
     let modules = new[ModuleInstance]()
     var index = 0
     while index < length(loader.modules) {

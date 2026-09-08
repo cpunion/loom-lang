@@ -1,0 +1,53 @@
+fn lock_fixture() LockedSource {
+    LockedSource { owner = hashed("path\n") name = "codec" git = "https://example.com/codec"
+        rev = "0123456789012345678901234567890123456789" tree = hashed("snapshot") }
+}
+test fn lock_roundtrip_is_deterministic_and_source_checked() {
+    let entry = lock_fixture()
+    let locks = new[LockedSource]()
+    push(locks, entry)
+    let other = LockedSource { owner = entry.owner name = "another" git = entry.git rev = entry.rev tree = entry.tree }
+    push(locks, other)
+    let decoded = match parse_lock(encode_lock(locks)) { Result.Ok(value) => value, Result.Err(_) => { assert false
+        new[LockedSource]() } }
+    assert length(decoded) == 2 && get(decoded, 0).name == "another" && get(decoded, 1).name == "codec"
+    assert encode_lock(decoded) == encode_lock(locks)
+    assert lock_index(decoded, entry.owner, "codec") == 1
+    assert lock_index(decoded, hashed("different owner"), "codec") == -1
+    let invalid = new[Text]()
+    push(invalid, "")
+    push(invalid, "loom-lock 2\n")
+    push(invalid, "loom-lock 1")
+    push(invalid, concat(encode_lock(locks), "\n"))
+    push(locks, entry)
+    // Manually repeat the encoded line: encoding deliberately canonicalizes.
+    let line = get(parts(encode_lock(decoded), 10), 1)
+    push(invalid, concat("loom-lock 1\n", concat(line, concat("\n", concat(line, "\n")))))
+    set(locks, 2, LockedSource { owner = entry.owner name = "third" git = entry.git rev = entry.rev tree = hashed("different bytes") })
+    push(invalid, encode_lock(locks))
+    set(locks, 2, LockedSource { owner = entry.owner name = "third" git = "http://example.com/codec" rev = entry.rev tree = entry.tree })
+    push(invalid, encode_lock(locks))
+    var index = 0
+    while index < length(invalid) {
+        assert match parse_lock(get(invalid, index)) { Result.Err(_) => true, Result.Ok(_) => false }
+        index = index + 1
+    }
+}
+
+test fn lock_owners_are_location_independent_and_git_paths_are_contained() {
+    assert match relative_source("/workspace/app", "/workspace/app") { Result.Ok(value) => value == "", Result.Err(_) => false }
+    assert match relative_source("/workspace/codec/pkg", "/workspace/app") { Result.Ok(value) => value == "../codec/pkg", Result.Err(_) => false }
+    assert match relative_source("C:\\workspace\\codec", "C:\\workspace\\app") { Result.Ok(value) => value == "../codec", Result.Err(_) => false }
+    assert match relative_source("D:\\codec", "C:\\workspace\\app") { Result.Err(_) => true, Result.Ok(_) => false }
+    let entry = lock_fixture()
+    let first = Resolution { root = "/one/app" tool = "git" locks = new[LockedSource]() snapshots = new[Snapshot]() }
+    let second = Resolution { root = "/two/app" tool = "git" locks = new[LockedSource]() snapshots = new[Snapshot]() }
+    assert match source_owner(first, "/one/codec") { Result.Ok(a) => match source_owner(second, "/two/codec") {
+        Result.Ok(b) => a == b, Result.Err(_) => false }, Result.Err(_) => false }
+    push(first.snapshots, Snapshot { base = "/one/cache" git = entry.git rev = entry.rev tree = entry.tree })
+    push(second.snapshots, Snapshot { base = "/two/cache" git = entry.git rev = entry.rev tree = entry.tree })
+    assert match source_owner(first, "/one/cache/nested") { Result.Ok(a) => match source_owner(second, "/two/cache/nested") {
+        Result.Ok(b) => a == b, Result.Err(_) => false }, Result.Err(_) => false }
+    assert match source_boundary(first, "/one/cache", "/one/cache/nested") { Result.Ok(_) => true, Result.Err(_) => false }
+    assert match source_boundary(first, "/one/cache/nested", "/one/cache-copy") { Result.Err(_) => true, Result.Ok(_) => false }
+}

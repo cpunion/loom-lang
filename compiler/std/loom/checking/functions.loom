@@ -43,26 +43,34 @@ fn signature_in(env Environment, id Int, arguments List[Int], node Node, owner I
 }
 fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticValue], node Node) Result[Int, Failure] {
     let current = get(env.signatures, id)
+    // Scheduling has the callee identity, not the caller's source identity.
+    // A failure anchored to the declaration must also use that declaration's span.
+    let declaration = symbol(env, current.symbol).node
     if prototype(env, current.symbol) && !has(symbol(env, current.symbol).node, NodeKind.Block) {
-        return Result.Err(failure(env, current.symbol, node, "concept evidence has no concrete implementation"))
+        return Result.Err(failure(env, current.symbol, declaration, "concept evidence has no concrete implementation"))
     }
     var index = 0
+    var instances = 0
     while index < length(env.pending) {
         let previous = get(env.pending, index)
-        if previous.signature == id && same(previous.arguments, arguments) && same_constants(previous.constants, constants) { return Result.Ok(index) }
+        if previous.signature == id {
+            instances = instances + 1
+            if same(previous.arguments, arguments) && same_constants(previous.constants, constants) { return Result.Ok(index) }
+        }
         index = index + 1
     }
-    if !known_constants(constants) { return Result.Err(failure(env, current.symbol, node, "comptime arguments must be determined for this instance")) }
-    if length(env.pending) >= 1024 {
-        return Result.Err(failure(env, current.symbol, node, "function specialization budget exceeded; expansion must be finite"))
+    if !known_constants(constants) { return Result.Err(failure(env, current.symbol, declaration, "comptime arguments must be determined for this instance")) }
+    // Independent declarations do not consume one global expansion budget.
+    if instances >= 1024 {
+        return Result.Err(failure(env, current.symbol, declaration, "function specialization budget exceeded; expansion must be finite"))
     }
     index = 0
     while index < length(arguments) {
         if type_depth(env, get(arguments, index)) >= 64 {
-            return Result.Err(failure(env, current.symbol, node, "function specialization depth exceeded; expansion must be finite"))
+            return Result.Err(failure(env, current.symbol, declaration, "function specialization depth exceeded; expansion must be finite"))
         }
         if !concrete(env, get(arguments, index)) {
-            return Result.Err(failure(env, current.symbol, node, "cannot emit unresolved type parameters"))
+            return Result.Err(failure(env, current.symbol, declaration, "cannot emit unresolved type parameters"))
         }
         index = index + 1
     }
@@ -96,9 +104,12 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "arg_text" { return runtime(0, ints(1), 3) }
     if name == "process_run" { return runtime(0, ints(intern(env, TypeKind.List, -1, ints(3))), 1) }
     if name == "process_run_input" { return runtime(0, two_types(intern(env, TypeKind.List, -1, ints(3)), 3), 1) }
-    if name == "process_capture_configured" {
+    if name == "process_capture_configured" || name == "process_capture_input_configured" {
         let list = intern(env, TypeKind.List, -1, ints(3))
-        let params = three_types(list, 3, 1)
+        let params = ints(list)
+        if name == "process_capture_input_configured" { push(params, 4) }
+        push(params, 3)
+        push(params, 1)
         push(params, list)
         push(params, 4)
         push(params, 4)

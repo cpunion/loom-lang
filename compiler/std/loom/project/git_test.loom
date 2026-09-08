@@ -1,0 +1,23 @@
+test fn git_paths_adapt_windows_prefixes_without_changing_canonical_paths() {
+    assert git_path("/tmp/漢\\字") == "/tmp/漢\\字"
+    assert git_path("/tmp/\\\\?\\C:\\file") == "/tmp/\\\\?\\C:\\file"
+    assert git_path("relative\\file") == "relative\\file"
+    assert git_path("C:\\漢字\\repo") == "C:/漢字/repo"
+    assert git_path("C:/漢字/repo") == "C:/漢字/repo"
+    assert git_path("\\\\server\\share\\漢字") == "//server/share/漢字"
+    assert git_path("\\\\?\\C:\\漢字\\repo") == "C:/漢字/repo"
+    assert git_path("\\\\?\\C:\\") == "C:/"
+    assert git_path("\\\\?\\UNC\\server\\share\\漢字") == "//server/share/漢字"
+    // Do not mistake another verbatim namespace for a drive or UNC path.
+    assert git_path("\\\\?\\Volume{fixture}\\repo") == "//?/Volume{fixture}/repo"
+    let canonical = "\\\\?\\C:\\漢字\\stage"
+    let arguments = repository_arguments(join_path(canonical, "repository"), "cat-file")
+    assert get(arguments, 0) == "--git-dir=C:/漢字/stage/repository"
+    let session = GitSession { tool = "git" directory = canonical options = Options {
+        directory = Option.Some(canonical) clear_environment = true environment = new[EnvChange]() } }
+    let values = git_arguments(session, arguments)
+    assert contains(values, "core.hooksPath=C:/漢字/stage/empty", length(values))
+    assert contains(values, "core.longpaths=true", length(values))
+    assert session.directory == canonical
+    assert match session.options.directory { Option.Some(value) => value == canonical, Option.None => false }
+}

@@ -1,7 +1,9 @@
 import std.process.run
 import std.process.run_input
 import std.process.capture
+import std.process.capture_input
 import std.process.SpawnError
+import std.bytes.new
 import std.list.new
 import std.list.push
 import std.list.get
@@ -23,6 +25,10 @@ test fn empty_and_invalid_executables_are_errors() {
         Result.Err(error) => { assert error == SpawnError.EmptyArguments }
         Result.Ok(_) => { assert false }
     }
+    match capture_input(arguments, std.bytes.new()) {
+        Result.Err(error) => { assert error == SpawnError.EmptyArguments }
+        Result.Ok(_) => { assert false }
+    }
     push(arguments, "invalid\0executable")
     match run(arguments) {
         Result.Err(error) => { assert error == SpawnError.Failed }
@@ -32,10 +38,18 @@ test fn empty_and_invalid_executables_are_errors() {
         Result.Err(error) => { assert error == SpawnError.Failed }
         Result.Ok(_) => { assert false }
     }
+    match capture_input(arguments, std.bytes.new()) {
+        Result.Err(error) => { assert error == SpawnError.Failed }
+        Result.Ok(_) => { assert false }
+    }
 }
 
 fn invalid_options(options Options) {
     match capture(new[Text](), options) {
+        Result.Err(error) => { assert error == SpawnError.InvalidOptions }
+        Result.Ok(_) => { assert false }
+    }
+    match capture_input(new[Text](), std.bytes.new(), options) {
         Result.Err(error) => { assert error == SpawnError.InvalidOptions }
         Result.Ok(_) => { assert false }
     }

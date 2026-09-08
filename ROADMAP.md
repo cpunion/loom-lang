@@ -123,8 +123,11 @@ layout belong to focused implementation designs, not new feature checklists.
 Offline path dependencies now traverse importer-local manifest edges and reuse
 canonical source roots, with instance-qualified package/test isolation. Distinct
 roots with the same module name coexist without merging nominal types, scopes
-or entry points. Git/fork resolution, version normalization, lockfiles and
-persistent input-based reuse remain open.
+or entry points. Exact HTTPS Git/fork sources now use the same selected-import
+traversal, with explicit resolution, locked source edges and actual snapshot
+content/membership verification. Local path inputs remain editable. Version
+ranges/normalization, graph-wide fork policies, authenticated transport and
+persistent native input-based reuse remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic
 method calls into the existing direct-call path. Conditional conformance queries,

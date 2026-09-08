@@ -95,16 +95,17 @@ test fn production_cycles_still_reject_before_loading_files() {
     let loader = Loader {
         files = new[SourceFile]() modules = new[ModuleRoot]() packages = new[Package]()
         std_root = "" active = new[Int]() complete = new[Int]()
+        resolution = Resolution { root = "/app" tool = "git" locks = new[LockedSource]() snapshots = new[Snapshot]() }
     }
     push(loader.modules, ModuleRoot { name = "app" base = "/app" dependencies = new[Dependency]() })
     push(loader.packages, Package { instance = 0 relative = "" imports = new[PackageImport]() })
     push(loader.active, 0)
-    assert match visit(loader, 0, "not-read", false, 1) {
+    assert match visit(loader, 0, "not-read", false, 1, false) {
         Result.Err(message) => message == "package import cycle through app"
         Result.Ok(_) => false
     }
     push(loader.complete, 0)
-    assert match visit(loader, 0, "not-read", false, 0) {
+    assert match visit(loader, 0, "not-read", false, 0, false) {
         Result.Ok(_) => true
         Result.Err(_) => false
     }
@@ -112,7 +113,8 @@ test fn production_cycles_still_reject_before_loading_files() {
 
 test fn module_roots_reuse_identity_independently_of_display_names() {
     let loader = Loader { files = new[SourceFile]() modules = new[ModuleRoot]() packages = new[Package]()
-        std_root = "/std" active = new[Int]() complete = new[Int]() }
+        std_root = "/std" active = new[Int]() complete = new[Int]()
+        resolution = Resolution { root = "/app" tool = "git" locks = new[LockedSource]() snapshots = new[Snapshot]() } }
     let standard = ModuleRoot { name = "std" base = "/std" dependencies = new[Dependency]() }
     let app = ModuleRoot { name = "app" base = "/app" dependencies = new[Dependency]() }
     let codec = ModuleRoot { name = "codec" base = "/codec" dependencies = new[Dependency]() }
@@ -125,10 +127,10 @@ test fn module_roots_reuse_identity_independently_of_display_names() {
         Result.Ok(index) => index == 3, Result.Err(_) => false }
     assert match register_module(loader, ModuleRoot { name = "renamed" base = "/codec" dependencies = new[Dependency]() }) {
         Result.Err(_) => true, Result.Ok(_) => false }
-    assert match imported_module(loader, 1, "app") { Result.Ok(index) => index == 1, Result.Err(_) => false }
-    assert match imported_module(loader, 1, "std") { Result.Ok(index) => index == 0, Result.Err(_) => false }
+    assert match imported_module(loader, 1, "app", false) { Result.Ok(index) => index == 1, Result.Err(_) => false }
+    assert match imported_module(loader, 1, "std", false) { Result.Ok(index) => index == 0, Result.Err(_) => false }
     // Already loaded does not mean directly declared by this importer.
-    assert match imported_module(loader, 1, "codec") {
+    assert match imported_module(loader, 1, "codec", false) {
         Result.Err(message) => message == "module is not a declared direct dependency: codec"
         Result.Ok(_) => false }
     let first = match registered_package(loader, 2, "/codec/parser") { Result.Ok(index) => index, Result.Err(_) => -1 }

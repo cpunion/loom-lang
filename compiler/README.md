@@ -313,6 +313,11 @@ timings; local variables remain conservatively rooted for the function.
   ordering between streams. It buffers complete output, not a streaming API.
   `run`/`run_input` retain inherited output and report no-exit-code termination
   as `SpawnError.Terminated`.
+- `std.process.capture_input(arguments, input Bytes)` adds binary stdin, with
+  an optional third `Options` argument. Input is copied before workers start;
+  stdin closes after writing while both output streams drain concurrently.
+  Early child stdin closure preserves its output and exit status. No worker
+  touches managed pointers, and no global signal disposition is changed.
 - `capture(arguments, Options)` configures only that child: `directory Option[Text]`,
   `clear_environment Bool`, and ordered `environment List[EnvChange]`, with
   `Set(name, value)` or `Remove(name)`. The one-argument form uses defaults through
@@ -540,7 +545,7 @@ compile-time dynamic execution currently reject. A dyn-compatible method can use
 bare `Self` only as its first receiver parameter; bound `Self.Item` projections
 are allowed elsewhere. Static-only concepts may also use bare `Self` elsewhere.
 
-## Local module dependencies
+## Module dependencies
 
 A dependency path is relative to the manifest declaring it; the key must match
 the target module's name:
@@ -574,9 +579,61 @@ target/loom run compiler/examples/modules/app
 target/loom test compiler/examples/modules/app
 ```
 
-Git/fork sources, version resolution, lockfiles and persistent build caching
-remain later work.
 Path dependencies are editable source, not content frozen by a lockfile.
+
+A dependency may instead select a Git repository, including a fork, directly:
+
+```toml
+[dependencies.codec]
+git = "https://github.com/example/codec-fork.git"
+rev = "0123456789012345678901234567890123456789"
+```
+
+The revision must be the full lowercase 40- or 64-digit ID of a commit, not
+a tag, branch or abbreviated hash. Replace the illustrative URL/revision above
+with a real module repository; its root must contain `loom.toml` with the matching
+module name. Sources use credential-free HTTPS URLs with ASCII host/path spelling
+and an optional port. URL escapes, query strings, fragments and IPv6 literals
+are not supported in this first transport slice. `path` and `git` cannot mix.
+
+```sh
+target/loom resolve path/to/app
+target/loom resolve path/to/app --tests
+target/loom check path/to/app
+target/loom test path/to/app
+```
+
+Only `resolve` fetches or updates `loom.lock`; `--tests` includes the selected
+package's test-only imports. Normal commands stay offline and fail if a selected
+Git edge is missing, changed, or lacks an intact cached snapshot. Unused manifest
+dependencies are not fetched. The lock preserves unrelated package edges, uses
+location-independent owner identities, and anchors exact source identities to
+SHA-256 snapshots. Local path inputs remain editable. Different Git URLs/commits
+remain different nominal instances; identical sources reuse one snapshot.
+Path dependencies declared inside a Git source cannot escape that snapshot.
+
+Snapshots live under the root module's `target/loom-deps`. Every selected snapshot
+is checked against actual regular-file contents and exact directory membership,
+including unexpected files or empty directories, not a trusted sidecar. `resolve`
+can repair a damaged cache from the same commit without changing its locked digest.
+Raw Git blobs bypass checkout filters and hooks; symlinks, submodules, traversal
+and nonportable/colliding paths reject. Executable mode is not restored: these
+are source snapshots, not installed executables. Tree validation sorts once rather
+than comparing every pair of repository paths.
+
+The Git tool runs with isolated configuration/home and an allowlisted child
+environment, HTTPS-only transport, verified TLS and no redirects or interactive
+authentication. Remote stdout/stderr never enter diagnostics. `--git-tool` selects
+a trusted executable; Git and host executable/DLL lookup paths must be trusted.
+Git-facing Windows drive/UNC paths use forward slashes without verbatim prefixes;
+Loom's canonical paths and native cwd remain unchanged. Windows Git sessions
+enable its builtin long-path support, not a promise about arbitrary external tools.
+Private-repository authentication, version ranges, graph-wide fork overrides,
+source-subdirectory selection and native object caching remain open.
+Resolution currently assumes a single writer and trusted filesystem ancestors;
+atomic lock replacement is not crash durability or protection from concurrent
+same-user mutation. Failed work leaves the prior lock unchanged, with best-effort
+cleanup of owned staging directories.
 
 ## Function values
 

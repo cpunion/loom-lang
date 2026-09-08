@@ -293,7 +293,15 @@ fn ordinary_project_tool_selects_packages_and_tests_without_a_compiler_child() {
         ir.to_str().unwrap(),
     ]));
     let ir = fs::read_to_string(ir).unwrap();
-    for absent in ["loom_rt_process_run", "loom_rt_file_create"] {
+    for absent in [
+        "loom_rt_process_run",
+        "loom_rt_process_capture",
+        "loom_rt_file_create",
+        "loom_rt_directory_create",
+        "loom_rt_path_rename",
+        "loom_rt_file_remove",
+        "loom_rt_directory_remove",
+    ] {
         assert!(!ir.contains(absent), "project API leaked {absent}");
     }
 

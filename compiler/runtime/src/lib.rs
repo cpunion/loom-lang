@@ -701,6 +701,48 @@ unsafe extern "C" fn loom_rt_process_capture_configured(
     stdout: *mut u8,
     stderr: *mut u8,
 ) -> i64 {
+    // SAFETY: The private ABI gives this call the same managed arguments as the
+    // shared implementation, with no input bytes to send.
+    unsafe {
+        process_capture_configured(
+            arguments,
+            Vec::new(),
+            directory,
+            clear,
+            changes,
+            stdout,
+            stderr,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_process_capture_input_configured(
+    arguments: *const u8,
+    input: *const u8,
+    directory: *const u8,
+    clear: i64,
+    changes: *const u8,
+    stdout: *mut u8,
+    stderr: *mut u8,
+) -> i64 {
+    // SAFETY: Copy input before any workers start or managed outputs grow. The
+    // writer owns only Rust bytes, including when input aliases an output buffer.
+    let input = unsafe { buffer_bytes(input) }.to_vec();
+    unsafe {
+        process_capture_configured(arguments, input, directory, clear, changes, stdout, stderr)
+    }
+}
+
+unsafe fn process_capture_configured(
+    arguments: *const u8,
+    input: Vec<u8>,
+    directory: *const u8,
+    clear: i64,
+    changes: *const u8,
+    stdout: *mut u8,
+    stderr: *mut u8,
+) -> i64 {
     // SAFETY: All inputs have their exact private signature. The builder copies
     // paths and environment entries into Rust storage before any Loom allocation.
     let command = unsafe {
@@ -723,7 +765,7 @@ unsafe extern "C" fn loom_rt_process_capture_configured(
             Err(status) => return status,
         }
     };
-    let output = match process_io::capture(command) {
+    let output = match process_io::capture(command, input) {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => fault("out of memory"),
         Err(_) => return -1,
@@ -1330,6 +1372,63 @@ mod tests {
             assert_eq!(buffer_bytes(*slots.add(1))[0], b'!');
             assert!(buffer_bytes(*slots.add(1)).ends_with(&stdout));
             assert_eq!(&buffer_bytes(*slots.add(2))[1..], stderr);
+        });
+        loom_rt_collect();
+        assert_eq!(live(), 0);
+    }
+
+    #[test]
+    fn process_capture_snapshots_binary_input_that_aliases_relocated_output() {
+        use process_io::{TEST_BYTES, TEST_CHILD, TEST_NAME, TEST_TOKEN};
+        let executable = std::env::current_exe().unwrap();
+        let input = (0..TEST_BYTES).map(|index| index as u8).collect::<Vec<_>>();
+        rooted([ptr::null_mut(); 7], |slots| unsafe {
+            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
+            *slots.add(1) = loom_rt_bytes_new();
+            *slots.add(2) = loom_rt_bytes_new();
+            *slots.add(4) = text("");
+            *slots.add(5) = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer));
+            for argument in [
+                executable.to_str().unwrap(),
+                "--ignored",
+                "--exact",
+                TEST_NAME,
+                "--nocapture",
+                "--skip",
+                TEST_TOKEN,
+            ] {
+                *slots.add(3) = text(argument);
+                list_push(*slots, slots.add(3).cast());
+            }
+            *slots.add(3) = text(&format!("{TEST_CHILD}=input"));
+            list_push(*slots.add(5), slots.add(3).cast());
+            for byte in &input {
+                bytes_push(*slots.add(1), *byte);
+            }
+            *slots.add(6) = *slots.add(1);
+            let previous = *slots.add(1) as usize;
+            HEAP.with(|heap| heap.borrow_mut().threshold = 0);
+            assert_eq!(
+                loom_rt_process_capture_input_configured(
+                    *slots,
+                    *slots.add(1),
+                    *slots.add(4),
+                    0,
+                    *slots.add(5),
+                    *slots.add(1),
+                    *slots.add(2),
+                ),
+                7
+            );
+            assert_ne!(*slots.add(1) as usize, previous);
+            assert_eq!(*slots.add(1), *slots.add(6));
+            let stdout = buffer_bytes(*slots.add(1));
+            assert!(stdout.starts_with(&input));
+            assert!(stdout.ends_with(&input.repeat(2)));
+            assert_eq!(
+                buffer_bytes(*slots.add(2)),
+                input.iter().map(|byte| 255 - byte).collect::<Vec<_>>()
+            );
         });
         loom_rt_collect();
         assert_eq!(live(), 0);

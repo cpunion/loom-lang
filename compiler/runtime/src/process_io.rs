@@ -1,7 +1,7 @@
-//! Binary output capture. Workers own only OS pipes and Rust buffers.
+//! Binary input and output capture. Workers own only OS pipes and Rust buffers.
 
-use std::io::{self, Read};
-use std::process::{Child, Command, Output, Stdio};
+use std::io::{self, Read, Write};
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -47,20 +47,20 @@ pub(super) fn configure<'a>(
 
 struct Running<'a> {
     child: &'a mut Child,
-    readers: Vec<JoinHandle<()>>,
+    workers: Vec<JoinHandle<()>>,
     reaped: bool,
 }
 
 impl Drop for Running<'_> {
     fn drop(&mut self) {
         if !self.reaped {
-            // Stop the direct child before joining readers blocked on its pipes.
+            // Stop the direct child before joining workers blocked on its pipes.
             // Process-tree cancellation is outside this synchronous boundary.
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
-        for reader in self.readers.drain(..) {
-            let _ = reader.join();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
         }
     }
 }
@@ -71,10 +71,15 @@ fn read_all(_: usize, pipe: &mut dyn Read) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+enum Completion {
+    Output(usize, io::Result<Vec<u8>>),
+    Input(io::Result<()>),
+}
+
 fn reader(
     mut pipe: impl Read + Send + 'static,
     index: usize,
-    completed: Sender<(usize, io::Result<Vec<u8>>)>,
+    completed: Sender<Completion>,
     drain: Drain,
 ) -> io::Result<JoinHandle<()>> {
     thread::Builder::new().spawn(move || {
@@ -83,14 +88,112 @@ fn reader(
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drain(index, &mut pipe)))
                 .unwrap_or_else(|_| Err(io::Error::other("process output reader panicked")));
-        let _ = completed.send((index, result));
+        let _ = completed.send(Completion::Output(index, result));
     })
 }
 
-fn capture_started(child: &mut Child, drain: Drain) -> io::Result<Output> {
+fn writer(
+    mut pipe: ChildStdin,
+    input: Vec<u8>,
+    completed: Sender<Completion>,
+) -> io::Result<JoinHandle<()>> {
+    thread::Builder::new().spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            block_sigpipe(&pipe)?;
+            let result = pipe.write_all(&input);
+            if result
+                .as_ref()
+                .is_err_and(|error| error.kind() == io::ErrorKind::BrokenPipe)
+            {
+                consume_sigpipe()?;
+            }
+            result
+        }))
+        .unwrap_or_else(|_| Err(io::Error::other("process input writer panicked")));
+        // Closing stdin signals EOF even when the child consumes all input before
+        // producing output. A child may intentionally stop reading early; keep
+        // its output and exit status in that case.
+        drop(pipe);
+        let result = match result {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            other => other,
+        };
+        let _ = completed.send(Completion::Input(result));
+    })
+}
+
+fn block_sigpipe(_pipe: &ChildStdin) -> io::Result<()> {
+    #[cfg(any(target_vendor = "apple", target_os = "netbsd"))]
+    {
+        use std::os::fd::AsRawFd;
+        // Darwin sends pipe-write SIGPIPE process-wide, so a thread mask alone
+        // is insufficient. Suppress it on this owned pipe without changing any
+        // global signal disposition. Darwin's SDK defines F_SETNOSIGPIPE as 73;
+        // libc currently exports the constant only for NetBSD.
+        #[cfg(target_vendor = "apple")]
+        const NO_SIGPIPE: libc::c_int = 73;
+        #[cfg(target_os = "netbsd")]
+        const NO_SIGPIPE: libc::c_int = libc::F_SETNOSIGPIPE;
+        // SAFETY: The live ChildStdin owns this writable pipe descriptor.
+        if unsafe { libc::fcntl(_pipe.as_raw_fd(), NO_SIGPIPE, 1) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "netbsd"))))]
+    {
+        // Native Loom does not run Rust's main initialization, which ignores
+        // SIGPIPE. Block it only on this dedicated writer thread; never change
+        // the caller's or child's signal disposition.
+        // SAFETY: All pointers reference live sigset_t storage and pthread_sigmask
+        // changes only this thread's signal mask.
+        unsafe {
+            let mut signals = std::mem::zeroed::<libc::sigset_t>();
+            if libc::sigemptyset(&mut signals) != 0
+                || libc::sigaddset(&mut signals, libc::SIGPIPE) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let error = libc::pthread_sigmask(libc::SIG_BLOCK, &signals, std::ptr::null_mut());
+            if error != 0 {
+                return Err(io::Error::from_raw_os_error(error));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn consume_sigpipe() -> io::Result<()> {
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "netbsd"))))]
+    {
+        // Consume a signal raised by our write before the thread exits. If the
+        // process already ignores SIGPIPE, no signal is pending and sigwait would
+        // block forever. This dedicated thread never performs any other writes.
+        // SAFETY: All pointers reference live signal-set or integer storage;
+        // SIGPIPE is blocked for this thread before its write begins.
+        unsafe {
+            let mut pending = std::mem::zeroed::<libc::sigset_t>();
+            if libc::sigpending(&mut pending) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::sigismember(&pending, libc::SIGPIPE) == 1 {
+                let mut signals = std::mem::zeroed::<libc::sigset_t>();
+                libc::sigemptyset(&mut signals);
+                libc::sigaddset(&mut signals, libc::SIGPIPE);
+                let mut signal = 0;
+                let error = libc::sigwait(&signals, &mut signal);
+                if error != 0 {
+                    return Err(io::Error::from_raw_os_error(error));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn capture_started(child: &mut Child, input: Vec<u8>, drain: Drain) -> io::Result<Output> {
     let mut running = Running {
         child,
-        readers: Vec::new(),
+        workers: Vec::new(),
         reaped: false,
     };
     let stdout = running
@@ -105,15 +208,33 @@ fn capture_started(child: &mut Child, drain: Drain) -> io::Result<Output> {
         .ok_or_else(|| io::Error::other("missing process stderr pipe"))?;
     let (completed, results) = mpsc::channel();
     running
-        .readers
+        .workers
         .push(reader(stdout, 0, completed.clone(), drain)?);
-    running.readers.push(reader(stderr, 1, completed, drain)?);
+    running
+        .workers
+        .push(reader(stderr, 1, completed.clone(), drain)?);
+    if !input.is_empty() {
+        let stdin = running
+            .child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("missing process stdin pipe"))?;
+        running
+            .workers
+            .push(writer(stdin, input, completed.clone())?);
+    } else {
+        drop(running.child.stdin.take());
+    }
+    drop(completed);
     let mut streams = [Vec::new(), Vec::new()];
-    for _ in 0..2 {
-        let (index, result) = results
+    for _ in 0..running.workers.len() {
+        let completed = results
             .recv()
-            .map_err(|_| io::Error::other("process output reader disconnected"))?;
-        streams[index] = result?;
+            .map_err(|_| io::Error::other("process I/O worker disconnected"))?;
+        match completed {
+            Completion::Output(index, result) => streams[index] = result?,
+            Completion::Input(result) => result?,
+        }
     }
     let status = running.child.wait()?;
     running.reaped = true;
@@ -125,13 +246,17 @@ fn capture_started(child: &mut Child, drain: Drain) -> io::Result<Output> {
     })
 }
 
-pub(super) fn capture(mut command: Command) -> io::Result<Output> {
+pub(super) fn capture(mut command: Command, input: Vec<u8>) -> io::Result<Output> {
     let mut child = command
-        .stdin(Stdio::null())
+        .stdin(if input.is_empty() {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    capture_started(&mut child, read_all)
+    capture_started(&mut child, input, read_all)
 }
 
 #[cfg(test)]
@@ -146,7 +271,6 @@ pub(super) const TEST_BYTES: usize = 256 * 1024;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn configuration_is_child_local_ordered_and_validated() {
@@ -222,6 +346,30 @@ mod tests {
     #[test]
     #[ignore = "child fixture for process capture tests"]
     fn capture_child_fixture() {
+        #[cfg(unix)]
+        if std::env::var_os(TEST_CHILD).as_deref() == Some(std::ffi::OsStr::new("sigpipe")) {
+            // SAFETY: This isolated subprocess models a native Loom executable;
+            // the test runner's process-wide signal disposition is untouched.
+            unsafe {
+                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            }
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--ignored",
+                    "--exact",
+                    TEST_NAME,
+                    "--nocapture",
+                    "--skip",
+                    TEST_TOKEN,
+                ])
+                .env(TEST_CHILD, "early");
+            let output = capture(command, vec![0; TEST_BYTES]).unwrap();
+            assert_eq!(output.status.code(), Some(7));
+            assert!(output.stdout.len() >= TEST_BYTES);
+            assert_eq!(output.stderr.len(), TEST_BYTES);
+            std::process::exit(0);
+        }
         if std::env::var_os(TEST_CHILD).as_deref() == Some(std::ffi::OsStr::new("blocked")) {
             loop {
                 thread::park();
@@ -230,14 +378,73 @@ mod tests {
         if !std::env::args().any(|argument| argument == TEST_TOKEN) {
             return;
         }
-        assert_eq!(io::stdin().read(&mut [0]).unwrap(), 0);
+        let mode = std::env::var(TEST_CHILD).unwrap_or_default();
+        if mode.is_empty() {
+            assert_eq!(io::stdin().read(&mut [0]).unwrap(), 0);
+        }
         let stdout = (0..TEST_BYTES).map(|index| index as u8).collect::<Vec<_>>();
         let stderr = stdout.iter().map(|byte| 255 - byte).collect::<Vec<_>>();
         io::stdout().write_all(&stdout).unwrap();
         io::stdout().flush().unwrap();
         io::stderr().write_all(&stderr).unwrap();
         io::stderr().flush().unwrap();
+        if mode == "input" {
+            let mut input = Vec::new();
+            io::stdin().read_to_end(&mut input).unwrap();
+            assert_eq!(input, stdout);
+            io::stdout().write_all(&input).unwrap();
+            io::stdout().flush().unwrap();
+        }
         std::process::exit(7);
+    }
+
+    #[test]
+    fn binary_input_is_written_while_both_outputs_are_drained() {
+        let input = (0..TEST_BYTES).map(|index| index as u8).collect::<Vec<_>>();
+        for mode in ["input", "early", ""] {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--ignored",
+                    "--exact",
+                    TEST_NAME,
+                    "--nocapture",
+                    "--skip",
+                    TEST_TOKEN,
+                ])
+                .env(TEST_CHILD, mode);
+            let output = capture(
+                command,
+                if mode.is_empty() {
+                    Vec::new()
+                } else {
+                    input.clone()
+                },
+            )
+            .unwrap();
+            assert_eq!(output.status.code(), Some(7));
+            let expected = if mode == "input" {
+                input.repeat(2)
+            } else {
+                input.clone()
+            };
+            assert!(output.stdout.ends_with(&expected));
+            assert_eq!(
+                output.stderr,
+                input.iter().map(|byte| 255 - byte).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn early_stdin_close_preserves_output_with_default_sigpipe() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", TEST_NAME, "--nocapture"])
+            .env(TEST_CHILD, "sigpipe")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
     }
 
     #[test]
@@ -249,25 +456,28 @@ mod tests {
                 read_all(index, pipe)
             }
         }
-        for missing_pipe in [false, true] {
+        for missing_pipe in [None, Some("stdout"), Some("stdin")] {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--ignored", "--exact", TEST_NAME, "--nocapture"])
                 .env(TEST_CHILD, "blocked")
-                .stdin(Stdio::null())
+                .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
                 .unwrap();
-            if missing_pipe {
+            if missing_pipe == Some("stdout") {
                 drop(child.stdout.take());
             }
-            let error = capture_started(&mut child, fail_read).unwrap_err();
+            if missing_pipe == Some("stdin") {
+                drop(child.stdin.take());
+            }
+            let error = capture_started(&mut child, vec![0; TEST_BYTES], fail_read).unwrap_err();
             assert_eq!(
                 error.to_string(),
-                if missing_pipe {
-                    "missing process stdout pipe"
-                } else {
-                    "injected read failure"
+                match missing_pipe {
+                    Some("stdout") => "missing process stdout pipe",
+                    Some("stdin") => "missing process stdin pipe",
+                    _ => "injected read failure",
                 }
             );
             assert!(child.try_wait().unwrap().is_some());

@@ -1,0 +1,241 @@
+import std.bytes.decode_utf8
+import std.file.write_bytes
+import std.file.read_bytes
+import std.hash.sha256.hex
+import std.list.sorted
+
+record TreeFile { path Text object Text }
+record SnapshotEntry { path Text folded Text directory Bool digest Text }
+
+fn snapshot_bytes(value Bytes, start Int, end Int) Bytes {
+    let buffer = std.bytes.new()
+    var index = start
+    while index < end { std.bytes.push(buffer, std.bytes.get(value, index))
+        index = index + 1 }
+    buffer
+}
+fn snapshot_text(value Bytes, start Int, end Int) Result[Text, Text] {
+    match decode_utf8(snapshot_bytes(value, start, end)) {
+        Result.Ok(text) => Result.Ok(text)
+        Result.Err(_) => Result.Err("Git snapshot metadata must be valid UTF-8")
+    }
+}
+fn snapshot_fold(value Text) Text {
+    let buffer = std.bytes.new()
+    var index = 0
+    while index < length(value) {
+        let current = byte(value, index)
+        std.bytes.push(buffer, if current >= 65 && current <= 90 { current + 32 } else { current })
+        index = index + 1
+    }
+    std.bytes.to_text(buffer)
+}
+fn snapshot_component(value Text) Bool {
+    if value == "" || value == "." || value == ".." || ends_with(value, ".") || ends_with(value, " ") { return false }
+    let folded = snapshot_fold(value)
+    if folded == ".git" { return false }
+    let prefix = get(parts(folded, 46), 0)
+    var end = length(prefix)
+    while end > 0 && byte(prefix, end - 1) == 32 { end = end - 1 }
+    let stem = slice(prefix, 0, end)
+    if stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" ||
+        stem == "conin$" || stem == "conout$" || stem == "clock$" { return false }
+    if starts_with(stem, "com") || starts_with(stem, "lpt") {
+        let suffix = slice(stem, 3, length(stem))
+        if (length(suffix) == 1 && byte(suffix, 0) >= 49 && byte(suffix, 0) <= 57) ||
+            suffix == "¹" || suffix == "²" || suffix == "³" { return false }
+    }
+    var index = 0
+    while index < length(value) {
+        let current = byte(value, index)
+        if current < 32 || current == 127 || current == 47 || current == 92 || current == 58 ||
+            current == 60 || current == 62 || current == 34 || current == 124 || current == 63 || current == 42 { return false }
+        // UTF-8 C1 controls. Other Unicode spelling is retained byte-for-byte;
+        // the post-write fingerprint detects host normalization differences.
+        if current == 194 && index + 1 < length(value) && byte(value, index + 1) >= 128 && byte(value, index + 1) <= 159 { return false }
+        index = index + 1
+    }
+    true
+}
+fn snapshot_entry(values List[SnapshotEntry], path Text, directory Bool, digest Text) {
+    push(values, SnapshotEntry { path = path folded = snapshot_fold(path) directory = directory digest = digest })
+}
+fn snapshot_folded_before(left SnapshotEntry, right SnapshotEntry) Bool {
+    if left.folded == right.folded { before(left.path, right.path) } else { before(left.folded, right.folded) }
+}
+fn snapshot_entries(values List[SnapshotEntry]) Result[List[SnapshotEntry], Text] {
+    // Fold each spelling once, then sort and compare neighbors. Repeated
+    // implied directories collapse; duplicate files and case aliases reject.
+    let ordered = sorted(values, snapshot_folded_before)
+    let unique = new[SnapshotEntry]()
+    var index = 0
+    while index < length(ordered) {
+        let current = get(ordered, index)
+        var repeated = false
+        if index > 0 {
+            let previous = get(ordered, index - 1)
+            repeated = previous.folded == current.folded
+            if repeated && (previous.path != current.path || previous.directory != current.directory || !current.directory) {
+                return Result.Err("Git snapshot paths collide or change case")
+            }
+        }
+        if !repeated { push(unique, current) }
+        index = index + 1
+    }
+    Result.Ok(unique)
+}
+fn snapshot_file(values List[SnapshotEntry], path Text, digest Text) Result[Bool, Text] {
+    let names = parts(path, 47)
+    var relative = ""
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        if !snapshot_component(name) { return Result.Err("Git snapshot requires portable relative paths") }
+        relative = if index == 0 { name } else { concat(relative, concat("/", name)) }
+        let directory = index + 1 < length(names)
+        snapshot_entry(values, relative, directory, if directory { "" } else { digest })
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn snapshot_digest(values List[SnapshotEntry]) Result[Text, Text] {
+    let ordered = snapshot_entries(values)?
+    let output = std.bytes.new()
+    append_text(output, "loom-snapshot 1\0")
+    var index = 0
+    while index < length(ordered) {
+        let entry = get(ordered, index)
+        std.bytes.push(output, if entry.directory { 68 } else { 70 })
+        append_text(output, entry.path)
+        std.bytes.push(output, 0)
+        append_text(output, entry.digest)
+        std.bytes.push(output, 0)
+        index = index + 1
+    }
+    Result.Ok(hex(output))
+}
+
+fn parse_git_tree(output Bytes, oid_size Int) Result[List[TreeFile], Text] {
+    if oid_size != 40 && oid_size != 64 { return Result.Err("unsupported Git object ID length") }
+    let files = new[TreeFile]()
+    let paths = new[SnapshotEntry]()
+    var offset = 0
+    while offset < std.bytes.length(output) {
+        let start = offset
+        var tab = -1
+        while offset < std.bytes.length(output) && std.bytes.get(output, offset) != 0 {
+            if tab < 0 && std.bytes.get(output, offset) == 9 { tab = offset }
+            offset = offset + 1
+        }
+        if offset == std.bytes.length(output) || tab < start { return Result.Err("malformed NUL-delimited Git tree") }
+        let fields = parts(snapshot_text(output, start, tab)?, 32)
+        if length(fields) != 3 { return Result.Err("malformed Git tree metadata") }
+        if (get(fields, 0) != "100644" && get(fields, 0) != "100755") || get(fields, 1) != "blob" {
+            return Result.Err("Git dependency trees support regular files only")
+        }
+        let object = get(fields, 2)
+        if !hex_id(object, oid_size) { return Result.Err("invalid Git tree object ID") }
+        let path = snapshot_text(output, tab + 1, offset)?
+        discard snapshot_file(paths, path, "")?
+        push(files, TreeFile { path = path object = object })
+        offset = offset + 1
+    }
+    discard snapshot_entries(paths)?
+    Result.Ok(files)
+}
+
+fn snapshot_collect(directory Text, relative Text, values List[SnapshotEntry]) Result[Bool, Text] {
+    let names = match entries(directory) {
+        Result.Ok(names) => names
+        Result.Err(_) => { return Result.Err("cannot enumerate dependency snapshot") }
+    }
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        if !snapshot_component(name) { return Result.Err("dependency snapshot contains a nonportable path") }
+        let path = if relative == "" { name } else { concat(relative, concat("/", name)) }
+        let absolute = join_path(directory, name)
+        let kind = match cache_entry(absolute)? {
+            Option.Some(kind) => kind
+            Option.None => { return Result.Err("dependency snapshot entry disappeared") }
+        }
+        if kind == FileKind.Directory {
+            snapshot_entry(values, path, true, "")
+            discard snapshot_collect(absolute, path, values)?
+        } else {
+            if kind != FileKind.File { return Result.Err("dependency snapshot must contain only real directories and regular files") }
+            let bytes = match read_bytes(absolute) {
+                Result.Ok(bytes) => bytes
+                Result.Err(_) => { return Result.Err("cannot read dependency snapshot file") }
+            }
+            snapshot_entry(values, path, false, hex(bytes))
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn snapshot_fingerprint(root Text) Result[Text, Text] {
+    if !match cache_entry(root)? { Option.Some(kind) => kind == FileKind.Directory, Option.None => false } {
+        return Result.Err("dependency snapshot root must be a real directory")
+    }
+    let values = new[SnapshotEntry]()
+    discard snapshot_collect(root, "", values)?
+    snapshot_digest(values)
+}
+fn git_blob_size(value Text, remaining Int) Result[Int, Text] {
+    if value == "" || (length(value) > 1 && byte(value, 0) == 48) { return Result.Err("invalid Git blob size") }
+    var size = 0
+    var index = 0
+    while index < length(value) {
+        let digit = byte(value, index) - 48
+        if digit < 0 || digit > 9 { return Result.Err("invalid Git blob size") }
+        // Bound accumulation by the available buffer, avoiding integer overflow.
+        if size > remaining / 10 || (size == remaining / 10 && digit > remaining % 10) {
+            return Result.Err("truncated Git blob output")
+        }
+        size = size * 10 + digit
+        index = index + 1
+    }
+    Result.Ok(size)
+}
+fn write_git_batch(root Text, files List[TreeFile], output Bytes) Result[Text, Text] {
+    if snapshot_fingerprint(root)? != snapshot_digest(new[SnapshotEntry]())? {
+        return Result.Err("Git extraction requires an empty staging directory")
+    }
+    let expected = new[SnapshotEntry]()
+    var offset = 0
+    var index = 0
+    while index < length(files) {
+        let file = get(files, index)
+        if !hex_id(file.object, 40) && !hex_id(file.object, 64) { return Result.Err("invalid expected Git object ID") }
+        let start = offset
+        while offset < std.bytes.length(output) && std.bytes.get(output, offset) != 10 { offset = offset + 1 }
+        if offset == std.bytes.length(output) { return Result.Err("truncated Git batch header") }
+        let fields = parts(snapshot_text(output, start, offset)?, 32)
+        if length(fields) != 3 { return Result.Err("malformed Git batch header") }
+        if get(fields, 0) != file.object || get(fields, 1) != "blob" { return Result.Err("Git batch object identity mismatch") }
+        offset = offset + 1
+        let remaining = std.bytes.length(output) - offset
+        let size = git_blob_size(get(fields, 2), remaining)?
+        if size >= remaining || std.bytes.get(output, offset + size) != 10 { return Result.Err("truncated or malformed Git blob output") }
+        let bytes = snapshot_bytes(output, offset, offset + size)
+        discard snapshot_file(expected, file.path, hex(bytes))?
+        let names = parts(file.path, 47)
+        var directory = root
+        var part = 0
+        while part + 1 < length(names) {
+            directory = join_path(directory, get(names, part))
+            discard cache_directory(directory)?
+            part = part + 1
+        }
+        let path = join_path(directory, get(names, part))
+        if match cache_entry(path)? { Option.Some(_) => true, Option.None => false } { return Result.Err("Git snapshot destination already exists") }
+        match write_bytes(path, bytes) { Result.Ok(_) => {}, Result.Err(_) => { return Result.Err("cannot write Git snapshot file") } }
+        offset = offset + size + 1
+        index = index + 1
+    }
+    if offset != std.bytes.length(output) { return Result.Err("unexpected surplus Git batch output") }
+    let digest = snapshot_digest(expected)?
+    if snapshot_fingerprint(root)? != digest { return Result.Err("Git snapshot paths or contents changed during extraction") }
+    Result.Ok(digest)
+}
