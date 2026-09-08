@@ -142,6 +142,8 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/process",
         "examples/scalar",
         "examples/receipt",
+        "examples/wordcount",
+        "examples/wordcount/stats",
         "examples/loops",
         "examples/data",
         "examples/syntax",
@@ -168,6 +170,16 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         stage3,
         &["run", compiler.join("examples/data").to_str().unwrap()],
     ));
+
+    // A user project is the working directory; discovery and -- forwarding
+    // must not depend on the test helper's explicit std/native arguments.
+    let output = Command::new(stage3)
+        .current_dir(compiler.join("examples/wordcount"))
+        .args(["run", "--", "sample.txt"])
+        .output()
+        .unwrap();
+    success(&output);
+    assert_eq!(output.stdout, b"2 4 23\n");
 
     // Ordinary in-memory syntax/semantic clients need no compiler module or I/O
     // discovery. These examples deliberately print their results.

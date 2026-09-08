@@ -5,8 +5,52 @@ fn cli_arguments(command Text) List[Text] {
     values
 }
 
+fn driver_arguments(command Text) List[Text] {
+    let values = cli_arguments(command)
+    std.list.push(values, "--std")
+    std.list.push(values, "compiler/std")
+    std.list.push(values, "--native-tool")
+    std.list.push(values, "target/debug/loom-native")
+    values
+}
+
+test fn run_separator_preserves_program_arguments_literally() {
+    let args = driver_arguments("run")
+    std.list.push(args, ".")
+    std.list.push(args, "--")
+    std.list.push(args, "--std")
+    std.list.push(args, "a path with spaces")
+    std.list.push(args, "")
+    std.list.push(args, "--")
+    match options(args) {
+        Result.Ok(value) => {
+            assert value.std_root == "compiler/std"
+            assert std.list.length(value.program_args) == 4
+            assert std.list.get(value.program_args, 0) == "--std"
+            assert std.list.get(value.program_args, 1) == "a path with spaces"
+            assert std.list.get(value.program_args, 2) == ""
+            assert std.list.get(value.program_args, 3) == "--"
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    let empty = driver_arguments("run")
+    std.list.push(empty, "--")
+    assert match options(empty) {
+        Result.Ok(value) => std.list.length(value.program_args) == 0,
+        _ => false
+    }
+    let rejected = driver_arguments("test")
+    std.list.push(rejected, "--")
+    assert match options(rejected) {
+        Result.Err(message) => message == "-- is only available with run",
+        _ => false
+    }
+}
+
 test fn compile_tests_without_running_preserves_test_mode() {
-    let args = cli_arguments("test")
+    let args = driver_arguments("test")
     std.list.push(args, "--output")
     std.list.push(args, "target/custom-tests")
     std.list.push(args, "--no-run")
@@ -15,11 +59,17 @@ test fn compile_tests_without_running_preserves_test_mode() {
             assert value.command == "test" && value.no_run
             assert value.output == "target/custom-tests"
         }
-        Result.Err(_) => { assert false }
+        Result.Err(_) => {
+            assert false
+        }
     }
-    match options(cli_arguments("test")) {
-        Result.Ok(value) => { assert !value.no_run && value.output == "" }
-        Result.Err(_) => { assert false }
+    match options(driver_arguments("test")) {
+        Result.Ok(value) => {
+            assert !value.no_run && value.output == ""
+        }
+        Result.Err(_) => {
+            assert false
+        }
     }
 }
 
@@ -31,25 +81,37 @@ test fn compile_only_flags_have_an_explicit_command_boundary() {
     std.list.push(commands, "emit-checked")
     var index = 0
     while index < std.list.length(commands) {
-        let args = cli_arguments(std.list.get(commands, index))
+        let args = driver_arguments(std.list.get(commands, index))
         std.list.push(args, "--no-run")
         match options(args) {
-            Result.Err(message) => { assert message == "--no-run is only available with test" }
-            Result.Ok(_) => { assert false }
+            Result.Err(message) => {
+                assert message == "--no-run is only available with test"
+            }
+            Result.Ok(_) => {
+                assert false
+            }
         }
         index = index + 1
     }
-    let args = cli_arguments("test")
+    let args = driver_arguments("test")
     std.list.push(args, "--output")
     std.list.push(args, "target/tests")
     match options(args) {
-        Result.Err(message) => { assert message == "--output requires build or test --no-run" }
-        Result.Ok(_) => { assert false }
+        Result.Err(message) => {
+            assert message == "--output requires build or test --no-run"
+        }
+        Result.Ok(_) => {
+            assert false
+        }
     }
     std.list.push(args, "--no-run")
     std.list.push(args, "--no-run")
     match options(args) {
-        Result.Err(message) => { assert message == "duplicate --no-run" }
-        Result.Ok(_) => { assert false }
+        Result.Err(message) => {
+            assert message == "duplicate --no-run"
+        }
+        Result.Ok(_) => {
+            assert false
+        }
     }
 }

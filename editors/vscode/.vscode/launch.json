@@ -5,5 +5,10 @@
     "type": "extensionHost",
     "request": "launch",
     "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/try-loom.code-workspace"]
+  }, {
+    "name": "Loom file-tool trial",
+    "type": "extensionHost",
+    "request": "launch",
+    "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/wordcount.code-workspace"]
   }]
 }

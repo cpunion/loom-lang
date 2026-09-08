@@ -1,0 +1,51 @@
+{
+  "folders": [{ "name": "wordcount", "path": "../../compiler/examples/wordcount" }],
+  "settings": {
+    "loom.executable": "../../../target/loom",
+    "loom.stdRoot": "../../std",
+    "[loom]": {
+      "editor.defaultFormatter": "cpunion.loom-language",
+      "editor.formatOnSave": true
+    }
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Loom: check wordcount",
+        "type": "process",
+        "command": "${workspaceFolder}/../../../target/loom",
+        "windows": { "command": "${workspaceFolder}/../../../target/loom.exe" },
+        "args": ["check"],
+        "problemMatcher": [],
+        "group": { "kind": "build", "isDefault": true }
+      },
+      {
+        "label": "Loom: test wordcount",
+        "type": "process",
+        "command": "${workspaceFolder}/../../../target/loom",
+        "windows": { "command": "${workspaceFolder}/../../../target/loom.exe" },
+        "args": ["test"],
+        "dependsOn": "Loom: test stats",
+        "problemMatcher": [],
+        "group": { "kind": "test", "isDefault": true }
+      },
+      {
+        "label": "Loom: test stats",
+        "type": "process",
+        "command": "${workspaceFolder}/../../../target/loom",
+        "windows": { "command": "${workspaceFolder}/../../../target/loom.exe" },
+        "args": ["test", "stats"],
+        "problemMatcher": []
+      },
+      {
+        "label": "Loom: run wordcount",
+        "type": "process",
+        "command": "${workspaceFolder}/../../../target/loom",
+        "windows": { "command": "${workspaceFolder}/../../../target/loom.exe" },
+        "args": ["run", "--", "sample.txt"],
+        "problemMatcher": []
+      }
+    ]
+  }
+}

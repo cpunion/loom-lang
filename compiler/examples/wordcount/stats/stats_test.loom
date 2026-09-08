@@ -1,0 +1,13 @@
+test fn empty_input() {
+    let counts = summarize("")
+    assert counts.lines == 0
+    assert counts.words == 0
+    assert counts.bytes == 0
+}
+
+test fn unicode_words_and_unterminated_line() {
+    let counts = summarize("hello\t世界\r\nLoom")
+    assert counts.lines == 1
+    assert counts.words == 3
+    assert counts.bytes == 18
+}

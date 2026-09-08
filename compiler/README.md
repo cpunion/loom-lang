@@ -93,9 +93,10 @@ optimized even in Cargo dev builds, with dev assertions and overflow checks
 retained, so managed Loom code does not call an unoptimized allocation layer.
 
 The root Cargo workspace alone builds `loom-native` and the runtime, not the
-public `loom` compiler. The source compiler defaults to `compiler/std` and
-`target/debug/loom-native` relative to the working directory; `--std` and
-`--native-tool` select explicit paths. These are development commands, not a
+public `loom` compiler. Invoking that compiler by path locates `compiler/std`
+and `target/debug/loom-native` in its own checkout, so commands work directly
+in an application's directory. `--std` and `--native-tool` select explicit
+paths for other layouts. These are development commands, not a
 relocatable release package or a stable compiler-artifact ABI. `--help` lists
 each tool's command surface.
 
@@ -103,6 +104,9 @@ each tool's command surface.
 `--output` optionally selects its path. Both forms of source tests and normal
 test-only imports remain included. A package with no tests reports `0 tests`
 without creating a binary. Ordinary `loom test` still compiles and runs its tests.
+`loom run [package] -- [arguments...]` passes arguments to the built program.
+Try the [multi-package file tool](examples/wordcount/README.md) for a complete
+edit, format, test, and run exercise.
 
 ## Windows bootstrap
 
@@ -1157,7 +1161,7 @@ assert value == 5
 
 A tail or returned value is saved before cleanup, including managed aggregates.
 Cleanup must have no value result; ordinary `discard` remains explicit. Its
-body cannot contain `return`, `?`, or another `defer`, even in an unselected
+body cannot contain `return`, `?`, `scoped`, or another `defer`, even in an unselected
 compile-time branch. Loop control is allowed only for loops inside the cleanup;
 it cannot leave the cleanup. Called functions have their own ordinary return scopes.
 Pure cleanup also executes during compile-time evaluation. Native lowering uses
@@ -1172,8 +1176,47 @@ The [cleanup example](examples/cleanup/main.loom) exercises these exits and GC
 snapshots. Fault draining preserves the first diagnostic and runs remaining
 callbacks even if a cleanup faults. It terminates the process; it is not exception
 unwinding or recovery. OOM, internal runtime corruption, external process signals,
-and explicit process termination do not guarantee cleanup. Task cancellation and
-`scoped`/`MustScope` remain unimplemented.
+and explicit process termination do not guarantee cleanup. Task cancellation
+remains unimplemented.
+
+`scoped name [Type] = initializer` uses the same block cleanup mechanism. It
+evaluates its initializer once and registers the statically selected
+`std.resource.Dispose.dispose(self Self)` only after success. Cleanup returns
+no value. The binding cannot be reassigned, copied, discarded, returned, or
+manually disposed; checked receiver methods may still mutate ordinary shared
+data. Implementing Dispose alone does not change ordinary unscoped sharing.
+
+```loom
+import std.resource.Dispose
+import std.resource.MustScope
+import std.list.push
+
+record Ticket { trace List[Int] }
+impl Dispose for Ticket {
+    fn dispose(self Ticket) { push(self.trace, 1) }
+}
+impl MustScope for Ticket {}
+
+fn main() {
+    let trace List[Int] = []
+    {
+        scoped ticket = Ticket { trace = trace }
+    }
+    assert trace[0] == 1
+}
+```
+
+The empty `std.resource.MustScope` marker requires immediate scoped handling,
+not ordinary bindings, parameters, discard, or dynamic erasure. A statically
+checked factory may return a fresh resource directly; a fresh Result/Option can
+transfer its single resource through `?` or a match payload immediately bound
+with `scoped`. Already shared bindings are not silently consumed. Checks follow
+receiver calls and also validate unused concrete resource functions without
+emitting them. No ownership, borrowing, or lifetime syntax is introduced.
+
+This synchronous slice conservatively rejects nested resource aggregates and
+resource lists, indirect resource factories, and matching a resource itself.
+Pending aggregate-transfer cleanup and async delivery/cancellation remain open.
 
 `break` exits the nearest enclosing `while` body; `continue` reevaluates that
 loop's condition. Both run the defers of scopes they leave, but not defers
@@ -1251,7 +1294,7 @@ old-language support policy. Stage numbers denote bootstrap generations, not
 language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Mutable record fields, broader proofs,
-fault-aware/scoped resources, Tasks, complete compile-time programming,
+nested resource transfers, Tasks, complete compile-time programming,
 version normalization, authenticated Git sources, graph-wide fork policies,
 persistent frontend/proof reuse, deployment and semantic-change tools remain
 outside this slice. Exact HTTPS Git/fork resolution, verified source locks and
