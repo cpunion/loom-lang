@@ -34,7 +34,7 @@ fn registered_cleanup(context Context, node Node) Result[Step, Failure] {
     let next = Context { env = context.env signature = context.signature arguments = context.arguments constants = context.constants
         locals = context.locals bindings = context.bindings head = context.head cleanups = context.cleanups cleanup_head = head loop_boundary = context.loop_boundary
         facts = context.facts fact_head = context.fact_head emit = context.emit }
-    Result.Ok(Step { context = next expression = expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true) })
+    Result.Ok(Step { context = next expression = expression(ExprKind.Defer, 0, node, "", head, expressions(body), true) })
 }
 
 // The value is evaluated once before cleanup. A hidden slot preserves scalar or
@@ -51,7 +51,7 @@ fn cleaned(context Context, node Node, boundary Int, value Expr) Expr {
     var head = context.cleanup_head
     while head != boundary {
         let cleanup = get(context.cleanups, head)
-        push(values, cleanup.body)
+        push(values, expression(ExprKind.Cleanup, 0, node, "", head, expressions(cleanup.body), cleanup.body.falls))
         head = cleanup.previous
     }
     if saved >= 0 { push(values, atom(ExprKind.Local, value.ty, node, saved)) }

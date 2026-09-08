@@ -327,7 +327,10 @@ are not included in this slice.
 The [lexical cleanup example](../../compiler/examples/cleanup/main.loom) runs
 late-bound `defer` blocks on normal, tail, return, `Result?`, `break` and `continue` exits, with LIFO
 order and managed result snapshots. Pure cleanup shares compile-time execution.
-Fault unwinding, task cancellation and `scoped`/`MustScope` remain unimplemented.
+Native stack registrations also drain synchronous language faults, preserving
+the first diagnostic and remaining cleanups if a callback faults. This terminates
+the process without exception unwinding; OOM and external termination do not
+guarantee cleanup. Task cancellation and `scoped`/`MustScope` remain unimplemented.
 
 Unlabeled loop control lowers directly to native branches and shares compile-time
 execution, including cleanup at the nearest loop boundary. The

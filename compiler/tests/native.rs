@@ -249,29 +249,8 @@ fn main() {{
 #[cfg(unix)]
 #[test]
 fn source_process_capture_keeps_output_when_child_has_no_exit_code() {
-    let child = source(
-        r#"
-import std.io.write_text
-import std.io.write_error
-import std.bytes.new
-import std.bytes.push
-import std.bytes.to_text
-fn main() {
-    discard write_text("before out\0🧵")
-    discard write_error("before err\0🧵")
-    let invalid = new()
-    push(invalid, 255)
-    discard to_text(invalid)
-}
-"#,
-    );
-    let artifact = common::executable(child.path(), "terminated child");
-    success(&loom(&[
-        "build",
-        path(child.path()),
-        "--output",
-        path(&artifact),
-    ]));
+    // Exercise an actual signal, not a language fault (which now exits with 1).
+    // The fixed shell child signals itself; no user input enters its command.
     let parent = source(&format!(
         r#"
 import std.process.capture
@@ -283,6 +262,8 @@ import std.text.starts_with
 import std.result.Result
 fn main() {{
     let args = new[Text]()
+    push(args, "/bin/sh")
+    push(args, "-c")
     push(args, {:?})
     match capture(args) {{
         Result.Err(_) => {{ assert false }}
@@ -294,7 +275,7 @@ fn main() {{
     }}
 }}
 "#,
-        path(&artifact),
+        "printf 'before out\\000🧵'; printf 'before err\\000🧵' >&2; kill -TERM $$",
     ));
     let output = managed(&["run", path(parent.path())], parent.path());
     success(&output);

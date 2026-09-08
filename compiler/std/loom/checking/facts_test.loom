@@ -63,7 +63,8 @@ test fn immutable_facts_remain_scoped_through_loops_defer_and_staging() {
     let program = flow_program(concat(definitions,
         "pub fn cleanup(value Int) { assert value > 0\ndefer { discard Positive(value) } }\npub fn changed(value Int) { var current = value\nassert current > 0\ndefer { discard Positive(current) }\ncurrent = 0 }\npub fn loop_scope(value Int) Result[Positive, ConstraintError] { var count = 0\nwhile count < 1 { assert value > 0\ndiscard Positive(value)\ncount = count + 1 }\nPositive(value) }\npub fn loop_guard(value Int) Positive { while value > 0 { return Positive(value) }\nPositive(1) }\npub fn future_assertion(value Int) Result[Positive, ConstraintError] { defer { assert value > 0 }\nPositive(value) }"))
     assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 0
-    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 1
+    // The same cleanup body is retained at registration and normal invocation.
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 2
     assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 1
     assert dynamic_count(get(program.functions, 3).body, ExprKind.If) == 0
     assert dynamic_count(get(program.functions, 4).body, ExprKind.If) == 1

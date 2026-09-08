@@ -499,7 +499,8 @@ impl Converter<'_> {
         let mut statements = Vec::new();
         let mut tail = None;
         for (index, child) in node.children.iter().enumerate() {
-            if index + 1 == node.children.len() && !matches!(child.tag, 12..=17 | 26 | 27) {
+            if index + 1 == node.children.len() && !matches!(child.tag, 12..=17 | 26 | 27 | 29 | 30)
+            {
                 tail = Some(Box::new(self.expr(child)?));
             } else {
                 statements.push(self.statement(child)?);
@@ -564,6 +565,32 @@ impl Converter<'_> {
                     S::Break
                 } else {
                     S::Continue
+                }
+            }
+            29 | 30 => {
+                if self.ty(node.ty)? != Type::Unit || !node.arms.is_empty() {
+                    return Err("invalid checked cleanup marker".into());
+                }
+                let id = index(node.index)?;
+                let child = self.child(node, 0, 1)?;
+                if self.ty(child.ty)? != Type::Unit {
+                    return Err("checked cleanup body must return no value".into());
+                }
+                let body = Self {
+                    loop_depth: 0,
+                    ..*self
+                }
+                .block(child)?;
+                if node.tag == 29 {
+                    if !node.falls {
+                        return Err("cleanup registration must fall through".into());
+                    }
+                    S::Defer { id, body }
+                } else {
+                    if node.falls != body.falls_through {
+                        return Err("cleanup fallthrough mismatch".into());
+                    }
+                    S::Cleanup { id, body }
                 }
             }
             _ => S::Expr(self.expr(node)?),
@@ -1021,6 +1048,42 @@ mod tests {
             children.len(),
             children.concat()
         )
+    }
+
+    #[test]
+    fn cleanup_markers_preserve_identity_and_require_one_unit_body() {
+        let stream = |markers: &[String]| {
+            let body = node(11, 0, "", -1, markers);
+            format!("loom-checked-1\n1\n0\n-1\n1\n0\n0\n0\n0\n0\n0\n0\n{body}-1\n0\n1\n0\n")
+        };
+        let body = node(11, 0, "", -1, &[]);
+        let program = decode(&stream(&[
+            node(29, 0, "", 7, std::slice::from_ref(&body)),
+            node(30, 0, "", 7, std::slice::from_ref(&body)),
+        ]))
+        .unwrap();
+        assert!(program.functions[0].body.tail.is_none());
+        assert!(matches!(
+            program.functions[0].body.statements[0].kind,
+            c::StmtKind::Defer { id: 7, .. }
+        ));
+        assert!(matches!(
+            program.functions[0].body.statements[1].kind,
+            c::StmtKind::Cleanup { id: 7, .. }
+        ));
+        for tag in [29, 30] {
+            assert!(decode(&stream(&[node(tag, 0, "", 7, &[])])).is_err());
+            assert!(
+                decode(&stream(&[node(
+                    tag,
+                    0,
+                    "",
+                    -1,
+                    std::slice::from_ref(&body)
+                )]))
+                .is_err()
+            );
+        }
     }
 
     #[test]

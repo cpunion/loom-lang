@@ -257,6 +257,8 @@ impl TemporarySlots {
                     self.may_allocate(allocating, condition)
                         || self.block_allocates(allocating, body)
                 }
+                checked::StmtKind::Cleanup { body, .. } => self.block_allocates(allocating, body),
+                checked::StmtKind::Defer { .. } => false,
                 checked::StmtKind::Return(None)
                 | checked::StmtKind::Break
                 | checked::StmtKind::Continue => false,
@@ -420,7 +422,9 @@ impl TemporarySlots {
                 }
                 checked::StmtKind::Return(None)
                 | checked::StmtKind::Break
-                | checked::StmtKind::Continue => {}
+                | checked::StmtKind::Continue
+                | checked::StmtKind::Defer { .. }
+                | checked::StmtKind::Cleanup { .. } => {}
             }
             // Let/Assign have copied into permanent local roots; other completed
             // statements retain no value. A return never reaches the next one.
@@ -440,19 +444,21 @@ pub(super) fn root_function<'ctx>(
     program: &checked::Program,
     allocating: &BTreeSet<usize>,
     source: &checked::Function,
+    callback_body: Option<&checked::Block>,
     locals: &[Option<PointerValue<'ctx>>],
+    borrowed: &HashMap<usize, PointerValue<'ctx>>,
     tracers: &mut HashMap<Type, FunctionValue<'ctx>>,
 ) -> NativeResult<RootFrame<'ctx>> {
     let mut slots = Vec::new();
-    let mut rooted_locals = HashMap::new();
+    let mut rooted_locals = borrowed.clone();
     for (index, ty) in source.locals.iter().enumerate() {
-        if managed(program, *ty) {
+        if managed(program, *ty) && locals[index].is_some() && !borrowed.contains_key(&index) {
             // Keep normal locals nonescaping so LLVM can promote them to SSA.
             // The collector rewrites a separate shadow slot; allocating calls
             // restore ordinary locals from it before source execution resumes.
             let native = native_type(context, program, *ty)?;
             let slot = builder.build_alloca(native, "gc.local")?;
-            let initial = if index < source.params.len() {
+            let initial = if callback_body.is_none() && index < source.params.len() {
                 builder.build_load(
                     native,
                     locals[index].ok_or("missing managed parameter")?,
@@ -467,11 +473,13 @@ pub(super) fn root_function<'ctx>(
         }
     }
     let mut temporary = TemporarySlots::default();
-    for value in &source.requires {
-        temporary.expression(program, allocating, value, false);
-        temporary.used.clear();
+    if callback_body.is_none() {
+        for value in &source.requires {
+            temporary.expression(program, allocating, value, false);
+            temporary.used.clear();
+        }
     }
-    temporary.block(program, allocating, &source.body);
+    temporary.block(program, allocating, callback_body.unwrap_or(&source.body));
     let mut storage = Vec::new();
     for ty in temporary.types {
         let native = native_type(context, program, ty)?;
@@ -569,6 +577,9 @@ fn block_expressions<'a>(value: &'a checked::Block, values: &mut Vec<&'a checked
             | checked::StmtKind::Return(Some(value)) => expressions(value, values),
             checked::StmtKind::While { condition, body } => {
                 expressions(condition, values);
+                block_expressions(body, values);
+            }
+            checked::StmtKind::Defer { body, .. } | checked::StmtKind::Cleanup { body, .. } => {
                 block_expressions(body, values);
             }
             checked::StmtKind::Return(None)

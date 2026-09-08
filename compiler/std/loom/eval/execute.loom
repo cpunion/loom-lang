@@ -257,6 +257,10 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
     discard spend(state, expr, 0, 1)?
     discard spend(state, expr, 1, 128)?
+    // Failed isolated computations are rejected; normal cleanup executes in
+    // the owner's frame, with late-bound reads and assignments to its locals.
+    if expr.kind == ExprKind.Defer { return Result.Ok(step(unit())) }
+    if expr.kind == ExprKind.Cleanup { return execute(state, child(expr, 0)?, frame, depth + 1) }
     if expr.kind == ExprKind.Break || expr.kind == ExprKind.Continue {
         return Result.Ok(Step { value = unit() control = if expr.kind == ExprKind.Break { Control.Break } else { Control.Continue } })
     }

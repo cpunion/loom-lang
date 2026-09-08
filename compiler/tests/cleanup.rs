@@ -3,7 +3,7 @@ mod common;
 use common::{loom, success};
 
 #[test]
-fn lexical_cleanup_preserves_native_results_without_a_runtime_executor() {
+fn lexical_cleanup_preserves_native_results_with_scope_only_registration() {
     let package = tempfile::tempdir().unwrap();
     let executable = common::executable(package.path(), "cleanup");
     success(
@@ -52,7 +52,8 @@ fn lexical_cleanup_preserves_native_results_without_a_runtime_executor() {
     );
     success(&Command::new(executable).output().unwrap());
     let ir = fs::read_to_string(ir).unwrap();
-    assert!(!ir.contains("loom_rt_") && !ir.contains("executor"));
+    assert!(ir.contains("loom_rt_cleanup_push") && ir.contains("loom_rt_cleanup_pop"));
+    assert!(!ir.contains("roots_enter") && !ir.contains("executor"));
 }
 
 #[test]

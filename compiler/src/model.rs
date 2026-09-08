@@ -192,6 +192,8 @@ pub mod checked {
         While { condition: Expr, body: Block },
         Break,
         Continue,
+        Defer { id: usize, body: Block },
+        Cleanup { id: usize, body: Block },
     }
 
     #[derive(Clone, Debug)]

@@ -20,6 +20,8 @@ use std::{
     sync::Once,
 };
 
+#[path = "llvm_cleanup.rs"]
+mod cleanup;
 #[path = "llvm_dyn.rs"]
 mod dynamic;
 #[path = "llvm_gc.rs"]
@@ -121,6 +123,11 @@ fn emit_checked(
         slots: live_slots,
     } = reachable_functions(program, &roots, library)?;
     let allocating = gc::allocating_functions(program, &reachable);
+    let cleanup_plans = reachable
+        .iter()
+        .map(|id| cleanup::plans(&program.functions[*id]).map(|plans| (*id, plans)))
+        .collect::<NativeResult<HashMap<_, _>>>()?;
+    let runtime_fault = library || cleanup_plans.values().any(|plans| !plans.is_empty());
     trace_phase("target");
     let native = NativeTarget::new(optimization)?;
     let machine = &native.machine;
@@ -157,11 +164,18 @@ fn emit_checked(
         let entry = context.append_basic_block(function, "entry");
         builder.position_at_end(entry);
         let source = &program.functions[id];
+        let plans = &cleanup_plans[&id];
+        let callback_locals = plans
+            .iter()
+            .flat_map(|plan| &plan.locals)
+            .copied()
+            .collect::<BTreeSet<_>>();
         let locals = source
             .locals
             .iter()
-            .map(|ty| {
-                if *ty == Type::Unit {
+            .enumerate()
+            .map(|(id, ty)| {
+                if *ty == Type::Unit || callback_locals.contains(&id) {
                     Ok(None)
                 } else {
                     Ok(Some(builder.build_alloca(
@@ -175,7 +189,12 @@ fn emit_checked(
             builder.build_store(locals[index].ok_or("invalid checked parameter")?, value)?;
         }
         let size_type = context.ptr_sized_int_type(&machine.get_target_data(), None);
-        let roots = if allocating.contains(&id) {
+        let roots = if allocating.contains(&id)
+            || plans.iter().any(|plan| {
+                plan.captures
+                    .iter()
+                    .any(|id| gc::managed(program, source.locals[*id]))
+            }) {
             gc::root_function(
                 &context,
                 &module,
@@ -183,7 +202,9 @@ fn emit_checked(
                 program,
                 &allocating,
                 source,
+                None,
                 &locals,
+                &HashMap::new(),
                 &mut tracers,
             )?
         } else {
@@ -204,7 +225,10 @@ fn emit_checked(
             roots,
             tracers: &mut tracers,
             loop_targets: Vec::new(),
+            cleanups: HashMap::new(),
+            runtime_fault,
         };
+        emitter.prepare_cleanups(id, plans)?;
         for requirement in &source.requires {
             let condition = emitter
                 .expr(requirement)?
@@ -223,6 +247,7 @@ fn emit_checked(
                 }
             }
         }
+        emitter.emit_cleanups(source, plans)?;
     }
     if !library {
         let pointer = context.ptr_type(AddressSpace::default());
@@ -426,6 +451,8 @@ struct FunctionEmitter<'a, 'ctx> {
     tracers: &'a mut HashMap<Type, FunctionValue<'ctx>>,
     /// Nearest loop body first via `last()`: (continue target, break target).
     loop_targets: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
+    cleanups: HashMap<usize, cleanup::Site<'ctx>>,
+    runtime_fault: bool,
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
@@ -732,6 +759,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 checked::StmtKind::Discard(value) | checked::StmtKind::Expr(value) => {
                     self.expr(value)?;
                 }
+                checked::StmtKind::Defer { id, .. } => self.register_cleanup(*id)?,
+                checked::StmtKind::Cleanup { id, .. } => self.run_cleanup(*id)?,
                 checked::StmtKind::Break | checked::StmtKind::Continue => {
                     let &(test, done) = self
                         .loop_targets
@@ -1608,6 +1637,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .append_basic_block(self.function, "guard.fault");
         self.builder.build_conditional_branch(valid, good, bad)?;
         self.builder.position_at_end(bad);
+        if self.runtime_fault {
+            let bytes = self
+                .builder
+                .build_global_string_ptr(message, "fault.message")?;
+            self.runtime_call(
+                "fault",
+                None,
+                &[
+                    bytes.as_pointer_value().into(),
+                    self.size_type.const_int(message.len() as u64, false).into(),
+                ],
+            )?;
+            self.builder.build_unreachable()?;
+            self.builder.position_at_end(good);
+            return Ok(());
+        }
         // Fault-only programs use the host CRT, without the managed runtime.
         let i32_type = self.context.i32_type();
         let pointer = self.context.ptr_type(AddressSpace::default());
@@ -1769,6 +1814,9 @@ fn reachable_functions(
                 | checked::StmtKind::Return(Some(value)) => expr(value, calls, witnesses, slots),
                 checked::StmtKind::While { condition, body } => {
                     expr(condition, calls, witnesses, slots);
+                    block(body, calls, witnesses, slots);
+                }
+                checked::StmtKind::Defer { body, .. } | checked::StmtKind::Cleanup { body, .. } => {
                     block(body, calls, witnesses, slots);
                 }
                 checked::StmtKind::Return(None)

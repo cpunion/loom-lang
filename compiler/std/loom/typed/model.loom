@@ -23,11 +23,13 @@ pub record Local { name Text ty Int mutable Bool }
 pub enum ExprKind {
     Integer Bool Text Local Unary Binary Call Intrinsic Record Field Variant
     Block Let Assign Return Assert Discard While If Match Coerce Deferred Float DynBox DynCall
-    FunctionRef IndirectCall Break Continue List
+    FunctionRef IndirectCall Break Continue List Defer Cleanup
 }
 // FunctionRef.index is a concrete scheduled function ID. IndirectCall children
 // are [callee, arguments...], evaluated once in source order.
 // List children are ordered, same-typed elements of a fresh shared container.
+// Defer/Cleanup index a function-local cleanup registration and retain its one
+// body child with the owner's Local IDs. Only Cleanup executes that body.
 pub record Expr {
     kind ExprKind
     ty Int
