@@ -672,24 +672,15 @@ unsafe extern "C" fn loom_rt_process_run(arguments: *const u8) -> i64 {
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_process_run_input(arguments: *const u8, input: *const u8) -> i64 {
-    use std::io::Write;
-
     // SAFETY: Both arguments remain live for this nonallocating synchronous call.
-    let mut command = match unsafe { process_command(arguments) } {
+    let command = match unsafe { process_command(arguments) } {
         Ok(command) => command,
         Err(status) => return status,
     };
-    let Ok(mut child) = command.stdin(std::process::Stdio::piped()).spawn() else {
-        return -1;
-    };
-    // Taking stdin guarantees the pipe closes before wait, including write errors.
-    // The child is reaped even if it stops reading before consuming all input.
-    let written = child.stdin.take().is_some_and(|mut pipe| {
-        // SAFETY: input is immutable UTF-8 Text and no Loom GC runs while writing.
-        pipe.write_all(unsafe { text_bytes(input) }).is_ok()
-    });
-    let status = child.wait();
-    if written { process_status(status) } else { -1 }
+    // SAFETY: The dedicated signal-protected writer owns a Rust copy, never a
+    // managed pointer. No Loom GC runs while reading the immutable input Text.
+    let input = unsafe { text_bytes(input) }.to_vec();
+    process_status(process_io::run_input(command, input))
 }
 
 #[unsafe(no_mangle)]

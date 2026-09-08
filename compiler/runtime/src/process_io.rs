@@ -1,7 +1,7 @@
 //! Binary input and output capture. Workers own only OS pipes and Rust buffers.
 
 use std::io::{self, Read, Write};
-use std::process::{Child, ChildStdin, Command, Output, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -110,14 +110,8 @@ fn writer(
             result
         }))
         .unwrap_or_else(|_| Err(io::Error::other("process input writer panicked")));
-        // Closing stdin signals EOF even when the child consumes all input before
-        // producing output. A child may intentionally stop reading early; keep
-        // its output and exit status in that case.
+        // Closing stdin signals EOF before waiting, including write errors.
         drop(pipe);
-        let result = match result {
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-            other => other,
-        };
         let _ = completed.send(Completion::Input(result));
     })
 }
@@ -233,6 +227,9 @@ fn capture_started(child: &mut Child, input: Vec<u8>, drain: Drain) -> io::Resul
             .map_err(|_| io::Error::other("process I/O worker disconnected"))?;
         match completed {
             Completion::Output(index, result) => streams[index] = result?,
+            // Capture preserves output/status when the child intentionally stops
+            // reading. run_input instead requires delivery of the complete input.
+            Completion::Input(Err(error)) if error.kind() == io::ErrorKind::BrokenPipe => {}
             Completion::Input(result) => result?,
         }
     }
@@ -257,6 +254,34 @@ pub(super) fn capture(mut command: Command, input: Vec<u8>) -> io::Result<Output
         .stderr(Stdio::piped())
         .spawn()?;
     capture_started(&mut child, input, read_all)
+}
+
+pub(super) fn run_input(mut command: Command, input: Vec<u8>) -> io::Result<ExitStatus> {
+    let mut child = command.stdin(Stdio::piped()).spawn()?;
+    let mut running = Running {
+        child: &mut child,
+        workers: Vec::new(),
+        reaped: false,
+    };
+    let stdin = running
+        .child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("missing process stdin pipe"))?;
+    let (completed, results) = mpsc::channel();
+    running.workers.push(writer(stdin, input, completed)?);
+    let Completion::Input(written) = results
+        .recv()
+        .map_err(|_| io::Error::other("process input worker disconnected"))?
+    else {
+        return Err(io::Error::other("unexpected process input result"));
+    };
+    // Reap the child even when it closes stdin early. Keep inherited outputs and
+    // the existing run_input error contract without changing global SIGPIPE.
+    let status = running.child.wait()?;
+    running.reaped = true;
+    written?;
+    Ok(status)
 }
 
 #[cfg(test)]

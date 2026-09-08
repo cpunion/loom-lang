@@ -10,9 +10,11 @@ use common::{loom, success};
 
 const PAYLOAD_BYTES: usize = 256 * 1024;
 const INPUT_MODE: &str = "literal input 雪 *? '$;";
+const RUN_INPUT_TEXT: &str = "text input\0雪🙂 *? '$;\n";
+const RUN_INPUT_REPEATS: usize = 16384;
 
 #[test]
-#[ignore = "subprocess fixture for native capture_input"]
+#[ignore = "subprocess fixture for native process input"]
 fn binary_child_fixture() {
     let args = std::env::args().collect::<Vec<_>>();
     let mode = args.last().unwrap();
@@ -42,10 +44,92 @@ fn binary_child_fixture() {
         io::stdout().flush().unwrap();
     } else if mode == "empty" {
         assert_eq!(io::stdin().read(&mut [0]).unwrap(), 0);
+    } else if mode == "run-input" {
+        let mut input = Vec::new();
+        io::stdin().read_to_end(&mut input).unwrap();
+        assert_eq!(input, RUN_INPUT_TEXT.repeat(RUN_INPUT_REPEATS).as_bytes());
     } else {
         assert_eq!(mode, "early");
     }
     std::process::exit(7);
+}
+
+#[test]
+fn native_run_input_reports_early_stdin_close_without_terminating_parent() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let input_path = directory.path().join("input.txt");
+    fs::write(&input_path, RUN_INPUT_TEXT.repeat(RUN_INPUT_REPEATS)).unwrap();
+    fs::write(
+        source.join("main.loom"),
+        format!(
+            r#"
+import std.process.run_input
+import std.process.arguments
+import std.process.SpawnError
+import std.file.read_text
+import std.list.new
+import std.list.push
+import std.list.get
+import std.result.Result
+fn main() {{
+    let input = match read_text({input_path:?}) {{
+        Result.Ok(value) => value,
+        Result.Err(_) => {{
+            assert false
+            ""
+        }}
+    }}
+    let mode = get(arguments(), 1)
+    let args = new[Text]()
+    push(args, {executable:?})
+    push(args, "--ignored")
+    push(args, "--exact")
+    push(args, "binary_child_fixture")
+    push(args, "--nocapture")
+    push(args, "--skip")
+    push(args, mode)
+    match run_input(args, input) {{
+        Result.Ok(code) => {{ assert mode == "run-input" && code == 7 }}
+        Result.Err(error) => {{ assert mode == "early" && error == SpawnError.Failed }}
+    }}
+}}
+"#,
+            input_path = input_path.to_str().unwrap(),
+            executable = std::env::current_exe().unwrap().to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+    let artifact = common::executable(directory.path(), "run input parent");
+    success(&loom(&[
+        "build",
+        source.to_str().unwrap(),
+        "--output",
+        artifact.to_str().unwrap(),
+    ]));
+    let payload = (0..PAYLOAD_BYTES)
+        .map(|index| index as u8)
+        .collect::<Vec<_>>();
+    let stderr = payload.iter().map(|byte| 255 - byte).collect::<Vec<_>>();
+    for mode in ["run-input", "early"] {
+        // Drain the inherited streams while the Loom parent writes stdin. The
+        // early-close case must return Failed instead of a native SIGPIPE exit.
+        let output = Command::new(&artifact)
+            .arg(mode)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "run_input mode {mode}: native parent status {} (stdout {} bytes, stderr {} bytes)",
+            output.status,
+            output.stdout.len(),
+            output.stderr.len(),
+        );
+        assert!(output.stdout.ends_with(&payload));
+        assert_eq!(output.stderr, stderr);
+    }
 }
 
 #[test]
