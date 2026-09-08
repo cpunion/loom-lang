@@ -84,7 +84,13 @@ fn link_command(
     if windows {
         let mut destination = OsString::from("/OUT:");
         destination.push(output);
-        command.args(["/link", "/SUBSYSTEM:CONSOLE", "/INCREMENTAL:NO", "/Brepro"]);
+        command.args([
+            "/link",
+            "/SUBSYSTEM:CONSOLE",
+            "/INCREMENTAL:NO",
+            "/OPT:REF",
+            "/Brepro",
+        ]);
         // Match the usual Unix main-stack capacity. Reserve virtual space;
         // leave the commit size unchanged so small programs pay only for use.
         command.arg("/STACK:8388608");
@@ -103,6 +109,13 @@ fn link_command(
         }
     } else {
         command.arg("-o").arg(output);
+        // These are final executable links; library/object output bypasses this
+        // path. Runtime static-library symbols are retained by native references.
+        if cfg!(target_os = "macos") {
+            command.arg("-Wl,-dead_strip");
+        } else if cfg!(target_os = "linux") {
+            command.arg("-Wl,--gc-sections");
+        }
     }
     command
 }
@@ -192,14 +205,42 @@ mod tests {
             "/OUT:build files/program.exe",
             "/DEFAULTLIB:libcmt",
             "/STACK:8388608",
+            "/OPT:REF",
             "/Brepro",
             "dbghelp.lib",
         ] {
             assert!(args.contains(&OsStr::new(argument)));
         }
+        assert!(!args.contains(&OsStr::new("-Wl,-dead_strip")));
+        assert!(!args.contains(&OsStr::new("-Wl,--gc-sections")));
         let scalar = link_command(object, output, None, OsStr::new("clang-cl"), true);
         let args: Vec<_> = scalar.get_args().collect();
         assert!(args.contains(&OsStr::new("/DEFAULTLIB:libcmt")));
+        assert!(args.contains(&OsStr::new("/OPT:REF")));
         assert!(!args.contains(&runtime.as_os_str()));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn unix_executable_links_discard_unreferenced_sections() {
+        let object = Path::new("build files/program.o");
+        let output = Path::new("build files/program");
+        let runtime = Path::new("runtime files/libloom_runtime.a");
+        let flag = if cfg!(target_os = "macos") {
+            "-Wl,-dead_strip"
+        } else {
+            "-Wl,--gc-sections"
+        };
+        for runtime in [None, Some(runtime)] {
+            let command = link_command(object, output, runtime, OsStr::new("clang"), false);
+            let args: Vec<_> = command.get_args().collect();
+            assert_eq!(args[0], object.as_os_str());
+            assert!(args.contains(&output.as_os_str()));
+            assert!(args.contains(&OsStr::new(flag)));
+            assert!(!args.contains(&OsStr::new("/OPT:REF")));
+            if let Some(runtime) = runtime {
+                assert_eq!(args[1], runtime.as_os_str());
+            }
+        }
     }
 }

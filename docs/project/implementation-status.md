@@ -11,6 +11,8 @@ close. Focused tests exercise actual timers and localhost sockets. This is not
 an async executor: source Task checking/lowering, persistent frame roots,
 task-local faults and structured cancellation remain unimplemented. The accepted
 [Task design](../rfcs/tasks.md) remains the target.
+Executable links enable native dead-section removal so an unused reactor does
+not enter synchronous program artifacts. Library object exports are unchanged.
 
 The active compiler has a real source-to-native check/build/test/run path,
 package/test isolation, concrete generic records/enums, shared lists, UTF-8
