@@ -126,6 +126,73 @@ fn emit_run(
 }
 
 #[test]
+fn match_payload_handoffs_survive_later_allocation_without_losing_other_local_roots() {
+    let concat = |left, right| primitive(Type::Text, Primitive::TextConcat, vec![left, right]);
+    let matched = |id, statements| {
+        value(
+            Type::Text,
+            E::Match {
+                value: Box::new(value(
+                    Type::Data(1),
+                    E::Variant {
+                        variant: 0,
+                        fields: vec![concat(text("left"), text("-"))],
+                    },
+                )),
+                arms: vec![checked::MatchArm {
+                    variant: Some(0),
+                    bindings: vec![Some(id)],
+                    whole: None,
+                    body: checked::Block {
+                        statements,
+                        tail: Some(Box::new(local(Type::Text, id))),
+                        falls_through: true,
+                    },
+                }],
+            },
+        )
+    };
+    let mut source = program(
+        vec![Type::Text; 3],
+        vec![
+            // Local 0 needs no permanent root: the match's result snapshot
+            // protects it while the second operand allocates and moves it.
+            equal(
+                concat(matched(0, vec![]), concat(text("right"), text("!"))),
+                text("left-right!"),
+            ),
+            // Local 1 must remain rooted across a safe point inside its arm.
+            equal(
+                matched(
+                    1,
+                    vec![statement(S::Discard(concat(
+                        text("allocate"),
+                        text("inside"),
+                    )))],
+                ),
+                text("left-"),
+            ),
+            statement(S::Discard(matched(2, vec![]))),
+            statement(S::Discard(concat(text("allocate"), text("after")))),
+            // Out-of-arm reads are legal in checked IR; don't elide this root.
+            equal(local(Type::Text, 2), text("left-")),
+        ],
+    );
+    source.types.push(checked::Data {
+        name: "Wrapped".into(),
+        kind: checked::DataKind::Enum(vec![("Value".into(), vec![Type::Text])]),
+    });
+    for optimization in [Optimization::O0, Optimization::O2] {
+        let (_, output) = emit_run(&source, optimization);
+        assert!(
+            output.status.success(),
+            "{optimization:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn typed_memory_access_preserves_aliases_argument_order_and_managed_layouts() {
     let list = Type::List(0);
     let mut statements = vec![
