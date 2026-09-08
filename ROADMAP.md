@@ -254,6 +254,10 @@ Bounded [compile-time execution](compiler/README.md#compile-time-execution) now
 uses the same checked model and a Loom-written evaluator. Explicit blocks
 support pure calls, local loops/recursion, and value results; `comptime if`
 selects one branch, including equality/inequality of nested generic types.
+Boolean composition now combines those guards, concept queries, static Bool
+parameters and pure computations with compile-time short-circuiting. Evidence
+stays on the actual selected path; unknown choices and required proofs are not
+resolved by guessing later operands.
 Shared-container
 results preserve internal aliases and cycles while constructing a fresh graph
 on each runtime evaluation. Successful pure results can be reused within one

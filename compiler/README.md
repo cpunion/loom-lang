@@ -1110,9 +1110,22 @@ call requirements. Type guards compare unshadowed types with `==` or `!=`,
 including generic/nested forms such as `T == List[Int]` and
 `List[Box[T]] == List[Box[Int]]`; see the
 [composite-guard example](examples/comptime/composite.loom). These guards do not
-provide general type-valued expressions or Boolean combinations of type
-comparisons. An unresolved generic choice requires a contextual result type and
-waits for concrete instantiation; code outside that choice is still checked.
+provide general type-valued expressions. `!`, `&&`, and `||` combine type guards,
+`implements` queries, static Bool parameters, and ordinary pure Bool computations.
+For example, `comptime if T implements Display && (T == Int || T == Bool)`
+selects a body with local Display evidence; the
+[conditional-label example](examples/comptime/conditions.loom) needs no public
+Display bound.
+
+Conditions short-circuit left to right at compile time: a skipped operand still
+parses but is not instantiated. Established concept evidence follows the actual
+condition path into subsequent operands and the selected body, including an
+`else` reached through negation. An unresolved left operand waits for concrete
+instantiation instead of inspecting the right operand or applying Boolean
+identities that could hide a fault. Unresolved choices require a contextual
+result type; required proofs cannot assume their result. Code outside the choice
+is still checked. Ordinary runtime Boolean expressions keep their existing
+type and purity checks.
 
 The Loom-written evaluator consumes the same checked model as native lowering;
 constraint folding and pure-predicate validation use this engine too.
