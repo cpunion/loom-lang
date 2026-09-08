@@ -6,3 +6,7 @@ members = ["compiler", "compiler/runtime"]
 # unoptimized host code during ordinary development. Debug checks stay enabled.
 [profile.dev.package.loom-runtime]
 opt-level = 3
+
+# Cache identities stream the native toolchain, including the loaded LLVM image.
+[profile.dev.package.sha2]
+opt-level = 3

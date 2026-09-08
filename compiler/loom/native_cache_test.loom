@@ -1,0 +1,26 @@
+import std.bytes.set
+
+test fn object_bundle_checks_metadata_payload_and_checksum_together() {
+    let prefix = cache_prefix("key", "backend", false)
+    let object = std.bytes.new()
+    std.bytes.push(object, 0)
+    std.bytes.push(object, 255)
+    let bundle = cache_bundle(prefix, CachedObject { bytes = object uses_runtime = true })
+    match cache_decode(bundle, prefix) {
+        Option.Some(value) => {
+            assert value.uses_runtime && std.bytes.length(value.bytes) == 2
+            assert std.bytes.get(value.bytes, 0) == 0 && std.bytes.get(value.bytes, 1) == 255
+        }
+        Option.None => { assert false }
+    }
+    assert match cache_decode(bundle, cache_prefix("other", "backend", false)) { Option.None => true, _ => false }
+    var position = 0
+    while position < std.bytes.length(bundle) {
+        let damaged = cache_copy(bundle, 0, std.bytes.length(bundle))
+        std.bytes.set(damaged, position, std.bytes.get(damaged, position) ^ 1)
+        assert match cache_decode(damaged, prefix) { Option.None => true, _ => false }
+        position = position + 1
+    }
+    assert match cache_decode(std.bytes.new(), prefix) { Option.None => true, _ => false }
+    assert match cache_decode(cache_copy(bundle, 0, std.bytes.length(bundle) - 1), prefix) { Option.None => true, _ => false }
+}

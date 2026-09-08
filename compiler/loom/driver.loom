@@ -24,7 +24,7 @@ import std.text.length
 
 record Options {
     command Text path Text std_root Text output Text ir Text native_tool Text
-    no_run Bool tests Bool git_tool Text
+    no_run Bool tests Bool git_tool Text object_cache Text
 }
 
 fn options(args List[Text]) Result[Options, Text] {
@@ -38,6 +38,7 @@ fn options(args List[Text]) Result[Options, Text] {
     var no_run = false
     var tests = false
     var git_tool = "git"
+    var object_cache = ""
     var index = 2
     while index < length(args) {
         let arg = get(args, index)
@@ -49,12 +50,20 @@ fn options(args List[Text]) Result[Options, Text] {
                 if no_run { return Result.Err("duplicate --no-run") }
                 no_run = true
             } else {
-                if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" {
+                if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--object-cache" {
                     index = index + 1
                     if index == length(args) { return Result.Err(concat(arg, " needs a value")) }
                     let value = get(args, index)
                     if arg == "--std" { standard = value }
                     if arg == "--native-tool" { tool = value }
+                    if arg == "--object-cache" {
+                        if object_cache != "" { return Result.Err("duplicate --object-cache") }
+                        if value == "" { return Result.Err("--object-cache needs a nonempty path") }
+                        if command != "build" && command != "test" && command != "run" {
+                            return Result.Err("--object-cache requires build, test or run")
+                        }
+                        object_cache = value
+                    }
                     if arg == "--git-tool" {
                         if command != "resolve" { return Result.Err("--git-tool is only available with resolve") }
                         git_tool = value
@@ -87,7 +96,7 @@ fn options(args List[Text]) Result[Options, Text] {
         Result.Ok(value) => value
         Result.Err(_) => { return Result.Err(concat("cannot resolve package path ", path)) }
     }
-    Result.Ok(Options { command = command path = path std_root = standard output = output ir = ir native_tool = tool no_run = no_run tests = tests git_tool = git_tool })
+    Result.Ok(Options { command = command path = path std_root = standard output = output ir = ir native_tool = tool no_run = no_run tests = tests git_tool = git_tool object_cache = object_cache })
 }
 fn diagnostic(files List[SourceFile], failure Failure) Text {
     let source = get(files, failure.source)
@@ -111,6 +120,12 @@ fn child_status(arguments List[Text]) Result[Int, Text] {
     }
 }
 fn compile(options Options, program Program, output Text) Result[Bool, Text] {
+    let input = encode(program)
+    if options.object_cache != "" && options.ir == "" {
+        if compile_cached(options, input, options.command != "test" && program.entry < 0, output)? {
+            return Result.Ok(true)
+        }
+    }
     let arguments = new[Text]()
     push(arguments, options.native_tool)
     push(arguments, "-")
@@ -119,7 +134,7 @@ fn compile(options Options, program Program, output Text) Result[Bool, Text] {
     if options.command == "test" { push(arguments, "--test") }
     if options.ir != "" { push(arguments, "--emit-ir")
         push(arguments, options.ir) }
-    let status = match run_input(arguments, encode(program)) {
+    let status = match run_input(arguments, input) {
         Result.Ok(code) => code
         Result.Err(_) => { return Result.Err("cannot invoke the native LLVM tool") }
     }
