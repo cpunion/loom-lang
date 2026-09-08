@@ -37,25 +37,27 @@ fn header_environment(env Environment) Environment {
     Environment { source = env.source types = env.types type_states = env.type_states expand_data = false has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
         concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses
-        associations = env.associations association_depth = env.association_depth }
+        associations = env.associations association_depth = env.association_depth
+        family_applications = env.family_applications promise_path = env.promise_path promise_depth = env.promise_depth }
 }
-fn association_environment(env Environment, member Int, receiver Int) Result[Environment, Failure] {
+fn association_environment(env Environment, member Int, receiver Int, arguments List[Int]) Result[Environment, Failure] {
     let node = symbol(env, member).node
     if env.association_depth >= 64 { return Result.Err(failure(env, member, node, "associated type expansion must be finite")) }
     var index = 0
     while index < env.association_depth {
         let earlier = get(env.associations, index)
-        if earlier.member == member && earlier.receiver == receiver {
+        if earlier.member == member && earlier.receiver == receiver && same(earlier.arguments, arguments) {
             return Result.Err(failure(env, member, node, "cyclic associated type binding or default"))
         }
         index = index + 1
     }
-    let current = Association { member = member receiver = receiver }
+    let current = Association { member = member receiver = receiver arguments = arguments }
     if index == length(env.associations) { push(env.associations, current) } else { set(env.associations, index, current) }
     Result.Ok(Environment { source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth computations = env.computations validations = env.validations
         concepts = env.concepts implementations = env.implementations interfaces = env.interfaces witnesses = env.witnesses uses = env.uses
-        associations = env.associations association_depth = env.association_depth + 1 })
+        associations = env.associations association_depth = env.association_depth + 1
+        family_applications = env.family_applications promise_path = env.promise_path promise_depth = env.promise_depth })
 }
 fn implementation_type(env Environment, index Int, depth Int) Result[Int, Failure] {
     let header = get(env.implementations, index)
@@ -91,6 +93,7 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
             var member = 0
             while member < length(members) {
                 let declaration = get(members, member)
+                discard member_parameter_headers(env, declaration, declaration)?
                 let nodes = group(symbol(env, declaration).node, NodeKind.Bounds)
                 let required = new[Int]()
                 var bound = 0
@@ -137,6 +140,7 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
                     }
                     found = fallback
                 }
+                discard member_parameter_headers(env, get(expected, index), found)?
                 push(bindings, found)
                 index = index + 1
             }
@@ -203,11 +207,17 @@ fn entailed(env Environment, obligations List[Requirement], ty Int, capability I
     }
     false
 }
-fn associated_type(env Environment, owner Int, member Int, receiver Int, node Node, depth Int) Result[Int, Failure] {
+fn associated_type(env Environment, owner Int, member Int, receiver Int, arguments List[Int], node Node, depth Int) Result[Int, Failure] {
     if depth > 64 { return Result.Err(failure(env, owner, node, "associated type expansion must be finite")) }
+    if length(arguments) != length(member_parameters(env, member)) {
+        return Result.Err(failure(env, owner, node, "wrong number of associated type arguments"))
+    }
     let shape = get(env.types, receiver)
     let capability = symbol(env, member).owner
     if shape.kind == TypeKind.Dyn {
+        if length(arguments) != 0 {
+            return Result.Err(failure(env, owner, node, "dyn does not yet support generic associated type families"))
+        }
         if get(env.interfaces, shape.symbol).symbol != capability {
             return Result.Err(failure(env, owner, node, "dynamic receiver does not expose this associated type"))
         }
@@ -225,7 +235,7 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, node No
         if active.receiver == receiver && symbol(env, active.member).owner == capability { own = true }
     }
     if (shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated) && !own {
-        return Result.Ok(intern(env, TypeKind.Associated, member, ints(receiver)))
+        return Result.Ok(intern(env, TypeKind.Associated, member, member_arguments(ints(receiver), arguments)))
     }
     if selected.implementation < 0 { return Result.Err(failure(env, owner, node, "associated type requires an explicit conformance")) }
     let header = get(env.implementations, selected.implementation)
@@ -234,11 +244,13 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, node No
     while get(members, index) != member { index = index + 1 }
     let binding = get(header.associated, index)
     let definition = symbol(env, binding).node
-    let scoped = association_environment(env, member, receiver)?
+    let scoped = association_environment(env, member, receiver, arguments)?
     // Defaults retain their defining package/import scope, but Self projections
     // use this implementation's effective map, including explicit overrides.
-    resolve(scoped, binding, child(definition, type_part(definition)),
-        if prototype(env, binding) { ints(receiver) } else { selected.arguments }, depth + 1)
+    let resolved = resolve(scoped, binding, child(definition, type_part(definition)),
+        member_arguments(if prototype(env, binding) { ints(receiver) } else { selected.arguments }, arguments), depth + 1)?
+    if length(arguments) != 0 { register_family_application(env, member, receiver, arguments, resolved) }
+    Result.Ok(resolved)
 }
 fn projection(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
     let split = first_dot(node.value)
@@ -249,11 +261,10 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
     let parameters = type_parameters(env, owner)
     var index = 0
     while index < length(parameters) {
-        if get(parameters, index).value == first { receiver = get(arguments, index) }
+        if get(parameters, index).value == first { receiver = get(arguments, index + parameter_offset(env, owner)) }
         index = index + 1
     }
     if receiver < 0 { return Result.Ok(-1) }
-    if length(node.children) != 0 { return Result.Err(failure(env, owner, node, "associated types do not take type arguments")) }
     let rest = slice(node.value, split + 1, length(node.value))
     let qualifier = package(rest)
     let selected = if qualifier == "" { -1 } else { concept_named(env, owner, node, qualifier)? }
@@ -300,5 +311,14 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
         index = index + 1
     }
     if found < 0 { return Result.Err(failure(env, owner, node, "associated type needs an explicit, accessible concept requirement")) }
-    associated_type(env, owner, found, receiver, node, depth + 1)
+    let supplied = new[Int]()
+    index = 0
+    while index < length(node.children) {
+        let argument = resolve_bound(env, owner, child(node, index), arguments, obligations, depth + 1)?
+        discard well_formed(env, owner, argument, obligations, child(node, index), 0)?
+        push(supplied, argument)
+        index = index + 1
+    }
+    discard member_domain(env, owner, found, supplied, obligations, node)?
+    associated_type(env, owner, found, receiver, supplied, node, depth + 1)
 }

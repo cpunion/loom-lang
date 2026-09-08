@@ -28,7 +28,7 @@ fn associated_results_and_bounded_data_use_native_value_layouts() {
     );
 
     fs::write(temporary.path().join("main.loom"),
-        "concept Source { type Item\nfn item(self Self) Self.Item }\nrecord Used { n Int }\nrecord Unused {}\nimpl Source for Used { type Item = Int\nfn item(self Used) Int { self.n } }\nimpl Source for Unused { type Item = Text\nfn item(self Unused) Text { \"uncalled-associated-method\" } }\nfn forward[S Source](value S) S.Item { value.item() }\nfn main() { assert forward(Used { n = 42 }) == 42 }").unwrap();
+        "concept Source { type Item\ntype Wrapped[T]\nfn item(self Self) Self.Item }\nrecord Used { n Int }\nrecord Unused {}\nimpl Source for Used { type Item = Int\ntype Wrapped[T] = T\nfn item(self Used) Int { self.n } }\nimpl Source for Unused { type Item = Text\ntype Wrapped[T] = List[T]\nfn item(self Unused) Text { \"uncalled-associated-method\" } }\nfn forward[S Source](value S) S.Item { value.item() }\nfn family[S Source, T](source S, value S.Wrapped[T]) S.Wrapped[T] { value }\nfn main() { let used = Used { n = 42 }\nassert family[Used, Int](used, forward(used)) == 42 }").unwrap();
     let ir = temporary.path().join("associated.ll");
     let executable = common::executable(temporary.path(), "scalar");
     success(

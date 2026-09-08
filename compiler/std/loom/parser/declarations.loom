@@ -69,11 +69,23 @@ fn impl_decl(cursor Cursor) Result[Step, Diagnostic] {
     Result.Ok(done(cursor, next(rest), NodeKind.Impl, "", children))
 }
 fn associated_type(cursor Cursor, implementation Bool) Result[Step, Diagnostic] {
-    let named = if implementation { name(next(cursor))? } else { type_parameter(next(cursor))? }
-    var rest = named.rest
+    let named = name(next(cursor))?
+    let parameters = type_parameters(named.rest)?
+    var rest = parameters.rest
     let children = new[Node]()
-    if length(named.node.children) != 0 {
-        push(children, done(next(next(cursor)), rest, NodeKind.Bounds, "", named.node.children).node)
+    if length(parameters.node.children) != 0 { push(children, parameters.node) }
+    if !implementation && at(rest, Kind.Name) && !reserved(token(rest).value) {
+        let start = rest
+        let bounds = new[Node]()
+        var more = true
+        while more {
+            let bound = type_ref(rest)?
+            push(bounds, bound.node)
+            rest = bound.rest
+            more = at(rest, Kind.Plus)
+            if more { rest = newlines(next(rest)) }
+        }
+        push(children, done(start, rest, NodeKind.Bounds, "", bounds).node)
     }
     if implementation || at(rest, Kind.Assign) {
         let value = type_ref(expect(rest, Kind.Assign, "'=' after the associated type name")?)?

@@ -21,3 +21,14 @@ test fn associated_symbols_stay_owned_and_preserve_method_overloads() {
     assert rejected(one_source("concept C { type Item\ntype Item }")).diagnostic.message == "duplicate declaration member"
     assert rejected(one_source("impl C for Int { type Item = Int\ntype Item = Bool }")).diagnostic.message == "duplicate declaration member"
 }
+
+test fn associated_type_parameters_have_member_local_names() {
+    let files = one_source("concept C { type Item[T Display, U]\ntype Other[T] }\nrecord Box[X] { value X }\nimpl[X] C for Box[X] { type Item[T Display, U] = Pair[X, T]\ntype Other[T] = List[T] }")
+    let program = bound(files, false)
+    assert length(program.symbols) == 7 && get(program.symbols, 1).owner == 0 && get(program.symbols, 5).owner == 4
+    assert length(candidates(program, 0, false, "T")) == 0
+    assert rejected(one_source("concept C { type Item[T, T] }")).diagnostic.message == "duplicate or reserved type parameter"
+    assert rejected(one_source("impl C for Int { type Item[Text] = Text }")).diagnostic.message == "duplicate or reserved type parameter"
+    assert rejected(one_source("concept C { type Item[Self] }")).diagnostic.message == "associated type parameter shadows Self"
+    assert rejected(one_source("impl[X] C for Box[X] { type Item[X] = X }")).diagnostic.message == "associated type parameter shadows an implementation type parameter"
+}

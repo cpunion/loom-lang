@@ -37,7 +37,7 @@ record StaticValue { ty Int known Bool number Int text Text arguments List[Int] 
 record Signature { symbol Int parameters Int params List[Int] compile_time List[Int] result Int requirements List[Requirement] }
 record Instance { signature Int arguments List[Int] constants List[StaticValue] }
 record Validation { signature Int constants List[StaticValue] }
-record Association { receiver Int member Int }
+record Association { receiver Int member Int arguments List[Int] }
 record Environment {
     source std.loom.binding.Program
     types List[Type]
@@ -54,6 +54,9 @@ record Environment {
     implementations List[Implementation]
     associations List[Association]
     association_depth Int
+    family_applications List[FamilyApplication]
+    promise_path List[Requirement]
+    promise_depth Int
     interfaces List[Interface]
     witnesses List[Witness]
     uses List[SlotUse]
@@ -195,6 +198,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
         has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         associations = new[Association]() association_depth = 0
+        family_applications = new[FamilyApplication]() promise_path = new[Requirement]() promise_depth = 0
         interfaces = new[Interface]() witnesses = new[Witness]() uses = new[SlotUse]() }
     initialize_types(env)
     discard conformance_headers(env)?

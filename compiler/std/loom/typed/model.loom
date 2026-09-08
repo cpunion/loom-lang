@@ -6,7 +6,7 @@ pub record Field { name Text ty Int }
 pub record Variant { name Text fields List[Int] }
 pub record Type {
     kind TypeKind
-    // Associated uses the concept member's source symbol and [receiver] arguments.
+    // Associated uses the member's source symbol and [receiver, member arguments...].
     // Concrete projections normalize before executable IR reaches the backend.
     // Function has symbol -1 and arguments [parameter types..., result type].
     // Dyn arguments are all associated bindings in concept declaration order;

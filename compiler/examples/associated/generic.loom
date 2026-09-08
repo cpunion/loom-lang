@@ -1,0 +1,36 @@
+concept Family { type Item[T] }
+record FamilyBox[X] { value X }
+
+impl Family for Bool { type Item[T] = List[T] }
+impl[X] Family for FamilyBox[X] { type Item[T] = (X, T) }
+
+fn family_echo[S Family, T](source S, value S.Item[T]) S.Family.Item[T] { value }
+fn family_forward[S Family, T](source S, value S.Item[T]) S.Item[T] {
+    family_echo[S, T](source, value)
+}
+
+fn exercise_families() {
+    let numbers = new[Int]()
+    push(numbers, 7)
+    let same = family_forward[Bool, Int](true, numbers)
+    set(numbers, 0, 9)
+    assert get(same, 0) == 9
+
+    let words = new[Text]()
+    push(words, concat("family", "!"))
+    let source = FamilyBox { value = words }
+    let pair = family_forward[FamilyBox[List[Text]], List[Text]](source, (words, words))
+    set(words, 0, concat("shared", "!"))
+    assert get(pair.0, 0) == "shared!" && get(pair.1, 0) == "shared!"
+
+    let prepared = comptime {
+        let values = new[Int]()
+        push(values, 42)
+        family_forward[Bool, Int](false, values)
+    }
+    assert get(prepared, 0) == 42
+    let constant = comptime { family_forward[FamilyBox[Int], Bool](FamilyBox { value = 3 }, (3, true)) }
+    assert constant.0 == 3 && constant.1
+}
+
+test fn generic_associated_families_preserve_concrete_values() { exercise_families() }

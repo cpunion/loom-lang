@@ -1,0 +1,72 @@
+fn associated_family_definitions() Text {
+    "concept Family { type Item[T] }\nimpl Family for Bool { type Item[T] = List[T] }\nrecord Box[X] { value X }\nimpl[X] Family for Box[X] { type Item[T] = (X, T) }\nfn echo[S Family, T](source S, value S.Item[T]) S.Family.Item[T] { value }\nfn forward[S Family, T](source S, value S.Item[T]) S.Item[T] { echo[S, T](source, value) }\nrecord Packed[S Family, T] { source S value S.Item[T] }\n"
+}
+
+test fn associated_families_normalize_in_generic_calls_data_and_compile_time_execution() {
+    let program = accepted(concat(associated_family_definitions(), "fn main() { let source = Box { value = \"source\" }\nlet value = forward[Box[Text], (Int, Bool)](source, (\"managed\", (7, true)))\nassert value.0 == \"managed\" && value.1.0 == 7 && value.1.1\nlet wrapped Packed[Box[Text], (Int, Bool)] = Packed { source = source value = value }\nassert wrapped.value.0 == \"managed\"\nlet constant = comptime { forward[Box[Int], Bool](Box { value = 3 }, (3, true)) }\nassert constant.0 == 3 && constant.1 }"))
+    var index = 0
+    while index < length(program.functions) {
+        assert get(program.types, get(program.functions, index).result).kind != TypeKind.Associated
+        index = index + 1
+    }
+    discard accepted(concat(associated_family_definitions(), "pub fn numbers[S Family](value S.Item[Int]) S.Item[Int] { value }\npub fn words[S Family](value S.Family.Item[Text]) S.Family.Item[Text] { value }"))
+}
+
+test fn associated_family_parameters_inherit_bounds_and_defaults() {
+    let definitions = "concept Value { fn rank(self Self) Int }\nimpl Value for Int { fn rank(self Int) Int { self } }\nconcept Family { type Item[T Value] Value = T }\nimpl Family for Bool {}\nimpl Family for Int { type Item[U] = U }\nfn rank[S Family, T Value](source S, value S.Item[T]) Int { value.rank() }\nfn forward[S Family, T Value](source S, value S.Item[T]) Int { rank[S, T](source, value) }\n"
+    discard accepted(concat(definitions, "fn main() { assert forward[Bool, Int](true, 7) == 7\nassert forward[Int, Int](0, 9) == 9\nlet constant = comptime { forward[Bool, Int](false, 11) }\nassert constant == 11 }"))
+    discard accepted("concept C { type Item[T C] = T\nfn get(self Self) Self.Item[Self] }\nimpl C for Int { fn get(self Int) Int { self } }\nfn main() { assert 3.get() == 3 }")
+    discard accepted("concept D {}\nimpl D for Int {}\nconcept C { type Item[U D] D }\nrecord Box[T] { value T }\nimpl[T D] C for Box[T] { type Item[U D] = U }\nfn echo[S C, U D](source S, value S.Item[U]) S.Item[U] { value }\nfn main() { assert echo[Box[Int], Int](Box { value = 1 }, 3) == 3 }")
+    rejects(concat(definitions, "pub fn missing[S Family, T](source S, value S.Item[T]) {}"))
+    rejects(concat(definitions, "pub fn wrong[S Family](value S.Item[Bool]) {}"))
+    rejects("concept Value {}\nconcept Family { type Item[T] Value = T }")
+    rejects("concept Value {}\nconcept Family { type Item[T] Value }\nimpl Family for Bool { type Item[T] = T }")
+    rejects("concept Value {}\nconcept Extra {}\nconcept Family { type Item[T Value] }\nimpl Family for Bool { type Item[T Value + Extra] = T }")
+}
+
+test fn associated_families_reject_invalid_arity_cycles_and_dynamic_bindings() {
+    rejects(concat(associated_family_definitions(), "pub fn missing[S Family](source S, value S.Item) {}"))
+    rejects(concat(associated_family_definitions(), "pub fn extra[S Family](source S, value S.Item[Int, Bool]) {}"))
+    rejects("concept Family { type Item[T] }\nimpl Family for Bool { type Item = Int }")
+    rejects("concept Family { type Item[T] }\nimpl Family for Bool { type Item[T, U] = (T, U) }")
+    rejects("concept Family { type Item[T] = Unknown }")
+    rejects("concept Family { type Item[T] }\nimpl Family for Bool { type Item[T] = Self.Item[T] }")
+    rejects("concept Family { type Item[T] }\nimpl Family for Bool { type Item[T] = Self.Item[List[T]] }")
+    rejects("concept Family { type Item[T] = Self.Other[T]\ntype Other[T] = Self.Item[T] }\nimpl Family for Bool {}")
+    discard accepted("concept Family { type Item[T] = Self.Other[T]\ntype Other[T] = Self.Item[T] }\nimpl Family for Bool { type Other[T] = T }")
+    rejects("concept Family { type Item[T] }\npub fn unsupported(value dyn Family[Item = Int]) {}")
+}
+
+test fn associated_family_evidence_forwards_without_leaking_test_conformances() {
+    let declarations = "concept Value { fn value(self Self) Int }\nrecord Item {}\nconcept Family { type Item[T] Value\nfn first(self Self) Self.Item[Int] }\nfn rank[T Value](value T) Int { value.value() }\nfn forward[S Family](source S) Int { rank(source.first()) }\nfn read[S Family](source S) Int { forward(source) }\n"
+    let testing = source_file("app", "impl Value for Item { fn value(self Item) Int { 7 } }\nimpl Family for Bool { type Item[T] = Item\nfn first(self Bool) Item { Item {} } }\ntest fn check_bound() { assert read(true) == 7 }", false)
+    let test_file = TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false }
+    let files = source_files(declarations)
+    push(files, test_file)
+    match bind(fixture_project(files), true) {
+        Result.Ok(bound) => match check(bound) { Result.Ok(_) => {}
+            Result.Err(failed) => { show_failure(fixture_project(files), failed)
+                assert false } }
+        Result.Err(_) => { assert false }
+    }
+    let invalid = source_files(concat(declarations, "pub fn production(value Item) Int { rank(value) }"))
+    push(invalid, test_file)
+    match bind(fixture_project(invalid), true) {
+        Result.Ok(bound) => match check(bound) { Result.Err(_) => {}
+            Result.Ok(_) => { assert false } }
+        Result.Err(_) => { assert false }
+    }
+}
+
+test fn associated_family_output_evidence_cannot_supply_its_own_input_requirement() {
+    let declarations = "concept D {}\nconcept C { type Item[T D] D }\nimpl C for Int { type Item[T] = T }\nfn prime[S C, T D](source S, value T) Bool { comptime if S.Item[T] implements D { true } else { false } }\nfn probe[S C](source S) Bool { comptime if Bool implements D { missing() } else { false } }\n"
+    let files = source_files(declarations)
+    let testing = source_file("app", "impl D for Bool {}\ntest fn check_scope() { assert prime(0, true)\nassert !probe(0) }", false)
+    push(files, TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(fixture_project(files), true) {
+        Result.Ok(bound) => match check(bound) { Result.Ok(_) => {}
+            Result.Err(failed) => { show_failure(fixture_project(files), failed)
+                assert false } }
+        Result.Err(_) => { assert false }
+    }
+}

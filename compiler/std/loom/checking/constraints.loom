@@ -213,6 +213,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
         pending = context.env.pending stage_depth = context.env.stage_depth + 1 computations = context.env.computations validations = context.env.validations
         concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces
         associations = context.env.associations association_depth = context.env.association_depth
+        family_applications = context.env.family_applications promise_path = context.env.promise_path promise_depth = context.env.promise_depth
         witnesses = context.env.witnesses uses = context.env.uses }
     let predicate = expr(predicate_context(env, declaration, context.locals, local, context.emit),
         predicate_node(context.env, declaration), 2)?

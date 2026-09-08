@@ -132,7 +132,11 @@ fn dynamic_type(env Environment, owner Int, node Node, arguments List[Int], obli
     let members = get(env.concepts, concept_index(env, capability)).associated
     let bindings = new[Int]()
     var index = 0
-    while index < length(members) { push(bindings, -1)
+    while index < length(members) {
+        if length(member_parameters(env, get(members, index))) != 0 {
+            return Result.Err(failure(env, owner, node, "dyn does not yet support generic associated type families"))
+        }
+        push(bindings, -1)
         index = index + 1 }
     index = 0
     while index < length(node.children) {
@@ -161,7 +165,7 @@ fn can_widen(context Context, source Int, target Int) Result[Bool, Failure] {
     let members = get(context.env.concepts, concept_index(context.env, capability)).associated
     var index = 0
     while index < length(members) {
-        let actual = associated_type(context.env, context.signature.symbol, get(members, index), source,
+        let actual = associated_type(context.env, context.signature.symbol, get(members, index), source, new[Int](),
             symbol(context.env, context.signature.symbol).node, 0)?
         if actual != get(desired.arguments, index) { return Result.Ok(false) }
         index = index + 1

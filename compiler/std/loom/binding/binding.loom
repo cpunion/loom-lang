@@ -159,6 +159,38 @@ fn names(file Int, nodes List[Node], reserved_types Bool) Result[Bool, Failure] 
     }
     Result.Ok(true)
 }
+fn associated_parameter_names(file Int, node Node, owner Node) Result[Bool, Failure] {
+    var index = 0
+    while index < length(node.children) {
+        let group = get(node.children, index)
+        if group.kind == NodeKind.TypeParameters {
+            var parameter = 0
+            while parameter < length(group.children) {
+                let named = get(group.children, parameter)
+                if named.value == "Self" {
+                    return Result.Err(failure(file, named, "associated type parameter shadows Self"))
+                }
+                var inherited = 0
+                while inherited < length(owner.children) {
+                    let outer = get(owner.children, inherited)
+                    if outer.kind == NodeKind.TypeParameters {
+                        var other = 0
+                        while other < length(outer.children) {
+                            if get(outer.children, other).value == named.value {
+                                return Result.Err(failure(file, named, "associated type parameter shadows an implementation type parameter"))
+                            }
+                            other = other + 1
+                        }
+                    }
+                    inherited = inherited + 1
+                }
+                parameter = parameter + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
 fn declaration_names(file Int, node Node) Result[Bool, Failure] {
     let members = new[Node]()
     var index = 0
@@ -167,6 +199,10 @@ fn declaration_names(file Int, node Node) Result[Bool, Failure] {
         if child.kind == NodeKind.TypeParameters { discard names(file, child.children, true)? }
         if child.kind == NodeKind.Parameters { discard names(file, child.children, false)? }
         if child.kind == NodeKind.Function { discard declaration_names(file, child)? }
+        if child.kind == NodeKind.AssociatedType {
+            discard declaration_names(file, child)?
+            discard associated_parameter_names(file, child, node)?
+        }
         if child.kind == NodeKind.Field || child.kind == NodeKind.Variant || child.kind == NodeKind.AssociatedType { push(members, child) }
         index = index + 1
     }
