@@ -1,0 +1,46 @@
+test fn task_callback_adapters_are_shared_without_mutating_checked_signatures() {
+    let span = test_span()
+    let types = test_types()
+    let task = shape(types, TypeKind.Task, ints(1))
+    let callback = function_type(types, ints(task), task)
+    let ordinary = function_type(types, ints(1), 1)
+    let locals = new[Local]()
+    push(locals, test_local(task))
+    let pass = test_function(ints(task), task, locals,
+        block(one(node(ExprKind.Local, task, span, 0, new[Expr]())), task, span, true))
+    let functions = new[Function]()
+    push(functions, generated(pass, pass.params, task, locals, pass.body))
+    let reference = node(ExprKind.FunctionRef, callback, span, 0, new[Expr]())
+    let body = one(node(ExprKind.Discard, 0, span, -1, one(reference)))
+    push(body, reference)
+    push(functions, generated(pass, new[Int](), callback, new[Local](), block(body, callback, span, true)))
+    let source = Program { types = types functions = functions entry = -1
+        tests = new[Int]() test_names = new[Text]() exports = ints(1)
+        interfaces = new[Interface]() witnesses = new[Witness]() }
+    let native = lower(source)
+    assert length(source.functions) == 2 && length(native.functions) == 3
+    assert length(get(source.types, callback).arguments) == 2
+    assert length(get(native.types, callback).arguments) == 3
+    assert length(get(native.types, ordinary).arguments) == 2
+    assert length(get(native.functions, 0).params) == 1
+    assert length(get(native.functions, 2).params) == 2
+    let selected = get(native.functions, 1).body.children
+    assert get(get(selected, 0).children, 0).index == 2
+    assert get(selected, 1).index == 2
+    assert get(get(source.functions, 1).body.children, 1).index == 0
+
+    // A source no-result async callback and the private task_run entry thunk
+    // initially have the same shape, but only the former takes a call label.
+    let no_result = shape(types, TypeKind.Task, ints(0))
+    let source_callback = function_type(types, new[Int](), no_result)
+    let entries = new[Function]()
+    push(entries, test_function(new[Int](), 0, new[Local](), empty(span)))
+    let executable = lower(Program { types = types functions = entries entry = 0
+        tests = new[Int]() test_names = new[Text]() exports = new[Int]()
+        interfaces = new[Interface]() witnesses = new[Witness]() })
+    assert length(get(executable.types, source_callback).arguments) == 2
+    let run = get(get(executable.functions, executable.entry).body.children, 0)
+    let thunk = get(run.children, 0)
+    assert length(get(executable.types, thunk.ty).arguments) == 1
+    assert length(get(executable.functions, thunk.index).params) == 0
+}

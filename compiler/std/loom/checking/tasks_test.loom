@@ -52,7 +52,7 @@ test fn tasks_cannot_be_lost_duplicated_or_escaped() {
     rejects("async fn item() Int { 1 }\nfn pass(value Task[Int]) {}")
     rejects("async fn item() Int { 1 }\nasync fn main() { let values = [item()]\ndiscard values }")
     rejects("async fn item() Int { 1 }\nasync fn main() { let pair = (item(), 1)\ndiscard pair }")
-    rejects("async fn item() Int { 1 }\nfn main() { let f = item\ndiscard f }")
+    discard accepted("async fn item() Int { 1 }\nfn main() { let f = item\ndiscard f }")
     discard accepted("concept C { async fn item(self Self) Int }")
 }
 
@@ -122,9 +122,8 @@ test fn task_owner_requirements_cannot_escape_through_function_or_compile_time_v
     let owner = "task creation or transfer requires an async function or a direct Task parameter or return type"
     task_rejected(concat(prefix, "fn main() { let task = factory() }"), owner)
     task_rejected(concat(prefix, "fn sink(task Task[Int]) { sink(task) }\nfn main() { sink(item()) }"), owner)
-    let reference = "Task-bearing function values are not yet implemented; call the function directly"
-    task_rejected(concat(prefix, "async fn main() { let callback = factory\ndiscard callback }"), reference)
-    task_rejected(concat(prefix, "fn main() { discard comptime { pass[Task[Int]] } }"), reference)
+    discard accepted(concat(prefix, "fn main() { let callback = factory\ndiscard callback }"))
+    task_rejected(concat(prefix, "fn main() { discard comptime { pass[Task[Int]] } }"), "compile-time evaluation cannot transfer tasks")
     rejects(concat(prefix, "fn ignored(value List[Task[Int]]) {}"))
     task_rejected("fn empty[T]() List[T] { [] }\nfn unused() { discard empty[Task[Int]]() }", "storing tasks in aggregates is not yet implemented")
     rejects(concat(prefix, "fn ignored(value Task[List[Task[Int]]]) Task[List[Task[Int]]] { value }"))

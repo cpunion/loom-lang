@@ -1,0 +1,36 @@
+fn task_callback_header() Text {
+    "async fn item[T](value T) T { value }\nfn forward(task Task[Int]) Task[Int] { task }\nasync fn both(a Task[Int], b Task[Int]) Int { a.await + b.await }\n"
+}
+
+test fn task_callbacks_infer_async_results_and_store_code_not_obligations() {
+    discard accepted(concat(task_callback_header(), "record Hooks { create fn(Int) Task[Int] }\nfn choose() fn(Int) Task[Int] { item }\nasync fn select() fn(Int) Task[Int] { item }\nfn register() List[fn(Int) Task[Int]] { [item[Int], choose()] }\nasync fn main() { let hooks = Hooks { create = item }\nlet saved = register()\nassert hooks.create(1).await == 1\nassert saved[0](2).await == 2\nlet callback = select().await\nlet alias = callback\nassert callback(3).await == 3 && alias(4).await == 4\nlet pass = forward\nassert pass(item(5)).await == 5 }"))
+    let fields = "record Hooks { create fn(Int) Task[Int] }\nconcept Other { fn create(self Self, value Bool) Bool }\nimpl Other for Hooks { fn create(self Hooks, value Bool) Bool { value } }\n"
+    discard accepted(concat(concat(task_callback_header(), fields), "async fn main() { let hooks = Hooks { create = item }\nassert hooks.create(1).await == 1 && hooks.create(true) }"))
+    rejects(concat(task_callback_header(), "fn main() { let callback fn(Int) Int = item\ndiscard callback }"))
+    rejects(concat(task_callback_header(), "fn main() { let callback = item\ndiscard callback }"))
+}
+
+test fn indirect_task_calls_preserve_owner_and_one_shot_boundaries() {
+    let prefix = task_callback_header()
+    let owner = "task creation or transfer requires an async function or a direct Task parameter or return type"
+    task_rejected(concat(prefix, "fn main() { let callback = item[Int]\ndiscard callback(1) }"), owner)
+    task_rejected(concat(prefix, "fn hidden(callback fn() Task[Int]) { let task = callback() }"), owner)
+    task_rejected(concat(prefix, "record Hook { call fn() Task[Int] }\nfn hidden(hook Hook) { let task = hook.call() }"), owner)
+    rejects(concat(prefix, "async fn main() { let callback = item[Int]\ndiscard callback(1) }"))
+    task_rejected(concat(prefix, "async fn main() { let callback = both\nlet task = item(1)\ndiscard callback(task, task).await }"), "this task was already awaited or transferred")
+    task_rejected(concat(prefix, "async fn wrong(flag Bool) { let callback = both\ndiscard callback(item(1), { if flag { return }\nitem(2) }).await }"), "a task argument is still pending; finish its call before returning")
+    task_rejected(concat(prefix, "async fn main() { let callback = item[Int]\ndefer { discard callback(1).await } }"), "await in cleanup bodies is not yet implemented")
+    task_rejected(concat(prefix, "fn main() { discard comptime { item[Int] } }"), "compile-time evaluation cannot create or await tasks")
+}
+
+test fn task_callbacks_do_not_erase_resource_or_private_wait_rules() {
+    suspension_reject(concat(suspension_header(), "async fn wrong(value Token) Int { value.id }\nfn main() { discard wrong }"), "async parameters cannot contain NoSuspend values")
+    resource_reject(concat(resource_header(), "async fn wrong(value Handle) Int { 1 }\nfn main() { discard wrong }"))
+    rejects(concat(task_callback_header(), "fn wrong(callback fn() Task[List[Task[Int]]]) Task[List[Task[Int]]] { callback() }"))
+    let files = source_files("import std.time.bad\nfn main() { bad() }")
+    push(files, source_file("std.time", "async intrinsic fn timer_until_ns(deadline Int)\npub fn bad() { discard timer_until_ns }", true))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "private async intrinsics must be awaited directly",
+        Result.Ok(_) => false
+    }
+}

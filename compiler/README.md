@@ -1303,7 +1303,8 @@ cannot justify a scoped initializer. Direct calls still use checked body evidenc
 
 This synchronous slice conservatively rejects nested resource aggregates and
 resource lists, and matching a resource itself.
-Aggregate-transfer cleanup and cleanup across async suspension remain open.
+Aggregate-transfer cleanup remains open. Lexical cleanup across suspension is
+supported as described in [Source Tasks](#source-tasks).
 
 `break` exits the nearest enclosing `while` body; `continue` reevaluates that
 loop's condition. Both run the defers of scopes they leave, but not defers
@@ -1370,7 +1371,25 @@ including creation-site diagnostics and Task argument adoption. Synchronous dyna
 methods can forward Task parameters/results without installing an owner. See the
 [method example](examples/async_methods). Async parameters cannot contain MustScope
 or NoSuspend values, and scoped receivers cannot escape into child Tasks.
-Task-bearing aggregates and function values remain unsupported.
+Named async functions can also be passed as ordinary function values:
+
+```loom
+async fn item(value Int) Int { value }
+fn select() fn(Int) Task[Int] { item }
+async fn main() {
+    let callback = select()
+    assert callback(7).await == 7
+}
+```
+
+Synchronous Task factories use the same callable type. They execute inline;
+async bodies run from the ready queue. Callbacks can be copied and stored in
+records/Lists or returned through Tasks. Calling them retains owner requirements
+and one-shot Task transfers; code pointers are not Task obligations. Only
+Task-returning callback signatures carry a private creation label, with no extra
+runtime dispatch. Compile-time Task references, capturing closures and actual
+Task-bearing aggregates remain unsupported. See the [callback example](examples/task_callbacks).
+
 `std.file.tasks.read_bytes/read_text/write_bytes/write_text` return ordinary Tasks
 and run open/create, read/write and normal close on a native pool of at most four threads per
 owner. See the [file task package](examples/async_files). Source code owns I/O

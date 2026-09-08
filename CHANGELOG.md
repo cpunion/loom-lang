@@ -5,6 +5,15 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Support named async function values and synchronous Task factories with the
+  same structural callable type. Preserve one-shot transfers and indirect creation
+  locations through native code pointers, including record/List storage and
+  suspension. Ordinary callbacks keep their ABI; capturing closures and stored
+  Task aggregates remain unfinished.
+
+- Retain lexical cleanup across suspension, add worker-backed file Tasks, and
+  support async methods through concrete, generic and sparse dynamic witnesses.
+
 - Support direct Task parameters and returns, including generic forwarding and
   nested Task results. Async callees adopt argument subtrees; completed producers
   retain returned children until extraction. Check one-shot obligations at entry,
@@ -27,9 +36,8 @@ implementation, not a compatibility ledger for previous prototypes.
   `test async fn`, postfix `.await`/`.await?`, and one-shot local obligations.
   Loom lowers typed frames and resume functions for a single-threaded CPU ready
   queue, with fault propagation and cancellation of queued/suspended descendants.
-  Asynchronous file/socket/worker I/O, joins, suspended cleanup, Task-bearing
-  aggregates, and async methods/function values remain
-  unfinished.
+  Socket adapters, general worker operations, joins and Task-bearing aggregates
+  remain unfinished.
 
 - Add a private native resume fault boundary: drain live lexical cleanups,
   restore GC roots, then unwind through LLVM frames into an owned diagnostic.
@@ -37,11 +45,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 - Add private owner-scoped frame roots over the existing moving collector,
   with dense scanning, generation-checked reuse and noncollecting handoff.
-  Generated coroutine frames reuse these roots; suspended cleanup remains unfinished.
+  Generated coroutine frames and suspended cleanup reuse these roots.
 
 - Add a private portable wait ABI for timers, native readiness and worker
   completion, with one-shot delivery and generation-checked cancellation.
-  Source timers use this path; source asynchronous I/O remains unfinished.
+  Source timers and asynchronous file operations use this path.
   Final executable links discard unreferenced runtime sections; library objects
   keep their existing export/reachability policy.
 

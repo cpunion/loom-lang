@@ -99,7 +99,7 @@ fn function_body(source Function, body Expr) Function {
     }
 }
 
-fn async_function(program Program, id Int) {
+fn async_function(program Program, callbacks List[Int], id Int) {
     let source = get(program.functions, id)
     let frame = length(program.types)
     push(program.types, Type {
@@ -133,14 +133,14 @@ fn async_function(program Program, id Int) {
         result = source.result
         span = source.span
     }
-    let source_body = remap(program, source.body, 1)
+    let source_body = remap(program, callbacks, source.body, 1)
     let captures = flags(length(locals))
     let cleanups = new[CleanupPlan]()
     cleanup_plans(source_body, locals, cleanups, captures)
     let first = state(graph)
     index = 0
     while index < length(source.preconditions) {
-        let guard = labeled(node(ExprKind.Assert, 0, source.span, -1, one(remap(program, get(source.preconditions, index), 1))), "precondition failed")
+        let guard = labeled(node(ExprKind.Assert, 0, source.span, -1, one(remap(program, callbacks, get(source.preconditions, index), 1))), "precondition failed")
         append(graph, first, guard)
         index = index + 1
     }
@@ -349,11 +349,21 @@ fn native_interfaces(interfaces List[Interface]) List[Interface] {
         while slot < length(source.methods) {
             let method = get(source.methods, slot)
             let params = clone(method.params)
-            if method.is_async { push(params, 3) }
-            push(methods, Method { is_async = false name = method.name params = params result = method.result })
+            if method.is_async {
+                push(params, 3)
+            }
+            push(methods, Method {
+                    is_async = false
+                    name = method.name
+                    params = params
+                    result = method.result
+                })
             slot = slot + 1
         }
-        push(lowered, Interface { symbol = source.symbol methods = methods })
+        push(lowered, Interface {
+                symbol = source.symbol
+                methods = methods
+            })
         index = index + 1
     }
     lowered
@@ -378,6 +388,11 @@ pub fn lower(source Program) Program {
         }
         index = index + 1
     }
+    index = 0
+    while !any && index < length(source.types) {
+        any = task_callback(source.types, get(source.types, index))
+        index = index + 1
+    }
     if !any {
         return source
     }
@@ -391,16 +406,30 @@ pub fn lower(source Program) Program {
         interfaces = source.interfaces
         witnesses = source.witnesses
     }
+    let callbacks = new[Int]()
+    index = 0
+    while index < length(source.functions) {
+        let function = get(source.functions, index)
+        push(callbacks, if !function.is_async && get(source.types, function.result).kind == TypeKind.Task {
+                -1
+            } else {
+                index
+            })
+        index = index + 1
+    }
     index = 0
     while index < length(source.functions) {
         let function = get(source.functions, index)
         if function.is_async {
-            async_function(program, index)
+            async_function(program, callbacks, index)
         } else {
-            set(program.functions, index, function_body(function, remap(program, function.body, 0)))
+            set(program.functions, index, function_body(function, remap(program, callbacks, function.body, 0)))
         }
         index = index + 1
     }
+    // The private task_run thunk has no label parameter. Create its native
+    // function type after source callback signatures have been transformed.
+    native_callbacks(program.types, length(source.types))
     let entry = if source.entry >= 0 && get(source.functions, source.entry).is_async {
         root_wrapper(program, source.entry)
     } else {

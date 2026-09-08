@@ -143,7 +143,13 @@ methods keep ordinary specialization and sparse witnesses. Direct Task transfers
 also work through synchronous dynamic methods. Scoped receiver transfer remains
 unsupported. See the [method example](compiler/examples/async_methods).
 
-The next async gates are Task-bearing aggregates and function values,
+Named async function values now use `fn(A) Task[B]`, like synchronous Task
+factories. Callbacks can be copied, returned and stored without retaining a Task;
+actual calls preserve owner requirements, creation locations and one-shot transfers.
+Native callbacks remain one code pointer. See the
+[callback example](compiler/examples/task_callbacks).
+
+The next async gates are Task-bearing aggregates,
 socket readiness adapters, general worker
 operations and joins. Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
@@ -268,8 +274,8 @@ bindings and discard. Direct factories and immediate single-payload Result/Optio
 transfer are supported. MustScope results retain their fresh-return obligation
 through runtime function values and dynamic factory methods; every selected
 implementation is checked. A Dispose-only callback result has no such guarantee.
-Nested resource aggregates and cleanup across suspension remain open; this is not the
-complete resource-cleanup gate.
+Nested resource aggregates remain open; suspended lexical cleanup is implemented
+as described above, not a general resource-transfer facility.
 
 List literals now share typed/native/compile-time semantics. Runtime literals
 allocate known capacity once and store elements directly; general compile-time

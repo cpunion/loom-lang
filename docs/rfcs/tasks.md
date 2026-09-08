@@ -111,7 +111,14 @@ Async MustScope/NoSuspend parameters and scoped receiver escape remain rejected;
 this does not establish a structured resource lifetime across a child call.
 See the [method example](../../compiler/examples/async_methods).
 
-Task-bearing aggregates and function values,
+Named async references have type `fn(A) Task[B]`, shared with synchronous Task
+factories. Copying or storing the code pointer creates no Task; invoking it retains
+the direct-call owner and one-shot obligations. Async constructors receive the
+actual indirect call location. A synchronous factory runs inline and creates any
+children at its own body call sites. The [callback example](../../compiler/examples/task_callbacks)
+covers both. Compile-time Task references and capturing closures remain unsupported.
+
+Task-bearing aggregates,
 socket adapters, general worker operations
 and joins are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread. Public outcome inspection remains
