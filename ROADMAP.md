@@ -114,6 +114,9 @@ scheduling, task-local faults, cancellation and source I/O/composition. See the
 [accepted Task design](docs/rfcs/tasks.md); reactor tests alone do not close it.
 Frame-root storage now reuses one outer root frame and a dense live set; ordinary
 functions gain no executor or per-call persistent-root registration.
+The native resume fault boundary drains live cleanups and restores roots before
+unwinding into an owned diagnostic. Source outcome propagation and suspended
+cleanup still belong to the remaining async integration gate.
 
 Extend the self-hosted path with the remaining accepted capabilities:
 
@@ -228,8 +231,8 @@ required proofs and cross-dyn conversions remain open.
 Lexical `defer` handles block completion, return, `Result?`, `break` and `continue`,
 preserving LIFO order and saved result values. Native stack registrations also
 drain synchronous language faults before process termination, preserving the
-first error if a cleanup faults. This is not exception unwinding; OOM and external
-termination do not guarantee cleanup. Synchronous `scoped` now selects the source
+first error if a cleanup faults. Only an explicit native resume boundary catches
+faults; OOM and external termination do not guarantee cleanup. Synchronous `scoped` now selects the source
 Dispose capability and checks resource escape; MustScope also rejects ordinary
 bindings and discard. Direct factories and immediate single-payload Result/Option
 transfer are supported. MustScope results retain their fresh-return obligation

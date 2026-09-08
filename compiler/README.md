@@ -1243,8 +1243,9 @@ Required proofs still inspect the lowered function; unsupported proofs reject.
 
 The [cleanup example](examples/cleanup/main.loom) exercises these exits and GC
 snapshots. Fault draining preserves the first diagnostic and runs remaining
-callbacks even if a cleanup faults. It terminates the process; it is not exception
-unwinding or recovery. OOM, internal runtime corruption, external process signals,
+callbacks even if a cleanup faults. Ordinary source programs still terminate;
+the private native resume catcher is not source-level recovery. OOM, internal
+runtime corruption, external process signals,
 and explicit process termination do not guarantee cleanup. Task cancellation
 remains unimplemented.
 
