@@ -20,21 +20,32 @@ fn task_type(state State, ty Int) Bool {
     if ty < 0 || ty >= length(state.program.types) {
         return false
     }
+    if ty <= 5 { return false }
+    while length(state.task_types) <= ty { push(state.task_types, -1) }
+    if get(state.task_types, ty) >= 0 { return get(state.task_types, ty) == 1 }
     let shape = get(state.program.types, ty)
-    if shape.kind == TypeKind.Task {
-        return true
-    }
-    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
-        return false
-    }
-    var index = 0
-    while index < length(shape.fields) {
-        if task_type(state, get(shape.fields, index).ty) {
-            return true
+    var found = shape.kind == TypeKind.Task
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+        var index = 0
+        while !found && index < length(shape.fields) {
+            found = task_type(state, get(shape.fields, index).ty)
+            index = index + 1
         }
-        index = index + 1
     }
-    false
+    if shape.kind == TypeKind.Enum {
+        var variant = 0
+        while !found && variant < length(shape.variants) {
+            let fields = get(shape.variants, variant).fields
+            var field = 0
+            while !found && field < length(fields) {
+                found = task_type(state, get(fields, field))
+                field = field + 1
+            }
+            variant = variant + 1
+        }
+    }
+    set(state.task_types, ty, if found { 1 } else { 0 })
+    found
 }
 
 fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) Result[Bool, Failure] {

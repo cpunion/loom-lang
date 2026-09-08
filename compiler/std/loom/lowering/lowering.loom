@@ -99,7 +99,7 @@ fn function_body(source Function, body Expr) Function {
     }
 }
 
-fn async_function(program Program, callbacks List[Int], id Int) {
+fn async_function(program Program, callbacks List[Int], task_types List[Int], id Int) {
     let source = get(program.functions, id)
     let frame = length(program.types)
     push(program.types, Type {
@@ -149,7 +149,7 @@ fn async_function(program Program, callbacks List[Int], id Int) {
             again = -1
         })
     finish(graph, output.state, Exit.Complete, output.expression, new[Edge](), new[Arm]())
-    task_results(program, graph)
+    task_results(program, task_types, graph)
     let live = flows(graph)
     let needed = flags(length(graph.locals))
     index = 0
@@ -270,15 +270,15 @@ fn async_function(program Program, callbacks List[Int], id Int) {
     push(params, 3)
     let create = operation("task_create", task, source.span, values)
     let body = new[Expr]()
-    let transfers = new[Expr]()
+    var transfers = false
     var owner = -1
     index = 0
     while index < length(source.params) {
         let parameter = get(source.params, index)
-        task_members(program.types, node(ExprKind.Local, parameter, source.span, index, new[Expr]()), transfers)
+        transfers = transfers || task_present(program.types, task_types, parameter)
         index = index + 1
     }
-    if length(transfers) > 0 {
+    if transfers {
         owner = length(constructor_locals)
         push(constructor_locals, Local {
                 name = ""
@@ -288,9 +288,13 @@ fn async_function(program Program, callbacks List[Int], id Int) {
             })
         push(body, node(ExprKind.Let, 0, source.span, owner, one(create)))
         index = 0
-        while index < length(transfers) {
-            push(body, operation("task_adopt", 0, source.span,
-                    pair(node(ExprKind.Local, task, source.span, owner, new[Expr]()), get(transfers, index))))
+        while index < length(source.params) {
+            let parameter = get(source.params, index)
+            if task_present(program.types, task_types, parameter) {
+                push(body, task_visit(program.types, task_types, constructor_locals,
+                    node(ExprKind.Local, parameter, source.span, index, new[Expr]()),
+                    node(ExprKind.Local, task, source.span, owner, new[Expr]()), false))
+            }
             index = index + 1
         }
     }
@@ -398,6 +402,7 @@ pub fn lower(source Program) Program {
         witnesses = source.witnesses
     }
     let callbacks = new[Int]()
+    let task_types = new[Int]()
     index = 0
     while index < length(source.functions) {
         let function = get(source.functions, index)
@@ -412,7 +417,7 @@ pub fn lower(source Program) Program {
     while index < length(source.functions) {
         let function = get(source.functions, index)
         if function.is_async {
-            async_function(program, callbacks, index)
+            async_function(program, callbacks, task_types, index)
         } else {
             set(program.functions, index, function_body(function, remap(program, callbacks, function.body, 0)))
         }

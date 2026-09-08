@@ -24,5 +24,6 @@ itself is transferred. The example exercises this with nested tuples, generic
 forwarding, a callback, shared data and timers.
 
 This is aggregate transfer, not a join API or tuple `.await` sugar. Await each
-Task explicitly. Task-bearing Lists and enums remain unsupported; shared-container
-transfer and multi-task completion observation are the next composition boundaries.
+Task explicitly. [Enums](../task_enums) also support Task payloads. Task-bearing
+Lists remain unsupported; shared-container transfer and multi-task completion
+observation are the next composition boundaries.

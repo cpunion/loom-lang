@@ -1388,7 +1388,7 @@ records/Lists or returned through Tasks. Calling them retains owner requirements
 and one-shot Task transfers; code pointers are not Task obligations. Only
 Task-returning callback signatures carry a private creation label, with no extra
 runtime dispatch. Compile-time Task references, capturing closures and actual
-Task-bearing Lists/enums remain unsupported. See the [callback example](examples/task_callbacks).
+Task-bearing Lists remain unsupported. See the [callback example](examples/task_callbacks).
 
 Tuples and records now transfer Task fields individually or as whole values:
 
@@ -1409,6 +1409,14 @@ before extracting one field if other Task fields would be discarded. Async calls
 adopt all parameter Tasks, and completed producers retain all returned subtrees
 until extraction. This is not tuple-await sugar or a join API. See the
 [aggregate example](examples/task_aggregates).
+
+Enums, including `Option[Task[T]]` and `Result[Task[T], E]`, transfer through
+ordinary `match` and `?`. Matching consumes the enum once and binds its active
+payload; every bound Task must then be awaited or transferred. A wildcard can
+cover remaining Task-free variants, but cannot discard Task-bearing payloads.
+Async calls adopt and retain only the active variant's children, with no new
+runtime representation or Task allocation for empty variants. See the
+[enum example](examples/task_enums).
 
 `std.file.tasks.read_bytes/read_text/write_bytes/write_text` return ordinary Tasks
 and run open/create, read/write and normal close on a native pool of at most four threads per

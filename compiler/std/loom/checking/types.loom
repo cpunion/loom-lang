@@ -49,6 +49,7 @@ fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
     }
     push(env.types, Type { kind = kind symbol = symbol arguments = arguments fields = fields variants = new[Variant]() constraint = new[Expr]() })
     push(env.type_states, 2)
+    push(env.task_widths, -1)
     length(env.types) - 1
 }
 fn tuple_type(env Environment, owner Int, node Node, elements List[Int]) Result[Int, Failure] {
@@ -191,6 +192,7 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
     let placeholder = simple_type(kind, declaration, arguments)
     push(env.types, placeholder)
     push(env.type_states, 0)
+    push(env.task_widths, -1)
     if env.expand_data { discard expand_type(env, id, depth)? }
     Result.Ok(id)
 }

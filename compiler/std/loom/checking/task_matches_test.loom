@@ -1,0 +1,34 @@
+fn task_enum_header() Text {
+    "enum Choice[T] { Some(T) Empty Failed(Text) }\nasync fn item(value Int) Int { value }\nfn pass[T](value T) T { value }\nfn start() Choice[Task[Int]] { Choice.Some(item(7)) }\n"
+}
+
+test fn task_enums_transfer_active_payloads_and_allow_task_free_remainders() {
+    let prefix = task_enum_header()
+    discard accepted(concat(prefix, "async fn relay[T](value T) T { value }\nasync fn main() { let value = relay(pass(start())).await\nmatch value { Choice.Some(task) => { assert task.await == 7 }, _ => {} } }") )
+    discard accepted(concat(prefix, "async fn use(value Choice[Task[Int]]) Int { match value { Choice.Empty => 0, rest => { match rest { Choice.Some(task) => task.await, _ => 0 } } } }\nasync fn main() { assert use(start()).await == 7\nassert use(Choice.Empty()).await == 0 }") )
+    discard accepted(concat(prefix, "async fn main() { let value Choice[(Task[Int], Task[Int])] = Choice.Some((item(1), item(2)))\nmatch value { Choice.Some(pair) => { let a, b = pair\nassert a.await + b.await == 3 }, _ => {} } }") )
+    discard accepted_result("import std.result.Result\nasync fn item() Int { 1 }\nfn forward(value Result[Task[Int], Text]) Result[Task[Int], Text] { Result.Ok(value?) }\nasync fn use(value Result[Task[Int], Text]) Result[Int, Text] { let task = value?\nResult.Ok(task.await) }\nasync fn main() { discard use(forward(Result.Ok(item()))).await\ndiscard use(forward(Result.Err(\"none\"))).await }")
+    discard accepted_result("import std.result.Result\nfn forward(value Result[Int, Task[Int]]) Result[Int, Task[Int]] { Result.Ok(value?) }")
+}
+
+test fn task_enums_reject_dropped_duplicated_and_unbound_payloads() {
+    let prefix = task_enum_header()
+    task_rejected(concat(prefix, "async fn main() { match start() { Choice.Some(_) => {}, _ => {} } }"), "a Task-bearing match payload must be bound and consumed")
+    task_rejected(concat(prefix, "async fn main() { match start() { Choice.Empty => {}, _ => {} } }"), "a wildcard cannot discard Task-bearing variants")
+    task_rejected(concat(prefix, "async fn main() { match start() { Choice.Some(task) => {}, _ => {} } }"), "a Task-bearing match payload must be awaited or transferred")
+    task_rejected(concat(prefix, "async fn main() { match start() { Choice.Some(task) => { discard task.await\ndiscard task.await }, _ => {} } }"), "this task was already awaited or transferred")
+    rejects(concat(prefix, "async fn main() { let value = start()\nlet copied = pass(value)\nlet again = value }") )
+    rejects(concat(prefix, "async fn main() { var value = start()\nvalue = Choice.Empty() }") )
+    rejects(concat(prefix, "async fn main() { discard start() }") )
+    rejects(concat(prefix, "async fn main() { let values = [start()] }") )
+    rejects(concat(prefix, "async fn main() { while true { match start() { Choice.Some(task) => { break }, _ => {} } } }") )
+    task_rejected(concat(prefix, "enum Two { Pair(Task[Int], Int) }\nasync fn wrong(flag Bool) { let value = Two.Pair(item(1), { if flag { return }\n2 })\nmatch value { Two.Pair(task, _) => { discard task.await } } }"), "a task argument is still pending; finish its call before returning")
+}
+
+test fn task_enums_preserve_owner_purity_and_resource_rules() {
+    task_rejected(concat(task_enum_header(), "fn hidden() { let value = start() }"), "task creation or transfer requires an async function or a Task-bearing parameter or return type")
+    task_rejected(concat(task_enum_header(), "fn main() { discard comptime { pass[Choice[Task[Int]]] } }"), "compile-time evaluation cannot transfer tasks")
+    resource_reject(concat(resource_header(), "enum Held { Some(Task[Handle]) None }\nfn transfer(value Held) Held { value }"))
+    suspension_reject(concat(suspension_header(), "enum Held { Some(Task[Token]) None }\nfn transfer(value Held) Held { value }"), "Task results cannot contain NoSuspend values")
+    rejects(concat(task_enum_header(), "enum Shared { Some(List[Task[Int]]) None }\nfn transfer(value Shared) Shared { value }"))
+}

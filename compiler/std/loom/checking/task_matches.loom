@@ -1,0 +1,70 @@
+fn task_bind(flow TaskFlow, local Int) {
+    var index = get(flow.offsets, local)
+    while index < get(flow.offsets, local + 1) {
+        set(flow.locals, index, 1)
+        index = index + 1
+    }
+}
+
+fn task_variant(env Environment, ty Int, variant Int) Bool {
+    let fields = get(get(env.types, ty).variants, variant).fields
+    var index = 0
+    while index < length(fields) {
+        if task_value(env, get(fields, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+
+fn task_match_bindings(flow TaskFlow, value Expr, ty Int, arm Arm, covered List[Int]) Result[Bool, Failure] {
+    if arm.variant >= 0 {
+        push(covered, arm.variant)
+        let fields = get(get(flow.context.env.types, ty).variants, arm.variant).fields
+        var index = 0
+        while index < length(fields) {
+            let local = get(arm.bindings, index)
+            if local >= 0 { task_bind(flow, local) } else {
+                if task_value(flow.context.env, get(fields, index)) {
+                    return Result.Err(task_error(flow, value, "a Task-bearing match payload must be bound and consumed"))
+                }
+            }
+            index = index + 1
+        }
+    } else {
+        if arm.whole >= 0 { task_bind(flow, arm.whole) } else {
+            if task_value(flow.context.env, ty) {
+                let shape = get(flow.context.env.types, ty)
+                var drops = shape.kind != TypeKind.Enum
+                var variant = 0
+                while variant < length(shape.variants) {
+                    drops = drops || (!resource_seen(covered, variant) && task_variant(flow.context.env, ty, variant))
+                    variant = variant + 1
+                }
+                if drops { return Result.Err(task_error(flow, value, "a wildcard cannot discard Task-bearing variants")) }
+            }
+        }
+    }
+    Result.Ok(true)
+}
+
+fn task_binding_consumed(flow TaskFlow, value Expr, local Int) Result[Bool, Failure] {
+    if local < 0 { return Result.Ok(true) }
+    var index = get(flow.offsets, local)
+    while index < get(flow.offsets, local + 1) {
+        if get(flow.locals, index) != 0 {
+            return Result.Err(task_error(flow, value, "a Task-bearing match payload must be awaited or transferred"))
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn task_match_consumed(flow TaskFlow, value Expr, arm Arm) Result[Bool, Failure] {
+    discard task_binding_consumed(flow, value, arm.whole)?
+    var index = 0
+    while index < length(arm.bindings) {
+        discard task_binding_consumed(flow, value, get(arm.bindings, index))?
+        index = index + 1
+    }
+    Result.Ok(true)
+}

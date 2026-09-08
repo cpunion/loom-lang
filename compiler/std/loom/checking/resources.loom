@@ -224,7 +224,7 @@ fn resource_unreached(env Environment, roots List[Int]) Result[Bool, Failure] {
     if resource_concept(env, "Dispose") < 0 && resource_concept(env, "MustScope") < 0 { return Result.Ok(true) }
     // Keep diagnostic-only instances out of native reachability. Generic
     // bodies retain obligations until a concrete specialization is selected.
-    let analysis = Environment { source = env.source types = env.types type_states = env.type_states expand_data = true
+    let analysis = Environment { source = env.source types = env.types type_states = env.type_states task_widths = env.task_widths expand_data = true
         has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers signatures = env.signatures
         pending = new[Instance]() stage_depth = env.stage_depth computations = env.computations validations = env.validations
         concepts = env.concepts implementations = env.implementations interfaces = env.interfaces
