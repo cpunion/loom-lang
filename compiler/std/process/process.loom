@@ -39,6 +39,7 @@ fn outcome(status Int) Result[Int, SpawnError] {
 pub fn run(arguments List[Text]) Result[Int, SpawnError] { outcome(process_run(arguments)) }
 
 // Writes input to the child's stdin, closes it, then waits for the exit status.
+// Incomplete input delivery returns Failed; stdout/stderr remain inherited.
 pub fn run_input(arguments List[Text], input Text) Result[Int, SpawnError] {
     outcome(process_run_input(arguments, input))
 }

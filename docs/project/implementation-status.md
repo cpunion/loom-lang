@@ -185,6 +185,9 @@ contents or mutating the process environment. Binary `capture_input` adds a copi
 stdin buffer and a concurrent writer to the same capture implementation; early
 stdin closure retains child output/status. Native-default SIGPIPE handling is
 pipe-local on macOS and writer-thread-local on Linux, not a global policy change.
+Text `run_input` uses the same protected writer but retains its stricter delivery
+contract: incomplete input returns `Failed` after reaping the child, with inherited
+stdout/stderr unchanged.
 The source resolver configures these mechanisms for public HTTPS Git, while
 private authentication remains open. None admits external state into compile-time
 evaluation.
