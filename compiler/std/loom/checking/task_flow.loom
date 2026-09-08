@@ -146,6 +146,9 @@ fn task_operands(flow TaskFlow, values List[Expr]) Result[Bool, Failure] {
 fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure] {
     let shape = get(flow.context.env.types, value.ty)
     let task = shape.kind == TypeKind.Task
+    if value.kind == ExprKind.Suspend && task {
+        return Result.Err(task_error(flow, value, "private async intrinsics must be awaited directly"))
+    }
     if !task && contains_task(flow.context.env, value.ty, new[Int]()) {
         return Result.Err(task_error(flow, value, "storing tasks in aggregates is not yet implemented"))
     }
@@ -168,6 +171,13 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
             return Result.Err(task_error(flow, value, "a NoSuspend operand is still pending; finish its operation before awaiting"))
         }
         return Result.Ok(task)
+    }
+    if value.kind == ExprKind.Suspend {
+        discard task_operands(flow, value.children)?
+        if get(flow.pending, 1) != 0 {
+            return Result.Err(task_error(flow, value, "a NoSuspend operand is still pending; finish its operation before awaiting"))
+        }
+        return Result.Ok(false)
     }
     // A deferred call retains its runtime arguments during abstract checking.
     // Other Deferred expressions have no children and cannot hide transfers.
@@ -307,7 +317,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
 // One seen set covers the whole body, including otherwise empty generic
 // aggregates. Ordinary calls do not repeatedly traverse the same type graph.
 fn task_nodes(value Expr, env Environment, seen List[Int]) Bool {
-    if value.kind == ExprKind.TaskCall || value.kind == ExprKind.Await || contains_task(env, value.ty, seen) {
+    if value.kind == ExprKind.TaskCall || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend || contains_task(env, value.ty, seen) {
         return true
     }
     var index = 0

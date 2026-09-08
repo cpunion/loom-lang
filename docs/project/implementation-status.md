@@ -44,11 +44,15 @@ stale completion; cancellation removes active registrations before handles may
 close. Focused tests exercise actual timers and localhost sockets. Source timer
 Tasks now use this notification path. `std.file.tasks` adds byte/text reads and
 writes using lazily created native workers, capped at four threads per owner.
-Workers own native File duplicates and copied buffers, never managed pointers;
+Workers own native Files and copied buffers, never managed pointers;
 the owner copies completed reads into GC-rooted Bytes. Source code owns partial-I/O
 loops, UTF-8 checks, errors and explicit close. Queued cancellation drops inputs;
-running cancellation drains the OS call before parent cleanup. Open/close and
-duplication remain synchronous, and a stuck native call can delay cancellation.
+running cancellation drains the OS call before parent cleanup. Open/create and
+normal close also use workers. An unclaimed open result retains native ownership
+until extraction or cancellation; close takes the private token exactly once.
+Handle duplication and failure-cleanup close remain synchronous, and a stuck
+native call can delay cancellation. Private async intrinsics suspend their caller
+directly and cannot escape as Tasks; public async functions still create hot Tasks.
 See the [file task example](../../compiler/examples/async_files).
 Executable links enable native dead-section removal so an unused reactor does
 not enter synchronous program artifacts. Library object exports are unchanged.

@@ -536,6 +536,29 @@ impl Converter<'_> {
         result: Type,
     ) -> Result<()> {
         match operation {
+            Primitive::TaskWaitFileOpen => {
+                if arguments[0].ty != Type::Text
+                    || arguments[1].ty != Type::Bool
+                    || result != Type::Bool
+                {
+                    return Err("checked file open wait signature mismatch".into());
+                }
+            }
+            Primitive::TaskWaitFileClose | Primitive::FileAbort => {
+                let expected = if operation == Primitive::FileAbort {
+                    Type::Int
+                } else {
+                    Type::Bool
+                };
+                if arguments[0].ty != Type::Int || result != expected {
+                    return Err("checked file close signature mismatch".into());
+                }
+            }
+            Primitive::TaskFileOpenResult => {
+                if result != Type::Int {
+                    return Err("checked file open result requires Int".into());
+                }
+            }
             Primitive::TaskWaitFileRead => {
                 if arguments.iter().any(|argument| argument.ty != Type::Int) || result != Type::Bool
                 {
@@ -1211,6 +1234,10 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_wait_file_write_bytes" => P::TaskWaitFileWriteBytes,
         "task_file_result" => P::TaskFileResult,
         "task_file_read_result" => P::TaskFileReadResult,
+        "task_wait_file_open" => P::TaskWaitFileOpen,
+        "task_wait_file_close" => P::TaskWaitFileClose,
+        "task_file_open_result" => P::TaskFileOpenResult,
+        "file_abort" => P::FileAbort,
         "clock_monotonic_ns" => P::MonotonicNs,
         _ => return Err("unknown private checked runtime operation".into()),
     })
@@ -1219,7 +1246,12 @@ fn primitive(value: &str) -> Result<Primitive> {
 fn primitive_arity(operation: Primitive) -> usize {
     use Primitive as P;
     match operation {
-        P::ArgCount | P::BytesNew | P::ListNew | P::MonotonicNs | P::TaskFileResult => 0,
+        P::ArgCount
+        | P::BytesNew
+        | P::ListNew
+        | P::MonotonicNs
+        | P::TaskFileResult
+        | P::TaskFileOpenResult => 0,
         P::FloatFromInt
         | P::FloatToInt
         | P::FloatParse
@@ -1249,7 +1281,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskResult
         | P::TaskRelease
         | P::TaskRun => 1,
-        P::TaskWaitTimer | P::TaskFileReadResult => 1,
+        P::TaskWaitTimer | P::TaskFileReadResult | P::TaskWaitFileClose | P::FileAbort => 1,
         P::TextByte
         | P::TextConcat
         | P::TextEqual
@@ -1264,6 +1296,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskAdopt
         | P::TaskCleanupPush
         | P::TaskWaitFileRead
+        | P::TaskWaitFileOpen
         | P::PathRename => 2,
         P::TextSlice
         | P::BytesSet

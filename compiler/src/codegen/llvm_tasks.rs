@@ -130,28 +130,23 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskWaitTimer
             | Primitive::TaskWaitFileRead
             | Primitive::TaskWaitFileWrite
-            | Primitive::TaskWaitFileWriteBytes => {
-                let operation = match operation {
-                    Primitive::TaskAwait => "task_await",
-                    Primitive::TaskWaitFileRead => "task_wait_file_read",
-                    Primitive::TaskWaitFileWrite => "task_wait_file_write",
-                    Primitive::TaskWaitFileWriteBytes => "task_wait_file_write_bytes",
-                    _ => "task_wait_timer",
-                };
-                let ready = self
-                    .runtime_call(operation, Some(self.context.i32_type().into()), values)?
-                    .ok_or("missing task readiness")?
-                    .into_int_value();
-                Ok(Some(
-                    self.builder
-                        .build_int_compare(
-                            IntPredicate::NE,
-                            ready,
-                            self.context.i32_type().const_zero(),
-                            "task.ready",
-                        )?
-                        .into(),
-                ))
+            | Primitive::TaskWaitFileWriteBytes
+            | Primitive::TaskWaitFileClose => self.task_ready(operation, values),
+            Primitive::TaskWaitFileOpen => {
+                let flag = self.builder.build_int_z_extend(
+                    values[1].into_int_value(),
+                    self.context.i32_type(),
+                    "file.create",
+                )?;
+                self.task_ready(operation, &[values[0], flag.into()])
+            }
+            Primitive::TaskFileOpenResult => self.runtime_call(
+                "task_file_open_result",
+                Some(self.context.i64_type().into()),
+                values,
+            ),
+            Primitive::FileAbort => {
+                self.runtime_call("file_abort", Some(self.context.i64_type().into()), values)
             }
             Primitive::TaskResult => {
                 let frame = self
@@ -196,5 +191,35 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
             _ => Err("expected a lowered task primitive".into()),
         }
+    }
+
+    fn task_ready(
+        &mut self,
+        operation: Primitive,
+        values: &[BasicValueEnum<'ctx>],
+    ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
+        let name = match operation {
+            Primitive::TaskAwait => "task_await",
+            Primitive::TaskWaitFileRead => "task_wait_file_read",
+            Primitive::TaskWaitFileWrite => "task_wait_file_write",
+            Primitive::TaskWaitFileWriteBytes => "task_wait_file_write_bytes",
+            Primitive::TaskWaitFileOpen => "task_wait_file_open",
+            Primitive::TaskWaitFileClose => "task_wait_file_close",
+            _ => "task_wait_timer",
+        };
+        let ready = self
+            .runtime_call(name, Some(self.context.i32_type().into()), values)?
+            .ok_or("missing task readiness")?
+            .into_int_value();
+        Ok(Some(
+            self.builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    ready,
+                    self.context.i32_type().const_zero(),
+                    "task.ready",
+                )?
+                .into(),
+        ))
     }
 }

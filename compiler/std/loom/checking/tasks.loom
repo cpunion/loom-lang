@@ -62,6 +62,9 @@ fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {
     if shape.kind != TypeKind.Task {
         return Result.Err(error(context, node, "await requires a Task value"))
     }
+    if value.kind == ExprKind.Suspend {
+        return Result.Ok(expression(ExprKind.Suspend, get(shape.arguments, 0), node, value.text, -1, value.children, value.falls))
+    }
     Result.Ok(expression(ExprKind.Await, get(shape.arguments, 0), node, "", -1, expressions(value), value.falls))
 }
 

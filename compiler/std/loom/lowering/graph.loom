@@ -161,17 +161,35 @@ fn parking(graph Graph, source Expr, start Int, loop Loop) Value {
             index = index + 1
         }
         let reading = source.text == "async_read"
+        let opening = source.text == "async_open"
+        let closing = source.text == "async_close"
         let wait_name = if reading {
             "task_wait_file_read"
         } else {
-            if source.text == "async_write" {
-                "task_wait_file_write"
+            if opening {
+                "task_wait_file_open"
             } else {
-                "task_wait_file_write_bytes"
+                if closing {
+                    "task_wait_file_close"
+                } else {
+                    if source.text == "async_write" {
+                        "task_wait_file_write"
+                    } else {
+                        "task_wait_file_write_bytes"
+                    }
+                }
             }
         }
-        assert source.ty == 1 && length(arguments) == 3
-        assert reading || source.text == "async_write" || source.text == "async_write_bytes"
+        assert source.ty == 1 && length(arguments) == if opening {
+            2
+        } else {
+            if closing {
+                1
+            } else {
+                3
+            }
+        }
+        assert reading || opening || closing || source.text == "async_write" || source.text == "async_write_bytes"
         let park = state(graph)
         let after = state(graph)
         jump(graph, current, park)
@@ -184,7 +202,11 @@ fn parking(graph Graph, source Expr, start Int, loop Loop) Value {
         let output = operation(if reading {
                 "task_file_read_result"
             } else {
-                "task_file_result"
+                if opening {
+                    "task_file_open_result"
+                } else {
+                    "task_file_result"
+                }
             }, 1, source.span,
             if reading {
                 one(get(arguments, 1))

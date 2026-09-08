@@ -6,7 +6,7 @@
 //! slots. Cancellation retires waits and drains children before parent cleanup.
 //! The reactor is created only on the first external wait.
 
-use super::blocking_io::{Job, Operation, Outcome, Pool};
+use super::blocking_io::{Job, Operation, Outcome};
 use super::cleanup::{OwnedFault, catch_fault, catch_fault_before_drain, raise_owned};
 use super::frame_roots::{FrameRootId, FrameRoots, with_frame_roots};
 use super::wait::{
@@ -77,7 +77,7 @@ struct Owner {
     roots: *const FrameRoots,
     core: RefCell<Core>,
     reactor: OnceCell<Arc<Reactor>>,
-    workers: OnceCell<Pool>,
+    workers: OnceCell<file_io::Files>,
 }
 
 thread_local! {
@@ -97,12 +97,12 @@ impl Owner {
         Ok(self.reactor.get().unwrap())
     }
 
-    fn workers(&self) -> io::Result<&Pool> {
+    fn workers(&self) -> io::Result<&file_io::Files> {
         if self.workers.get().is_none() {
             let count = std::thread::available_parallelism()
                 .map_or(1, usize::from)
                 .min(4);
-            if self.workers.set(Pool::new(count)?).is_err() {
+            if self.workers.set(file_io::Files::new(count)?).is_err() {
                 fatal("file workers initialized twice");
             }
         }

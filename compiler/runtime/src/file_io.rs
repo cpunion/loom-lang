@@ -3,20 +3,6 @@
 
 #[cfg(unix)]
 mod platform {
-    pub fn duplicate(fd: i64) -> std::io::Result<std::fs::File> {
-        use std::os::fd::FromRawFd;
-        let fd = libc::c_int::try_from(fd)
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-        // SAFETY: fcntl validates the source descriptor. The new owned descriptor
-        // shares its cursor but can outlive the source's explicit close.
-        let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
-        if copy < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(unsafe { std::fs::File::from_raw_fd(copy) })
-        }
-    }
-
     pub fn open(path: &str, create: bool) -> i64 {
         let Ok(path) = std::ffi::CString::new(path) else {
             return -1;
@@ -71,18 +57,6 @@ mod platform {
         standard_closed: [bool; 3],
     }
     thread_local! { static HANDLES: RefCell<Handles> = RefCell::new(Handles::default()); }
-
-    pub fn duplicate(fd: i64) -> std::io::Result<File> {
-        let slot = usize::try_from(fd).ok().and_then(|fd| fd.checked_sub(3));
-        HANDLES.with(|handles| {
-            let handles = handles.borrow();
-            let file = slot
-                .and_then(|slot| handles.files.get(slot))
-                .and_then(Option::as_ref)
-                .ok_or(std::io::ErrorKind::InvalidInput)?;
-            file.try_clone()
-        })
-    }
 
     // Only explicit close of standard handles needs this OS boundary. Rust's
     // File and standard streams otherwise own wide paths and binary I/O.
@@ -204,7 +178,7 @@ mod platform {
     }
 }
 
-pub use platform::{close, duplicate, open, read, write};
+pub use platform::{close, open, read, write};
 
 #[cfg(test)]
 mod tests {

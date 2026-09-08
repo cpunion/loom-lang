@@ -10,6 +10,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
 pub(super) enum Operation {
+    Open(String, bool),
+    Close(File),
     Read(File, usize),
     Write(File, Vec<u8>),
     Failed,
@@ -20,12 +22,26 @@ pub(super) enum Operation {
 pub(super) struct Outcome {
     pub count: i64,
     pub bytes: Vec<u8>,
+    pub file: Option<File>,
 }
 
 impl Operation {
     fn run(self) -> Outcome {
         let mut bytes = Vec::new();
         let count = match self {
+            Self::Open(path, create) => {
+                let file = if create {
+                    File::create(path)
+                } else {
+                    File::open(path)
+                };
+                return Outcome {
+                    count: if file.is_ok() { 0 } else { -1 },
+                    bytes,
+                    file: file.ok(),
+                };
+            }
+            Self::Close(file) => close_file(file),
             Self::Read(mut file, limit) => {
                 bytes.resize(limit, 0);
                 match file.read(&mut bytes) {
@@ -44,8 +60,36 @@ impl Operation {
             #[cfg(test)]
             Self::Test(run) => return run(),
         };
-        // File and write input have been dropped before completion is published.
-        Outcome { count, bytes }
+        // Read/write inputs are dropped before completion. Open results retain
+        // the native File until extraction or cancellation, not just an integer.
+        Outcome {
+            count,
+            bytes,
+            file: None,
+        }
+    }
+}
+
+pub(super) fn close_file(file: File) -> i64 {
+    #[cfg(unix)]
+    {
+        use std::os::fd::IntoRawFd;
+        // SAFETY: File transfers its owned descriptor; it is not closed again.
+        i64::from(unsafe { libc::close(file.into_raw_fd()) })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::IntoRawHandle;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        }
+        // SAFETY: The owned handle leaves File and is closed exactly once.
+        if unsafe { CloseHandle(file.into_raw_handle()) } != 0 {
+            0
+        } else {
+            -1
+        }
     }
 }
 

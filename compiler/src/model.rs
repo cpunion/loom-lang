@@ -118,6 +118,10 @@ pub enum Primitive {
     TaskWaitFileWriteBytes,
     TaskFileResult,
     TaskFileReadResult,
+    TaskWaitFileOpen,
+    TaskWaitFileClose,
+    TaskFileOpenResult,
+    FileAbort,
     MonotonicNs,
 }
 

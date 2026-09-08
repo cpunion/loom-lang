@@ -102,21 +102,28 @@ bodies cannot suspend or create/consume Tasks. See the
 [cleanup example](../../compiler/examples/async_cleanup).
 
 Task-bearing aggregates,
-async methods, Task-bearing function values/dynamic calls, asynchronous
-fully asynchronous file operations, socket adapters, general worker operations
+async methods, Task-bearing function values/dynamic calls,
+socket adapters, general worker operations
 and joins are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread. Public outcome inspection remains
 future work.
 
 `std.file.tasks` supplies byte/text read/write Tasks using the same completion
 notifications. A lazily created pool caps workers at four per owner; it does not
-bound queued job memory. Jobs retain native File duplicates and copied buffers,
+bound queued job memory. Jobs retain native Files and copied buffers,
 not GC references. Write bytes are snapshotted once per submitted operation;
 completed read bytes copy back on the owner. Source code retains read/write loops,
 UTF-8 policy, errors and explicit close. Cancellation removes queued inputs or
-waits for a running call to finish before cleanup. Open/close and duplication
-remain synchronous; a stuck native call can delay drain. This is not yet a fully
-nonblocking file API or a general source-level blocking-work executor.
+waits for a running call to finish before cleanup. Open/create and normal close
+also use workers: an open result owns its File until extraction or cancellation;
+close removes its owner-local token before fallible setup. Tokens are never reused.
+Duplication and failure-cleanup close remain synchronous; a stuck native call can
+delay drain. This is not a general source-level blocking-work executor or support
+for resource-bearing Task results.
+
+Private async intrinsics must be awaited directly: Loom lowers them to suspension
+of the caller's frame, not separately queued Tasks. Public async function calls
+still create hot child Tasks, including the source timer and file wrappers.
 
 Loom lowers suspension into ordinary typed constructor/resume functions, using
 private frame/task primitives and control flow; LLVM does not lower source await.
