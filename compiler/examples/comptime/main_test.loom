@@ -3,3 +3,7 @@ test fn selected_type_branches_accept_only_the_needed_operations() {
     assert adjusted("not an integer") == 0
     assert only_integer(7) == 7
 }
+
+test fn conditional_labels_keep_public_requirements_local() {
+    conditional_labels()
+}

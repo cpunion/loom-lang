@@ -1,0 +1,67 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.result.Result
+
+enum GuardDecision { Pending Known(Bool, Context) }
+
+fn guard_condition(context Context, node Node, condition Node, depth Int) Result[GuardDecision, Failure] {
+    if depth >= 256 { return Result.Err(error(context, condition, "compile-time condition depth exhausted")) }
+    if condition.kind == NodeKind.Unary && condition.value == "!" {
+        return match guard_condition(context, node, child(condition, 0), depth + 1)? {
+            GuardDecision.Pending => Result.Ok(GuardDecision.Pending)
+            GuardDecision.Known(value, checked) => Result.Ok(GuardDecision.Known(!value, checked))
+        }
+    }
+    if condition.kind == NodeKind.Binary && (condition.value == "&&" || condition.value == "||") {
+        return match guard_condition(context, node, child(condition, 0), depth + 1)? {
+            // Do not inspect the right side to simplify an unresolved left:
+            // its evaluation may fault or still require specialization.
+            GuardDecision.Pending => Result.Ok(GuardDecision.Pending)
+            GuardDecision.Known(value, checked) => {
+                if (condition.value == "&&" && !value) || (condition.value == "||" && value) {
+                    Result.Ok(GuardDecision.Known(value, checked))
+                } else {
+                    guard_condition(checked, node, child(condition, 1), depth + 1)
+                }
+            }
+        }
+    }
+    if condition.kind == NodeKind.Implements {
+        if !type_operand(context, child(condition, 0)) {
+            return Result.Err(error(context, condition, "implements requires an unshadowed type operand"))
+        }
+        let ty = context_type(context, child(condition, 0))?
+        let capability = required_concept(context.env, context.signature.symbol, child(condition, 1))?
+        let yes = satisfies(context, ty, capability)?
+        if !yes && !concrete(context.env, ty) { return Result.Ok(GuardDecision.Pending) }
+        let checked = if yes { with_evidence(context, ty, capability) } else { context }
+        return Result.Ok(GuardDecision.Known(yes, checked))
+    }
+    if condition.kind == NodeKind.Binary && (condition.value == "==" || condition.value == "!=") &&
+        (type_operand(context, child(condition, 0)) || type_operand(context, child(condition, 1)) ||
+            type_application(context, child(condition, 0)) || type_application(context, child(condition, 1)) ||
+            child(condition, 0).kind == NodeKind.Type || child(condition, 1).kind == NodeKind.Type ||
+            child(condition, 0).kind == NodeKind.TupleType || child(condition, 1).kind == NodeKind.TupleType) {
+        if !type_operand(context, child(condition, 0)) || !type_operand(context, child(condition, 1)) {
+            return Result.Err(error(context, condition, "comptime type comparison requires two unshadowed types"))
+        }
+        let left = context_type(context, child(condition, 0))?
+        let right = context_type(context, child(condition, 1))?
+        if left != right && (!concrete(context.env, left) || !concrete(context.env, right)) {
+            return Result.Ok(GuardDecision.Pending)
+        }
+        return Result.Ok(GuardDecision.Known(if condition.value == "==" { left == right } else { left != right }, context))
+    }
+    let type_dependent = abstract_context(context) && depends_on_type(context, condition)
+    if type_dependent || unknown_static(context, condition) {
+        let stage = staging(context, node)?
+        let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
+            constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head
+            cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
+            facts = stage.facts fact_head = stage.fact_head emit = false }
+        let value = expr(validation, condition, 2)?
+        discard isolated(context, node, value, length(context.locals))?
+        if type_dependent || contains_deferred(value) { return Result.Ok(GuardDecision.Pending) }
+    }
+    Result.Ok(GuardDecision.Known(computed(context, node, condition, 2)?.number != 0, context))
+}

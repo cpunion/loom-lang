@@ -71,6 +71,7 @@ fn only_integer[T](value T) Int {
 fn main() {
     shared_results()
     composite_guards()
+    conditional_labels()
     assert comptime {
         fibonacci(10)
     } == 55

@@ -16,3 +16,28 @@ test fn composite_type_guards_reject_shadowed_type_arguments() {
     }
     rejects("fn main() { let Int = 0\ncomptime if List[Int] == List[Int] { discard Int } }")
 }
+
+test fn boolean_type_guards_short_circuit_and_resolve_associated_types() {
+    let definitions = "concept Display { fn display(self Self) Text }\nconcept Source { type Item\nfn first(self Self) Self.Item }\nimpl Display for Int { fn display(self Int) Text { \"int\" } }\nimpl Source for Bool { type Item = Int\nfn first(self Bool) Int { 7 } }\n"
+    discard accepted(concat(definitions, "fn both[T, U](source T, other U) Text { comptime if T implements Source && T.Item implements Display && U implements Display { source.first().display() } else { \"none\" } }\nfn scalar[T](value T) Bool { comptime if T == Int || T == Bool { true } else { false } }\nfn fallback[T]() Int { comptime if T implements Display || unavailable() { 1 } else { 0 } }\nfn main() { assert comptime { assert both(true, 1) == \"int\"\nassert both(1, true) == \"none\" && both(true, true) == \"none\"\nassert scalar(1) && scalar(true) && !scalar(\"text\")\nassert fallback[Int]() == 1\ntrue } }"))
+    discard accepted("fn main() { comptime if false && unavailable() { unavailable() } else { assert true }\ncomptime if true || (1 / 0 > 0) { assert true } else { unavailable() } }")
+    discard accepted("fn disabled(comptime enabled Bool, value Int) Int { comptime if enabled && value > 0 { 1 } else { 0 } }\nfn main() { assert disabled(false, 7) == 0 }")
+    rejects("fn enabled(comptime enabled Bool, value Int) Int { comptime if enabled && value > 0 { 1 } else { 0 } }\nfn main() { discard enabled(true, 7) }")
+    rejects(concat(definitions, "fn fallback[T]() Int { comptime if T implements Display || unavailable() { 1 } else { 0 } }\nfn main() { discard fallback[Bool]() }"))
+}
+
+test fn boolean_type_guard_evidence_stays_on_the_evaluated_path() {
+    let definitions = "concept C { fn value(self Self) Int }\nconcept D { fn value(self Self) Int }\nconcept Missing {}\nimpl C for Int { fn value(self Int) Int { 1 } }\nimpl D for Int { fn value(self Int) Int { 2 } }\n"
+    discard accepted(concat(definitions, "fn negated[T](value T) Int { comptime if !(T implements C) { 0 } else { value.value() } }\nfn left[T](value T) Int { comptime if T implements C || T implements D { value.value() } else { 0 } }\nfn right[T](value T) Int { comptime if T implements Missing || T implements D { value.value() } else { 0 } }\nfn inverted[T](value T) Int { comptime if !(T implements C || T implements D) { 0 } else { value.value() } }\nfn main() { assert comptime { assert negated(1) == 1 && negated(true) == 0\nassert left(1) == 1 && right(1) == 2 && inverted(1) == 1\ntrue } }"))
+    rejects(concat(definitions, "fn either[T, U](first T, second U) Int { comptime if T implements C || U implements D { second.value() } else { 0 } }\nfn main() { discard either(1, true) }"))
+    rejects(concat(definitions, "pub fn leaked[T](value T) Int { comptime if T implements C && true { discard value.value() }\nvalue.value() }"))
+}
+
+test fn boolean_type_guards_never_hide_pending_proofs_or_evaluated_faults() {
+    rejects("concept C {}\npub fn pending[T]() Int ensures result == 1 { comptime if T implements C || true { 1 } else { 0 } }")
+    rejects("concept C {}\npub fn pending[T]() Int ensures result == 0 { comptime if T implements C && false { 1 } else { 0 } }")
+    rejects("fn failed() Bool { assert false\ntrue }\nfn main() { comptime if failed() && false { assert true } }")
+    rejects("fn main() { comptime if (1 / 0 > 0) || true { assert true } }")
+    rejects("fn false_proof() Int ensures result == 2 { comptime if Int == Int || Int == Text { 1 } else { 2 } }")
+    discard accepted("fn proved() Int ensures result == 1 { comptime if !(Int == Text) && (Int == Int || Int == Bool) { 1 } else { 2 } }\nfn main() { assert proved() == 1 }")
+}

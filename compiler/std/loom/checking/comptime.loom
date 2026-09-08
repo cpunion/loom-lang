@@ -187,49 +187,14 @@ fn type_application(context Context, node Node) Bool {
     lookup(context, slice(path, 0, first_dot(path))) < 0
 }
 fn selected(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
-    let condition = child(source, 0)
-    var yes = false
-    var chosen = context
-    if condition.kind == NodeKind.Implements {
-        if !type_operand(context, child(condition, 0)) {
-            return Result.Err(error(context, condition, "implements requires an unshadowed type operand"))
+    match guard_condition(context, node, child(source, 0), 0)? {
+        GuardDecision.Pending => deferred(context, node, expected)
+        GuardDecision.Known(yes, chosen) => {
+            if yes { return block(chosen, child(source, 1), expected, enforce) }
+            if length(source.children) == 3 { return block(chosen, child(source, 2), expected, enforce) }
+            typed(context, node, expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true), expected)
         }
-        let ty = context_type(context, child(condition, 0))?
-        let capability = required_concept(context.env, context.signature.symbol, child(condition, 1))?
-        yes = satisfies(context, ty, capability)?
-        if !yes && !concrete(context.env, ty) { return deferred(context, node, expected) }
-        if yes { chosen = with_evidence(context, ty, capability) }
-    } else { if condition.kind == NodeKind.Binary && (condition.value == "==" || condition.value == "!=") &&
-        (type_operand(context, child(condition, 0)) || type_operand(context, child(condition, 1)) ||
-            type_application(context, child(condition, 0)) || type_application(context, child(condition, 1)) ||
-            child(condition, 0).kind == NodeKind.Type || child(condition, 1).kind == NodeKind.Type ||
-            child(condition, 0).kind == NodeKind.TupleType || child(condition, 1).kind == NodeKind.TupleType) {
-        if !type_operand(context, child(condition, 0)) || !type_operand(context, child(condition, 1)) {
-            return Result.Err(error(context, condition, "comptime type comparison requires two unshadowed types"))
-        }
-        let left = context_type(context, child(condition, 0))?
-        let right = context_type(context, child(condition, 1))?
-        if left != right && (!concrete(context.env, left) || !concrete(context.env, right)) {
-            return deferred(context, node, expected)
-        }
-        yes = if condition.value == "==" { left == right } else { left != right }
-    } else {
-        let type_dependent = abstract_context(context) && depends_on_type(context, condition)
-        if type_dependent || unknown_static(context, condition) {
-            let stage = staging(context, node)?
-            let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
-                constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head
-                cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
-                facts = stage.facts fact_head = stage.fact_head emit = false }
-            let value = expr(validation, condition, 2)?
-            discard isolated(context, node, value, length(context.locals))?
-            if type_dependent || contains_deferred(value) { return deferred(context, node, expected) }
-        }
-        yes = computed(context, node, condition, 2)?.number != 0
-    } }
-    if yes { return block(chosen, child(source, 1), expected, enforce) }
-    if length(source.children) == 3 { return block(context, child(source, 2), expected, enforce) }
-    typed(context, node, expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true), expected)
+    }
 }
 fn compile_time(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let source = child(node, 0)

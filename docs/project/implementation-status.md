@@ -303,8 +303,12 @@ record/enum results, including shared lists/bytes. Every runtime evaluation
 constructs a fresh graph with its internal aliases and cycles preserved; no
 hidden mutable global is introduced. Successful pure results can be reused
 within one check, not across builds. `comptime if` selects code using a computed
-Boolean or type equality/inequality, including nested generic types. This is not
-general type-valued computation or Boolean composition of type comparisons.
+Boolean or type equality/inequality, including nested generic types. Its `!`,
+`&&`, and `||` conditions compose type/concept queries and pure Bool computations
+with left-to-right compile-time short-circuiting. Only the actual path supplies
+concept evidence to subsequent operands and the selected body; unresolved
+choices defer without bypassing required proofs. This is not general type-valued
+computation.
 Runtime captures, external effects, faults, and exhausted
 budgets reject. Scalar constraint folding shares this evaluator; required
 postconditions still use the prover, with no evaluation-as-proof fallback.

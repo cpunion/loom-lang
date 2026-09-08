@@ -1,0 +1,20 @@
+import std.display.Display
+
+// The public API does not require Display: only the selected branch uses it.
+pub fn label[T](value T, comptime detailed Bool) Text {
+    comptime if detailed && T implements Display &&(T == Int || T == Bool) {
+        value.display()
+    } else {
+        "<value>"
+    }
+}
+
+fn conditional_labels() {
+    assert label(7, true) == "7"
+    assert label(true, true) == "true"
+    assert label(7, false) == "<value>"
+    assert label("text", true) == "<value>"
+    assert label(Box {
+            value = 1
+        }, true) == "<value>"
+}

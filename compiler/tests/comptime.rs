@@ -47,6 +47,86 @@ fn compile_time_work_runs_natively_and_does_not_enter_runtime_reachability() {
 }
 
 #[test]
+fn composed_compile_time_guards_select_runtime_bodies_and_keep_required_proofs() {
+    let source = tempfile::tempdir().unwrap();
+    fs::write(source.path().join("main.loom"), r#"
+import std.io.write_text
+
+concept Number { fn number(self Self) Int }
+impl Number for Int { fn number(self Int) Int { self } }
+
+fn gate(value Int) Bool { value % 17 == 3 }
+
+fn choose[T](value T, comptime active Bool) Int {
+    comptime if active && !(T == Bool) && (T implements Number || T == Int) && gate(20) && !gate(21) {
+        discard write_text("selected|")
+        value.number()
+    } else {
+        discard write_text("fallback|")
+        0
+    }
+}
+
+fn short[T](value T) Int {
+    comptime if T == Int || missing_guard() { value } else { missing_branch() }
+}
+
+// Unknown left operands defer selection; do not algebraically reduce this
+// condition and instantiate its body before T is supplied.
+fn deferred[T]() Int {
+    comptime if (T == Int && false) || true { missing_branch() } else { 0 }
+}
+
+fn main() {
+    assert choose(7, true) == 7
+    assert choose(false, true) == 0
+    assert choose(9, false) == 0
+    assert short(3) == 3
+}
+"#).unwrap();
+    let executable = common::executable(source.path(), "composed-guards");
+    let ir = source.path().join("composed-guards.ll");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                source.path().to_str().unwrap(),
+                "--output",
+                executable.to_str().unwrap(),
+                "--emit-ir",
+                ir.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        let output = Command::new(&executable).output().unwrap();
+        success(&output);
+        assert_eq!(output.stdout, b"selected|fallback|fallback|");
+        // gate's parameter-dependent remainder would survive O0 if that
+        // compile-time-only function entered native reachability.
+        assert!(!fs::read_to_string(&ir).unwrap().contains("srem i64"));
+    }
+    for rejected in [
+        "fn bad[T]() Int { comptime if T == Int && missing_guard() { 1 } else { 0 } }\nfn main() { discard bad[Int]() }",
+        "fn bad(flag Bool) Int { comptime if true && flag { 1 } else { 0 } }\nfn main() {}",
+        "import std.io.write_text\nfn effect() Bool { discard write_text(\"guard-side-effect\")\ntrue }\nfn main() { comptime if true && effect() {} }",
+        "fn wrong[T](value T) Int ensures result == 1 { comptime if !(T == Bool) && T == Int { 2 } else { 1 } }\nfn main() { discard wrong(3) }",
+        "fn hidden(value Int) Int { value }\nfn unproved(value Int) Int ensures result == value { comptime if true && Int == Int { hidden(value) } else { value } }\nfn main() { discard unproved(3) }",
+    ] {
+        fs::write(source.path().join("main.loom"), rejected).unwrap();
+        let output = loom(&["check", source.path().to_str().unwrap()]);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "accepted {rejected}: {output:?}"
+        );
+        assert!(!output.stderr.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("guard-side-effect"));
+    }
+}
+
+#[test]
 fn compile_time_faults_captures_and_unproved_contracts_fail_closed() {
     let source = tempfile::tempdir().unwrap();
     for text in [

@@ -29,6 +29,12 @@ test fn concepts_implementations_and_bounds_have_explicit_structure() {
 }
 
 test fn implements_conditions_and_expression_receivers_preserve_chaining() {
+    let guard = child(child(child(body(child(parsed("fn choose[T]() { comptime if T implements Display && !(T == Int || T == Bool) {} }"), 0)), 0), 0), 0)
+    assert guard.kind == NodeKind.Binary && guard.value == "&&"
+    assert child(guard, 0).kind == NodeKind.Implements
+    let negated = child(guard, 1)
+    assert negated.kind == NodeKind.Unary && negated.value == "!"
+    assert child(negated, 0).value == "||" && child(child(negated, 0), 0).value == "=="
     let tree = parsed("fn select[T](value T) Text { comptime if List[T] implements app.Display { value.display() } else { unavailable() } }\nfn f() { make().display[Int](1)?.0\n(make().child).display()\n}")
     let condition = child(child(child(body(child(tree, 0)), 0), 0), 0)
     assert condition.kind == NodeKind.Implements
