@@ -536,6 +536,18 @@ impl Converter<'_> {
         result: Type,
     ) -> Result<()> {
         match operation {
+            Primitive::TaskWaitTimer => {
+                if arguments[0].ty != Type::Int || result != Type::Bool {
+                    return Err(
+                        "checked timer wait requires an Int deadline and Bool readiness".into(),
+                    );
+                }
+            }
+            Primitive::MonotonicNs => {
+                if result != Type::Int {
+                    return Err("checked monotonic clock requires an Int result".into());
+                }
+            }
             Primitive::TaskCreate => {
                 let fields = self.frame(arguments[0].ty)?;
                 let Type::Function(id) = arguments[1].ty else {
@@ -1127,6 +1139,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_result" => P::TaskResult,
         "task_release" => P::TaskRelease,
         "task_run" => P::TaskRun,
+        "task_wait_timer" => P::TaskWaitTimer,
+        "clock_monotonic_ns" => P::MonotonicNs,
         _ => return Err("unknown private checked runtime operation".into()),
     })
 }
@@ -1134,7 +1148,7 @@ fn primitive(value: &str) -> Result<Primitive> {
 fn primitive_arity(operation: Primitive) -> usize {
     use Primitive as P;
     match operation {
-        P::ArgCount | P::BytesNew | P::ListNew => 0,
+        P::ArgCount | P::BytesNew | P::ListNew | P::MonotonicNs => 0,
         P::FloatFromInt
         | P::FloatToInt
         | P::FloatParse
@@ -1162,6 +1176,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskResult
         | P::TaskRelease
         | P::TaskRun => 1,
+        P::TaskWaitTimer => 1,
         P::TextByte
         | P::TextConcat
         | P::TextEqual

@@ -4,6 +4,10 @@ test fn compile_time_purity_rejects_tasks_and_async_function_values() {
     "compile-time evaluation cannot create or await tasks"
     assert rejected(program, node(ExprKind.Await, 1, "", -1, one(literal(1))), 0).message ==
     "compile-time evaluation cannot create or await tasks"
+    assert rejected(program, node(ExprKind.Suspend, 0, "timer_until_ns", -1, one(literal(0))), 0).message ==
+    "compile-time evaluation cannot create or await tasks"
+    assert rejected(program, node(ExprKind.Intrinsic, 1, "clock_monotonic_ns", -1, new[Expr]()), 0).message ==
+    "compile-time evaluation forbids intrinsic clock_monotonic_ns"
     push(program.functions, Function {
             is_async = true
             symbol = 0

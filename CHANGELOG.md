@@ -5,11 +5,17 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add `std.time.monotonic_ns`, `sleep_ns`, `sleep_ms` and `sleep_until_ns`.
+  Loom timer states preserve a single evaluated deadline; runtime notifications
+  requeue them through a lazily created reactor. Idle waits block without spinning
+  or creating per-task threads. Relative delays begin when the task body runs;
+  monotonic deadlines are process-local and scheduling promises no fairness.
+
 - Add the first source Task slice: hot child creation, `async fn main`,
   `test async fn`, postfix `.await`/`.await?`, and one-shot local obligations.
   Loom lowers typed frames and resume functions for a single-threaded CPU ready
   queue, with fault propagation and cancellation of queued/suspended descendants.
-  Source timers, asynchronous I/O, joins, suspended cleanup, Task transfers
+  Asynchronous file/socket/worker I/O, joins, suspended cleanup, Task transfers
   through parameters/returns/aggregates, and async methods/function values remain
   unfinished.
 
@@ -23,7 +29,7 @@ implementation, not a compatibility ledger for previous prototypes.
 
 - Add a private portable wait ABI for timers, native readiness and worker
   completion, with one-shot delivery and generation-checked cancellation.
-  Connecting source Tasks to timer/I/O waits remains unfinished.
+  Source timers use this path; source asynchronous I/O remains unfinished.
   Final executable links discard unreferenced runtime sections; library objects
   keep their existing export/reachability policy.
 

@@ -177,6 +177,10 @@ fn expression_tag(kind ExprKind) Int {
             assert false
             -1
         }
+        ExprKind.Suspend => {
+            assert false
+            -1
+        }
     }
 }
 

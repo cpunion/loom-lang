@@ -110,6 +110,8 @@ fn three_types(a Int, b Int, c Int) List[Int] { let values = two_types(a, b)
     values
 }
 fn runtime_signature(env Environment, name Text) RuntimeSignature {
+    if name == "clock_monotonic_ns" { return runtime(0, new[Int](), 1) }
+    if name == "timer_until_ns" { return runtime(0, ints(1), 0) }
     if name == "float_from_int" { return runtime(0, ints(1), 5) }
     if name == "float_to_int" { return runtime(0, ints(5), 1) }
     if name == "float_parse" { return runtime(0, ints(3), 5) }
@@ -166,6 +168,9 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
     let item = symbol(env, current.symbol)
     let expected = runtime_signature(env, item.name)
     if expected.parameters < 0 { return Result.Err(failure(env, current.symbol, item.node, "unknown private runtime intrinsic")) }
+    if has(item.node, NodeKind.Async) != (item.name == "timer_until_ns") {
+        return Result.Err(failure(env, current.symbol, item.node, "intrinsic declaration has an incorrect async modifier"))
+    }
     if current.parameters != expected.parameters || !same(current.params, expected.params) || current.result != expected.result {
         return Result.Err(failure(env, current.symbol, item.node, "intrinsic declaration does not match its runtime signature"))
     }
@@ -261,7 +266,8 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
             push(values, atom(ExprKind.Local, get(current.params, index), item.node, index))
             index = index + 1
         }
-        let call = expression(ExprKind.Intrinsic, current.result, item.node, runtime_name, -1, values, true)
+        let call = expression(if has(item.node, NodeKind.Async) { ExprKind.Suspend } else { ExprKind.Intrinsic },
+            current.result, item.node, runtime_name, -1, values, true)
         expression(ExprKind.Block, current.result, item.node, "", -1, expressions(call), true)
     }
     var result_local = -1

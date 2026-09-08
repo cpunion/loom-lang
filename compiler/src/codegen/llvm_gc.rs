@@ -87,6 +87,8 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::PathCanonical => true,
         Primitive::FloatFromInt
         | Primitive::TaskCreate
+        | Primitive::TaskWaitTimer
+        | Primitive::MonotonicNs
         | Primitive::TaskAwait
         | Primitive::TaskResult
         | Primitive::TaskRelease

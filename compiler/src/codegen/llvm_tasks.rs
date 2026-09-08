@@ -126,9 +126,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     &[values[0], values[1], bytes.into(), length],
                 )
             }
-            Primitive::TaskAwait => {
+            Primitive::TaskAwait | Primitive::TaskWaitTimer => {
+                let operation = if operation == Primitive::TaskAwait {
+                    "task_await"
+                } else {
+                    "task_wait_timer"
+                };
                 let ready = self
-                    .runtime_call("task_await", Some(self.context.i32_type().into()), values)?
+                    .runtime_call(operation, Some(self.context.i32_type().into()), values)?
                     .ok_or("missing task readiness")?
                     .into_int_value();
                 Ok(Some(

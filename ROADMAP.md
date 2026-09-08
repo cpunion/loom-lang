@@ -107,16 +107,21 @@ compiler correctness.
 ## N2 — Complete the language and source library
 
 The first source Task slice implements hot child creation, postfix await,
-one-shot obligations and a CPU ready queue on one owner thread. Loom lowers
+one-shot obligations and a ready queue on one owner thread. Loom lowers
 suspension into typed functions and GC-traced frames; ordinary functions gain
 no executor or per-call persistent-root registration. Resume faults propagate
 through awaits and cancel/drain queued or suspended descendants. See the
 [example](compiler/examples/tasks).
 
+Source `std.time` connects monotonic timer waits to that ready queue. Deadlines
+are computed once, the reactor is created only on the first external wait, and
+the idle owner blocks without spinning or creating per-task threads. Relative
+sleeps start in their task body; the clock origin is process-local and scheduling
+promises no fairness. See the [timer example](compiler/examples/timers).
+
 The next async gates are suspended lexical cleanup, Task transfers through
-parameters/returns/aggregates, async methods/function values, and source I/O and
-joins. The existing private timer/readiness/completion ABI is not yet connected
-to source Tasks. CPU task scheduling is cooperative, not parallel threads.
+parameters/returns/aggregates, async methods/function values, asynchronous
+file/socket/worker I/O and joins. Task scheduling is cooperative, not parallel threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 
 Extend the self-hosted path with the remaining accepted capabilities:

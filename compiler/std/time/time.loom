@@ -1,0 +1,30 @@
+intrinsic fn clock_monotonic_ns() Int
+
+async intrinsic fn timer_until_ns(deadline Int)
+
+// Nanoseconds on this process's monotonic clock, not calendar time.
+// Values are meaningful only within the same process execution.
+pub fn monotonic_ns() Int {
+    clock_monotonic_ns()
+}
+
+// Relative sleeps start when this task's body first executes, not at creation.
+pub async fn sleep_ns(duration Int)
+requires duration >= 0
+{
+    timer_until_ns(monotonic_ns() + duration).await
+}
+
+pub async fn sleep_ms(milliseconds Int)
+requires milliseconds >= 0
+{
+    timer_until_ns(monotonic_ns() + milliseconds * 1000000).await
+}
+
+// Past deadlines are already satisfied. Use this to choose a deadline before
+// queuing the task; computing a new relative delay on each resume is unnecessary.
+pub async fn sleep_until_ns(deadline Int)
+requires deadline >= 0
+{
+    timer_until_ns(deadline).await
+}

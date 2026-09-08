@@ -50,7 +50,7 @@ fn test_function(params List[Int], output Int, locals List[Local], body Expr) Fu
 }
 
 fn has_high(value Expr) Bool {
-    if value.kind == ExprKind.TaskCall || value.kind == ExprKind.Await {
+    if value.kind == ExprKind.TaskCall || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend {
         return true
     }
     var index = 0
@@ -211,4 +211,41 @@ test fn edge_bindings_and_argument_snapshots_are_live_at_the_correct_point() {
     assert get(get(ordered.states, first).code, 1).kind == ExprKind.Assign
     let pending = get(flows(ordered), 1).live
     assert get(pending, saved.index) && !get(pending, 1)
+
+    let timer = Graph {
+        states = new[State]()
+        locals = new[Local]()
+        result = 0
+        span = span
+    }
+    push(timer.locals, test_local(1))
+    push(timer.locals, test_local(1))
+    let initial = state(timer)
+    let deadline = node(ExprKind.Call, 1, span, 99, one(local(timer, 1)))
+    let suspended = labeled(node(ExprKind.Suspend, 0, span, -1, one(deadline)), "timer_until_ns")
+    let continued = evaluate(timer, suspended, initial, Loop {
+            exit = -1
+            again = -1
+        })
+    finish(timer, continued.state, Exit.Complete, continued.expression, new[Edge](), new[Arm]())
+    // The effectful deadline is evaluated once, before the persistent park state.
+    let initialized = get(timer.states, initial).code
+    assert length(initialized) == 1
+    let snapshot = get(initialized, 0)
+    assert snapshot.kind == ExprKind.Let && get(snapshot.children, 0).kind == ExprKind.Call
+    let parked = get(timer.states, 1)
+    assert parked.exit == Exit.Park && length(parked.code) == 0
+    assert parked.value.kind == ExprKind.Intrinsic && parked.value.text == "task_wait_timer"
+    assert get(parked.value.children, 0).index == snapshot.index
+    let timer_live = flows(timer)
+    assert get(get(timer_live, 1).live, snapshot.index) && !get(get(timer_live, 1).live, 1)
+    let spills = new[Int]()
+    push(spills, -1)
+    push(spills, -1)
+    push(spills, 2)
+    let terminator = ending(timer, 1, temporary(timer, 1), spills, timer_live)
+    let saved_state = get(get(terminator.children, 2).children, 1)
+    assert saved_state.kind == ExprKind.FrameStore && saved_state.index == 1
+    assert get(saved_state.children, 1).text == "1"
+    assert length(get(timer.states, continued.state).code) == 0 && !has_high(terminator)
 }

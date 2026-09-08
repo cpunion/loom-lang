@@ -140,6 +140,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/unicode",
         "std/fs",
         "std/env",
+        "std/time",
         "std/process",
         "examples/scalar",
         "examples/contracts",
@@ -166,6 +167,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/comptime_dynamic",
         "examples/cleanup",
         "examples/tasks",
+        "examples/timers",
     ] {
         let output = source_compiler(stage3, &["test", compiler.join(package).to_str().unwrap()]);
         assert!(output.status.success(), "{package}: {output:?}");
