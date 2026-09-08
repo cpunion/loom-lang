@@ -108,6 +108,8 @@ pub enum Primitive {
     TaskResult,
     TaskRelease,
     TaskRun,
+    TaskWaitTimer,
+    MonotonicNs,
 }
 
 pub mod checked {

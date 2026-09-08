@@ -160,6 +160,11 @@ pub(crate) fn now_ns() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
+#[unsafe(no_mangle)]
+pub(super) extern "C" fn loom_rt_monotonic_ns() -> i64 {
+    i64::try_from(now_ns()).unwrap_or_else(|_| super::fatal("monotonic clock exceeds Int range"))
+}
+
 impl Reactor {
     pub(crate) fn new() -> io::Result<Self> {
         Ok(Self {

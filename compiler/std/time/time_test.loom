@@ -1,0 +1,28 @@
+test fn readings_are_nonnegative_and_monotonic() {
+    let first = monotonic_ns()
+    let second = monotonic_ns()
+    assert first >= 0 && second >= first
+}
+
+test async fn zero_durations_and_past_deadlines_complete() {
+    let before = monotonic_ns()
+    sleep_ns(0).await
+    sleep_ms(0).await
+    sleep_until_ns(0).await
+    sleep_until_ns(before).await
+    assert monotonic_ns() >= before
+}
+
+test async fn real_waits_do_not_complete_before_their_deadlines() {
+    let start = monotonic_ns()
+    let nanoseconds = sleep_ns(1000000)
+    let milliseconds = sleep_ms(1)
+    let deadline = start + 2000000
+    let absolute = sleep_until_ns(deadline)
+    nanoseconds.await
+    assert monotonic_ns() - start >= 1000000
+    milliseconds.await
+    assert monotonic_ns() - start >= 1000000
+    absolute.await
+    assert monotonic_ns() >= deadline
+}

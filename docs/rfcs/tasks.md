@@ -69,14 +69,23 @@ sugar. Concrete library spellings are not compiler dispatch tables.
 
 The current source slice supports direct async functions, async main/tests,
 one-shot local Tasks and postfix `.await`/`.await?`. Hot creation enqueues a child
-without running its body inline. One owner thread processes the CPU ready queue;
+without running its body inline. One owner thread processes the ready queue;
 this is cooperative execution, not parallel threads. Child faults propagate at
 await, and parent failure cancels and drains queued or suspended descendants.
 The [source example](../../compiler/examples/tasks) illustrates the available surface.
 
+`std.time.monotonic_ns` reads a clock with an unspecified process-local origin,
+not calendar time. `sleep_ns` and `sleep_ms` measure from the start of their task
+body; `sleep_until_ns` uses an absolute deadline on that same clock. Arguments
+and deadlines are evaluated once, not again on resume. Timer notifications now
+requeue suspended tasks; the idle owner blocks in a reactor created lazily on
+the first external wait. There is no thread per task, spin loop or fairness
+promise. Past deadlines and zero delays are valid but do not guarantee a yield.
+See the [timer example](../../compiler/examples/timers).
+
 Active `defer`/`scoped` cleanup cannot yet cross an await. Task transfers through
-parameters, returns and aggregates, async methods/function values, source timers,
-asynchronous I/O and joins are explicitly unfinished, not removed requirements.
+parameters, returns and aggregates, async methods/function values, asynchronous
+file/socket/worker I/O and joins are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread. Public outcome inspection and
 cleanup across suspended activations remain future work.
 
@@ -137,7 +146,7 @@ Failed native interest updates restore the prior registrations; inability to
 restore that borrowed-handle boundary is an unrecoverable runtime fault.
 
 The reactor uses [polling](https://docs.rs/polling/3.11.0/polling/struct.Poller.html)
-for OS readiness rather than separate handwritten platform reactors. Connecting
-source task suspension to these waits remains a separate gate from CPU scheduling;
-readiness tests do not imply source asynchronous I/O support. Public raw-fd wait
+for OS readiness rather than separate handwritten platform reactors. Source
+timers now use this wait path; readiness tests do not imply source asynchronous
+file/socket/worker I/O support. Public raw-fd wait
 constructors and a runtime registry of join names are not required.

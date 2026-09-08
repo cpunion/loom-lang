@@ -32,6 +32,20 @@ fn branching(graph Graph, condition Expr, yes Expr, no Expr) Expr {
     nonfall(node(ExprKind.If, 0, graph.span, -1, values))
 }
 
+fn pending(graph Graph, id Int, spills List[Int], live List[Flow]) Expr {
+    let values = new[Expr]()
+    var index = 1
+    while index < length(spills) {
+        if get(spills, index) >= 0 && get(get(live, id).live, index) {
+            push(values, store(graph, get(spills, index), local(graph, index)))
+        }
+        index = index + 1
+    }
+    push(values, store(graph, 1, integer(id, graph.span)))
+    push(values, returned(graph, 1))
+    block(values, 0, graph.span, false)
+}
+
 fn ending(graph Graph, id Int, pc Int, spills List[Int], live List[Flow]) Expr {
     let current = get(graph.states, id)
     if current.exit == Exit.Unreachable {
@@ -70,19 +84,13 @@ fn ending(graph Graph, id Int, pc Int, spills List[Int], live List[Flow]) Expr {
             falls = false
         }
     }
-    if current.exit == Exit.Wait {
-        let pending = new[Expr]()
-        var index = 1
-        while index < length(spills) {
-            if get(spills, index) >= 0 && get(get(live, id).live, index) {
-                push(pending, store(graph, get(spills, index), local(graph, index)))
-            }
-            index = index + 1
+    if current.exit == Exit.Wait || current.exit == Exit.Park {
+        let ready = if current.exit == Exit.Wait {
+            operation("task_await", 2, graph.span, one(current.value))
+        } else {
+            current.value
         }
-        push(pending, store(graph, 1, integer(id, graph.span)))
-        push(pending, returned(graph, 1))
-        return branching(graph, operation("task_await", 2, graph.span, one(current.value)),
-            dispatch_to(graph, pc, get(current.edges, 0).target), block(pending, 0, graph.span, false))
+        return branching(graph, ready, dispatch_to(graph, pc, get(current.edges, 0).target), pending(graph, id, spills, live))
     }
     let completed = new[Expr]()
     if graph.result == 0 {

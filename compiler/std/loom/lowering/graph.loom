@@ -146,6 +146,25 @@ fn waiting(graph Graph, source Expr, start Int, loop Loop) Value {
     }
 }
 
+fn parking(graph Graph, source Expr, start Int, loop Loop) Value {
+    assert source.text == "timer_until_ns" && source.ty == 0 && length(source.children) == 1
+    let deadline = snapshot(graph, evaluate(graph, get(source.children, 0), start, loop))
+    if deadline.state < 0 {
+        return deadline
+    }
+    assert deadline.expression.ty == 1
+    let park = state(graph)
+    let after = state(graph)
+    jump(graph, deadline.state, park)
+    // Reentry starts here, after argument evaluation. A ready wait is consumed
+    // by the runtime; a pending wait saves this same deadline and state again.
+    finish(graph, park, Exit.Park, operation("task_wait_timer", 2, source.span, one(deadline.expression)), edges(after), new[Arm]())
+    Value {
+        state = after
+        expression = empty(source.span)
+    }
+}
+
 fn evaluate(graph Graph, source Expr, start Int, loop Loop) Value {
     if start < 0 {
         return Value {
@@ -171,6 +190,9 @@ fn evaluate(graph Graph, source Expr, start Int, loop Loop) Value {
     }
     if source.kind == ExprKind.Await {
         return waiting(graph, source, start, loop)
+    }
+    if source.kind == ExprKind.Suspend {
+        return parking(graph, source, start, loop)
     }
     if source.kind == ExprKind.Return {
         let output = if length(source.children) == 0 {

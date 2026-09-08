@@ -1338,15 +1338,25 @@ Use `loom run` and `loom test` as usual; see the [task package](examples/tasks).
 await, `.await()` and `.await!` are invalid. Task handles are one-shot: they
 cannot be discarded, copied, overwritten while live or awaited twice.
 
-The current executor is a CPU ready queue on one owner thread, not parallel
+The current executor runs a ready queue on one owner thread, not parallel
 threads. Loom lowers suspension into typed constructor/resume functions and
 GC-traced frames; ordinary functions keep their direct execution path. A child
 fault propagates at await, and parent failure cancels and drains queued or
 suspended descendants.
 
+The [timer package](examples/timers) uses `std.time.sleep_ns`, `sleep_ms` and
+`sleep_until_ns`; `std.time.monotonic_ns` supplies their process-local clock.
+Relative sleeps begin when their task body runs, not when the call queues them.
+Use `sleep_until_ns(monotonic_ns() + duration)` to choose a deadline at the call
+site. Arguments and deadlines are evaluated once. The clock is not calendar time;
+do not persist its values across processes. Timer notifications requeue suspended
+tasks, and an idle owner blocks in a reactor created only on the first external
+wait: no spin loop or thread per task. Scheduling promises no fairness, and
+zero delays or past deadlines do not guarantee a yield.
+
 This slice rejects active `defer`/`scoped` cleanup across await, Task transfers
-through parameters/returns/aggregates, and async methods/function values. Source
-timers, asynchronous I/O, joins and public task-outcome handling are not available
+through parameters/returns/aggregates, and async methods/function values.
+Asynchronous file/socket/worker I/O, joins and public task-outcome handling are not available
 yet. Existing synchronous I/O blocks the owner thread. These are implementation
 limits; the [accepted design](../docs/rfcs/tasks.md) remains the target.
 

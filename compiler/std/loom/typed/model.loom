@@ -93,6 +93,7 @@ pub enum ExprKind {
     Await
     FrameNew
     FrameStore
+    Suspend
 }
 
 // FunctionRef.index is a concrete scheduled function ID. IndirectCall children
@@ -101,7 +102,9 @@ pub enum ExprKind {
 // Defer/Cleanup index a function-local cleanup registration and retain its one
 // body child with the owner's Local IDs. Only Cleanup executes that body.
 // Assert.text is a static source diagnostic, or empty for source-less IR.
-// TaskCall/Await exist only before coroutine lowering. FrameNew children are
+// TaskCall/Await/Suspend exist only before coroutine lowering. Suspend names a
+// checked private async operation and contains its already-typed arguments.
+// FrameNew children are
 // indexed Field initializers; omitted fields are zeroed. FrameStore children
 // are [frame,value], index selects the field, and its result is Unit.
 pub record Expr {

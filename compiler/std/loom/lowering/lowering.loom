@@ -152,7 +152,7 @@ fn async_function(program Program, id Int) {
     }
     index = 0
     while index < length(graph.states) {
-        if get(graph.states, index).exit == Exit.Wait {
+        if get(graph.states, index).exit == Exit.Wait || get(graph.states, index).exit == Exit.Park {
             var local = 1
             while local < length(needed) {
                 if get(get(live, index).live, local) {

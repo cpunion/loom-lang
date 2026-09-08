@@ -639,7 +639,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskAwait
             | Primitive::TaskResult
             | Primitive::TaskRelease
-            | Primitive::TaskRun => {
+            | Primitive::TaskRun
+            | Primitive::TaskWaitTimer => {
                 return self.task_primitive(result, operation, &values);
             }
             Primitive::FloatFromInt => {
@@ -695,6 +696,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ("unicode_whitespace", Some(self.context.i32_type().into()))
             }
             Primitive::ArgCount => ("process_arg_count", Some(i64_type.into())),
+            Primitive::MonotonicNs => ("monotonic_ns", Some(i64_type.into())),
             Primitive::ArgText => ("process_arg_text", Some(pointer.into())),
             Primitive::ProcessRun => ("process_run", Some(i64_type.into())),
             Primitive::ProcessRunInput => ("process_run_input", Some(i64_type.into())),

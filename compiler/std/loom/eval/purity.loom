@@ -43,7 +43,7 @@ fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) 
     Result.Ok(true)
 }
 fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Bool, Failure] {
-    if expr.kind == ExprKind.TaskCall || expr.kind == ExprKind.Await {
+    if expr.kind == ExprKind.TaskCall || expr.kind == ExprKind.Await || expr.kind == ExprKind.Suspend {
         return Result.Err(failure(expr, "compile-time evaluation cannot create or await tasks"))
     }
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }

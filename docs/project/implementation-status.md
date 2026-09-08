@@ -12,16 +12,24 @@ across awaits into GC-traced frames. Task handles are one-shot; `.await?` retain
 ordinary Result propagation. A child fault propagates at await; parent failure
 cancels and drains queued or suspended descendants. See the
 [task example](../../compiler/examples/tasks) and [accepted design](../rfcs/tasks.md).
-This first slice has no source timers, asynchronous I/O or joins. Active lexical
+Source `std.time` now exposes a process-local monotonic clock and relative or
+absolute timer Tasks. Deadlines are evaluated once; reactor notifications put
+suspended tasks back in the ready queue. The reactor is created on the first
+external wait, and an idle owner blocks instead of spinning or creating a thread
+per task. Relative sleeps start when their task body runs, not when queued.
+See the [timer example](../../compiler/examples/timers). Scheduling has no
+fairness guarantee.
+
+Source asynchronous file/socket/worker I/O and joins remain unfinished. Active lexical
 cleanup cannot cross an await; Task parameter/return/aggregate transfers, async
 methods and async function values remain unsupported.
 
 The private wait ABI now provides one-shot timers, borrowed socket readiness and
 cross-thread completion notifications through `polling`. Generation checks reject
 stale completion; cancellation removes active registrations before handles may
-close. Focused tests exercise actual timers and localhost sockets. This is not
-the source Task I/O path: the CPU task scheduler does not yet consume these wait
-notifications.
+close. Focused tests exercise actual timers and localhost sockets. Source timer
+Tasks now use this notification path; source readiness and worker-I/O adapters
+remain unfinished.
 Executable links enable native dead-section removal so an unused reactor does
 not enter synchronous program artifacts. Library object exports are unchanged.
 

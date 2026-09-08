@@ -153,7 +153,6 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool, proto
     }
     let is_intrinsic = word(rest, "intrinsic")
     if is_intrinsic {
-        if is_async { return Result.Err(error(rest, "async intrinsic declarations are not supported")) }
         push(children, done(rest, next(rest), NodeKind.Intrinsic, "", new[Node]()).node)
         rest = next(rest)
     }

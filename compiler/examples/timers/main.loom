@@ -1,0 +1,11 @@
+import std.time.sleep_ms
+import std.io.write_text
+
+async fn main() {
+    let first = sleep_ms(30)
+    let second = sleep_ms(10)
+    discard write_text("queued\n")
+    first.await
+    second.await
+    discard write_text("timers finished\n")
+}

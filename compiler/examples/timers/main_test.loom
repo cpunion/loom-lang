@@ -1,0 +1,13 @@
+import std.time.monotonic_ns
+import std.time.sleep_until_ns
+import std.time.sleep_ns
+
+test async fn waits_until_the_deadline() {
+    let deadline = monotonic_ns() + 1000000
+    sleep_until_ns(deadline).await
+    assert monotonic_ns() >= deadline
+}
+
+test async fn zero_duration_is_valid() {
+    sleep_ns(0).await
+}

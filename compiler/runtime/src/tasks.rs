@@ -3,14 +3,16 @@
 //! identities and static creation labels contain no managed pointers. Resumes
 //! root/reload their frame across allocation and return 0 (done) or 1 (waiting).
 //! This initial suspension ABI permits no live lexical cleanup registrations:
-//! cancelling a queued/waiting subtree releases its frames, not user callbacks.
+//! cancelling a queued/waiting subtree retires waits and releases its frames,
+//! not user callbacks. The reactor is created only on the first external wait.
 
 use super::cleanup::{OwnedFault, catch_fault, raise_owned};
 use super::frame_roots::{FrameRootId, FrameRoots, with_frame_roots};
+use super::wait::{KIND_TIMER, Reactor, ReadyNotification, Registration, WaitSource};
 use super::{fatal, fault};
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::ptr;
+use std::{io, ptr, time::Duration};
 
 type Resume = unsafe extern "C-unwind" fn(*mut u8) -> i64;
 type Constructor = unsafe extern "C-unwind" fn() -> u64;
@@ -19,8 +21,16 @@ enum State {
     Queued,
     Running,
     Waiting(u64),
+    ExternalWaiting,
     Completed,
     Faulted(OwnedFault),
+}
+
+#[derive(Clone, Copy)]
+struct ExternalWait {
+    source: WaitSource,
+    registration: Registration,
+    ready: Option<ReadyNotification>,
 }
 
 struct Task {
@@ -30,6 +40,7 @@ struct Task {
     children: BTreeSet<u64>,
     waiter: Option<u64>,
     state: State,
+    external: Option<ExternalWait>,
     creation: (*const u8, usize),
 }
 
@@ -40,11 +51,13 @@ struct Core {
     current: Option<u64>,
     root: Option<u64>,
     next: u64,
+    pending: usize,
 }
 
 struct Owner {
     roots: *const FrameRoots,
     core: RefCell<Core>,
+    reactor: OnceCell<Reactor>,
 }
 
 thread_local! {
@@ -57,6 +70,62 @@ impl Owner {
         unsafe { &*self.roots }
     }
 
+    fn reactor(&self) -> io::Result<&Reactor> {
+        if self.reactor.get().is_none() && self.reactor.set(Reactor::new()?).is_err() {
+            fatal("task reactor initialized twice");
+        }
+        Ok(self.reactor.get().unwrap())
+    }
+
+    fn cancel_wait(&self, core: &mut Core, id: u64) {
+        if let Some(wait) = core.tasks.get_mut(&id).unwrap().external.take() {
+            if wait.ready.is_none() {
+                // A false result means completion is already queued. Either
+                // way, its old identity cannot wake a removed/replaced wait.
+                if self
+                    .reactor
+                    .get()
+                    .unwrap()
+                    .cancel(wait.registration)
+                    .is_err()
+                {
+                    fatal("failed to cancel task wait");
+                }
+                core.pending -= 1;
+            }
+        }
+    }
+
+    fn poll(&self, blocking: bool) -> io::Result<()> {
+        if self.core.borrow().pending == 0 {
+            return Ok(());
+        }
+        let reactor = self.reactor.get().expect("registered task wait");
+        // No task/root/heap borrow crosses this OS wait. Workers can only
+        // publish identities; the owner alone queues and resumes task frames.
+        reactor.wait(if blocking { None } else { Some(Duration::ZERO) })?;
+        while let Some(notification) = reactor.pop_ready() {
+            let mut core = self.core.borrow_mut();
+            let Some(task) = core.tasks.get_mut(&notification.owner) else {
+                continue;
+            };
+            let Some(wait) = task.external.as_mut() else {
+                continue;
+            };
+            if !matches!(task.state, State::ExternalWaiting)
+                || wait.registration != notification.registration
+                || wait.ready.is_some()
+            {
+                continue;
+            }
+            wait.ready = Some(notification);
+            task.state = State::Queued;
+            core.pending -= 1;
+            core.ready.push_back(notification.owner);
+        }
+        Ok(())
+    }
+
     // Cancellation has no callback in this slice. Visit only live descendants,
     // children before parents; removed queued identities are skipped on dequeue.
     fn cancel_tree(&self, core: &mut Core, id: u64) {
@@ -67,6 +136,7 @@ impl Owner {
                 pending.push((id, true));
                 pending.extend(task.children.iter().map(|child| (*child, false)));
             } else {
+                self.cancel_wait(core, id);
                 let task = core.tasks.remove(&id).expect("live cancelled task");
                 if let Some(parent) = task.parent {
                     core.tasks
@@ -90,9 +160,14 @@ impl Owner {
         let core = self.core.borrow();
         let task = &core.tasks[&id];
         match (status, &task.state) {
-            (0, State::Running) if task.children.is_empty() => Ok(()),
+            (0, State::Running) if task.children.is_empty() && task.external.is_none() => Ok(()),
             (0, _) => Err("task completed with outstanding children or wait"),
-            (1, State::Waiting(_)) => Ok(()),
+            (1, State::Waiting(_)) if task.external.is_none() => Ok(()),
+            (1, State::ExternalWaiting)
+                if task.external.is_some_and(|wait| wait.ready.is_none()) =>
+            {
+                Ok(())
+            }
             _ => Err("invalid task resume state"),
         }
     }
@@ -109,6 +184,9 @@ impl Owner {
             Ok(_) => fatal("unchecked task resume state"),
             Err(mut failure) => {
                 self.cancel_descendants(&mut core, id);
+                // Registration may have succeeded before this activation
+                // faults, even if it never returned Pending.
+                self.cancel_wait(&mut core, id);
                 let task = core.tasks.get_mut(&id).unwrap();
                 if task.creation.1 != 0 {
                     failure.message.push(b'\n');
@@ -144,6 +222,9 @@ impl Owner {
 
     unsafe fn drive(&self, root: u64) -> Result<(), OwnedFault> {
         loop {
+            if let Err(error) = self.poll(false) {
+                return Err(self.wait_failure(root, error));
+            }
             let next = {
                 let mut core = self.core.borrow_mut();
                 if matches!(
@@ -151,7 +232,7 @@ impl Owner {
                     State::Completed | State::Faulted(_)
                 ) {
                     let task = core.tasks.remove(&root).unwrap();
-                    assert!(task.children.is_empty() && core.tasks.is_empty());
+                    assert!(task.children.is_empty() && core.tasks.is_empty() && core.pending == 0);
                     assert!(self.roots().remove(task.frame));
                     core.root = None;
                     core.ready.clear();
@@ -163,22 +244,34 @@ impl Owner {
                 }
                 let id = loop {
                     let Some(id) = core.ready.pop_front() else {
-                        fatal("task wait has no runnable dependency");
+                        break None;
                     };
                     if core.tasks.contains_key(&id) {
-                        break id;
+                        break Some(id);
                     }
                 };
-                let task = core.tasks.get_mut(&id).unwrap();
-                if !matches!(task.state, State::Queued) {
-                    fatal("invalid ready task state");
+                if let Some(id) = id {
+                    let task = core.tasks.get_mut(&id).unwrap();
+                    if !matches!(task.state, State::Queued) {
+                        fatal("invalid ready task state");
+                    }
+                    task.state = State::Running;
+                    let next = (id, task.frame, task.resume);
+                    core.current = Some(id);
+                    Some(next)
+                } else {
+                    if core.pending == 0 {
+                        fatal("task wait has no runnable dependency");
+                    }
+                    None
                 }
-                task.state = State::Running;
-                let next = (id, task.frame, task.resume);
-                core.current = Some(id);
-                next
             };
-            let (id, frame, resume) = next;
+            let Some((id, frame, resume)) = next else {
+                if let Err(error) = self.poll(true) {
+                    return Err(self.wait_failure(root, error));
+                }
+                continue;
+            };
             // Reload after every previous callback/collection. Neither Core nor
             // the root store remains borrowed while generated code executes.
             let frame = self.roots().get(frame).expect("rooted task frame");
@@ -195,6 +288,95 @@ impl Owner {
             self.finish_resume(id, outcome);
         }
     }
+
+    fn wait_failure(&self, root: u64, error: io::Error) -> OwnedFault {
+        // Capture the diagnostic with the existing test/fault context, but do
+        // not propagate it through an installed owner or its outer root scope.
+        // SAFETY: No activation, cleanup, or heap borrow is live here.
+        let failure = unsafe { catch_fault(|| wait_fault(error)) }.unwrap_err();
+        let mut core = self.core.borrow_mut();
+        self.cancel_tree(&mut core, root);
+        core.root = None;
+        core.ready.clear();
+        failure
+    }
+}
+
+fn wait_fault(error: io::Error) -> ! {
+    if error.kind() == io::ErrorKind::OutOfMemory {
+        fatal("out of memory");
+    }
+    fault(&format!("task wait failed: {error}"));
+}
+
+// Readiness adapters must retain the native handle until completion/cancel;
+// this internal operation does not acquire ownership of any source resource.
+unsafe fn wait_source(source: WaitSource) -> Option<ReadyNotification> {
+    let outcome = edit(|owner, core| {
+        let id = core.current.ok_or("task wait outside a resume")?;
+        let task = core.tasks.get_mut(&id).unwrap();
+        if !matches!(task.state, State::Running | State::ExternalWaiting) {
+            return Err("task already awaits a child");
+        }
+        if let Some(wait) = task.external {
+            let previous = wait.source;
+            if (
+                previous.kind,
+                previous.interests,
+                previous.handle,
+                previous.deadline_ns,
+            ) != (
+                source.kind,
+                source.interests,
+                source.handle,
+                source.deadline_ns,
+            ) {
+                return Err("task already has another external wait");
+            }
+            if wait.ready.is_some() {
+                task.external = None;
+                task.state = State::Running;
+            }
+            return Ok(Ok(wait.ready));
+        }
+        let registration = owner.reactor().and_then(|reactor| {
+            // SAFETY: The adapter retains a readiness handle through drain.
+            unsafe { reactor.register(source, id) }
+        });
+        match registration {
+            Ok(registration) => {
+                task.external = Some(ExternalWait {
+                    source,
+                    registration,
+                    ready: None,
+                });
+                task.state = State::ExternalWaiting;
+                core.pending += 1;
+                Ok(Ok(None))
+            }
+            Err(error) => Ok(Err(error)),
+        }
+    });
+    // Reactor failures, like invalid task operations, must not unwind while
+    // Core is borrowed: fault cleanup can allocate and inspect task state.
+    outcome.unwrap_or_else(|error| wait_fault(error))
+}
+
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_wait_timer(deadline_ns: i64) -> i32 {
+    if deadline_ns < 0 {
+        fault("timer deadline must not be negative");
+    }
+    // SAFETY: A timer borrows no native resource.
+    let ready = unsafe {
+        wait_source(WaitSource {
+            kind: KIND_TIMER,
+            interests: 0,
+            handle: 0,
+            deadline_ns: deadline_ns as u64,
+        })
+    };
+    i32::from(ready.is_some())
 }
 
 fn edit<R>(operation: impl FnOnce(&Owner, &mut Core) -> Result<R, &'static str>) -> R {
@@ -257,6 +439,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
                 children: BTreeSet::new(),
                 waiter: None,
                 state: State::Queued,
+                external: None,
                 creation: (creation, creation_len),
             },
         );
@@ -275,6 +458,9 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
 pub(super) extern "C-unwind" fn loom_rt_task_await(child: u64) -> i32 {
     edit(|_, core| {
         let parent = parent(core, child)?;
+        if core.tasks[&parent].external.is_some() {
+            return Err("task already has an external wait");
+        }
         if !matches!(core.tasks[&parent].state, State::Running)
             && !matches!(core.tasks[&parent].state, State::Waiting(id) if id == child)
         {
@@ -345,6 +531,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor
         let owner = Owner {
             roots: ptr::from_ref(roots),
             core: RefCell::new(Core::default()),
+            reactor: OnceCell::new(),
         };
         OWNER.set(ptr::from_ref(&owner));
         // SAFETY: The owner remains rooted outside all fault boundaries. The
@@ -381,3 +568,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor
         raise_owned(failure);
     }
 }
+
+#[cfg(test)]
+#[path = "tasks_wait_tests.rs"]
+mod wait_tests;
