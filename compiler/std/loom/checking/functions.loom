@@ -8,7 +8,6 @@ import std.loom.typed.Local
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.Function
-import std.loom.proof.verify
 import std.list.new
 import std.list.get
 import std.list.push
@@ -180,6 +179,15 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
 fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
     if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool { return Result.Ok(true) }
     if node.kind == NodeKind.Name && package(node.value) == "" { return Result.Ok(true) }
+    if node.kind == NodeKind.Call {
+        let arguments = child(node, 1).children
+        var index = 0
+        while index < length(arguments) {
+            discard scalar_contract(context, get(arguments, index))?
+            index = index + 1
+        }
+        return Result.Ok(true)
+    }
     if node.kind == NodeKind.Unary || node.kind == NodeKind.Binary {
         var index = 0
         while index < length(node.children) {
@@ -188,7 +196,7 @@ fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
         }
         return Result.Ok(true)
     }
-    Result.Err(error(context, node, "contracts currently support only scalar, call-free predicates"))
+    Result.Err(error(context, node, "contracts require scalar predicates and pure helper calls"))
 }
 fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failure] {
     let clauses = new[Expr]()
@@ -263,15 +271,8 @@ fn function(env Environment, id Int, arguments List[Int], constants List[StaticV
         push(context.bindings, Binding { name = "result" local = result_local constant = -1 previous = context.head })
         context = context_at(context, binding)
     }
-    let postconditions = contracts(context, item.node, NodeKind.Ensures)?
     let checked_function = Function { symbol = current.symbol arguments = arguments params = runtime_params result = current.result
-        locals = context.locals preconditions = preconditions postconditions = postconditions result_local = result_local
+        locals = context.locals preconditions = preconditions postconditions = new[Expr]() result_local = result_local
         body = body runtime_name = runtime_name span = item.node.span }
-    if length(postconditions) != 0 {
-        match verify(checked_function) {
-            Result.Ok(_) => {}
-            Result.Err(message) => { return Result.Err(failure(env, current.symbol, item.node, message)) }
-        }
-    }
-    Result.Ok(checked_function)
+    checked_contracts(context, item.node, checked_function)
 }

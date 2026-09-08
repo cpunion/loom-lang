@@ -180,6 +180,12 @@ relations and branch-join inference remain later work. Bounded expansion of
 direct scalar helpers now supports refinement implication while retaining
 evaluation and precondition obligations; general helper control flow remains open.
 
+Required function contracts now reuse that bounded helper expansion, preserving
+multiple parameter/result identities and guarded evaluation obligations. Pure
+predicates remain normal source functions; proof-only callees do not become native
+roots. Their own contracts and unused callers still undergo mandatory checking.
+General body calls, helper control flow and required Float reasoning remain open.
+
 Structural tuples, numeric projection, and plain-name destructuring now use the
 native aggregate path, including generics, shared containers, and compile-time
 results. More general patterns and runtime-sized task composition remain later
@@ -278,7 +284,8 @@ reflection remain incomplete.
 `Int` type predicates can call pure helpers through the same bounded evaluator;
 known constants remove checks, while unknown results retain the runtime
 construction boundary. Execution never substitutes for a required proof:
-function contracts still use the documented call-free proof fragment.
+function contracts use the documented symbolic proof fragment, including bounded
+expansion of checked scalar helpers.
 Explicit Int refinement conversion now reuses that fragment to eliminate a
 destination check only when both truth and definedness follow from the source
 predicate. Exact call-free conjunction reuse also handles Float without

@@ -1,0 +1,51 @@
+test fn contract_helpers_expand_scalar_arguments_locals_and_guarded_calls() {
+    let admitted = "fn admitted(value Int) Bool requires value > 0 { true }\n"
+    let program = accepted(concat(admitted, "fn good(value Int) Int requires value > 0 ensures admitted(result) { value }\nfn main() { assert good(3) == 3 }"))
+    // The proof-only helper belongs to a separate checked closure, not native
+    // reachability. Main and good are the only runtime functions here.
+    assert length(program.functions) == 2
+    discard accepted(concat(admitted, "pub fn guarded(value Int) Int ensures result <= 0 || admitted(result) { value }"))
+    let range = "fn between(value Int, low Int, high Int) Bool { let above = value >= low\nreturn above && value <= high }\nfn bounded(value Int) Bool { between(value, 1, 100) }\n"
+    discard accepted(concat(range, "pub fn keep(value Int, low Int, high Int) Int requires between(value, low, high) ensures between(result, low, high) { value }\npub fn nested(value Int) Int requires bounded(value) ensures between(result, 1, 100) { value }"))
+    discard accepted("fn either(left Bool, right Bool) Bool { left || right }\npub fn zero(value Int) Int requires value == 0 ensures result == 0 || either(false, 10 / result > 0) { value }")
+    discard accepted("fn touched(value Int) Bool { let unused = value + 1\ntrue }\npub fn bounded(value Int) Int requires value < 9223372036854775807 ensures touched(result) { value }")
+    // Runtime Float predicates need no unsupported symbolic Float proof.
+    discard accepted("fn positive(value Float) Bool { value > 0.0 }\nfn keep(value Float) Float requires positive(value) { value }\nfn main() { assert keep(1.0) == 1.0 }")
+}
+
+test fn helper_contracts_do_not_assume_requirements_or_skip_eager_arithmetic() {
+    let admitted = "fn admitted(value Int) Bool requires value > 0 { true }\n"
+    rejects(concat(admitted, "fn bad(value Int) Int ensures admitted(result) { value }\nfn main() { discard bad(3) }"))
+    rejects(concat(admitted, "fn unused(value Int) Int ensures admitted(result) { value }\nfn main() {}"))
+    rejects("fn denied(value Int) Bool { false }\nfn bad(value Int) Int ensures denied(result) { value }")
+    rejects("fn either(left Bool, right Bool) Bool { left || right }\nfn bad(value Int) Int requires value == 0 ensures either(result == 0, 10 / result > 0) { value }")
+    rejects("fn touched(value Int) Bool { let unused = value + 1\ntrue }\nfn bad(value Int) Int ensures touched(result) { value }")
+    rejects("fn always(value Int) Bool { true }\nfn bad(value Int) Int ensures always(result + 1) { value }")
+    rejects("fn wrong(value Int) Bool ensures result { false }\nfn caller(value Int) Int requires wrong(value) { value }")
+    rejects("fn positive(value Float) Bool { value > 0.0 }\nfn bad(value Float) Float requires positive(value) ensures positive(result) { value }")
+}
+
+test fn helper_proofs_remain_mandatory_for_templates_and_unsupported_bodies() {
+    let admitted = "fn admitted(value Int) Bool requires value > 0 { true }\n"
+    discard accepted(concat(admitted, "fn good[T](value Int) Int requires value > 0 ensures admitted(result) { value }\nfn main() { assert good[Bool](3) == 3 }"))
+    rejects(concat(admitted, "fn bad[T](value Int) Int ensures admitted(result) { value }\nfn main() { discard bad[Int](3) }"))
+    rejects(concat(admitted, "fn hidden[T](value Int) Int requires value > 0 ensures admitted(result) { comptime if T == Int { value } else { 0 } }\nfn main() { discard hidden[Int](3) }"))
+    rejects(concat(admitted, "fn hidden(value Int, comptime chosen Bool) Int requires value > 0 ensures admitted(result) { comptime if chosen { value } else { 0 } }\nfn main() { discard hidden(3, true) }"))
+    let callers = "\nfn bad(value Int) Int requires value > 0 ensures helper(result) { value }\nfn main() {}"
+    rejects(concat("fn helper(value Int) Bool { var count = value\nwhile count < 0 { count = count + 1 }\ntrue }", callers))
+    rejects(concat("fn helper(value Int) Bool { helper(value) }", callers))
+    rejects(concat("fn positive(value Int) Bool { value > 0 }\nfn helper(value Int) Bool { let action = positive\naction(value) }", callers))
+    rejects("concept Check { fn positive(self Self) Bool }\nfn bad(value dyn Check) Int ensures value.positive() { 1 }\nfn main() {}")
+}
+
+test fn contract_helpers_use_the_defining_packages_private_bindings() {
+    let files = source_files("import rules.checked\nfn admitted(value Int) Bool { false }\nfn main() { assert checked(7) == 7 }")
+    push(files, source_file("rules", "fn admitted(value Int) Bool requires value > 0 { true }\npub fn checked(value Int) Int requires value > 0 ensures admitted(result) { value }", false))
+    match checked(files) {
+        Result.Ok(program) => { assert length(program.functions) == 2 }
+        Result.Err(failed) => {
+            show_failure(fixture_project(files), failed)
+            assert false
+        }
+    }
+}

@@ -1,0 +1,60 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.ast.has
+import std.loom.typed.Expr
+import std.loom.typed.Function
+import std.loom.proof.verify
+import std.loom.proof.verify_with_helpers
+import std.list.get
+import std.list.length
+import std.result.Result
+
+fn contract_call(node Node) Bool {
+    if node.kind == NodeKind.Call { return true }
+    var index = 0
+    while index < length(node.children) {
+        if contract_call(child(node, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+fn contract_helpers(node Node) Bool {
+    var index = 0
+    while index < length(node.children) {
+        let member = child(node, index)
+        if (member.kind == NodeKind.Requires || member.kind == NodeKind.Ensures) && contract_call(member) { return true }
+        index = index + 1
+    }
+    false
+}
+fn with_contracts(function Function, preconditions List[Expr], postconditions List[Expr]) Function {
+    Function { symbol = function.symbol arguments = function.arguments params = function.params result = function.result
+        locals = function.locals preconditions = preconditions postconditions = postconditions result_local = function.result_local
+        body = function.body runtime_name = function.runtime_name span = function.span }
+}
+fn checked_contracts(context Context, node Node, function Function) Result[Function, Failure] {
+    if !contract_helpers(node) {
+        if !has(node, NodeKind.Ensures) { return Result.Ok(function) }
+        let checked = with_contracts(function, function.preconditions, contracts(context, node, NodeKind.Ensures)?)
+        match verify(checked) {
+            Result.Ok(_) => Result.Ok(checked)
+            Result.Err(message) => Result.Err(error(context, node, message))
+        }
+    } else {
+        // Check-only calls have no executable indices. Recheck the predicates
+        // in their declaration scope with a private queue of actual helpers.
+        // No concrete caller substitutes for an abstract generic declaration.
+        let stage = staging(context, node)?
+        let preconditions = contracts(stage, node, NodeKind.Requires)?
+        let postconditions = contracts(stage, node, NodeKind.Ensures)?
+        let proof = with_contracts(function, preconditions, postconditions)
+        match verify_with_helpers(prepared(stage)?, proof) {
+            Result.Ok(conditions) => {
+                // Ensures are already proved; retain call-free checked clauses
+                // for reflection/CTFE, not private helper indices or runtime roots.
+                Result.Ok(with_contracts(function, function.preconditions, conditions))
+            }
+            Result.Err(message) => Result.Err(error(context, node, message))
+        }
+    }
+}

@@ -1,4 +1,5 @@
 import std.loom.typed.Program
+import std.loom.typed.Function
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.Local
@@ -254,4 +255,96 @@ fn helper_implication(program Program, premise Expr, conclusion Expr) Result[Boo
 // optional query never turns unsupported forms or failed preparation into facts.
 pub fn implies_with_helpers(program Program, premise Expr, conclusion Expr) Bool {
     match helper_implication(program, premise, conclusion) { Result.Ok(proved) => proved, Result.Err(_) => false }
+}
+
+// Expansion validates the scalar grammar. This bounds its substituted trees
+// without imposing refinement implication's canonical self-local identity.
+fn contract_size(value Expr, budget List[Int], depth Int) Bool {
+    if depth >= 64 || !conjunction_step(budget) { return false }
+    var index = 0
+    while index < length(value.children) {
+        if !contract_size(get(value.children, index), budget, depth + 1) { return false }
+        index = index + 1
+    }
+    true
+}
+fn bounded_contract(value Expr) Bool {
+    let budget = new[Int]()
+    push(budget, 256)
+    contract_size(value, budget, 0)
+}
+fn contract_at(value Expr, source Expr) Expr {
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, contract_at(get(value.children, index), source))
+        index = index + 1
+    }
+    proof_expr(source, value.kind, value.ty, value.text, value.index, children)
+}
+fn contract_clause(output List[Expr], value Expr, source Expr) Result[Bool, Text] {
+    if !bounded_contract(value) || length(output) >= 1024 {
+        return Result.Err("contract helper proof expansion budget exhausted")
+    }
+    push(output, contract_at(value, source))
+    Result.Ok(true)
+}
+fn evaluated_bounds(value Expr) Expr {
+    let low = proof_expr(value, ExprKind.Integer, 1, "-9223372036854775808", -1, new[Expr]())
+    let high = proof_expr(value, ExprKind.Integer, 1, "9223372036854775807", -1, new[Expr]())
+    proof_and(proof_expr(value, ExprKind.Binary, 2, ">=", -1, proof_children(value, low)),
+        proof_expr(value, ExprKind.Binary, 2, "<=", -1, proof_children(value, high)))
+}
+fn contract_predicates(program Program, function Function, inputs List[Expr], entry Bool, budget List[Int]) Result[List[Expr], Text] {
+    let output = new[Expr]()
+    let bindings = new[ExpansionBinding]()
+    var index = 0
+    while index < length(function.locals) {
+        let reference = proof_expr(function.body, ExprKind.Local, get(function.locals, index).ty, "", index, new[Expr]())
+        push(bindings, ExpansionBinding { local = index value = reference })
+        index = index + 1
+    }
+    index = 0
+    while index < length(inputs) {
+        let input = get(inputs, index)
+        let context = Expansion { program = program budget = budget active = new[Int]() checks = new[Evaluation]() }
+        let predicate = expanded(context, input, proof_bool(input, true), bindings, function.locals, false, 0, 0)?
+        var check_index = 0
+        while check_index < length(context.checks) {
+            let check = get(context.checks, check_index)
+            if !bounded_contract(check.guard) || !bounded_contract(check.value) {
+                return Result.Err("contract helper proof expansion budget exhausted")
+            }
+            if check.required {
+                discard contract_clause(output, guarded_value(check.guard, check.value), input)?
+            } else { if !total_scalar(check.value) {
+                if entry {
+                    // An entry predicate has already run. Successful checked
+                    // arithmetic supplies bounds only on the path that ran it.
+                    if check.value.ty == 1 {
+                        discard contract_clause(output, guarded_value(check.guard, evaluated_bounds(check.value)), input)?
+                    }
+                } else {
+                    // This value has not executed. Reflexive equality asks the
+                    // existing verifier to prove its evaluation defined first,
+                    // including arguments and discarded helper calculations.
+                    let defined_value = proof_expr(check.value, ExprKind.Binary, 2, "==", -1, proof_children(check.value, check.value))
+                    discard contract_clause(output, guarded_value(check.guard, defined_value), input)?
+                }
+            } }
+            check_index = check_index + 1
+        }
+        discard contract_clause(output, predicate, input)?
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+fn expanded_contracts(program Program, function Function) Result[Function, Text] {
+    let budget = new[Int]()
+    push(budget, 4096)
+    let preconditions = contract_predicates(program, function, function.preconditions, true, budget)?
+    let postconditions = contract_predicates(program, function, function.postconditions, false, budget)?
+    Result.Ok(Function { symbol = function.symbol arguments = function.arguments params = function.params result = function.result
+        locals = function.locals preconditions = preconditions postconditions = postconditions result_local = function.result_local
+        body = function.body runtime_name = function.runtime_name span = function.span })
 }

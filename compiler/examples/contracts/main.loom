@@ -1,0 +1,36 @@
+fn positive(value Int) Bool {
+    value > 0
+}
+
+// Calling this predicate requires proof that its argument is positive.
+fn admitted(value Int) Bool
+requires value > 0 {
+    true
+}
+
+fn good(value Int) Int
+requires positive(value)
+ensures admitted(result)
+{
+    value
+}
+
+fn between(value Int, low Int, high Int) Bool {
+    let above = value >= low
+    return above && value <= high
+}
+
+fn bounded(value Int, low Int, high Int) Int
+requires between(value, low, high)
+ensures between(result, low, high)
+{
+    value
+}
+
+fn main() {
+    assert good(7) == 7
+    assert comptime {
+        good(7)
+    } == 7
+    assert bounded(12, 10, 20) == 12
+}

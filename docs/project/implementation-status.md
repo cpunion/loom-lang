@@ -165,7 +165,16 @@ with constrained construction, command-line input, and ordinary source tests.
 Their supported operation/call closure is validated even for unused constrained
 declarations. Known true/false predicates remove the check or reject; unknown
 inputs or unsuccessful optional evaluation retain normal runtime construction
-and fault behavior. Function contracts remain call-free and proofs mandatory.
+and fault behavior. Function contracts now reuse direct acyclic scalar helpers
+with immutable locals and tail expressions/returns. A private checked closure
+preserves helper preconditions, eager/unused arithmetic and short-circuit guards;
+successful entry checks provide facts, while exit checks must be proved. Helpers
+used only by postconditions stay out of native reachability. The
+[contract example](../../compiler/examples/contracts/README.md) exercises this
+through the CLI and compile-time execution. Generic declarations still require
+abstract proofs. Helper loops/recursion, indirect/dynamic calls and general calls
+in a function body requiring proof remain unsupported; required proofs never
+fall back to runtime checks or sampled evaluation.
 
 Managed memory now uses stop-the-world copying collection with a traced
 large-object space; stress mode relocates all sizes. Rewritable typed

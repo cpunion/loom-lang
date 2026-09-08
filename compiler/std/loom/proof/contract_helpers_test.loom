@@ -1,0 +1,92 @@
+import std.loom.typed.Program
+import std.loom.typed.Type
+import std.loom.typed.Interface
+import std.loom.typed.Witness
+
+fn contract_fixture(params List[Int], result_type Int, body Expr, preconditions List[Expr], postconditions List[Expr]) Function {
+    let locals = new[Local]()
+    var index = 0
+    while index < length(params) {
+        push(locals, Local { name = "parameter" ty = get(params, index) mutable = false is_scoped = false })
+        index = index + 1
+    }
+    push(locals, Local { name = "result" ty = result_type mutable = false is_scoped = false })
+    Function { symbol = 0 arguments = new[Int]() params = params result = result_type locals = locals
+        preconditions = preconditions postconditions = postconditions result_local = length(params)
+        body = if body.kind == ExprKind.Block { body } else { expression(ExprKind.Block, result_type, "", -1, nodes(body)) }
+        runtime_name = "" span = body.span }
+}
+fn proof_helpers(functions List[Function]) Program {
+    Program { types = new[Type]() functions = functions entry = -1 tests = new[Int]() test_names = new[Text]()
+        exports = new[Int]() interfaces = new[Interface]() witnesses = new[Witness]() }
+}
+fn helper_call(index Int, result_type Int, arguments List[Expr]) Expr { expression(ExprKind.Call, result_type, "", index, arguments) }
+fn helpers_verified(program Program, function Function) Bool {
+    match verify_with_helpers(program, function) { Result.Ok(_) => true, Result.Err(_) => false }
+}
+
+test fn contract_helpers_preserve_parameter_and_result_identity() {
+    let compare = contract_fixture([1, 1], 2, operation(">=", local(0), local(1)), [], [])
+    let program = proof_helpers([compare])
+    let premise = operation(">=", local(0), local(1))
+    let goal = helper_call(0, 2, [local(2), local(1)])
+    assert helpers_verified(program, contract_fixture([1, 1], 1, local(0), [premise], [goal]))
+    assert !helpers_verified(program, contract_fixture([1, 1], 1, local(1), [premise], [helper_call(0, 2, [local(2), local(0)])]))
+    // Calls in the ordinary body are not rescued by contract-only expansion.
+    assert !helpers_verified(program, contract_fixture([1, 1], 2, helper_call(0, 2, [local(0), local(1)]), [], [expression(ExprKind.Bool, 2, "true", -1, [])]))
+}
+
+test fn contract_helper_requirements_are_entry_facts_not_goal_assumptions() {
+    let yes = expression(ExprKind.Bool, 2, "true", -1, [])
+    let positive = operation(">", local(0), literal("0"))
+    let helper = contract_fixture([1], 2, yes, [positive], [])
+    let program = proof_helpers([helper])
+    let goal = helper_call(0, 2, [local(1)])
+    assert helpers_verified(program, fixture(local(0), [positive], goal))
+    assert !helpers_verified(program, fixture(local(0), [], goal))
+    assert helpers_verified(program, fixture(local(0), [helper_call(0, 2, [local(0)])], operation(">", local(1), literal("0"))))
+    let guarded = operation("||", operation("<=", local(0), literal("0")), helper_call(0, 2, [local(0)]))
+    assert helpers_verified(program, fixture(local(0), [], guarded))
+    assert !helpers_verified(program, fixture(local(0), [guarded], operation(">", local(1), literal("0"))))
+}
+
+test fn contract_helpers_keep_eager_and_discarded_arithmetic_obligations() {
+    let yes = expression(ExprKind.Bool, 2, "true", -1, [])
+    let increment = operation("+", local(0), literal("1"))
+    let discarded = expression(ExprKind.Discard, 0, "", -1, [increment])
+    let touched = contract_fixture([1], 2, expression(ExprKind.Block, 2, "", -1, [discarded, yes]), [], [])
+    let ignore = contract_fixture([1], 2, yes, [], [])
+    let program = proof_helpers([touched, ignore])
+    let safe = operation("<", local(0), literal("9223372036854775807"))
+    assert !helpers_verified(program, fixture(local(0), [], helper_call(0, 2, [local(0)])))
+    assert helpers_verified(program, fixture(local(0), [safe], helper_call(0, 2, [local(0)])))
+    assert helpers_verified(program, fixture(local(0), [helper_call(0, 2, [local(0)])], safe))
+    assert !helpers_verified(program, fixture(local(0), [], helper_call(1, 2, [operation("/", literal("1"), literal("0"))])))
+    let skipped = operation("||", yes, helper_call(1, 2, [operation("/", literal("1"), literal("0"))]))
+    assert helpers_verified(program, fixture(local(0), [], skipped))
+    let conditional = operation("||", operation("==", local(0), literal("9223372036854775807")), helper_call(0, 2, [local(0)]))
+    assert !helpers_verified(program, fixture(local(0), [conditional], safe))
+}
+
+test fn helper_contract_expansion_is_bounded_and_anchors_returned_predicates() {
+    let inner = contract_fixture([1], 2, operation(">=", local(0), literal("0")), [], [])
+    let outer = contract_fixture([1], 2, helper_call(0, 2, [local(0)]), [], [])
+    let program = proof_helpers([inner, outer])
+    let raw = helper_call(1, 2, [local(1)])
+    let goal = Expr { kind = raw.kind ty = raw.ty span = Span { start = 42 end = 51 } text = raw.text index = raw.index
+        children = raw.children arms = raw.arms falls = raw.falls }
+    match verify_with_helpers(program, fixture(literal("0"), [], goal)) {
+        Result.Ok(clauses) => {
+            let value = get(clauses, length(clauses) - 1)
+            assert value.kind == ExprKind.Binary && value.span.start == 42 && value.span.end == 51
+            assert get(value.children, 0).span.start == 42 && get(value.children, 0).index == 1
+        }
+        Result.Err(_) => { assert false }
+    }
+    let recursive = contract_fixture([1], 2, helper_call(0, 2, [local(0)]), [], [])
+    assert !helpers_verified(proof_helpers([recursive]), fixture(local(0), [], helper_call(0, 2, [local(0)])))
+    // Requires-only functions need purity/expansion, not a Float theorem.
+    let floating = expression(ExprKind.Local, 5, "", 0, [])
+    let zero = expression(ExprKind.Float, 5, "0.0", -1, [])
+    assert helpers_verified(proof_helpers([]), contract_fixture([5], 5, floating, [operation(">", floating, zero)], []))
+}
