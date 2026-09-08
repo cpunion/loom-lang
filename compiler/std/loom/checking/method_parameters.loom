@@ -154,7 +154,8 @@ fn implementation_method(env Environment, header Implementation, owner Int, expe
                 }
                 match trial {
                     Result.Ok(current) => {
-                        if same(current.params, target.params) && same(current.compile_time, target.compile_time) && current.result == target.result {
+                        if same(current.params, target.params) && same(current.compile_time, target.compile_time) && current.result == target.result &&
+                            async_signature(env, current) == async_signature(env, target) {
                             push(matches, MethodMatch { slot = slot signature = current })
                         }
                     }

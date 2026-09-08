@@ -336,9 +336,9 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
     }
     let logical_output = substitute(context.env, context.signature.symbol, signature.result, instance.arguments, node)?
     let asynchronous = async_signature(context.env, signature)
-    let output = if asynchronous { intern(context.env, TypeKind.Task, -1, ints(logical_output)) } else { logical_output }
+    let output = call_result(context.env, signature, logical_output)
     let dynamic = prototype(context.env, signature.symbol) && length(runtime_values) != 0 && get(context.env.types, get(runtime_values, 0).ty).kind == TypeKind.Dyn
-    discard task_call_context(context, node, runtime_values, output, asynchronous, dynamic)?
+    discard task_call_context(context, node, runtime_values, output, asynchronous)?
     if !context.emit && !known_constants(constants) {
         return Result.Ok(expression(ExprKind.Deferred, output, node, "", -1, runtime_values, all_fall(runtime_values)))
     }

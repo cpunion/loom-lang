@@ -325,7 +325,17 @@ fn dyn_location(analysis SemanticView, report Inspection, value Expr) {
     }
     let interface = get(analysis.data.interfaces, receiver.symbol)
     let method = get(interface.methods, value.index)
-    add_type(report, signature_name(analysis, method.params, method.result))
+    let output = if method.is_async {
+        get(get(analysis.data.types, method.result).arguments, 0)
+    } else {
+        method.result
+    }
+    let label = signature_name(analysis, method.params, output)
+    add_type(report, if method.is_async {
+            concat("async ", label)
+        } else {
+            label
+        })
     var selected = -1
     var index = 0
     while index < length(analysis.bindings.symbols) {
@@ -401,8 +411,11 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
         if value.kind == ExprKind.Call || value.kind == ExprKind.FunctionRef || value.kind == ExprKind.TaskCall {
             if value.index >= 0 {
                 let callee = get(analysis.data.functions, value.index)
-                add_type(report, if callee.is_async { concat("async ", signature_name(analysis, callee.params, callee.result)) } else {
-                    signature_name(analysis, callee.params, callee.result) })
+                add_type(report, if callee.is_async {
+                        concat("async ", signature_name(analysis, callee.params, callee.result))
+                    } else {
+                        signature_name(analysis, callee.params, callee.result)
+                    })
                 symbol_location(analysis, report, callee.symbol)
             }
             return

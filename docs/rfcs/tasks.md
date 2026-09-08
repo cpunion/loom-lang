@@ -67,7 +67,7 @@ sugar. Concrete library spellings are not compiler dispatch tables.
 
 ## Implementation boundary
 
-The current source slice supports direct async functions, async main/tests,
+The current source slice supports async functions/methods, async main/tests,
 one-shot local Tasks and postfix `.await`/`.await?`. Hot creation enqueues a child
 without running its body inline. One owner thread processes the ready queue;
 this is cooperative execution, not parallel threads. Child faults propagate at
@@ -101,8 +101,17 @@ Function signatures alone do not retain their parameter/result values. Cleanup
 bodies cannot suspend or create/consume Tasks. See the
 [cleanup example](../../compiler/examples/async_cleanup).
 
-Task-bearing aggregates,
-async methods, Task-bearing function values/dynamic calls,
+Async concept/impl methods use the existing typed constructors for concrete,
+generic and dynamic calls. The async modifier is part of conformance, not an
+overload discriminator. Defaults, associated results and type/comptime parameters
+share ordinary method specialization. Sparse witnesses call constructors; a private
+label preserves the actual dynamic creation site. Synchronous dynamic methods can
+also transfer direct Task parameters/results using their caller's owner.
+Async MustScope/NoSuspend parameters and scoped receiver escape remain rejected;
+this does not establish a structured resource lifetime across a child call.
+See the [method example](../../compiler/examples/async_methods).
+
+Task-bearing aggregates and function values,
 socket adapters, general worker operations
 and joins are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread. Public outcome inspection remains

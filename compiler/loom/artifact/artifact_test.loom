@@ -117,6 +117,7 @@ test fn dynamic_metadata_is_an_explicit_sparse_tail() {
     std.list.push(params, 3)
     let methods = std.list.new[Method]()
     std.list.push(methods, Method {
+            is_async = false
             name = "display"
             params = params
             result = 3

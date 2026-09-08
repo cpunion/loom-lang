@@ -224,15 +224,17 @@ fn snapshot(graph Graph, value Value) Value {
 }
 
 // Remapping only changes owner-local IDs; function/witness/type IDs stay stable.
-fn remap(value Expr, offset Int) Expr {
+fn remap(program Program, value Expr, offset Int) Expr {
     let local_index = value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign
     let children = new[Expr]()
     var index = 0
     while index < length(value.children) {
-        push(children, remap(get(value.children, index), offset))
+        push(children, remap(program, get(value.children, index), offset))
         index = index + 1
     }
-    if value.kind == ExprKind.TaskCall {
+    let dynamic_task = value.kind == ExprKind.DynCall &&
+        get(get(program.interfaces, get(program.types, get(value.children, 0).ty).symbol).methods, value.index).is_async
+    if value.kind == ExprKind.TaskCall || dynamic_task {
         push(children, labeled(node(ExprKind.Text, 3, value.span, -1, new[Expr]()), value.text))
     }
     let arms = new[Arm]()
@@ -253,7 +255,7 @@ fn remap(value Expr, offset Int) Expr {
         let body = new[Expr]()
         field = 0
         while field < length(arm.body) {
-            push(body, remap(get(arm.body, field), offset))
+            push(body, remap(program, get(arm.body, field), offset))
             field = field + 1
         }
         push(arms, Arm {
@@ -276,7 +278,7 @@ fn remap(value Expr, offset Int) Expr {
         }
         ty = value.ty
         span = value.span
-        text = if value.kind == ExprKind.TaskCall {
+        text = if value.kind == ExprKind.TaskCall || dynamic_task {
             ""
         } else {
             value.text

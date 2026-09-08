@@ -265,6 +265,7 @@ pub fn encode(program Program) Text {
             var slot = 0
             while slot < length(interface.methods) {
                 let method = get(interface.methods, slot)
+                assert !method.is_async
                 integers(buffer, method.params)
                 integer(buffer, method.result)
                 slot = slot + 1

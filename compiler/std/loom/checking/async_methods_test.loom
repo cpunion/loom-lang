@@ -1,0 +1,55 @@
+fn async_method_header() Text {
+    "concept Source { type Item\nasync fn read(self Self) Self.Item\nasync fn echo[T](self Self, value T, comptime flag Bool) T { value }\nfn forward[T](self Self, task Task[T]) Task[T] { task }\nasync fn wrap[T](self Self, task Task[T]) Task[T] { task } }\nrecord Number { value Int }\nimpl Source for Number { type Item = Int\nasync fn read(self Number) Int { self.value } }\n"
+}
+
+test fn async_methods_share_static_specialization_and_dynamic_task_signatures() {
+    let program = accepted(concat(async_method_header(), "async fn generic[S Source](source S) S.Item { source.read().await }\nasync fn main() { let concrete = Number { value = 7 }\nlet erased dyn Source[Item = Int] = concrete\nassert generic(concrete).await == 7\nassert generic(erased).await == 7\nassert erased.echo(\"ok\", true).await == \"ok\"\nassert erased.wrap(erased.forward(erased.read())).await.await == 7 }"))
+    let methods = get(program.interfaces, 0).methods
+    var index = 0
+    var asynchronous = 0
+    var synchronous = 0
+    while index < length(methods) {
+        let method = get(methods, index)
+        assert get(program.types, method.result).kind == TypeKind.Task
+        if method.is_async {
+            asynchronous = asynchronous + 1
+        } else {
+            synchronous = synchronous + 1
+        }
+        index = index + 1
+    }
+    assert asynchronous == 3 && synchronous == 1
+    discard accepted("concept Source { type Item\nasync fn read(self Self) Self.Item }\nimpl Source for Int { type Item = Task[Int]\nasync fn read(self Int) Task[Int] { item(self) } }\nasync fn item(value Int) Int { value }\nasync fn main() { let value dyn Source[Item = Task[Int]] = 7\nassert value.read().await.await == 7 }")
+    discard accepted("record Metadata[T] { value Int }\nasync fn item() Metadata[Task[Int]] { Metadata[Task[Int]] { value = 7 } }\nasync fn main() { assert item().await.value == 7 }")
+}
+
+test fn async_method_effects_and_task_obligations_cannot_be_erased() {
+    rejects("concept C { fn read(self Self) Int\nasync fn read(self Self) Int }")
+    task_rejected("concept C { async fn read(self Self) Int }\nimpl C for Int { fn read(self Int) Int { self } }",
+        "implementation method signature does not match its concept")
+    task_rejected("concept C { fn read(self Self) Int }\nimpl C for Int { async fn read(self Int) Int { self } }",
+        "implementation method signature does not match its concept")
+    let prefix = concat(async_method_header(), "fn source() dyn Source[Item = Int] { Number { value = 7 } }\n")
+    task_rejected(concat(prefix, "fn main() { let pending = source().read() }"),
+        "task creation or transfer requires an async function or a direct Task parameter or return type")
+    rejects(concat(prefix, "async fn main() { discard source().read() }"))
+    rejects(concat(prefix, "async fn main() { let pending = source().read()\ndiscard source().forward(pending).await\ndiscard pending.await }"))
+    rejects(concat(prefix, "async fn main() { defer { discard source().read().await } }"))
+    rejects(concat(prefix, "async fn main() { discard comptime { source().read().await } }"))
+    task_rejected(concat(prefix, "fn pair(task Task[Int], extra Int) Task[Int] { task }\nasync fn work(flag Bool) { discard pair(source().read(), { if flag { return }\n0 }).await }"),
+        "a task argument is still pending; finish its call before returning")
+}
+
+test fn async_method_receivers_keep_resource_and_no_suspend_boundaries() {
+    suspension_reject(concat(suspension_header(), "concept C { async fn read(self Self) Int }\nimpl C for Token { async fn read(self Token) Int { self.id } }"),
+        "async parameters cannot contain NoSuspend values")
+    suspension_reject(concat(resource_header(), "concept C { async fn read(self Self) Int }\nimpl C for Handle { async fn read(self Handle) Int { 7 } }"),
+        "async parameters cannot contain MustScope resources")
+    resource_reject("import std.resource.Dispose\nconcept C { async fn read(self Self) Int }\nrecord Guard {}\nimpl Dispose for Guard { fn dispose(self Guard) {} }\nimpl C for Guard { async fn read(self Guard) Int { 7 } }\nasync fn main() { scoped guard = Guard {}\ndiscard guard.read().await }")
+    let files = source_files("import std.resource.Dispose\nfn main() {}")
+    push(files, source_file("std.resource", "pub concept Dispose { async fn dispose(self Self) }", true))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "Dispose must declare only fn dispose(self Self)",
+        Result.Ok(_) => false
+    }
+}

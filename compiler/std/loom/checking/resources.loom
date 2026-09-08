@@ -32,7 +32,7 @@ fn resource_protocols(env Environment) Result[Bool, Failure] {
             return Result.Err(failure(env, dispose, symbol(env, dispose).node, "Dispose must declare only fn dispose(self Self)"))
         }
         let method = get(env.signatures, get(protocol.methods, 0))
-        if symbol(env, method.symbol).name != "dispose" || method.parameters != 1 || length(method.params) != 1 || method.result != 0 ||
+        if async_signature(env, method) || symbol(env, method.symbol).name != "dispose" || method.parameters != 1 || length(method.params) != 1 || method.result != 0 ||
             get(env.types, get(method.params, 0)).kind != TypeKind.Parameter || get(env.types, get(method.params, 0)).symbol != 0 {
             return Result.Err(failure(env, dispose, symbol(env, dispose).node, "Dispose must declare only fn dispose(self Self)"))
         }

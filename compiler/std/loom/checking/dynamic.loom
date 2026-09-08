@@ -95,7 +95,8 @@ fn fill_interface_methods(env Environment, receiver Int, capability Concept, met
                 }
                 previous = previous + 1
             }
-            let header = Method { name = symbol(env, current.symbol).name params = params result = specialized.result }
+            let header = Method { is_async = async_signature(env, current) name = symbol(env, current.symbol).name params = params
+                result = call_result(env, specialized, specialized.result) }
             push(headers, header)
             if !has_static(current) {
                 push(methods, header)
@@ -275,7 +276,9 @@ fn dynamic_call(context Context, node Node, signature Int, arguments List[Int], 
             (get(context.env.uses, index).interface != interface || get(context.env.uses, index).slot != slot) { index = index + 1 }
         if index == length(context.env.uses) { push(context.env.uses, SlotUse { interface = interface slot = slot }) }
     }
-    Result.Ok(expression(ExprKind.DynCall, output, node, "", slot, values, all_fall(values)))
+    let asynchronous = async_signature(context.env, get(context.env.signatures, signature))
+    Result.Ok(expression(ExprKind.DynCall, output, node, if asynchronous { task_creation_message(context, node) } else { "" },
+        slot, values, all_fall(values)))
 }
 fn slot_used(env Environment, interface Int, slot Int) Bool {
     var index = 0

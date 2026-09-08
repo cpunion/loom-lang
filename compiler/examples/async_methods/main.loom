@@ -1,0 +1,102 @@
+import std.time.sleep_ms
+import std.io.write_text
+import std.list.push
+import std.list.length
+
+concept Source {
+    type Item
+
+    async fn read(self Self) Self.Item
+
+    async fn read_again(self Self) Self.Item {
+        self.read().await
+    }
+
+    async fn echo[T](self Self, value T, comptime delayed Bool) T {
+        comptime if delayed {
+            sleep_ms(1).await
+        }
+        value
+    }
+
+    fn forward[T](self Self, task Task[T]) Task[T] {
+        task
+    }
+
+    async fn wrap[T](self Self, task Task[T]) Task[T] {
+        sleep_ms(1).await
+        task
+    }
+
+    async fn unused(self Self) Text {
+        "UNUSED_ASYNC_METHOD"
+    }
+}
+
+record Local {
+    values List[Int]
+    trace List[Int]
+}
+
+impl Source for Local {
+    type Item = Int
+
+    async fn read(self Local) Int {
+        push(self.trace, 1)
+        sleep_ms(1).await
+        self.values[0]
+    }
+}
+
+record Deferred {
+    value Int
+}
+
+impl Source for Deferred {
+    type Item = Task[Int]
+
+    async fn read(self Deferred) Task[Int] {
+        Local {
+            values = [self.value]
+            trace = []
+        }.read()
+    }
+}
+
+async fn resolved[S Source](source S) S.Item {
+    source.read().await
+}
+
+async fn exercise() {
+    let original = Local {
+        values = [41]
+        trace = []
+    }
+    let erased dyn Source[Item = Int] = original
+    let direct = original.read()
+    let dynamic = erased.read()
+    assert length(original.trace) == 0
+    original.values[0] = 42
+    assert direct.await == 42
+    assert dynamic.await == 42
+    assert resolved(original).await == 42
+    assert resolved(erased).await == 42
+    assert erased.read_again().await == 42
+    assert erased.echo("ready", true).await == "ready"
+    let nested = erased.wrap(erased.forward(erased.echo(7, false)))
+    assert nested.await.await == 7
+    let producer dyn Source[Item = Task[Int]] = Deferred {
+        value = 9
+    }
+    assert resolved(producer).await.await == 9
+    assert producer.read_again().await.await == 9
+}
+
+async fn main() {
+    exercise().await
+    discard write_text("methods finished\n")
+}
+
+test async fn source_method_calls() {
+    exercise().await
+}

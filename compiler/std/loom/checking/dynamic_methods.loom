@@ -54,7 +54,8 @@ fn dynamic_slot(context Context, node Node, receiver Int, method Int, arguments 
         if previous.signature == method && same(previous.arguments, local) && same_constants(previous.constants, constants) { return Result.Ok(slot) }
         slot = slot + 1
     }
-    push(get(env.interfaces, interface).methods, Method { name = symbol(env, specialized.symbol).name params = params result = specialized.result })
+    push(get(env.interfaces, interface).methods, Method { is_async = async_signature(env, specialized)
+        name = symbol(env, specialized.symbol).name params = params result = call_result(env, specialized, specialized.result) })
     push(slots, DynamicSlot { signature = method arguments = local constants = constants })
     // A box may have been reached before the first use of this specialization.
     // Keep every existing table aligned; future boxes use the current length.
