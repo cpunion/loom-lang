@@ -68,9 +68,9 @@ test fn checked_faults_short_circuit_and_purity() {
 test fn calls_have_frames_preconditions_and_return_flow() {
     let program = empty()
     let locals = new[Local]()
-    push(locals, Local { name = "n" ty = 1 mutable = true })
-    push(locals, Local { name = "sum" ty = 1 mutable = true })
-    push(locals, Local { name = "result" ty = 1 mutable = false })
+    push(locals, Local { name = "n" ty = 1 mutable = true is_scoped = false })
+    push(locals, Local { name = "sum" ty = 1 mutable = true is_scoped = false })
+    push(locals, Local { name = "result" ty = 1 mutable = false is_scoped = false })
     let body = one(node(ExprKind.Let, 0, "", 1, one(literal(0))))
     let updates = two(node(ExprKind.Assign, 0, "", 1, one(binary("+", 1, local(1, 1), local(0, 1)))),
         node(ExprKind.Assign, 0, "", 0, one(binary("-", 1, local(0, 1), literal(1)))))

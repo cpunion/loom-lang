@@ -306,6 +306,16 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
         index = index + 1
     }
     discard validate_static(context.env, instance.signature, constants, node)?
+    var resource_argument = 0
+    while resource_argument < length(runtime_values) {
+        if resource_argument == 0 && method_declaration(context.env, signature.symbol) >= 0 {
+            discard resource_receiver(context, node, get(runtime_values, resource_argument))?
+        }
+        if !(resource_argument == 0 && method_declaration(context.env, signature.symbol) >= 0) && must_scope(context, get(runtime_values, resource_argument).ty)? {
+            return Result.Err(error(context, node, "MustScope values cannot be passed as ordinary arguments"))
+        }
+        resource_argument = resource_argument + 1
+    }
     let output = substitute(context.env, context.signature.symbol, signature.result, instance.arguments, node)?
     if !context.emit && !known_constants(constants) {
         return Result.Ok(expression(ExprKind.Deferred, output, node, "", -1, runtime_values, all_fall(runtime_values)))

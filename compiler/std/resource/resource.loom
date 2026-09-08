@@ -1,0 +1,7 @@
+// The compiler recognizes these declarations by their trusted package identity.
+// Disposal is synchronous; external resources must not depend on GC cleanup.
+pub concept Dispose {
+    fn dispose(self Self)
+}
+
+pub concept MustScope {}

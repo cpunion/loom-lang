@@ -1,0 +1,54 @@
+fn resource_checked(source Text) Result[std.loom.typed.Program, Failure] {
+    let files = source_files(source)
+    push(files, source_file("std.resource", "pub concept Dispose { fn dispose(self Self) }\npub concept MustScope {}", true))
+    push(files, source_file("std.result", "pub enum Result[T, E] { Ok(T) Err(E) }", true))
+    push(files, source_file("std.list", "intrinsic fn list_push[T](values List[T], value T)\npub fn push[T](values List[T], value T) { list_push(values, value) }", true))
+    checked(files)
+}
+fn resource_accept(source Text) {
+    match resource_checked(source) {
+        Result.Ok(_) => {}
+        Result.Err(failed) => { discard write_error(failed.diagnostic.message)
+            discard write_error(source)
+            assert false }
+    }
+}
+fn resource_reject(source Text) {
+    match resource_checked(source) { Result.Err(_) => {}, Result.Ok(_) => { discard write_error(source)
+        assert false } }
+}
+fn resource_header() Text {
+    "import std.resource.Dispose\nimport std.resource.MustScope\nimport std.list.push\nrecord Handle { log List[Int] }\nimpl Dispose for Handle { fn dispose(self Handle) { push(self.log, 9) } }\nimpl MustScope for Handle {}\nconcept Use { fn use(self Self) Int }\nimpl Use for Handle { fn use(self Handle) Int { push(self.log, 1)\n7 } }\nfn make(log List[Int]) Handle { Handle { log = log } }\n"
+}
+
+test fn scoped_resources_borrow_methods_and_transfer_fresh_factory_results() {
+    resource_accept(concat(resource_header(), "fn main() { let log = [0]\n{ scoped value = make(log)\nassert value.use() == 7 }\nassert log[2] == 9 }"))
+    resource_accept(concat(resource_header(), "import std.result.Result\nfn open(log List[Int]) Result[Handle, Text] { Result.Ok(make(log)) }\nfn run(log List[Int]) Result[Int, Text] { scoped value = open(log)?\nResult.Ok(value.use()) }\nfn main() { discard run([0]) }"))
+    resource_accept(concat(resource_header(), "import std.result.Result\nfn open(log List[Int]) Result[Handle, Text] { Result.Ok(make(log)) }\nfn main() { match open([0]) { Result.Ok(payload) => { scoped value = payload\nassert value.use() == 7 }, Result.Err(_) => {} } }"))
+}
+
+test fn scoped_resources_reject_copy_discard_erasure_and_pending_aggregate_leaks() {
+    resource_reject("import std.resource.Dispose\nimport std.resource.MustScope\nenum Token { Open }\nimpl Dispose for Token { fn dispose(self Token) {} }\nimpl MustScope for Token {}\nfn bad() { match Token.Open() { Token.Open => {} } }")
+    resource_reject(concat(resource_header(), "fn bad() { let value = make([0]) }"))
+    resource_reject(concat(resource_header(), "fn bad() { discard make([0]) }"))
+    resource_reject(concat(resource_header(), "fn take(value Handle) {}"))
+    resource_reject(concat(resource_header(), "fn bad() Handle { scoped value = make([0])\nvalue }"))
+    resource_reject(concat(resource_header(), "fn bad() { scoped value = make([0])\nlet alias = value }"))
+    resource_reject(concat(resource_header(), "fn bad() { scoped value = make([0])\nvalue.dispose() }"))
+    resource_reject(concat(resource_header(), "fn bad() { scoped value = make([0])\ndefer { Dispose.dispose(value) } }"))
+    resource_reject(concat(resource_header(), "fn bad() { scoped value = make([0])\nlet erased dyn Use = value }"))
+    resource_reject(concat(resource_header(), "fn bad() List[Handle] { [make([0]), make([1])] }"))
+    resource_reject(concat(resource_header(), "record Pair { first Handle second Handle }\nfn bad() Pair { Pair { first = make([0]) second = make([1]) } }"))
+    resource_reject(concat(resource_header(), "enum Wrapped { Some(Handle) }\nimpl Dispose for Wrapped { fn dispose(self Wrapped) {} }\nfn bad() { scoped wrapped = Wrapped.Some(make([0])) }"))
+    resource_reject(concat(resource_header(), "import std.result.Result\nfn bad() { match Result.Ok[Handle, Text](make([0])) { Result.Ok(_) => {}, Result.Err(_) => {} } }"))
+    resource_reject(concat(resource_header(), "import std.result.Result\nfn bad() { match Result.Ok[Handle, Text](make([0])) { Result.Ok(payload) => { assert true\nscoped value = payload }, Result.Err(_) => {} } }"))
+}
+
+test fn dispose_only_scopes_require_freshness_and_transitive_receiver_safety() {
+    let header = "import std.resource.Dispose\nrecord Item { id Int }\nimpl Dispose for Item { fn dispose(self Item) {} }\nconcept Copy { fn copy(self Self) Self }\nimpl Copy for Item { fn copy(self Item) Item { self } }\nconcept Forward { fn forward(self Self) Item }\nimpl Forward for Item { fn forward(self Item) Item { self.copy() } }\n"
+    resource_accept(concat(header, "fn main() { let item = Item { id = 1 }\nassert item.forward().id == 1 }") )
+    resource_reject(concat(header, "fn bad() { scoped item = Item { id = 1 }\ndiscard item.forward() }"))
+    resource_reject(concat(header, "fn bad() { let item = Item { id = 1 }\nscoped alias = item }"))
+    resource_reject(concat(header, "fn identity(item Item) Item { item }\nfn bad() { scoped alias = identity(Item { id = 1 }) }"))
+    resource_reject(concat(header, "fn choose(item Item, old Bool) Item { if old { return item }\nItem { id = 2 } }\nfn bad() { scoped alias = choose(Item { id = 1 }, true) }"))
+}

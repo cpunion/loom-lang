@@ -1,0 +1,246 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.binding.Failure
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Function
+import std.loom.typed.TypeKind
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+fn resource_concept(env Environment, name Text) Int {
+    var index = 0
+    while index < length(env.concepts) {
+        let current = symbol(env, get(env.concepts, index).symbol)
+        let file = get(env.source.files, current.file)
+        if current.name == name && current.public && !current.test_only && file.trusted_std && package_label(env.source.modules, env.source.packages, file.package) == "std.resource" {
+            return get(env.concepts, index).symbol
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn resource_protocols(env Environment) Result[Bool, Failure] {
+    let dispose = resource_concept(env, "Dispose")
+    if dispose >= 0 {
+        let protocol = get(env.concepts, concept_index(env, dispose))
+        if length(protocol.methods) != 1 || length(protocol.associated) != 0 {
+            return Result.Err(failure(env, dispose, symbol(env, dispose).node, "Dispose must declare only fn dispose(self Self)"))
+        }
+        let method = get(env.signatures, get(protocol.methods, 0))
+        if symbol(env, method.symbol).name != "dispose" || method.parameters != 1 || length(method.params) != 1 || method.result != 0 ||
+            get(env.types, get(method.params, 0)).kind != TypeKind.Parameter || get(env.types, get(method.params, 0)).symbol != 0 {
+            return Result.Err(failure(env, dispose, symbol(env, dispose).node, "Dispose must declare only fn dispose(self Self)"))
+        }
+    }
+    let marker = resource_concept(env, "MustScope")
+    if marker >= 0 {
+        let protocol = get(env.concepts, concept_index(env, marker))
+        if length(protocol.methods) != 0 || length(protocol.associated) != 0 {
+            return Result.Err(failure(env, marker, symbol(env, marker).node, "MustScope must be an empty marker concept"))
+        }
+    }
+    Result.Ok(true)
+}
+
+fn resource_seen(seen List[Int], ty Int) Bool {
+    var index = 0
+    while index < length(seen) {
+        if get(seen, index) == ty { return true }
+        index = index + 1
+    }
+    false
+}
+
+// Function signatures describe possible calls, not values retained in the
+// function reference. Data obligations follow every stored aggregate member.
+fn resource_type(env Environment, owner Int, obligations List[Requirement], ty Int, seen List[Int]) Result[Bool, Failure] {
+    let capability = resource_concept(env, "MustScope")
+    if capability < 0 || resource_seen(seen, ty) { return Result.Ok(false) }
+    push(seen, ty)
+    if admitted(env, owner, obligations, ty, capability)? { return Result.Ok(true) }
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Function { return Result.Ok(false) }
+    var index = 0
+    while index < length(shape.arguments) {
+        if resource_type(env, owner, obligations, get(shape.arguments, index), seen)? { return Result.Ok(true) }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.fields) {
+        if resource_type(env, owner, obligations, get(shape.fields, index).ty, seen)? { return Result.Ok(true) }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if resource_type(env, owner, obligations, get(fields, field), seen)? { return Result.Ok(true) }
+            field = field + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(false)
+}
+
+fn must_scope(context Context, ty Int) Result[Bool, Failure] {
+    if resource_concept(context.env, "MustScope") < 0 { return Result.Ok(false) }
+    resource_type(context.env, context.signature.symbol, context.signature.requirements, ty, new[Int]())
+}
+
+fn scope_initializer(context Context, node Node, value Expr) Result[Bool, Failure] {
+    let capability = resource_concept(context.env, "Dispose")
+    if capability < 0 { return Result.Err(error(context, node, "scoped requires std.resource.Dispose")) }
+    if !satisfies(context, value.ty, capability)? {
+        return Result.Err(error(context, node, "scoped requires a value implementing std.resource.Dispose"))
+    }
+    let shape = get(context.env.types, value.ty)
+    var index = 0
+    while index < length(shape.fields) {
+        if must_scope(context, get(shape.fields, index).ty)? {
+            return Result.Err(error(context, node, "nested resource aggregates require pending-transfer cleanup, which is not yet supported"))
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if must_scope(context, get(fields, field))? {
+                return Result.Err(error(context, node, "nested resource aggregates require pending-transfer cleanup, which is not yet supported"))
+            }
+            field = field + 1
+        }
+        index = index + 1
+    }
+    if shape.kind == TypeKind.List && must_scope(context, get(shape.arguments, 0))? {
+        return Result.Err(error(context, node, "resource lists require pending-transfer cleanup, which is not yet supported"))
+    }
+    Result.Ok(true)
+}
+
+fn resource_scope_node(node Node) Bool {
+    if node.kind == NodeKind.Scoped { return true }
+    var index = 0
+    while index < length(node.children) {
+        if resource_scope_node(child(node, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+
+fn resource_analysis_root(env Environment, current Signature, body Expr) Result[Bool, Failure] {
+    if resource_concept(env, "Dispose") < 0 && resource_concept(env, "MustScope") < 0 { return Result.Ok(false) }
+    if resource_scope_node(symbol(env, current.symbol).node) { return Result.Ok(true) }
+    if resource_type(env, current.symbol, current.requirements, current.result, new[Int]())? { return Result.Ok(true) }
+    var index = 0
+    while index < length(current.params) {
+        if resource_type(env, current.symbol, current.requirements, get(current.params, index), new[Int]())? { return Result.Ok(true) }
+        index = index + 1
+    }
+    resource_body_required(env, current, body)
+}
+
+fn resource_body_required(env Environment, current Signature, body Expr) Result[Bool, Failure] {
+    if resource_type(env, current.symbol, current.requirements, body.ty, new[Int]())? { return Result.Ok(true) }
+    var index = 0
+    while index < length(body.children) {
+        if resource_body_required(env, current, get(body.children, index))? { return Result.Ok(true) }
+        index = index + 1
+    }
+    index = 0
+    while index < length(body.arms) {
+        let arm = get(body.arms, index)
+        var member = 0
+        while member < length(arm.body) {
+            if resource_body_required(env, current, get(arm.body, member))? { return Result.Ok(true) }
+            member = member + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(false)
+}
+
+fn resource_parameters(context Context) Result[Bool, Failure] {
+    if resource_concept(context.env, "MustScope") < 0 { return Result.Ok(true) }
+    let method = method_declaration(context.env, context.signature.symbol) >= 0
+    var index = 0
+    while index < length(context.signature.params) {
+        if !(method && index == 0) && must_scope(context, get(context.signature.params, index))? {
+            return Result.Err(error(context, symbol(context.env, context.signature.symbol).node, "MustScope values cannot be ordinary parameters; use a scoped receiver method"))
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn resource_binding(context Context, node Node, value Expr) Result[Bool, Failure] {
+    if must_scope(context, value.ty)? {
+        return Result.Err(error(context, node, "MustScope values require scoped, not an ordinary binding or discard"))
+    }
+    Result.Ok(true)
+}
+
+fn resource_payload(context Context, binding Node, body Node) Result[Bool, Failure] {
+    if binding.kind == NodeKind.Wildcard {
+        return Result.Err(error(context, binding, "a wildcard cannot discard a resource payload"))
+    }
+    if length(body.children) != 0 {
+        let first = child(body, 0)
+        if first.kind == NodeKind.Scoped {
+            let input = child(first, length(first.children) - 1)
+            if input.kind == NodeKind.Name && input.value == binding.value { return Result.Ok(true) }
+        }
+    }
+    Result.Err(error(context, binding, "a resource payload must immediately enter scoped before any other operation"))
+}
+
+fn resource_receiver(context Context, node Node, value Expr) Result[Bool, Failure] {
+    if !must_scope(context, value.ty)? { return Result.Ok(true) }
+    if value.kind == ExprKind.Local && (get(context.locals, value.index).is_scoped ||
+        (value.index == 0 && method_declaration(context.env, context.signature.symbol) >= 0)) { return Result.Ok(true) }
+    Result.Err(error(context, node, "a resource must enter scoped before a method call"))
+}
+
+fn resource_unreached(env Environment, roots List[Int]) Result[Bool, Failure] {
+    if resource_concept(env, "Dispose") < 0 && resource_concept(env, "MustScope") < 0 { return Result.Ok(true) }
+    // Keep diagnostic-only instances out of native reachability. Generic
+    // bodies retain obligations until a concrete specialization is selected.
+    let analysis = Environment { source = env.source types = env.types type_states = env.type_states expand_data = true
+        has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers signatures = env.signatures
+        pending = new[Instance]() stage_depth = env.stage_depth computations = env.computations validations = env.validations
+        concepts = env.concepts implementations = env.implementations interfaces = env.interfaces
+        associations = env.associations association_depth = env.association_depth
+        family_applications = env.family_applications promise_path = env.promise_path promise_depth = env.promise_depth
+        dynamic_interfaces = env.dynamic_interfaces witnesses = new[Witness]() uses = new[SlotUse]() }
+    var index = 0
+    while index < length(roots) {
+        let selected = get(roots, index)
+        let current = get(env.signatures, selected)
+        if current.parameters == 0 && !has_static(current) && !prototype(env, current.symbol) {
+            discard schedule(analysis, selected, new[Int](), new[StaticValue](), symbol(env, current.symbol).node)?
+        }
+        index = index + 1
+    }
+    discard emit_functions(analysis, false)?
+    Result.Ok(true)
+}
+
+fn resource_computation(context Context, functions List[Function], value Expr) Result[Bool, Failure] {
+    if resource_concept(context.env, "Dispose") < 0 && resource_concept(context.env, "MustScope") < 0 { return Result.Ok(true) }
+    let closure = new[Function]()
+    var index = 0
+    while index < length(functions) { push(closure, get(functions, index))
+        index = index + 1 }
+    push(closure, Function { symbol = context.signature.symbol arguments = context.arguments params = new[Int]() result = value.ty
+        locals = context.locals preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1
+        body = value runtime_name = "" span = value.span })
+    discard resource_function(ResourceAnalysis { env = context.env functions = closure summaries = new[ResourceSummary]() }, length(functions), -1)?
+    Result.Ok(true)
+}

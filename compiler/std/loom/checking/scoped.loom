@@ -1,0 +1,32 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.typed.Local
+import std.loom.typed.ExprKind
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+import std.result.Result
+
+fn registered_scoped(context Context, node Node, boundary Int) Result[Step, Failure] {
+    let annotation = if length(node.children) == 2 { context_type(context, child(node, 0))? } else { -1 }
+    let value = expr(context, child(node, length(node.children) - 1), annotation)?
+    discard scope_initializer(context, node, value)?
+    let local = length(context.locals)
+    let bound = bind_local(context, node, node.value, value.ty, false, boundary)?
+    set(context.locals, local, Local { name = node.value ty = value.ty mutable = false is_scoped = true })
+    let receiver = Node { kind = NodeKind.Name value = node.value span = node.span children = new[Node]() }
+    let dispose = method_call(bound, node, receiver, "dispose", new[Node](), new[Node](), resource_concept(context.env, "Dispose"), 0)?
+    let body = expression(ExprKind.Block, 0, node, "", -1, expressions(dispose), dispose.falls)
+    let head = length(context.cleanups)
+    push(context.cleanups, Cleanup { body = body previous = context.cleanup_head })
+    let next = Context { env = bound.env signature = bound.signature arguments = bound.arguments constants = bound.constants
+        locals = bound.locals bindings = bound.bindings head = bound.head cleanups = bound.cleanups cleanup_head = head loop_boundary = bound.loop_boundary
+        facts = bound.facts fact_head = bound.fact_head emit = bound.emit }
+    let initialized = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls)
+    // Registration follows successful initialization; it does not run dispose.
+    // The marker distinguishes compiler disposal from an explicit defer call.
+    let registered = expression(ExprKind.Defer, 0, node, "scoped", head, expressions(body), true)
+    Result.Ok(Step { context = next expression = expression(ExprKind.Block, 0, node, "", -1, pair(initialized, registered), value.falls) })
+}
