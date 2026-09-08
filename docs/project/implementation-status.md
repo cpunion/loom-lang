@@ -147,6 +147,15 @@ selected build, retaining the existing typed witness ABI and reachability model.
 No runtime type discovery, generic code generation or new bootstrap checkpoint
 is required. Native objects remain build-specific, not open-ended generic libraries.
 
+Methods now accept Int/Bool/Text and function `comptime` parameters, with matching
+positions in the concept and implementation. Static and dynamic calls share
+selected-branch validation under declared bounds; known implementations in unused
+bodies cannot hide an invalid selected branch. Overrides do not instantiate the
+default body they replace. Dynamic slots distinguish static
+values and omit those arguments from their native signatures. Default forwarding,
+generic methods and static-method compile-time execution use the same checked
+model. Concept contracts and compile-time dyn execution remain unsupported.
+
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The
 [arguments example](../../compiler/examples/arguments/main.loom) combines it

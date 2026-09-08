@@ -305,7 +305,20 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
         }
         index = index + 1
     }
-    discard validate_static(context.env, instance.signature, constants, node)?
+    if prototype(context.env, signature.symbol) {
+        if length(constants) != 0 && known_constants(constants) {
+            let receiver = get(instance.arguments, 0)
+            let kind = get(context.env.types, receiver).kind
+            // A nominal receiver can select an implementation even while its
+            // arguments remain abstract. Do not guess for evidence-only types,
+            // or validate a default body that an implementation overrides.
+            if kind != TypeKind.Parameter && kind != TypeKind.Associated && kind != TypeKind.Dyn &&
+                conformance(context.env, receiver, symbol(context.env, signature.symbol).owner).implementation >= 0 {
+                let target = method_target(context.env, instance.signature, instance.arguments, constants)?
+                discard validate_static(context.env, target.signature, constants, symbol(context.env, get(context.env.signatures, target.signature).symbol).node)?
+            }
+        }
+    } else { discard validate_static(context.env, instance.signature, constants, node)? }
     var resource_argument = 0
     while resource_argument < length(runtime_values) {
         if resource_argument == 0 && method_declaration(context.env, signature.symbol) >= 0 {
@@ -321,7 +334,7 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
         return Result.Ok(expression(ExprKind.Deferred, output, node, "", -1, runtime_values, all_fall(runtime_values)))
     }
     if prototype(context.env, signature.symbol) && length(runtime_values) != 0 && get(context.env.types, get(runtime_values, 0).ty).kind == TypeKind.Dyn {
-        return dynamic_call(context, node, instance.signature, instance.arguments, output, runtime_values)
+        return dynamic_call(context, node, instance.signature, instance.arguments, constants, output, runtime_values)
     }
     let target = if context.emit { schedule(context.env, instance.signature, instance.arguments, constants, node)? } else { -1 }
     Result.Ok(expression(ExprKind.Call, output, node, "", target, runtime_values, all_fall(runtime_values)))

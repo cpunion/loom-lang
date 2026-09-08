@@ -147,6 +147,7 @@ fn exercise() {
             later
         }) == 6
     assert length(trace) == 2 && get(trace, 0) == 1 && get(trace, 1) == 2
+    exercise_methods()
 }
 
 fn main() {

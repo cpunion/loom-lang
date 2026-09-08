@@ -680,6 +680,29 @@ Implementation methods inherit the concept method's parameter requirements;
 they may rename parameters or restate requirements but cannot strengthen them.
 Overloads still require a unique match. Defaults call the selected overrides.
 
+Methods also accept the same `comptime` value and function parameters as ordinary
+functions. The concept and implementation must mark the same parameter positions;
+the receiver remains a runtime parameter. For example:
+
+```loom
+concept Adjust {
+    fn apply(self Self, value Int, comptime extra Int) Int
+}
+impl Adjust for Bool {
+    fn apply(self Bool, value Int, comptime extra Int) Int { value + extra }
+}
+fn adjusted(source dyn Adjust) Int { source.apply(40, 2) }
+```
+
+Static calls specialize directly. Dynamic calls use finite slots distinguished by
+the method, its type arguments and its static values; static parameters do not
+enter the runtime signature. Selected implementation/default bodies are checked
+under their declared generic requirements, including known implementations in
+unused functions with generic nominal receivers. An override does not instantiate
+the default body it replaces. The [method example](examples/comptime_parameters/methods.loom)
+combines defaults, recursive static callbacks, Text/Bool options and dynamic calls.
+This does not add concept contracts or compile-time execution of dyn values.
+
 ### Associated types and bounded data
 
 A concept can name a type supplied by each implementation. Static instances
@@ -1072,9 +1095,10 @@ proofs reject. Specialization and pure evaluation remain bounded.
 
 The [static-parameter example](examples/comptime_parameters/main.loom) covers
 generic recursion, pure argument computation, static Text, shadowing, returned
-ordinary and static callbacks, shared results and runtime argument order. Static
-parameters are not yet supported on intrinsics or concept/implementation methods. Taking a reference
-to a declaration with static parameters also rejects until explicit partial
+ordinary and static callbacks, shared results and runtime argument order. Concept
+and implementation methods support the same parameter forms, including dynamic
+calls; intrinsics do not. Taking a reference to a declaration with static
+parameters still rejects until explicit partial
 specialization can supply a complete function identity. Capturing closures,
 variadics and general type-valued computation remain later work.
 

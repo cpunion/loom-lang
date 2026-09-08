@@ -41,29 +41,38 @@ fn signature_in(env Environment, id Int, arguments List[Int], node Node, owner I
     Result.Ok(Signature { symbol = original.symbol parameters = original.parameters params = params
         compile_time = original.compile_time result = substitute(env, owner, original.result, arguments, node)? requirements = obligations })
 }
+fn method_target(env Environment, id Int, arguments List[Int], constants List[StaticValue]) Result[Instance, Failure] {
+    let current = get(env.signatures, id)
+    let declaration = symbol(env, current.symbol).node
+    let capability = symbol(env, current.symbol).owner
+    let selected = conformance(env, get(arguments, 0), capability)
+    if selected.implementation < 0 {
+        return Result.Err(failure(env, current.symbol, declaration, "concept evidence has no concrete implementation"))
+    }
+    let methods = get(env.concepts, concept_index(env, capability)).methods
+    var slot = 0
+    while get(methods, slot) != id { slot = slot + 1 }
+    let target = get(get(env.implementations, selected.implementation).methods, slot)
+    if target == id && !has(declaration, NodeKind.Block) {
+        return Result.Err(failure(env, current.symbol, declaration, "concept evidence has no concrete implementation"))
+    }
+    Result.Ok(Instance { signature = target
+        arguments = if target == id { arguments } else { member_arguments(selected.arguments, argument_tail(arguments, 1)) }
+        constants = constants })
+}
 fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticValue], node Node) Result[Int, Failure] {
     let current = get(env.signatures, id)
     // Scheduling has the callee identity, not the caller's source identity.
     // A failure anchored to the declaration must also use that declaration's span.
     let declaration = symbol(env, current.symbol).node
     if prototype(env, current.symbol) {
-        let receiver = get(arguments, 0)
-        let capability = symbol(env, current.symbol).owner
-        let selected = conformance(env, receiver, capability)
-        if selected.implementation < 0 {
-            return Result.Err(failure(env, current.symbol, declaration, "concept evidence has no concrete implementation"))
-        }
-        let methods = get(env.concepts, concept_index(env, capability)).methods
-        var slot = 0
-        while get(methods, slot) != id { slot = slot + 1 }
-        let target = get(get(env.implementations, selected.implementation).methods, slot)
-        if target != id {
-            return schedule(env, target, member_arguments(selected.arguments, argument_tail(arguments, 1)), constants, node)
-        }
+        let selected = method_target(env, id, arguments, constants)?
+        if selected.signature != id { return schedule(env, selected.signature, selected.arguments, constants, node) }
     }
-    if prototype(env, current.symbol) && !has(symbol(env, current.symbol).node, NodeKind.Block) {
-        return Result.Err(failure(env, current.symbol, declaration, "concept evidence has no concrete implementation"))
-    }
+    if !known_constants(constants) { return Result.Err(failure(env, current.symbol, declaration, "comptime arguments must be determined for this instance")) }
+    // Dispatch must validate the selected implementation/default, not only the
+    // concept declaration. Witness activation and CTFE schedule here as well.
+    discard validate_static(env, id, constants, declaration)?
     var index = 0
     var instances = 0
     while index < length(env.pending) {
@@ -74,7 +83,6 @@ fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticV
         }
         index = index + 1
     }
-    if !known_constants(constants) { return Result.Err(failure(env, current.symbol, declaration, "comptime arguments must be determined for this instance")) }
     // Independent declarations do not consume one global expansion budget.
     if instances >= 1024 {
         return Result.Err(failure(env, current.symbol, declaration, "function specialization budget exceeded; expansion must be finite"))
