@@ -47,3 +47,42 @@ test fn configured_capture_and_environment_lookup_have_exact_effectful_signature
         index = index + 1
     }
 }
+
+test fn binary_capture_has_an_exact_effectful_signature() {
+    let declarations = "intrinsic fn process_capture_input_configured(arguments List[Text], input Bytes, directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int\nintrinsic fn list_new[T]() List[T]\nintrinsic fn bytes_new() Bytes\npub fn capture_example() Int { process_capture_input_configured(list_new[Text](), bytes_new(), \"\", 0, list_new[Text](), bytes_new(), bytes_new()) }"
+    let files = source_files("import std.process.capture_example\npub fn run() Int { capture_example() }")
+    push(files, source_file("std.process", declarations, true))
+    match checked(files) {
+        Result.Ok(program) => {
+            var found = false
+            var index = 0
+            while index < length(program.functions) {
+                if get(program.functions, index).runtime_name == "process_capture_input_configured" { found = true }
+                index = index + 1
+            }
+            assert found
+        }
+        Result.Err(_) => { assert false }
+    }
+    let staged = source_files("import std.process.capture_example\nfn main() { discard comptime { if false { capture_example() } else { 0 } } }")
+    push(staged, source_file("std.process", declarations, true))
+    match checked(staged) {
+        Result.Err(failed) => { assert failed.diagnostic.message == "compile-time evaluation forbids intrinsic process_capture_input_configured" }
+        Result.Ok(_) => { assert false }
+    }
+    let invalid = new[Text]()
+    push(invalid, "intrinsic fn process_capture_input_configured(arguments List[Text], input Text, directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int")
+    push(invalid, "intrinsic fn process_capture_input_configured(arguments List[Text], input Bytes, directory Text, clear Int, changes List[Int], stdout Bytes, stderr Bytes) Int")
+    push(invalid, "intrinsic fn process_capture_input_configured(arguments List[Text], input Bytes, directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Bool")
+    push(invalid, "intrinsic fn process_capture_input_configured(arguments List[Text], directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int")
+    var index = 0
+    while index < length(invalid) {
+        let fixture = source_files("")
+        push(fixture, source_file("std.process", get(invalid, index), true))
+        match checked(fixture) {
+            Result.Err(failed) => { assert failed.diagnostic.message == "intrinsic declaration does not match its runtime signature" }
+            Result.Ok(_) => { assert false }
+        }
+        index = index + 1
+    }
+}

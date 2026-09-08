@@ -74,6 +74,7 @@ pub enum Primitive {
     ProcessRun,
     ProcessRunInput,
     ProcessCaptureConfigured,
+    ProcessCaptureInputConfigured,
     EnvGet,
     Exit,
     BytesNew,

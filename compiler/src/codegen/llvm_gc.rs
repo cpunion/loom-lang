@@ -72,6 +72,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TextSlice
         | Primitive::ArgText
         | Primitive::ProcessCaptureConfigured
+        | Primitive::ProcessCaptureInputConfigured
         | Primitive::EnvGet
         | Primitive::BytesNew
         | Primitive::BytesPush
@@ -888,6 +889,18 @@ mod tests {
                 Primitive::ProcessCaptureConfigured,
                 vec![
                     Type::List(0),
+                    Type::Text,
+                    Type::Int,
+                    Type::List(0),
+                    Type::Bytes,
+                    Type::Bytes,
+                ],
+            ),
+            (
+                Primitive::ProcessCaptureInputConfigured,
+                vec![
+                    Type::List(0),
+                    Type::Bytes,
                     Type::Text,
                     Type::Int,
                     Type::List(0),

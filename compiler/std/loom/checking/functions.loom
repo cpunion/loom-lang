@@ -96,9 +96,12 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "arg_text" { return runtime(0, ints(1), 3) }
     if name == "process_run" { return runtime(0, ints(intern(env, TypeKind.List, -1, ints(3))), 1) }
     if name == "process_run_input" { return runtime(0, two_types(intern(env, TypeKind.List, -1, ints(3)), 3), 1) }
-    if name == "process_capture_configured" {
+    if name == "process_capture_configured" || name == "process_capture_input_configured" {
         let list = intern(env, TypeKind.List, -1, ints(3))
-        let params = three_types(list, 3, 1)
+        let params = ints(list)
+        if name == "process_capture_input_configured" { push(params, 4) }
+        push(params, 3)
+        push(params, 1)
         push(params, list)
         push(params, 4)
         push(params, 4)
