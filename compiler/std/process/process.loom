@@ -13,6 +13,7 @@ intrinsic fn arg_text(index Int) Text
 intrinsic fn process_run(arguments List[Text]) Int
 intrinsic fn process_run_input(arguments List[Text], input Text) Int
 intrinsic fn process_capture_configured(arguments List[Text], directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int
+intrinsic fn process_capture_input_configured(arguments List[Text], input Bytes, directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int
 intrinsic fn exit(code Int)
 
 pub enum SpawnError { EmptyArguments Failed Terminated InvalidOptions }
@@ -48,6 +49,13 @@ pub fn capture(arguments List[Text]) Result[Output, SpawnError] {
     capture(arguments, Options { directory = Option.None clear_environment = false environment = new[EnvChange]() })
 }
 
+// Sends a snapshot of arbitrary bytes and closes stdin while both output streams
+// drain concurrently. Empty input matches capture. A child that closes stdin
+// early still returns its output and status, including a nonzero exit code.
+pub fn capture_input(arguments List[Text], input Bytes) Result[Output, SpawnError] {
+    capture_input(arguments, input, Options { directory = Option.None clear_environment = false environment = new[EnvChange]() })
+}
+
 fn valid_name(name Text) Bool {
     name != "" && !contains(name, "=") && !contains(name, "\0")
 }
@@ -56,6 +64,15 @@ fn valid_name(name Text) Bool {
 // directory; Some("") is invalid. An absolute executable avoids platform-specific
 // relative-path lookup. Clearing the child environment is not a sandbox.
 pub fn capture(arguments List[Text], options Options) Result[Output, SpawnError] {
+    capture_configured(arguments, Option.None, options)
+}
+
+// Applies the same child-local directory and environment options as capture.
+pub fn capture_input(arguments List[Text], input Bytes, options Options) Result[Output, SpawnError] {
+    capture_configured(arguments, Option.Some(input), options)
+}
+
+fn capture_configured(arguments List[Text], input Option[Bytes], options Options) Result[Output, SpawnError] {
     let directory = match options.directory {
         Option.None => "",
         Option.Some(value) => {
@@ -81,7 +98,11 @@ pub fn capture(arguments List[Text], options Options) Result[Output, SpawnError]
     }
     let stdout = std.bytes.new()
     let stderr = std.bytes.new()
-    let code = process_capture_configured(arguments, directory, if options.clear_environment { 1 } else { 0 }, changes, stdout, stderr)
+    let clear = if options.clear_environment { 1 } else { 0 }
+    let code = match input {
+        Option.None => process_capture_configured(arguments, directory, clear, changes, stdout, stderr),
+        Option.Some(bytes) => process_capture_input_configured(arguments, bytes, directory, clear, changes, stdout, stderr)
+    }
     let status = if code == -3 { ExitStatus.Terminated } else { ExitStatus.Exited(outcome(code)?) }
     Result.Ok(Output { status = status stdout = stdout stderr = stderr })
 }
