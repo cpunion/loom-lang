@@ -81,7 +81,8 @@ highlighting, document formatting, and diagnostics for unsaved buffers. Its
 language server sends source snapshots to the same Loom package/type/contract
 checker; it does not implement another parser or checker in JavaScript.
 Completion, navigation, rename, and incremental semantic caching remain open.
-Interactive editor UI validation is still pending.
+An isolated macOS VS Code extension-host test covers activation, unsaved errors,
+error clearing, and applied formatting. Broader interactive usability review remains open.
 
 ## Public syntax libraries
 
