@@ -1,0 +1,82 @@
+import std.loom.typed.Program
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Local
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.clone
+import std.list.length
+
+// fn(A) Task[B] can point to an async constructor or a synchronous factory.
+// Only this call shape carries a hidden creation label; ordinary callbacks
+// remain unchanged. Adapters are emitted once, and only for referenced factories.
+fn task_callback(types List[Type], ty Type) Bool {
+    ty.kind == TypeKind.Function && get(types, get(ty.arguments, length(ty.arguments) - 1)).kind == TypeKind.Task
+}
+
+fn callback_target(program Program, callbacks List[Int], id Int) Int {
+    if get(callbacks, id) >= 0 {
+        return get(callbacks, id)
+    }
+    let source = get(program.functions, id)
+    let params = clone(source.params)
+    let locals = new[Local]()
+    let values = new[Expr]()
+    var index = 0
+    while index < length(params) {
+        let ty = get(params, index)
+        push(locals, Local {
+                name = ""
+                ty = ty
+                mutable = false
+                is_scoped = false
+            })
+        push(values, node(ExprKind.Local, ty, source.span, index, new[Expr]()))
+        index = index + 1
+    }
+    push(params, 3)
+    push(locals, Local {
+            name = ""
+            ty = 3
+            mutable = false
+            is_scoped = false
+        })
+    let target = length(program.functions)
+    let call = node(ExprKind.Call, source.result, source.span, id, values)
+    push(program.functions, generated(source, params, source.result, locals,
+            block(one(call), source.result, source.span, true)))
+    set(callbacks, id, target)
+    target
+}
+
+// Wait until all high-level calls are lowered. Clone each changed argument
+// list so the public checked program retains its source-level signatures.
+fn native_callbacks(types List[Type], count Int) {
+    var index = 0
+    while index < count {
+        let ty = get(types, index)
+        if task_callback(types, ty) {
+            let arguments = new[Int]()
+            var parameter = 0
+            while parameter + 1 < length(ty.arguments) {
+                push(arguments, get(ty.arguments, parameter))
+                parameter = parameter + 1
+            }
+            push(arguments, 3)
+            push(arguments, get(ty.arguments, parameter))
+            set(types, index, Type {
+                    kind = ty.kind
+                    symbol = ty.symbol
+                    arguments = arguments
+                    fields = ty.fields
+                    variants = ty.variants
+                    constraint = ty.constraint
+                })
+        }
+        index = index + 1
+    }
+}

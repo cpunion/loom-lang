@@ -17,7 +17,11 @@ fn async_signature(env Environment, signature Signature) Bool {
 }
 
 fn call_result(env Environment, signature Signature, logical Int) Int {
-    if async_signature(env, signature) { intern(env, TypeKind.Task, -1, ints(logical)) } else { logical }
+    if async_signature(env, signature) {
+        intern(env, TypeKind.Task, -1, ints(logical))
+    } else {
+        logical
+    }
 }
 
 fn direct_task(env Environment, ty Int) Bool {
@@ -81,11 +85,10 @@ fn contains_task(env Environment, ty Int, seen List[Int]) Bool {
     if shape.kind == TypeKind.Task {
         return true
     }
-    // Nominal arguments and dyn associated bindings are metadata, not stored
-    // Tasks. Follow actual fields/payloads; function signatures keep their
-    // separate, still-unsupported Task-call boundary here.
+    // Nominal arguments, dyn associated bindings and function signatures are
+    // metadata, not stored Tasks. Function values hold only a code pointer.
     var index = 0
-    while (shape.kind == TypeKind.List || shape.kind == TypeKind.Function) && index < length(shape.arguments) {
+    while shape.kind == TypeKind.List && index < length(shape.arguments) {
         if contains_task(env, get(shape.arguments, index), seen) {
             return true
         }
@@ -122,7 +125,7 @@ fn task_transfer_type(env Environment, signature Signature, ty Int, node Node) R
         payload = get(get(env.types, payload).arguments, 0)
     }
     if contains_task(env, payload, new[Int]()) {
-        return Result.Err(failure(env, signature.symbol, node, "Task-bearing aggregates and function values are not yet implemented"))
+        return Result.Err(failure(env, signature.symbol, node, "Task-bearing aggregates are not yet implemented"))
     }
     if payload != ty && resource_type(env, signature.symbol, signature.requirements, payload, new[Int]())? {
         return Result.Err(failure(env, signature.symbol, node, "Task results containing MustScope resources are not yet implemented"))

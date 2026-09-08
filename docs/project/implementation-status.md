@@ -32,8 +32,15 @@ and results through synchronous methods, without adding an owner or runtime ABI.
 Witnesses retain only used constructors; child failures preserve dynamic creation
 locations. Scoped receivers cannot escape into Tasks; async MustScope/NoSuspend
 parameters remain rejected. See the [method example](../../compiler/examples/async_methods).
-Socket adapters, general worker operations, joins, Task-bearing aggregates and
-Task-bearing function values remain unfinished.
+Named async references and synchronous Task factories now share structural
+`fn(A) Task[B]` values. Parameters, returns, records and Lists store a code pointer,
+not a live Task. Calls retain owner checks, one-shot transfer and the actual
+indirect creation location. Only Task-returning callback signatures gain a private
+label argument; synchronous factories use one adapter per referenced target.
+Ordinary callbacks retain their ABI. Compile-time Task references and capturing
+closures remain unsupported. See the [callback example](../../compiler/examples/task_callbacks).
+Socket adapters, general worker operations, joins and Task-bearing aggregates
+remain unfinished.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;

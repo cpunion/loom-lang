@@ -181,7 +181,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     }
     // A deferred call retains its runtime arguments during abstract checking.
     // Other Deferred expressions have no children and cannot hide transfers.
-    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall || value.kind == ExprKind.Deferred {
+    if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall || value.kind == ExprKind.IndirectCall || value.kind == ExprKind.Deferred {
         return task_arguments(flow, value)
     }
     if value.kind == ExprKind.Let || value.kind == ExprKind.Assign {

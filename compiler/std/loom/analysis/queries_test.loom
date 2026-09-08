@@ -240,6 +240,17 @@ test fn async_method_queries_keep_logical_signatures_and_task_result_types() {
     only_type(inspection(analysis, text, "await"), "Int")
 }
 
+test fn async_function_values_keep_source_types_in_editor_queries() {
+    let text = "async fn item(value Int) Int { value }\nasync fn main() { let callback = item\nlet pending = callback(7)\nassert pending.await == 7 }"
+    let analysis = accepted(input(text))
+    only_type(inspection(analysis, text, "callback ="), "fn(Int) Task[Int]")
+    only_type(inspection(analysis, text, "callback(7)"), "fn(Int) Task[Int]")
+    only_type(inspection(analysis, text, "pending ="), "Task[Int]")
+    only_type(inspection(analysis, text, "await"), "Int")
+    let declaration = query_offset(text, "item(value")
+    only_definition(inspection(analysis, text, "item\n"), declaration, declaration + 4)
+}
+
 test fn inspections_do_not_invent_results_for_comments_punctuation_or_unchecked_bodies() {
     let text = "fn unused[T](value T) T { value }\nfn main() {\nlet 数量 = 3\n// 数量 has no reference here\nassert 数量 == 3\n}"
     let analysis = accepted(input(text))

@@ -1,0 +1,106 @@
+import std.time.sleep_ms
+import std.io.write_text
+import std.list.push
+import std.list.length
+
+record Input {
+    values List[Int]
+    started List[Int]
+}
+
+async fn read(input Input) Int {
+    push(input.started, 1)
+    sleep_ms(1).await
+    input.values[0]
+}
+
+// A synchronous factory has the same callable type as an async constructor.
+// The factory runs inline; the child it creates still runs in the ready queue.
+fn factory(input Input) Task[Int] {
+    read(input)
+}
+
+fn choose(delayed Bool) fn(Input) Task[Int] {
+    if delayed {
+        read
+    } else {
+        factory
+    }
+}
+
+fn forward[T](task Task[T]) Task[T] {
+    task
+}
+
+async fn identity[T](value T) T {
+    sleep_ms(1).await
+    value
+}
+
+async fn empty[T]() List[T] {
+    []
+}
+
+async fn notify() {
+    sleep_ms(1).await
+}
+
+async fn apply[T](callback fn(T) Task[T], value T) T {
+    callback(value).await
+}
+
+record Hooks {
+    create fn(Input) Task[Int]
+}
+
+concept Other {
+    fn create(self Self, value Bool) Bool
+}
+
+impl Other for Hooks {
+    fn create(self Hooks, value Bool) Bool {
+        value
+    }
+}
+
+async fn exercise() {
+    let input = Input {
+        values = [41]
+        started = []
+    }
+    let callbacks = [choose(true), choose(false)]
+    let hooks = Hooks {
+        create = callbacks[0]
+    }
+    let first = hooks.create(input)
+    let second = callbacks[1](input)
+    assert length(input.started) == 0
+    input.values[0] = 42
+    assert first.await == 42
+    assert second.await == 42
+    assert hooks.create(true)
+    let pass = forward[Int]
+    assert pass(callbacks[0](input)).await == 42
+    let selected fn(Int) Task[Int] = identity
+    let alias = selected
+    assert apply(selected, 7).await == 7
+    assert alias(8).await == 8
+    // Returning a callable through a Task returns code, not a pending child.
+    let restored = identity(callbacks).await
+    assert restored[0](input).await == 42
+    let nested = identity[Task[Int]]
+    assert nested(alias(9)).await.await == 9
+    let make_empty fn() Task[List[Int]] = empty
+    assert length(make_empty().await) == 0
+    let done = notify
+    done().await
+}
+
+async fn main() {
+    exercise().await
+    discard write_text("callbacks finished\n")
+}
+
+test async fn callable_task_values() {
+    exercise().await
+}
