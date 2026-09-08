@@ -1,0 +1,41 @@
+import wordcount.stats.Summary
+import wordcount.stats.summarize
+import std.file.read_text
+import std.int.to_text
+import std.io.write_text
+import std.io.write_error
+import std.list.length
+import std.process.arguments
+import std.process.exit_code
+import std.result.Result
+import std.text.concat
+import std.text.join
+
+fn display(summary Summary) Text {
+    join([to_text(summary.lines), to_text(summary.words), to_text(summary.bytes)], " ")
+}
+
+fn main() {
+    let args = arguments()
+    if length(args) != 2 {
+        discard write_error("usage: wordcount FILE\n")
+        exit_code(2)
+        return
+    }
+    let path = args[1]
+    let text = match read_text(path) {
+        Result.Ok(text) => text
+        Result.Err(_) => {
+            discard write_error(concat("cannot read UTF-8 file: ", concat(path, "\n")))
+            exit_code(1)
+            return
+        }
+    }
+    match write_text(concat(display(summarize(text)), "\n")) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            exit_code(1)
+        }
+    }
+}

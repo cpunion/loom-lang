@@ -1,0 +1,306 @@
+import std.loom.binding.Failure
+import std.loom.source.Diagnostic
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Function
+import std.loom.typed.TypeKind
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+import std.result.Result
+
+record ResourceValue { protected Bool fresh Bool pending Int }
+record ResourceSummary { function Int borrowed Int visiting Bool fresh Bool }
+record ResourceAnalysis { env Environment functions List[Function] summaries List[ResourceSummary] }
+record ResourceFlow { analysis ResourceAnalysis function Int locals List[ResourceValue] automatic List[Int] returns List[Bool] }
+
+fn resource_value(protected Bool, fresh Bool, pending Int) ResourceValue {
+    ResourceValue { protected = protected fresh = fresh pending = pending }
+}
+fn resource_error(flow ResourceFlow, expr Expr, message Text) Failure {
+    let current = get(flow.analysis.functions, flow.function)
+    Failure { source = symbol(flow.analysis.env, current.symbol).file diagnostic = Diagnostic { span = expr.span message = message } }
+}
+fn flow_resource(flow ResourceFlow, ty Int) Result[Bool, Failure] {
+    resource_type(flow.analysis.env, get(flow.analysis.functions, flow.function).symbol, new[Requirement](), ty, new[Int]())
+}
+fn resource_automatic(expr Expr, output List[Int]) {
+    if expr.kind == ExprKind.Defer && expr.text == "scoped" { push(output, expr.index) }
+    var index = 0
+    while index < length(expr.children) { resource_automatic(get(expr.children, index), output)
+        index = index + 1 }
+    index = 0
+    while index < length(expr.arms) {
+        let body = get(expr.arms, index).body
+        var member = 0
+        while member < length(body) { resource_automatic(get(body, member), output)
+            member = member + 1 }
+        index = index + 1
+    }
+}
+fn resource_branch(flow ResourceFlow) ResourceFlow {
+    let locals = new[ResourceValue]()
+    var index = 0
+    while index < length(flow.locals) { push(locals, get(flow.locals, index))
+        index = index + 1 }
+    ResourceFlow { analysis = flow.analysis function = flow.function locals = locals automatic = flow.automatic returns = flow.returns }
+}
+fn resource_join(flow ResourceFlow, branch ResourceFlow) {
+    var index = 0
+    while index < length(flow.locals) {
+        let prior = get(flow.locals, index)
+        let next = get(branch.locals, index)
+        set(flow.locals, index, resource_value(prior.protected || next.protected, prior.fresh && next.fresh,
+            if prior.pending == next.pending { prior.pending } else { -2 }))
+        index = index + 1
+    }
+}
+fn resource_pending(flow ResourceFlow) Bool {
+    var index = 0
+    while index < length(flow.locals) {
+        if get(flow.locals, index).pending == index { return true }
+        index = index + 1
+    }
+    false
+}
+fn resource_consume(flow ResourceFlow, value ResourceValue) {
+    if value.pending >= 0 {
+        set(flow.locals, value.pending, resource_value(false, false, -2))
+    }
+}
+
+// A summary is for one concrete function and one borrowed receiver. Recursive
+// edges may share the no-escape obligation, but never establish freshness.
+fn resource_function(analysis ResourceAnalysis, id Int, borrowed Int) Result[Bool, Failure] {
+    var index = 0
+    while index < length(analysis.summaries) {
+        let previous = get(analysis.summaries, index)
+        if previous.function == id && previous.borrowed == borrowed {
+            return Result.Ok(!previous.visiting && previous.fresh)
+        }
+        index = index + 1
+    }
+    let slot = length(analysis.summaries)
+    push(analysis.summaries, ResourceSummary { function = id borrowed = borrowed visiting = true fresh = false })
+    let current = get(analysis.functions, id)
+    let locals = new[ResourceValue]()
+    index = 0
+    while index < length(current.locals) {
+        push(locals, resource_value(index == borrowed || get(current.locals, index).is_scoped, false, -1))
+        index = index + 1
+    }
+    let automatic = new[Int]()
+    resource_automatic(current.body, automatic)
+    let flow = ResourceFlow { analysis = analysis function = id locals = locals automatic = automatic returns = new[Bool]() }
+    let value = resource_expression(flow, current.body, false)?
+    if value.protected { return Result.Err(resource_error(flow, current.body, "a scoped value or borrowed receiver cannot escape through a return")) }
+    if flow_resource(flow, current.result)? && current.body.falls && !value.fresh {
+        return Result.Err(resource_error(flow, current.body, "a resource return must transfer a fresh value"))
+    }
+    if resource_pending(flow) { return Result.Err(resource_error(flow, current.body, "a resource payload must immediately enter scoped")) }
+    var fresh = !current.body.falls || value.fresh
+    index = 0
+    while index < length(flow.returns) { fresh = fresh && get(flow.returns, index)
+        index = index + 1 }
+    set(analysis.summaries, slot, ResourceSummary { function = id borrowed = borrowed visiting = false fresh = fresh })
+    Result.Ok(fresh)
+}
+
+fn resource_call(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
+    var borrowed = -1
+    var index = 0
+    while index < length(expr.children) {
+        let child = get(expr.children, index)
+        let value = resource_expression(flow, child, false)?
+        if value.protected {
+            if expr.kind != ExprKind.Call || expr.index < 0 || index != 0 || method_declaration(flow.analysis.env, get(flow.analysis.functions, expr.index).symbol) < 0 {
+                return Result.Err(resource_error(flow, child, "a scoped value may only be borrowed as a checked method receiver"))
+            }
+            borrowed = index
+        } else {
+            if flow_resource(flow, child.ty)? { return Result.Err(resource_error(flow, child, "a resource must enter scoped before a method call")) }
+        }
+        index = index + 1
+    }
+    if expr.kind != ExprKind.Call || expr.index < 0 {
+        if flow_resource(flow, expr.ty)? { return Result.Err(resource_error(flow, expr, "resource factories require a statically known function")) }
+        return Result.Ok(resource_value(false, false, -1))
+    }
+    let target = get(flow.analysis.functions, expr.index)
+    if borrowed >= 0 {
+        let declaration = method_declaration(flow.analysis.env, target.symbol)
+        if declaration >= 0 && symbol(flow.analysis.env, declaration).owner == resource_concept(flow.analysis.env, "Dispose") && !automatic {
+            return Result.Err(resource_error(flow, expr, "a scoped value is disposed automatically; manual Dispose calls are forbidden"))
+        }
+    }
+    let fresh = resource_function(flow.analysis, expr.index, borrowed)?
+    Result.Ok(resource_value(false, fresh, -1))
+}
+
+fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
+    let kind = expr.kind
+    let current = get(flow.analysis.functions, flow.function)
+    if resource_pending(flow) && kind != ExprKind.Block && kind != ExprKind.Local &&
+        !(kind == ExprKind.Let && get(current.locals, expr.index).is_scoped) {
+        return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped before any other operation"))
+    }
+    if kind == ExprKind.Local {
+        let value = get(flow.locals, expr.index)
+        if value.pending == -2 { return Result.Err(resource_error(flow, expr, "a transferred resource payload cannot be used again")) }
+        return Result.Ok(value)
+    }
+    if kind == ExprKind.Defer || kind == ExprKind.Cleanup {
+        let cleanup = resource_branch(flow)
+        discard resource_expression(cleanup, get(expr.children, 0), resource_seen(flow.automatic, expr.index))?
+        return Result.Ok(resource_value(false, false, -1))
+    }
+    if kind == ExprKind.Let || kind == ExprKind.Assign {
+        let value = resource_expression(flow, get(expr.children, 0), false)?
+        let local = get(current.locals, expr.index)
+        if local.is_scoped {
+            if kind == ExprKind.Assign || value.protected || !value.fresh {
+                return Result.Err(resource_error(flow, expr, "scoped requires a fresh resource, not a copied or borrowed value"))
+            }
+            resource_consume(flow, value)
+            set(flow.locals, expr.index, resource_value(true, false, -1))
+        } else {
+            if local.name != "" && (value.protected || flow_resource(flow, local.ty)?) {
+                return Result.Err(resource_error(flow, expr, "a scoped value cannot be copied into an ordinary binding"))
+            }
+            // Named ordinary bindings remain shareable. They do not silently
+            // become consumed/exclusive when subsequently passed to scoped.
+            set(flow.locals, expr.index, resource_value(value.protected, local.name == "" && value.fresh, value.pending))
+        }
+        return Result.Ok(resource_value(false, false, -1))
+    }
+    if kind == ExprKind.Call || kind == ExprKind.IndirectCall || kind == ExprKind.DynCall {
+        return resource_call(flow, expr, automatic)
+    }
+    if kind == ExprKind.If {
+        discard resource_expression(flow, get(expr.children, 0), false)?
+        let yes = resource_branch(flow)
+        let first = resource_expression(yes, get(expr.children, 1), false)?
+        let no = resource_branch(flow)
+        let other = if length(expr.children) == 3 { resource_expression(no, get(expr.children, 2), false)? } else { resource_value(false, false, -1) }
+        resource_join(flow, yes)
+        resource_join(flow, no)
+        return Result.Ok(resource_value(first.protected || other.protected, first.fresh && other.fresh, -1))
+    }
+    if kind == ExprKind.Match { return resource_match(flow, expr) }
+    if kind == ExprKind.While {
+        discard resource_expression(flow, get(expr.children, 0), false)?
+        let body = resource_branch(flow)
+        discard resource_expression(body, get(expr.children, 1), false)?
+        resource_join(flow, body)
+        return Result.Ok(resource_value(false, false, -1))
+    }
+    if kind == ExprKind.Return {
+        if length(expr.children) == 0 { return Result.Ok(resource_value(false, true, -1)) }
+        let value = resource_expression(flow, get(expr.children, 0), false)?
+        if value.protected { return Result.Err(resource_error(flow, expr, "a scoped value or borrowed receiver cannot escape through a return")) }
+        if flow_resource(flow, get(expr.children, 0).ty)? && !value.fresh {
+            return Result.Err(resource_error(flow, expr, "a resource return must transfer a fresh value"))
+        }
+        resource_consume(flow, value)
+        push(flow.returns, value.fresh)
+        return Result.Ok(value)
+    }
+    if kind == ExprKind.Block {
+        var value = resource_value(false, true, -1)
+        var index = 0
+        while index < length(expr.children) {
+            value = resource_expression(flow, get(expr.children, index), automatic)?
+            index = index + 1
+        }
+        return Result.Ok(value)
+    }
+    if kind == ExprKind.Field {
+        let value = resource_expression(flow, get(expr.children, 0), false)?
+        // Ordinary fields retain their ordinary sharing semantics. A scoped
+        // wrapper does not acquire exclusive ownership of its reachable data.
+        return Result.Ok(resource_value(value.protected && flow_resource(flow, expr.ty)?, false, -1))
+    }
+    var protected = false
+    var resources = 0
+    var index = 0
+    while index < length(expr.children) {
+        let child = get(expr.children, index)
+        let value = if kind == ExprKind.Record { resource_expression(flow, get(child.children, 0), false)? } else { resource_expression(flow, child, false)? }
+        if value.protected { protected = true }
+        if flow_resource(flow, child.ty)? {
+            resources = resources + 1
+            if !value.fresh { return Result.Err(resource_error(flow, child, "resource aggregates require a fresh transferred payload")) }
+        }
+        index = index + 1
+    }
+    if protected { return Result.Err(resource_error(flow, expr, "a scoped value cannot be copied, discarded, boxed, or stored in an aggregate")) }
+    if resources != 0 && (kind != ExprKind.Variant || length(expr.children) != 1) {
+        return Result.Err(resource_error(flow, expr, "nested resource aggregates require pending-transfer cleanup, which is not yet supported"))
+    }
+    if kind == ExprKind.List && flow_resource(flow, expr.ty)? {
+        return Result.Err(resource_error(flow, expr, "resource lists require pending-transfer cleanup, which is not yet supported"))
+    }
+    Result.Ok(resource_value(false, kind == ExprKind.Record || kind == ExprKind.Variant || kind == ExprKind.List, -1))
+}
+
+fn resource_match(flow ResourceFlow, expr Expr) Result[ResourceValue, Failure] {
+    let input = get(expr.children, 0)
+    let value = resource_expression(flow, input, false)?
+    let resource = flow_resource(flow, input.ty)?
+    if value.protected || (resource && !value.fresh) {
+        return Result.Err(resource_error(flow, input, "resource matching requires a fresh result, not a scoped or copied value"))
+    }
+    var protected = false
+    var fresh = true
+    var pending = -1
+    var index = 0
+    while index < length(expr.arms) {
+        let arm = get(expr.arms, index)
+        let branch = resource_branch(flow)
+        if arm.whole >= 0 {
+            set(branch.locals, arm.whole, resource_value(false, resource, if resource { arm.whole } else { -1 }))
+        } else {
+            if resource && arm.variant < 0 { return Result.Err(resource_error(flow, expr, "a wildcard cannot discard a resource payload")) }
+        }
+        var field = 0
+        if arm.variant >= 0 {
+            let fields = get(get(flow.analysis.env.types, input.ty).variants, arm.variant).fields
+            while field < length(fields) {
+                let local = get(arm.bindings, field)
+                let needed = flow_resource(flow, get(fields, field))?
+                if local < 0 && needed { return Result.Err(resource_error(flow, expr, "a wildcard cannot discard a resource payload")) }
+                if local >= 0 { set(branch.locals, local, resource_value(false, needed, if needed { local } else { -1 })) }
+                field = field + 1
+            }
+        }
+        var output = resource_value(false, true, -1)
+        field = 0
+        while field < length(arm.body) { output = resource_expression(branch, get(arm.body, field), false)?
+            field = field + 1 }
+        if resource_pending(branch) && output.pending < 0 { return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped")) }
+        protected = protected || output.protected
+        if get(arm.body, length(arm.body) - 1).falls {
+            fresh = fresh && output.fresh
+            if output.pending >= 0 { pending = output.pending }
+        }
+        resource_join(flow, branch)
+        index = index + 1
+    }
+    Result.Ok(resource_value(protected, fresh, pending))
+}
+
+fn resource_functions(env Environment, functions List[Function]) Result[Bool, Failure] {
+    if resource_concept(env, "Dispose") < 0 && resource_concept(env, "MustScope") < 0 { return Result.Ok(true) }
+    let analysis = ResourceAnalysis { env = env functions = functions summaries = new[ResourceSummary]() }
+    var index = 0
+    while index < length(functions) {
+        let current = get(functions, index)
+        let borrowed = if length(current.params) != 0 && method_declaration(env, current.symbol) >= 0 &&
+            resource_type(env, current.symbol, new[Requirement](), get(current.params, 0), new[Int]())? { 0 } else { -1 }
+        discard resource_function(analysis, index, borrowed)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}

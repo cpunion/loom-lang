@@ -209,6 +209,7 @@ fn can_widen(context Context, source Int, target Int) Result[Bool, Failure] {
     Result.Ok(true)
 }
 fn boxed(context Context, node Node, value Expr, target Int) Result[Expr, Failure] {
+    if must_scope(context, value.ty)? { return Result.Err(error(context, node, "dyn cannot erase a MustScope obligation")) }
     if !can_widen(context, value.ty, target)? {
         return Result.Err(error(context, node, "dyn conversion needs an explicit conformance; conversions between different dyn concepts are not supported"))
     }
@@ -310,5 +311,6 @@ fn emit_functions(env Environment, retain Bool) Result[List[Function], Failure] 
         }
         more = activate_witnesses(env, retain)?
     }
+    discard resource_functions(env, functions)?
     Result.Ok(functions)
 }

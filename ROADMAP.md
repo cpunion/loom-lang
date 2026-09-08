@@ -202,8 +202,11 @@ Lexical `defer` handles block completion, return, `Result?`, `break` and `contin
 preserving LIFO order and saved result values. Native stack registrations also
 drain synchronous language faults before process termination, preserving the
 first error if a cleanup faults. This is not exception unwinding; OOM and external
-termination do not guarantee cleanup. `scoped`/`MustScope` and async cancellation
-still require implementation; this is not the complete resource-cleanup gate.
+termination do not guarantee cleanup. Synchronous `scoped` now selects the source
+Dispose capability and checks resource escape; MustScope also rejects ordinary
+bindings and discard. Direct factories and immediate single-payload Result/Option
+transfer are supported. Nested resource aggregates, indirect factories, and async
+cancellation remain open; this is not the complete resource-cleanup gate.
 
 List literals now share typed/native/compile-time semantics. Runtime literals
 allocate known capacity once and store elements directly; general compile-time

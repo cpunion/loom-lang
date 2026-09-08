@@ -69,7 +69,7 @@ fn destructure(context Context, node Node, boundary Int) Result[Step, Failure] {
     }
     // Keep the RHS outside the new bindings and evaluate it exactly once.
     let hidden = length(context.locals)
-    push(context.locals, Local { name = "" ty = value.ty mutable = false })
+    push(context.locals, Local { name = "" ty = value.ty mutable = false is_scoped = false })
     let values = expressions(expression(ExprKind.Let, 0, node, "", hidden, expressions(value), value.falls))
     var current = context
     var index = 0

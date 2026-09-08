@@ -212,6 +212,7 @@ fn function(env Environment, id Int, arguments List[Int], constants List[StaticV
     var context = Context { env = env signature = current arguments = arguments
         constants = constants locals = new[Local]() bindings = new[Binding]() head = -1
         cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2 facts = new[Fact]() fact_head = -1 emit = emit }
+    discard resource_parameters(context)?
     let parameters = group(item.node, NodeKind.Parameters)
     let filtered = has_static(current)
     let runtime_params = if filtered { new[Int]() } else { current.params }
@@ -249,7 +250,7 @@ fn function(env Environment, id Int, arguments List[Int], constants List[StaticV
     var result_local = -1
     if has(item.node, NodeKind.Ensures) {
         result_local = length(context.locals)
-        push(context.locals, Local { name = "result" ty = current.result mutable = false })
+        push(context.locals, Local { name = "result" ty = current.result mutable = false is_scoped = false })
         let binding = length(context.bindings)
         push(context.bindings, Binding { name = "result" local = result_local constant = -1 previous = context.head })
         context = context_at(context, binding)

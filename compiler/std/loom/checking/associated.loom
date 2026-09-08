@@ -246,10 +246,10 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, argumen
     while get(members, index) != member { index = index + 1 }
     let binding = get(header.associated, index)
     let definition = symbol(env, binding).node
-    let scoped = association_environment(env, member, receiver, arguments)?
+    let resolution_env = association_environment(env, member, receiver, arguments)?
     // Defaults retain their defining package/import scope, but Self projections
     // use this implementation's effective map, including explicit overrides.
-    let resolved = resolve(scoped, binding, child(definition, type_part(definition)),
+    let resolved = resolve(resolution_env, binding, child(definition, type_part(definition)),
         member_arguments(if prototype(env, binding) { ints(receiver) } else { selected.arguments }, arguments), depth + 1)?
     if length(arguments) != 0 { register_family_application(env, member, receiver, arguments, resolved) }
     Result.Ok(resolved)

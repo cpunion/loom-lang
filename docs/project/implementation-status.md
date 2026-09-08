@@ -334,7 +334,22 @@ order and managed result snapshots. Pure cleanup shares compile-time execution.
 Native stack registrations also drain synchronous language faults, preserving
 the first diagnostic and remaining cleanups if a callback faults. This terminates
 the process without exception unwinding; OOM and external termination do not
-guarantee cleanup. Task cancellation and `scoped`/`MustScope` remain unimplemented.
+guarantee cleanup. Synchronous `scoped` now reuses those registrations with
+statically selected source Dispose methods. Resource-flow checking rejects
+copying, escape and manual disposal, including transitive receiver calls;
+ordinary shared fields retain their semantics. MustScope requires scoped
+handling or direct fresh return, with immediate single-payload Result/Option
+transfer. Unused concrete resource functions are checked without entering native
+reachability. Nested resource aggregates, indirect factories and Task
+cancellation remain unimplemented.
+
+The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
+same-directory tests, a separate library package, Unicode text and file I/O.
+Development compiler paths resolve std/native from their checkout, allowing
+check/build/test/run from the application's own directory; `run --` forwards
+program arguments. The VS Code development host has a dedicated trial workspace.
+Real host/protocol smoke tests pass, but completion, error-tolerant semantic
+queries and source-located assertion failures remain programming-experience gaps.
 
 Unlabeled loop control lowers directly to native branches and shares compile-time
 execution, including cleanup at the nearest loop boundary. The

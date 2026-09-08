@@ -45,6 +45,7 @@ test fn inline_members_and_blocks_get_structural_line_breaks() {
 }
 
 test fn imports_generics_contracts_and_control_flow_preserve_meaning() {
+    discard round_trip("fn f(){scoped resource=acquire()\nif true{scoped next Resource=acquire()}\ndefer{finish()} }")
     assert round_trip("fn f() List[Int]{return[1,2]}\nfn g(){let xs List[List[Int]]=[[],[1]]\ndiscard xs}") ==
     "fn f() List[Int] {\n    return [1, 2]\n}\n\nfn g() {\n    let xs List[List[Int]] = [[], [1]]\n    discard xs\n}\n"
     discard round_trip("fn f() { discard [\n1, // first\n2,\n] }")

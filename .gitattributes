@@ -8,3 +8,4 @@
 *.stderr text eol=lf
 *.toml text eol=lf
 *.yml text eol=lf
+compiler/examples/wordcount/sample.txt text eol=lf

@@ -48,7 +48,7 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
         }
         if get(state.by_id, value.number) >= 0 { return Result.Ok(true) }
         let local = length(state.context.locals)
-        push(state.context.locals, Local { name = "" ty = value.ty mutable = false })
+        push(state.context.locals, Local { name = "" ty = value.ty mutable = false is_scoped = false })
         set(state.by_id, value.number, length(state.objects))
         push(state.objects, ReifyObject { value = value local = local })
     }

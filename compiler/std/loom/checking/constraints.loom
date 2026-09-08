@@ -54,7 +54,7 @@ fn predicate_context(env Environment, owner Int, locals List[Local], self_local 
 }
 fn predicate_scope(env Environment, owner Int, base Int) Context {
     let locals = new[Local]()
-    push(locals, Local { name = "self" ty = base mutable = false })
+    push(locals, Local { name = "self" ty = base mutable = false is_scoped = false })
     predicate_context(env, owner, locals, 0, false)
 }
 fn refinement(env Environment, owner Int, base Int) Result[Expr, Failure] {
@@ -197,7 +197,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     let error_type = constraint_error(context, node)?
     let output = result_type(context, node, shape, target, error_type)?
     let local = length(context.locals)
-    push(context.locals, Local { name = "self" ty = base mutable = false })
+    push(context.locals, Local { name = "self" ty = base mutable = false is_scoped = false })
     let saved = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls)
     let reference = atom(ExprKind.Local, base, node, local)
     let refined = expression(ExprKind.Coerce, target, node, "", -1, expressions(reference), true)

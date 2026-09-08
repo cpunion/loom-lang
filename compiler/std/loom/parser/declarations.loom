@@ -228,10 +228,13 @@ fn statement(cursor Cursor) Result[Step, Diagnostic] {
         let body = block(next(rest))?
         return Result.Ok(done(cursor, body.rest, NodeKind.Defer, "", one(body.node)))
     }
-    if word(rest, "let") || word(rest, "var") {
-        let kind = if word(rest, "let") { NodeKind.Let } else { NodeKind.Var }
+    if word(rest, "let") || word(rest, "var") || word(rest, "scoped") {
+        let kind = if word(rest, "scoped") { NodeKind.Scoped } else { if word(rest, "let") { NodeKind.Let } else { NodeKind.Var } }
         let named = name(next(rest))?
         rest = named.rest
+        if kind == NodeKind.Scoped && (named.node.value == "_" || at(rest, Kind.Comma)) {
+            return Result.Err(error(next(cursor), "scoped requires one named binding"))
+        }
         if at(rest, Kind.Comma) {
             if named.node.value == "_" {
                 return Result.Err(error(next(cursor), "destructuring requires names, not wildcards"))

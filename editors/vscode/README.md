@@ -26,7 +26,16 @@ task prints `36`. No extension is installed or published by these commands.
 
 For your own project, set workspace `loom.executable` to the absolute `target/loom`
 path (`loom.exe` on Windows) and `loom.stdRoot` to the repository's `compiler/std`.
-Run CLI commands from the repository root for now, passing your package directory.
+The checkout's compiler can also run CLI commands directly in your project
+directory; use its absolute path or a relative path containing a separator.
+
+For a more realistic exercise, select **Loom file-tool trial** before pressing
+F5. Its [workspace](wordcount.code-workspace) opens a small
+[file-counting application](../../compiler/examples/wordcount/README.md) with a
+separate `stats` package. Its tasks check, test both packages, and run against a
+UTF-8 file. Try the edits in that walkthrough, including a failed test and missing
+file; `run` prints `2 4 23` before changes. This is still a development extension,
+not an installed Marketplace release.
 
 `loom.executable` defaults to `loom` on PATH; relative paths containing a separator
 and relative `loom.stdRoot` paths resolve from the containing workspace folder.

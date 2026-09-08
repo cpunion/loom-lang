@@ -13,7 +13,7 @@ pub enum NodeKind {
     Match Arm Pattern Bindings Wildcard If Comptime
     TupleType Tuple Destructure Float
     Concept Impl Implements MethodCall DynType AssociatedType FunctionType Invoke
-    Defer Bounds Break Continue List Apply Index IndexAssign
+    Defer Bounds Break Continue List Apply Index IndexAssign Scoped
 }
 
 // TupleType/Tuple/List children are ordered elements. Destructure stores "let" or
@@ -36,6 +36,7 @@ pub enum NodeKind {
 // the named receiver's span, including in explicit applications like identity[Int].
 // IndexAssign has [Apply/Index target, value]; rebinding retains named Assign.
 // Defer is a statement with one Block child; its span includes the keyword.
+// Scoped has the same name/optional type/initializer shape as Let.
 
 pub record Node {
     kind NodeKind

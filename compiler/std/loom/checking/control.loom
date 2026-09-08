@@ -17,7 +17,7 @@ import std.result.Result
 fn statement_kind(kind NodeKind) Bool {
     kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign || kind == NodeKind.IndexAssign || kind == NodeKind.Return ||
     kind == NodeKind.Assert || kind == NodeKind.Discard || kind == NodeKind.While || kind == NodeKind.Destructure || kind == NodeKind.Defer ||
-    kind == NodeKind.Break || kind == NodeKind.Continue
+    kind == NodeKind.Break || kind == NodeKind.Continue || kind == NodeKind.Scoped
 }
 fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
     let kind = node.kind
@@ -29,11 +29,13 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
         return Result.Ok(Step { context = context expression = expression(ExprKind.Block, 0, node, "", -1, pair(cleanup, exit), false) })
     }
     if kind == NodeKind.Defer { return registered_cleanup(context, node) }
+    if kind == NodeKind.Scoped { return registered_scoped(context, node, boundary) }
     if kind == NodeKind.IndexAssign { return Result.Ok(Step { context = context expression = index_assignment(context, node)? }) }
     if kind == NodeKind.Destructure { return destructure(context, node, boundary) }
     if kind == NodeKind.Let || kind == NodeKind.Var {
         let annotation = if length(node.children) == 2 { context_type(context, child(node, 0))? } else { -1 }
         let value = expr(context, child(node, length(node.children) - 1), annotation)?
+        discard resource_binding(context, node, value)?
         let local = length(context.locals)
         let next = bind_local(context, node, node.value, value.ty, kind == NodeKind.Var, boundary)?
         return Result.Ok(Step { context = next expression = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls) })
@@ -62,6 +64,7 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
     } else {
     if kind == NodeKind.Discard {
         let value = expr(context, child(node, 0), -1)?
+        discard resource_binding(context, node, value)?
         expression(ExprKind.Discard, 0, node, "", -1, expressions(value), value.falls)
     } else {
     if kind == NodeKind.While {
@@ -118,6 +121,10 @@ fn conditional(context Context, node Node, expected Int, enforce Bool) Result[Ex
 }
 fn matched(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let value = expr(context, child(node, 0), -1)?
+    let marker = resource_concept(context.env, "MustScope")
+    if marker >= 0 && satisfies(context, value.ty, marker)? {
+        return Result.Err(error(context, node, "a MustScope value requires scoped; direct resource matching is not yet supported"))
+    }
     let shape = get(context.env.types, value.ty)
     let covered = new[Bool]()
     var index = 0
@@ -163,6 +170,7 @@ fn matched(context Context, node Node, expected Int, enforce Bool) Result[Expr, 
                 var field = 0
                 while field < length(fields) {
                     let binding = get(bindings, field)
+                    if must_scope(context, get(fields, field))? { discard resource_payload(context, binding, child(arm, 1))? }
                     if binding.kind == NodeKind.Wildcard { push(locals, -1) } else {
                         push(locals, length(current.locals))
                         current = bind_local(current, binding, binding.value, get(fields, field), false, context.head)?
@@ -173,10 +181,14 @@ fn matched(context Context, node Node, expected Int, enforce Bool) Result[Expr, 
             } else {
                 if package(pattern.value) != "" || length(pattern.children) != 0 { return Result.Err(error(context, pattern, "unknown enum variant in pattern")) }
                 whole = length(current.locals)
+                if must_scope(context, value.ty)? { discard resource_payload(context, pattern, child(arm, 1))? }
                 current = bind_local(current, pattern, pattern.value, value.ty, false, context.head)?
                 complete = true
             }
-        } else { complete = true }
+        } else {
+            if must_scope(context, value.ty)? { return Result.Err(error(context, pattern, "a wildcard cannot discard a resource payload")) }
+            complete = true
+        }
         let body = block(current, child(arm, 1), if output >= 0 { output } else { expected }, enforce || output >= 0)?
         if body.falls { output = body.ty }
         falls = falls || body.falls
@@ -232,8 +244,8 @@ fn propagated(context Context, node Node, expected Int) Result[Expr, Failure] {
     if get(arguments, 1) != error_type { return Result.Err(error(context, node, "`?` error type must match the enclosing function")) }
     let success = length(context.locals)
     let payload = get(arguments, 0)
-    push(context.locals, Local { name = "" ty = payload mutable = false })
-    push(context.locals, Local { name = "" ty = error_type mutable = false })
+    push(context.locals, Local { name = "" ty = payload mutable = false is_scoped = false })
+    push(context.locals, Local { name = "" ty = error_type mutable = false is_scoped = false })
     let arms = new[Arm]()
     let accepted = atom(ExprKind.Local, payload, node, success)
     let ok = expression(ExprKind.Block, payload, node, "", -1, expressions(accepted), true)

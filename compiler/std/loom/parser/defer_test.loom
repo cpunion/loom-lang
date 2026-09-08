@@ -14,3 +14,17 @@ test fn defer_requires_a_block_and_preserves_lexical_structure() {
     let unbraced = rejected("fn f() { defer done() }")
     assert unbraced.message == "expected '{'" && unbraced.span.start == 15
 }
+
+test fn scoped_is_one_named_binding_with_an_optional_type() {
+    let statements = body(child(parsed("fn f() { scoped file = open()\nif true { scoped next File = open() } }"), 0))
+    let first = child(statements, 0)
+    assert first.kind == NodeKind.Scoped && first.value == "file"
+    assert length(first.children) == 1 && child(first, 0).kind == NodeKind.Call
+    let typed = child(child(child(statements, 1), 1), 0)
+    assert typed.kind == NodeKind.Scoped && typed.value == "next"
+    assert length(typed.children) == 2 && child(typed, 0).value == "File"
+    discard rejected("fn f() { scoped let file = open() }")
+    discard rejected("fn f() { scoped _ = open() }")
+    discard rejected("fn f() { scoped a, b = open() }")
+    discard rejected("fn scoped() {}")
+}

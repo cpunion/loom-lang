@@ -1,0 +1,102 @@
+import std.fs.kind
+import std.fs.FileKind
+import std.text.slice
+import std.text.contains
+
+record DevelopmentTools {
+    std_root Text
+    native_tool Text
+}
+
+fn tool_file(path Text) Bool {
+    match kind(path) {
+        Result.Ok(value) => value == FileKind.File,
+        Result.Err(_) => false
+    }
+}
+
+fn executable_directory(path Text) Text {
+    let windows = is_windows_path(path)
+    var index = length(path)
+    while index > 0 {
+        index = index - 1
+        if byte(path, index) == 47 ||(windows && byte(path, index) == 92) {
+            return slice(path, 0, index + 1)
+        }
+    }
+    ""
+}
+
+fn checkout_source(root Text, component Text) Text {
+    join_path(join_path(root, "compiler"), component)
+}
+
+// Development stages share one checkout's std and native bridge. Never search
+// the caller's package directory or mix a cached checkpoint's source with it.
+fn compiler_checkout(invoked Text) Result[Text, Text] {
+    if !contains(invoked, "/") && !is_windows_path(invoked) {
+        return Result.Err("cannot locate development tools from a bare command name; invoke Loom with a path or pass --std and --native-tool")
+    }
+    let executable = match canonicalize(invoked) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("cannot resolve the compiler executable; pass --std and --native-tool")
+        }
+    }
+    var directory = match canonicalize(executable_directory(executable)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("cannot resolve the compiler directory; pass --std and --native-tool")
+        }
+    }
+    while directory != "" {
+        if tool_file(join_path(checkout_source(directory, "loom"), "loom.toml")) && tool_file(join_path(join_path(checkout_source(directory, "std"), "result"), "result.loom")) {
+            return Result.Ok(directory)
+        }
+        // Canonical Windows paths are verbatim: neither '/' nor '..' may be
+        // appended expecting the OS to normalize them.
+        let parent = match canonicalize(executable_directory(directory)) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("cannot locate the development checkout; pass --std and --native-tool")
+            }
+        }
+        if parent == directory {
+            directory = ""
+        } else {
+            directory = parent
+        }
+    }
+    Result.Err("cannot locate the development checkout; pass --std and --native-tool")
+}
+
+fn development_tools(invoked Text, standard Text, native Text, needs_native Bool) Result[DevelopmentTools, Text] {
+    if standard != "" &&(!needs_native || native != "") {
+        return Result.Ok(DevelopmentTools {
+                std_root = standard
+                native_tool = native
+            })
+    }
+    let root = compiler_checkout(invoked)?
+    let std_root = if standard != "" {
+        standard
+    } else {
+        checkout_source(root, "std")
+    }
+    var native_tool = native
+    if needs_native && native_tool == "" {
+        let name = if is_windows_path(root) {
+            "loom-native.exe"
+        } else {
+            "loom-native"
+        }
+        native_tool = join_path(join_path(join_path(root, "target"), "debug"), name)
+        if !tool_file(native_tool) {
+            return Result.Err("cannot find the checkout's native tool; build it first or pass --native-tool")
+        }
+    }
+    Result.Ok(DevelopmentTools {
+            std_root = std_root
+            native_tool = native_tool
+        })
+}

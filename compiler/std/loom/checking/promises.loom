@@ -43,7 +43,7 @@ fn promised(env Environment, owner Int, obligations List[Requirement], ty Int, c
     }
     let node = symbol(env, owner).node
     if env.promise_depth >= 64 { return Result.Err(failure(env, owner, node, "associated evidence exceeds the type specialization budget")) }
-    let scoped = promise_environment(env, ty, capability)
+    let resolution_env = promise_environment(env, ty, capability)
     let relevant = promise_concepts(env, capability)
     let pending = new[Requirement]()
     var index = 0
@@ -62,7 +62,7 @@ fn promised(env Environment, owner Int, obligations List[Requirement], ty Int, c
     index = 0
     while index < length(pending) {
         let given = get(pending, index)
-        if given.ty == ty && given.capability == capability { return concrete_methods(scoped, owner, ty, capability) }
+        if given.ty == ty && given.capability == capability { return concrete_methods(resolution_env, owner, ty, capability) }
         let shape = get(env.types, given.ty)
         if get(relevant, concept_index(env, given.capability)) {
             if type_depth(env, given.ty) >= 64 || length(env.types) >= 4096 { exhausted = true } else {
@@ -79,9 +79,9 @@ fn promised(env Environment, owner Int, obligations List[Requirement], ty Int, c
                                 let target = get(bounds, bound)
                                 if get(relevant, concept_index(env, target)) {
                                     if resolved < 0 {
-                                        resolved = associated_type(scoped, owner, declaration_member, given.ty, new[Int](), node, 0)?
+                                        resolved = associated_type(resolution_env, owner, declaration_member, given.ty, new[Int](), node, 0)?
                                     }
-                                    if resolved == ty && target == capability { return concrete_methods(scoped, owner, ty, capability) }
+                                    if resolved == ty && target == capability { return concrete_methods(resolution_env, owner, ty, capability) }
                                     if !required(pending, resolved, target) {
                                         push(pending, Requirement { ty = resolved capability = target })
                                     }
@@ -92,7 +92,7 @@ fn promised(env Environment, owner Int, obligations List[Requirement], ty Int, c
                         member = member + 1
                     }
                 }
-                discard expand_family_promises(scoped, owner, given, pending, relevant, node)?
+                discard expand_family_promises(resolution_env, owner, given, pending, relevant, node)?
             }
         }
         index = index + 1

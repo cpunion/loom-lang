@@ -33,10 +33,13 @@ does not add a bootstrap checkpoint. Use one-stage `--dev` for ordinary edits;
 the three-stage comparison is the bootstrap/CI validation gate.
 
 The source CLI provides `check`, `build`, `test`, and `run` for one directory
-package. It defaults to `compiler/std` and `target/debug/loom-native` relative to
-the working directory; use `--std` and `--native-tool` elsewhere. `build` accepts
+package. When invoked by path, a development compiler locates `compiler/std`
+and `target/debug/loom-native` in its own checkout, independently of the working
+directory. Use `--std` and `--native-tool` for other layouts. `build` accepts
 `--output`; native commands also accept `--emit-ir`. Library builds produce an
 object, and production excludes test files and test declarations.
+`run [package] -- [arguments...]` forwards arguments verbatim to the program;
+relative file arguments remain relative to the caller's working directory.
 `--object-cache` enables [trusted-local object reuse](../README.md#native-object-cache)
 for native commands. The Loom driver owns cache policy; the Rust bridge only
 identifies its implementation, emits objects and links/publishes requested files.
@@ -84,7 +87,9 @@ checker; it does not implement another parser or checker in JavaScript.
 Completion, rename, and incremental semantic caching remain open. Semantic
 queries currently require a successfully checked package and concrete body instances.
 An isolated macOS VS Code extension-host test covers activation, unsaved errors,
-error clearing, and applied formatting. Broader interactive usability review remains open.
+error clearing, and applied formatting. The
+[file-tool trial](../examples/wordcount/README.md) exercises a multi-package
+application from its own directory. Broader interactive usability review remains open.
 
 ## Public syntax libraries
 

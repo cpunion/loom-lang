@@ -10,8 +10,8 @@ import std.list.length
 import std.result.Result
 
 fn cleanup_form(context Context, node Node, loops Int) Result[Bool, Failure] {
-    if node.kind == NodeKind.Return || node.kind == NodeKind.Try || node.kind == NodeKind.Defer {
-        return Result.Err(error(context, node, "defer blocks cannot contain return, ? or another defer"))
+    if node.kind == NodeKind.Return || node.kind == NodeKind.Try || node.kind == NodeKind.Defer || node.kind == NodeKind.Scoped {
+        return Result.Err(error(context, node, "defer blocks cannot contain return, ?, defer or scoped"))
     }
     if loops == 0 && (node.kind == NodeKind.Break || node.kind == NodeKind.Continue) {
         return Result.Err(error(context, node, "loop control cannot leave a defer block"))
@@ -45,7 +45,7 @@ fn cleaned(context Context, node Node, boundary Int, value Expr) Expr {
     var saved = -1
     if value.ty == 0 { push(values, value) } else {
         saved = length(context.locals)
-        push(context.locals, Local { name = "" ty = value.ty mutable = false })
+        push(context.locals, Local { name = "" ty = value.ty mutable = false is_scoped = false })
         push(values, expression(ExprKind.Let, 0, node, "", saved, expressions(value), true))
     }
     var head = context.cleanup_head

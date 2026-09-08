@@ -26,6 +26,10 @@ fn rejects_result(text Text) {
 }
 
 test fn type_mismatches_name_types_and_only_unused_values_suggest_discard() {
+    match checked(source_files("fn main() { let result = 1 }")) {
+        Result.Err(failed) => { assert failed.diagnostic.message == "result is reserved for function postconditions; choose another binding name" }
+        Result.Ok(_) => { assert false }
+    }
     let source = "record Item { quantity Int }\nfn main() { discard Item { quantity = \"three\" } }"
     match checked(source_files(source)) {
         Result.Err(failed) => {

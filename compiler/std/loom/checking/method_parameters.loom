@@ -127,8 +127,8 @@ fn implementation_method(env Environment, header Implementation, owner Int, expe
     let item = symbol(env, owner)
     let count = method_parameter_count(env, owner)
     let arguments = abstract_arguments(env, function_parameter_count(env, owner))
-    let scoped = header_environment(env)
-    let original = requirements(scoped, owner, arguments)?
+    let resolution_env = header_environment(env)
+    let original = requirements(resolution_env, owner, arguments)?
     let ordinary = new[Signature]()
     if count == 0 { push(ordinary, source_signature(env, owner, arguments, original)?) }
     let matches = new[MethodMatch]()
@@ -140,14 +140,14 @@ fn implementation_method(env Environment, header Implementation, owner Int, expe
         if symbol(env, declaration.symbol).name == item.name && method_parameter_count(env, declaration.symbol) == count &&
             length(declaration.params) == length(group(item.node, NodeKind.Parameters)) {
             if !method_bounds_match(env, declaration.symbol, owner)? { strengthened = true } else {
-                let target = signature_in(scoped, id, method_instance_arguments(env, declaration.symbol, header.ty, method_parameter_prefix(env, owner)), item.node, header.symbol)?
+                let target = signature_in(resolution_env, id, method_instance_arguments(env, declaration.symbol, header.ty, method_parameter_prefix(env, owner)), item.node, header.symbol)?
                 let obligations = new[Requirement]()
                 var index = 0
                 while index < length(original) { push(obligations, get(original, index))
                     index = index + 1 }
                 discard inherit_member_requirements(env, declaration.symbol, argument_tail(arguments, method_parameter_prefix(env, owner)), obligations)?
                 let trial Result[Signature, Failure] = if count == 0 { Result.Ok(get(ordinary, 0)) } else {
-                    source_signature(scoped, owner, arguments, function_requirements(scoped, owner, obligations)?)
+                    source_signature(resolution_env, owner, arguments, function_requirements(resolution_env, owner, obligations)?)
                 }
                 match trial {
                     Result.Ok(current) => {
