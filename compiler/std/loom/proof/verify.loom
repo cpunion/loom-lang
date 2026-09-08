@@ -97,6 +97,8 @@ fn operation(function Function, expr Expr, state State, depth Int) Result[List[O
 fn execute(function Function, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
     if depth <= 0 { return Result.Err("proof depth budget exhausted") }
     if holds(Predicate.Constant(false), state.facts) { return Result.Ok(new[Outcome]()) }
+    if expr.kind == ExprKind.Defer { return Result.Ok(outcomes(state, Value.Empty)) }
+    if expr.kind == ExprKind.Cleanup { return execute(function, get(expr.children, 0), state, depth - 1) }
     if expr.kind == ExprKind.Block { return block(function, expr, state, depth) }
     if expr.kind == ExprKind.If { return conditional(function, expr, state, depth) }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary { return operation(function, expr, state, depth) }

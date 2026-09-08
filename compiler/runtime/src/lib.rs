@@ -12,6 +12,7 @@ use std::ffi::c_char;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr::{self, NonNull};
 
+mod cleanup;
 mod file_io;
 mod fs_ops;
 mod process_io;
@@ -109,7 +110,7 @@ impl Arena {
             let layout = Layout::from_size_align(PAGE_SIZE, 16).unwrap();
             // SAFETY: Small objects fit within a page and are aligned to 16 bytes.
             let page =
-                NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| fault("out of memory"));
+                NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| fatal("out of memory"));
             self.pages.push(page);
             self.used = 0;
         }
@@ -196,7 +197,13 @@ thread_local! {
 }
 
 fn fault(message: &str) -> ! {
-    eprintln!("RuntimeFault: {message}");
+    cleanup::fault(message.as_bytes())
+}
+
+// Broken runtime invariants and allocation exhaustion cannot safely execute
+// user callbacks, particularly while the heap is borrowed or being relocated.
+fn fatal(message: &str) -> ! {
+    cleanup::report(message.as_bytes());
     std::process::abort()
 }
 
@@ -222,7 +229,7 @@ fn storage(arena: &mut Arena, layout: Layout, zeroed: bool) -> NonNull<u8> {
                 alloc(layout)
             }
         })
-        .unwrap_or_else(|| fault("out of memory"))
+        .unwrap_or_else(|| fatal("out of memory"))
     }
 }
 
@@ -232,7 +239,7 @@ fn allocate_storage(size: usize, trace: Option<Trace>, zeroed: bool) -> *mut u8 
     let collect = HEAP.with(|heap| {
         let heap = heap.borrow();
         if heap.collecting {
-            fault("allocation during GC tracing");
+            fatal("allocation during GC tracing");
         }
         heap.stress || heap.bytes.saturating_add(occupied(layout)) >= heap.threshold
     });
@@ -290,7 +297,7 @@ unsafe extern "C" fn loom_rt_roots_leave(frame: *mut RootFrame) {
     HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
         if heap.roots != frame {
-            fault("invalid GC root frame order");
+            fatal("invalid GC root frame order");
         }
         // SAFETY: A matching enter initialized this still-live frame.
         heap.roots = unsafe { (*frame).previous };
@@ -352,7 +359,7 @@ extern "C" fn loom_rt_collect() {
     let mut frame = HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
         if heap.collecting {
-            fault("recursive GC collection");
+            fatal("recursive GC collection");
         }
         heap.collecting = true;
         heap.work.clear();
@@ -565,15 +572,16 @@ unsafe extern "C" fn loom_rt_process_init(argc: i32, argv: *const *const c_char)
     #[cfg(not(windows))]
     PROCESS_ARGS.set((argc, argv));
     #[cfg(windows)]
-    PROCESS_ARGS.with(|arguments| {
-        *arguments.borrow_mut() = std::env::args_os()
+    {
+        let values = std::env::args_os()
             .map(|argument| {
                 argument
                     .into_string()
                     .unwrap_or_else(|_| fault("invalid Unicode process argument"))
             })
             .collect();
-    });
+        PROCESS_ARGS.with(|arguments| *arguments.borrow_mut() = values);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -606,15 +614,19 @@ unsafe extern "C" fn loom_rt_process_arg_text(index: i64) -> *mut u8 {
     }
     #[cfg(windows)]
     {
-        PROCESS_ARGS.with(|arguments| {
+        let argument = PROCESS_ARGS.with(|arguments| {
             let arguments = arguments.borrow();
-            let argument = usize::try_from(index)
+            usize::try_from(index)
                 .ok()
                 .and_then(|index| arguments.get(index))
-                .unwrap_or_else(|| fault("process argument index out of bounds"));
-            // SAFETY: Rust-owned argument bytes outlive the managed allocation.
-            unsafe { loom_rt_text_new(argument.as_ptr(), argument.len()) }
-        })
+                .map(|argument| (argument.as_ptr(), argument.len()))
+        });
+        let (bytes, length) =
+            argument.unwrap_or_else(|| fault("process argument index out of bounds"));
+        // SAFETY: These process-owned strings are initialized before Loom main
+        // and never modified afterwards. Release the borrow before any fault
+        // can run a cleanup which reads the process arguments again.
+        unsafe { loom_rt_text_new(bytes, length) }
     }
 }
 
@@ -758,7 +770,7 @@ unsafe fn process_capture_configured(
     };
     let output = match process_io::capture(command, input) {
         Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => fault("out of memory"),
+        Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => fatal("out of memory"),
         Err(_) => return -1,
     };
     rooted([stdout, stderr], |slots| {
@@ -896,7 +908,7 @@ unsafe fn reserve(owner: *mut u8, additional: usize, stride: usize) -> *mut Buff
                     // SAFETY: Only the rooted shared header owns this separate
                     // allocation. Growth never changes it back to an arena slot.
                     NonNull::new(unsafe { realloc(current, previous.layout(), layout.size()) })
-                        .unwrap_or_else(|| fault("out of memory"))
+                        .unwrap_or_else(|| fatal("out of memory"))
                 } else {
                     let pointer = storage(&mut heap.space, layout, false);
                     // SAFETY: Arena slices cannot be reallocated individually.

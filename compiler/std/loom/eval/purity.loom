@@ -64,7 +64,11 @@ fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Boo
     }
     var index = 0
     while index < length(expr.children) {
-        let nested = if expr.kind == ExprKind.While && index == 1 { loops + 1 } else { loops }
+        // Registration does not execute the body, but its effects still belong
+        // to this computation's purity closure. Cleanup has its own loop scope.
+        let nested = if expr.kind == ExprKind.Defer || expr.kind == ExprKind.Cleanup { 0 } else {
+            if expr.kind == ExprKind.While && index == 1 { loops + 1 } else { loops }
+        }
         discard scan(state, get(expr.children, index), seen, depth + 1, nested)?
         index = index + 1
     }

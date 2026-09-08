@@ -9,7 +9,7 @@ the frozen historical Rust seed is only a fallback for producing that input.
 
 The native tool consumes a checked program, not source that it parses or
 type-checks again. It uses LLVM 22 through Inkwell; there is no second language
-frontend or runtime interpreter. Scalar-only programs link only
+frontend or runtime interpreter. Cleanup-free scalar programs link only
 the host C library for fault reporting; managed programs also link the small
 Rust runtime. Ordinary arithmetic and calls lower
 directly; LLVM's O2 pipeline promotes local storage and removes unused code.
@@ -1105,7 +1105,8 @@ unsupported and reject; successful evaluation is not an algebraic proof.
 `defer { ... }` registers a synchronous block in its containing lexical scope,
 including `if`/`else`, match arms and each loop iteration. Registered blocks run
 once in reverse order on normal completion, `return`, `Result?` propagation,
-`break`, or `continue`.
+`break`, or `continue`, and before termination on a synchronous language
+`RuntimeFault`.
 Bindings are resolved at registration, but their values are read at cleanup:
 
 ```loom
@@ -1122,14 +1123,20 @@ Cleanup must have no value result; ordinary `discard` remains explicit. Its
 body cannot contain `return`, `?`, or another `defer`, even in an unselected
 compile-time branch. Loop control is allowed only for loops inside the cleanup;
 it cannot leave the cleanup. Called functions have their own ordinary return scopes.
-Pure cleanup also executes during compile-time evaluation. Lowering uses
-ordinary checked blocks, locals and calls, without a runtime cleanup executor.
+Pure cleanup also executes during compile-time evaluation. Native lowering uses
+direct callbacks and stack registrations, not a general runtime executor. Callbacks
+read and update the owner's local storage, including moving-GC roots. Programs
+with reachable cleanup route faults through a small LIFO drain, including faults
+in called functions without local `defer` blocks. Cleanup-free scalar executables
+retain their runtime-free path.
 Required proofs still inspect the lowered function; unsupported proofs reject.
 
 The [cleanup example](examples/cleanup/main.loom) exercises these exits and GC
-snapshots. This synchronous slice does **not** unwind `RuntimeFault`/process abort
-or task cancellation, and does not yet implement `scoped`/`MustScope`. Those
-remain requirements, not guarantees supplied by this initial lowering.
+snapshots. Fault draining preserves the first diagnostic and runs remaining
+callbacks even if a cleanup faults. It terminates the process; it is not exception
+unwinding or recovery. OOM, internal runtime corruption, external process signals,
+and explicit process termination do not guarantee cleanup. Task cancellation and
+`scoped`/`MustScope` remain unimplemented.
 
 `break` exits the nearest enclosing `while` body; `continue` reevaluates that
 loop's condition. Both run the defers of scopes they leave, but not defers

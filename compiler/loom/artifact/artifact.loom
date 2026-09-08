@@ -25,7 +25,7 @@ import std.list.length
 // concrete executable projections must already have normalized to their type.
 // Function: symbol, span(start,end), params, result, locals, preconditions, body.
 // Expr: tag,type,span,text,index,falls,children,arms. Arm: variant,bindings,whole,
-// body; absent bindings/variants use -1. Tags 0..28 follow expression_tag below.
+// body; absent bindings/variants use -1. Tags 0..30 follow expression_tag below.
 // FunctionRef.index is the concrete function ID (no children); IndirectCall has
 // index -1 and children [callee,args...].
 // DynBox.index is a witness ID, children=[value]; DynCall.index is a method slot,
@@ -111,6 +111,7 @@ fn expression_tag(kind ExprKind) Int {
         ExprKind.FunctionRef => 24, ExprKind.IndirectCall => 25
         ExprKind.Break => 26, ExprKind.Continue => 27
         ExprKind.List => 28
+        ExprKind.Defer => 29, ExprKind.Cleanup => 30
         // A deferred generic branch is check-only and must be instantiated.
         ExprKind.Deferred => { assert false
             -1 }

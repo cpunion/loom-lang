@@ -18,3 +18,8 @@ test fn cleanup_control_is_explicit_and_contracts_still_require_proof() {
     rejects("fn wrong() Int ensures result == 4 { defer { assert true }\n3 }")
     rejects("fn opaque(value Int) Int { value }\nfn unproved(value Int) Int ensures result == value { defer { discard opaque(value) }\nvalue }")
 }
+
+test fn required_proofs_observe_cleanup_effects_and_saved_results() {
+    discard accepted("fn changed() Int ensures result == 7 { var value = 1\n{ defer { value = 7 }\nvalue = 2 }\nvalue }\nfn saved() Int ensures result == 2 { var value = 2\ndefer { value = 7 }\nvalue }\nfn main() { assert comptime { changed() + saved() } == 9 }")
+    rejects("fn wrong() Int ensures result == 2 { var value = 1\n{ defer { value = 7 }\nvalue = 2 }\nvalue }")
+}

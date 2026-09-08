@@ -7,7 +7,7 @@ fn failure(error: io::Error) -> i64 {
     match error.kind() {
         io::ErrorKind::AlreadyExists => -2,
         io::ErrorKind::NotFound => -3,
-        io::ErrorKind::OutOfMemory => super::fault("out of memory"),
+        io::ErrorKind::OutOfMemory => super::fatal("out of memory"),
         _ => -1,
     }
 }

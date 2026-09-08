@@ -198,10 +198,12 @@ retain explicit generic requirements and mandatory abstract proofs. Function
 references to partially specialized static declarations, capturing closures
 and heterogeneous packs remain open.
 
-Lexical `defer` now lowers block completion, return, `Result?`, `break` and `continue` cleanup into
-ordinary checked code, preserving LIFO order and saved result values. Fault
-unwinding, `scoped`/`MustScope` and async cancellation still require implementation;
-this is not the complete resource-cleanup gate.
+Lexical `defer` handles block completion, return, `Result?`, `break` and `continue`,
+preserving LIFO order and saved result values. Native stack registrations also
+drain synchronous language faults before process termination, preserving the
+first error if a cleanup faults. This is not exception unwinding; OOM and external
+termination do not guarantee cleanup. `scoped`/`MustScope` and async cancellation
+still require implementation; this is not the complete resource-cleanup gate.
 
 List literals now share typed/native/compile-time semantics. Runtime literals
 allocate known capacity once and store elements directly; general compile-time

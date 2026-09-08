@@ -105,7 +105,8 @@ fn main() {
         );
         success(&Command::new(&executable).output().unwrap());
         let ir = fs::read_to_string(&ir).unwrap();
-        assert!(!ir.contains("loom_rt_") && !ir.contains("executor"));
+        assert!(ir.contains("loom_rt_cleanup_push") && ir.contains("loom_rt_cleanup_pop"));
+        assert!(!ir.contains("roots_enter") && !ir.contains("executor"));
         if level == "0" {
             assert!(ir.contains("br label %while.test"));
             assert!(ir.contains("br label %while.done"));
