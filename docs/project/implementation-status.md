@@ -348,8 +348,13 @@ same-directory tests, a separate library package, Unicode text and file I/O.
 Development compiler paths resolve std/native from their checkout, allowing
 check/build/test/run from the application's own directory; `run --` forwards
 program arguments. The VS Code development host has a dedicated trial workspace.
-Real host/protocol smoke tests pass, but completion, error-tolerant semantic
-queries and source-located assertion failures remain programming-experience gaps.
+Real host/protocol smoke tests pass, but completion and error-tolerant semantic
+queries remain programming-experience gaps. Native assertions now carry static
+definition-file/line/Unicode-column diagnostics. Test entries set one current
+test name, retained with the first fault across cleanup. Standalone test binaries
+need no source files, and production builds emit no test context or test-only
+labels. Successful test summaries are unchanged. Other faults still lack source
+locations; stack traces and continuing after a fault remain open.
 
 Unlabeled loop control lowers directly to native branches and shares compile-time
 execution, including cleanup at the nearest loop boundary. The

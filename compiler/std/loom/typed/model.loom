@@ -30,6 +30,7 @@ pub enum ExprKind {
 // List children are ordered, same-typed elements of a fresh shared container.
 // Defer/Cleanup index a function-local cleanup registration and retain its one
 // body child with the owner's Local IDs. Only Cleanup executes that body.
+// Assert.text is a static source diagnostic, or empty for source-less IR.
 pub record Expr {
     kind ExprKind
     ty Int
@@ -66,6 +67,7 @@ pub record Program {
     functions List[Function]
     entry Int
     tests List[Int]
+    test_names List[Text]
     exports List[Int]
     interfaces List[Interface]
     witnesses List[Witness]

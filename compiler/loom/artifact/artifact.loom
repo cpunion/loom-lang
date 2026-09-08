@@ -15,7 +15,7 @@ import std.list.length
 // Private source-compiler -> LLVM bridge format, not a package/cache format.
 // Header: loom-checked-1\n. Integers are decimal lines; strings are byte length
 // then raw UTF-8, without a trailing separator. Lists start with their count.
-// Program: types, functions, entry (-1 absent), tests, exports, optional dyn tail.
+// Program: types, functions, entry (-1 absent), tests, exports, optional features.
 // Type: tag, symbol, then List/refined element ID, record fields(name,type), or
 // enum variants(name,payload IDs). Tuples use record layout, with symbol -1 and
 // positional field names. Dyn stores its interface index in symbol, no payload.
@@ -28,11 +28,13 @@ import std.list.length
 // body; absent bindings/variants use -1. Tags 0..30 follow expression_tag below.
 // FunctionRef.index is the concrete function ID (no children); IndirectCall has
 // index -1 and children [callee,args...].
+// Assert.text is its static source diagnostic; empty text has no source location.
 // DynBox.index is a witness ID, children=[value]; DynCall.index is a method slot,
-// children=[receiver,args...]. The optional tail exists only with dynamic data:
-// feature tag 1, interfaces(methods(params excluding receiver,result)), witnesses
+// children=[receiver,args...]. Optional unique feature sections follow exports:
+// tag 1, interfaces(methods(params excluding receiver,result)), witnesses
 // (interface ID,concrete type ID,method function IDs with -1 for unused slots).
-// No tail means no dynamic metadata; non-dynamic programs keep their byte stream.
+// Tag 2 contains test names, in the same order as tests. It contains no source
+// text. A source-less checked program can omit diagnostic names and messages.
 // Constraints, proof results, generic metadata and local names are not emitted.
 
 fn raw(buffer Bytes, value Text) {
@@ -198,6 +200,15 @@ pub fn encode(program Program) Text {
             integer(buffer, witness.interface)
             integer(buffer, witness.concrete)
             integers(buffer, witness.methods)
+            index = index + 1
+        }
+    }
+    if length(program.test_names) > 0 {
+        integer(buffer, 2)
+        integer(buffer, length(program.test_names))
+        index = 0
+        while index < length(program.test_names) {
+            text(buffer, get(program.test_names, index))
             index = index + 1
         }
     }

@@ -106,7 +106,7 @@ pub fn evaluate(program Program, expression Expr, locals Int) Result[Value, Fail
 // Optional constraint folding shares execution/arithmetic but cannot invoke a
 // function or manufacture mutable state. Unknown self stays nonconstant.
 pub fn scalar(expression Expr, self_value Value) Result[Value, Failure] {
-    let program = Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() exports = new[Int]()
+    let program = Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() test_names = new[Text]() exports = new[Int]()
         interfaces = new[Interface]() witnesses = new[Witness]() }
     let state = state(program, true)
     discard scan(state, expression, new[Int](), 0, 0)?

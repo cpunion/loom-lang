@@ -2,6 +2,8 @@ import std.loom.project.name
 import std.loom.project.package
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
+import std.loom.source.render
+import std.loom.source.Diagnostic
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.TypeKind
@@ -18,6 +20,12 @@ fn statement_kind(kind NodeKind) Bool {
     kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign || kind == NodeKind.IndexAssign || kind == NodeKind.Return ||
     kind == NodeKind.Assert || kind == NodeKind.Discard || kind == NodeKind.While || kind == NodeKind.Destructure || kind == NodeKind.Defer ||
     kind == NodeKind.Break || kind == NodeKind.Continue || kind == NodeKind.Scoped
+}
+fn assertion_message(context Context, node Node) Text {
+    if !context.emit { return "" }
+    let declaration = symbol(context.env, context.signature.symbol)
+    let source = get(context.env.source.files, declaration.file)
+    render(source.path, source.text, Diagnostic { span = node.span message = "assertion failed" })
 }
 fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
     let kind = node.kind
@@ -60,7 +68,7 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
     if kind == NodeKind.Assert {
         let value = expr(context, child(node, 0), 2)?
         return Result.Ok(Step { context = assuming(context, value, true, 0)
-            expression = expression(ExprKind.Assert, 0, node, "", -1, expressions(value), value.falls) })
+            expression = expression(ExprKind.Assert, 0, node, assertion_message(context, node), -1, expressions(value), value.falls) })
     } else {
     if kind == NodeKind.Discard {
         let value = expr(context, child(node, 0), -1)?

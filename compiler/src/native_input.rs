@@ -200,26 +200,37 @@ pub fn decode(text: &str) -> Result<c::Program> {
     let entry = optional(reader.integer()?)?;
     let tests = reader.sequence(Reader::index)?;
     let exports = reader.sequence(Reader::index)?;
-    let (interfaces, witnesses) = if reader.offset == text.len() {
-        (vec![], vec![])
-    } else {
-        if reader.integer()? != 1 {
-            return Err("unknown checked-IR feature tag".into());
+    let mut interfaces = vec![];
+    let mut witnesses = vec![];
+    let mut test_names = vec![];
+    let mut features = [false; 2];
+    while reader.offset != text.len() {
+        let tag = reader.index()?;
+        let seen = match tag {
+            1 | 2 => &mut features[tag - 1],
+            _ => return Err("unknown checked-IR feature tag".into()),
+        };
+        if *seen {
+            return Err("duplicate checked-IR feature tag".into());
         }
-        let interfaces = reader.sequence(|reader| {
-            reader.sequence(|reader| Ok((reader.sequence(Reader::index)?, reader.index()?)))
-        })?;
-        let witnesses = reader.sequence(|reader| {
-            Ok((
-                reader.index()?,
-                reader.index()?,
-                reader.sequence(|reader| optional(reader.integer()?))?,
-            ))
-        })?;
-        (interfaces, witnesses)
-    };
-    if reader.offset != text.len() {
-        return Err("trailing checked-IR input".into());
+        *seen = true;
+        if tag == 1 {
+            interfaces = reader.sequence(|reader| {
+                reader.sequence(|reader| Ok((reader.sequence(Reader::index)?, reader.index()?)))
+            })?;
+            witnesses = reader.sequence(|reader| {
+                Ok((
+                    reader.index()?,
+                    reader.index()?,
+                    reader.sequence(|reader| optional(reader.integer()?))?,
+                ))
+            })?;
+        } else {
+            test_names = reader.sequence(Reader::string)?;
+        }
+    }
+    if !test_names.is_empty() && test_names.len() != tests.len() {
+        return Err("checked test-name count mismatch".into());
     }
     let mut program = c::Program {
         types: vec![],
@@ -230,6 +241,7 @@ pub fn decode(text: &str) -> Result<c::Program> {
         witnesses: vec![],
         entry,
         tests,
+        test_names,
         exports,
     };
     let mut types = Vec::new();
@@ -539,7 +551,10 @@ impl Converter<'_> {
                         .transpose()?,
                 )
             }
-            15 => S::Assert(self.expr(self.child(node, 0, 1)?)?),
+            15 => S::Assert {
+                condition: self.expr(self.child(node, 0, 1)?)?,
+                message: node.text.clone(),
+            },
             16 => S::Discard(self.expr(self.child(node, 0, 1)?)?),
             17 => {
                 let condition = self.expr(self.child(node, 0, 2)?)?;
@@ -1051,6 +1066,49 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_payloads_are_optional_and_features_are_unique() {
+        let message = "helpers.loom:3:5: assertion failed";
+        let assertion = node(15, 0, message, -1, &[node(1, 1, "false", -1, &[])]);
+        let body = node(11, 0, "", -1, &[assertion]);
+        let prefix =
+            format!("loom-checked-1\n2\n0\n-1\n2\n-1\n1\n0\n0\n0\n0\n0\n0\n0\n{body}-1\n1\n0\n0\n");
+        let names = "2\n1\n12\npackage.test";
+        let dynamic = "1\n0\n0\n";
+        for tail in [
+            String::new(),
+            "2\n0\n".into(),
+            names.into(),
+            format!("{names}{dynamic}"),
+            format!("{dynamic}{names}"),
+        ] {
+            let program = decode(&format!("{prefix}{tail}")).unwrap();
+            let c::StmtKind::Assert {
+                message: actual, ..
+            } = &program.functions[0].body.statements[0].kind
+            else {
+                panic!("expected assertion")
+            };
+            assert_eq!(actual, message);
+            assert_eq!(
+                program.test_names.len(),
+                usize::from(tail.contains("package.test"))
+            );
+        }
+        for (tail, error) in [
+            (format!("{names}{names}"), "duplicate"),
+            (format!("{dynamic}{dynamic}"), "duplicate"),
+            ("3\n".into(), "unknown"),
+            ("2\n2\n1\na1\nb".into(), "count mismatch"),
+        ] {
+            assert!(
+                decode(&format!("{prefix}{tail}"))
+                    .unwrap_err()
+                    .contains(error)
+            );
+        }
+    }
+
+    #[test]
     fn cleanup_markers_preserve_identity_and_require_one_unit_body() {
         let stream = |markers: &[String]| {
             let body = node(11, 0, "", -1, markers);
@@ -1464,7 +1522,7 @@ mod tests {
         assert!(
             decode(&format!("{prefix}{tail}1\n0\n0\n"))
                 .unwrap_err()
-                .contains("trailing")
+                .contains("duplicate")
         );
         assert!(decode(&prefix).is_err());
     }

@@ -208,7 +208,10 @@ fn ieee_float_operations_and_aggregate_payloads_execute_without_runtime() {
             statements: conditions
                 .into_iter()
                 .map(|condition| checked::Stmt {
-                    kind: checked::StmtKind::Assert(condition),
+                    kind: checked::StmtKind::Assert {
+                        condition,
+                        message: String::new(),
+                    },
                     span: Span::default(),
                 })
                 .collect(),
@@ -234,6 +237,7 @@ fn ieee_float_operations_and_aggregate_payloads_execute_without_runtime() {
         functions,
         entry: Some(entry),
         tests: vec![],
+        test_names: vec![],
         exports: vec![],
     };
     assert_eq!(value_words(&program, Type::Data(1)).unwrap(), 2);

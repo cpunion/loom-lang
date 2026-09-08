@@ -6,6 +6,7 @@ import std.loom.typed.Interface
 import std.loom.typed.Witness
 import std.list.new
 import std.list.push
+import std.text.ends_with
 
 test fn counted_fields_preserve_utf8_newlines_and_nuls() {
     let buffer = std.bytes.new()
@@ -17,10 +18,13 @@ test fn counted_fields_preserve_utf8_newlines_and_nuls() {
 test fn empty_checked_program_has_a_deterministic_stream() {
     let program = Program {
         types = std.list.new[Type]() functions = std.list.new[Function]() entry = -1
-        tests = std.list.new[Int]() exports = std.list.new[Int]()
+        tests = std.list.new[Int]() test_names = std.list.new[Text]() exports = std.list.new[Int]()
         interfaces = std.list.new[Interface]() witnesses = std.list.new[Witness]()
     }
     assert encode(program) == "loom-checked-1\n0\n0\n-1\n0\n0\n"
+    push(program.tests, 0)
+    push(program.test_names, "pkg.例")
+    assert ends_with(encode(program), "2\n1\n7\npkg.例")
 }
 
 test fn abstract_associated_types_use_non_executable_placeholders() {
@@ -60,7 +64,7 @@ test fn dynamic_metadata_is_an_explicit_sparse_tail() {
     let witnesses = std.list.new[Witness]()
     std.list.push(witnesses, Witness { interface = 0 concrete = 1 methods = slots })
     let program = Program { types = types functions = std.list.new[Function]() entry = -1
-        tests = std.list.new[Int]() exports = std.list.new[Int]() interfaces = interfaces witnesses = witnesses }
+        tests = std.list.new[Int]() test_names = std.list.new[Text]() exports = std.list.new[Int]() interfaces = interfaces witnesses = witnesses }
     // Source names and symbol 42 are intentionally absent; slots retain -1.
     assert encode(program) == "loom-checked-1\n1\n11\n0\n0\n-1\n0\n0\n1\n1\n1\n1\n3\n3\n1\n0\n1\n1\n-1\n"
     assert type_tag(TypeKind.Dyn) == 11
