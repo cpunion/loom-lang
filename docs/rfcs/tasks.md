@@ -103,9 +103,20 @@ bodies cannot suspend or create/consume Tasks. See the
 
 Task-bearing aggregates,
 async methods, Task-bearing function values/dynamic calls, asynchronous
-file/socket/worker I/O and joins are explicitly unfinished, not removed requirements.
+fully asynchronous file operations, socket adapters, general worker operations
+and joins are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread. Public outcome inspection remains
 future work.
+
+`std.file.tasks` supplies byte/text read/write Tasks using the same completion
+notifications. A lazily created pool caps workers at four per owner; it does not
+bound queued job memory. Jobs retain native File duplicates and copied buffers,
+not GC references. Write bytes are snapshotted once per submitted operation;
+completed read bytes copy back on the owner. Source code retains read/write loops,
+UTF-8 policy, errors and explicit close. Cancellation removes queued inputs or
+waits for a running call to finish before cleanup. Open/close and duplication
+remain synchronous; a stuck native call can delay drain. This is not yet a fully
+nonblocking file API or a general source-level blocking-work executor.
 
 Loom lowers suspension into ordinary typed constructor/resume functions, using
 private frame/task primitives and control flow; LLVM does not lower source await.
@@ -176,6 +187,6 @@ restore that borrowed-handle boundary is an unrecoverable runtime fault.
 
 The reactor uses [polling](https://docs.rs/polling/3.11.0/polling/struct.Poller.html)
 for OS readiness rather than separate handwritten platform reactors. Source
-timers now use this wait path; readiness tests do not imply source asynchronous
-file/socket/worker I/O support. Public raw-fd wait
+timers and file-worker completions now use this wait path; readiness tests do not
+imply source socket APIs or general worker execution. Public raw-fd wait
 constructors and a runtime registry of join names are not required.

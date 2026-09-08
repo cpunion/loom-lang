@@ -6,17 +6,24 @@
 //! slots. Cancellation retires waits and drains children before parent cleanup.
 //! The reactor is created only on the first external wait.
 
+use super::blocking_io::{Job, Operation, Outcome, Pool};
 use super::cleanup::{OwnedFault, catch_fault, catch_fault_before_drain, raise_owned};
 use super::frame_roots::{FrameRootId, FrameRoots, with_frame_roots};
-use super::wait::{KIND_TIMER, Reactor, ReadyNotification, Registration, WaitSource};
+use super::wait::{
+    KIND_COMPLETION, KIND_TIMER, Reactor, ReadyNotification, Registration, WaitSource,
+};
 use super::{fatal, fault};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::sync::Arc;
 use std::{io, ptr, time::Duration};
 
 type Resume = unsafe extern "C-unwind" fn(*mut u8) -> i64;
 type Constructor = unsafe extern "C-unwind" fn() -> u64;
 type CleanupCallback = unsafe extern "C-unwind" fn(*mut u8);
+
+#[path = "tasks_file_io.rs"]
+mod file_io;
 
 #[derive(Clone, Copy)]
 struct TaskCleanup {
@@ -52,6 +59,7 @@ struct Task {
     waiter: Option<u64>,
     state: State,
     external: Option<ExternalWait>,
+    operation: Option<Arc<Job>>,
     creation: (*const u8, usize),
 }
 
@@ -68,7 +76,8 @@ struct Core {
 struct Owner {
     roots: *const FrameRoots,
     core: RefCell<Core>,
-    reactor: OnceCell<Reactor>,
+    reactor: OnceCell<Arc<Reactor>>,
+    workers: OnceCell<Pool>,
 }
 
 thread_local! {
@@ -81,11 +90,37 @@ impl Owner {
         unsafe { &*self.roots }
     }
 
-    fn reactor(&self) -> io::Result<&Reactor> {
-        if self.reactor.get().is_none() && self.reactor.set(Reactor::new()?).is_err() {
+    fn reactor(&self) -> io::Result<&Arc<Reactor>> {
+        if self.reactor.get().is_none() && self.reactor.set(Arc::new(Reactor::new()?)).is_err() {
             fatal("task reactor initialized twice");
         }
         Ok(self.reactor.get().unwrap())
+    }
+
+    fn workers(&self) -> io::Result<&Pool> {
+        if self.workers.get().is_none() {
+            let count = std::thread::available_parallelism()
+                .map_or(1, usize::from)
+                .min(4);
+            if self.workers.set(Pool::new(count)?).is_err() {
+                fatal("file workers initialized twice");
+            }
+        }
+        Ok(self.workers.get().unwrap())
+    }
+
+    fn cancel_operation(&self, id: u64) {
+        let operation = self
+            .core
+            .borrow_mut()
+            .tasks
+            .get_mut(&id)
+            .unwrap()
+            .operation
+            .take();
+        if let Some(operation) = operation {
+            operation.cancel_and_drain();
+        }
     }
 
     fn cancel_wait(&self, core: &mut Core, id: u64) {
@@ -178,6 +213,7 @@ impl Owner {
                 pending.extend(task.children.iter().map(|child| (*child, false)));
             } else {
                 self.cancel_wait(&mut self.core.borrow_mut(), id);
+                self.cancel_operation(id);
                 self.drain_cleanups(id, first);
                 let mut core = self.core.borrow_mut();
                 let task = core.tasks.remove(&id).expect("live cancelled task");
@@ -212,7 +248,10 @@ impl Owner {
         };
         match (status, &task.state) {
             (0, State::Running)
-                if children_done && task.external.is_none() && task.cleanups.is_empty() =>
+                if children_done
+                    && task.external.is_none()
+                    && task.operation.is_none()
+                    && task.cleanups.is_empty() =>
             {
                 Ok(())
             }
@@ -377,6 +416,7 @@ unsafe fn before_resume_fault(data: *mut u8) {
     let mut secondary = None;
     owner.cancel_descendants(id, &mut secondary);
     owner.cancel_wait(&mut owner.core.borrow_mut(), id);
+    owner.cancel_operation(id);
 }
 
 fn append_creation(failure: &mut OwnedFault, creation: (*const u8, usize)) {
@@ -624,6 +664,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
                 waiter: None,
                 state: State::Queued,
                 external: None,
+                operation: None,
                 creation: (creation, creation_len),
             },
         );
@@ -728,6 +769,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor
             roots: ptr::from_ref(roots),
             core: RefCell::new(Core::default()),
             reactor: OnceCell::new(),
+            workers: OnceCell::new(),
         };
         OWNER.set(ptr::from_ref(&owner));
         // SAFETY: The owner remains rooted outside all fault boundaries. The

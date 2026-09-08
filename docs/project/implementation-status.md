@@ -24,7 +24,7 @@ Direct Task parameters/returns, generic forwarding and nested Task results now
 preserve one-shot obligations. Async callees adopt argument subtrees; completed
 producers retain Task-valued results until extraction by the actual consumer.
 Sync helpers expose a direct Task parameter/result and use their caller's owner.
-Source asynchronous file/socket/worker I/O and joins remain unfinished.
+Socket adapters, general worker operations and joins remain unfinished.
 Task-bearing aggregates, async methods,
 Task-bearing function values and dynamic calls remain unsupported.
 
@@ -42,8 +42,14 @@ The private wait ABI now provides one-shot timers, borrowed socket readiness and
 cross-thread completion notifications through `polling`. Generation checks reject
 stale completion; cancellation removes active registrations before handles may
 close. Focused tests exercise actual timers and localhost sockets. Source timer
-Tasks now use this notification path; source readiness and worker-I/O adapters
-remain unfinished.
+Tasks now use this notification path. `std.file.tasks` adds byte/text reads and
+writes using lazily created native workers, capped at four threads per owner.
+Workers own native File duplicates and copied buffers, never managed pointers;
+the owner copies completed reads into GC-rooted Bytes. Source code owns partial-I/O
+loops, UTF-8 checks, errors and explicit close. Queued cancellation drops inputs;
+running cancellation drains the OS call before parent cleanup. Open/close and
+duplication remain synchronous, and a stuck native call can delay cancellation.
+See the [file task example](../../compiler/examples/async_files).
 Executable links enable native dead-section removal so an unused reactor does
 not enter synchronous program artifacts. Library object exports are unchanged.
 

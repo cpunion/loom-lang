@@ -644,7 +644,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskResult
             | Primitive::TaskRelease
             | Primitive::TaskRun
-            | Primitive::TaskWaitTimer => {
+            | Primitive::TaskWaitTimer
+            | Primitive::TaskWaitFileRead
+            | Primitive::TaskWaitFileWrite
+            | Primitive::TaskWaitFileWriteBytes
+            | Primitive::TaskFileResult
+            | Primitive::TaskFileReadResult => {
                 return self.task_primitive(result, operation, &values);
             }
             Primitive::FloatFromInt => {
