@@ -197,6 +197,17 @@ fn type_args(cursor Cursor) Result[Step, Diagnostic] {
     }
     Result.Ok(done(cursor, cursor, NodeKind.TypeArguments, "", new[Node]()))
 }
+// In expressions the same brackets denote type arguments or a container index.
+// Parse their syntax once; the checker decides from the receiver's binding.
+fn expression_args(cursor Cursor) Result[Step, Diagnostic] {
+    if at(cursor, Kind.LBracket) {
+        return sequence(cursor, Kind.LBracket, Kind.RBracket, NodeKind.TypeArguments, Items.Arguments, true)
+    }
+    Result.Ok(done(cursor, cursor, NodeKind.TypeArguments, "", new[Node]()))
+}
+fn bracket_arguments(node Node) Node {
+    Node { kind = NodeKind.Arguments value = "" span = node.span children = node.children }
+}
 fn type_parameters(cursor Cursor) Result[Step, Diagnostic] {
     if at(cursor, Kind.LBracket) {
         return sequence(cursor, Kind.LBracket, Kind.RBracket, NodeKind.TypeParameters, Items.Names, true)

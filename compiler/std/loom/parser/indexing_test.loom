@@ -1,0 +1,20 @@
+test fn brackets_keep_receiver_spans_and_defer_name_resolution() {
+    let tree = parsed("fn f() { values[i + 1] = matrix[index()][0]\ndiscard functions[i](2)\ndiscard (holder()).items[0]\ndiscard [1, 2][0] }")
+    let statements = body(child(tree, 0))
+    let assignment = child(statements, 0)
+    assert assignment.kind == NodeKind.IndexAssign
+    let target = child(assignment, 0)
+    assert target.kind == NodeKind.Apply && child(target, 0).value == "values"
+    assert child(target, 0).span.start == 9 && child(target, 0).span.end == 15
+    assert child(child(target, 1), 0).kind == NodeKind.Binary
+    let source = child(assignment, 1)
+    assert source.kind == NodeKind.Index && child(source, 0).kind == NodeKind.Apply
+    let call = child(child(statements, 1), 0)
+    assert call.kind == NodeKind.Call && call.value == "functions"
+    assert child(child(call, 0), 0).kind == NodeKind.Name
+    let field = child(child(statements, 2), 0)
+    assert field.kind == NodeKind.Index && child(field, 0).kind == NodeKind.Select
+    assert child(child(statements, 3), 0).kind == NodeKind.Index
+    discard rejected("fn f() { values[] = 1 }")
+    discard rejected("fn f() { (1 + 2) = 3 }")
+}

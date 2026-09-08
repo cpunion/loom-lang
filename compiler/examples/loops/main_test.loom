@@ -7,3 +7,11 @@ test fn accepts_empty_input_and_exact_limits() {
     assert sum_until([], 10) == 0
     assert sum_until([1, -9, 3, 4], 8) == 8
 }
+
+test fn indexed_updates_keep_shared_elements() {
+    let values = [1, 2, 3]
+    let alias = values
+    alias[1] = 7
+    assert values[1] == 7
+    assert sum_until(values, 20) == 11
+}

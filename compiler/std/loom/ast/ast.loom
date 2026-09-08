@@ -13,7 +13,7 @@ pub enum NodeKind {
     Match Arm Pattern Bindings Wildcard If Comptime
     TupleType Tuple Destructure Float
     Concept Impl Implements MethodCall DynType AssociatedType FunctionType Invoke
-    Defer Bounds Break Continue List
+    Defer Bounds Break Continue List Apply Index IndexAssign
 }
 
 // TupleType/Tuple/List children are ordered elements. Destructure stores "let" or
@@ -30,8 +30,11 @@ pub enum NodeKind {
 // have one type child. Projections retain dotted Types with type arguments.
 // FunctionType has [Parameters(type nodes), ReturnType(empty or one type)].
 // A named Parameter has its type first, then an optional empty Comptime marker.
-// Invoke has [callee, Arguments]; named calls retain Call, and explicit generic
-// applications such as identity[Int] retain Type until binding selects their role.
+// Invoke has [callee, Arguments]; named calls retain Call. Expression brackets
+// keep argument expressions until binding selects indexing or type application.
+// Apply has [Name, Arguments]; Index has [receiver, Arguments]. Apply preserves
+// the named receiver's span, including in explicit applications like identity[Int].
+// IndexAssign has [Apply/Index target, value]; rebinding retains named Assign.
 // Defer is a statement with one Block child; its span includes the keyword.
 
 pub record Node {

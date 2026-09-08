@@ -93,6 +93,10 @@ fn resolve(env Environment, owner Int, node Node, arguments List[Int], depth Int
 }
 fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
     if depth > 64 { return Result.Err(failure(env, owner, node, "type specialization depth exceeded")) }
+    if node.kind == NodeKind.Apply {
+        let applied = Node { kind = NodeKind.Type value = child(node, 0).value children = child(node, 1).children span = node.span }
+        return resolve_bound(env, owner, applied, arguments, obligations, depth)
+    }
     if node.kind == NodeKind.DynType { return dynamic_type(env, owner, node, arguments, obligations, depth + 1) }
     if node.kind == NodeKind.FunctionType {
         let shape = new[Int]()
@@ -114,6 +118,9 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
             index = index + 1
         }
         return tuple_type(env, owner, node, elements)
+    }
+    if node.kind != NodeKind.Type && node.kind != NodeKind.Name {
+        return Result.Err(failure(env, owner, node, "expected a type argument, not a value expression"))
     }
     var builtin = -1
     if node.value == "Self" { builtin = self_type(env, owner, arguments, depth)? }

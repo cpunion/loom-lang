@@ -114,7 +114,7 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
         let rest = newlines(next(cursor))
         // Fold a bare negative literal so Int's minimum remains representable.
         // Postfix operations bind first, just as they do for Float and names.
-        if at(cursor, Kind.Minus) && at(rest, Kind.Number) && !at(next(rest), Kind.Dot) && !at(next(rest), Kind.Question) {
+        if at(cursor, Kind.Minus) && at(rest, Kind.Number) && !at(next(rest), Kind.Dot) && !at(next(rest), Kind.Question) && !at(next(rest), Kind.LBracket) && !at(next(rest), Kind.LParen) {
             if !in_int_range(token(rest).value, true) {
                 return Result.Err(error(rest, "integer literal is outside the Int range"))
             }
@@ -142,7 +142,7 @@ fn comptime_expr(cursor Cursor) Result[Step, Diagnostic] {
 }
 fn named_expr(cursor Cursor, records Bool) Result[Step, Diagnostic] {
     let named = path(cursor)?
-    let types = type_args(named.rest)?
+    let types = expression_args(named.rest)?
     var rest = types.rest
     if at(rest, Kind.LParen) {
         let args = sequence(rest, Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
@@ -162,7 +162,7 @@ fn named_expr(cursor Cursor, records Bool) Result[Step, Diagnostic] {
         return Result.Ok(done(cursor, next(rest), NodeKind.Construct, named.node.value, children))
     }
     if length(types.node.children) != 0 {
-        return Result.Ok(done(cursor, rest, NodeKind.Type, named.node.value, types.node.children))
+        return Result.Ok(done(cursor, rest, NodeKind.Apply, "", two(named.node, bracket_arguments(types.node))))
     }
     Result.Ok(named)
 }
@@ -177,17 +177,17 @@ fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
             let field = if numeric {
                 done(after, next(after), NodeKind.Name, token(after).value, new[Node]())
             } else { name(after)? }
-            let types = if numeric { done(field.rest, field.rest, NodeKind.TypeArguments, "", new[Node]()) } else { type_args(field.rest)? }
+            let types = if numeric { done(field.rest, field.rest, NodeKind.TypeArguments, "", new[Node]()) } else { expression_args(field.rest)? }
             if !numeric && at(types.rest, Kind.LParen) {
                 let args = sequence(types.rest, Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
                 let children = two(parsed.node, types.node)
                 push(children, args.node)
                 parsed = done(start, args.rest, NodeKind.MethodCall, field.node.value, children)
             } else {
-                if length(types.node.children) != 0 {
-                    return Result.Err(error(types.rest, "expected '(' after method type arguments"))
-                }
                 parsed = done(start, field.rest, NodeKind.Select, field.node.value, one(parsed.node))
+                if length(types.node.children) != 0 {
+                    parsed = done(start, types.rest, NodeKind.Index, "", two(parsed.node, bracket_arguments(types.node)))
+                }
             }
         } else {
             if at(rest, Kind.Question) {
@@ -196,7 +196,12 @@ fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
                 if at(rest, Kind.LParen) {
                     let args = sequence(rest, Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
                     parsed = done(start, args.rest, NodeKind.Invoke, "", two(parsed.node, args.node))
-                } else { more = false }
+                } else {
+                    if at(rest, Kind.LBracket) {
+                        let args = sequence(rest, Kind.LBracket, Kind.RBracket, NodeKind.Arguments, Items.Arguments, true)?
+                        parsed = done(start, args.rest, NodeKind.Index, "", two(parsed.node, args.node))
+                    } else { more = false }
+                }
             }
         }
     }

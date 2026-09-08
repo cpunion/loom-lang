@@ -208,6 +208,10 @@ still require implementation; this is not the complete resource-cleanup gate.
 List literals now share typed/native/compile-time semantics. Runtime literals
 allocate known capacity once and store elements directly; general compile-time
 graph reification retains its alias/cycle-preserving allocate-then-fill path.
+List/Bytes subscript reads and writes now lower to the same direct primitives as
+source-library access, preserving shared aliases, operand order and fault cleanup.
+Generic application and indexed callbacks are distinguished by binding, not naming
+heuristics. This does not yet implement fine-grained constrained shared views.
 
 Stop-the-world copying GC now rewrites precise typed roots and object fields,
 preserving shared aliases, cycles and allocation-crossing expression snapshots.

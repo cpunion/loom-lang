@@ -35,6 +35,19 @@ fn parameter_name(context Context, name Text) Bool {
 }
 fn depends_on_type(context Context, node Node) Bool {
     if node.kind == NodeKind.Type && parameter_name(context, slice(node.value, 0, first_dot(node.value))) { return true }
+    // Explicit generic arguments occupy the type namespace, even when a value
+    // binding has the same spelling. Ordinary index/value names do not.
+    if node.kind == NodeKind.Apply && type_application(context, node) && type_parameter_operand(context, node) { return true }
+    let generic_call = node.kind == NodeKind.Call &&
+        (package(node.value) != "" || lookup(context, slice(node.value, 0, first_dot(node.value))) < 0)
+    if generic_call || node.kind == NodeKind.MethodCall || node.kind == NodeKind.Construct {
+        let types = group(node, NodeKind.TypeArguments)
+        var index = 0
+        while index < length(types) {
+            if type_parameter_operand(context, get(types, index)) { return true }
+            index = index + 1
+        }
+    }
     if node.kind == NodeKind.Implements && type_parameter_operand(context, child(node, 0)) { return true }
     if node.kind == NodeKind.Binary && (node.value == "==" || node.value == "!=") &&
         type_operand(context, child(node, 0)) && type_operand(context, child(node, 1)) &&
@@ -131,6 +144,10 @@ fn computed(context Context, node Node, input Node, expected Int) Result[Value, 
 }
 
 fn type_operand(context Context, node Node) Bool {
+    if node.kind == NodeKind.Apply {
+        return type_operand(context, Node { kind = NodeKind.Type value = child(node, 0).value
+            children = child(node, 1).children span = node.span })
+    }
     if node.kind == NodeKind.AssociatedType { return type_operand(context, child(node, 0)) }
     if node.kind == NodeKind.FunctionType {
         var group = 0
@@ -164,6 +181,11 @@ fn type_parameter_operand(context Context, node Node) Bool {
     }
     false
 }
+fn type_application(context Context, node Node) Bool {
+    if node.kind != NodeKind.Apply { return false }
+    let path = child(node, 0).value
+    lookup(context, slice(path, 0, first_dot(path))) < 0
+}
 fn selected(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let condition = child(source, 0)
     var yes = false
@@ -179,6 +201,7 @@ fn selected(context Context, node Node, source Node, expected Int, enforce Bool)
         if yes { chosen = with_evidence(context, ty, capability) }
     } else { if condition.kind == NodeKind.Binary && (condition.value == "==" || condition.value == "!=") &&
         (type_operand(context, child(condition, 0)) || type_operand(context, child(condition, 1)) ||
+            type_application(context, child(condition, 0)) || type_application(context, child(condition, 1)) ||
             child(condition, 0).kind == NodeKind.Type || child(condition, 1).kind == NodeKind.Type ||
             child(condition, 0).kind == NodeKind.TupleType || child(condition, 1).kind == NodeKind.TupleType) {
         if !type_operand(context, child(condition, 0)) || !type_operand(context, child(condition, 1)) {

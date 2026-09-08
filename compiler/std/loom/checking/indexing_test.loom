@@ -1,0 +1,53 @@
+test fn indexing_preserves_shared_values_and_expression_order_at_compile_time() {
+    discard accepted("record Box[T] { values List[T] }\nfn mark(trace List[Int], digit Int, output Int) Int { trace[0] = trace[0] * 10 + digit\noutput }\nfn source(trace List[Int], values List[Int]) List[Int] { trace[0] = trace[0] * 10 + 1\nvalues }\nfn exercise() Int { let trace = [0]\nlet a = [1, 2]\nvar b = a\nsource(trace, b)[mark(trace, 2, 0)] = mark(trace, 3, 9)\nassert trace[0] == 123 && a[0] == 9\nb = [3]\nassert a[0] == 9 && b[0] == 3\nlet nested = [a, a]\nnested[1][0] = 7\nassert nested[0][0] == 7\nlet box = Box { values = a }\nbox.values[1] = 4\nlet Index = 0\nassert a[Index + 1] == 4\ncomptime if List[Box[Int]] != List[Box[Text]] { assert true } else { unavailable() }\ncomptime if [1][0] == [1][0] { assert true } else { unavailable() }\na[0] }\nfn main() { assert comptime { exercise() } == 7 }")
+    discard accepted("type Positive = Int where self > 0\nfn main() { let values = [Positive(1)]\nvalues[0] = Positive(2)\nlet loose = [1]\nloose[0] = Positive(3)\nlet pair = [(4, true)]\nassert pair[0].0 == 4 }")
+    discard accepted("concept Display { fn display(self Self) Text }\nimpl Display for Int { fn display(self Int) Text { \"int\" } }\nimpl Display for Bool { fn display(self Bool) Text { \"bool\" } }\nfn main() { let values List[dyn Display] = [1]\nvalues[0] = true\nassert values[0].display() == \"bool\" }")
+}
+
+test fn indexed_function_calls_coexist_with_explicit_generic_arguments() {
+    discard accepted("fn kind[T]() Int { comptime if T == Int { 1 } else { 2 } }\nfn invoke(comptime callback fn() Int) Int { callback() }\nfn direct[T](T Int) Int { comptime { kind[T]() } }\nfn reference[T](T Int) Int { comptime { invoke(kind[T]) } }\nfn main() { assert direct[Int](0) == 1 && direct[Text](0) == 2\nassert reference[Int](0) == 1 && reference[Text](0) == 2 }")
+    discard accepted("record lower { value Int }\nrecord Holder { callbacks List[fn(Int) Int] }\nfn identity[T](value T) T { value }\nfn next(value Int) Int { value + 1 }\nfn callbacks() List[fn(Int) Int] { [next] }\nfn apply(comptime callback fn(Int) Int, value Int) Int { callback(value) }\nfn check() Int { let functions List[fn(Int) Int] = [identity[Int], next]\nlet i = 0\nassert functions[i](7) == 7 && functions[i + 1](7) == 8\nassert callbacks()[i](8) == 9\nlet holder = Holder { callbacks = functions }\nassert holder.callbacks[i](9) == 9\nassert (holder).callbacks[i + 1](9) == 10\nlet value = identity[lower](lower { value = 3 })\nassert value.value == 3\nlet nested = identity[List[List[Int]]]([[5]])\nassert nested[0][0] == 5\napply(identity[Int], 11) }\nfn main() { assert comptime { check() } == 11 }")
+    let declarations = "record Holder { pick List[fn(Int) Int] }\nconcept Pick { fn pick[T](self Self, value T) T { value } }\nimpl Pick for Holder {}\nfn next(value Int) Int { value + 1 }\n"
+    discard accepted(concat(declarations, "fn main() { let holder = Holder { pick = [next] }\nassert holder.pick[0](1) == 2\nassert holder.pick[Int](1) == 1\nlet Int = 0\nassert (holder.pick)[Int](1) == 2\nassert Pick.pick[Int](holder, 1) == 1 }"))
+    rejects(concat(declarations, "fn main() { let holder = Holder { pick = [next] }\nlet Int = 0\ndiscard holder.pick[Int](1) }"))
+    let library = source_file("library", "record Holder { callbacks List[fn(Int) Int] }\npub concept Callbacks { fn callbacks[T](self Self, value T) T { value } }\nimpl Callbacks for Holder {}\nfn next(value Int) Int { value + 1 }\npub fn make() Holder { Holder { callbacks = [next] } }", false)
+    let files = source_files("import library.make\nimport library.Callbacks\nfn main() { let holder = make()\nassert holder.callbacks[Int](7) == 7 }")
+    push(files, library)
+    match checked(files) {
+        Result.Ok(_) => {}
+        Result.Err(failed) => { show_failure(fixture_project(files), failed)
+            assert false }
+    }
+    let private_access = source_files("import library.make\nimport library.Callbacks\nfn main() { let holder = make()\ndiscard holder.callbacks[0](7) }")
+    push(private_access, library)
+    match checked(private_access) { Result.Err(_) => {}
+        Result.Ok(_) => { assert false } }
+}
+
+test fn indexing_rejects_wrong_types_without_weakening_generic_type_syntax() {
+    rejects("fn main() { let values = [1]\nvalues[0] = true }")
+    rejects("fn main() { let values = [1]\ndiscard values[true] }")
+    rejects("fn main() { discard [1][0, 1] }")
+    rejects("fn main() { discard \"text\"[0] }")
+    rejects("fn main() { discard (1, true)[0] }")
+    rejects("type Positive = Int where self > 0\nfn main() { let values = [Positive(1)]\nvalues[0] = 0 }")
+    rejects("type Positive = Int where self > 0\nfn main() { let values = [[Positive(1)]]\nlet loose List[Int] = values[0]\ndiscard loose }")
+    rejects("fn identity[T](value T) T { value }\nfn main() { discard identity[\"Int\"](1) }")
+    rejects("fn identity[T](value T) T { value }\nfn main() { discard identity[List[\"Int\"]]([1]) }")
+    rejects("fn identity[T](value T) T { value }\nfn main() { discard identity[(Int, \"Bool\")]((1, true)) }")
+    rejects("fn main() { discard comptime { [1][-1] } }")
+    rejects("fn main() { discard comptime { let values = [1]\nvalues[1] = 2\nvalues[0] } }")
+    rejects("fn false_proof() Int ensures result == 1 { let values = [1]\nvalues[0] = 2\nvalues[0] }")
+}
+
+test fn byte_indexing_reuses_checked_buffer_operations() {
+    let files = source_files("import std.bytes.new\nfn exercise() Int { let values = new()\nlet alias = values\nalias[0] = 255\nvalues[0] }\nfn main() { assert comptime { exercise() } == 255 }")
+    push(files, source_file("std.bytes", "intrinsic fn bytes_new() Bytes\nintrinsic fn bytes_push(values Bytes, byte Int)\npub fn new() Bytes { let values = bytes_new()\nbytes_push(values, 0)\nvalues }", true))
+    match checked(files) {
+        Result.Ok(_) => {}
+        Result.Err(failed) => { show_failure(fixture_project(files), failed)
+            assert false }
+    }
+    discard accepted("pub fn edit(values Bytes, index Int) Int { values[index + 1] = 255\nvalues[index + 1] }")
+    rejects("pub fn edit(values Bytes) { values[0] = true }")
+}

@@ -1,6 +1,5 @@
 import std.int.to_text
 import std.io.write_text
-import std.list.get
 import std.list.length
 import std.process.exit_code
 import std.result.Result
@@ -11,7 +10,7 @@ fn sum_until(values List[Int], limit Int) Int {
     var total = 0
     var index = 0
     while index < length(values) {
-        let value = get(values, index)
+        let value = values[index]
         index = index + 1
         if value < 0 {
             continue
