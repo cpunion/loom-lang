@@ -1,4 +1,5 @@
 import std.loom.project.load
+import std.loom.project.resolve
 import std.loom.project.is_windows_path
 import std.loom.project.join_path
 import std.fs.canonicalize
@@ -23,7 +24,7 @@ import std.text.length
 
 record Options {
     command Text path Text std_root Text output Text ir Text native_tool Text
-    no_run Bool
+    no_run Bool tests Bool git_tool Text
 }
 
 fn options(args List[Text]) Result[Options, Text] {
@@ -35,46 +36,58 @@ fn options(args List[Text]) Result[Options, Text] {
     var ir = ""
     var tool = "target/debug/loom-native"
     var no_run = false
+    var tests = false
+    var git_tool = "git"
     var index = 2
     while index < length(args) {
         let arg = get(args, index)
-        if arg == "--no-run" {
-            if no_run { return Result.Err("duplicate --no-run") }
-            no_run = true
+        if arg == "--tests" {
+            if tests { return Result.Err("duplicate --tests") }
+            tests = true
         } else {
-            if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" {
-                index = index + 1
-                if index == length(args) { return Result.Err(concat(arg, " needs a value")) }
-                let value = get(args, index)
-                if arg == "--std" { standard = value }
-                if arg == "--native-tool" { tool = value }
-                if arg == "--output" || arg == "-o" {
-                    if output != "" { return Result.Err("duplicate --output") }
-                    output = value
-                }
-                if arg == "--emit-ir" {
-                    if ir != "" { return Result.Err("duplicate --emit-ir") }
-                    ir = value
-                }
+            if arg == "--no-run" {
+                if no_run { return Result.Err("duplicate --no-run") }
+                no_run = true
             } else {
-                if length(arg) > 0 && byte(arg, 0) == 45 { return Result.Err(concat("unknown option ", arg)) }
-                if selected { return Result.Err("select one package directory") }
-                selected = true
-                path = arg
+                if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" {
+                    index = index + 1
+                    if index == length(args) { return Result.Err(concat(arg, " needs a value")) }
+                    let value = get(args, index)
+                    if arg == "--std" { standard = value }
+                    if arg == "--native-tool" { tool = value }
+                    if arg == "--git-tool" {
+                        if command != "resolve" { return Result.Err("--git-tool is only available with resolve") }
+                        git_tool = value
+                    }
+                    if arg == "--output" || arg == "-o" {
+                        if output != "" { return Result.Err("duplicate --output") }
+                        output = value
+                    }
+                    if arg == "--emit-ir" {
+                        if ir != "" { return Result.Err("duplicate --emit-ir") }
+                        ir = value
+                    }
+                } else {
+                    if length(arg) > 0 && byte(arg, 0) == 45 { return Result.Err(concat("unknown option ", arg)) }
+                    if selected { return Result.Err("select one package directory") }
+                    selected = true
+                    path = arg
+                }
             }
         }
         index = index + 1
     }
     if no_run && command != "test" { return Result.Err("--no-run is only available with test") }
+    if tests && command != "resolve" { return Result.Err("--tests is only available with resolve") }
     if command != "build" && !(command == "test" && no_run) && output != "" {
         return Result.Err("--output requires build or test --no-run")
     }
-    if (command == "check" || command == "emit-checked") && ir != "" { return Result.Err("this command does not emit LLVM IR") }
+    if (command == "check" || command == "emit-checked" || command == "resolve") && ir != "" { return Result.Err("this command does not emit LLVM IR") }
     path = match canonicalize(path) {
         Result.Ok(value) => value
         Result.Err(_) => { return Result.Err(concat("cannot resolve package path ", path)) }
     }
-    Result.Ok(Options { command = command path = path std_root = standard output = output ir = ir native_tool = tool no_run = no_run })
+    Result.Ok(Options { command = command path = path std_root = standard output = output ir = ir native_tool = tool no_run = no_run tests = tests git_tool = git_tool })
 }
 fn diagnostic(files List[SourceFile], failure Failure) Text {
     let source = get(files, failure.source)
@@ -115,6 +128,10 @@ fn compile(options Options, program Program, output Text) Result[Bool, Text] {
 }
 fn execute(args List[Text]) Result[Text, Text] {
     let selected = options(args)?
+    if selected.command == "resolve" {
+        discard resolve(selected.path, selected.std_root, selected.tests, selected.git_tool)?
+        return Result.Ok("resolved package dependencies\n")
+    }
     let program = prepared(selected)?
     if selected.command == "check" { return Result.Ok("checked package\n") }
     if selected.command == "emit-checked" { return Result.Ok(encode(program)) }

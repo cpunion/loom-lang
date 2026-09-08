@@ -593,7 +593,7 @@ fn manifest_does_not_silently_ignore_configuration() {
     let manifest = fixture.path().join("loom.toml");
     fs::write(&manifest, "[module]\nname = 'demo'\nversion = '0.1.0'").unwrap();
     success(&loom(&["check", path(fixture.path())]));
-    for field in ["target", "dependences"] {
+    for field in ["target", "dependences", "LOOM_MANIFEST_SECRET"] {
         fs::write(
             &manifest,
             format!("[module]\nname = 'demo'\n{field} = 'ignored'"),
@@ -601,7 +601,11 @@ fn manifest_does_not_silently_ignore_configuration() {
         .unwrap();
         let output = loom(&["check", path(fixture.path())]);
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("module.{field}")));
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains("unsupported module manifest field"));
+        // Manifest text may arrive from a remote source; report the problem
+        // without copying an arbitrary key or value into diagnostics.
+        assert!(!diagnostic.contains("LOOM_MANIFEST_SECRET"));
     }
 }
 

@@ -1,0 +1,194 @@
+import std.loom.manifest.valid_git
+import std.hash.sha256.hex
+import std.bytes.new
+import std.bytes.push
+import std.bytes.get
+import std.bytes.length
+import std.bytes.decode_utf8
+import std.bytes.to_text
+import std.option.Option
+import std.fs.entry_kind
+import std.fs.FsError
+import std.fs.create_dir
+import std.fs.rename
+import std.fs.remove_file
+import std.fs.remove_empty_dir
+import std.file.write_text
+import std.file.read_bytes
+import std.int.to_text
+
+record LockedSource { owner Text name Text git Text rev Text tree Text }
+record Snapshot { base Text git Text rev Text tree Text }
+record Resolution { root Text tool Text locks List[LockedSource] snapshots List[Snapshot] }
+
+fn append_text(output Bytes, value Text) {
+    var index = 0
+    while index < length(value) {
+        std.bytes.push(output, byte(value, index))
+        index = index + 1
+    }
+}
+fn hashed(value Text) Text {
+    let bytes = std.bytes.new()
+    append_text(bytes, value)
+    hex(bytes)
+}
+fn hex_id(value Text, size Int) Bool {
+    if length(value) != size { return false }
+    var index = 0
+    while index < size {
+        let digit = byte(value, index)
+        if !((digit >= 48 && digit <= 57) || (digit >= 97 && digit <= 102)) { return false }
+        index = index + 1
+    }
+    true
+}
+fn cache_entry(path Text) Result[Option[FileKind], Text] {
+    match entry_kind(path) {
+        Result.Ok(value) => Result.Ok(Option.Some(value))
+        Result.Err(error) => {
+            if error == FsError.NotFound { Result.Ok(Option.None) } else { Result.Err("cannot inspect dependency cache entry") }
+        }
+    }
+}
+fn lock_index(locks List[LockedSource], owner Text, name Text) Int {
+    var index = 0
+    while index < length(locks) {
+        let entry = get(locks, index)
+        if entry.owner == owner && entry.name == name { return index }
+        index = index + 1
+    }
+    -1
+}
+fn parse_lock(text Text) Result[List[LockedSource], Text] {
+    let lines = parts(text, 10)
+    if get(lines, 0) != "loom-lock 1" { return Result.Err("unsupported loom.lock format") }
+    let locks = new[LockedSource]()
+    var index = 1
+    while index < length(lines) {
+        let line = get(lines, index)
+        if line == "" && index == length(lines) - 1 { return Result.Ok(locks) }
+        let fields = parts(line, 9)
+        if length(fields) != 5 { return Result.Err("malformed loom.lock entry") }
+        let owner = get(fields, 0)
+        let name = get(fields, 1)
+        let git = get(fields, 2)
+        let rev = get(fields, 3)
+        let tree = get(fields, 4)
+        if !hex_id(owner, 64) || !segment(name) || name == "std" || !valid_git(git, rev) || !hex_id(tree, 64) {
+            return Result.Err("invalid loom.lock source identity")
+        }
+        if lock_index(locks, owner, name) >= 0 { return Result.Err("duplicate loom.lock dependency edge") }
+        var previous = 0
+        while previous < length(locks) {
+            let entry = get(locks, previous)
+            if entry.git == git && entry.rev == rev && entry.tree != tree {
+                return Result.Err("inconsistent loom.lock source digest")
+            }
+            previous = previous + 1
+        }
+        push(locks, LockedSource { owner = owner name = name git = git rev = rev tree = tree })
+        index = index + 1
+    }
+    Result.Err("loom.lock requires a final newline")
+}
+fn read_lock(root Text) Result[List[LockedSource], Text] {
+    let path = join_path(root, "loom.lock")
+    match cache_entry(path)? {
+        Option.None => Result.Ok(new[LockedSource]())
+        Option.Some(value) => {
+            if value != FileKind.File { return Result.Err("loom.lock must be a regular file") }
+            parse_lock(read(path)?)
+        }
+    }
+}
+fn encode_lock(locks List[LockedSource]) Text {
+    let lines = new[Text]()
+    var index = 0
+    while index < length(locks) {
+        let entry = get(locks, index)
+        include(lines, concat(entry.owner, concat("\t", concat(entry.name, concat("\t", concat(entry.git,
+            concat("\t", concat(entry.rev, concat("\t", entry.tree)))))))))
+        index = index + 1
+    }
+    let output = std.bytes.new()
+    append_text(output, "loom-lock 1\n")
+    index = 0
+    while index < length(lines) {
+        append_text(output, get(lines, index))
+        std.bytes.push(output, 10)
+        index = index + 1
+    }
+    std.bytes.to_text(output)
+}
+
+fn cache_directory(path Text) Result[Bool, Text] {
+    match create_dir(path) {
+        Result.Ok(_) => Result.Ok(true)
+        Result.Err(error) => {
+            if error == FsError.AlreadyExists {
+                if match cache_entry(path)? { Option.Some(value) => value == FileKind.Directory, Option.None => false } {
+                    return Result.Ok(true)
+                }
+            }
+            Result.Err("dependency cache requires real directories")
+        }
+    }
+}
+fn cache_root(root Text) Result[Text, Text] {
+    let target = join_path(root, "target")
+    discard cache_directory(target)?
+    let cache = join_path(target, "loom-deps")
+    discard cache_directory(cache)?
+    Result.Ok(cache)
+}
+fn staging(root Text) Result[Text, Text] {
+    let cache = cache_root(root)?
+    var index = 0
+    while true {
+        let path = join_path(cache, concat("staging-", to_text(index)))
+        match create_dir(path) {
+            Result.Ok(_) => { return Result.Ok(path) }
+            Result.Err(error) => {
+                if error != FsError.AlreadyExists { return Result.Err("cannot create dependency staging directory") }
+            }
+        }
+        index = index + 1
+    }
+    Result.Err("unreachable staging directory")
+}
+// Only called on a directory created by this resolution, never a source root.
+// Refuse unknown entry kinds and never follow a final symlink.
+fn remove_staging(path Text) Result[Bool, Text] {
+    match cache_entry(path)? {
+        Option.None => Result.Ok(true)
+        Option.Some(value) => {
+            if value == FileKind.Directory {
+                let names = match entries(path) { Result.Ok(value) => value, Result.Err(_) => { return Result.Err("cannot enumerate staging directory") } }
+                var index = 0
+                while index < length(names) {
+                    discard remove_staging(join_path(path, get(names, index)))?
+                    index = index + 1
+                }
+                match remove_empty_dir(path) { Result.Ok(_) => Result.Ok(true), Result.Err(_) => Result.Err("cannot remove staging directory") }
+            } else {
+                if value != FileKind.File && value != FileKind.Symlink { return Result.Err("unknown staging entry kind") }
+                match remove_file(path) { Result.Ok(_) => Result.Ok(true), Result.Err(_) => Result.Err("cannot remove staging file") }
+            }
+        }
+    }
+}
+fn publish_lock(resolution Resolution) Result[Bool, Text] {
+    // Preserve unrelated selected-package edges. Successful resolution, not a
+    // partial download, is the publication boundary.
+    let text = encode_lock(resolution.locks)
+    let path = join_path(resolution.root, "loom.lock")
+    if length(resolution.locks) == 0 && match cache_entry(path)? { Option.None => true, Option.Some(_) => false } {
+        return Result.Ok(true)
+    }
+    let stage = staging(resolution.root)?
+    defer { discard remove_staging(stage) }
+    let temporary = join_path(stage, "loom.lock")
+    match write_text(temporary, text) { Result.Ok(_) => {}, Result.Err(_) => { return Result.Err("cannot write loom.lock") } }
+    match rename(temporary, path) { Result.Ok(_) => Result.Ok(true), Result.Err(_) => Result.Err("cannot publish loom.lock") }
+}

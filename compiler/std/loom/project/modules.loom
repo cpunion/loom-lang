@@ -1,4 +1,5 @@
 import std.loom.manifest.Dependency
+import std.loom.manifest.DependencySource
 import std.list.new
 import std.list.get
 import std.list.push
@@ -60,7 +61,7 @@ fn dependency_directory(base Text, path Text) Result[Text, Text] {
     Result.Ok(directory)
 }
 
-fn imported_module(loader Loader, owner Int, name Text) Result[Int, Text] {
+fn imported_module(loader Loader, owner Int, name Text, comptime fetch Bool) Result[Int, Text] {
     // The standard library is registered first and cannot be replaced by a
     // dependency. Other modules are visible only through the importer's edges.
     if name == "std" { return Result.Ok(0) }
@@ -70,7 +71,14 @@ fn imported_module(loader Loader, owner Int, name Text) Result[Int, Text] {
     while index < length(source.dependencies) {
         let dependency = get(source.dependencies, index)
         if dependency.name == name {
-            let base = dependency_directory(source.base, dependency.path)?
+            let base = match dependency.source {
+                DependencySource.Path(path) => {
+                    let base = dependency_directory(source.base, path)?
+                    discard source_boundary(loader.resolution, source.base, base)?
+                    base
+                }
+                DependencySource.Git(git, rev) => git_dependency(loader.resolution, source.base, name, git, rev, fetch)?
+            }
             var existing = 0
             while existing < length(loader.modules) {
                 let module = get(loader.modules, existing)

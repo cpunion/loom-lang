@@ -14,9 +14,10 @@ import std.text.concat
 import std.text.from_codepoint
 import std.text.starts_with
 
-// Dependency paths remain relative to the declaring manifest; project loading
-// resolves them and verifies the target module identity.
-pub record Dependency { name Text path Text }
+// Paths remain relative to the declaring manifest. Git sources pin a full
+// commit object ID; project loading resolves sources and verifies module names.
+pub enum DependencySource { Path(Text) Git(Text, Text) }
+pub record Dependency { name Text source DependencySource }
 pub record Module { name Text version Text dependencies List[Dependency] }
 
 pub fn segment(value Text) Bool {
@@ -73,6 +74,91 @@ fn hex(value Int) Int {
     if value >= 97 && value <= 102 { return value - 87 }
     -1
 }
+fn ascii_alphanumeric(value Int) Bool {
+    (value >= 48 && value <= 57) || (value >= 65 && value <= 90) || (value >= 97 && value <= 122)
+}
+fn git_host(value Text) Bool {
+    if length(value) == 0 || length(value) > 253 { return false }
+    var offset = 0
+    var numeric = true
+    var labels = 0
+    var ipv4 = true
+    while offset < length(value) {
+        let start = offset
+        var number = 0
+        while offset < length(value) && byte(value, offset) != 46 {
+            let current = byte(value, offset)
+            if !ascii_alphanumeric(current) && current != 45 { return false }
+            if current < 48 || current > 57 { numeric = false } else {
+                if offset - start < 4 { number = number * 10 + current - 48 }
+            }
+            offset = offset + 1
+        }
+        let count = offset - start
+        if count == 0 || count > 63 { return false }
+        if !ascii_alphanumeric(byte(value, start)) || !ascii_alphanumeric(byte(value, offset - 1)) { return false }
+        if count > 3 || number > 255 || (count > 1 && byte(value, start) == 48) { ipv4 = false }
+        labels = labels + 1
+        if offset < length(value) {
+            offset = offset + 1
+            if offset == length(value) { return false }
+        }
+    }
+    !numeric || (labels == 4 && ipv4)
+}
+fn git_url(value Text) Bool {
+    // The first transport accepts ASCII DNS/IPv4 hosts, an optional decimal
+    // port, and a nonempty URI path. No IPv6, percent escapes, credentials,
+    // query/fragment, backslashes, whitespace/control bytes, or dot segments.
+    if !starts_with(value, "https://") { return false }
+    var authority_end = 8
+    while authority_end < length(value) && byte(value, authority_end) != 47 { authority_end = authority_end + 1 }
+    if authority_end == length(value) { return false }
+    var host_end = 8
+    while host_end < authority_end && byte(value, host_end) != 58 { host_end = host_end + 1 }
+    if !git_host(slice(value, 8, host_end)) { return false }
+    if host_end < authority_end {
+        var index = host_end + 1
+        if index == authority_end { return false }
+        var port = 0
+        while index < authority_end {
+            let current = byte(value, index)
+            if current < 48 || current > 57 { return false }
+            port = port * 10 + current - 48
+            if port > 65535 { return false }
+            index = index + 1
+        }
+        if port == 0 { return false }
+    }
+    var offset = authority_end + 1
+    if offset == length(value) { return false }
+    while offset < length(value) {
+        let start = offset
+        while offset < length(value) && byte(value, offset) != 47 {
+            let current = byte(value, offset)
+            // RFC 3986 path characters, excluding percent escapes and @.
+            if !ascii_alphanumeric(current) && current != 45 && current != 46 && current != 95 && current != 126 &&
+                current != 33 && current != 36 && current != 38 && current != 39 && current != 40 && current != 41 &&
+                current != 42 && current != 43 && current != 44 && current != 59 && current != 61 && current != 58 { return false }
+            offset = offset + 1
+        }
+        let part = slice(value, start, offset)
+        if part == "" || part == "." || part == ".." { return false }
+        offset = offset + 1
+    }
+    true
+}
+fn git_revision(value Text) Bool {
+    if length(value) != 40 && length(value) != 64 { return false }
+    var index = 0
+    while index < length(value) {
+        let current = byte(value, index)
+        if !((current >= 48 && current <= 57) || (current >= 97 && current <= 102)) { return false }
+        index = index + 1
+    }
+    true
+}
+pub fn valid_git(url Text, rev Text) Bool { git_url(url) && git_revision(rev) }
 fn quoted(value Text) Result[Text, Text] {
     let end = length(value) - 1
     if end < 1 { return Result.Err("expected a quoted manifest string") }
@@ -133,7 +219,8 @@ fn quoted(value Text) Result[Text, Text] {
 }
 
 // This subset is explicit: module/dependency tables, bare keys, integers and
-// single-line quoted strings. Other TOML forms and dependency sources reject.
+// single-line quoted strings. Dependencies use path or HTTPS Git plus full rev.
+// Other TOML forms and dependency sources reject without echoing input values.
 pub fn parse(text Text) Result[Module, Text] {
     var offset = 0
     var section = ""
@@ -167,7 +254,7 @@ pub fn parse(text Text) Result[Module, Text] {
                         }
                         section = concat("dependencies.", key)
                         dependency = length(dependencies)
-                        push(dependencies, Dependency { name = key path = "" })
+                        push(dependencies, Dependency { name = key source = DependencySource.Path("") })
                     }
                 }
             } else {
@@ -177,7 +264,7 @@ pub fn parse(text Text) Result[Module, Text] {
                 let key = trim(slice(line, 0, equal))
                 let value = trim(slice(line, equal + 1, length(line)))
                 let full = if section == "" { key } else { concat(section, concat(".", key)) }
-                if contains(seen, full) { return Result.Err(concat("duplicate manifest key: ", full)) }
+                if contains(seen, full) { return Result.Err("duplicate manifest key") }
                 push(seen, full)
                 if section == "" {
                     if key == "schema" {
@@ -190,21 +277,38 @@ pub fn parse(text Text) Result[Module, Text] {
                                 if contains(seen, "[dependencies]") { return Result.Err("duplicate manifest table") }
                                 push(seen, "[dependencies]")
                                 inline_dependencies = true
-                            } else { return Result.Err(concat("unsupported manifest field or TOML syntax: ", full)) }
+                            } else { return Result.Err("unsupported manifest field or TOML syntax") }
                         }
                     }
                 } else {
                     if section == "dependencies" {
-                        return Result.Err("path dependencies require [dependencies.<name>] with a path field")
+                        return Result.Err("dependencies require [dependencies.<name>] with path or git and rev fields")
                     }
                     if dependency >= 0 {
-                        if key != "path" { return Result.Err(concat("unsupported dependency field; only path is supported: ", full)) }
+                        if key != "path" && key != "git" && key != "rev" {
+                            return Result.Err("unsupported dependency field; expected path or git and rev")
+                        }
+                        if contains(seen, concat(section, ".path")) &&
+                            (contains(seen, concat(section, ".git")) || contains(seen, concat(section, ".rev"))) {
+                            return Result.Err("dependency cannot mix path and git sources")
+                        }
                         let current = get(dependencies, dependency)
-                        set(dependencies, dependency, Dependency { name = current.name path = quoted(value)? })
+                        let decoded = quoted(value)?
+                        let source = if key == "path" { DependencySource.Path(decoded) } else {
+                            match current.source {
+                                DependencySource.Path(_) => {
+                                    if key == "git" { DependencySource.Git(decoded, "") } else { DependencySource.Git("", decoded) }
+                                }
+                                DependencySource.Git(url, rev) => {
+                                    if key == "git" { DependencySource.Git(decoded, rev) } else { DependencySource.Git(url, decoded) }
+                                }
+                            }
+                        }
+                        set(dependencies, dependency, Dependency { name = current.name source = source })
                     } else {
                         if key == "name" { name = quoted(value)? } else {
                             if key == "version" { version = quoted(value)? } else {
-                                return Result.Err(concat("unsupported module manifest field: ", full))
+                                return Result.Err("unsupported module manifest field")
                             }
                         }
                     }
@@ -220,7 +324,15 @@ pub fn parse(text Text) Result[Module, Text] {
     while index < length(dependencies) {
         let current = get(dependencies, index)
         if current.name == name { return Result.Err("a dependency cannot shadow its own module name") }
-        if length(current.path) == 0 { return Result.Err(concat("dependency requires a nonempty path: ", current.name)) }
+        match current.source {
+            DependencySource.Path(path) => {
+                if length(path) == 0 { return Result.Err("dependency requires a nonempty path or git and rev") }
+            }
+            DependencySource.Git(url, rev) => {
+                if !git_url(url) { return Result.Err("git dependency requires a supported HTTPS repository URL") }
+                if !git_revision(rev) { return Result.Err("git dependency rev must be a full 40 or 64 character lowercase hexadecimal commit ID") }
+            }
+        }
         index = index + 1
     }
     Result.Ok(Module { name = name version = version dependencies = dependencies })

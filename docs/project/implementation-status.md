@@ -22,8 +22,19 @@ entries, including transitive package loading and isolated root tests. The
 instances of the same-named dependency without compiler or runtime special cases.
 Canonical source roots are reused; distinct roots retain separate package/type
 identities and importer-local visibility. Entry points, test roots and import
-cycles use these identities, not display names. Git/fork resolution, version
-normalization and lockfiles are still open, not supplied by local path loading.
+cycles use these identities, not display names. Exact HTTPS Git/fork dependencies
+now share this traversal. `loom resolve` fetches selected sources and locks source
+edges; normal check/build/test/run is offline and verifies real cached bytes and
+directory membership. Unrelated selected-package lock entries survive. Git source
+path dependencies stay inside their snapshot, and raw blob extraction rejects
+links, submodules and colliding paths without running checkout filters/hooks.
+Version normalization, authenticated sources and global fork policies remain open;
+editable path dependencies are not frozen source snapshots.
+
+The function expansion budget now applies per declaration, not to the number of
+independent functions in an application. Unbounded specialization still rejects;
+declaration-anchored errors use that declaration's span rather than a caller span
+from another file.
 
 Explicit Int refinement conversions also remove a destination check when the
 source predicate proves its truth and arithmetic definedness. The bounded,
@@ -156,22 +167,27 @@ hostile-path sandbox or durable publication protocol.
 Source `std.hash.sha256` now supplies one-shot binary digests and lowercase hex
 encoding using ordinary Int bitwise operations and Bytes. Fixed scratch storage
 and virtual padding avoid copying the input. Known vectors, compile-time results
-and native execution under forced collection agree. This is a hashing library,
-not yet package-lock anchoring or persistent cache verification.
+and native execution under forced collection agree. The source resolver now uses
+it for locked snapshot contents and membership, not native object caching.
 
 Source `std.process.capture` exposes concurrent binary stdout/stderr capture
 with stdin EOF, literal arguments and preserved output for nonzero or signal
 termination. Worker threads touch only OS pipes and Rust buffers; output copies
 back into precisely rooted Loom Bytes after the child is reaped. Failure cleanup
 handles the direct child, not a process tree. A support checkpoint precedes the
-public intrinsic declaration. This is synchronous tooling groundwork, not an
-async executor, streaming process API or completed Git dependency resolver.
+public intrinsic declaration. This is synchronous tooling, not an async executor
+or streaming process API.
 Its configuration overload now supplies child-local cwd and ordered environment
 edits, optionally starting from an empty environment. The old private capture
 operation is removed; both public forms share one native boundary. Source
 `std.env.get` distinguishes absent, empty and non-UTF-8 values without logging
-contents or mutating the process environment. Neither API implements Git
-authentication policy or admits external state into compile-time evaluation.
+contents or mutating the process environment. Binary `capture_input` adds a copied
+stdin buffer and a concurrent writer to the same capture implementation; early
+stdin closure retains child output/status. Native-default SIGPIPE handling is
+pipe-local on macOS and writer-thread-local on Linux, not a global policy change.
+The source resolver configures these mechanisms for public HTTPS Git, while
+private authentication remains open. None admits external state into compile-time
+evaluation.
 
 The native toolchain uses Rust 1.88 and LLVM 22. macOS, Linux, and Windows pass
 the [full bootstrap and native gate](https://github.com/cpunion/loom-lang/actions/runs/34022948294).

@@ -1,0 +1,173 @@
+import std.text.from_codepoint
+
+fn snapshot_oid() Text { "0123456789abcdef0123456789abcdef01234567" }
+fn snapshot_buffer(text Text) Bytes {
+    let output = std.bytes.new()
+    append_text(output, text)
+    output
+}
+fn snapshot_tree_line(path Text, mode Text, object Text) Text {
+    concat(mode, concat(" blob ", concat(object, concat("\t", concat(path, "\0")))))
+}
+fn snapshot_parsed(text Text, size Int) List[TreeFile] {
+    match parse_git_tree(snapshot_buffer(text), size) {
+        Result.Ok(files) => files
+        Result.Err(_) => { assert false
+            new[TreeFile]() }
+    }
+}
+fn snapshot_rejects_path(path Text) {
+    assert match parse_git_tree(snapshot_buffer(snapshot_tree_line(path, "100644", snapshot_oid())), 40) {
+        Result.Err(_) => true, Result.Ok(_) => false
+    }
+}
+fn snapshot_batch_rejects(files List[TreeFile], text Text) {
+    let root = match staging(".") { Result.Ok(path) => path, Result.Err(_) => { assert false
+        "" } }
+    defer { discard remove_staging(root) }
+    assert match write_git_batch(root, files, snapshot_buffer(text)) { Result.Err(_) => true, Result.Ok(_) => false }
+}
+
+test fn git_tree_preserves_utf8_order_modes_and_full_object_ids() {
+    let text = concat(snapshot_tree_line("目录/file.bin", "100755", snapshot_oid()), snapshot_tree_line("README.md", "100644", snapshot_oid()))
+    let files = snapshot_parsed(text, 40)
+    assert length(files) == 2 && get(files, 0).path == "目录/file.bin" && get(files, 1).path == "README.md"
+    assert get(files, 0).object == snapshot_oid()
+    let long = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    assert get(snapshot_parsed(snapshot_tree_line("emoji-😀", "100644", long), 64), 0).object == long
+    assert length(snapshot_parsed("", 40)) == 0
+    assert match parse_git_tree(snapshot_buffer(text), 64) { Result.Err(_) => true, Result.Ok(_) => false }
+    assert match parse_git_tree(snapshot_buffer(text), 7) { Result.Err(_) => true, Result.Ok(_) => false }
+}
+
+test fn git_tree_rejects_nonportable_paths_and_prefix_collisions() {
+    snapshot_rejects_path("")
+    snapshot_rejects_path("/absolute")
+    snapshot_rejects_path("../escape")
+    snapshot_rejects_path("a/./b")
+    snapshot_rejects_path("a//b")
+    snapshot_rejects_path("a/")
+    snapshot_rejects_path("a\\b")
+    snapshot_rejects_path("C:relative")
+    snapshot_rejects_path("a:stream")
+    snapshot_rejects_path("a/ending.")
+    snapshot_rejects_path("a/ending ")
+    snapshot_rejects_path("a\tb")
+    snapshot_rejects_path("a\nb")
+    snapshot_rejects_path("wild*card")
+    snapshot_rejects_path("a?b")
+    snapshot_rejects_path("a\"b")
+    snapshot_rejects_path("a<b")
+    snapshot_rejects_path("a>b")
+    snapshot_rejects_path("a|b")
+    snapshot_rejects_path(".GiT/config")
+    snapshot_rejects_path("CON.txt")
+    snapshot_rejects_path("nul")
+    snapshot_rejects_path("aux.data")
+    snapshot_rejects_path("prn.log")
+    snapshot_rejects_path("COM1.ext")
+    snapshot_rejects_path("lpt9")
+    snapshot_rejects_path("LPT¹.txt")
+    snapshot_rejects_path("con .txt")
+    snapshot_rejects_path("CONIN$.txt")
+    snapshot_rejects_path(concat("a", std.text.from_codepoint(127)))
+    snapshot_rejects_path(concat("a", std.text.from_codepoint(133)))
+    let first = snapshot_tree_line("Dir/a", "100644", snapshot_oid())
+    assert match parse_git_tree(snapshot_buffer(concat(first, snapshot_tree_line("dir/b", "100644", snapshot_oid()))), 40) {
+        Result.Err(_) => true, Result.Ok(_) => false }
+    assert match parse_git_tree(snapshot_buffer(concat(first, snapshot_tree_line("Dir", "100644", snapshot_oid()))), 40) {
+        Result.Err(_) => true, Result.Ok(_) => false }
+    assert match parse_git_tree(snapshot_buffer(concat(first, first)), 40) { Result.Err(_) => true, Result.Ok(_) => false }
+}
+
+test fn git_tree_rejects_nonregular_or_malformed_records() {
+    assert match parse_git_tree(snapshot_buffer(snapshot_tree_line("link", "120000", snapshot_oid())), 40) {
+        Result.Err(_) => true, Result.Ok(_) => false }
+    assert match parse_git_tree(snapshot_buffer(concat("160000 commit ", concat(snapshot_oid(), "\tsubmodule\0"))), 40) {
+        Result.Err(_) => true, Result.Ok(_) => false }
+    assert match parse_git_tree(snapshot_buffer(concat("100644 blob ", concat(snapshot_oid(), " file\0"))), 40) {
+        Result.Err(_) => true, Result.Ok(_) => false }
+    assert match parse_git_tree(snapshot_buffer(concat("100644 blob ", concat(snapshot_oid(), "\tfile"))), 40) {
+        Result.Err(_) => true, Result.Ok(_) => false }
+    assert match parse_git_tree(snapshot_buffer(snapshot_tree_line("file", "100644", "deadbeef")), 40) {
+        Result.Err(_) => true, Result.Ok(_) => false }
+    let invalid = snapshot_buffer(concat("100644 blob ", concat(snapshot_oid(), "\t")))
+    std.bytes.push(invalid, 255)
+    std.bytes.push(invalid, 0)
+    assert match parse_git_tree(invalid, 40) { Result.Err(_) => true, Result.Ok(_) => false }
+}
+
+test fn git_batch_preserves_binary_files_and_fingerprints_actual_membership() {
+    let root = match staging(".") { Result.Ok(path) => path, Result.Err(_) => { assert false
+        "" } }
+    defer { discard remove_staging(root) }
+    let files = snapshot_parsed(snapshot_tree_line("目录/raw.bin", "100644", snapshot_oid()), 40)
+    let output = snapshot_buffer(concat(snapshot_oid(), " blob 3\n"))
+    std.bytes.push(output, 0)
+    std.bytes.push(output, 255)
+    std.bytes.push(output, 10)
+    std.bytes.push(output, 10)
+    let fingerprint = match write_git_batch(root, files, output) { Result.Ok(value) => value, Result.Err(_) => { assert false
+        "" } }
+    assert match snapshot_fingerprint(root) { Result.Ok(value) => value == fingerprint, Result.Err(_) => false }
+    let path = join_path(join_path(root, "目录"), "raw.bin")
+    let bytes = match read_bytes(path) { Result.Ok(value) => value, Result.Err(_) => { assert false
+        std.bytes.new() } }
+    assert std.bytes.length(bytes) == 3 && std.bytes.get(bytes, 0) == 0 && std.bytes.get(bytes, 1) == 255 && std.bytes.get(bytes, 2) == 10
+    let extra = join_path(root, "empty")
+    assert match create_dir(extra) { Result.Ok(_) => true, Result.Err(_) => false }
+    assert match snapshot_fingerprint(root) { Result.Ok(value) => value != fingerprint, Result.Err(_) => false }
+    assert match remove_empty_dir(extra) { Result.Ok(_) => true, Result.Err(_) => false }
+    assert match snapshot_fingerprint(root) { Result.Ok(value) => value == fingerprint, Result.Err(_) => false }
+    let sidecar = join_path(root, "digest")
+    assert match write_text(sidecar, fingerprint) { Result.Ok(_) => true, Result.Err(_) => false }
+    assert match snapshot_fingerprint(root) { Result.Ok(value) => value != fingerprint, Result.Err(_) => false }
+    assert match remove_file(sidecar) { Result.Ok(_) => true, Result.Err(_) => false }
+    let renamed = join_path(join_path(root, "目录"), "renamed.bin")
+    assert match rename(path, renamed) { Result.Ok(_) => true, Result.Err(_) => false }
+    assert match snapshot_fingerprint(root) { Result.Ok(value) => value != fingerprint, Result.Err(_) => false }
+    assert match rename(renamed, path) { Result.Ok(_) => true, Result.Err(_) => false }
+    assert match snapshot_fingerprint(root) { Result.Ok(value) => value == fingerprint, Result.Err(_) => false }
+    assert match write_text(path, "modified") { Result.Ok(_) => true, Result.Err(_) => false }
+    assert match snapshot_fingerprint(root) { Result.Ok(value) => value != fingerprint, Result.Err(_) => false }
+    assert match remove_file(path) { Result.Ok(_) => true, Result.Err(_) => false }
+    assert match snapshot_fingerprint(root) { Result.Ok(value) => value != fingerprint, Result.Err(_) => false }
+}
+
+test fn git_batch_rejects_identity_size_delimiter_and_surplus_errors() {
+    let files = snapshot_parsed(snapshot_tree_line("file", "100644", snapshot_oid()), 40)
+    snapshot_batch_rejects(files, "")
+    snapshot_batch_rejects(files, concat(snapshot_oid(), " tree 0\n\n"))
+    snapshot_batch_rejects(files, "ffffffffffffffffffffffffffffffffffffffff blob 0\n\n")
+    snapshot_batch_rejects(files, concat(snapshot_oid(), " blob -1\n\n"))
+    snapshot_batch_rejects(files, concat(snapshot_oid(), " blob 01\nx\n"))
+    snapshot_batch_rejects(files, concat(snapshot_oid(), " blob 92233720368547758070\n\n"))
+    snapshot_batch_rejects(files, concat(snapshot_oid(), " blob 2\nx\n"))
+    snapshot_batch_rejects(files, concat(snapshot_oid(), " blob 1\nx!"))
+    snapshot_batch_rejects(files, concat(snapshot_oid(), " blob 0\n\nsurplus"))
+    let values = new[SnapshotEntry]()
+    discard snapshot_file(values, "b", "two")
+    discard snapshot_file(values, "a/file", "one")
+    let reverse = new[SnapshotEntry]()
+    discard snapshot_file(reverse, "a/file", "one")
+    discard snapshot_file(reverse, "b", "two")
+    assert match snapshot_digest(values) {
+        Result.Ok(first) => match snapshot_digest(reverse) { Result.Ok(second) => first == second, Result.Err(_) => false }
+        Result.Err(_) => false
+    }
+}
+
+test fn git_tree_many_shared_prefixes_sort_before_collision_checks() {
+    let output = std.bytes.new()
+    var index = 2000
+    while index > 0 {
+        append_text(output, snapshot_tree_line(concat("shared/nested/file", to_text(index)), "100644", snapshot_oid()))
+        index = index - 1
+    }
+    assert match parse_git_tree(output, 40) {
+        Result.Ok(files) => length(files) == 2000 && get(files, 0).path == "shared/nested/file2000"
+        Result.Err(_) => false
+    }
+    append_text(output, snapshot_tree_line("SHARED/nested/last", "100644", snapshot_oid()))
+    assert match parse_git_tree(output, 40) { Result.Err(_) => true, Result.Ok(_) => false }
+}

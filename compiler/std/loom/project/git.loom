@@ -1,0 +1,315 @@
+import std.env.get
+import std.process.capture
+import std.process.capture_input
+import std.process.Options
+import std.process.Output
+import std.process.ExitStatus
+import std.process.EnvChange
+
+record GitSession { tool Text directory Text options Options }
+
+// Git for Windows rejects verbatim prefixes in its path validator, even though
+// Windows accepts them. Adapt only Git-facing paths; Loom's canonical paths and
+// child working directory keep their native spelling. Unix backslashes survive.
+fn git_path(path Text) Text {
+    if !is_windows_path(path) { return path }
+    let output = std.bytes.new()
+    var offset = 0
+    if starts_with(path, "\\\\?\\UNC\\") {
+        append_text(output, "//")
+        offset = 8
+    } else {
+        if starts_with(path, "\\\\?\\") && length(path) >= 7 && byte(path, 5) == 58 &&
+            (byte(path, 6) == 92 || byte(path, 6) == 47) { offset = 4 }
+    }
+    while offset < length(path) {
+        let value = byte(path, offset)
+        std.bytes.push(output, if value == 92 { 47 } else { value })
+        offset = offset + 1
+    }
+    std.bytes.to_text(output)
+}
+
+fn child_setting(changes List[EnvChange], name Text, value Text) {
+    push(changes, EnvChange.Set(name, value))
+}
+fn git_session(stage Text, tool Text) Result[GitSession, Text] {
+    let home = join_path(stage, "home")
+    let empty = join_path(stage, "empty")
+    discard cache_directory(home)?
+    discard cache_directory(empty)?
+    let config = join_path(stage, "empty-config")
+    match write_text(config, "") { Result.Ok(_) => {}, Result.Err(_) => { return Result.Err("cannot create isolated Git configuration") } }
+    let changes = new[EnvChange]()
+    // Only host executable/DLL lookup and temporary-directory settings survive.
+    // The selected Git executable and these host paths are trusted tools, not a
+    // sandbox. Credentials, proxies, config, tracing and Git overrides do not.
+    let host_names = parts("PATH\nSystemRoot\nWINDIR\nTEMP\nTMP\nTMPDIR", 10)
+    var index = 0
+    while index < length(host_names) {
+        let name = get(host_names, index)
+        match std.env.get(name) {
+            Result.Ok(value) => { match value { Option.Some(text) => { child_setting(changes, name, text) }, Option.None => {} } }
+            Result.Err(_) => { return Result.Err("Git host environment is not valid UTF-8") }
+        }
+        index = index + 1
+    }
+    // Child-local home prevents libcurl's implicit netrc lookup. No user home
+    // directory or process environment is changed.
+    let child_home = git_path(home)
+    let child_config = git_path(config)
+    child_setting(changes, "HOME", child_home)
+    child_setting(changes, "USERPROFILE", child_home)
+    child_setting(changes, "XDG_CONFIG_HOME", child_home)
+    child_setting(changes, "NETRC", child_config)
+    child_setting(changes, "GIT_CONFIG_GLOBAL", child_config)
+    child_setting(changes, "GIT_CONFIG_SYSTEM", child_config)
+    child_setting(changes, "GIT_CONFIG_NOSYSTEM", "1")
+    child_setting(changes, "GIT_ALLOW_PROTOCOL", "https")
+    child_setting(changes, "GIT_TERMINAL_PROMPT", "0")
+    child_setting(changes, "GIT_NO_REPLACE_OBJECTS", "1")
+    child_setting(changes, "GIT_NO_LAZY_FETCH", "1")
+    child_setting(changes, "LC_ALL", "C")
+    Result.Ok(GitSession { tool = tool directory = stage options = Options {
+        directory = Option.Some(stage) clear_environment = true environment = changes
+    } })
+}
+fn git_arguments(session GitSession, arguments List[Text]) List[Text] {
+    let values = new[Text]()
+    push(values, session.tool)
+    push(values, "--no-pager")
+    push(values, "--no-replace-objects")
+    let settings = parts("credential.helper=\ncredential.interactive=false\nhttp.sslVerify=true\nhttp.followRedirects=false\nhttp.proxy=\nhttp.emptyAuth=false\nhttp.delegation=none\nfetch.fsckObjects=true\ngc.auto=0\nmaintenance.auto=false", 10)
+    var index = 0
+    while index < length(settings) {
+        push(values, "-c")
+        push(values, get(settings, index))
+        index = index + 1
+    }
+    push(values, "-c")
+    push(values, concat("core.hooksPath=", git_path(join_path(session.directory, "empty"))))
+    if is_windows_path(session.directory) {
+        // Let Git's builtin filesystem operations expand long paths themselves.
+        push(values, "-c")
+        push(values, "core.longpaths=true")
+    }
+    index = 0
+    while index < length(arguments) {
+        push(values, get(arguments, index))
+        index = index + 1
+    }
+    values
+}
+fn git_success(output Output) Result[Bytes, Text] {
+    if match output.status { ExitStatus.Exited(code) => code == 0, ExitStatus.Terminated => false } {
+        return Result.Ok(output.stdout)
+    }
+    // Remote messages can contain credentials or arbitrary terminal content.
+    // Never embed stdout/stderr, the source URL, or environment values here.
+    Result.Err("Git dependency operation failed; remote output was suppressed")
+}
+fn git_output(session GitSession, arguments List[Text]) Result[Bytes, Text] {
+    match capture(git_arguments(session, arguments), session.options) {
+        Result.Ok(output) => git_success(output)
+        Result.Err(_) => Result.Err("cannot invoke Git dependency tool")
+    }
+}
+fn git_batch(session GitSession, arguments List[Text], input Bytes) Result[Bytes, Text] {
+    match capture_input(git_arguments(session, arguments), input, session.options) {
+        Result.Ok(output) => git_success(output)
+        Result.Err(_) => Result.Err("cannot exchange Git object data")
+    }
+}
+fn repository_arguments(repository Text, command Text) List[Text] {
+    let arguments = new[Text]()
+    push(arguments, concat("--git-dir=", git_path(repository)))
+    push(arguments, command)
+    arguments
+}
+fn snapshot_path(root Text, git Text, rev Text) Text {
+    join_path(join_path(join_path(root, "target"), "loom-deps"), hashed(concat(git, concat("\n", rev))))
+}
+fn fetch_snapshot(resolution Resolution, git Text, rev Text, expected Text) Result[Snapshot, Text] {
+    let stage = staging(resolution.root)?
+    defer { discard remove_staging(stage) }
+    let session = git_session(stage, resolution.tool)?
+    let repository = join_path(stage, "repository")
+    let init = parts("init\n--bare\n--template=", 10)
+    push(init, if length(rev) == 40 { "--object-format=sha1" } else { "--object-format=sha256" })
+    push(init, git_path(repository))
+    discard git_output(session, init)?
+    let fetch = repository_arguments(repository, "fetch")
+    let flags = parts("--quiet\n--depth=1\n--no-tags\n--no-recurse-submodules\n--no-write-fetch-head\n--no-auto-maintenance\n--", 10)
+    var index = 0
+    while index < length(flags) { push(fetch, get(flags, index))
+        index = index + 1 }
+    push(fetch, git)
+    push(fetch, rev)
+    discard git_output(session, fetch)?
+    let kind_arguments = repository_arguments(repository, "cat-file")
+    push(kind_arguments, "-t")
+    push(kind_arguments, rev)
+    let kind = match decode_utf8(git_output(session, kind_arguments)?) {
+        Result.Ok(value) => value
+        Result.Err(_) => { return Result.Err("invalid Git object kind") }
+    }
+    if kind != "commit\n" { return Result.Err("Git revision must identify a commit, not a tag or tree") }
+    let tree = repository_arguments(repository, "ls-tree")
+    push(tree, "-r")
+    push(tree, "-z")
+    push(tree, "--full-tree")
+    push(tree, rev)
+    push(tree, "--")
+    let files = parse_git_tree(git_output(session, tree)?, length(rev))?
+    let objects = std.bytes.new()
+    index = 0
+    while index < length(files) {
+        append_text(objects, get(files, index).object)
+        std.bytes.push(objects, 10)
+        index = index + 1
+    }
+    let batch = repository_arguments(repository, "cat-file")
+    push(batch, "--batch")
+    let output = git_batch(session, batch, objects)?
+    let source = join_path(stage, "source")
+    discard cache_directory(source)?
+    let digest = write_git_batch(source, files, output)?
+    if expected != "" && expected != digest { return Result.Err("Git snapshot does not match the locked content digest") }
+    let destination = snapshot_path(resolution.root, git, rev)
+    match cache_entry(destination)? {
+        Option.None => {}
+        Option.Some(value) => {
+            if value == FileKind.Other { return Result.Err("unsupported dependency cache entry") }
+            // Retire only this exact cache entry into our owned stage; cleanup
+            // cannot traverse a symlink to another tree.
+            match rename(destination, join_path(stage, "retired")) {
+                Result.Ok(_) => {}
+                Result.Err(_) => { return Result.Err("cannot replace damaged dependency cache") }
+            }
+        }
+    }
+    match rename(source, destination) {
+        Result.Ok(_) => {}
+        Result.Err(_) => { return Result.Err("cannot publish dependency snapshot") }
+    }
+    Result.Ok(Snapshot { base = destination git = git rev = rev tree = digest })
+}
+
+fn relative_source(path Text, root Text) Result[Text, Text] {
+    var common = root
+    var prefix = ""
+    while !inside(path, common) {
+        let next = parent(common)
+        if next == common { return Result.Err("locked local modules must share a filesystem root") }
+        prefix = concat(prefix, "../")
+        common = next
+    }
+    let relative = if path == common { "" } else { slice(path, length(join_path(common, "")), length(path)) }
+    let components = parts(relative, separator(path))
+    var normalized = prefix
+    var index = 0
+    while index < length(components) {
+        if index > 0 { normalized = concat(normalized, "/") }
+        normalized = concat(normalized, get(components, index))
+        index = index + 1
+    }
+    Result.Ok(normalized)
+}
+fn source_owner(resolution Resolution, base Text) Result[Text, Text] {
+    var index = 0
+    while index < length(resolution.snapshots) {
+        let source = get(resolution.snapshots, index)
+        if inside(base, source.base) {
+            return Result.Ok(hashed(concat("git\n", concat(source.git, concat("\n", concat(source.rev,
+                concat("\n", relative_source(base, source.base)?)))))))
+        }
+        index = index + 1
+    }
+    Result.Ok(hashed(concat("path\n", relative_source(base, resolution.root)?)))
+}
+fn source_boundary(resolution Resolution, base Text, dependency Text) Result[Bool, Text] {
+    var index = 0
+    while index < length(resolution.snapshots) {
+        let source = get(resolution.snapshots, index)
+        if inside(base, source.base) && !inside(dependency, source.base) {
+            return Result.Err("a Git module path dependency cannot escape its source snapshot")
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+fn resolved_snapshot(resolution Resolution, git Text, rev Text, expected Text, comptime fetch Bool) Result[Snapshot, Text] {
+    var index = 0
+    while index < length(resolution.snapshots) {
+        let source = get(resolution.snapshots, index)
+        if source.git == git && source.rev == rev {
+            if expected != "" && expected != source.tree { return Result.Err("inconsistent locked dependency digest") }
+            return Result.Ok(source)
+        }
+        index = index + 1
+    }
+    let path = snapshot_path(resolution.root, git, rev)
+    // Inspect all cache ancestors without creating anything during an ordinary
+    // check/build. Snapshot verification reads actual names/kinds/bytes.
+    let ancestors = new[Text]()
+    push(ancestors, join_path(resolution.root, "target"))
+    push(ancestors, join_path(join_path(resolution.root, "target"), "loom-deps"))
+    push(ancestors, path)
+    var present = true
+    index = 0
+    while index < length(ancestors) {
+        if present {
+            match cache_entry(get(ancestors, index))? {
+                Option.None => { present = false }
+                Option.Some(value) => {
+                    if value != FileKind.Directory {
+                        if index < length(ancestors) - 1 { return Result.Err("dependency cache ancestors must be real directories") }
+                        present = false
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    if present && expected != "" {
+        match snapshot_fingerprint(path) {
+            Result.Ok(tree) => {
+                if tree == expected {
+                    let source = Snapshot { base = path git = git rev = rev tree = tree }
+                    push(resolution.snapshots, source)
+                    return Result.Ok(source)
+                }
+            }
+            Result.Err(_) => {}
+        }
+    }
+    comptime if fetch {
+        let source = fetch_snapshot(resolution, git, rev, expected)?
+        push(resolution.snapshots, source)
+        Result.Ok(source)
+    } else {
+        Result.Err("dependency cache is missing or changed; run loom resolve")
+    }
+}
+fn git_dependency(resolution Resolution, base Text, name Text, git Text, rev Text, comptime fetch Bool) Result[Text, Text] {
+    let owner = source_owner(resolution, base)?
+    let index = lock_index(resolution.locks, owner, name)
+    comptime if !fetch {
+        if index < 0 { return Result.Err("Git dependency is not locked; run loom resolve") }
+        let locked = get(resolution.locks, index)
+        if locked.git != git || locked.rev != rev {
+            return Result.Err("Git dependency changed from loom.lock; run loom resolve")
+        }
+    }
+    var expected = ""
+    var entry = 0
+    while entry < length(resolution.locks) {
+        let locked = get(resolution.locks, entry)
+        if locked.git == git && locked.rev == rev { expected = locked.tree }
+        entry = entry + 1
+    }
+    let source = resolved_snapshot(resolution, git, rev, expected, fetch)?
+    let locked = LockedSource { owner = owner name = name git = git rev = rev tree = source.tree }
+    if index < 0 { push(resolution.locks, locked) } else { set(resolution.locks, index, locked) }
+    Result.Ok(source.base)
+}

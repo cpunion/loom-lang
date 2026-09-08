@@ -16,13 +16,15 @@ test fn supported_manifest_subset() {
 test fn path_dependencies_decode_strings_and_keep_declaration_order() {
     let module = parsed("[module]\nname='app'\n[dependencies.codec]\npath = \"../codec\"\n[dependencies]\n[dependencies.json]\npath = '../json#fork' # a literal hash\n")
     assert length(module.dependencies) == 2
-    assert get(module.dependencies, 0).name == "codec" && get(module.dependencies, 0).path == "../codec"
-    assert get(module.dependencies, 1).name == "json" && get(module.dependencies, 1).path == "../json#fork"
+    assert get(module.dependencies, 0).name == "codec"
+    assert match get(module.dependencies, 0).source { DependencySource.Path(path) => path == "../codec", _ => false }
+    assert get(module.dependencies, 1).name == "json"
+    assert match get(module.dependencies, 1).source { DependencySource.Path(path) => path == "../json#fork", _ => false }
     let escaped = parsed("[module]\nname='app'\n[dependencies.codec]\npath=\"../codec\\u0020fork\"")
-    assert get(escaped.dependencies, 0).path == "../codec fork"
+    assert match get(escaped.dependencies, 0).source { DependencySource.Path(path) => path == "../codec fork", _ => false }
 }
 
-test fn incomplete_duplicate_and_nonpath_dependencies_reject() {
+test fn incomplete_duplicate_and_unsupported_dependencies_reject() {
     let prefix = "[module]\nname='app'\n"
     rejects(concat(prefix, "[dependencies.codec]"))
     rejects(concat(prefix, "[dependencies.codec]\npath=''"))
@@ -35,6 +37,125 @@ test fn incomplete_duplicate_and_nonpath_dependencies_reject() {
     rejects(concat(prefix, "[dependencies.std]\npath='../std'"))
     rejects(concat(prefix, "[dependencies.app]\npath='../other'"))
     rejects("dependencies={}\n[module]\nname='app'\n[dependencies.codec]\npath='../codec'")
+}
+
+fn revision() Text { "0123456789abcdef0123456789abcdef01234567" }
+fn git_manifest(url Text, rev Text) Text {
+    concat("[module]\nname='app'\n[dependencies.codec]\ngit=\"", concat(url, concat("\"\nrev='", concat(rev, "'"))))
+}
+fn rejects_git_url(url Text) { rejects(git_manifest(url, revision())) }
+
+test fn git_sources_keep_urls_full_revisions_and_declaration_order() {
+    let url = "https://Git.Example.com:8443/team/codec.git"
+    let text = concat(git_manifest(url, revision()), "\n[dependencies.local]\npath='../local'")
+    let module = parsed(text)
+    assert length(module.dependencies) == 2
+    assert get(module.dependencies, 0).name == "codec"
+    assert match get(module.dependencies, 0).source {
+        DependencySource.Git(source, rev) => source == url && rev == revision()
+        _ => false
+    }
+    assert get(module.dependencies, 1).name == "local"
+    assert match get(module.dependencies, 1).source { DependencySource.Path(path) => path == "../local", _ => false }
+    let sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    let reverse = parsed(concat("[module]\nname='app'\n[dependencies.codec]\nrev='", concat(sha256, "'\ngit='https://127.0.0.1:443/codec/'")))
+    assert match get(reverse.dependencies, 0).source {
+        DependencySource.Git(source, rev) => source == "https://127.0.0.1:443/codec/" && rev == sha256
+        _ => false
+    }
+    assert length(parsed(git_manifest("https://localhost/codec", revision())).dependencies) == 1
+    assert length(parsed(git_manifest("https://example.com/co\\u0064ec", revision())).dependencies) == 1
+}
+
+test fn git_sources_require_one_source_and_an_unambiguous_commit() {
+    let prefix = "[module]\nname='app'\n[dependencies.codec]\n"
+    rejects(concat(prefix, concat("rev='", concat(revision(), "'"))))
+    rejects(git_manifest("https://example.com/codec", ""))
+    rejects(git_manifest("https://example.com/codec", "main"))
+    rejects(git_manifest("https://example.com/codec", "v1.0.0"))
+    rejects(git_manifest("https://example.com/codec", "0123456"))
+    rejects(git_manifest("https://example.com/codec", "0123456789abcdef0123456789abcdef0123456"))
+    rejects(git_manifest("https://example.com/codec", concat(revision(), "0")))
+    rejects(git_manifest("https://example.com/codec", "0123456789ABCDEF0123456789ABCDEF01234567"))
+    rejects(git_manifest("https://example.com/codec", "g123456789abcdef0123456789abcdef01234567"))
+    rejects(concat(prefix, "path='../codec'\ngit='https://example.com/codec'"))
+    rejects(concat(prefix, "git='https://example.com/codec'\npath='../codec'"))
+    rejects(concat(prefix, "path=''\nrev='main'"))
+    rejects(concat(prefix, "rev='main'\npath=''"))
+    let valid = git_manifest("https://example.com/codec", revision())
+    rejects(concat(valid, "\ngit='https://example.com/other'"))
+    rejects(concat(valid, concat("\nrev='", concat(revision(), "'"))))
+    rejects(concat(valid, "\nbranch='main'"))
+    rejects(concat(valid, "\ntag='v1'"))
+    rejects(concat(valid, "\nversion='1'"))
+    rejects(concat(valid, "\nreplace='../other'"))
+    rejects(concat(valid, "\n[replace]\ncodec='../other'"))
+    rejects(concat(valid, "\n[overrides]\ncodec='../other'"))
+}
+
+test fn git_urls_reject_unsupported_authorities_and_paths() {
+    rejects_git_url("")
+    rejects_git_url("http://example.com/codec")
+    rejects_git_url("ssh://example.com/codec")
+    rejects_git_url("git@example.com:codec")
+    rejects_git_url("https:///codec")
+    rejects_git_url("https://example.com")
+    rejects_git_url("https://example.com/")
+    rejects_git_url("https://user:secret@example.com/codec")
+    rejects_git_url("https://example.com/codec?token=secret")
+    rejects_git_url("https://example.com/codec#secret")
+    rejects_git_url("https://example.com:/codec")
+    rejects_git_url("https://example.com:0/codec")
+    rejects_git_url("https://example.com:65536/codec")
+    rejects_git_url("https://example.com:443x/codec")
+    rejects_git_url("https://example.com:443:443/codec")
+    rejects_git_url("https://[::1]/codec")
+    rejects_git_url("https://.example.com/codec")
+    rejects_git_url("https://example..com/codec")
+    rejects_git_url("https://-example.com/codec")
+    rejects_git_url("https://example-.com/codec")
+    rejects_git_url("https://example_com/codec")
+    rejects_git_url("https://999.1.2.3/codec")
+    rejects_git_url("https://127.1/codec")
+    rejects_git_url("https://127.00.0.1/codec")
+    rejects_git_url("https://example.com//codec")
+    rejects_git_url("https://example.com/./codec")
+    rejects_git_url("https://example.com/team/../codec")
+    rejects_git_url("https://example.com/codec/..")
+    rejects_git_url("https://example.com/co%64ec")
+    rejects_git_url("https://example.com/co%00dec")
+    rejects_git_url("https://example.com/co\\\\dec")
+    rejects_git_url("https://example.com/co dec")
+    rejects_git_url("https://example.com/<codec>")
+}
+
+test fn git_urls_reject_unicode_and_decoded_controls_without_echoing_secrets() {
+    rejects_git_url("https://例子.com/codec")
+    rejects_git_url("https://example.com/编解码")
+    rejects_git_url("https://example.com/co\\u0085dec")
+    rejects_git_url("https://example.com/co\\u2028dec")
+    rejects_git_url("https://example.com/co\\u0000dec")
+    rejects_git_url("https://example.com/co\\tdec")
+    rejects_git_url("https://example.com/co\\ndec")
+    rejects_git_url("https://example.com/co\\rdec")
+    var control = 0
+    while control <= 32 {
+        rejects_git_url(concat("https://example.com/co", concat(from_codepoint(control), "dec")))
+        control = control + 1
+    }
+    rejects_git_url(concat("https://example.com/co", concat(from_codepoint(127), "dec")))
+    assert match parse(git_manifest("https://user:secret@example.com/codec", revision())) {
+        Result.Err(error) => error == "git dependency requires a supported HTTPS repository URL"
+        _ => false
+    }
+    assert match parse("https://user:secret@example.com/codec=true\n[module]\nname='app'") {
+        Result.Err(error) => error == "unsupported manifest field or TOML syntax"
+        _ => false
+    }
+    assert match parse("[module]\nname='app'\nhttps://user:secret@example.com/codec=true") {
+        Result.Err(error) => error == "unsupported module manifest field"
+        _ => false
+    }
 }
 
 fn rejects(text Text) {
