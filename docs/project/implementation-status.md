@@ -42,8 +42,10 @@ not a live Task. Named references have an entry pointer and null environment.
 Calls retain owner checks, one-shot transfer and the actual
 indirect creation location. Only Task-returning callback signatures gain a private
 label argument; synchronous factories use one adapter per referenced target.
-Direct functions and private coroutine callbacks retain their ABI. Compile-time Task references and source capturing
-closures remain unsupported. See the [callback example](../../compiler/examples/task_callbacks).
+Direct functions and private coroutine callbacks retain their ABI. Source async
+closures use the same callable shape and owner checks, but cannot capture live
+Tasks or scoped/NoSuspend resources. Compile-time Task references remain
+unsupported. See the [callback example](../../compiler/examples/task_callbacks).
 Tuples and records now carry one-shot Task fields, including nested fields,
 generic forwarding and callback/dynamic signatures. Whole-value reads transfer
 all fields; field reads and tuple destructuring track each Task independently.
@@ -223,8 +225,14 @@ environments through ordinary typed payload allocation, loads and stores.
 Native O0/O2 tests cover escaped shared state, records/enums/Lists and callee
 snapshots across allocating argument reassignment under forced moving GC.
 Closed-build indirect allocation analysis keeps scalar callbacks root-free;
-library callbacks remain conservative. Source closure conversion and compile-time
-capture evaluation are not yet implemented.
+library callbacks remain conservative. Source anonymous functions now capture
+only referenced enclosing bindings. Immutable bindings retain value semantics;
+mutable bindings share one typed managed cell with their enclosing scope.
+Nested closures, async literals and pure compile-time execution/reification use
+the same environments, without new runtime operations. Scoped, MustScope,
+NoSuspend and live Task captures reject before flow analysis. Explicit captured
+function `comptime` parameters remain unsupported. See the
+[closure example](../../compiler/examples/closures/README.md).
 
 Source `std.list.map/filter/fold` use those function values without new runtime
 operations. They traverse the initial index range in order, preserve shared

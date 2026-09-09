@@ -1,0 +1,27 @@
+import std.list.map
+import std.list.length
+import std.list.get
+
+fn counter(start Int) fn(Int) Int {
+    var current = start
+    fn(step Int) Int {
+        current = current + step
+        current
+    }
+}
+
+fn shifted(offset Int) fn(Int) Int {
+    fn(value Int) Int {
+        value + offset
+    }
+}
+
+fn main() {
+    let next = counter(10)
+    let alias = next
+    assert next(2) == 12
+    assert alias(3) == 15
+    let values = map([1, 2, 3], shifted(5))
+    assert length(values) == 3
+    assert get(values, 2) == 8
+}

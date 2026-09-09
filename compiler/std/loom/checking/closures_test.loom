@@ -1,0 +1,31 @@
+test fn closures_keep_fixed_signatures_generic_evidence_and_private_scopes() {
+    discard accepted("fn make[T](value T) fn() T { fn() T { value } }\nfn main() { let action = make(3)\nassert action() == 3 }")
+    discard accepted("fn make[T](value T) fn() Int { fn() Int { comptime if T == Int { value } else { 0 } } }\nfn main() { assert make(3)() == 3\nassert make(true)() == 0 }")
+    discard accepted("fn make(comptime enabled Bool) fn() Int { fn() Int { comptime if enabled { 1 } else { 2 } } }\nfn main() { assert make(true)() == 1\nassert make(false)() == 2 }")
+    discard accepted("fn use(comptime action fn(Int) Int) Int { action(3) }\nfn main() { assert use(fn(value Int) Int { value + 1 }) == 4 }")
+    discard accepted("fn main() { let identity = fn(value Int) Int ensures result == value { value }\nassert identity(4) == 4 }")
+    discard accepted("fn identity(value Int) Int ensures result == value { value }\nfn main() { let action = fn(value Int) Int ensures result == value { identity(value) }\nassert action(4) == 4 }")
+    rejects("fn main() { let action = fn(value Int) Int { true }\ndiscard action }")
+    rejects("fn main() { let action fn(Text) Int = fn(value Int) Int { value }\ndiscard action }")
+    rejects("fn main() { let value = 1\nlet action = fn() { value = 2 }\naction() }")
+    rejects("fn main() { let action = fn() Int { missing }\ndiscard action }")
+    rejects("fn main() { let action = fn(value Int) Int ensures result > value { value }\ndiscard action }")
+    rejects("fn main() { let action = fn() Int { value }\nlet value = 3\ndiscard action }")
+}
+
+test fn closure_staging_rejects_runtime_capture_and_impure_execution() {
+    discard accepted("fn main() { let answer = comptime { var n = 1\nlet read = fn() Int { n }\nn = 3\nread() }\nassert answer == 3 }")
+    rejects("fn main() { var value = 1\nlet action = comptime { fn() Int { value } }\ndiscard action }")
+    rejects("fn choose(value Int) Int { comptime { let action = fn() Int { value }\naction() } }")
+    rejects("fn main() { discard comptime { let limit = 3\nlet action = fn(value Int) Int requires value > limit { value }\naction(2) } }")
+    rejects("fn use(comptime action fn() Int) Int { action() }\nfn main() { let answer = use(comptime { var n = 1\nfn() Int { n = n + 1\nn } })\ndiscard answer }")
+}
+
+test fn closures_do_not_hide_scoped_or_one_shot_obligations() {
+    resource_reject(concat(resource_header(), "fn main() { scoped held = make([0])\nlet read = fn() Int { held.use() }\ndiscard read }"))
+    resource_reject("import std.resource.Dispose\nrecord Item { id Int }\nimpl Dispose for Item { fn dispose(self Item) {} }\nfn main() { scoped held = Item { id = 1 }\nlet read = fn() Int { held.id }\ndiscard read }")
+    resource_reject(concat(suspension_header(), "fn main() { let held = token()\nlet read = fn() Int { held.id }\ndiscard read }"))
+    rejects("async fn item() Int { 1 }\nasync fn main() { let pending = item()\nlet read = fn() Task[Int] { pending }\ndiscard read().await }")
+    resource_accept(concat(resource_header(), "fn main() { scoped held = make([0])\nlet read = fn() Int { 3 }\nassert read() == 3 }"))
+    discard accepted("async fn item() Int { 1 }\nasync fn main() { let pending = item()\nlet read = fn() Int { 3 }\nassert read() == 3\ndiscard pending.await }")
+}

@@ -55,7 +55,7 @@ fn guard_condition(context Context, node Node, condition Node, depth Int) Result
     let type_dependent = abstract_context(context) && depends_on_type(context, condition)
     if type_dependent || unknown_static(context, condition) {
         let stage = staging(context, node)?
-        let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
+        let validation = Context { lexical = stage.lexical env = stage.env signature = stage.signature arguments = stage.arguments
             constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head
             cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
             facts = stage.facts fact_head = stage.fact_head emit = false }

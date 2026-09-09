@@ -93,6 +93,8 @@ fn resolve(env Environment, owner Int, node Node, arguments List[Int], depth Int
     resolve_bound(env, owner, node, arguments, requirements(env, owner, arguments)?, depth)
 }
 fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
+    let lexical = lexical_owner(env, owner)
+    if lexical != owner { return resolve_bound(env, lexical, node, arguments, obligations, depth) }
     if depth > 64 { return Result.Err(failure(env, owner, node, "type specialization depth exceeded")) }
     if node.kind == NodeKind.Apply {
         let applied = Node { kind = NodeKind.Type value = child(node, 0).value children = child(node, 1).children span = node.span }

@@ -1,0 +1,134 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Arm
+import std.loom.typed.Local
+import std.loom.typed.Function
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+
+fn captured_storage(scope Lexical, local Int) Int {
+    var index = 0
+    while index < length(scope.cells) {
+        let cell = get(scope.cells, index)
+        if cell.local == local { return cell.ty }
+        index = index + 1
+    }
+    -1
+}
+fn closure_local(scope Lexical, local Int, captured Bool) Int {
+    if local < 0 || scope.local < 0 { return local }
+    if captured {
+        if local == scope.local { return 0 }
+        if local < scope.local { return local + 1 }
+    } else { if local > scope.local { return local - 1 } }
+    local
+}
+fn storage_node(value Expr, kind ExprKind, ty Int, index Int, children List[Expr]) Expr {
+    Expr { kind = kind ty = ty span = value.span text = value.text index = index children = children arms = value.arms falls = value.falls }
+}
+// Requires clauses run before the body initializes captured locals. Read their
+// entry values from the environment instead; mutable captures still read a cell.
+fn capture_precondition(scope Lexical, value Expr) Expr {
+    if value.kind == ExprKind.Local {
+        var index = 0
+        while index < length(scope.captures) {
+            let capture = get(scope.captures, index)
+            if capture.local == value.index {
+                let storage = if capture.cell >= 0 { capture.cell } else { capture.ty }
+                let environment = storage_node(value, ExprKind.Local, scope.environment, scope.local, new[Expr]())
+                let field = storage_node(value, ExprKind.Field, storage, capture.field, expressions(environment))
+                if capture.cell >= 0 { return storage_node(value, ExprKind.Field, capture.ty, 0, expressions(field)) }
+                return field
+            }
+            index = index + 1
+        }
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, capture_precondition(scope, get(value.children, index)))
+        index = index + 1
+    }
+    storage_node(value, value.kind, value.ty, value.index, children)
+}
+fn close_expression(scope Lexical, value Expr, captured Bool) Expr {
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, close_expression(scope, get(value.children, index), captured))
+        index = index + 1
+    }
+    let arms = new[Arm]()
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let bindings = new[Int]()
+        var item = 0
+        while item < length(arm.bindings) { push(bindings, closure_local(scope, get(arm.bindings, item), captured))
+            item = item + 1 }
+        let body = new[Expr]()
+        item = 0
+        while item < length(arm.body) { push(body, close_expression(scope, get(arm.body, item), captured))
+            item = item + 1 }
+        push(arms, Arm { variant = arm.variant bindings = bindings whole = closure_local(scope, arm.whole, captured) body = body })
+        index = index + 1
+    }
+    let local = value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign
+    let mapped = if local { closure_local(scope, value.index, captured) } else { value.index }
+    let cell = if local { captured_storage(scope, value.index) } else { -1 }
+    if cell >= 0 {
+        let reference = storage_node(value, ExprKind.Local, cell, mapped, new[Expr]())
+        if value.kind == ExprKind.Local {
+            // A capture initializer transfers the cell reference itself.
+            if value.ty == cell { return reference }
+            return storage_node(value, ExprKind.Field, value.ty, 0, expressions(reference))
+        }
+        let input = get(children, 0)
+        if value.kind == ExprKind.Assign {
+            return storage_node(value, ExprKind.FrameStore, 0, 0, pair(reference, input))
+        }
+        let initializer = if input.ty == cell { input } else {
+            storage_node(value, ExprKind.FrameNew, cell, -1,
+                expressions(storage_node(input, ExprKind.Field, input.ty, 0, expressions(input))))
+        }
+        return storage_node(value, ExprKind.Let, 0, mapped, expressions(initializer))
+    }
+    Expr { kind = value.kind ty = value.ty span = value.span text = value.text index = mapped children = children arms = arms falls = value.falls }
+}
+fn close_function(context Context, function Function) Function {
+    if length(context.lexical) == 0 { return function }
+    let scope = get(context.lexical, 0)
+    let captured = scope.environment >= 0 && length(get(context.env.types, scope.environment).fields) != 0
+    let locals = new[Local]()
+    let params = new[Int]()
+    if captured {
+        push(locals, get(function.locals, scope.local))
+        push(params, scope.environment)
+    }
+    var index = 0
+    while index < length(function.params) { push(params, get(function.params, index))
+        index = index + 1 }
+    index = 0
+    while index < length(function.locals) {
+        if index != scope.local {
+            let local = get(function.locals, index)
+            let cell = captured_storage(scope, index)
+            push(locals, Local { name = local.name ty = if cell >= 0 { cell } else { local.ty } mutable = local.mutable is_scoped = local.is_scoped })
+        }
+        index = index + 1
+    }
+    let preconditions = new[Expr]()
+    index = 0
+    while index < length(function.preconditions) { push(preconditions, close_expression(scope,
+        capture_precondition(scope, get(function.preconditions, index)), captured))
+        index = index + 1 }
+    let postconditions = new[Expr]()
+    index = 0
+    while index < length(function.postconditions) { push(postconditions, close_expression(scope, get(function.postconditions, index), captured))
+        index = index + 1 }
+    Function { is_async = function.is_async symbol = function.symbol arguments = function.arguments params = params result = function.result
+        locals = locals preconditions = preconditions postconditions = postconditions result_local = closure_local(scope, function.result_local, captured)
+        body = close_expression(scope, function.body, captured) runtime_name = function.runtime_name span = function.span }
+}

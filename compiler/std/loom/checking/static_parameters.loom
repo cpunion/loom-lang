@@ -49,9 +49,22 @@ fn known_constants(values List[StaticValue]) Bool {
     }
     true
 }
+fn static_type(context Context, index Int) Int {
+    if index < length(context.signature.compile_time) {
+        return get(context.signature.params, get(context.signature.compile_time, index))
+    }
+    let captures = lexical(context).captures
+    var capture = 0
+    while capture < length(captures) {
+        let value = get(captures, capture)
+        if value.constant == index { return value.ty }
+        capture = capture + 1
+    }
+    return get(context.constants, index).ty
+}
 fn static_expression(context Context, node Node, index Int) Result[Expr, Failure] {
     let value = get(context.constants, index)
-    let declared = get(context.signature.params, get(context.signature.compile_time, index))
+    let declared = static_type(context, index)
     if !value.known { return Result.Ok(expression(ExprKind.Deferred, declared, node, "", -1, new[Expr](), true)) }
     if get(context.env.types, value.ty).kind == TypeKind.Function {
         // Abstract declaration checking sees only its written callback shape,
@@ -120,7 +133,7 @@ fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] 
     let stage = staging(context, node)?
     // This contender may become a runtime argument. Preserve its lexical
     // proofs and exits while keeping speculative locals and queues private.
-    let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
+    let validation = Context { lexical = stage.lexical env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
         locals = stage.locals bindings = stage.bindings head = stage.head
         cleanups = clone(context.cleanups) cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
         facts = clone(context.facts) fact_head = context.fact_head emit = false }
@@ -134,7 +147,7 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
         // Unlike overload probing, a selected static argument cannot use an
         // enclosing runtime loop, cleanup or proof context.
         let stage = staging(context, node)?
-        let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
+        let validation = Context { lexical = stage.lexical env = stage.env signature = stage.signature arguments = stage.arguments constants = stage.constants
             locals = stage.locals bindings = stage.bindings head = stage.head
             cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
             facts = stage.facts fact_head = stage.fact_head emit = false }
@@ -149,11 +162,19 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
             // Naming a function does not execute its body: an effectful target
             // is valid here, but cannot be called by the pure evaluator.
             let instance = get(stage.env.pending, reference.index)
+            if instance.signature < 0 {
+                if length(reference.children) != 0 { return Result.Err(error(context, node, "captured closures are not yet supported as comptime parameters")) }
+                let closure = get(stage.env.closures, -1 - instance.signature)
+                return Result.Ok(StaticValue { ty = expected known = true number = closure.signature.symbol text = "" arguments = ints(closure.environment) })
+            }
             return Result.Ok(StaticValue { ty = expected known = true number = get(stage.env.signatures, instance.signature).symbol
                 text = "" arguments = instance.arguments })
         }
     }
     let value = computed(context, node, node, expected)?
+    if value.text == "closure" && get(context.env.types, value.ty).kind == TypeKind.Function {
+        return Result.Err(error(context, node, "captured closures are not yet supported as comptime parameters"))
+    }
     let arguments = new[Int]()
     if get(context.env.types, expected).kind == TypeKind.Function {
         var index = 0
@@ -186,7 +207,7 @@ fn validate_static(env Environment, id Int, constants List[StaticValue], node No
     if length(env.validations) >= 1024 { return Result.Err(failure(env, original.symbol, node, "comptime specialization budget exceeded; expansion must be finite")) }
     let selected = length(env.validations)
     push(env.validations, Validation { signature = id constants = constants })
-    let validation = Environment { source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
+    let validation = Environment { closures = env.closures source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth + 1 computations = env.computations
         validations = env.validations concepts = env.concepts implementations = env.implementations interfaces = env.interfaces
         associations = env.associations association_depth = env.association_depth

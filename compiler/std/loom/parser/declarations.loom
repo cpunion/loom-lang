@@ -168,7 +168,11 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool, proto
     push(children, parameters.node)
     let params = sequence(parameters.rest, Kind.LParen, Kind.RParen, NodeKind.Parameters, Items.Parameters, false)?
     push(children, params.node)
-    rest = params.rest
+    function_contents(start, params.rest, children, named.node.value, is_intrinsic, prototype)
+}
+
+fn function_contents(start Cursor, cursor Cursor, children List[Node], name Text, is_intrinsic Bool, prototype Bool) Result[Step, Diagnostic] {
+    var rest = cursor
     if !is_intrinsic && !prototype { rest = newlines(rest) }
     if at(rest, Kind.LParen) || (at(rest, Kind.Name) && !word(rest, "requires") && !word(rest, "ensures")) {
         let ty = type_ref(rest)?
@@ -180,18 +184,18 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool, proto
         if at(newlines(rest), Kind.LBrace) {
             let body = block(newlines(rest))?
             push(children, body.node)
-            return Result.Ok(done(start, body.rest, NodeKind.Function, named.node.value, children))
+            return Result.Ok(done(start, body.rest, NodeKind.Function, name, children))
         }
         if !at(rest, Kind.Newline) && !at(rest, Kind.RBrace) {
             return Result.Err(error(rest, "concept method contracts are not yet supported"))
         }
-        return Result.Ok(done(start, rest, NodeKind.Function, named.node.value, children))
+        return Result.Ok(done(start, rest, NodeKind.Function, name, children))
     }
     if is_intrinsic {
         if !at(rest, Kind.Newline) && !at(rest, Kind.Eof) {
             return Result.Err(error(rest, "intrinsic declarations have no body or contracts"))
         }
-        return Result.Ok(done(start, rest, NodeKind.Function, named.node.value, children))
+        return Result.Ok(done(start, rest, NodeKind.Function, name, children))
     }
     rest = newlines(rest)
     while word(rest, "requires") || word(rest, "ensures") {
@@ -202,7 +206,7 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool, proto
     }
     let body = block(rest)?
     push(children, body.node)
-    Result.Ok(done(start, body.rest, NodeKind.Function, named.node.value, children))
+    Result.Ok(done(start, body.rest, NodeKind.Function, name, children))
 }
 
 fn block(cursor Cursor) Result[Step, Diagnostic] {

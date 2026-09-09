@@ -11,6 +11,8 @@ record Concept { symbol Int methods List[Int] associated List[Int] bounds List[L
 record Implementation { symbol Int capability Int ty Int methods List[Int] associated List[Int] state Int }
 
 fn type_parameters(env Environment, owner Int) List[Node] {
+    let lexical = lexical_owner(env, owner)
+    if lexical != owner { return type_parameters(env, lexical) }
     let item = symbol(env, owner)
     let declaration = if item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl { item.owner } else { owner }
     let parameters = group(symbol(env, declaration).node, NodeKind.TypeParameters)
@@ -237,7 +239,7 @@ fn with_evidence(context Context, ty Int, capability Int) Context {
         index = index + 1 }
     if !entailed(context.env, context.signature.requirements, ty, capability) { push(obligations, Requirement { ty = ty capability = capability }) }
     let updated = Signature { symbol = current.symbol parameters = current.parameters params = current.params compile_time = current.compile_time result = current.result requirements = obligations }
-    Context { env = context.env signature = updated arguments = context.arguments locals = context.locals
+    Context { lexical = context.lexical env = context.env signature = updated arguments = context.arguments locals = context.locals
         constants = context.constants bindings = context.bindings head = context.head
         cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
         facts = context.facts fact_head = context.fact_head emit = context.emit }

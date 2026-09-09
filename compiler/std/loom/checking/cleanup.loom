@@ -32,7 +32,7 @@ fn registered_cleanup(context Context, node Node) Result[Step, Failure] {
     let body = block(loop_context(context, -2), source, 0, true)?
     let head = length(context.cleanups)
     push(context.cleanups, Cleanup { body = body previous = context.cleanup_head })
-    let next = Context { env = context.env signature = context.signature arguments = context.arguments constants = context.constants
+    let next = Context { lexical = context.lexical env = context.env signature = context.signature arguments = context.arguments constants = context.constants
         locals = context.locals bindings = context.bindings head = context.head cleanups = context.cleanups cleanup_head = head loop_boundary = context.loop_boundary
         facts = context.facts fact_head = context.fact_head emit = context.emit }
     Result.Ok(Step { context = next expression = expression(ExprKind.Defer, 0, node, "", head, expressions(body), true) })

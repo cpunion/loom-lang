@@ -72,7 +72,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
         return Result.Err(error(context, node, "compile-time staging depth exceeded; check for a dependency cycle"))
     }
     // Compile-time call targets never enter the runtime reachability queue.
-    let env = Environment { source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true
+    let env = Environment { closures = context.env.closures source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true
         has_refinements = context.env.has_refinements expanding_helpers = context.env.expanding_helpers signatures = context.env.signatures
         pending = new[Instance]() stage_depth = context.env.stage_depth + 1 computations = context.env.computations
         validations = context.env.validations
@@ -89,7 +89,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
     index = 0
     while index < length(context.bindings) { push(bindings, get(context.bindings, index))
         index = index + 1 }
-    Result.Ok(Context { env = env signature = context.signature arguments = context.arguments
+    Result.Ok(Context { lexical = copy_lexical(context.lexical) env = env signature = context.signature arguments = context.arguments
         constants = context.constants locals = locals bindings = bindings head = context.head
         cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2 facts = new[Fact]() fact_head = -1 emit = true })
 }
@@ -133,8 +133,10 @@ fn computed(context Context, node Node, input Node, expected Int) Result[Value, 
     let saved = computation(context, input, expected, value.ty)
     if saved >= 0 { return Result.Ok(get(context.env.computations, saved).value) }
     let program = prepared(stage)?
-    discard resource_computation(stage, program.functions, value)?
-    match std.loom.eval.evaluate(program, value, length(stage.locals)) {
+    let body = close_function(stage, Function { is_async = false symbol = stage.signature.symbol arguments = stage.arguments params = new[Int]() result = value.ty
+        locals = stage.locals preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1 body = value runtime_name = "" span = value.span })
+    discard resource_computation(stage, program.functions, body)?
+    match std.loom.eval.evaluate(program, body.body, length(body.locals)) {
         Result.Ok(value) => {
             push(context.env.computations, Computation { owner = context.signature.symbol arguments = context.arguments
                 constants = context.constants node = input expected = expected ty = value.ty value = value })
@@ -221,7 +223,7 @@ fn compile_time(context Context, node Node, expected Int, enforce Bool) Result[E
     let type_dependent = abstract_context(context) && depends_on_type(context, source)
     if type_dependent || unknown_static(context, source) {
         let stage = staging(context, node)?
-        let validation = Context { env = stage.env signature = stage.signature arguments = stage.arguments
+        let validation = Context { lexical = stage.lexical env = stage.env signature = stage.signature arguments = stage.arguments
             constants = stage.constants locals = stage.locals bindings = stage.bindings head = stage.head
             cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
             facts = stage.facts fact_head = stage.fact_head emit = false }

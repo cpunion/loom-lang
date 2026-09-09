@@ -1,6 +1,6 @@
 // Member parameters follow Self in a concept default, or the enclosing impl's
 // parameters in an explicit binding. The compiler itself uses ordinary Lists.
-fn parameter_offset(env Environment, owner Int) Int { if prototype(env, owner) { 1 } else { 0 } }
+fn parameter_offset(env Environment, owner Int) Int { if prototype(env, lexical_owner(env, owner)) { 1 } else { 0 } }
 
 fn member_parameters(env Environment, member Int) List[Node] {
     group(symbol(env, member).node, NodeKind.TypeParameters)

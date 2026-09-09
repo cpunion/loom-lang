@@ -284,6 +284,7 @@ Do not interpret those indices as references into `program.functions`.
 
 Function types store parameter type IDs followed by the result ID in
 `Type.arguments`. A `FunctionRef` expression names one concrete function instance;
+its optional child supplies the typed managed environment of a lifted closure.
 an `IndirectCall` stores its callee before the arguments in `Expr.children`.
 The callee has no single statically selected call index. Compile-time function
 values retain source symbols and type arguments for destination reification.

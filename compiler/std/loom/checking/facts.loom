@@ -69,7 +69,7 @@ fn fact_operator(value Expr, text Text, children List[Expr]) Expr {
         ty = 2 span = value.span text = text index = -1 children = children arms = value.arms falls = true }
 }
 fn fact_context(context Context, head Int) Context {
-    Context { env = context.env signature = context.signature arguments = context.arguments
+    Context { lexical = context.lexical env = context.env signature = context.signature arguments = context.arguments
         constants = context.constants locals = context.locals bindings = context.bindings head = context.head
         cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
         facts = context.facts fact_head = head emit = context.emit }

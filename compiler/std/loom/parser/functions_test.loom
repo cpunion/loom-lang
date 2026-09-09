@@ -27,6 +27,18 @@ test fn arbitrary_callees_chain_without_changing_named_calls() {
     assert child(child(body, 3), 0).kind == NodeKind.Call
 }
 
+test fn anonymous_functions_and_types_remain_distinct() {
+    let tree = parsed("fn main() { let action = fn(value Int) Int { value }\nlet empty = fn() {}\nlet task = async fn() Int { 1 }\nlet nested = fn() fn(Int) Int { action } }")
+    let values = body(child(tree, 0))
+    assert child(child(values, 0), 0).kind == NodeKind.Function
+    assert child(child(values, 1), 0).kind == NodeKind.Function
+    assert child(child(values, 2), 0).kind == NodeKind.Function
+    assert child(child(values, 3), 0).kind == NodeKind.Function
+    discard rejected("fn main() { let action = fn() Unit {} }")
+    discard rejected("fn main() { let action = fn(value) { value } }")
+    discard rejected("fn main() { let action = async {} }")
+}
+
 test fn compile_time_parameters_preserve_types_spans_and_ordinary_calls() {
     let tree = parsed("fn repeat[T](value T, comptime count Int) T { repeat(value, count) }\nfn flags(comptime enabled Bool, comptime label Text) {}")
     let function = child(tree, 0)

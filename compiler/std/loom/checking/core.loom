@@ -45,6 +45,7 @@ record TypeState {
 }
 
 record Environment {
+    closures List[ClosurePlan]
     source std.loom.binding.Program
     types List[Type]
     type_states List[TypeState]
@@ -72,6 +73,7 @@ record Binding { name Text local Int constant Int previous Int }
 record Cleanup { body Expr previous Int }
 record Fact { local Int predicate Expr previous Int }
 record Context {
+    lexical List[Lexical]
     env Environment
     signature Signature
     arguments List[Int]
@@ -176,13 +178,13 @@ fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Fail
     Result.Ok(value)
 }
 fn context_at(context Context, head Int) Context {
-    Context { env = context.env signature = context.signature arguments = context.arguments
+    Context { lexical = context.lexical env = context.env signature = context.signature arguments = context.arguments
         constants = context.constants locals = context.locals bindings = context.bindings head = head
         cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
         facts = context.facts fact_head = context.fact_head emit = context.emit }
 }
 fn loop_context(context Context, boundary Int) Context {
-    Context { env = context.env signature = context.signature arguments = context.arguments
+    Context { lexical = context.lexical env = context.env signature = context.signature arguments = context.arguments
         constants = context.constants locals = context.locals bindings = context.bindings head = context.head
         cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = boundary
         facts = context.facts fact_head = context.fact_head emit = context.emit }
@@ -194,7 +196,7 @@ fn lookup(context Context, value Text) Int {
         if binding.name == value { return head }
         head = binding.previous
     }
-    -1
+    capture_binding(context, value)
 }
 fn bind_local(context Context, node Node, value Text, ty Int, mutable Bool, boundary Int) Result[Context, Failure] {
     if value == "result" { return Result.Err(error(context, node, "result is reserved for function postconditions; choose another binding name")) }
@@ -233,7 +235,7 @@ fn bind_name(context Context, node Node, value Text, local Int, constant Int, bo
 // Global declarations keep one meaning in production checks and editor queries.
 // Every invocation owns fresh mutable checking tables; failures are discarded.
 fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
-    let env = Environment { source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
+    let env = Environment { closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
         has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         associations = new[Association]() association_depth = 0

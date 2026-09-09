@@ -127,7 +127,7 @@ fn call_value(context Context, node Node, callee Expr, types List[Node], inputs 
     }
     let output = get(shape.arguments, count)
     discard task_call_context(context, node, values, output, false)?
-    if callee.kind == ExprKind.FunctionRef && callee.index >= 0 && !direct_task(context.env, output) {
+    if callee.kind == ExprKind.FunctionRef && callee.index >= 0 && length(callee.children) == 0 && !direct_task(context.env, output) {
         let arguments = new[Expr]()
         index = 1
         while index < length(values) {

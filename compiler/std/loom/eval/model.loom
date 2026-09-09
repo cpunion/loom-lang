@@ -20,6 +20,8 @@ import std.result.Result
 // list_length/list_element expose initialized elements. Bytes use raw items.
 // Named functions use their source symbol in number and Int-wrapped type IDs
 // in items; these survive reification into a different function queue.
+// Captured functions use text "closure" and append their managed environment;
+// environments/cells have allocation IDs and shared fields, like containers.
 // A dyn value keeps its concrete type ID in number and its receiver in items[0],
 // never a witness index tied to one staging or runtime function queue.
 pub record Value { ty Int number Int floating Float text Text items List[Value] }

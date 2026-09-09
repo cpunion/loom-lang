@@ -997,19 +997,25 @@ reachability, not every function with the same signature. Closed executables
 derive indirect allocation effects from those targets, keeping scalar callbacks
 free of GC roots and Loom runtime linkage. Library callbacks remain conservative.
 
-The backend also accepts typed captured environments, including shared mutation,
-escaping results, aggregate storage and moving-GC snapshots. It reuses generated
-managed payloads, not Task scheduling or a runtime interpreter. This is backend
-support: source closure binding/lifting and compile-time capture evaluation are
-not implemented yet.
+Anonymous `fn(value Int) Int { ... }` and `async fn(...)` expressions use those
+typed captured environments. Only referenced enclosing bindings are captured:
+`let` retains its value and normal shared-data semantics; `var` shares one mutable
+cell across the enclosing scope and all closure copies. Captures may escape their
+creator and survive moving GC without Task scheduling or a runtime interpreter.
+Scoped, MustScope, NoSuspend and live Task bindings cannot be captured. The
+[closure example](examples/closures/README.md) covers nested captures, async
+factories, compile-time results and lexical cleanup. Anonymous parameters must
+have explicit runtime types; these literals do not declare their own generic or
+compile-time parameters.
 
 Pure compile-time calls and returned named function values use the same checked
 signatures and contracts. Reification schedules the source declaration and its
 type arguments in the destination program, not an evaluation-local function ID.
 The [callback example](examples/callbacks/main.loom) uses source `std.list.map`,
 overloaded callbacks, returned functions, and GC-stressed argument
-ordering. Named compile-time function parameters are also supported; capturing
-closures and bound method values remain later work.
+ordering. Pure captured closures also execute and return from `comptime` blocks,
+preserving shared/cyclic environments. Explicit captured function `comptime`
+parameters and bound method values remain later work.
 
 ## Contract boundary
 
@@ -1177,7 +1183,7 @@ ordinary and static callbacks, shared results and runtime argument order. Concep
 and implementation methods support the same parameter forms, including dynamic
 calls; intrinsics do not. Taking a reference to a declaration with static
 parameters still rejects until explicit partial
-specialization can supply a complete function identity. Capturing closures,
+specialization can supply a complete function identity. Captured `comptime` function parameters,
 variadics and general type-valued computation remain later work.
 
 ## Compile-time execution
@@ -1449,8 +1455,9 @@ records/Lists or returned through Tasks. Calling them retains owner requirements
 and one-shot Task transfers; named callbacks are not Task obligations. Only
 Task-returning callback signatures carry a private creation label, with no extra
 runtime dispatch. Private coroutine entry/resume/cleanup operations retain their
-direct native callback ABI. Compile-time Task references and source capturing
-closures remain unsupported. Actual Task-bearing Lists use the transfer
+direct native callback ABI. Async closures and capturing synchronous factories
+use this same path; their environments cannot capture live Tasks or scoped
+resources. Compile-time Task references remain unsupported. Actual Task-bearing Lists use the transfer
 operations described below. See the [callback example](examples/task_callbacks).
 
 Tuples and records now transfer Task fields individually or as whole values:
