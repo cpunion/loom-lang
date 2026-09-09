@@ -173,7 +173,7 @@ fn explicit_witnesses_dispatch_and_keep_sparse_reachability() {
         slots,
         BTreeSet::from([(Type::Dyn(0), 0), (Type::Dyn(1), 0)])
     );
-    assert!(gc::allocating_functions(&program, &functions).contains(&3));
+    assert!(gc::allocating_functions(&program, &functions, false).contains(&3));
     assert_eq!(value_words(&program, Type::Dyn(0)).unwrap(), 2);
     assert!(gc::managed(&program, Type::Dyn(0)));
     let directory = tempfile::tempdir().unwrap();

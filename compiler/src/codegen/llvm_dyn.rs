@@ -3,7 +3,7 @@
 use super::*;
 use inkwell::types::{FunctionType, StructType};
 
-fn method_type<'ctx>(
+pub(super) fn method_type<'ctx>(
     context: &'ctx Context,
     program: &checked::Program,
     method: &checked::Signature,

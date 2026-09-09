@@ -252,6 +252,12 @@ pub mod checked {
         Binary(Binary, Box<Expr>, Box<Expr>),
         Call(usize, Vec<Expr>),
         FunctionRef(usize),
+        /// A typed lifted function whose first parameter is its managed
+        /// environment. The remaining parameters have this value's signature.
+        Closure {
+            function: usize,
+            environment: Box<Expr>,
+        },
         IndirectCall {
             callee: Box<Expr>,
             arguments: Vec<Expr>,

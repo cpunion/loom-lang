@@ -990,9 +990,18 @@ Function values work in records, enums, tuples and shared Lists. Arbitrary
 callee expressions evaluate before their arguments, once each from left to
 right, including `available()?(value)`. If a callable field and concept method
 both match, use `(holder.action)(value)` or `Concept.action(holder, value)`.
-Native references use one code pointer and retain only their actual targets,
-not every function with the same signature. Managed arguments keep normal GC
-protection; scalar callbacks need no Loom runtime.
+Native function values use a managed environment and an entry pointer. Named
+references have a null environment and allocate nothing; a private adapter
+preserves the target's direct-call ABI. Only actual referenced targets enter
+reachability, not every function with the same signature. Closed executables
+derive indirect allocation effects from those targets, keeping scalar callbacks
+free of GC roots and Loom runtime linkage. Library callbacks remain conservative.
+
+The backend also accepts typed captured environments, including shared mutation,
+escaping results, aggregate storage and moving-GC snapshots. It reuses generated
+managed payloads, not Task scheduling or a runtime interpreter. This is backend
+support: source closure binding/lifting and compile-time capture evaluation are
+not implemented yet.
 
 Pure compile-time calls and returned named function values use the same checked
 signatures and contracts. Reification schedules the source declaration and its
@@ -1437,10 +1446,12 @@ async fn main() {
 Synchronous Task factories use the same callable type. They execute inline;
 async bodies run from the ready queue. Callbacks can be copied and stored in
 records/Lists or returned through Tasks. Calling them retains owner requirements
-and one-shot Task transfers; code pointers are not Task obligations. Only
+and one-shot Task transfers; named callbacks are not Task obligations. Only
 Task-returning callback signatures carry a private creation label, with no extra
-runtime dispatch. Compile-time Task references, capturing closures and actual
-Task-bearing Lists use transfer operations described below. See the [callback example](examples/task_callbacks).
+runtime dispatch. Private coroutine entry/resume/cleanup operations retain their
+direct native callback ABI. Compile-time Task references and source capturing
+closures remain unsupported. Actual Task-bearing Lists use the transfer
+operations described below. See the [callback example](examples/task_callbacks).
 
 Tuples and records now transfer Task fields individually or as whole values:
 

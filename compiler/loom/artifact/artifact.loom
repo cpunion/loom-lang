@@ -28,7 +28,9 @@ import std.list.length
 // body; absent bindings/variants use -1. Tags 0..32 follow expression_tag below.
 // Task stores its logical result type; Frame uses managed record fields.
 // FrameNew uses indexed Field initializers; FrameStore has [frame,value].
-// FunctionRef.index is the concrete function ID (no children); IndirectCall has
+// FunctionRef.index is the concrete function ID. Named references have no
+// children; a lowered closure may carry one managed Frame environment, matching
+// the target's first parameter. IndirectCall has
 // index -1 and children [callee,args...].
 // Assert.text is its static source diagnostic; empty text has no source location.
 // DynBox.index is a witness ID, children=[value]; DynCall.index is a method slot,
