@@ -19,8 +19,13 @@ concept Source {
         value
     }
 
-    fn forward[T](self Self, task Task[T]) Task[T] {
-        task
+    fn forward[T](self Self, task Task[T], comptime direct Bool) Task[T] {
+        comptime if direct {
+            task
+        } else {
+            let moved = task
+            moved
+        }
     }
 
     async fn wrap[T](self Self, task Task[T]) Task[T] {
@@ -83,8 +88,9 @@ async fn exercise() {
     assert resolved(erased).await == 42
     assert erased.read_again().await == 42
     assert erased.echo("ready", true).await == "ready"
-    let nested = erased.wrap(erased.forward(erased.echo(7, false)))
+    let nested = erased.wrap(erased.forward(erased.echo(7, false), false))
     assert nested.await.await == 7
+    assert original.forward(original.echo("direct", false), true).await == "direct"
     let producer dyn Source[Item = Task[Int]] = Deferred {
         value = 9
     }

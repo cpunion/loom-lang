@@ -11,8 +11,13 @@ async fn recorded[T](value T, order List[Int], tag Int) T {
     value
 }
 
-fn forward[T](task Task[T]) Task[T] {
-    task
+fn forward[T](task Task[T], comptime direct Bool) Task[T] {
+    comptime if direct {
+        task
+    } else {
+        let transferred = task
+        transferred
+    }
 }
 
 async fn render(number Task[Int], word Task[Text]) Text {
@@ -28,7 +33,7 @@ async fn joined() Text {
 
     // Creation queues both children; it does not run their bodies inline.
     assert length(order) == 0
-    let text = render(forward(number), word).await
+    let text = render(forward(number, true), forward(word, false)).await
     assert length(order) == 2
     assert get(order, 0) == 1 && get(order, 1) == 2
     text

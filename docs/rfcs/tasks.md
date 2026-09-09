@@ -90,8 +90,11 @@ Task parameters without running their bodies. A Task-valued result stays below
 its completed producer until the actual consumer extracts it, preserving subtree
 cancellation even when that producer is transferred again. Already-evaluated
 call arguments remain obligations until the call executes.
-Consumption through an unselected `comptime if` remains unsupported: abstract
-checking must establish the transfer rather than drop a live parameter's obligation.
+An undetermined `comptime if` retains check-only uncertainty for visible Task
+bindings. It does not prove them consumed or execute either branch. Each concrete
+instance selects its branch and checks all actual transfers before emission,
+including omissions, repeated reads, overwrites and control-flow joins. Required
+postconditions still need abstract proof; pending Task analysis is not proof evidence.
 
 Active `defer`/`scoped` cleanup now crosses await through frame-backed captures.
 The independent `std.resource.NoSuspend` marker forbids live lexical bindings,

@@ -51,7 +51,7 @@ fn task_binding_consumed(flow TaskFlow, value Expr, local Int) Result[Bool, Fail
     if local < 0 { return Result.Ok(true) }
     var index = get(flow.offsets, local)
     while index < get(flow.offsets, local + 1) {
-        if get(flow.locals, index) != 0 {
+        if get(flow.locals, index) == 1 {
             return Result.Err(task_error(flow, value, "a Task-bearing match payload must be awaited or transferred"))
         }
         index = index + 1

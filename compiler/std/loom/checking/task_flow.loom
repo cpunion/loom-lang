@@ -12,7 +12,9 @@ import std.list.length
 import std.result.Result
 
 // Task handles are one-shot, without introducing source ownership syntax.
-// Locals transfer on reads; joins retain only identical consumption states.
+// Locals transfer on reads: 0 consumed, 1 live, 2 pending comptime selection.
+// State 2 is check-only uncertainty, never evidence of a valid transfer.
+// Concrete instances contain no pending selections and still require exact joins.
 record TaskFlow {
     context Context
     locals List[Int]
@@ -71,8 +73,27 @@ fn task_join(flow TaskFlow, branch TaskFlow) {
     set(flow.pending, 1, get(branch.pending, 1))
 }
 
-fn same_task_state(left TaskFlow, right TaskFlow) Bool {
-    same(left.locals, right.locals) && get(left.pending, 0) == get(right.pending, 0)
+fn compatible_task_states(left List[Int], right List[Int]) Bool {
+    var index = 0
+    while index < length(left) {
+        let a = get(left, index)
+        let b = get(right, index)
+        if a != b && a != 2 && b != 2 { return false }
+        index = index + 1
+    }
+    true
+}
+
+fn merge_task_states(left List[Int], right List[Int]) {
+    var index = 0
+    while index < length(left) {
+        if get(right, index) == 2 { set(left, index, 2) }
+        index = index + 1
+    }
+}
+
+fn compatible_task_state(left TaskFlow, right TaskFlow) Bool {
+    compatible_task_states(left.locals, right.locals) && get(left.pending, 0) == get(right.pending, 0)
 }
 
 fn tasks_consumed(flow TaskFlow, value Expr) Result[Bool, Failure] {
@@ -81,7 +102,7 @@ fn tasks_consumed(flow TaskFlow, value Expr) Result[Bool, Failure] {
     }
     var index = 0
     while index < length(flow.locals) {
-        if get(flow.locals, index) != 0 {
+        if get(flow.locals, index) == 1 {
             return Result.Err(task_error(flow, value, "a task is still live at function exit; await or transfer it before returning"))
         }
         index = index + 1
@@ -164,6 +185,21 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     if task && !allowed {
         return Result.Err(task_error(flow, value, "a task must be awaited or transferred; it cannot be copied or discarded"))
     }
+    if value.kind == ExprKind.Deferred && value.text == "comptime selection" {
+        // Captures describe possible access, not eagerly evaluated operands.
+        // deferred() rejects this node in every emitting/concrete check.
+        var capture = 0
+        while capture < length(value.children) {
+            let local = get(value.children, capture).index
+            var field = get(flow.offsets, local)
+            while field < get(flow.offsets, local + 1) {
+                set(flow.locals, field, 2)
+                field = field + 1
+            }
+            capture = capture + 1
+        }
+        return Result.Ok(task)
+    }
     if value.kind == ExprKind.Local && task {
         return task_take(flow, value, get(flow.offsets, value.index), task_width(flow.context.env, value.ty))
     }
@@ -189,7 +225,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         return Result.Ok(task)
     }
     // A deferred call retains its runtime arguments during abstract checking.
-    // Other Deferred expressions have no children and cannot hide transfers.
+    // Pending selections are handled separately above; they do not call anything.
     if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall || value.kind == ExprKind.IndirectCall || value.kind == ExprKind.Deferred || value.kind == ExprKind.Record || value.kind == ExprKind.Variant || value.kind == ExprKind.List ||
         (value.kind == ExprKind.Intrinsic && (value.text == "list_append" || value.text == "list_take" || value.text == "list_replace" || value.text == "task_observe" || value.text == "task_cancel" || value.text == "task_drain")) {
         return task_arguments(flow, value)
@@ -201,7 +237,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         if value.falls && takes_task {
             var index = get(flow.offsets, value.index)
             while index < get(flow.offsets, value.index + 1) {
-                if get(flow.locals, index) != 0 {
+                if get(flow.locals, index) == 1 {
                     return Result.Err(task_error(flow, value, "cannot overwrite a live task; await or transfer it first"))
                 }
                 set(flow.locals, index, 1)
@@ -234,9 +270,10 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
             discard task_expression(no, otherwise, allowed)?
             no_falls = otherwise.falls
         }
-        if then.falls && no_falls && !same_task_state(yes, no) {
+        if then.falls && no_falls && !compatible_task_state(yes, no) {
             return Result.Err(task_error(flow, value, "task consumption must agree on all continuing branches"))
         }
+        if then.falls && no_falls { merge_task_states(yes.locals, no.locals) }
         if then.falls {
             task_join(flow, yes)
         } else {
@@ -262,9 +299,10 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
             discard task_sequence(branch, body, allowed)?
             if all_fall(body) {
                 discard task_match_consumed(branch, value, arm)?
-                if found && !same_task_state(merged, branch) {
+                if found && !compatible_task_state(merged, branch) {
                     return Result.Err(task_error(flow, value, "task consumption must agree on all continuing match arms"))
                 }
+                if found { merge_task_states(branch.locals, merged.locals) }
                 task_join(merged, branch)
                 found = true
             }
@@ -280,18 +318,20 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         let branch = task_branch(flow)
         let right = get(value.children, 1)
         discard task_expression(branch, right, false)?
-        if right.falls && !same_task_state(flow, branch) {
+        if right.falls && !compatible_task_state(flow, branch) {
             return Result.Err(task_error(flow, value, "a short-circuit operand cannot conditionally consume a live task"))
         }
+        if right.falls { merge_task_states(flow.locals, branch.locals) }
         return Result.Ok(false)
     }
     if value.kind == ExprKind.While {
         let before = task_states(flow.locals)
         let pending = get(flow.pending, 0)
         discard task_expression(flow, get(value.children, 0), false)?
-        if !same(before, flow.locals) || pending != get(flow.pending, 0) {
+        if !compatible_task_states(before, flow.locals) || pending != get(flow.pending, 0) {
             return Result.Err(task_error(flow, value, "loop conditions must preserve existing task consumption state"))
         }
+        merge_task_states(before, flow.locals)
         let exits = new[List[Int]]()
         let branch = TaskFlow {
             context = flow.context
@@ -306,16 +346,18 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         }
         let body = get(value.children, 1)
         discard task_expression(branch, body, false)?
-        if body.falls &&(!same(before, branch.locals) || pending != get(branch.pending, 0)) {
+        if body.falls &&(!compatible_task_states(before, branch.locals) || pending != get(branch.pending, 0)) {
             return Result.Err(task_error(flow, value, "loop bodies must consume their own tasks and preserve tasks from outside the loop"))
         }
+        if body.falls { merge_task_states(flow.locals, branch.locals) }
         var selected = !unconditional_loop(get(value.children, 0))
         var exit = 0
         while exit < length(exits) {
             let state = get(exits, exit)
-            if selected && !same(flow.locals, state) {
+            if selected && !compatible_task_states(flow.locals, state) {
                 return Result.Err(task_error(flow, value, "task consumption must agree on all continuing loop exits"))
             }
+            if selected { merge_task_states(state, flow.locals) }
             var local = 0
             while local < length(state) {
                 set(flow.locals, local, get(state, local))
@@ -328,13 +370,13 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
     }
     if value.kind == ExprKind.Break || value.kind == ExprKind.Continue {
         if get(flow.pending, 0) != flow.loop_pending ||
-            (value.kind == ExprKind.Continue && !same(flow.locals, flow.loop_entry)) {
+            (value.kind == ExprKind.Continue && !compatible_task_states(flow.locals, flow.loop_entry)) {
             return Result.Err(task_error(flow, value, "loop exits must consume loop-local tasks and preserve outer tasks"))
         }
         if value.kind == ExprKind.Break {
             var index = 0
             while index < length(flow.locals) {
-                if get(flow.locals, index) != 0 && get(flow.loop_entry, index) == 0 {
+                if get(flow.locals, index) == 1 && get(flow.loop_entry, index) == 0 {
                     return Result.Err(task_error(flow, value, "loop exits must consume loop-local tasks and preserve outer tasks"))
                 }
                 index = index + 1
@@ -356,7 +398,7 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
             cleanup = true
         }
         discard task_sequence(branch, value.children, false)?
-        if !same_task_state(branch, flow) {
+        if !compatible_task_state(branch, flow) {
             return Result.Err(task_error(flow, value, "task transfer from cleanup is not yet implemented"))
         }
         return Result.Ok(false)

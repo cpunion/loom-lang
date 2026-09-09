@@ -25,6 +25,15 @@ fn forward[T](value T) T {
     value
 }
 
+fn staged[A, B](pair (Task[A], Task[B]), comptime unpack Bool) (Task[A], Task[B]) {
+    comptime if unpack {
+        let first, second = pair
+        (first, second)
+    } else {
+        pair
+    }
+}
+
 concept Source {
     fn begin(self Self, values List[Int]) Work[List[Int], Text]
 
@@ -89,7 +98,7 @@ async fn exercise() {
     let a, b = pair
     assert a.await == 3
     assert b.await == "four"
-    let left, right = (sleep_ms(1), sleep_ms(1))
+    let left, right = staged((sleep_ms(1), sleep_ms(1)), true)
     left.await
     right.await
     var (nested_first, (nested_second, _)), mark = ((delayed(values), (delayed("nested"), false)), 1)

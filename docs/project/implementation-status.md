@@ -24,6 +24,10 @@ Direct Task parameters/returns, generic forwarding and nested Task results now
 preserve one-shot obligations. Async callees adopt argument subtrees; completed
 producers retain Task-valued results until extraction by the actual consumer.
 Sync helpers expose a Task-bearing parameter/result and use their caller's owner.
+Undetermined compile-time selections now defer affected Task states until concrete
+instantiation, including aggregate fields, match scopes and loop/branch joins.
+They retain a distinct check-only state, not invented transfers; concrete instances
+still require exact one-shot flow, and mandatory proofs cannot use pending selections.
 Async concept/impl methods now share the same constructor/resume path through
 concrete, generic and dynamic calls. Implementations must match the declared async
 effect. Default methods, associated results and type/comptime method parameters
