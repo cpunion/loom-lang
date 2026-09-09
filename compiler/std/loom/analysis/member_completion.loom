@@ -1,4 +1,5 @@
 import std.loom.checking.member_candidates
+import std.loom.checking.MemberQuery
 
 fn completion_receiver(node Node, tokens List[Token], dot Span) Option[Node] {
     if !inside(node.span, dot.start) {
@@ -15,7 +16,8 @@ fn completion_receiver(node Node, tokens List[Token], dot Span) Option[Node] {
     if node.kind == NodeKind.Select || node.kind == NodeKind.MethodCall || node.kind == NodeKind.Await {
         return Option.Some(get(node.children, 0))
     }
-    if node.kind == NodeKind.Name || node.kind == NodeKind.Call {
+    let type_path = node.kind == NodeKind.Type || node.kind == NodeKind.DynType || node.kind == NodeKind.Construct
+    if node.kind == NodeKind.Name || node.kind == NodeKind.Call || type_path {
         var name = ""
         var end = node.span.start
         index = 0
@@ -23,8 +25,10 @@ fn completion_receiver(node Node, tokens List[Token], dot Span) Option[Node] {
             let token = get(tokens, index)
             if token.span.start >= node.span.start {
                 if token.kind == Kind.Name {
-                    name = concat(name, token.value)
-                    end = token.span.end
+                    if node.kind != NodeKind.DynType || token.span.start != node.span.start {
+                        name = concat(name, token.value)
+                        end = token.span.end
+                    }
                 } else {
                     if token.kind == Kind.Dot {
                         name = concat(name, ".")
@@ -39,7 +43,15 @@ fn completion_receiver(node Node, tokens List[Token], dot Span) Option[Node] {
         }
         if name != "" {
             return Option.Some(Node {
-                    kind = NodeKind.Name
+                    kind = if type_path {
+                        if node.kind == NodeKind.DynType {
+                            NodeKind.DynType
+                        } else {
+                            NodeKind.Type
+                        }
+                    } else {
+                        NodeKind.Name
+                    }
                     value = name
                     children = new[Node]()
                     span = Span {
@@ -85,8 +97,16 @@ fn complete_members(bindings std.loom.binding.Program, file Int, offset Int) Opt
             return Option.None
         }
     }
+    if receiver.kind == NodeKind.Type || receiver.kind == NodeKind.DynType {
+        return qualified_completion(bindings, file, offset, span, receiver)
+    }
     let candidates = match member_candidates(bindings, file, span.start, receiver, slice(source.text, span.start, offset)) {
-        Result.Ok(value) => value
+        Result.Ok(value) => match value {
+            MemberQuery.Members(items) => items
+            MemberQuery.Qualified => {
+                return qualified_completion(bindings, file, offset, span, receiver)
+            }
+        }
         Result.Err(_) => {
             return Option.None
         }

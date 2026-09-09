@@ -116,8 +116,7 @@ types. Inner bindings hide outer names; overloads retain separate declaration
 signatures. Test-only names never enter production scope. Partial identifiers and
 body type errors work; choosing a candidate replaces the whole identifier, even
 when the cursor is in its middle. These are visible candidates, not a claim that
-each overload or value is valid at this expression. There is no automatic import
-or package-qualified completion yet. A cursor-local recovery can fill one missing
+each overload or value is valid at this expression. A cursor-local recovery can fill one missing
 name/value and close unmatched delimiters at EOF in a virtual completion snapshot.
 It does not change the user's buffer, relax ordinary parsing/checking, or clear
 the original syntax diagnostic. Other syntax/lexical errors still block results;
@@ -134,6 +133,16 @@ undetermined compile-time branches and `comptime` execution blocks have no resul
 These are type-based hints, not verification of the unfinished body, callees,
 contracts or resource flow; method overloads retain declaration signatures and
 still require arguments. Names and members replace the entire partial token.
+
+Qualified completion walks the same visible spellings as ordinary name lookup:
+`std.` can offer `text`, and `std.text.` offers the symbols explicitly imported
+from that package, not every public declaration in downloaded dependencies.
+Current-package private symbols and test-only imports retain their normal scope;
+same-named dependency instances do not merge. Local value receivers take priority
+over namespaces, including whole-value match bindings. Type annotations and
+constructors offer types; `dyn` offers concepts; type parameters hide matching
+namespace roots. These are spelling candidates, not validated instantiations.
+Import-statement path discovery and automatic imports are not implemented.
 
 ```sh
 npm test           # Real LSP transport with a small process fixture
@@ -177,7 +186,7 @@ query results; a project `"error"` has none. Spans and query offsets use UTF-8 b
 the server maps them to/from LSP UTF-16 positions using the captured text.
 Formatting reads and writes source on stdin/stdout.
 Completion output adds `"completion": null | { "start", "end", "items": [
-{ "label", "kind": "variable" | "function" | "type" | "field" | "method" | "keyword", "detail" }, ...] }`.
+{ "label", "kind": "variable" | "function" | "type" | "field" | "method" | "keyword" | "namespace", "detail" }, ...] }`.
 Its spans are also UTF-8 bytes; it does not run proofs or produce an executable.
 
 The client/server use Microsoft's [Language Server SDK](https://github.com/microsoft/vscode-languageserver-node)

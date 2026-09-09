@@ -100,6 +100,12 @@ error clearing, name/member completion and applied formatting. The
 [file-tool trial](../examples/wordcount/README.md) exercises a multi-package
 application from its own directory. Broader interactive usability review remains open.
 
+Package-qualified completion enumerates current-package and explicitly imported
+names, preserving overloads, private/test scopes and dependency instance identity.
+Local receivers do not fall back to namespaces. Type/constructor paths offer
+types and `dyn` paths offer concepts, without hiding a same-named type parameter.
+Import-path discovery and automatic imports remain open.
+
 ## Public syntax libraries
 
 The compiler and ordinary Loom programs use the same source implementation:
@@ -221,7 +227,7 @@ without the CLI, LLVM backend, or filesystem loading:
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
 | `inspect_independent(bindings, file, offset)` | Isolated inspection of a concrete function and its checked dependencies; no executable program |
 | `complete_names(bindings, file, offset)` | `Option[Completion]`: visible names and declaration signatures, using binding only |
-| `complete_at(bindings, file, offset)` | Names or receiver-type member hints, with a UTF-8 replacement span |
+| `complete_at(bindings, file, offset)` | Names, qualified paths or receiver-type member hints, with a UTF-8 replacement span |
 | `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
 
 The [semantic example](../examples/semantic/main.loom) creates an in-memory
@@ -249,8 +255,9 @@ Completion candidates are not checked expression results. Member queries reuse
 the ordinary parameter/match binders, preceding statements and explicit concept
 evidence; they do not check the unfinished body or prove its callees/contracts.
 Unknown receivers, earlier typing errors, undetermined compile-time branches and
-`comptime` execution blocks return no result. No package-qualified completion or
-automatic imports are provided. The caller supplies matching source/AST bindings;
+`comptime` execution blocks return no receiver result. Qualified type spelling
+queries need only bindings; expression paths retain the enclosing prefix checks.
+No import discovery or automatic imports are provided. The caller supplies matching source/AST bindings;
 CLI-only cursor recovery maps virtual insertion ranges back to the original buffer.
 
 `inspect_at` selects the source token's role, so a receiver and its selected field

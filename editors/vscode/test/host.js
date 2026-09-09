@@ -72,6 +72,15 @@ async function run() {
     const fieldRange = field.range.replacing || field.range;
     assert.ok(fieldRange.isEmpty && fieldRange.end.isEqual(document.positionAt(memberSource.length)));
     assert.equal(document.getText(), memberSource);
+    const qualified = 'import std.text.length\nfn main(){discard std.';
+    await replace(qualified);
+    await diagnostics(document.uri, values => values.length > 0);
+    const namespaces = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider',
+      document.uri, document.positionAt(qualified.length), '.');
+    const text = namespaces.items.find(item => item.label === 'text');
+    assert.ok(text && text.kind === vscode.CompletionItemKind.Module && text.insertText === 'text');
+    assert.ok((text.range.replacing || text.range).isEmpty);
+    assert.equal(document.getText(), qualified);
     await replace(source);
     await diagnostics(document.uri, values => values.length === 0);
     const edits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { tabSize: 4, insertSpaces: true });

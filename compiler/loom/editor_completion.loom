@@ -83,6 +83,7 @@ fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int, in
             CompletionKind.Field => "field"
             CompletionKind.Method => "method"
             CompletionKind.Keyword => "keyword"
+            CompletionKind.Namespace => "namespace"
         }
         let fields = concat("{\"label\":", concat(editor_quoted(item.name), concat(",\"kind\":", editor_quoted(kind))))
         items = concat(items, concat(fields, concat(",\"detail\":", concat(editor_quoted(item.detail), "}"))))

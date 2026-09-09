@@ -1,0 +1,139 @@
+fn qualified_project(body Text) Project {
+    let project = input(concat("import helper.util.decode\nimport helper.util.Token\nimport helper.util.Show\n", body))
+    push(project.modules, ModuleInstance {
+            name = "helper"
+            source = "/helper"
+        })
+    push(project.packages, Package {
+            instance = 1
+            relative = "util"
+            imports = new[PackageImport]()
+        })
+    push(get(project.packages, 0).imports, PackageImport {
+            spelling = "helper.util"
+            target = 1
+        })
+    let dependency = "pub fn decode(value Int) Int { value }\npub fn decode(value Bool) Bool { value }\npub record Token { value Int }\npub concept Show { fn show(self Self) Int }\npub fn unimported() {}\nfn hidden() {}"
+    push(project.files, SourceFile {
+            package = 1
+            path = "helper/util.loom"
+            text = dependency
+            tree = get(input(dependency).files, 0).tree
+            test_only = false
+            trusted_std = false
+        })
+    // The same display name in another source instance is not this import.
+    push(project.modules, ModuleInstance {
+            name = "helper"
+            source = "/fork"
+        })
+    push(project.packages, Package {
+            instance = 2
+            relative = "util"
+            imports = new[PackageImport]()
+        })
+    let unrelated = "pub fn decode(value Text) Text { value }"
+    push(project.files, SourceFile {
+            package = 2
+            path = "fork/util.loom"
+            text = unrelated
+            tree = get(input(unrelated).files, 0).tree
+            test_only = false
+            trusted_std = false
+        })
+    project
+}
+
+fn qualified_query(bindings std.loom.binding.Program, file Int, fragment Text) Completion {
+    let source = get(bindings.files, file)
+    match complete_at(bindings, file, query_offset(source.text, fragment) + std.text.length(fragment)) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            qualified_query(bindings, file, fragment)
+        }
+    }
+}
+
+test fn qualified_names_reuse_import_instances_overloads_and_type_positions() {
+    let source = qualified_project("fn main() { discard helper.util.deRest }")
+    let methods = qualified_query(query_bindings(source), 0, "discard helper.util.de")
+    assert length(methods.items) == 2
+    assert get(methods.items, 0).kind == CompletionKind.Function
+    assert get(methods.items, 0).detail != get(methods.items, 1).detail
+    assert slice(get(source.files, 0).text, methods.span.start, methods.span.end) == "deRest"
+    let namespace = qualified_query(query_bindings(qualified_project("fn main() { discard helper._ }")), 0, "discard helper.")
+    assert length(namespace.items) == 1 && get(namespace.items, 0).name == "util"
+    assert get(namespace.items, 0).kind == CompletionKind.Namespace && get(namespace.items, 0).detail == "package helper.util"
+    let all = qualified_query(query_bindings(qualified_project("fn main() { discard helper.util._ }")), 0, "discard helper.util.")
+    assert length(all.items) == 4 && !completion_named(all.items, "hidden") && !completion_named(all.items, "unimported")
+    let types = qualified_query(query_bindings(qualified_project("fn demo(value helper.util.ToRest) {}")), 0, "value helper.util.To")
+    assert length(types.items) == 1 && get(types.items, 0).name == "Token" && get(types.items, 0).kind == CompletionKind.Type
+    let constructed = qualified_query(query_bindings(qualified_project("fn main() { discard helper.util.ToRest { value = 1 } }")), 0, "discard helper.util.To")
+    assert length(constructed.items) == 1 && get(constructed.items, 0).name == "Token"
+    let dynamic = qualified_query(query_bindings(qualified_project("fn demo(value dyn helper.util.ShRest) {}")), 0, "value dyn helper.util.Sh")
+    assert length(dynamic.items) == 1 && get(dynamic.items, 0).name == "Show"
+}
+
+test fn qualified_paths_do_not_override_value_or_type_parameter_bindings() {
+    let header = "record Inner { decode Bool }\nrecord Box { util Inner }\n"
+    let bodies = ["fn demo(helper Box) { discard helper.util.de }",
+        "fn demo(box Box) { match box { helper => { discard helper.util.de } } }"]
+    var index = 0
+    while index < length(bodies) {
+        let found = qualified_query(query_bindings(qualified_project(concat(header, get(bodies, index)))), 0, "discard helper.util.de")
+        assert length(found.items) == 1 && get(found.items, 0).kind == CompletionKind.Field
+        assert get(found.items, 0).detail == "decode Bool"
+        index = index + 1
+    }
+    // A bare enum variant is not a whole-value pattern binding.
+    let variant = qualified_query(query_bindings(qualified_project("enum Choice { helper }\nfn demo() { match Choice.helper { helper => { discard helper.util.de } } }")), 0, "discard helper.util.de")
+    assert length(variant.items) == 2 && get(variant.items, 0).kind == CompletionKind.Function
+    let global_values = "concept Inspect { fn inspect(self Self) Bool }\nenum Choice { Empty }\nimpl Inspect for Choice { fn inspect(self Choice) Bool { true } }\nimpl Inspect for fn(Int) Int { fn inspect(self fn(Int) Int) Bool { true } }\nfn identity(value Int) Int { value }\n"
+    let enum_value = qualified_query(query_bindings(qualified_project(concat(global_values, "fn demo() { discard Choice.Empty.in }"))), 0, "discard Choice.Empty.in")
+    assert length(enum_value.items) == 1 && get(enum_value.items, 0).kind == CompletionKind.Method
+    let function_value = qualified_query(query_bindings(qualified_project(concat(global_values, "fn demo() { discard (identity).in }"))), 0, "discard (identity).in")
+    assert length(function_value.items) == 1 && get(function_value.items, 0).kind == CompletionKind.Method
+    let shadowed = qualified_project("fn demo[helper](value helper.util.To) {}")
+    assert match complete_at(query_bindings(shadowed), 0, query_offset(get(shadowed.files, 0).text, "value helper.util.To") + 20) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    let invalid = qualified_project("fn demo() { let helper Bool = 3\ndiscard helper.util.de }")
+    assert match complete_at(query_bindings(invalid), 0, query_offset(get(invalid.files, 0).text, "discard helper.util.de") + 22) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    let self_source = input("record Token {}\nconcept C { fn demo(self Self, value Self.To) }")
+    set(self_source.modules, 0, ModuleInstance { name = "Self" source = "/Self" })
+    assert match complete_at(query_bindings(self_source), 0, query_offset(get(self_source.files, 0).text, "value Self.To") + 13) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
+
+test fn qualified_local_private_and_test_imports_keep_their_original_scope() {
+    let project = qualified_project("fn private_name() {}\nfn demo() { discard app.pr }\nfn production() { discard helper.util.un }\ntest fn embedded() { discard helper.util.un }")
+    let testing = "import helper.util.unimported\nfn test_helper() {}"
+    push(project.files, SourceFile {
+            package = 0
+            path = "main_test.loom"
+            text = testing
+            tree = get(input(testing).files, 0).tree
+            test_only = true
+            trusted_std = false
+        })
+    let bindings = match bind(project, true) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let private = qualified_query(bindings, 0, "discard app.pr")
+    assert completion_named(private.items, "private_name") && completion_named(private.items, "production")
+    let production = qualified_query(bindings, 0, "fn production() { discard helper.util.un")
+    assert length(production.items) == 0
+    let test_import = qualified_query(bindings, 0, "test fn embedded() { discard helper.util.un")
+    assert length(test_import.items) == 1 && get(test_import.items, 0).name == "unimported"
+}
