@@ -41,7 +41,7 @@ fn exercise() {
             assert false
         }
     }
-    let nested =((1.0, 2.0),(3.0,))
+    let nested = ((1.0, 2.0), (3.0,))
     assert nested.0.1 == 2.0 && nested.1.0 == 3.0
     assert match to_int(from_int(42) / 2.0) {
         Result.Ok(number) => number == 21,

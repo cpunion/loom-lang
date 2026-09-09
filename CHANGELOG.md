@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Keep spaces before grouped operands after binary operators, assignment,
+  commas, match arrows and contract keywords in `loom fmt`, while retaining
+  attached calls and unary prefixes. Preserve parsed structure and idempotence.
+
 - Add compiler-backed name completion to VS Code and public
   `std.loom.analysis.complete_names`. Reuse package visibility and lexical
   scopes, preserve overload signatures and whole-identifier replacement, and

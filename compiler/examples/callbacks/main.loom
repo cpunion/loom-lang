@@ -84,13 +84,13 @@ fn exercise() {
     let hook = Hook {
         action = increment
     }
-    assert hook.action(8) == 9 &&(hook.action)(9) == 10
+    assert hook.action(8) == 9 && (hook.action)(9) == 10
     let maybe = MaybeHook.Some(double)
     assert match maybe {
         MaybeHook.Some(value) => value(4) == 8,
         MaybeHook.None => false
     }
-    let functions =(increment, double)
+    let functions = (increment, double)
     assert functions.0(2) == 3 && functions.1(2) == 4
     let values = new[Int]()
     push(values, 3)

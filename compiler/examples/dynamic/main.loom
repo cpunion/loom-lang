@@ -86,7 +86,7 @@ fn exercise() {
         Maybe.Some(inner) => inner.display() == "enum!",
         _ => false
     }
-    let pair (dyn Display, dyn Display) =(true, label("tuple"))
+    let pair (dyn Display, dyn Display) = (true, label("tuple"))
     assert pair.0.display() == "true" && pair.1.display() == "tuple!"
 
     // The receiver snapshot must survive replacement and allocation in the next

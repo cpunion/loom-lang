@@ -36,7 +36,7 @@ fn token_at(tokens List[Token], offset Int) Int {
     var low = 0
     var high = length(tokens) - 1
     while low < high {
-        let middle = low +(high - low) / 2
+        let middle = low + (high - low) / 2
         if get(tokens, middle).span.start < offset {
             low = middle + 1
         } else {
@@ -53,11 +53,13 @@ fn marks(node Node, tokens List[Token], layout Layout) {
         opening = opening + 1
     }
     let actual_block = node.kind == NodeKind.Block && get(tokens, opening).kind == Kind.LBrace
-    if node.kind == NodeKind.List { set(layout.spaces, opening, true) }
+    if node.kind == NodeKind.List {
+        set(layout.spaces, opening, true)
+    }
     if (node.kind == NodeKind.Type || node.kind == NodeKind.TupleType) && get(tokens, start).kind == Kind.LParen {
         set(layout.spaces, start, true)
     }
-    if node.kind == NodeKind.Unary ||(node.kind == NodeKind.Integer && length(node.value) > 0 && byte(node.value, 0) == 45) {
+    if node.kind == NodeKind.Unary || (node.kind == NodeKind.Integer && length(node.value) > 0 && byte(node.value, 0) == 45) {
         var prefix = start
         while get(tokens, prefix).kind == Kind.LParen || get(tokens, prefix).kind == Kind.Newline {
             prefix = prefix + 1
@@ -69,7 +71,7 @@ fn marks(node Node, tokens List[Token], layout Layout) {
     if node.kind == NodeKind.Select && length(node.value) > 0 && byte(node.value, 0) >= 48 && byte(node.value, 0) <= 57 {
         let receiver = get(node.children, 0)
         let token = get(tokens, token_at(tokens, receiver.span.start))
-        if (receiver.kind == NodeKind.Integer || receiver.kind == NodeKind.Float) &&(token.kind == Kind.Number || token.kind == Kind.Float) {
+        if (receiver.kind == NodeKind.Integer || receiver.kind == NodeKind.Float) && (token.kind == Kind.Number || token.kind == Kind.Float) {
             set(layout.spaces, token_at(tokens, receiver.span.end), true)
         }
     }
@@ -79,7 +81,7 @@ fn marks(node Node, tokens List[Token], layout Layout) {
         if node.kind == NodeKind.File || actual_block ||
         ((node.kind == NodeKind.Record || node.kind == NodeKind.Construct) && child.kind == NodeKind.Field) ||
         (node.kind == NodeKind.Enum && child.kind == NodeKind.Variant) ||
-        ((node.kind == NodeKind.Concept || node.kind == NodeKind.Impl) &&(child.kind == NodeKind.Function || child.kind == NodeKind.AssociatedType)) ||
+        ((node.kind == NodeKind.Concept || node.kind == NodeKind.Impl) && (child.kind == NodeKind.Function || child.kind == NodeKind.AssociatedType)) ||
         (node.kind == NodeKind.Match && child.kind == NodeKind.Arm) ||
         child.kind == NodeKind.Requires || child.kind == NodeKind.Ensures {
             let separation = if node.kind == NodeKind.File && index > 0 &&
@@ -176,8 +178,19 @@ fn spaced(previous Token, current Token, force Bool, prefix Bool) Bool {
         return force
     }
     if right == Kind.LParen {
-        return force ||(left == Kind.Name &&(previous.value == "if" || previous.value == "while" ||
-                previous.value == "match" || previous.value == "return" || previous.value == "assert" || previous.value == "discard"))
+        if force {
+            return true
+        }
+        if left == Kind.Name {
+            return previous.value == "if" || previous.value == "while" || previous.value == "match" ||
+            previous.value == "return" || previous.value == "assert" || previous.value == "discard" ||
+            previous.value == "requires" || previous.value == "ensures"
+        }
+        // Calls attach to receivers; binary operators, assignments, commas and
+        // match arrows separate their following grouped expression. Unary
+        // prefixes and opening delimiters were handled above.
+        return left != Kind.RParen && left != Kind.RBracket && left != Kind.RBrace &&
+        left != Kind.Question && left != Kind.Number && left != Kind.Float && left != Kind.Text
     }
     true
 }
