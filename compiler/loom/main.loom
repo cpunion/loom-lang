@@ -43,7 +43,7 @@ fn main() {
         discard write_text("loom source compiler (development)\n")
         return
     }
-    if mode == "editor-check" || mode == "editor-query" {
+    if mode == "editor-check" || mode == "editor-query" || mode == "editor-complete" {
         let output = editor_execute(args)
         match write_text(output.text) {
             Result.Ok(_) => {

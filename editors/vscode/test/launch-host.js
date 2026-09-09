@@ -33,7 +33,7 @@ async function main() {
     const result = await fs.readFile(resultFile, 'utf8').then(JSON.parse).catch(() => null);
     if (!result) throw new Error(`VS Code exited ${code} without a host-test completion report`);
     if (code !== 0 || result.passed !== true) throw new Error(result.error || `VS Code extension-host smoke exited ${code}`);
-    console.log('VS Code activation, unsaved diagnostics, hover, definition, formatting/save, test, and run passed.');
+    console.log('VS Code activation, unsaved diagnostics, hover, definition, name completion, formatting/save, test, and run passed.');
   } catch (error) {
     const output = await fs.readFile(logFile, 'utf8').catch(() => '');
     if (output) process.stderr.write(output.slice(-8192));

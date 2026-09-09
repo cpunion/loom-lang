@@ -80,17 +80,18 @@ statement per line. It separates top-level declarations and retains at most one
 user blank line. This changes layout, not grammar; semicolons remain invalid.
 
 The [VS Code development extension](../../editors/vscode/README.md) provides
-highlighting, document formatting, diagnostics, type hovers and definition
+highlighting, document formatting, diagnostics, name completion, type hovers and definition
 navigation for unsaved buffers. Its
 language server sends source snapshots to the same Loom package/type/contract
 checker; it does not implement another parser or checker in JavaScript.
-Completion, rename, and incremental semantic caching remain open. Semantic
+Name completion uses package bindings and lexical scopes without type checking;
+member completion, rename, and incremental semantic caching remain open. Semantic
 queries use concrete body instances. If package checking fails, an independently
 checked ordinary function can still provide hover and navigation; its own errors
 or a failing dependency suppress the result. Syntax, global declaration, and
 generic/comptime template errors can still block queries.
 An isolated macOS VS Code extension-host test covers activation, unsaved errors,
-error clearing, and applied formatting. The
+error clearing, applied name completion and formatting. The
 [file-tool trial](../examples/wordcount/README.md) exercises a multi-package
 application from its own directory. Broader interactive usability review remains open.
 

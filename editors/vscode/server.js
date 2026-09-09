@@ -1,5 +1,5 @@
 'use strict';
-const { createConnection, TextDocuments, TextDocumentSyncKind, DiagnosticSeverity, ResponseError, LSPErrorCodes } = require('vscode-languageserver/node');
+const { createConnection, TextDocuments, TextDocumentSyncKind, DiagnosticSeverity, CompletionItemKind, ResponseError, LSPErrorCodes } = require('vscode-languageserver/node');
 const { TextDocument } = require('vscode-languageserver-textdocument');
 const { URI } = require('vscode-uri');
 const fs = require('node:fs/promises');
@@ -19,7 +19,7 @@ connection.onInitialize(params => {
   folderChanges = !!params.capabilities.workspace?.workspaceFolders;
   defaults = params.initializationOptions?.settings || {};
   return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, documentFormattingProvider: true,
-    hoverProvider: true, definitionProvider: true,
+    hoverProvider: true, definitionProvider: true, completionProvider: {},
     workspace: { workspaceFolders: { supported: true, changeNotifications: true } } } };
 });
 connection.onInitialized(() => {
@@ -151,12 +151,19 @@ async function semanticQuery(params, token, kind) {
   try {
     overlays = await compiler.snapshots(buffers);
     const report = await compiler.query(await settings(document.uri), directory, file,
-      compiler.byteOffset(document, params.position), overlays.args, controller.signal);
+      compiler.byteOffset(document, params.position), overlays.args, controller.signal, kind === 'completion');
     if (report.error) return null;
     if (kind === 'hover') {
       const hover = report.hover;
       value = hover?.types.length ? { contents: hover.types.map(type => ({ language: 'loom', value: type })),
         range: { start: compiler.bytePosition(document, hover.start), end: compiler.bytePosition(document, hover.end) } } : null;
+    } else if (kind === 'completion') {
+      const result = report.completion;
+      const kinds = { variable: CompletionItemKind.Variable, function: CompletionItemKind.Function, type: CompletionItemKind.Class };
+      value = { isIncomplete: true, items: (result?.items || []).map(item => ({
+        label: item.label, kind: kinds[item.kind], detail: item.detail,
+        textEdit: { range: { start: compiler.bytePosition(document, result.start), end: compiler.bytePosition(document, result.end) }, newText: item.label },
+      })) };
     } else {
       value = await Promise.all((report.definitions || []).map(async item => {
         const target = await sourceDocument(path.resolve(directory, item.path), buffers);
@@ -182,6 +189,7 @@ function queryRequest(params, token, kind) {
 }
 connection.onHover((params, token) => queryRequest(params, token, 'hover'));
 connection.onDefinition((params, token) => queryRequest(params, token, 'definition'));
+connection.onCompletion((params, token) => queryRequest(params, token, 'completion'));
 connection.onDocumentFormatting(async (params, token) => {
   const document = documents.get(params.textDocument.uri);
   if (!document) return [];
