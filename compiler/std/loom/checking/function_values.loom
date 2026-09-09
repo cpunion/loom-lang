@@ -107,7 +107,7 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
     Result.Ok(expression(ExprKind.FunctionRef, output, node, "", target, new[Expr](), true))
 }
 
-fn call_value(context Context, node Node, callee Expr, types List[Node], inputs List[Node]) Result[Expr, Failure] {
+fn call_value(context Context, node Node, callee Expr, types List[Node], inputs CallInputs) Result[Expr, Failure] {
     if length(types) != 0 {
         return Result.Err(error(context, node, "function values have fixed signatures and do not take type arguments"))
     }
@@ -116,13 +116,13 @@ fn call_value(context Context, node Node, callee Expr, types List[Node], inputs 
         return Result.Err(error(context, node, "this value is not callable"))
     }
     let count = length(shape.arguments) - 1
-    if length(inputs) != count {
+    if length(inputs.nodes) != count {
         return Result.Err(error(context, node, "function value argument count does not match"))
     }
     let values = expressions(callee)
     var index = 0
     while index < count {
-        push(values, expr(context, get(inputs, index), get(shape.arguments, index))?)
+        push(values, input_value(context, inputs, index, get(shape.arguments, index), false)?)
         index = index + 1
     }
     let output = get(shape.arguments, count)
@@ -145,15 +145,14 @@ fn call_value(context Context, node Node, callee Expr, types List[Node], inputs 
             }, -1, values, all_fall(values)))
 }
 
-fn field_call(context Context, node Node, source Node, receiver Expr, callee Expr, inputs List[Node], options List[Int], types List[Node], expected Int) Result[Expr, Failure] {
+fn field_call(context Context, node Node, source Node, receiver Expr, callee Expr, inputs CallInputs, options List[Int], types List[Node], expected Int) Result[Expr, Failure] {
     if length(options) == 0 {
         return call_value(context, node, callee, new[Node](), inputs)
     }
     let shape = get(context.env.types, callee.ty).arguments
     let count = length(shape) - 1
-    var field_matches = count == length(inputs)
-    let declarations = new[Node]()
-    push(declarations, source)
+    var field_matches = count == length(inputs.nodes)
+    let declarations = input_receiver(inputs, source)
     let values = expressions(receiver)
     let probing = static_options(context, options)
     let probes = new[Bool]()
@@ -161,28 +160,23 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
         push(probes, false)
     }
     var index = 0
-    while index < length(inputs) {
-        let input = get(inputs, index)
+    while index < length(inputs.nodes) {
+        let input = get(inputs.nodes, index)
         var expected_argument = -1
         if length(options) == 1 {
             let method = get(context.env.signatures, get(options, 0))
             let arguments = supplied_call(context, node, types, method)?
             discard infer(context.env, get(method.params, 0), receiver.ty, arguments)
             let method_type = hint(context, get(method.params, index + 1), arguments, node)?
-            if count != length(inputs) || method_type == get(shape, index) {
+            if count != length(inputs.nodes) || method_type == get(shape, index) {
                 expected_argument = method_type
             }
         }
         let probe = probing && static_position(context, options, index + 1)
-        let value = if probe {
-            static_probe(context, input, expected_argument)?
-        } else {
-            expr(context, input, expected_argument)?
-        }
+        let value = input_value(context, inputs, index, expected_argument, probe)?
         if probing {
             push(probes, probe)
         }
-        push(declarations, input)
         push(values, value)
         if field_matches {
             if value.ty != get(shape, index) && !can_widen(context, value.ty, get(shape, index))? {
@@ -200,9 +194,9 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
         index = 0
         while index < count {
             let argument = if probing && get(probes, index + 1) {
-                expr(context, get(inputs, index), get(shape, index))?
+                input_value(context, inputs, index, get(shape, index), false)?
             } else {
-                typed(context, get(inputs, index), get(values, index + 1), get(shape, index))?
+                typed(context, get(inputs.nodes, index), get(values, index + 1), get(shape, index))?
             }
             push(arguments, argument)
             index = index + 1

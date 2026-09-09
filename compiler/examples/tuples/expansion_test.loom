@@ -1,0 +1,4 @@
+test async fn expansion_order_aliases_and_task_transfers() {
+    expansions()
+    spread_tasks().await
+}

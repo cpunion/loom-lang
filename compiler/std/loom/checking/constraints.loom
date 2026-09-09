@@ -163,11 +163,11 @@ fn constraint_error(context Context, node Node) Result[Int, Failure] {
     if variant.name != "Rejected" || length(variant.fields) != 0 { return Result.Err(error(context, node, "ConstraintError must contain an empty Rejected variant")) }
     Result.Ok(ty)
 }
-fn constrained(context Context, node Node, declaration Int, types List[Node], inputs List[Node]) Result[Expr, Failure] {
-    if length(types) != 0 || length(inputs) != 1 { return Result.Err(error(context, node, "a constrained constructor takes one value and no type arguments")) }
+fn constrained(context Context, node Node, declaration Int, types List[Node], inputs CallInputs) Result[Expr, Failure] {
+    if length(types) != 0 || length(inputs.nodes) != 1 { return Result.Err(error(context, node, "a constrained constructor takes one value and no type arguments")) }
     let target = data_type(context.env, declaration, new[Int](), 0)?
     let base = base_type(context.env, target)
-    let input = expr(context, get(inputs, 0), -1)?
+    let input = input_value(context, inputs, 0, -1, false)?
     if input.ty == target { return Result.Ok(input) }
     let value = typed(context, node, input, base)?
     let source = get(context.env.types, input.ty)

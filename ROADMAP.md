@@ -290,6 +290,12 @@ field validation with matches and retaining initializer order, ordinary mutabili
 Task/resource obligations and compile-time execution. This adds no matcher or
 bootstrap checkpoint; refutable and scoped bindings remain open.
 
+Tuple value expansion now forwards heterogeneous arguments and assembles tuple
+or List literals through the same typed calls/projections. Saved operands evaluate
+once and preserve Task/resource obligations; literal expansion retains contextual
+and compile-time argument checking. This establishes argument expansion, not
+variadic declarations, type packs or heterogeneous Task join policies.
+
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time
 invocation/reification. Native captured environments now reuse typed managed

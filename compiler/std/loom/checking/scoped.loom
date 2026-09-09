@@ -17,7 +17,7 @@ fn registered_scoped(context Context, node Node, boundary Int) Result[Step, Fail
     let bound = bind_local(context, node, node.value, value.ty, false, boundary)?
     set(context.locals, local, Local { name = node.value ty = value.ty mutable = false is_scoped = true })
     let receiver = Node { kind = NodeKind.Name value = node.value span = node.span children = new[Node]() }
-    let dispose = method_call(bound, node, receiver, "dispose", new[Node](), new[Node](), resource_concept(context.env, "Dispose"), 0)?
+    let dispose = method_call(bound, node, receiver, "dispose", new[Node](), plain_inputs(new[Node]()), resource_concept(context.env, "Dispose"), 0)?
     let body = expression(ExprKind.Block, 0, node, "", -1, expressions(dispose), dispose.falls)
     let head = length(context.cleanups)
     push(context.cleanups, Cleanup { body = body previous = context.cleanup_head })

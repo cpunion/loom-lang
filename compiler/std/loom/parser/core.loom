@@ -74,11 +74,16 @@ fn name(cursor Cursor) Result[Step, Diagnostic] {
     }
     Result.Ok(done(cursor, next(cursor), NodeKind.Name, token(cursor).value, new[Node]()))
 }
+fn ellipsis(cursor Cursor) Bool {
+    at(cursor, Kind.Dot) && at(next(cursor), Kind.Dot) && at(next(next(cursor)), Kind.Dot) &&
+        token(cursor).span.end == token(next(cursor)).span.start &&
+        token(next(cursor)).span.end == token(next(next(cursor))).span.start
+}
 fn path(cursor Cursor) Result[Step, Diagnostic] {
     let first = name(cursor)?
     var rest = first.rest
     var value = first.node.value
-    while at(rest, Kind.Dot) && !at(next(rest), Kind.Number) && !word(next(rest), "await") {
+    while at(rest, Kind.Dot) && !ellipsis(rest) && !at(next(rest), Kind.Number) && !word(next(rest), "await") {
         let part = name(next(rest))?
         value = concat(value, concat(".", part.node.value))
         rest = part.rest
@@ -139,7 +144,12 @@ fn item(cursor Cursor, mode Items) Result[Step, Diagnostic] {
     match mode {
         Items.Types => type_ref(cursor)
         Items.Names => type_parameter(cursor)
-        Items.Arguments => expr(cursor, 0, true, true)
+        Items.Arguments => {
+            let value = expr(cursor, 0, true, true)?
+            if ellipsis(value.rest) {
+                Result.Ok(done(cursor, next(next(next(value.rest))), NodeKind.Spread, "", one(value.node)))
+            } else { Result.Ok(value) }
+        }
         Items.Parameters => parameter(cursor)
         Items.Bindings => type_binding(cursor)
     }
@@ -156,6 +166,7 @@ fn parenthesized(cursor Cursor, mode Items, tuple_kind NodeKind) Result[Step, Di
     var rest = newlines(first.rest)
     if !at(rest, Kind.Comma) {
         rest = expect(rest, Kind.RParen, "')'")?
+        if first.node.kind == NodeKind.Spread { return Result.Ok(done(cursor, rest, tuple_kind, "", one(first.node))) }
         return Result.Ok(done(cursor, rest, first.node.kind, first.node.value, first.node.children))
     }
     let children = one(first.node)

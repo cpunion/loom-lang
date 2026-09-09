@@ -541,6 +541,29 @@ parallel reassignment are not implemented. Copying a tuple shares its managed
 fields just as copying a record does; compile-time results construct fresh graphs
 while preserving internal sharing.
 
+`values...` expands a statically known tuple in a call, enum payload, tuple or
+List literal. Each operand evaluates once, left to right; a callable receiver
+still evaluates before its arguments. `(values...)` constructs the expanded tuple.
+For example:
+
+```loom
+fn apply[A, B, R](callback fn(A, B) R, arguments (A, B)) R {
+    callback(arguments...)
+}
+let pair = (2, 3)
+let joined = (1, pair..., 4)
+let values = [1, pair..., 4]
+```
+
+Expansion preserves shared fields and transfers every Task field once. It uses
+ordinary typed arguments/projections, not runtime argument packing. A tuple
+literal expands directly, retaining contextual inference and explicit comptime
+arguments. Other tuple expressions use one saved snapshot and cannot currently
+expand into comptime parameter positions. Lists have runtime-sized contents and
+cannot expand into a fixed call signature. Variadic declarations/type packs,
+type-list expansion and tuple Task joins remain open; this is their argument
+expansion foundation, not a fixed-arity replacement for them.
+
 Records also support `let Packet { value = item, .. } = packet` and the same
 form with `var`. Named fields can reorder and nest record/tuple bindings; generic
 arguments follow the initializer type. List every field or use `..` explicitly,

@@ -127,6 +127,10 @@ The compiler and ordinary Loom programs use the same source implementation:
 | `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]`, editor-only `completion_source` / `CompletionSource`, lexical `import_cursor` / `ImportCursor` |
 | `std.loom.format` | `format(Text) Result[Text, Diagnostic]` |
 
+`NodeKind.Spread` retains the operand of postfix tuple expansion in source
+argument/element lists. Checking lowers it to ordinary values, one saved tuple
+where needed, and typed field projections; no expansion opcode reaches LLVM.
+
 Import, for example, `std.loom.parser.parse` and `std.loom.ast.NodeKind` in
 any package. Parsing supplied text returns a file node or the first diagnostic;
 it does not read files, load a project, bind names, check types, or invoke the

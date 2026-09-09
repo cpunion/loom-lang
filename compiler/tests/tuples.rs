@@ -50,3 +50,29 @@ fn tuple_errors_are_source_diagnostics_not_native_failures() {
         assert!(!output.stderr.is_empty());
     }
 }
+
+#[test]
+fn scalar_tuple_expansion_has_no_runtime_container_or_scheduler() {
+    let source = tempfile::tempdir().unwrap();
+    fs::write(source.path().join("main.loom"),
+        "fn sum(a Int, b Int) Int { a + b }\nfn expanded(values (Int, Int)) Int { sum(values...) }\nfn main() { assert expanded((20, 22)) == 42 }").unwrap();
+    let executable = common::executable(source.path(), "expanded");
+    let ir = source.path().join("expanded.ll");
+    success(
+        &common::command(&[
+            "build",
+            source.path().to_str().unwrap(),
+            "--output",
+            executable.to_str().unwrap(),
+            "--emit-ir",
+            ir.to_str().unwrap(),
+        ])
+        .env("LOOM_OPT_LEVEL", "0")
+        .output()
+        .unwrap(),
+    );
+    let ir = fs::read_to_string(ir).unwrap();
+    assert!(!ir.contains("call ptr @loom_"));
+    assert!(!ir.contains("@loom_task_"));
+    success(&Command::new(executable).output().unwrap());
+}

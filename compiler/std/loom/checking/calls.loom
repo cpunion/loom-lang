@@ -102,7 +102,7 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     Result.Ok(expression(ExprKind.Record, constructed_type(context, declaration, arguments, node)?, node, "", -1, fields, all_fall(fields)))
 }
-fn variant(context Context, node Node, types List[Node], inputs List[Node], expected Int) Result[Expr, Failure] {
+fn variant(context Context, node Node, types List[Node], inputs CallInputs, expected Int) Result[Expr, Failure] {
     let declaration = find_data(context.env, context.signature.symbol, node, package(node.value))?
     if declaration < 0 { return Result.Err(error(context, node, "unknown enum type")) }
     let shape = get(context.env.types, template(context, declaration)?)
@@ -115,14 +115,14 @@ fn variant(context Context, node Node, types List[Node], inputs List[Node], expe
     }
     if selected < 0 { return Result.Err(error(context, node, "unknown enum variant")) }
     let patterns = get(shape.variants, selected).fields
-    if length(patterns) != length(inputs) { return Result.Err(error(context, node, "enum payload count does not match")) }
+    if length(patterns) != length(inputs.nodes) { return Result.Err(error(context, node, "enum payload count does not match")) }
     let arguments = data_arguments(context, node, declaration, types, expected)?
     let values = new[Expr]()
     index = 0
-    while index < length(inputs) {
+    while index < length(inputs.nodes) {
         let pattern = get(patterns, index)
-        let input = get(inputs, index)
-        let value = expr(context, input, hint(context, pattern, arguments, input)?)?
+        let input = get(inputs.nodes, index)
+        let value = input_value(context, inputs, index, hint(context, pattern, arguments, input)?, false)?
         discard infer(context.env, pattern, value.ty, arguments)
         push(values, value)
         index = index + 1
@@ -131,14 +131,14 @@ fn variant(context Context, node Node, types List[Node], inputs List[Node], expe
     index = 0
     while index < length(values) {
         let target = substitute(context.env, declaration, get(patterns, index), arguments, node)?
-        set(values, index, typed(context, get(inputs, index), get(values, index), target)?)
+        set(values, index, typed(context, get(inputs.nodes, index), get(values, index), target)?)
         index = index + 1
     }
     Result.Ok(expression(ExprKind.Variant, constructed_type(context, declaration, arguments, node)?, node, "", selected, values, all_fall(values)))
 }
 fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let types = child(node, 0).children
-    let inputs = child(node, 1).children
+    let inputs = call_inputs(context, child(node, 1).children)?
     let first = slice(node.value, 0, first_dot(node.value))
     if lookup(context, first) >= 0 {
         if package(node.value) == "" {
@@ -156,12 +156,9 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     if length(context.env.concepts) != 0 && package(node.value) != "" {
         let capability = concept_named(context.env, context.signature.symbol, node, package(node.value))?
         if capability >= 0 {
-            if length(inputs) == 0 { return Result.Err(error(context, node, "a concept method call needs a receiver")) }
-            let arguments = new[Node]()
-            var index = 1
-            while index < length(inputs) { push(arguments, get(inputs, index))
-                index = index + 1 }
-            return method_call(context, node, get(inputs, 0), name(node.value), types, arguments, capability, expected)
+            if length(inputs.nodes) == 0 { return Result.Err(error(context, node, "a concept method call needs a receiver")) }
+            return method_call_checked(context, node, get(inputs.nodes, 0), input_value(context, inputs, 0, -1, false)?,
+                name(node.value), types, input_tail(inputs), capability, expected)
         }
     }
     let current = symbol(context.env, context.signature.symbol)
@@ -186,14 +183,14 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         let signature = get(context.env.signatures, index)
         var candidate = 0
         while candidate < length(available) {
-            if get(available, candidate) == signature.symbol && length(signature.params) == length(inputs) && (length(types) == 0 || length(types) == signature.parameters) { push(options, index) }
+            if get(available, candidate) == signature.symbol && length(signature.params) == length(inputs.nodes) && (length(types) == 0 || length(types) == signature.parameters) { push(options, index) }
             candidate = candidate + 1
         }
         index = index + 1
     }
     invoke(context, node, options, types, inputs, new[Expr](), expected)
 }
-fn invoke(context Context, node Node, options List[Int], types List[Node], inputs List[Node], prefix List[Expr], expected Int) Result[Expr, Failure] {
+fn invoke(context Context, node Node, options List[Int], types List[Node], inputs CallInputs, prefix List[Expr], expected Int) Result[Expr, Failure] {
     let values = new[Expr]()
     let probes = new[Bool]()
     let probing = static_options(context, options)
@@ -209,15 +206,13 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
             previous = previous + 1
         }
     }
-    while index < length(inputs) {
+    while index < length(inputs.nodes) {
         var expected_argument = -1
         if length(options) == 1 {
             expected_argument = hint(context, get(get(context.env.signatures, get(options, 0)).params, index), inferred, node)?
         }
         let probe = probing && static_position(context, options, index)
-        let value = if probe { static_probe(context, get(inputs, index), expected_argument)? } else {
-            expr(context, get(inputs, index), expected_argument)?
-        }
+        let value = input_value(context, inputs, index, expected_argument, probe)?
         if probing { push(probes, probe) }
         push(values, value)
         if length(options) == 1 {
@@ -291,7 +286,7 @@ fn choose_overload(context Context, node Node, matches OverloadSet) Result[Insta
     }
     Result.Ok(get(matches.candidates, selected))
 }
-fn invoke_selected(context Context, node Node, instance Instance, inputs List[Node], values List[Expr], probes List[Bool]) Result[Expr, Failure] {
+fn invoke_selected(context Context, node Node, instance Instance, inputs CallInputs, values List[Expr], probes List[Bool]) Result[Expr, Failure] {
     let signature = get(context.env.signatures, instance.signature)
     let constants = new[StaticValue]()
     let filtered = has_static(signature)
@@ -299,13 +294,17 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
     var index = 0
     while index < length(values) {
         let target = substitute(context.env, context.signature.symbol, get(signature.params, index), instance.arguments, node)?
-        let input = get(inputs, index)
+        let input = get(inputs.nodes, index)
         if is_static(signature, index) {
+            match saved_input(inputs, index) {
+                Option.Some(_) => { return Result.Err(error(context, input, "a saved tuple cannot expand into comptime parameters; supply static arguments explicitly or expand a tuple literal")) }
+                Option.None => {}
+            }
             let value = static_argument(context, input, get(values, index), target)?
             push(constants, value)
             if value.capture >= 0 { push(runtime_values, static_environment_argument(context, input, value)?) }
         } else {
-            let value = if length(probes) != 0 && get(probes, index) { expr(context, input, target)? } else {
+            let value = if length(probes) != 0 && get(probes, index) { input_value(context, inputs, index, target, false)? } else {
                 typed(context, input, get(values, index), target)?
             }
             if filtered { push(runtime_values, value) } else { set(runtime_values, index, value) }
