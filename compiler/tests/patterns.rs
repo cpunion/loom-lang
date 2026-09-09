@@ -27,7 +27,9 @@ fn nested_patterns_share_native_compile_time_and_task_semantics() {
 
     fs::write(
         directory.path().join("main.loom"),
-        "enum Bit { On Off }\nfn choose(value (Bit, Bit)) Int { match value { (Bit.On, _) => 1\n(_, Bit.On) => 2\n(Bit.Off, Bit.Off) => 0 } }\nfn main() { assert choose((Bit.Off(), Bit.On())) == 2 }",
+        "enum Bit { On Off }\nfn choose(value (Bit, Bit)) Int { match value { (Bit.On, _) => 1\n(_, Bit.On) => 2\n(Bit.Off, Bit.Off) => 0 } }\n\
+         fn classify(value Int) Int { match value { 0 => 1\n7 => 2\nrest => rest } }\n\
+         fn main() { assert choose((Bit.Off(), Bit.On())) == 2\nassert classify(7) == 2\nassert classify(9) == 9 }",
     )
     .unwrap();
     let ir = directory.path().join("patterns.ll");
@@ -46,6 +48,7 @@ fn nested_patterns_share_native_compile_time_and_task_semantics() {
     );
     let ir = fs::read_to_string(ir).unwrap();
     assert!(ir.contains("switch i64"));
+    assert!(ir.contains("icmp eq i64"));
     assert!(!ir.contains("call ptr @loom_"));
     assert!(!ir.contains("@loom_task_"));
     success(&common::run_tasks(&executable));

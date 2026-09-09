@@ -20,3 +20,20 @@ test fn patterns_nest_variants_and_tuples_without_changing_plain_bindings() {
         index = index + 1 }
     assert rejected(concat("fn f() { match x { ", concat(pattern, " => 0 } }"))).message == "pattern nesting limit exceeded"
 }
+
+test fn scalar_patterns_keep_literal_values_and_source_spans() {
+    let source = "fn f() { match x { (-9223372036854775808, -0.0, true, \"雪\") => 0\n_ => 1 } }"
+    let tuple = child(child(child(body(child(parsed(source), 0)), 0), 1), 0)
+    assert child(tuple, 0).kind == NodeKind.Integer && child(tuple, 0).value == "-9223372036854775808"
+    assert child(tuple, 1).kind == NodeKind.Float && child(tuple, 1).value == "-0.0"
+    assert child(tuple, 0).span.end - child(tuple, 0).span.start == 20
+    assert child(tuple, 1).span.end - child(tuple, 1).span.start == 4
+    assert child(tuple, 2).kind == NodeKind.Bool && child(tuple, 2).value == "true"
+    assert child(tuple, 3).kind == NodeKind.Text && child(tuple, 3).value == "雪"
+    discard parsed("fn f() { match x { Some(1e3) => 0\n_ => 1 } }")
+    assert rejected("fn f() { match x { 9223372036854775808 => 0 } }").message == "integer literal is outside the Int range"
+    assert rejected("fn f() { match x { -9223372036854775809 => 0 } }").message == "integer literal is outside the Int range"
+    discard rejected("fn f() { match x { -name => 0 } }")
+    discard rejected("fn f() { match x { 1 + 2 => 0 } }")
+    discard rejected("fn f() { let (true, value) = x }")
+}

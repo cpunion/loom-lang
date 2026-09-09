@@ -280,7 +280,8 @@ results. Nested enum/tuple patterns in `match` now use typed decisions with
 source-order selection, exhaustive coverage and one-shot Task transfer, without
 a native matcher or a new bootstrap checkpoint. Binding wildcards use ordinary
 discard rules; nested names keep lexical scope and var mutability.
-Literal/record patterns, guards and heterogeneous tuple task composition remain
+Scalar literal patterns now reuse those decisions and ordinary equality, including
+nested Task payloads and finite Bool coverage. Record patterns, guards and heterogeneous tuple task composition remain
 later work; dynamic List joins use the separate source policies above.
 
 Named function values now support ordinary higher-order functions, structural

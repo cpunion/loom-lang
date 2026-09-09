@@ -1,0 +1,137 @@
+import std.int.parse
+import std.float.parse
+import std.float.to_text
+
+fn scalar_pattern(node Node) Bool {
+    node.kind == NodeKind.Integer || node.kind == NodeKind.Bool || node.kind == NodeKind.Text || node.kind == NodeKind.Float
+}
+
+fn literal_pattern_scope(context Context, node Node, ty Int) Result[PatternScope, Failure] {
+    let literal = expr(context, node, -1)?
+    if literal.ty != base_type(context.env, ty) {
+        return Result.Err(error(context, node, "literal pattern must match the value's scalar type"))
+    }
+    // Keep the parsed AST/spelling intact. Only this checked pattern's key is
+    // normalized, using the same integer and binary64 values as ordinary ==.
+    var key = node.value
+    if node.kind == NodeKind.Integer {
+        key = match std.int.parse(key) {
+            Result.Ok(value) => std.int.to_text(value),
+            Result.Err(_) => {
+                return Result.Err(error(context, node, "invalid Int pattern"))
+            }
+        }
+    }
+    if node.kind == NodeKind.Float {
+        key = match std.float.parse(key) {
+            Result.Ok(value) => {
+                if value != value {
+                    return Result.Err(error(context, node, "NaN cannot be an equality pattern"))
+                }
+                if value == 0.0 {
+                    "0"
+                } else {
+                    std.float.to_text(value)
+                }
+            }
+            Result.Err(_) => {
+                return Result.Err(error(context, node, "invalid Float pattern"))
+            }
+        }
+    }
+    let source = Node {
+        kind = node.kind
+        value = key
+        span = node.span
+        children = node.children
+    }
+    Result.Ok(PatternScope {
+            context = context
+            pattern = CheckedPattern {
+                source = source
+                ty = ty
+                variant = -3
+                local = -1
+                children = new[CheckedPattern]()
+            }
+        })
+}
+
+fn literal_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], column Int, depth Int) Result[Expr, Failure] {
+    let value = get(values, column)
+    let base = base_type(plan.context.env, value.ty)
+    let boolean = base == 2
+    let keys = new[Text]()
+    if boolean {
+        push(keys, "true")
+    } else {
+        var index = 0
+        while index < length(rows) {
+            discard pattern_step(plan, depth)?
+            let pattern = get(get(rows, index).patterns, column)
+            if pattern.variant == -3 {
+                var found = false
+                var key = 0
+                while key < length(keys) {
+                    discard pattern_step(plan, depth)?
+                    found = found || get(keys, key) == pattern.source.value
+                    key = key + 1
+                }
+                if !found {
+                    push(keys, pattern.source.value)
+                }
+            }
+            index = index + 1
+        }
+    }
+    let empty = new[Expr]()
+    let remaining = pattern_slots(values, column, empty)
+    // Bool has exactly two cases. Every other scalar has a remainder domain,
+    // including NaN for Float; finite literal lists cannot discharge it.
+    let fallback = pattern_rows(plan, rows, column, if boolean {
+            -3
+        } else {
+            -4
+        },
+        if boolean {
+            "false"
+        } else {
+            ""
+        }, value, empty, value, depth + 1)?
+    var body = pattern_decision(plan, fallback, remaining, depth + 1)?
+    let kind = if base == 1 {
+        ExprKind.Integer
+    } else {
+        if base == 2 {
+            ExprKind.Bool
+        } else {
+            if base == 3 {
+                ExprKind.Text
+            } else {
+                ExprKind.Float
+            }
+        }
+    }
+    let operand = typed(plan.context, plan.source, value, base)?
+    var index = length(keys)
+    while index > 0 {
+        index = index - 1
+        let key = get(keys, index)
+        let selected = pattern_rows(plan, rows, column, -3, key, value, empty, value, depth + 1)?
+        let yes = pattern_decision(plan, selected, remaining, depth + 1)?
+        let literal = expression(kind, base, plan.source, key, -1, new[Expr](), true)
+        let condition = expression(ExprKind.Binary, 2, plan.source, "==", -1, pair(operand, literal), true)
+        let children = pair(condition, if yes.kind == ExprKind.Block {
+                yes
+            } else {
+                pattern_block(plan.source, new[Expr](), yes)
+            })
+        push(children, if body.kind == ExprKind.Block {
+                body
+            } else {
+                pattern_block(plan.source, new[Expr](), body)
+            })
+        body = expression(ExprKind.If, plan.output, plan.source, "", -1, children, yes.falls || body.falls)
+    }
+    Result.Ok(body)
+}

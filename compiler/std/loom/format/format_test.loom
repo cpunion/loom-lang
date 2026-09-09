@@ -77,6 +77,9 @@ test fn grouped_operands_have_spaces_but_calls_and_unary_prefixes_do_not() {
 }
 
 test fn comments_unicode_and_literal_spelling_are_not_rewritten() {
+    assert round_trip("fn f(v Float) Int {match v{-0.00=>0\n1e0=>1\n_=>2}}") ==
+    "fn f(v Float) Int {\n    match v {\n        -0.00 => 0\n        1e0 => 1\n        _ => 2\n    }\n}\n"
+    discard round_trip("fn f(v (Text, Bool)) Int {match v{(\"\\u{96ea}\", true)=>1\n_=>0}}")
     assert round_trip("// 注释\r\nrecord 数据 { 值 Text // 字段\r\n}\r\nfn 名称(){ // body\r\nlet 文本=\"a\\n\\u{41}\\\"\" // tail\r\nlet 数值=00012\r\nlet 浮点=1.20e+03\r\ndiscard 文本\r\ndiscard 数值\r\ndiscard 浮点\r\n}// end") ==
     "// 注释\nrecord 数据 {\n    值 Text // 字段\n}\n\nfn 名称() { // body\n    let 文本 = \"a\\n\\u{41}\\\"\" // tail\n    let 数值 = 00012\n    let 浮点 = 1.20e+03\n    discard 文本\n    discard 数值\n    discard 浮点\n} // end\n"
     assert round_trip("// only\n\n") == "// only\n"

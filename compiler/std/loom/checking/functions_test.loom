@@ -20,7 +20,7 @@ import std.io.write_error
 record TestFile { package Text path Text text Text tree Node test_only Bool trusted_std Bool }
 
 fn source_file(package Text, text Text, trusted Bool) TestFile {
-    let tree = match parse(text) {
+    let tree = match std.loom.parser.parse(text) {
         Result.Ok(tree) => tree
         Result.Err(failed) => { discard write_error(failed.message)
             discard write_error(text)

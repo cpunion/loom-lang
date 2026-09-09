@@ -108,8 +108,11 @@ async fn exercise_tasks() {
 
 async fn main() {
     exercise_values()
+    literal_values()
     comptime {
         exercise_values()
+        literal_values()
     }
     exercise_tasks().await
+    literal_tasks().await
 }
