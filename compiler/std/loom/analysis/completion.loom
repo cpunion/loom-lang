@@ -134,23 +134,17 @@ fn completion_binding(items List[CompletionItem], node Node) {
         completion_local(items, node, CompletionKind.Variable, concat(keyword, node.value))
     }
     if node.kind == NodeKind.Destructure {
-        let bindings = get(node.children, 0)
-        var index = 0
-        while index < length(bindings.children) {
-            let binding = get(bindings.children, index)
-            completion_local(items, binding, CompletionKind.Variable, concat(node.value, concat(" ", binding.value)))
-            index = index + 1
-        }
+        completion_pattern(items, get(node.children, 0), concat(node.value, " "))
     }
 }
 
-fn completion_pattern(items List[CompletionItem], node Node) {
+fn completion_pattern(items List[CompletionItem], node Node, prefix Text) {
     if node.kind == NodeKind.Name {
-        completion_local(items, node, CompletionKind.Variable, concat("match binding ", node.value))
+        completion_local(items, node, CompletionKind.Variable, concat(prefix, node.value))
     }
     var index = 0
     while index < length(node.children) {
-        completion_pattern(items, get(node.children, index))
+        completion_pattern(items, get(node.children, index), prefix)
         index = index + 1
     }
 }
@@ -180,7 +174,7 @@ fn completion_scope(node Node, text Text, offset Int, items List[CompletionItem]
             }
         }
         if node.kind == NodeKind.Arm && index == 0 && child.span.end < offset {
-            completion_pattern(items, child)
+            completion_pattern(items, child, "match binding ")
         }
         if node.kind == NodeKind.Block && child.span.end < offset {
             completion_binding(items, child)

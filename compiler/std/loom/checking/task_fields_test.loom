@@ -3,10 +3,24 @@ fn task_fields_header() Text {
 }
 
 test fn task_fields_transfer_independently_through_values_calls_and_destructuring() {
+    discard accepted(concat(task_fields_header(), "async fn main() { var a, (b, _) = (item(1), (item(\"two\"), true))\nassert b.await == \"two\"\nassert a.await == 1\na = item(3)\nassert a.await == 3 }"))
     discard accepted(concat(task_fields_header(), "async fn main() { let pair = start()\nlet first = pair.first\nassert pair.label == \"pair\"\nlet second = pass(pair.second)\nassert first.await == 7\nassert second.await == \"yes\"\nlet a, nested = (item(1), (item(\"two\"), item(true)))\nlet b, c = nested\nassert c.await\nassert a.await == 1\nassert b.await == \"two\" }") )
     discard accepted(concat(task_fields_header(), "async fn wrap(value Pair) Pair { value }\nasync fn main() { let pair = wrap(pass(start())).await\nassert pair.first.await == 7\nassert pair.second.await == \"yes\" }") )
     discard accepted(concat(task_fields_header(), "async fn branch(flag Bool) { var pair = start()\nif flag { discard pair.first.await } else { discard pair.first.await }\ndiscard pair.second.await\npair = start()\ndiscard pair.first.await\ndiscard pair.second.await }") )
     discard accepted(concat(task_fields_header(), "async fn main() { assert (item(1), \"metadata\").0.await == 1 }") )
+}
+
+test fn nested_destructuring_cannot_discard_or_duplicate_task_obligations() {
+    let prefix = task_fields_header()
+    let discarded = "a task must be awaited or transferred; it cannot be copied or discarded"
+    task_rejected(concat(prefix, "async fn main() { let a, (_, _) = (1, (item(2), true))\ndiscard a }"), discarded)
+    task_rejected(concat(prefix, "async fn main() { let a, _ = (1, (item(2), true))\ndiscard a }"), discarded)
+    rejects(concat(prefix, "async fn main() { let a, (b, _) = (1, (item(2), true))\ndiscard a }"))
+    task_rejected(concat(prefix, "async fn main() { let _, (task, _) = (1, (item(2), true))\ndiscard task.await\ndiscard task.await }"), "this task was already awaited or transferred")
+    resource_reject(concat(resource_header(), "fn main() { let _, (handle, _) = (1, (make([0]), true))\ndiscard handle }"))
+    resource_reject(concat(resource_header(), "fn main() { let _, (_, _) = (1, (make([0]), true)) }"))
+    suspension_reject(concat(suspension_header(), "async fn main() { let _, (held, _) = (1, (token(), true))\ndiscard tick().await\ndiscard held.id }"), "a NoSuspend value is still in scope; leave its block before awaiting")
+    resource_accept(concat(suspension_header(), "async fn main() { let _, (_, _) = (1, (token(), true))\ndiscard tick().await }"))
 }
 
 test fn task_field_obligations_cannot_be_copied_dropped_or_hidden_in_control_flow() {

@@ -1,4 +1,5 @@
 import std.loom.ast.Node
+import std.loom.ast.NodeKind
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.TypeKind
@@ -60,28 +61,43 @@ fn tuple_member(context Context, node Node, value Expr, field Text) Result[Expr,
 }
 
 fn destructure(context Context, node Node, boundary Int) Result[Step, Failure] {
-    let names = child(node, 0).children
     let value = expr(context, child(node, 1), -1)?
-    let shape = get(context.env.types, value.ty)
-    if shape.kind != TypeKind.Tuple { return Result.Err(error(context, node, "destructuring requires a tuple")) }
-    if length(names) < 2 || length(names) != length(shape.arguments) {
-        return Result.Err(error(context, node, "destructuring name count must match the tuple"))
-    }
     // Keep the RHS outside the new bindings and evaluate it exactly once.
     let hidden = length(context.locals)
     push(context.locals, Local { name = "" ty = value.ty mutable = false is_scoped = false })
     let values = expressions(expression(ExprKind.Let, 0, node, "", hidden, expressions(value), value.falls))
+    let current = destructure_fields(context, child(node, 0), atom(ExprKind.Local, value.ty, node, hidden),
+        values, node.value == "var", boundary, 0)?
+    Result.Ok(Step { context = current expression = expression(ExprKind.Block, 0, node, "", -1, values, value.falls) })
+}
+
+fn destructure_fields(context Context, node Node, value Expr, values List[Expr], mutable Bool, boundary Int, depth Int) Result[Context, Failure] {
+    if depth >= 64 { return Result.Err(error(context, node, "pattern nesting limit exceeded")) }
+    if node.kind == NodeKind.Name || node.kind == NodeKind.Wildcard {
+        discard resource_binding(context, node, value)?
+        if node.kind == NodeKind.Wildcard {
+            // Ordinary discard checking also rejects Task-bearing fields.
+            push(values, expression(ExprKind.Discard, 0, node, "", -1, expressions(value), true))
+            return Result.Ok(context)
+        }
+        let local = length(context.locals)
+        let current = bind_local(context, node, node.value, value.ty, mutable, boundary)?
+        push(values, expression(ExprKind.Let, 0, node, "", local, expressions(value), true))
+        return Result.Ok(current)
+    }
+    let shape = get(context.env.types, value.ty)
+    if shape.kind != TypeKind.Tuple { return Result.Err(error(context, node, "destructuring requires a tuple")) }
+    if length(node.children) != length(shape.arguments) {
+        return Result.Err(error(context, node, "destructuring element count must match the tuple"))
+    }
     var current = context
     var index = 0
-    while index < length(names) {
-        let name = get(names, index)
+    while index < length(node.children) {
+        let field = child(node, index)
         let ty = get(shape.arguments, index)
-        let projection = expression(ExprKind.Field, ty, name, "", index,
-            expressions(atom(ExprKind.Local, value.ty, node, hidden)), true)
-        let local = length(current.locals)
-        current = bind_local(current, name, name.value, ty, node.value == "var", boundary)?
-        push(values, expression(ExprKind.Let, 0, name, "", local, expressions(projection), true))
+        let projection = expression(ExprKind.Field, ty, field, "", index, expressions(value), true)
+        current = destructure_fields(current, field, projection, values, mutable, boundary, depth + 1)?
         index = index + 1
     }
-    Result.Ok(Step { context = current expression = expression(ExprKind.Block, 0, node, "", -1, values, value.falls) })
+    Result.Ok(current)
 }

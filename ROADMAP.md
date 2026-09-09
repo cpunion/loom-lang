@@ -263,12 +263,13 @@ expansion, preserving eager argument values and the original native body.
 Recursive proof dependencies, unexpanded helper control flow, indirect/dynamic
 calls and required Float reasoning remain open.
 
-Structural tuples, numeric projection, and plain-name destructuring now use the
+Structural tuples, numeric projection, and nested let/var destructuring use the
 native aggregate path, including generics, shared containers, and compile-time
 results. Nested enum/tuple patterns in `match` now use typed decisions with
 source-order selection, exhaustive coverage and one-shot Task transfer, without
-a native matcher or a new bootstrap checkpoint. Literal/record patterns, guards,
-nested let/var destructuring and heterogeneous tuple task composition remain
+a native matcher or a new bootstrap checkpoint. Binding wildcards use ordinary
+discard rules; nested names keep lexical scope and var mutability.
+Literal/record patterns, guards and heterogeneous tuple task composition remain
 later work; dynamic List joins use the separate source policies above.
 
 Named function values now support ordinary higher-order functions, structural

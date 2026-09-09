@@ -92,6 +92,16 @@ async fn exercise() {
     let left, right = (sleep_ms(1), sleep_ms(1))
     left.await
     right.await
+    var (nested_first, (nested_second, _)), mark = ((delayed(values), (delayed("nested"), false)), 1)
+    defer {
+        push(trace, mark)
+    }
+    assert nested_second.await == "nested"
+    push(values, 43)
+    assert nested_first.await[1] == 43
+    mark = 9
+    nested_first = delayed([44])
+    assert nested_first.await[0] == 44
 }
 
 async fn main() {

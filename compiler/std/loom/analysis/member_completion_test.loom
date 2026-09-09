@@ -30,6 +30,8 @@ test fn members_infer_records_calls_indexing_tuples_and_local_shadowing() {
     assert completion_found(member_completion(numbered, "pair.1", 6), "1").detail == "1 Bool"
     let nested = concat(header, "fn main() { let outer = Box { value = make() }\ndiscard outer.value.va }")
     assert completion_found(member_completion(nested, ".va }", 3), "value").detail == "value Int"
+    let destructured = concat(header, "fn main() { let _, (box, _) = (true, (make(), 0))\ndiscard box.va }")
+    assert completion_found(member_completion(destructured, ".va", 3), "value").detail == "value Int"
 }
 
 test fn methods_follow_explicit_conformance_generic_bounds_and_dynamic_interfaces() {

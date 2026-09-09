@@ -6,25 +6,29 @@ use common::{loom, success};
 fn tuple_values_run_natively_and_keep_managed_fields_alive() {
     let example = common::root().join("compiler/examples/tuples");
     success(&loom(&["check", example.to_str().unwrap()]));
+    success(&loom(&["test", example.to_str().unwrap()]));
+    success(&loom(&["run", example.to_str().unwrap()]));
     let output = tempfile::tempdir().unwrap();
     let executable = common::executable(output.path(), "tuples");
-    success(
-        &common::command(&[
-            "build",
-            example.to_str().unwrap(),
-            "--output",
-            executable.to_str().unwrap(),
-        ])
-        .env("LOOM_OPT_LEVEL", "0")
-        .output()
-        .unwrap(),
-    );
-    success(
-        &Command::new(executable)
-            .env("LOOM_GC_STRESS", "1")
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                example.to_str().unwrap(),
+                "--output",
+                executable.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
             .output()
             .unwrap(),
-    );
+        );
+        success(
+            &Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
 }
 
 #[test]

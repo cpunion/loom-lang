@@ -190,8 +190,11 @@ checked arithmetic. Conditional helpers retain branch guards and early body retu
 Boolean results normalize into bounded call-free predicates. Helper loops, mutation and indirect calls remain unsupported
 for this optional proof; they do not become proof assumptions.
 
-Structural tuples support positional access and plain-name `let`/`var`
-destructuring, including nested types and `List`/`Result` elements. Native layout,
+Structural tuples support positional access and nested `let`/`var`
+destructuring, including singleton patterns and explicit wildcard discards.
+Initializers evaluate once before any new name enters scope; ordinary typed field
+projections retain shared data, Task obligations and resource restrictions.
+Native layout,
 compile-time evaluation, reification, and public typed analysis use the same
 aggregate semantics. The [tuple example](../../compiler/examples/tuples/main.loom)
 checks evaluation order and shared-container results under GC stress.
@@ -201,8 +204,8 @@ Arms keep source-order inference and first-match selection; type-based coverage
 rejects missing combinations and unreachable arms. Whole fallbacks reconstruct
 decomposed values from live fields, preserving shared data and one-shot Tasks.
 The [pattern example](../../compiler/examples/patterns/README.md) covers native,
-compile-time and suspended execution. Literal/record patterns, guards and nested
-let/var destructuring remain open. Compiler production sources retain flat patterns.
+compile-time and suspended execution. Literal/record patterns and guards remain
+open. Compiler production sources retain flat patterns.
 
 Named function values have structural signatures, contextual overload/generic
 selection, and native calls through one code pointer. Parameters, returned
