@@ -1,0 +1,203 @@
+import std.text.starts_with
+
+// Completion hints, not a checked Program or proof of the surrounding body.
+pub record MemberCandidate {
+    name Text
+    ty Text
+    method Int
+}
+
+fn query_inside(node Node, offset Int) Bool {
+    node.span.start <= offset && offset < node.span.end
+}
+
+// Follow only the lexical path to the query. Completed preceding statements use
+// the ordinary checker; an incomplete current expression is not fabricated into
+// a successful body. No query flag or callback enters ordinary expression checks.
+fn member_context(context Context, node Node, offset Int) Result[Context, Failure] {
+    if node.kind == NodeKind.Block {
+        var current = context
+        var index = 0
+        while index < length(node.children) {
+            let source = child(node, index)
+            if query_inside(source, offset) {
+                return member_context(current, source, offset)
+            }
+            if source.span.end <= offset {
+                if statement_kind(source.kind) {
+                    let checked = statement(current, source, context.head)?
+                    current = checked.context
+                    if !checked.expression.falls {
+                        return Result.Err(error(context, source, "completion follows an unconditional exit"))
+                    }
+                } else {
+                    let checked = expr(current, source, 0)?
+                    if !checked.falls {
+                        return Result.Err(error(context, source, "completion follows an unconditional exit"))
+                    }
+                }
+            }
+            index = index + 1
+        }
+        return Result.Ok(current)
+    }
+    if node.kind == NodeKind.If || node.kind == NodeKind.While {
+        var branch = 1
+        while branch < length(node.children) {
+            if query_inside(child(node, branch), offset) {
+                let condition = expr(context, child(node, 0), 2)?
+                let selected = assuming(context, condition, branch == 1, 0)
+                return member_context(if node.kind == NodeKind.While {
+                        loop_context(selected, context.cleanup_head)
+                    } else {
+                        selected
+                    }, child(node, branch), offset)
+            }
+            branch = branch + 1
+        }
+    }
+    if node.kind == NodeKind.Match && !query_inside(child(node, 0), offset) {
+        let value = expr(context, child(node, 0), -1)?
+        var index = 1
+        while index < length(node.children) {
+            let arm = child(node, index)
+            if query_inside(child(arm, 1), offset) {
+                let scope = match_scope(context, value, arm)?
+                return member_context(scope.context, child(arm, 1), offset)
+            }
+            index = index + 1
+        }
+    }
+    if node.kind == NodeKind.Defer {
+        return member_context(loop_context(context, -2), child(node, 0), offset)
+    }
+    if node.kind == NodeKind.Comptime {
+        let source = child(node, 0)
+        if source.kind != NodeKind.If {
+            return Result.Err(error(context, node, "completion inside a comptime execution block is not yet supported"))
+        }
+        return match guard_condition(context, node, child(source, 0), 0)? {
+            GuardDecision.Pending => Result.Err(error(context, node, "completion needs a determined compile-time branch"))
+            GuardDecision.Known(yes, chosen) => {
+                let index = if yes {
+                    1
+                } else {
+                    2
+                }
+                if index >= length(source.children) || !query_inside(child(source, index), offset) {
+                    Result.Err(error(context, node, "completion is outside the selected compile-time branch"))
+                } else {
+                    member_context(chosen, child(source, index), offset)
+                }
+            }
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        let child = child(node, index)
+        if query_inside(child, offset) {
+            return member_context(context, child, offset)
+        }
+        index = index + 1
+    }
+    Result.Ok(context)
+}
+
+fn member_hints(context Context, receiver Node, prefix Text) Result[List[MemberCandidate], Failure] {
+    let value = expr(context, receiver, -1)?
+    let env = context.env
+    let shape = get(env.types, value.ty)
+    let hints = new[MemberCandidate]()
+    if shape.kind == TypeKind.Record {
+        let declaration = symbol(env, shape.symbol)
+        let here = symbol(env, context.signature.symbol)
+        if declaration.public || get(env.source.files, declaration.file).package == get(env.source.files, here.file).package {
+            var index = 0
+            while index < length(shape.fields) {
+                let field = get(shape.fields, index)
+                if starts_with(field.name, prefix) {
+                    push(hints, MemberCandidate {
+                            name = field.name
+                            ty = type_name(env.source, env.types, env.interfaces, field.ty)
+                            method = -1
+                        })
+                }
+                index = index + 1
+            }
+        }
+    }
+    if shape.kind == TypeKind.Tuple {
+        var index = 0
+        while index < length(shape.arguments) {
+            let name = to_text(index)
+            if starts_with(name, prefix) {
+                push(hints, MemberCandidate {
+                        name = name
+                        ty = type_name(env.source, env.types, env.interfaces, get(shape.arguments, index))
+                        method = -1
+                    })
+            }
+            index = index + 1
+        }
+    }
+    if shape.kind == TypeKind.Task && has(symbol(env, context.signature.symbol).node, NodeKind.Async) && starts_with("await", prefix) {
+        push(hints, MemberCandidate {
+                name = "await"
+                ty = type_name(env.source, env.types, env.interfaces, get(shape.arguments, 0))
+                method = -2
+            })
+    }
+    var index = 0
+    while index < length(env.concepts) {
+        let capability = get(env.concepts, index)
+        let visible = if shape.kind == TypeKind.Dyn {
+            let declared = symbol(env, capability.symbol)
+            let here = symbol(env, context.signature.symbol)
+            get(env.interfaces, shape.symbol).symbol == capability.symbol &&
+            (declared.public || get(env.source.files, declared.file).package == get(env.source.files, here.file).package)
+        } else {
+            visible_concept(context, capability.symbol)
+        }
+        if visible && satisfies(context, value.ty, capability.symbol)? {
+            var method = 0
+            while method < length(capability.methods) {
+                let signature = get(env.signatures, get(capability.methods, method))
+                let item = symbol(env, signature.symbol)
+                if starts_with(item.name, prefix) {
+                    push(hints, MemberCandidate {
+                            name = item.name
+                            ty = ""
+                            method = signature.symbol
+                        })
+                }
+                method = method + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(hints)
+}
+
+// Signature/body-prefix inference shares ordinary checking, but neither the
+// incomplete body nor its callees are claimed verified. Only candidate strings
+// leave the query. Unknown receiver types and earlier typing errors reject.
+pub fn member_candidates(source std.loom.binding.Program, file Int, offset Int, receiver Node, prefix Text) Result[List[MemberCandidate], Failure] {
+    let env = prepare(source)?
+    var index = 0
+    while index < length(env.signatures) {
+        let current = get(env.signatures, index)
+        let item = symbol(env, current.symbol)
+        if item.file == file && query_inside(item.node, offset) && has(item.node, NodeKind.Block) {
+            let arguments = abstract_arguments(env, current.parameters)
+            let scope = function_scope(env, signature(env, index, arguments, item.node)?, arguments, unknown_constants(current), false)?
+            let body = child(item.node, part(item.node, NodeKind.Block))
+            if !query_inside(body, offset) {
+                return Result.Ok(new[MemberCandidate]())
+            }
+            let context = member_context(scope.context, body, offset)?
+            return member_hints(context, receiver, prefix)
+        }
+        index = index + 1
+    }
+    Result.Ok(new[MemberCandidate]())
+}

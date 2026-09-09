@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add receiver-type member completion through shared Loom signature, local and
+  match-scope checking. Offer visible fields, tuple indices, explicit concept
+  methods and async Task `.await`, retaining generic/test visibility and full-token
+  replacement. Reuse cursor recovery without turning hints into proof evidence.
+
 - Recover missing cursor names/values and unmatched EOF delimiters in virtual
   completion snapshots, only after ordinary loading fails. Keep normal
   parsing/builds strict, retain original diagnostics and map insertion ranges
@@ -17,8 +22,7 @@ implementation, not a compatibility ledger for previous prototypes.
 - Add compiler-backed name completion to VS Code and public
   `std.loom.analysis.complete_names`. Reuse package visibility and lexical
   scopes, preserve overload signatures and whole-identifier replacement, and
-  accept body type errors without running proofs. Member completion and syntax
-  recovery remain open.
+  accept body type errors without running proofs.
 
 - Implement List-based `std.task.all/settled/any/race` in Loom, using one-time
   notification registration and indexed slot transfer. Drain losing subtrees

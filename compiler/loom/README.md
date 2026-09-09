@@ -80,12 +80,15 @@ statement per line. It separates top-level declarations and retains at most one
 user blank line. This changes layout, not grammar; semicolons remain invalid.
 
 The [VS Code development extension](../../editors/vscode/README.md) provides
-highlighting, document formatting, diagnostics, name completion, type hovers and definition
+highlighting, document formatting, diagnostics, name/member completion, type hovers and definition
 navigation for unsaved buffers. Its
 language server sends source snapshots to the same Loom package/type/contract
 checker; it does not implement another parser or checker in JavaScript.
 Name completion uses package bindings and lexical scopes without type checking;
-member completion, rename, and incremental semantic caching remain open. Completion
+member completion infers the receiver through ordinary signature/body-prefix
+checking. It offers fields, tuple indices, admitted concept methods and async
+Task `.await`, not proof of an applicable call or valid body. Rename and incremental
+semantic caching remain open. Completion
 can recover a missing cursor name/value or unmatched EOF delimiters
 without modifying the source or making normal builds accept it. Other semantic
 queries use concrete body instances. If package checking fails, an independently
@@ -93,7 +96,7 @@ checked ordinary function can still provide hover and navigation; its own errors
 or a failing dependency suppress the result. Syntax, global declaration, and
 generic/comptime template errors can still block queries.
 An isolated macOS VS Code extension-host test covers activation, unsaved errors,
-error clearing, applied name completion and formatting. The
+error clearing, name/member completion and applied formatting. The
 [file-tool trial](../examples/wordcount/README.md) exercises a multi-package
 application from its own directory. Broader interactive usability review remains open.
 
@@ -217,6 +220,8 @@ without the CLI, LLVM backend, or filesystem loading:
 | `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
 | `inspect_independent(bindings, file, offset)` | Isolated inspection of a concrete function and its checked dependencies; no executable program |
+| `complete_names(bindings, file, offset)` | `Option[Completion]`: visible names and declaration signatures, using binding only |
+| `complete_at(bindings, file, offset)` | Names or receiver-type member hints, with a UTF-8 replacement span |
 | `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
 
 The [semantic example](../examples/semantic/main.loom) creates an in-memory
@@ -239,6 +244,14 @@ addresses `analysis.program.functions`; local indices address that function's
 locals. Uninstantiated generic templates and signature-only positions have no
 typed result. The evolving checked model is not a stable public schema or a
 typed macro API.
+
+Completion candidates are not checked expression results. Member queries reuse
+the ordinary parameter/match binders, preceding statements and explicit concept
+evidence; they do not check the unfinished body or prove its callees/contracts.
+Unknown receivers, earlier typing errors, undetermined compile-time branches and
+`comptime` execution blocks return no result. No package-qualified completion or
+automatic imports are provided. The caller supplies matching source/AST bindings;
+CLI-only cursor recovery maps virtual insertion ranges back to the original buffer.
 
 `inspect_at` selects the source token's role, so a receiver and its selected field
 have distinct answers even when lowering shares their spans. `Inspection.types`

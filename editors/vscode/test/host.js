@@ -62,6 +62,16 @@ async function run() {
     const range = amount.range.replacing || amount.range;
     assert.ok(range.isEmpty && range.end.isEqual(document.positionAt(unfinished.length)));
     assert.equal(document.getText(), unfinished);
+    const memberSource = 'record Receipt { amount Int }\nfn main(){let receipt=Receipt { amount=42 }\ndiscard receipt.';
+    await replace(memberSource);
+    await diagnostics(document.uri, values => values.length > 0);
+    const members = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider',
+      document.uri, document.positionAt(memberSource.length), '.');
+    const field = members.items.find(item => item.label === 'amount');
+    assert.ok(field && field.kind === vscode.CompletionItemKind.Field && field.insertText === 'amount');
+    const fieldRange = field.range.replacing || field.range;
+    assert.ok(fieldRange.isEmpty && fieldRange.end.isEqual(document.positionAt(memberSource.length)));
+    assert.equal(document.getText(), memberSource);
     await replace(source);
     await diagnostics(document.uri, values => values.length === 0);
     const edits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { tabSize: 4, insertSpaces: true });

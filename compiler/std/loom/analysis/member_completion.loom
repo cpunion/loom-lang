@@ -1,0 +1,134 @@
+import std.loom.checking.member_candidates
+
+fn completion_receiver(node Node, tokens List[Token], dot Span) Option[Node] {
+    if !inside(node.span, dot.start) {
+        return Option.None
+    }
+    var index = 0
+    while index < length(node.children) {
+        let nested = get(node.children, index)
+        if inside(nested.span, dot.start) {
+            return completion_receiver(nested, tokens, dot)
+        }
+        index = index + 1
+    }
+    if node.kind == NodeKind.Select || node.kind == NodeKind.MethodCall || node.kind == NodeKind.Await {
+        return Option.Some(get(node.children, 0))
+    }
+    if node.kind == NodeKind.Name || node.kind == NodeKind.Call {
+        var name = ""
+        var end = node.span.start
+        index = 0
+        while index < length(tokens) && get(tokens, index).span.start < dot.start {
+            let token = get(tokens, index)
+            if token.span.start >= node.span.start {
+                if token.kind == Kind.Name {
+                    name = concat(name, token.value)
+                    end = token.span.end
+                } else {
+                    if token.kind == Kind.Dot {
+                        name = concat(name, ".")
+                    } else {
+                        if token.kind != Kind.LParen && token.kind != Kind.Newline {
+                            return Option.None
+                        }
+                    }
+                }
+            }
+            index = index + 1
+        }
+        if name != "" {
+            return Option.Some(Node {
+                    kind = NodeKind.Name
+                    value = name
+                    children = new[Node]()
+                    span = Span {
+                        start = node.span.start
+                        end = end
+                    }
+                })
+        }
+    }
+    Option.None
+}
+
+fn complete_members(bindings std.loom.binding.Program, file Int, offset Int) Option[Completion] {
+    if file < 0 || file >= length(bindings.files) {
+        return Option.None
+    }
+    let source = get(bindings.files, file)
+    let span = match completion_span(source.text, offset, true) {
+        Option.Some(value) => value
+        Option.None => {
+            return Option.None
+        }
+    }
+    let tokens = match lex(source.text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    var previous = get(tokens, length(tokens) - 1)
+    var index = 0
+    while index < length(tokens) && get(tokens, index).span.start < span.start {
+        let token = get(tokens, index)
+        previous = token
+        index = index + 1
+    }
+    if previous.kind != Kind.Dot {
+        return Option.None
+    }
+    let receiver = match completion_receiver(source.tree, tokens, previous.span) {
+        Option.Some(value) => value
+        Option.None => {
+            return Option.None
+        }
+    }
+    let candidates = match member_candidates(bindings, file, span.start, receiver, slice(source.text, span.start, offset)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    let items = new[CompletionItem]()
+    index = 0
+    while index < length(candidates) {
+        let candidate = get(candidates, index)
+        let detail = if candidate.method >= 0 {
+            let method = get(bindings.symbols, candidate.method)
+            let owner = get(bindings.symbols, method.owner)
+            concat(owner.name, concat(": ", completion_detail(get(bindings.files, method.file).text, method.node)))
+        } else {
+            concat(candidate.name, concat(" ", candidate.ty))
+        }
+        push(items, CompletionItem {
+                name = candidate.name
+                detail = detail
+                kind = if candidate.method >= 0 {
+                    CompletionKind.Method
+                } else {
+                    if candidate.method == -2 {
+                        CompletionKind.Keyword
+                    } else {
+                        CompletionKind.Field
+                    }
+                }
+            })
+        index = index + 1
+    }
+    Option.Some(Completion {
+            span = span
+            items = items
+        })
+}
+
+// Names need only binding; receiver members also infer the enclosing signature
+// and preceding statements through the ordinary checker. Neither is proof of a
+// valid call/body. Never guess members from a matching declaration spelling.
+pub fn complete_at(bindings std.loom.binding.Program, file Int, offset Int) Option[Completion] {
+    match complete_names(bindings, file, offset) {
+        Option.Some(value) => Option.Some(value)
+        Option.None => complete_members(bindings, file, offset)
+    }
+}

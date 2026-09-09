@@ -19,7 +19,7 @@ connection.onInitialize(params => {
   folderChanges = !!params.capabilities.workspace?.workspaceFolders;
   defaults = params.initializationOptions?.settings || {};
   return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, documentFormattingProvider: true,
-    hoverProvider: true, definitionProvider: true, completionProvider: {},
+    hoverProvider: true, definitionProvider: true, completionProvider: { triggerCharacters: ['.'] },
     workspace: { workspaceFolders: { supported: true, changeNotifications: true } } } };
 });
 connection.onInitialized(() => {
@@ -159,7 +159,8 @@ async function semanticQuery(params, token, kind) {
         range: { start: compiler.bytePosition(document, hover.start), end: compiler.bytePosition(document, hover.end) } } : null;
     } else if (kind === 'completion') {
       const result = report.completion;
-      const kinds = { variable: CompletionItemKind.Variable, function: CompletionItemKind.Function, type: CompletionItemKind.Class };
+      const kinds = { variable: CompletionItemKind.Variable, function: CompletionItemKind.Function, type: CompletionItemKind.Class,
+        field: CompletionItemKind.Field, method: CompletionItemKind.Method, keyword: CompletionItemKind.Keyword };
       value = { isIncomplete: true, items: (result?.items || []).map(item => ({
         label: item.label, kind: kinds[item.kind], detail: item.detail,
         textEdit: { range: { start: compiler.bytePosition(document, result.start), end: compiler.bytePosition(document, result.end) }, newText: item.label },

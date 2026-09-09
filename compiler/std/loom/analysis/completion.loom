@@ -15,6 +15,9 @@ pub enum CompletionKind {
     Variable
     Function
     Type
+    Field
+    Method
+    Keyword
 }
 
 pub record CompletionItem {
@@ -31,7 +34,7 @@ pub record Completion {
 // Completion is binding evidence, not a checked type or an applicable overload.
 // Unknown names and body type errors do not prevent lexical scope queries.
 // The supplied source/AST must agree, as for the other binding queries.
-fn completion_span(text Text, offset Int) Option[Span] {
+fn completion_span(text Text, offset Int, members Bool) Option[Span] {
     if offset < 0 || offset > std.text.length(text) {
         return Option.None
     }
@@ -52,8 +55,9 @@ fn completion_span(text Text, offset Int) Option[Span] {
         if token.kind == Kind.Text && token.span.start <= offset && offset < token.span.end {
             return Option.None
         }
-        if token.span.start <= offset && offset <= token.span.end && token.kind == Kind.Name {
-            if previous_dot {
+        if token.span.start <= offset && offset <= token.span.end &&
+            (token.kind == Kind.Name || (previous_dot && token.kind == Kind.Number)) {
+            if previous_dot && !members {
                 return Option.None
             }
             return Option.Some(token.span)
@@ -66,7 +70,7 @@ fn completion_span(text Text, offset Int) Option[Span] {
                 }
                 gap = gap + width(text, gap)
             }
-            if previous_dot {
+            if previous_dot && !members {
                 return Option.None
             }
             return Option.Some(Span {
@@ -220,7 +224,7 @@ pub fn complete_names(bindings std.loom.binding.Program, file Int, offset Int) O
         return Option.None
     }
     let source = get(bindings.files, file)
-    let span = match completion_span(source.text, offset) {
+    let span = match completion_span(source.text, offset, false) {
         Option.Some(value) => value
         Option.None => {
             return Option.None
