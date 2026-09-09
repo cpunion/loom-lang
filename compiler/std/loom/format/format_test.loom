@@ -61,6 +61,8 @@ test fn imports_generics_contracts_and_control_flow_preserve_meaning() {
 }
 
 test fn multiline_groups_postfix_and_unary_operators_stay_parseable() {
+    assert round_trip("fn f(){call(1,pair...,other()...)\nlet copy=(pair...)\nlet list=[0,pair...,3]}") ==
+    "fn f() {\n    call(1, pair..., other()...)\n    let copy = (pair...)\n    let list = [0, pair..., 3]\n}\n"
     assert round_trip("fn f(){let(a,(b,_))=(1,(2,true))\nvar(c,)=(3,)}") ==
     "fn f() {\n    let (a, (b, _)) = (1, (2, true))\n    var (c,) = (3,)\n}\n"
     discard round_trip("fn f(){let ((a,), // binding\n_), (b,c) = (((1,),true),(2,3))\nvar d,(e,_)= (a,(b,c))\nlet (single,)=(d,)}")

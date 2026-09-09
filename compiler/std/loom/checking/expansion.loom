@@ -1,0 +1,170 @@
+import std.option.Option
+import std.loom.typed.Local
+
+// Ordinary calls retain their source list and allocate no preparation table.
+// Only expanded tuples need saved expressions, at their original operand slot.
+record CallInputs {
+    nodes List[Node]
+    ready Option[List[Option[Expr]]]
+}
+
+fn source_nodes(node Node) List[Node] {
+    let values = new[Node]()
+    push(values, node)
+    values
+}
+
+fn plain_inputs(nodes List[Node]) CallInputs {
+    CallInputs {
+        nodes = nodes
+        ready = Option.None
+    }
+}
+
+fn saved_input(inputs CallInputs, index Int) Option[Expr] {
+    match inputs.ready {
+        Option.Some(values) => get(values, index),
+        Option.None => Option.None
+    }
+}
+
+fn input_value(context Context, inputs CallInputs, index Int, expected Int, probe Bool) Result[Expr, Failure] {
+    let node = get(inputs.nodes, index)
+    if probe {
+        return static_probe(context, node, expected)
+    }
+    match saved_input(inputs, index) {
+        Option.Some(value) => typed(context, node, value, expected)
+        Option.None => expr(context, node, expected)
+    }
+}
+
+fn input_tail(inputs CallInputs) CallInputs {
+    let nodes = new[Node]()
+    var index = 1
+    while index < length(inputs.nodes) {
+        push(nodes, get(inputs.nodes, index))
+        index = index + 1
+    }
+    let ready Option[List[Option[Expr]]] = match inputs.ready {
+        Option.None => Option.None
+        Option.Some(values) => {
+            let tail = new[Option[Expr]]()
+            index = 1
+            while index < length(values) {
+                push(tail, get(values, index))
+                index = index + 1
+            }
+            Option.Some(tail)
+        }
+    }
+    CallInputs {
+        nodes = nodes
+        ready = ready
+    }
+}
+
+fn input_receiver(inputs CallInputs, source Node) CallInputs {
+    let nodes = source_nodes(source)
+    var index = 0
+    while index < length(inputs.nodes) {
+        push(nodes, get(inputs.nodes, index))
+        index = index + 1
+    }
+    let ready Option[List[Option[Expr]]] = match inputs.ready {
+        Option.None => Option.None
+        Option.Some(values) => {
+            let prefixed = new[Option[Expr]]()
+            push(prefixed, Option.None)
+            index = 0
+            while index < length(values) {
+                push(prefixed, get(values, index))
+                index = index + 1
+            }
+            Option.Some(prefixed)
+        }
+    }
+    CallInputs {
+        nodes = nodes
+        ready = ready
+    }
+}
+
+fn expand_input(context Context, source Node, nodes List[Node], ready List[Option[Expr]], depth Int) Result[Bool, Failure] {
+    if source.kind != NodeKind.Spread {
+        push(nodes, source)
+        push(ready, Option.None)
+        return Result.Ok(true)
+    }
+    if depth >= 64 {
+        return Result.Err(error(context, source, "tuple expansion nesting limit exceeded"))
+    }
+    let operand = child(source, 0)
+    if operand.kind == NodeKind.Tuple {
+        // A literal already supplies ordered operands. Flatten it before hints
+        // and static-argument selection, without manufacturing an aggregate.
+        var index = 0
+        while index < length(operand.children) {
+            discard expand_input(context, child(operand, index), nodes, ready, depth + 1)?
+            index = index + 1
+        }
+        return Result.Ok(true)
+    }
+    let value = expr(context, operand, -1)?
+    let shape = get(context.env.types, value.ty)
+    if shape.kind != TypeKind.Tuple {
+        return Result.Err(error(context, source, "expansion requires a statically known tuple, not a runtime-sized List"))
+    }
+    let local = length(context.locals)
+    push(context.locals, Local {
+            name = ""
+            ty = value.ty
+            mutable = false
+            is_scoped = false
+        })
+    var index = 0
+    while index < length(shape.arguments) {
+        let node = Node {
+            kind = NodeKind.Select
+            value = std.int.to_text(index)
+            span = source.span
+            children = source_nodes(operand)
+        }
+        let projection = expression(ExprKind.Field, get(shape.arguments, index), node, "", index,
+            expressions(atom(ExprKind.Local, value.ty, source, local)), true)
+        let field = if index == 0 {
+            let body = expressions(expression(ExprKind.Let, 0, source, "", local, expressions(value), value.falls))
+            push(body, projection)
+            expression(ExprKind.Block, projection.ty, source, "", -1, body, value.falls)
+        } else {
+            projection
+        }
+        push(nodes, node)
+        push(ready, Option.Some(field))
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn call_inputs(context Context, sources List[Node]) Result[CallInputs, Failure] {
+    var spread = false
+    var index = 0
+    while index < length(sources) {
+        spread = spread || get(sources, index).kind == NodeKind.Spread
+        index = index + 1
+    }
+    if !spread {
+        return Result.Ok(plain_inputs(sources))
+    }
+    let nodes = new[Node]()
+    let ready = new[Option[Expr]]()
+    index = 0
+    while index < length(sources) {
+        discard expand_input(context, get(sources, index), nodes, ready, 0)?
+        index = index + 1
+    }
+    Result.Ok(CallInputs {
+            nodes = nodes
+            ready = Option.Some(ready)
+        })
+}

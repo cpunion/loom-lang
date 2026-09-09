@@ -1,0 +1,18 @@
+test fn tuple_expansion_is_an_ordered_argument_or_element_node() {
+    let statements = body(child(parsed("fn demo() { call(1, pair..., other()...)\nlet combined = (pair...)\nlet list = [0, pair..., 3]\ndiscard object.method(pair...)\ndiscard callbacks[0](pair...) }"), 0))
+    let args = child(child(statements, 0), 1)
+    assert child(args, 1).kind == NodeKind.Spread && child(child(args, 1), 0).value == "pair"
+    assert child(child(args, 2), 0).kind == NodeKind.Call
+    let tuple = child(child(statements, 1), 0)
+    assert tuple.kind == NodeKind.Tuple && child(tuple, 0).kind == NodeKind.Spread
+    assert child(child(child(statements, 2), 0), 1).kind == NodeKind.Spread
+    discard parsed("fn demo() { call((1, pair...)...)\ndiscard (nested.0..., 4) }")
+}
+
+test fn expansions_do_not_turn_lists_into_types_or_standalone_expressions() {
+    discard rejected("fn demo() { discard value... }")
+    discard rejected("fn demo() { call(...) }")
+    discard rejected("fn demo() { call(value . . .) }")
+    discard rejected("fn demo(value Int...) {}")
+    discard rejected("fn demo[T...]() {}")
+}

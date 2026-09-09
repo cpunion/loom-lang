@@ -1,0 +1,18 @@
+test fn tuple_expansion_shares_call_inference_and_literal_static_arguments() {
+    discard accepted("fn sum(a Int, b Int) Int { a + b }\nfn sum(a Text, b Text) Text { a }\nfn forward[A, B, R](f fn(A, B) R, values (A, B)) R { f(values...) }\nfn main() { let pair = (1, 2)\nassert sum(pair...) == 3\nassert forward[Int, Int, Int](sum, pair) == 3 }")
+}
+
+test fn tuple_expansion_covers_methods_construction_and_compile_time_execution() {
+    discard accepted("concept Add { fn add(self Self, a Int, b Int) Int }\nimpl Add for Int { fn add(self Int, a Int, b Int) Int { self + a + b } }\nenum Pair { Both(Int, Text) }\ntype Positive = Int where self > 0\nfn sum(a Int, b Int) Int { a + b }\nfn main() { let args = (2, 3)\nlet value dyn Add = 1\nassert value.add(args...) == 6\nassert Add.add((1, 2, 3)...) == 6\nlet all = (value, 2, 3)\nassert Add.add(all...) == 6\nlet payload = (4, \"ok\")\nmatch Pair.Both(payload...) { Pair.Both(number, text) => { assert number == 4 && text == \"ok\" } }\nlet positive Positive = Positive((1,)...)\nassert positive == 1\nlet joined = (1, args..., 4)\nassert joined.2 == 3\nlet copied = (args...)\nassert copied.0 == 2\nlet items = [1, args..., 4]\nassert items[2] == 3\nassert comptime { let values = (3, 4)\nsum(values...) } == 7 }")
+    discard accepted("fn id[T](value T) T { value }\nfn apply(callback fn(Int) Int, value Int) Int { callback(value) }\nfn chosen(comptime number Int, value Int) Int { number + value }\nfn main() { assert apply((id, 3)...) == 3\nassert chosen((2, 3)...) == 5 }")
+}
+
+test fn tuple_expansion_preserves_task_and_static_phase_boundaries() {
+    discard accepted("async fn item[T](value T) T { value }\nasync fn consume(a Task[Int], b Task[Text]) { assert a.await == 1\nassert b.await == \"ok\" }\nasync fn main() { let tasks = (item(1), item(\"ok\"))\nconsume(tasks...).await }")
+    rejects("fn sum(a Int, b Int) Int { a + b }\nfn main() { discard sum([1, 2]...) }")
+    rejects("fn sum(a Int, b Int) Int { a + b }\nfn main() { discard sum((1, 2, 3)...) }")
+    rejects("fn main() { let mixed = (1, true)\ndiscard [mixed...] }")
+    rejects("fn selected(comptime value Int) Int { value }\nfn main() { let values = (1,)\ndiscard selected(values...) }")
+    rejects("async fn item() Int { 1 }\nasync fn consume(a Task[Int], b Task[Int]) { discard a.await\ndiscard b.await }\nasync fn main() { let tasks = (item(), item())\nconsume(tasks...).await\nconsume(tasks...).await }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { let tasks = (item(), item())\ndiscard (tasks...) }")
+}

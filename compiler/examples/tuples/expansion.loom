@@ -1,0 +1,104 @@
+fn mark(events List[Int], value Int) Int {
+    push(events, value)
+    value
+}
+
+fn spread_values(events List[Int]) (Int, Text, List[Int]) {
+    discard mark(events, 2)
+    (2, concat("managed", " text"), events)
+}
+
+fn spread_check(first Int, second Int, text Text, events List[Int], last Int) {
+    assert first == 1 && second == 2 && text == "managed text" && last == 3
+    assert length(events) == 3 && get(events, 0) == 1 && get(events, 1) == 2 && get(events, 2) == 3
+}
+
+fn spread_callback(events List[Int]) fn(Int, Int, Text, List[Int], Int) {
+    push(events, 0)
+    spread_check
+}
+
+fn spread_sum(a Int, b Int) Int {
+    a + b
+}
+
+fn spread_factory(events List[Int]) fn(Int, Int) Int {
+    push(events, 0)
+    spread_sum
+}
+
+fn after_factory(events List[Int]) (Int, Int) {
+    assert length(events) == 1 && get(events, 0) == 0
+    push(events, 1)
+    (2, 3)
+}
+
+concept SpreadAdd {
+    fn add(self Self, left Int, right Int) Int
+}
+
+impl SpreadAdd for Int {
+    fn add(self Int, left Int, right Int) Int {
+        self + left + right
+    }
+}
+
+fn spread_forward[A, B, R](callback fn(A, B) R, values (A, B)) R {
+    callback(values...)
+}
+
+fn spread_pure() (List[Int], List[Int]) {
+    let values = [4]
+    let pair = (values, values)
+    (pair...)
+}
+
+fn expansions() {
+    let events = new[Int]()
+    spread_check(mark(events, 1), spread_values(events)..., mark(events, 3))
+    let callback_events = new[Int]()
+    // The callee is evaluated before any argument; tuple contents remain shared.
+    let callback = spread_callback(callback_events)
+    assert get(callback_events, 0) == 0
+    let inputs = (1, 2, "managed text", events, 3)
+    callback(inputs...)
+    let pair = (2, 3)
+    assert spread_forward(spread_sum, pair) == 5
+    let ordering = new[Int]()
+    assert spread_factory(ordering)(after_factory(ordering)...) == 5
+    assert length(ordering) == 2
+    let receiver dyn SpreadAdd = 4
+    assert receiver.add(pair...) == 9
+    let whole = (receiver, 2, 3)
+    assert SpreadAdd.add(whole...) == 9
+    assert comptime {
+        spread_forward(spread_sum, (4, 5))
+    } == 9
+    let values = [0, pair..., 4]
+    assert length(values) == 4 && get(values, 2) == 3
+    let nested = (0, (pair..., 4)..., 5)
+    assert nested.1 == 2 && nested.4 == 5
+    let shared_a, shared_b = comptime {
+        spread_pure()
+    }
+    push(shared_a, 5)
+    assert length(shared_b) == 2
+}
+
+async fn spread_task[T](value T) T {
+    value
+}
+
+async fn spread_consume(a Task[Int], b Task[Text]) {
+    assert a.await == 7
+    assert b.await == "ready"
+}
+
+async fn spread_tasks() {
+    let tasks = (spread_task(7), spread_task(concat("rea", "dy")))
+    spread_consume(tasks...).await
+    let collected = [(spread_task(1), spread_task(2))...]
+    // Dynamic list joining remains source library policy, not tuple expansion.
+    let numbers = std.task.all(collected).await
+    assert get(numbers, 0) == 1 && get(numbers, 1) == 2
+}

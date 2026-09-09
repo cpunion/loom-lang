@@ -180,6 +180,7 @@ fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
     var more = true
     while more {
         let rest = parsed.rest
+        if ellipsis(rest) { return Result.Ok(parsed) }
         if at(rest, Kind.Dot) {
             let after = next(rest)
             if word(after, "await") {

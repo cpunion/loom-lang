@@ -5,6 +5,7 @@ import std.list.set
 import std.list.length
 import std.result.Result
 import std.text.concat
+import std.task.all
 
 pub fn tagged[T](value T) (T, Text) {
     (value, "item")
@@ -79,6 +80,8 @@ fn exercise() {
     assert length(a) == 2
 }
 
-fn main() {
+async fn main() {
     exercise()
+    expansions()
+    spread_tasks().await
 }

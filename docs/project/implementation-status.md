@@ -227,6 +227,13 @@ mutable names rebind locally without changing record fields. Nested bindings,
 explicit omission, compile-time execution, shared aliases and one-shot Task
 transfers have native evidence. Refutable or scoped binding patterns remain unsupported.
 
+Postfix tuple expansion now feeds ordinary calls, enum payloads, tuples and List
+literals. Literal operands expand before contextual checking; other tuples use
+one saved value and typed projections at their original evaluation position.
+Native/compile-time execution preserves sharing and one-shot Task transfer.
+There is no runtime argument pack or expansion opcode. Variadic declarations,
+type packs and expansion of saved tuples into comptime positions remain open.
+
 Named function values have structural signatures, contextual overload/generic
 selection, and native calls through an entry/environment pair. Parameters, returned
 callees and aggregate storage share the ordinary ABI and GC rules. Pure

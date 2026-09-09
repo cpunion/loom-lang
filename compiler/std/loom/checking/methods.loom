@@ -59,9 +59,12 @@ fn bound_method(context Context, ty Int, member Text, arity Int, type_count Int)
     }
     Result.Ok(false)
 }
-fn method_call(context Context, node Node, source Node, method_name Text, types List[Node], inputs List[Node], selected Int, expected Int) Result[Expr, Failure] {
+fn method_call(context Context, node Node, source Node, method_name Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[Expr, Failure] {
     let receiver = expr(context, source, -1)?
-    let bound = if selected >= 0 { false } else { bound_method(context, receiver.ty, method_name, length(inputs) + 1, length(types))? }
+    method_call_checked(context, node, source, receiver, method_name, types, inputs, selected, expected)
+}
+fn method_call_checked(context Context, node Node, source Node, receiver Expr, method_name Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[Expr, Failure] {
+    let bound = if selected >= 0 { false } else { bound_method(context, receiver.ty, method_name, length(inputs.nodes) + 1, length(types))? }
     let options = new[Int]()
     var index = 0
     let receiver_type = get(context.env.types, receiver.ty)
@@ -77,14 +80,14 @@ fn method_call(context Context, node Node, source Node, method_name Text, types 
         while index < length(methods) {
             let id = get(methods, index)
             let current = get(context.env.signatures, id)
-            if method_matches(context.env, current, method_name, length(inputs) + 1, length(types)) { push(options, id) }
+            if method_matches(context.env, current, method_name, length(inputs.nodes) + 1, length(types)) { push(options, id) }
             index = index + 1
         }
     } else {
     index = 0
     while index < length(context.env.concepts) {
         let capability = get(context.env.concepts, index)
-        if concept_method(context.env, capability, method_name, length(inputs) + 1, length(types)) &&
+        if concept_method(context.env, capability, method_name, length(inputs.nodes) + 1, length(types)) &&
             ((selected < 0 && visible_concept(context, capability.symbol) &&
             (!bound || evidence(context, receiver.ty, capability.symbol)?)) || selected == capability.symbol) {
             let provided = if receiver_type.kind == TypeKind.Parameter || receiver_type.kind == TypeKind.Associated { -1 } else {
@@ -98,7 +101,7 @@ fn method_call(context Context, node Node, source Node, method_name Text, types 
             while method < length(methods) {
                 let id = get(methods, method)
                 let current = get(context.env.signatures, id)
-                if method_matches(context.env, current, method_name, length(inputs) + 1, length(types)) {
+                if method_matches(context.env, current, method_name, length(inputs.nodes) + 1, length(types)) {
                     push(options, id)
                 }
                 method = method + 1
@@ -140,10 +143,5 @@ fn method_call(context Context, node Node, source Node, method_name Text, types 
     if length(options) == 0 {
         return Result.Err(error(context, node, "method needs an accessible concept and explicit conformance; generic requirements must be declared"))
     }
-    let arguments = new[Node]()
-    push(arguments, source)
-    index = 0
-    while index < length(inputs) { push(arguments, get(inputs, index))
-        index = index + 1 }
-    invoke(context, node, options, types, arguments, expressions(receiver), expected)
+    invoke(context, node, options, types, input_receiver(inputs, source), expressions(receiver), expected)
 }

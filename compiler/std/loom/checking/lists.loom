@@ -9,6 +9,7 @@ import std.list.length
 import std.result.Result
 
 fn list_literal(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let inputs = call_inputs(context, node.children)?
     var element = -1
     if expected >= 0 {
         let shape = get(context.env.types, expected)
@@ -18,9 +19,9 @@ fn list_literal(context Context, node Node, expected Int) Result[Expr, Failure] 
     }
     let values = new[Expr]()
     var index = 0
-    while index < length(node.children) {
-        let source = child(node, index)
-        let value = expr(context, source, element)?
+    while index < length(inputs.nodes) {
+        let source = get(inputs.nodes, index)
+        let value = input_value(context, inputs, index, element, false)?
         if value.ty == 0 && !inferred_empty(context) {
             return Result.Err(error(context, source, "list elements must produce a value"))
         }
