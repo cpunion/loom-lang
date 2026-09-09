@@ -91,6 +91,15 @@ fn emit_run(
     test_mode: bool,
     runtime: bool,
 ) -> (String, std::process::Output) {
+    emit_run_at(program, test_mode, runtime, Optimization::O0)
+}
+
+fn emit_run_at(
+    program: &checked::Program,
+    test_mode: bool,
+    runtime: bool,
+    optimization: Optimization,
+) -> (String, std::process::Output) {
     let directory = tempfile::tempdir().unwrap();
     let object = directory.path().join("functions.o");
     let ir = directory.path().join("functions.ll");
@@ -106,7 +115,7 @@ fn emit_run(
                 object: &object,
                 ir: Some(&ir),
                 test_mode,
-                optimization: Optimization::O0,
+                optimization,
             },
         )
         .unwrap();
@@ -134,6 +143,290 @@ fn emit_run(
         .output()
         .unwrap();
     (std::fs::read_to_string(ir).unwrap(), output)
+}
+
+#[test]
+fn captured_functions_escape_share_state_and_survive_container_gc() {
+    let callable = Type::Function(0);
+    let environment = Type::Data(0);
+    let wrapper = Type::Data(1);
+    let variant = Type::Data(2);
+    let list = Type::List(0);
+    let field = |ty, index| value(ty, E::Field(Box::new(local(environment, 0)), index));
+    let mut advance = function(
+        vec![environment, Type::Int],
+        Type::Int,
+        Some(value(
+            Type::Int,
+            E::Binary(
+                Binary::Add,
+                Box::new(field(Type::Int, 0)),
+                Box::new(primitive(
+                    Type::Int,
+                    Primitive::TextLen,
+                    vec![field(Type::Text, 1)],
+                )),
+            ),
+        )),
+    );
+    advance.body.statements.push(statement(S::Expr(value(
+        Type::Unit,
+        E::FrameStore {
+            frame: Box::new(local(environment, 0)),
+            field: 0,
+            value: Box::new(value(
+                Type::Int,
+                E::Binary(
+                    Binary::Add,
+                    Box::new(field(Type::Int, 0)),
+                    Box::new(local(Type::Int, 1)),
+                ),
+            )),
+        },
+    ))));
+    let mut factory = function(
+        vec![Type::Text],
+        callable,
+        Some(value(
+            callable,
+            E::Field(Box::new(local(environment, 1)), 2),
+        )),
+    );
+    factory.locals.push(environment);
+    factory.body.statements = vec![
+        statement(S::Let {
+            local: 1,
+            value: value(
+                environment,
+                E::FrameNew(vec![(0, int(0)), (1, local(Type::Text, 0))]),
+            ),
+        }),
+        // The closure refers back to the payload that stores it. Moving GC
+        // must retain this cycle without tracing the entry as a data pointer.
+        statement(S::Expr(value(
+            Type::Unit,
+            E::FrameStore {
+                frame: Box::new(local(environment, 1)),
+                field: 2,
+                value: Box::new(value(
+                    callable,
+                    E::Closure {
+                        function: 0,
+                        environment: Box::new(local(environment, 1)),
+                    },
+                )),
+            },
+        ))),
+    ];
+    let mut main = function(vec![], Type::Unit, None);
+    main.locals = vec![callable, wrapper, variant, list, callable];
+    main.body.statements = vec![
+        statement(S::Let {
+            local: 0,
+            value: value(
+                callable,
+                E::Call(
+                    1,
+                    vec![primitive(
+                        Type::Text,
+                        Primitive::TextConcat,
+                        vec![text("se"), text("ed")],
+                    )],
+                ),
+            ),
+        }),
+        statement(S::Let {
+            local: 1,
+            value: value(wrapper, E::Record(vec![(0, local(callable, 0))])),
+        }),
+        statement(S::Let {
+            local: 2,
+            value: value(
+                variant,
+                E::Variant {
+                    variant: 0,
+                    fields: vec![local(callable, 0)],
+                },
+            ),
+        }),
+        statement(S::Let {
+            local: 3,
+            value: value(list, E::List(vec![local(callable, 0)])),
+        }),
+        // Drop the original binding; each aggregate independently retains the
+        // same mutable environment after its creator's native frame has gone.
+        statement(S::Assign {
+            local: 0,
+            value: reference(0, 3),
+        }),
+        equal(
+            invoke(
+                Type::Int,
+                value(callable, E::Field(Box::new(local(wrapper, 1)), 0)),
+                vec![int(1)],
+            ),
+            int(5),
+        ),
+        equal(
+            value(
+                Type::Int,
+                E::Match {
+                    value: Box::new(local(variant, 2)),
+                    arms: vec![checked::MatchArm {
+                        variant: Some(0),
+                        bindings: vec![Some(4)],
+                        whole: None,
+                        body: body(
+                            vec![],
+                            Some(invoke(Type::Int, local(callable, 4), vec![int(2)])),
+                        ),
+                    }],
+                },
+            ),
+            int(7),
+        ),
+        equal(
+            invoke(
+                Type::Int,
+                primitive(callable, Primitive::ListGet, vec![local(list, 3), int(0)]),
+                vec![int(3)],
+            ),
+            int(10),
+        ),
+        equal(invoke(Type::Int, local(callable, 0), vec![int(0)]), int(99)),
+    ];
+    let alternate = function(vec![Type::Int], Type::Int, Some(int(99)));
+    let unused = function(vec![environment, Type::Int], Type::Int, Some(int(9001)));
+    let mut program = program(
+        vec![advance, factory, main, alternate, unused],
+        vec![checked::Signature {
+            params: vec![Type::Int],
+            result: Type::Int,
+        }],
+    );
+    program.types = vec![
+        checked::Data {
+            name: "capture".into(),
+            kind: checked::DataKind::Frame(vec![
+                ("count".into(), Type::Int),
+                ("label".into(), Type::Text),
+                ("self".into(), callable),
+            ]),
+        },
+        checked::Data {
+            name: "wrapper".into(),
+            kind: checked::DataKind::Record(vec![("call".into(), callable)]),
+        },
+        checked::Data {
+            name: "variant".into(),
+            kind: checked::DataKind::Enum(vec![("Some".into(), vec![callable])]),
+        },
+    ];
+    program.lists.push(callable);
+    for optimization in [Optimization::O0, Optimization::O2] {
+        let (ir, output) = emit_run_at(&program, false, true, optimization);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!ir.contains("@loom.fn.4("));
+    }
+}
+
+#[test]
+fn captured_callee_snapshot_survives_allocating_argument_reassignment() {
+    let callable = Type::Function(0);
+    let environment = Type::Data(0);
+    let read = value(Type::Text, E::Field(Box::new(local(environment, 0)), 0));
+    let join = function(
+        vec![environment, Type::Text],
+        Type::Text,
+        Some(primitive(
+            Type::Text,
+            Primitive::TextConcat,
+            vec![read, local(Type::Text, 1)],
+        )),
+    );
+    let factory = function(
+        vec![Type::Text],
+        callable,
+        Some(value(
+            callable,
+            E::Closure {
+                function: 0,
+                environment: Box::new(value(
+                    environment,
+                    E::FrameNew(vec![(0, local(Type::Text, 0))]),
+                )),
+            },
+        )),
+    );
+    let create = |label| {
+        value(
+            callable,
+            E::Call(
+                1,
+                vec![primitive(
+                    Type::Text,
+                    Primitive::TextConcat,
+                    vec![text(label), text("")],
+                )],
+            ),
+        )
+    };
+    let mut main = function(vec![], Type::Unit, None);
+    main.locals = vec![callable];
+    main.body.statements = vec![
+        statement(S::Let {
+            local: 0,
+            value: create("old"),
+        }),
+        equal(
+            invoke(
+                Type::Text,
+                local(callable, 0),
+                vec![value(
+                    Type::Text,
+                    E::Block(body(
+                        vec![statement(S::Assign {
+                            local: 0,
+                            value: create("new"),
+                        })],
+                        Some(primitive(
+                            Type::Text,
+                            Primitive::TextConcat,
+                            vec![text("+"), text("tail")],
+                        )),
+                    )),
+                )],
+            ),
+            text("old+tail"),
+        ),
+        equal(
+            invoke(Type::Text, local(callable, 0), vec![text("!")]),
+            text("new!"),
+        ),
+    ];
+    let mut program = program(
+        vec![join, factory, main],
+        vec![checked::Signature {
+            params: vec![Type::Text],
+            result: Type::Text,
+        }],
+    );
+    program.types.push(checked::Data {
+        name: "capture".into(),
+        kind: checked::DataKind::Frame(vec![("label".into(), Type::Text)]),
+    });
+    for optimization in [Optimization::O0, Optimization::O2] {
+        let (_, output) = emit_run_at(&program, false, true, optimization);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -322,8 +615,13 @@ fn named_callbacks_keep_direct_abi_dce_and_scalar_paths_runtime_free() {
             .functions,
         BTreeSet::from([0, 2, 3, 4, 5, 6])
     );
-    assert!(!gc::managed(&program, callable));
-    assert_eq!(value_words(&program, Type::Data(1)).unwrap(), 2);
+    assert!(gc::managed(&program, callable));
+    assert_eq!(value_words(&program, Type::Data(1)).unwrap(), 3);
+    let reachable = reachable_functions(&program, &[2], false)
+        .unwrap()
+        .functions;
+    assert!(gc::allocating_functions(&program, &reachable, false).is_empty());
+    assert!(gc::allocating_functions(&program, &reachable, true).contains(&3));
     let (ir, output) = emit_run(&program, false, false);
     assert!(
         output.status.success(),

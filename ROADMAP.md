@@ -149,7 +149,8 @@ unsupported. See the [method example](compiler/examples/async_methods).
 Named async function values now use `fn(A) Task[B]`, like synchronous Task
 factories. Callbacks can be copied, returned and stored without retaining a Task;
 actual calls preserve owner requirements, creation locations and one-shot transfers.
-Native callbacks remain one code pointer. See the
+Named callbacks use a null managed environment and an entry pointer; direct
+functions and private coroutine callbacks keep their ABI. See the
 [callback example](compiler/examples/task_callbacks).
 
 Task-bearing tuples and records now support whole-value transfer, independent
@@ -277,7 +278,9 @@ later work; dynamic List joins use the separate source policies above.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time
-invocation/reification. Capturing closures remain open; runtime callbacks are
+invocation/reification. Native captured environments now reuse typed managed
+payloads and GC snapshots, with shared escaping state tested at O0/O2. Source
+closure conversion and compile-time capture evaluation remain open; runtime callbacks are
 distinct from compile-time parameters.
 
 Compile-time parameters now specialize named calls with Int/Bool/Text values or

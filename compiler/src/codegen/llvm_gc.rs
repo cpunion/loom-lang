@@ -23,9 +23,12 @@ impl RootFrame<'_> {
 pub(super) fn allocating_functions(
     program: &checked::Program,
     reachable: &BTreeSet<usize>,
+    library: bool,
 ) -> BTreeSet<usize> {
     let mut allocating = BTreeSet::new();
     let mut calls = HashMap::<usize, Vec<usize>>::new();
+    let mut references = HashMap::<Type, BTreeSet<usize>>::new();
+    let mut indirect = Vec::new();
     for id in reachable {
         let source = &program.functions[*id];
         let mut values = Vec::new();
@@ -38,9 +41,21 @@ pub(super) fn allocating_functions(
                 checked::ExprKind::DynBox { .. }
                 | checked::ExprKind::DynCall { .. }
                 | checked::ExprKind::List(_)
-                | checked::ExprKind::FrameNew(_)
-                | checked::ExprKind::IndirectCall { .. } => {
+                | checked::ExprKind::FrameNew(_) => {
                     allocating.insert(*id);
+                }
+                checked::ExprKind::FunctionRef(target)
+                | checked::ExprKind::Closure {
+                    function: target, ..
+                } => {
+                    references.entry(value.ty).or_default().insert(target);
+                }
+                checked::ExprKind::IndirectCall { ref callee, .. } => {
+                    if library {
+                        allocating.insert(*id);
+                    } else {
+                        indirect.push((*id, callee.ty));
+                    }
                 }
                 checked::ExprKind::Primitive(operation, _) => {
                     if allocates(operation) {
@@ -52,6 +67,15 @@ pub(super) fn allocating_functions(
                 }
                 _ => {}
             }
+        }
+    }
+    // In a closed executable, a callable can only come from a reachable typed
+    // reference. External library callers remain conservatively allocating.
+    // This keeps scalar callbacks root-free without treating captured values
+    // as unmanaged or assuming that an arbitrary indirect call is pure.
+    for (caller, ty) in indirect {
+        if let Some(targets) = references.get(&ty) {
+            calls.entry(caller).or_default().extend(targets);
         }
     }
     loop {
@@ -149,7 +173,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
 
 pub(super) fn managed(program: &checked::Program, ty: Type) -> bool {
     match ty {
-        Type::Text | Type::Bytes | Type::List(_) | Type::Dyn(_) => true,
+        Type::Text | Type::Bytes | Type::List(_) | Type::Dyn(_) | Type::Function(_) => true,
         Type::Data(id) => match &program.types[id].kind {
             checked::DataKind::Task(_) => false,
             checked::DataKind::Frame(_) => true,
@@ -159,12 +183,7 @@ pub(super) fn managed(program: &checked::Program, ty: Type) -> bool {
                 .iter()
                 .any(|(_, fields)| fields.iter().any(|ty| managed(program, *ty))),
         },
-        Type::Int
-        | Type::Float
-        | Type::Bool
-        | Type::Unit
-        | Type::Parameter(_)
-        | Type::Function(_) => false,
+        Type::Int | Type::Float | Type::Bool | Type::Unit | Type::Parameter(_) => false,
     }
 }
 
@@ -234,6 +253,9 @@ impl TemporarySlots {
             | checked::ExprKind::IndirectCall { .. } => true,
             checked::ExprKind::Unary(_, value)
             | checked::ExprKind::Field(value, _)
+            | checked::ExprKind::Closure {
+                environment: value, ..
+            }
             | checked::ExprKind::Coerce(value) => self.may_allocate(allocating, value),
             checked::ExprKind::Binary(_, left, right) => {
                 self.may_allocate(allocating, left) || self.may_allocate(allocating, right)
@@ -349,6 +371,9 @@ impl TemporarySlots {
         match &value.kind {
             checked::ExprKind::Unary(_, value)
             | checked::ExprKind::Field(value, _)
+            | checked::ExprKind::Closure {
+                environment: value, ..
+            }
             | checked::ExprKind::Coerce(value) => {
                 self.expression(program, allocating, value, false)
             }
@@ -642,6 +667,9 @@ fn walk_expression<'a>(
     match &value.kind {
         checked::ExprKind::Unary(_, value)
         | checked::ExprKind::Field(value, _)
+        | checked::ExprKind::Closure {
+            environment: value, ..
+        }
         | checked::ExprKind::Coerce(value)
         | checked::ExprKind::DynBox { value, .. } => walk_expression(value, expression, statement),
         checked::ExprKind::DynCall {
@@ -852,7 +880,7 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
             Type::Text | Type::Bytes | Type::List(_) => {
                 self.visit(value.into_pointer_value())?.into()
             }
-            Type::Dyn(_) => {
+            Type::Dyn(_) | Type::Function(_) => {
                 let data = self.builder.build_extract_value(
                     value.into_struct_value(),
                     0,
@@ -988,7 +1016,7 @@ impl<'ctx> TraceEmitter<'_, 'ctx> {
         offset: usize,
     ) -> NativeResult<inkwell::values::ArrayValue<'ctx>> {
         Ok(match ty {
-            Type::Text | Type::Bytes | Type::List(_) | Type::Dyn(_) => {
+            Type::Text | Type::Bytes | Type::List(_) | Type::Dyn(_) | Type::Function(_) => {
                 let word = self
                     .builder
                     .build_extract_value(payload, offset as u32, "trace.word")?

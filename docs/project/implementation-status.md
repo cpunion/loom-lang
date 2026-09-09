@@ -37,11 +37,12 @@ Witnesses retain only used constructors; child failures preserve dynamic creatio
 locations. Scoped receivers cannot escape into Tasks; async MustScope/NoSuspend
 parameters remain rejected. See the [method example](../../compiler/examples/async_methods).
 Named async references and synchronous Task factories now share structural
-`fn(A) Task[B]` values. Parameters, returns, records and Lists store a code pointer,
-not a live Task. Calls retain owner checks, one-shot transfer and the actual
+`fn(A) Task[B]` values. Parameters, returns, records and Lists store a callable,
+not a live Task. Named references have an entry pointer and null environment.
+Calls retain owner checks, one-shot transfer and the actual
 indirect creation location. Only Task-returning callback signatures gain a private
 label argument; synchronous factories use one adapter per referenced target.
-Ordinary callbacks retain their ABI. Compile-time Task references and capturing
+Direct functions and private coroutine callbacks retain their ABI. Compile-time Task references and source capturing
 closures remain unsupported. See the [callback example](../../compiler/examples/task_callbacks).
 Tuples and records now carry one-shot Task fields, including nested fields,
 generic forwarding and callback/dynamic signatures. Whole-value reads transfer
@@ -212,12 +213,18 @@ compile-time and suspended execution. Literal/record patterns and guards remain
 open. Compiler production sources retain flat patterns.
 
 Named function values have structural signatures, contextual overload/generic
-selection, and native calls through one code pointer. Parameters, returned
+selection, and native calls through an entry/environment pair. Parameters, returned
 callees and aggregate storage share the ordinary ABI and GC rules. Pure
 compile-time invocation and returned-reference reification use the same checked
 model. The [callback example](../../compiler/examples/callbacks/main.loom) runs
 under forced collection; O0 scalar callbacks have no Loom runtime dependency
-and retain only referenced targets. Capturing closures are not yet implemented.
+and retain only referenced targets. The backend now supports captured managed
+environments through ordinary typed payload allocation, loads and stores.
+Native O0/O2 tests cover escaped shared state, records/enums/Lists and callee
+snapshots across allocating argument reassignment under forced moving GC.
+Closed-build indirect allocation analysis keeps scalar callbacks root-free;
+library callbacks remain conservative. Source closure conversion and compile-time
+capture evaluation are not yet implemented.
 
 Source `std.list.map/filter/fold` use those function values without new runtime
 operations. They traverse the initial index range in order, preserve shared

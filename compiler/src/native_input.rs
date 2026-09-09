@@ -381,9 +381,6 @@ pub fn decode(text: &str) -> Result<c::Program> {
     for id in 0..program.types.len() {
         layout(&program, Type::Data(id), &mut state)?;
         if let c::DataKind::Frame(fields) = &program.types[id].kind {
-            if fields.len() < 2 || fields[1].1 != Type::Int {
-                return Err("checked frame requires a result prefix and Int state".into());
-            }
             for (_, field) in fields {
                 layout(&program, *field, &mut state)?;
             }
@@ -520,6 +517,14 @@ impl Converter<'_> {
         Err("checked frame operation requires a generated frame".into())
     }
 
+    fn coroutine_frame(&self, ty: Type) -> Result<&[(String, Type)]> {
+        let fields = self.frame(ty)?;
+        if fields.len() < 2 || fields[1].1 != Type::Int {
+            return Err("checked coroutine frame requires a result prefix and Int state".into());
+        }
+        Ok(fields)
+    }
+
     fn task_result(&self, ty: Type) -> Result<Type> {
         if let Type::Data(id) = ty
             && let c::DataKind::Task(result) = self.program.types[id].kind
@@ -629,7 +634,7 @@ impl Converter<'_> {
                 }
             }
             Primitive::TaskCreate => {
-                let fields = self.frame(arguments[0].ty)?;
+                let fields = self.coroutine_frame(arguments[0].ty)?;
                 let Type::Function(id) = arguments[1].ty else {
                     return Err("checked task resume requires a function pointer".into());
                 };
@@ -661,7 +666,7 @@ impl Converter<'_> {
                 {
                     return Err("checked task cleanup signature mismatch".into());
                 }
-                self.frame(signature.params[0])?;
+                self.coroutine_frame(signature.params[0])?;
             }
             Primitive::TaskCleanupPop => {
                 if arguments[0].ty != Type::Int || result != Type::Unit {
@@ -1137,8 +1142,16 @@ impl Converter<'_> {
                 let Type::Function(signature) = ty else {
                     return Err("checked function reference requires a function type".into());
                 };
-                if !node.children.is_empty() {
-                    return Err("checked named function references cannot capture values".into());
+                if node.children.len() > 1 {
+                    return Err("checked function reference has at most one environment".into());
+                }
+                let environment = node
+                    .children
+                    .first()
+                    .map(|value| self.expr(value))
+                    .transpose()?;
+                if let Some(environment) = &environment {
+                    self.frame(environment.ty)?;
                 }
                 let target = index(node.index)?;
                 let function = at(self.functions, target)?;
@@ -1148,10 +1161,22 @@ impl Converter<'_> {
                     .iter()
                     .map(|ty| self.ty(*ty))
                     .collect::<Result<Vec<_>>>()?;
-                if params != signature.params || self.ty(function.result)? != signature.result {
+                let expected = environment
+                    .iter()
+                    .map(|value| value.ty)
+                    .chain(signature.params.iter().copied())
+                    .collect::<Vec<_>>();
+                if params != expected || self.ty(function.result)? != signature.result {
                     return Err("checked function reference signature mismatch".into());
                 }
-                E::FunctionRef(target)
+                if let Some(environment) = environment {
+                    E::Closure {
+                        function: target,
+                        environment: Box::new(environment),
+                    }
+                } else {
+                    E::FunctionRef(target)
+                }
             }
             25 => {
                 if node.index != -1 {
@@ -1747,7 +1772,61 @@ mod tests {
                 1
             ))
             .unwrap_err()
-            .contains("cannot capture")
+            .contains("requires a generated frame")
+        );
+    }
+
+    #[test]
+    fn captured_references_require_one_typed_managed_environment() {
+        let lifted = node(11, 1, "", -1, &[node(3, 1, "", 1, &[])]);
+        let frame = node(
+            31,
+            2,
+            "",
+            -1,
+            &[node(9, 1, "", 0, &[node(0, 1, "4", -1, &[])])],
+        );
+        let stream = |captures: &[String], parameter: usize| {
+            let reference = node(24, 3, "", 0, captures);
+            let call = node(25, 1, "", -1, &[reference, node(0, 1, "7", -1, &[])]);
+            let main = node(11, 0, "", -1, &[node(16, 0, "", -1, &[call])]);
+            format!(
+                concat!(
+                    "loom-checked-1\n4\n0\n-1\n1\n-1\n",
+                    "14\n-1\n1\n1\nn1\n12\n-1\n1\n1\n1\n",
+                    "2\n0\n0\n0\n2\n{parameter}\n1\n1\n2\n{parameter}\n1\n0\n{lifted}",
+                    "1\n0\n0\n0\n0\n0\n0\n{main}1\n0\n0\n",
+                ),
+                parameter = parameter,
+                lifted = lifted,
+                main = main
+            )
+        };
+        let program = decode(&stream(std::slice::from_ref(&frame), 2)).unwrap();
+        let c::StmtKind::Discard(call) = &program.functions[1].body.statements[0].kind else {
+            panic!()
+        };
+        let c::ExprKind::IndirectCall { callee, .. } = &call.kind else {
+            panic!()
+        };
+        assert!(matches!(
+            callee.kind,
+            c::ExprKind::Closure { function: 0, .. }
+        ));
+        assert!(
+            decode(&stream(&[], 2))
+                .unwrap_err()
+                .contains("reference signature mismatch")
+        );
+        assert!(
+            decode(&stream(&[frame.clone(), frame.clone()], 2))
+                .unwrap_err()
+                .contains("at most one environment")
+        );
+        assert!(
+            decode(&stream(&[frame], 1))
+                .unwrap_err()
+                .contains("reference signature mismatch")
         );
     }
 

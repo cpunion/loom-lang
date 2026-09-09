@@ -53,6 +53,9 @@ fn walk_expr<'a>(
     expression(value);
     match &value.kind {
         checked::ExprKind::Unary(_, value)
+        | checked::ExprKind::Closure {
+            environment: value, ..
+        }
         | checked::ExprKind::Coerce(value)
         | checked::ExprKind::Field(value, _)
         | checked::ExprKind::DynBox { value, .. } => walk_expr(value, statement, expression),
