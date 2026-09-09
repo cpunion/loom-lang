@@ -1,0 +1,24 @@
+test fn inferred_no_result_generic_payloads_do_not_admit_ordinary_void_values() {
+    discard accepted("fn empty() {}\nfn pair[T](value T) (T, List[T]) { let copy = value\n(copy, [copy]) }\nfn call[T](callback fn() T) (T, List[T]) { pair(callback()) }\nfn main() { discard call(empty) }")
+    rejects("fn empty() {}\nfn main() { let value = empty() }")
+    rejects("fn empty() {}\nfn main() { discard [empty()] }")
+    rejects("fn empty() {}\nfn main() { discard (empty(), 1) }")
+    rejects("fn empty() {}\nfn wrong[T](task Task[T]) Task[T] { let value = empty()\ntask }\nasync fn main() {}")
+    rejects("fn empty() {}\nfn wrong[T](value T) { discard (empty(), value) }\nfn main() { wrong(1) }")
+    rejects("fn invalid(value Unit) {}")
+}
+
+test fn private_fault_exits_keep_task_obligations_on_continuing_paths() {
+    let files = source_files("import std.task.run\nasync fn main() { discard run().await }")
+    push(files, source_file("std.task", "intrinsic fn fault_text(message Text)\nasync fn item() Int { 1 }\npub async fn run() Int { let task = item()\nif true { fault_text(\"failed\") }\ntask.await }", true))
+    assert match checked(files) {
+        Result.Ok(_) => true,
+        Result.Err(_) => false
+    }
+    let invalid = source_files("import std.task.run\nasync fn main() { run().await }")
+    push(invalid, source_file("std.task", "intrinsic fn fault_text(message Text)\nasync fn item() Int { 1 }\npub async fn run() { let task = item()\nif false { fault_text(\"failed\") } }", true))
+    assert match checked(invalid) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+}

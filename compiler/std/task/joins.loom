@@ -1,0 +1,105 @@
+// Policies stay in Loom. Runtime only supplies terminal notifications, typed
+// extraction, and subtree drain. A helper Task is per group, not per element.
+async fn collect[T](tasks List[Task[T]], fail_fast Bool) List[Option[Outcome[T]]] {
+    let batch = watch(tasks)
+    var pending = batch.slots
+    var remaining = batch.count
+    var slots = new[Option[Outcome[T]]]()
+    var index = 0
+    while index < remaining {
+        slots = append(slots, Option.None)
+        index = index + 1
+    }
+    while remaining > 0 {
+        let index = task_next().await
+        let task, rest = take_slot(pending, index)
+        pending = rest
+        let value = task_outcome(task).await
+        let kept = if fail_fast {
+            Outcome.Completed(completed(value))
+        } else {
+            value
+        }
+        slots = put_slot(slots, index, kept)
+        remaining = remaining - 1
+    }
+    drain(pending, false)
+    slots
+}
+
+pub async fn settled[T](tasks List[Task[T]]) List[Outcome[T]] {
+    filled(collect(tasks, false).await)
+}
+
+pub async fn all[T](tasks List[Task[T]]) List[T] {
+    var pending = collect(tasks, true).await
+    var values = new[T]()
+    while true {
+        match take_last(pending) {
+            Option.Some(pair) => {
+                let value, rest = pair
+                pending = rest
+                match value {
+                    Option.Some(value) => {
+                        values = append(values, completed(value))
+                    }
+                    Option.None => {
+                        fault_text("task result slot is empty")
+                    }
+                }
+            }
+            Option.None => {
+                return values
+            }
+        }
+    }
+}
+
+async fn first[T](tasks List[Task[T]], success_only Bool) Outcome[T] {
+    let batch = watch(tasks)
+    var pending = batch.slots
+    var remaining = batch.count
+    if remaining == 0 {
+        fault_text("any/race requires at least one task")
+    }
+    var failure = "no task completed successfully"
+    var failed = false
+    while remaining > 0 {
+        let index = task_next().await
+        let task, rest = take_slot(pending, index)
+        pending = rest
+        match task_outcome(task).await {
+            Outcome.Completed(value) => {
+                drain(pending, false)
+                return Outcome.Completed(value)
+            }
+            Outcome.Faulted(error) => {
+                if !success_only {
+                    drain(pending, true)
+                    return Outcome.Faulted(error)
+                }
+                if !failed {
+                    failure = error.message
+                    failed = true
+                }
+            }
+            Outcome.Cancelled => {
+                if !success_only {
+                    drain(pending, false)
+                    return Outcome.Cancelled
+                }
+            }
+        }
+        remaining = remaining - 1
+    }
+    drain(pending, false)
+    fault_text(failure)
+}
+
+pub async fn any[T](tasks List[Task[T]]) T {
+    completed(first(tasks, true).await)
+}
+
+pub async fn race[T](tasks List[Task[T]]) Outcome[T] {
+    first(tasks, false).await
+}

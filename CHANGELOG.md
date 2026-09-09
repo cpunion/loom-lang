@@ -5,6 +5,13 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Implement List-based `std.task.all/settled/any/race` in Loom, using one-time
+  notification registration and indexed slot transfer. Drain losing subtrees
+  before returning, including returned Tasks; preserve primary faults and report
+  cleanup failures. Support inferred no-result generic payloads without exposing
+  Unit syntax. Add native/compile-time `std.list.transfer.replace`. Tuple joins
+  remain open.
+
 - Add source `std.task.outcome` and `cancel`, with typed Completed/Faulted/Cancelled
   results, including no-result and Task-valued payloads. Preserve ordinary
   Result errors as successful values. Cancellation drains descendants, OS work

@@ -116,6 +116,8 @@ pub enum Primitive {
     TaskStatus,
     TaskFailure,
     TaskCancelBegin,
+    TaskDrain,
+    FaultText,
     TaskResult,
     TaskRelease,
     TaskRun,

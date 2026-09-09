@@ -198,11 +198,22 @@ fn lookup(context Context, value Text) Int {
 }
 fn bind_local(context Context, node Node, value Text, ty Int, mutable Bool, boundary Int) Result[Context, Failure] {
     if value == "result" { return Result.Err(error(context, node, "result is reserved for function postconditions; choose another binding name")) }
-    if ty == 0 { return Result.Err(error(context, node, "invalid local binding")) }
+    // Generic bodies are checked with abstract parameters first. A later
+    // instance may infer the internal no-result type from Task/callback input;
+    // keep that zero-sized payload without admitting ordinary void bindings.
+    if ty == 0 && !inferred_empty(context) { return Result.Err(error(context, node, "invalid local binding")) }
     let local = length(context.locals)
     let next = bind_name(context, node, value, local, -1, boundary)?
     push(context.locals, Local { name = value ty = ty mutable = mutable is_scoped = false })
     Result.Ok(next)
+}
+fn inferred_empty(context Context) Bool {
+    var index = 0
+    while index < length(context.arguments) {
+        if get(context.arguments, index) == 0 { return true }
+        index = index + 1
+    }
+    false
 }
 fn bind_name(context Context, node Node, value Text, local Int, constant Int, boundary Int) Result[Context, Failure] {
     if value == "result" { return Result.Err(error(context, node, "result is reserved for function postconditions; choose another binding name")) }

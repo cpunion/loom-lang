@@ -21,7 +21,7 @@ fn list_literal(context Context, node Node, expected Int) Result[Expr, Failure] 
     while index < length(node.children) {
         let source = child(node, index)
         let value = expr(context, source, element)?
-        if value.ty == 0 {
+        if value.ty == 0 && !inferred_empty(context) {
             return Result.Err(error(context, source, "list elements must produce a value"))
         }
         if element < 0 {

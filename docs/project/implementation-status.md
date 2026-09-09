@@ -78,8 +78,17 @@ results and reporting cleanup faults. Cancellation does not suspend the owner;
 running blocking work must finish first. Generated ordinary enum construction
 retains typed result extraction, GC snapshots and nested Task obligations.
 See the [outcome example](../../compiler/examples/task_outcomes).
-Source join policies remain unfinished, as do socket adapters and general worker
-APIs.
+Source List `all/settled/any/race` now use those notifications and typed outcomes.
+Input-order collection and first-completion selection do not scan all inputs at
+each wait or create per-element wrapper Tasks. Losing subtrees drain before
+return, including completed producers with returned Tasks. Primary faults win
+over secondary cleanup faults; otherwise cleanup failure fails the join.
+Generic instances preserve inferred zero-sized payloads, including no-result
+Tasks, without admitting ordinary void bindings or source Unit syntax. Source
+`std.list.transfer.replace` returns the displaced value and shared header, using
+ordinary native get/set and the same compile-time semantics.
+See the [join example](../../compiler/examples/task_joins).
+Tuple joins, socket adapters and general worker APIs remain unfinished.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;

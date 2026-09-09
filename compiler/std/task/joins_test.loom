@@ -1,0 +1,186 @@
+import std.list.length
+import std.list.get
+import std.text.contains
+import std.text.concat
+import std.time.sleep_ms
+import std.result.Result
+
+async fn delayed(value Int, delay Int) Int {
+    sleep_ms(delay).await
+    value
+}
+
+async fn quick_child() Task[Int] {
+    delayed(7, 0)
+}
+
+async fn returned_pending(events List[Text]) Task[Int] {
+    pending_number(events)
+}
+
+test async fn list_all_and_settled_preserve_input_order_and_empty_inputs() {
+    let values = all([delayed(1, 5), delayed(2, 1), delayed(3, 0)]).await
+    assert values[0] == 1 && values[1] == 2 && values[2] == 3
+    let outcomes = settled([delayed(4, 3), failed(), delayed(6, 0)]).await
+    assert completed(outcomes[0]) == 4
+    assert completed(outcomes[2]) == 6
+    match outcomes[1] {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(all[Int]([]).await) == 0
+    assert length(settled[Int]([]).await) == 0
+    let ordinary = all([ordinary_error()]).await
+    match ordinary[0] {
+        Result.Err(error) => {
+            assert error == "ordinary error"
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+test async fn no_result_tasks_work_in_every_list_policy_without_source_unit() {
+    assert length(all([sleep_ms(0), sleep_ms(1)]).await) == 2
+    let outcomes = settled([sleep_ms(1), sleep_ms(0)]).await
+    assert length(outcomes) == 2
+    match outcomes[0] {
+        Outcome.Completed(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    any([sleep_ms(0), sleep_ms(10000)]).await
+    match race([sleep_ms(0), sleep_ms(10000)]).await {
+        Outcome.Completed(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+async fn pending_number(events List[Text]) Int {
+    defer {
+        push(events, "cleaned")
+    }
+    push(events, "started")
+    sleep_ms(10000).await
+    0
+}
+
+test async fn all_observes_later_input_failure_before_a_slow_first_input() {
+    let events = ["begin"]
+    match outcome(all([pending_number(events), failed()])).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert events[1] == "started" && events[2] == "cleaned"
+}
+
+async fn primary_failure() {
+    fault_text("primary join failure")
+}
+
+test async fn loser_cleanup_faults_surface_without_replacing_a_primary_fault() {
+    let events = ["begin"]
+    match outcome(any([cleanup_failure(events), sleep_ms(2)])).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert events[1] == "remaining cleanup"
+    let later = ["begin"]
+    match race([cleanup_failure(later), primary_failure()]).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "primary join failure")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert later[1] == "remaining cleanup"
+}
+
+test async fn first_policies_select_completion_order_and_drain_losers() {
+    assert any([failed(), delayed(7, 2), delayed(9, 10000)]).await == 7
+    match race([delayed(1, 10000), failed()]).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    match outcome(any([failed(), failed()])).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    match outcome(race[Int]([])).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "at least one task")
+        }
+        _ => {
+            assert false
+        }
+    }
+    match outcome(any[Int]([])).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "at least one task")
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+test async fn joins_preserve_managed_values_and_task_valued_results() {
+    let text = concat("kept", " alive")
+    let values = all([successful(), successful()]).await
+    assert values[0] == "typed result" && values[1] == "typed result"
+    let children = all([nested(), nested()]).await
+    let texts = all(children).await
+    assert texts[0] == "typed result" && texts[1] == "typed result"
+    assert any([nested(), nested()]).await.await == "typed result"
+    match race([nested(), nested()]).await {
+        Outcome.Completed(child) => {
+            assert child.await == "typed result"
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert text == "kept alive"
+    let events = ["begin"]
+    let winner = any([quick_child(), returned_pending(events)]).await
+    assert events[1] == "started" && events[2] == "cleaned"
+    assert winner.await == 7
+}
+
+test async fn dynamic_input_count_does_not_create_a_recursive_join_chain() {
+    var tasks = new[Task[Int]]()
+    var count = 0
+    while count < 200 {
+        tasks = append(tasks, delayed(count, 0))
+        count = count + 1
+    }
+    let values = all(tasks).await
+    assert length(values) == count && values[0] == 0 && values[199] == 199
+}

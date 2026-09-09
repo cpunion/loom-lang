@@ -165,8 +165,18 @@ unexpected runtime failures. The private outcome schema validates exact typed
 payloads; generated ordinary enum control flow constructs the source result.
 See the [outcome example](../../compiler/examples/task_outcomes).
 
-Socket adapters, general worker operations
-and joins are explicitly unfinished, not removed requirements.
+List `std.task.all/settled/any/race` now implement the policies above in Loom.
+Children register once; checked indexed replacement selects their typed handles
+without rescanning or a per-input wrapper Task. Private group helpers add one
+Task per group. Input-order collection, dynamic/empty inputs, no-result payloads
+and Task-valued results share the native generic path. `any` faults with the
+first observed failure when no input succeeds; an ordinary Result error counts
+as success. Losing producers are retired with their returned subtrees intact.
+A cleanup fault fails an otherwise successful join, while an existing primary
+fault remains authoritative. See the [join example](../../compiler/examples/task_joins).
+
+Socket adapters, general worker operations and heterogeneous tuple joins/await
+are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread.
 
 `std.file.tasks` supplies byte/text read/write Tasks using the same completion

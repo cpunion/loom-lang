@@ -3,6 +3,31 @@
 
 use super::*;
 
+/// Source join policy has already selected a winner. Retire an unselected
+/// subtree without extracting Task-valued results. Existing child faults lose
+/// the selection; new cleanup faults propagate unless a primary fault won.
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_drain(child: u64, suppress: i32) {
+    let owner = edit(|owner, core| {
+        let current = parent(core, child)?;
+        if !matches!(core.tasks[&current].state, State::Running)
+            || core.tasks[&child].returned_to_parent
+        {
+            return Err("task drain requires a running parent and its unconsumed child");
+        }
+        Ok(ptr::from_ref(owner))
+    });
+    let mut failure = None;
+    // SAFETY: The enclosing owner remains live; drain releases Core borrows
+    // before callbacks and never retains a managed result pointer.
+    unsafe { &*owner }.cancel_tree(child, &mut failure);
+    if suppress == 0 {
+        if let Some(failure) = failure {
+            raise_owned(failure);
+        }
+    }
+}
+
 fn awaited(core: &Core, child: u64) -> Result<&Task, &'static str> {
     let current = parent(core, child)?;
     let task = &core.tasks[&child];

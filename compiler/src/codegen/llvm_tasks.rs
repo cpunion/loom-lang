@@ -103,6 +103,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         let pointer = self.context.ptr_type(AddressSpace::default());
         match operation {
+            Primitive::TaskDrain => {
+                let suppress = self.builder.build_int_z_extend(
+                    values[1].into_int_value(),
+                    self.context.i32_type(),
+                    "task.drain.suppress",
+                )?;
+                self.runtime_call("task_drain", None, &[values[0], suppress.into()])?;
+                self.restore_locals()?;
+                Ok(None)
+            }
+            Primitive::FaultText => {
+                self.runtime_call("fault_text", None, values)?;
+                self.builder.build_unreachable()?;
+                Ok(None)
+            }
             Primitive::TaskCreate => {
                 // Lowering supplies a static creation-site Text. The runtime
                 // borrows its compiler-owned bytes, never a managed interior.
