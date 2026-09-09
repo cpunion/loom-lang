@@ -60,6 +60,8 @@ test fn member_scope_reuses_match_bindings_and_selected_comptime_evidence() {
     assert completion_found(member_completion(nested, ".va", 3), "value").detail == "value Int"
     let literal = concat(header, "fn demo(value (Bool, Text, Box)) { match value { (true, \"ready\", box) => { discard box.va }\n_ => {} } }")
     assert completion_found(member_completion(literal, ".va", 3), "value").detail == "value Int"
+    let record_case = concat(header, "record Outer { box Box flag Bool }\nfn demo(value Outer) { match value { Outer { flag = true, box = box } => { discard box.va }\n_ => {} } }")
+    assert completion_found(member_completion(record_case, ".va", 3), "value").detail == "value Int"
     let whole = concat(header, "fn demo(box Box) { match box { whole => { discard whole.va } } }")
     assert completion_found(member_completion(whole, ".va", 3), "value").detail == "value Int"
     let guarded = "concept Show { fn show(self Self) Text }\nfn demo[T Show](value T) { comptime if T implements Show { discard value.sh } else {} }"

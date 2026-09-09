@@ -1,0 +1,99 @@
+fn record_pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, depth Int) Result[PatternScope, Failure] {
+    let shape = get(context.env.types, ty)
+    if shape.kind != TypeKind.Record {
+        return Result.Err(error(context, node, "record pattern requires a record value"))
+    }
+    let target = find_data(context.env, context.signature.symbol, node, node.value)?
+    if target < 0 || target != shape.symbol {
+        return Result.Err(error(context, node, "pattern belongs to a different nominal record"))
+    }
+    let declaration = symbol(context.env, shape.symbol)
+    let here = symbol(context.env, context.signature.symbol)
+    if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
+        return Result.Err(error(context, node, "cannot inspect a private record from another package"))
+    }
+    let positions = new[Int]()
+    var index = 0
+    while index < length(shape.fields) {
+        push(positions, -1)
+        index = index + 1
+    }
+    let checked = new[CheckedPattern]()
+    var current = context
+    var omitted = node
+    var rest = false
+    index = 0
+    // Check named fields in source order; matrix columns use declaration order.
+    while index < length(node.children) {
+        let member = child(node, index)
+        if member.kind == NodeKind.RestPattern {
+            omitted = member
+            rest = true
+        } else {
+            var field = -1
+            var search = 0
+            while search < length(shape.fields) {
+                if get(shape.fields, search).name == member.value {
+                    field = search
+                }
+                search = search + 1
+            }
+            if field < 0 {
+                return Result.Err(error(context, member, "unknown record field in pattern"))
+            }
+            if get(positions, field) >= 0 {
+                return Result.Err(error(context, member, "duplicate record field in pattern"))
+            }
+            let nested = pattern_scope(current, child(member, 0), get(shape.fields, field).ty, body, boundary, depth + 1)?
+            current = nested.context
+            set(positions, field, length(checked))
+            push(checked, nested.pattern)
+        }
+        index = index + 1
+    }
+    let children = new[CheckedPattern]()
+    index = 0
+    while index < length(shape.fields) {
+        let position = get(positions, index)
+        if position >= 0 {
+            push(children, get(checked, position))
+        } else {
+            if !rest {
+                return Result.Err(error(context, node, "match every record field or explicitly omit fields with '..'"))
+            }
+            let wildcard = Node {
+                kind = NodeKind.Wildcard
+                value = ""
+                span = omitted.span
+                children = new[Node]()
+            }
+            let nested = pattern_scope(current, wildcard, get(shape.fields, index).ty, body, boundary, depth + 1)?
+            current = nested.context
+            push(children, nested.pattern)
+        }
+        index = index + 1
+    }
+    Result.Ok(PatternScope {
+            context = current
+            pattern = CheckedPattern {
+                source = node
+                ty = ty
+                variant = -2
+                local = -1
+                children = children
+            }
+        })
+}
+
+fn pattern_product_types(shape Type) List[Int] {
+    if shape.kind == TypeKind.Tuple {
+        return shape.arguments
+    }
+    let types = new[Int]()
+    var index = 0
+    while index < length(shape.fields) {
+        push(types, get(shape.fields, index).ty)
+        index = index + 1
+    }
+    types
+}

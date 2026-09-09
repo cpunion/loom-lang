@@ -1,5 +1,5 @@
 // Checked source patterns lower to ordinary Match/If/Field/Let expressions.
-// variant -3 is a literal, -2 is a tuple, -1 is a wildcard or binding; nonnegative IDs are enum
+// variant -3 is a literal, -2 is a tuple/record, -1 is a wildcard or binding; nonnegative IDs are enum
 // variants. Binding locals are allocated once before checking each arm body.
 record CheckedPattern { source Node ty Int variant Int local Int children List[CheckedPattern] }
 record PatternScope { context Context pattern CheckedPattern }
@@ -31,7 +31,7 @@ fn pattern_variant(context Context, node Node, ty Int) Result[Int, Failure] {
 }
 
 fn nested_pattern(node Node) Bool {
-    if node.kind == NodeKind.Tuple || scalar_pattern(node) { return true }
+    if node.kind == NodeKind.Tuple || node.kind == NodeKind.RecordPattern || scalar_pattern(node) { return true }
     let bindings = group(node, NodeKind.Bindings)
     var index = 0
     while index < length(bindings) {
@@ -45,6 +45,7 @@ fn pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, de
     if depth >= 64 { return Result.Err(error(context, node, "pattern nesting limit exceeded")) }
     let shape = get(context.env.types, ty)
     if scalar_pattern(node) { return literal_pattern_scope(context, node, ty) }
+    if node.kind == NodeKind.RecordPattern { return record_pattern_scope(context, node, ty, body, boundary, depth) }
     var selected = -1
     if node.kind == NodeKind.Tuple {
         if shape.kind != TypeKind.Tuple { return Result.Err(error(context, node, "tuple pattern requires a tuple value")) }

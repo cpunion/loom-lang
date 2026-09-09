@@ -14,6 +14,7 @@ pub enum NodeKind {
     TupleType Tuple Destructure Float
     Concept Impl Implements MethodCall DynType AssociatedType FunctionType Invoke
     Defer Bounds Break Continue List Apply Index IndexAssign Scoped Async Await
+    RecordPattern RestPattern
 }
 
 // TupleType/Tuple/List children are ordered elements. Destructure stores "let" or
@@ -41,6 +42,8 @@ pub enum NodeKind {
 // Within match arms, Tuple contains patterns and Pattern contains Bindings of
 // recursive patterns. Bare payload Names bind values; qualified paths or calls
 // identify variants. The same source tree serves parsing, checking and tooling.
+// RecordPattern stores the nominal path and source-ordered Field(name, pattern)
+// children, with an optional final RestPattern for explicitly omitted fields.
 
 pub record Node {
     kind NodeKind

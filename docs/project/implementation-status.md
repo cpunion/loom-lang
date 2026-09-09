@@ -216,7 +216,11 @@ compile-time and suspended execution. Int/Bool/Text/Float literal patterns now
 share this matrix, using ordinary equality and typed branches. Bool coverage is
 finite; other scalars require a fallback, including NaN for Float. Checked keys
 normalize equal numeric spellings and decoded Text without rewriting source.
-Record patterns and guards remain open. Compiler production sources retain flat patterns.
+Named record patterns now share the tuple product decisions, with nominal checking,
+source-ordered field bindings and explicit `..` omission. Typed field projections
+and fallback reconstruction preserve shared data and Task obligations without new
+runtime or checked-artifact operations. Guards remain open. Compiler production
+sources retain flat patterns.
 
 Named function values have structural signatures, contextual overload/generic
 selection, and native calls through an entry/environment pair. Parameters, returned

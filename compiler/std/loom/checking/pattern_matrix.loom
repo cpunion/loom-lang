@@ -108,14 +108,14 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
     let value = get(values, column)
     if get(first.patterns, column).variant == -3 { return literal_decision(plan, rows, values, column, depth + 1) }
     let shape = get(plan.context.env.types, value.ty)
-    let tuple = shape.kind == TypeKind.Tuple
-    let count = if tuple { 1 } else { length(shape.variants) }
+    let product = shape.kind == TypeKind.Tuple || shape.kind == TypeKind.Record
+    let count = if product { 1 } else { length(shape.variants) }
     if count == 0 { return Result.Err(error(plan.context, plan.source, "non-exhaustive match")) }
     let arms = new[Arm]()
     var falls = false
     var variant = 0
     while variant < count {
-        let types = if tuple { shape.arguments } else { get(shape.variants, variant).fields }
+        let types = if product { pattern_product_types(shape) } else { get(shape.variants, variant).fields }
         let fields = new[Expr]()
         let locals = new[Int]()
         let initializers = new[Expr]()
@@ -126,17 +126,17 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
             let local = pattern_local(plan.context, plan.source, ty)
             push(fields, local)
             push(locals, local.index)
-            push(reconstructed, if tuple { expression(ExprKind.Field, ty, plan.source, "", field, expressions(local), true) } else { local })
-            if tuple {
+            push(reconstructed, if product { expression(ExprKind.Field, ty, plan.source, "", field, expressions(local), true) } else { local })
+            if product {
                 let projected = expression(ExprKind.Field, ty, plan.source, "", field, expressions(value), true)
                 push(initializers, pattern_let(plan.source, local.index, projected))
             }
             field = field + 1
         }
-        let rebuilt = expression(if tuple { ExprKind.Record } else { ExprKind.Variant }, value.ty, plan.source, "", if tuple { -1 } else { variant }, reconstructed, true)
-        let selected = pattern_rows(plan, rows, column, if tuple { -2 } else { variant }, "", value, fields, rebuilt, depth + 1)?
+        let rebuilt = expression(if product { ExprKind.Record } else { ExprKind.Variant }, value.ty, plan.source, "", if product { -1 } else { variant }, reconstructed, true)
+        let selected = pattern_rows(plan, rows, column, if product { -2 } else { variant }, "", value, fields, rebuilt, depth + 1)?
         let body = pattern_decision(plan, selected, pattern_slots(values, column, fields), depth + 1)?
-        if tuple { return Result.Ok(pattern_block(plan.source, initializers, body)) }
+        if product { return Result.Ok(pattern_block(plan.source, initializers, body)) }
         falls = falls || body.falls
         let block = if body.kind == ExprKind.Block { body } else { pattern_block(plan.source, new[Expr](), body) }
         push(arms, Arm { variant = variant bindings = locals whole = -1 body = expressions(block) })

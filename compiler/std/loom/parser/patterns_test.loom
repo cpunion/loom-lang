@@ -37,3 +37,23 @@ test fn scalar_patterns_keep_literal_values_and_source_spans() {
     discard rejected("fn f() { match x { 1 + 2 => 0 } }")
     discard rejected("fn f() { let (true, value) = x }")
 }
+
+test fn record_patterns_preserve_field_order_and_require_explicit_separators() {
+    let source = "fn f() { match x { app.Pair { second = Some((true, item)), first = 0\n.., } => item } }"
+    let pattern = child(child(child(body(child(parsed(source), 0)), 0), 1), 0)
+    assert pattern.kind == NodeKind.RecordPattern && pattern.value == "app.Pair"
+    assert length(pattern.children) == 3
+    assert child(pattern, 0).kind == NodeKind.Field && child(pattern, 0).value == "second"
+    assert child(child(pattern, 0), 0).kind == NodeKind.Pattern
+    assert child(pattern, 1).value == "first"
+    assert child(pattern, 2).kind == NodeKind.RestPattern
+    assert child(pattern, 2).span.end - child(pattern, 2).span.start == 2
+    discard parsed("fn f() { match x { Empty {} => 0 } }")
+    discard rejected("fn f() { match x { Pair { first = a second = b } => 0 } }")
+    discard rejected("fn f() { match x { Pair { first } => 0 } }")
+    discard rejected("fn f() { match x { Pair { .., first = a } => 0 } }")
+    discard rejected("fn f() { match x { Pair { ... } => 0 } }")
+    discard rejected("fn f() { match x { Pair { . . } => 0 } }")
+    discard rejected("fn f() { match x { .. => 0 } }")
+    discard rejected("fn f() { let Pair { first = a } = x }")
+}

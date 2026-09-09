@@ -1,0 +1,31 @@
+fn record_pattern(start Cursor, named Step, depth Int) Result[Step, Diagnostic] {
+    var rest = newlines(next(named.rest))
+    let fields = new[Node]()
+    while !at(rest, Kind.RBrace) {
+        if at(rest, Kind.Dot) {
+            let second = next(rest)
+            if !at(second, Kind.Dot) || token(rest).span.end != token(second).span.start {
+                return Result.Err(error(rest, "expected '..' to omit record fields"))
+            }
+            push(fields, done(rest, next(second), NodeKind.RestPattern, "", new[Node]()).node)
+            rest = newlines(next(second))
+            if at(rest, Kind.Comma) {
+                rest = newlines(next(rest))
+            }
+            return Result.Ok(done(start, expect(rest, Kind.RBrace, "'}' after '..'")?, NodeKind.RecordPattern, named.node.value, fields))
+        }
+        let field = name(rest)?
+        let value = pattern_at(newlines(expect(field.rest, Kind.Assign, "'=' after the field name")?), depth + 1, true, false)?
+        push(fields, done(rest, value.rest, NodeKind.Field, field.node.value, one(value.node)).node)
+        rest = value.rest
+        if at(rest, Kind.Comma) {
+            rest = next(rest)
+        } else {
+            if !at(rest, Kind.Newline) && !at(rest, Kind.RBrace) {
+                return Result.Err(error(rest, "expected a comma, newline, or '}' after the record field pattern"))
+            }
+        }
+        rest = newlines(rest)
+    }
+    Result.Ok(done(start, next(rest), NodeKind.RecordPattern, named.node.value, fields))
+}

@@ -1,0 +1,111 @@
+record Packet[T] {
+    ready Bool
+    value T
+}
+
+record Empty {
+}
+
+fn unpack[T](value Packet[T]) T {
+    match value {
+        Packet {
+            value = item,
+            ..
+        } => item
+    }
+}
+
+fn packet(trace List[Int], values List[Int]) Packet[(Text, List[Int])] {
+    push(trace, 1)
+    Packet {
+        ready = true
+        value = (concat("rea", "dy"), values)
+    }
+}
+
+fn inspect_packet(value Packet[(Text, List[Int])]) Text {
+    match value {
+        Packet {
+            value = ("ready", items),
+            ready = true
+        } => {
+            push(items, 7)
+            "selected"
+        }
+        whole => {
+            let (text, items) = whole.value
+            push(items, 8)
+            text
+        }
+    }
+}
+
+fn record_values() {
+    let trace List[Int] = []
+    let values List[Int] = []
+    assert inspect_packet(packet(trace, values)) == "selected"
+    assert length(trace) == 1 && length(values) == 1 && values[0] == 7
+    assert inspect_packet(Packet {
+            ready = false
+            value = ("ready", values)
+        }) == "ready"
+    assert inspect_packet(Packet {
+            ready = true
+            value = ("other", values)
+        }) == "other"
+    assert length(values) == 3 && values[1] == 8 && values[2] == 8
+    assert unpack(Packet {
+            ready = false
+            value = 9
+        }) == 9
+    let empty = Empty {
+    }
+    assert match empty {
+        Empty {
+        } => true
+    }
+    let nested = Option.Some((Packet {
+                ready = true
+                value = 3
+            }, false))
+    assert match nested {
+        Option.Some((Packet {
+                    value = n,
+                    ready = true
+                }, false)) => n == 3
+        _ => false
+    }
+}
+
+async fn consume_packet(value Packet[Task[Int]], trace List[Int]) Int {
+    match value {
+        Packet {
+            value = task,
+            ready = true
+        } => {
+            defer {
+                push(trace, 2)
+            }
+            sleep_ms(1).await
+            task.await
+        }
+        whole => {
+            // The failed field test does not consume or duplicate the Task.
+            sleep_ms(1).await
+            whole.value.await
+        }
+    }
+}
+
+async fn record_tasks() {
+    let trace List[Int] = []
+    assert consume_packet(Packet {
+            ready = true
+            value = delayed(7)
+        }, trace).await == 7
+    assert consume_packet(Packet {
+            ready = false
+            value = delayed(8)
+        }, trace).await == 8
+    assert length(trace) == 1 && trace[0] == 2
+}
