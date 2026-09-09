@@ -2,7 +2,7 @@ test fn literal_patterns_check_types_and_exhaustiveness() {
     discard accepted("pub fn bit(v Bool) Int ensures result >= 0 && result <= 1 { match v { true => 1\nfalse => 0 } }")
     discard accepted("pub fn choose[T](v (Bool, T)) T { match v { (true, value) => value\n(false, value) => value } }")
     discard accepted("pub fn pick(v Int) Int { match v { -9223372036854775808 => 0\n9223372036854775807 => 1\nrest => rest } }")
-    discard accepted("type Count Int where value >= 0\npub fn pick(v Count) Int { match v { 0 => 1\nrest => rest } }")
+    discard accepted("type Count = Int where self >= 0\npub fn pick(v Count) Int { match v { 0 => 1\nrest => rest } }")
     rejects("pub fn bit(v Bool) Int { match v { true => 1 } }")
     rejects("pub fn bit(v Bool) Int { match v { true => 1\nfalse => 0\n_ => 2 } }")
     rejects("pub fn pick(v Int) Int { match v { 0 => 0 } }")
