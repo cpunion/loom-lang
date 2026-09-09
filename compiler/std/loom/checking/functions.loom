@@ -259,21 +259,10 @@ fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failu
     Result.Ok(clauses)
 }
 
-// Construction and mandatory verification share one binder/body checker. A
-// private proof closure can construct its caller without verifying it recursively.
-fn function_body(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[CheckedBody, Failure] {
-    let original = get(env.signatures, id)
-    let item = symbol(env, original.symbol)
-    let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
-    let current = signature(env, id, arguments, item.node)?
-    discard task_signature(env, current, item.node)?
-    if emit && length(env.interfaces) != 0 {
-        let seen = new[Int]()
-        var index = 0
-        while index < length(current.params) { discard emitted_type(env, current.symbol, get(current.params, index), item.node, seen)?
-            index = index + 1 }
-        discard emitted_type(env, current.symbol, current.result, item.node, seen)?
-    }
+record FunctionScope { context Context preconditions List[Expr] params List[Int] }
+
+fn function_scope(env Environment, current Signature, arguments List[Int], constants List[StaticValue], emit Bool) Result[FunctionScope, Failure] {
+    let item = symbol(env, current.symbol)
     var context = Context { env = env signature = current arguments = arguments
         constants = constants locals = new[Local]() bindings = new[Binding]() head = -1
         cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2 facts = new[Fact]() fact_head = -1 emit = emit }
@@ -300,11 +289,31 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
         context = assuming(context, get(preconditions, index), true, 0)
         index = index + 1
     }
+    Result.Ok(FunctionScope { context = context preconditions = preconditions params = runtime_params })
+}
+
+// Construction and mandatory verification share one binder/body checker. A
+// private proof closure can construct its caller without verifying it recursively.
+fn function_body(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[CheckedBody, Failure] {
+    let original = get(env.signatures, id)
+    let item = symbol(env, original.symbol)
+    let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
+    let current = signature(env, id, arguments, item.node)?
+    discard task_signature(env, current, item.node)?
+    if emit && length(env.interfaces) != 0 {
+        let seen = new[Int]()
+        var index = 0
+        while index < length(current.params) { discard emitted_type(env, current.symbol, get(current.params, index), item.node, seen)?
+            index = index + 1 }
+        discard emitted_type(env, current.symbol, current.result, item.node, seen)?
+    }
+    let scope = function_scope(env, current, arguments, constants, emit)?
+    var context = scope.context
     let body = if runtime_name == "" {
         block(context, child(item.node, part(item.node, NodeKind.Block)), current.result, true)?
     } else {
         let values = new[Expr]()
-        index = 0
+        var index = 0
         while index < length(current.params) {
             push(values, atom(ExprKind.Local, get(current.params, index), item.node, index))
             index = index + 1
@@ -321,8 +330,8 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
         push(context.bindings, Binding { name = "result" local = result_local constant = -1 previous = context.head })
         context = context_at(context, binding)
     }
-    let checked_function = Function { is_async = has(item.node, NodeKind.Async) symbol = current.symbol arguments = arguments params = runtime_params result = current.result
-        locals = context.locals preconditions = preconditions postconditions = new[Expr]() result_local = result_local
+    let checked_function = Function { is_async = has(item.node, NodeKind.Async) symbol = current.symbol arguments = arguments params = scope.params result = current.result
+        locals = context.locals preconditions = scope.preconditions postconditions = new[Expr]() result_local = result_local
         body = body runtime_name = runtime_name span = item.node.span }
     discard task_flow(context, checked_function)?
     Result.Ok(CheckedBody { context = context function = checked_function })

@@ -348,7 +348,10 @@ buffers to the same compiler for diagnostics, formatting, type hovers and checke
 definition navigation. An actual VS Code extension-host smoke passes on macOS.
 Name completion now reuses package bindings and lexical scopes, including partial
 identifiers in bodies with type errors and additive cursor/EOF syntax recovery
-confined to virtual completion snapshots. Member completion, rename, and incremental
+confined to virtual completion snapshots. Receiver-type completion now offers
+fields, tuple indices, admitted concept methods and Task `.await`, sharing
+ordinary scope/type rules without claiming the incomplete body is verified.
+Package-qualified completion, rename, and incremental
 semantic reuse are subsequent tooling work, not completed language features.
 Native failing assertions now report their source location and current test,
 including helper assertions and standalone test executables. The first fault

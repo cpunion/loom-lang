@@ -25,7 +25,7 @@ test('LSP semantic queries preserve all checked types/targets and cancel on sibl
   t.after(() => client.close());
   assert.equal(client.initialized.capabilities.hoverProvider, true);
   assert.equal(client.initialized.capabilities.definitionProvider, true);
-  assert.deepEqual(client.initialized.capabilities.completionProvider, {});
+  assert.deepEqual(client.initialized.capabilities.completionProvider, { triggerCharacters: ['.'] });
   const target = path.join(folder, 'query_target.loom');
   const text = '// é😀 QUERY';
   await client.open(file, text);

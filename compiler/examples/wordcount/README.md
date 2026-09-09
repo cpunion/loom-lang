@@ -36,6 +36,8 @@ Try these edits:
 5. Run `../../../target/loom run -- missing.txt` to check the file-error path.
 6. In the editor, add `fn scratch() Int { true }` to `main.loom`. Check that
    the error appears but hover and navigation in `main` still work, then remove it.
+7. In `display`, remove `words` from `summary.words`. After `summary.`, completion
+   should offer `lines`, `words`, and `bytes`; select `words` to restore the program.
 
 The missing-file command exits with `1`; omitting the file argument prints usage
 and exits with `2`. `loom run` preserves these application exit codes, just like
@@ -51,8 +53,8 @@ it is not part of the starting example.
 
 During the exercise, note where you had to guess syntax or look up an API,
 whether diagnostics pointed to the mistake, and whether formatting or navigation
-interrupted your work. Completion, rename, and automatic discovery of dependency
-tests are not available yet; a passing demo is not a claim that these exist.
+interrupted your work. Name/member completion is available; rename and automatic
+discovery of dependency tests remain open.
 
 For a standalone executable:
 
@@ -67,8 +69,8 @@ explicit `--std` and `--native-tool` paths. The compiler does not yet provide
 `loom init`; the small manifest and source files here are the complete project.
 
 See the [VS Code trial](../../../editors/vscode/README.md#try-it) for unsaved
-diagnostics, formatting, hover, and definition navigation. Completion and
-rename are not implemented. Independent ordinary functions remain queryable
+diagnostics, formatting, completion, hover, and definition navigation. Rename is
+not implemented. Independent ordinary functions remain queryable
 despite unrelated body errors; syntax and template errors can still block queries.
 A failed native assertion reports
 the test name and the assertion's original file, line and Unicode column,

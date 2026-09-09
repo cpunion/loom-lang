@@ -1,0 +1,139 @@
+fn member_completion(text Text, fragment Text, cursor Int) Completion {
+    let bindings = query_bindings(input(text))
+    match complete_at(bindings, 0, query_offset(text, fragment) + cursor) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            member_completion(text, fragment, cursor)
+        }
+    }
+}
+
+test fn members_infer_records_calls_indexing_tuples_and_local_shadowing() {
+    let header = "record Box[T] { value T }\nfn make() Box[Int] { Box { value = 3 } }\n"
+    let tails = ["fn main() { let box = make()\ndiscard box.va }",
+        "fn main() { discard make().va }", "fn main() { let boxes = [make()]\ndiscard boxes[0].va }"]
+    var index = 0
+    while index < length(tails) {
+        let found = member_completion(concat(header, get(tails, index)), ".va", 3)
+        assert length(found.items) == 1 && get(found.items, 0).name == "value"
+        assert get(found.items, 0).detail == "value Int" && get(found.items, 0).kind == CompletionKind.Field
+        index = index + 1
+    }
+    let shadow = concat(header, "fn main() { let box = make()\nif true { let box = Box { value = true }\ndiscard box.va } }")
+    assert completion_found(member_completion(shadow, ".va", 3), "value").detail == "value Bool"
+    let tuple = "fn main() { let pair = (1, true)\ndiscard pair._ }"
+    let fields = member_completion(tuple, "pair._", 5)
+    assert length(fields.items) == 2
+    assert completion_found(fields, "0").detail == "0 Int" && completion_found(fields, "1").detail == "1 Bool"
+    let numbered = "fn main() { let pair = (1, true)\ndiscard pair.1 }"
+    assert completion_found(member_completion(numbered, "pair.1", 6), "1").detail == "1 Bool"
+    let nested = concat(header, "fn main() { let outer = Box { value = make() }\ndiscard outer.value.va }")
+    assert completion_found(member_completion(nested, ".va }", 3), "value").detail == "value Int"
+}
+
+test fn methods_follow_explicit_conformance_generic_bounds_and_dynamic_interfaces() {
+    let header = "concept Show { fn show(self Self) Text\nfn show(self Self, detailed Bool) Text }\nconcept Other { fn absent(self Self) Int }\nrecord Box[T] { value T }\nimpl Show for Int { fn show(self Int) Text { \"int\" }\nfn show(self Int, detailed Bool) Text { \"int\" } }\nimpl[T Show] Show for Box[T] { fn show(self Box[T]) Text { self.value.show() }\nfn show(self Box[T], detailed Bool) Text { self.value.show(detailed) } }\n"
+    let bodies = ["fn demo(value Int) { discard value.sh }", "fn demo[T Show](value T) { discard value.sh }",
+        "fn demo(value dyn Show) { discard value.sh }", "fn demo(value Box[Int]) { discard value.sh }"]
+    var index = 0
+    while index < length(bodies) {
+        let methods = member_completion(concat(header, get(bodies, index)), "discard value.sh", 16)
+        assert length(methods.items) == 2
+        assert get(methods.items, 0).kind == CompletionKind.Method
+        assert get(methods.items, 0).detail != get(methods.items, 1).detail
+        index = index + 1
+    }
+    let unbounded = member_completion(concat(header, "fn demo[T](value T) { discard value.sh }"), "discard value.sh", 16)
+    assert length(unbounded.items) == 0
+    let unsatisfied = member_completion(concat(header, "fn demo(value Box[Bool]) { discard value.sh }"), "discard value.sh", 16)
+    assert length(unsatisfied.items) == 0
+}
+
+test fn member_scope_reuses_match_bindings_and_selected_comptime_evidence() {
+    let header = "record Box { value Int }\nenum Choice { Some(Box) None }\n"
+    let matched = concat(header, "fn main() { match Choice.Some(Box { value = 7 }) { Choice.Some(box) => { discard box.va }\nChoice.None => {} } }")
+    assert completion_found(member_completion(matched, ".va", 3), "value").detail == "value Int"
+    let whole = concat(header, "fn demo(box Box) { match box { whole => { discard whole.va } } }")
+    assert completion_found(member_completion(whole, ".va", 3), "value").detail == "value Int"
+    let guarded = "concept Show { fn show(self Self) Text }\nfn demo[T Show](value T) { comptime if T implements Show { discard value.sh } else {} }"
+    assert length(member_completion(guarded, ".sh", 3).items) == 1
+    let task = "async fn item() Int { 7 }\nasync fn main() { let pending = item()\ndiscard pending.aw }"
+    let awaited = completion_found(member_completion(task, ".aw", 3), "await")
+    assert awaited.kind == CompletionKind.Keyword && awaited.detail == "await Int"
+    let typed_error = "record Box { value Int }\nfn main() { let box Bool = Box { value = 1 }\ndiscard box.va }"
+    assert match complete_at(query_bindings(input(typed_error)), 0, query_offset(typed_error, ".va") + 3) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}
+
+test fn foreign_private_fields_and_unimported_concepts_do_not_leak_into_completion() {
+    let text = "import helper.make\nfn main() { let value = make()\ndiscard value._ }"
+    let project = input(text)
+    push(project.modules, ModuleInstance {
+            name = "helper"
+            source = "/helper"
+        })
+    push(project.packages, Package {
+            instance = 1
+            relative = ""
+            imports = new[PackageImport]()
+        })
+    push(get(project.packages, 0).imports, PackageImport {
+            spelling = "helper"
+            target = 1
+        })
+    let dependency = "record Hidden { secret Int }\npub concept Inspect { fn inspect(self Self) Int }\nimpl Inspect for Hidden { fn inspect(self Hidden) Int { self.secret } }\npub fn make() Hidden { Hidden { secret = 1 } }"
+    push(project.files, SourceFile {
+            package = 1
+            path = "helper.loom"
+            text = dependency
+            tree = get(input(dependency).files, 0).tree
+            test_only = false
+            trusted_std = false
+        })
+    let bindings = query_bindings(project)
+    match complete_at(bindings, 0, query_offset(text, "value._") + 6) {
+        Option.Some(value) => {
+            assert length(value.items) == 0
+        }
+        Option.None => {
+            assert false
+        }
+    }
+    let ordinary = "concept Show { fn show(self Self) Int }\nfn demo(value Int) { discard value.sh }"
+    let isolated = input(ordinary)
+    let testing = "impl Show for Int { fn show(self Int) Int { self } }\ntest fn example() { let value = 1\ndiscard value.sh }"
+    push(isolated.files, SourceFile {
+            package = 0
+            path = "main_test.loom"
+            text = testing
+            tree = get(input(testing).files, 0).tree
+            test_only = true
+            trusted_std = false
+        })
+    let scopes = match bind(isolated, true) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    match complete_at(scopes, 0, query_offset(ordinary, "discard value.sh") + 16) {
+        Option.Some(value) => {
+            assert length(value.items) == 0
+        }
+        Option.None => {
+            assert false
+        }
+    }
+    match complete_at(scopes, 1, query_offset(testing, "discard value.sh") + 16) {
+        Option.Some(value) => {
+            assert length(value.items) == 1 && get(value.items, 0).name == "show"
+        }
+        Option.None => {
+            assert false
+        }
+    }
+}

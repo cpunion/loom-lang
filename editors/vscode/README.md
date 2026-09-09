@@ -1,9 +1,9 @@
 # Loom for VS Code
 
 A small development extension: highlighting, brackets/comments, unsaved-buffer
-diagnostics, name completion, checked type hover, go to definition, and document formatting. The
+diagnostics, name/member completion, checked type hover, go to definition, and document formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
-Loom. Member completion, references, rename, and incremental semantic caching are not
+Loom. References, rename, and incremental semantic caching are not
 implemented.
 
 ## Try it
@@ -116,8 +116,8 @@ types. Inner bindings hide outer names; overloads retain separate declaration
 signatures. Test-only names never enter production scope. Partial identifiers and
 body type errors work; choosing a candidate replaces the whole identifier, even
 when the cursor is in its middle. These are visible candidates, not a claim that
-each overload or value is valid at this expression. There is no automatic import,
-member/qualified completion yet. A cursor-local recovery can fill one missing
+each overload or value is valid at this expression. There is no automatic import
+or package-qualified completion yet. A cursor-local recovery can fill one missing
 name/value and close unmatched delimiters at EOF in a virtual completion snapshot.
 It does not change the user's buffer, relax ordinary parsing/checking, or clear
 the original syntax diagnostic. Other syntax/lexical errors still block results;
@@ -125,9 +125,19 @@ recovery is not a general error-tolerant parser. Strings and comments offer no
 names. Requests reuse all unsaved buffers and cancellation
 rules; completion results are not cached across edits.
 
+After `.`, member completion infers the receiver from the enclosing signature and
+preceding statements. It offers visible record fields, tuple indices, methods
+supported by explicit concept evidence (including generic bounds and `dyn`), and
+`.await` for Tasks in async functions. Match bindings and determined `comptime if`
+branches reuse the checker. Unknown receiver types, earlier typing errors,
+undetermined compile-time branches and `comptime` execution blocks have no result.
+These are type-based hints, not verification of the unfinished body, callees,
+contracts or resource flow; method overloads retain declaration signatures and
+still require arguments. Names and members replace the entire partial token.
+
 ```sh
 npm test           # Real LSP transport with a small process fixture
-npm run smoke      # Real target/loom: overlays, hover/definition, formatting
+npm run smoke      # Real target/loom: overlays, hover/definition, completion, formatting
 npm run smoke:host # Installed VS Code: actual extension activation and commands
 ```
 
@@ -167,7 +177,7 @@ query results; a project `"error"` has none. Spans and query offsets use UTF-8 b
 the server maps them to/from LSP UTF-16 positions using the captured text.
 Formatting reads and writes source on stdin/stdout.
 Completion output adds `"completion": null | { "start", "end", "items": [
-{ "label", "kind": "variable" | "function" | "type", "detail" }, ...] }`.
+{ "label", "kind": "variable" | "function" | "type" | "field" | "method" | "keyword", "detail" }, ...] }`.
 Its spans are also UTF-8 bytes; it does not run proofs or produce an executable.
 
 The client/server use Microsoft's [Language Server SDK](https://github.com/microsoft/vscode-languageserver-node)

@@ -1,4 +1,4 @@
-import std.loom.analysis.complete_names
+import std.loom.analysis.complete_at
 import std.loom.analysis.CompletionKind
 import std.loom.parser.completion_source
 import std.list.set
@@ -63,7 +63,7 @@ fn editor_no_completion() EditorOutput {
 }
 
 fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int, inserted Bool) EditorOutput {
-    let completion = match complete_names(bindings, file, offset) {
+    let completion = match complete_at(bindings, file, offset) {
         Option.Some(value) => value
         Option.None => {
             return editor_no_completion()
@@ -80,6 +80,9 @@ fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int, in
             CompletionKind.Variable => "variable"
             CompletionKind.Function => "function"
             CompletionKind.Type => "type"
+            CompletionKind.Field => "field"
+            CompletionKind.Method => "method"
+            CompletionKind.Keyword => "keyword"
         }
         let fields = concat("{\"label\":", concat(editor_quoted(item.name), concat(",\"kind\":", editor_quoted(kind))))
         items = concat(items, concat(fields, concat(",\"detail\":", concat(editor_quoted(item.detail), "}"))))

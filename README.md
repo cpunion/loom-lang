@@ -60,7 +60,7 @@ the complete language, standard library, or tooling design is implemented.
 - `compiler/std`: source libraries, including the shared compiler analysis layers.
 - `compiler/runtime`: managed-memory and private platform primitives in Rust.
 - `compiler/examples` and `compiler/tests`: runnable examples and focused tests.
-- `editors/vscode`: highlighting, compiler-backed diagnostics, and formatting.
+- `editors/vscode`: diagnostics, name/member completion, navigation, and formatting.
 - `docs`: goals, decisions, and current status.
 
 All changes use pull requests. See [Contributing](CONTRIBUTING.md),
