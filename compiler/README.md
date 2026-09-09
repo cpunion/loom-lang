@@ -1398,6 +1398,24 @@ before awaiting. NoSuspend values cannot enter Task parameters/results or lose
 their marker through dyn conversion.
 
 Direct Task parameters, returns and nested results preserve one-shot obligations.
+Generic `comptime if` may transfer these parameters in the selected branch:
+
+```loom
+fn forward[T](task Task[T], comptime direct Bool) Task[T] {
+    comptime if direct {
+        task
+    } else {
+        let moved = task
+        moved
+    }
+}
+```
+
+An undetermined template selection retains pending Task states, not proof of
+consumption. Concrete instances check their actual selected bodies before native
+emission; missing, repeated or invalid transfers still reject. Required contracts
+cannot use this pending state as an assumption. This adds no runtime selector.
+
 Async concept/impl methods support concrete, generic and dynamic calls, default
 bodies, associated results and type/comptime method parameters. The implementation's
 async modifier must match its concept. Witnesses invoke the same typed constructors,

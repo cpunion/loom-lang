@@ -88,7 +88,7 @@ test fn direct_task_parameters_returns_and_nested_awaits_transfer_once() {
     discard accepted("enum Choice { Yes No }\nasync fn item() Int { 7 }\nfn pick(task Task[Int], flag Bool) Task[Int] { if flag { return task }\ntask }\nfn branch(task Task[Int], flag Bool) Task[Int] { if flag { task } else { task } }\nfn matched(task Task[Int], flag Choice) Task[Int] { match flag { Choice.Yes => task, Choice.No => task } }\nasync fn main() { assert matched(branch(pick(item(), true), false), Choice.Yes()).await == 7 }")
     discard accepted("async fn item[T](value T) T { value }\nfn pass(task Task[Int], comptime selected Bool) Task[Int] { task }\nasync fn empty() {}\nfn forward[T](task Task[T]) Task[T] { return task }\nasync fn main() { assert pass(item(3), true).await == 3\nforward(empty()).await }")
     discard accepted("async fn item() Int { 7 }\nfn pick(task Task[Int], comptime flag Bool) Task[Int] { if flag { task } else { task } }\nasync fn main() { assert pick(item(), true).await == 7 }")
-    task_rejected("fn pick(task Task[Int], comptime flag Bool) Task[Int] { comptime if flag { task } else { task } }", "a task is still live at function exit; await or transfer it before returning")
+    discard accepted("fn pick(task Task[Int], comptime flag Bool) Task[Int] { comptime if flag { task } else { task } }")
 }
 
 test fn task_call_arguments_preserve_pending_obligations_across_control_flow() {

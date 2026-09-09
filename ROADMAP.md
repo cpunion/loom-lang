@@ -122,6 +122,9 @@ promises no fairness. See the [timer example](compiler/examples/timers).
 Direct Task parameters and returns now support reusable functions and nested Task
 results, with one-shot argument obligations and lazy returned-subtree handoff.
 Sync helpers do not install an executor; they expose Task inputs or an output.
+Generic compile-time selection now retains pending Task states during abstract
+checking, then validates the selected instance's real transfers before emission.
+That uncertainty neither enters native IR nor discharges required proofs.
 
 Lexical cleanup now survives suspension through frame-backed captures, with
 children and waits drained before parent cleanup. `NoSuspend` remains an

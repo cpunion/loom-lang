@@ -189,7 +189,25 @@ fn type_application(context Context, node Node) Bool {
 }
 fn selected(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
     match guard_condition(context, node, child(source, 0), 0)? {
-        GuardDecision.Pending => deferred(context, node, expected)
+        GuardDecision.Pending => {
+            let value = deferred(context, node, expected)?
+            // This branch can read or replace visible Task bindings. Keep that
+            // uncertainty separate from a deferred call's evaluated arguments.
+            // Only concrete selection establishes their actual transfer state.
+            let captures = new[Expr]()
+            var head = context.head
+            while head >= 0 {
+                let binding = get(context.bindings, head)
+                if binding.local >= 0 {
+                    let ty = get(context.locals, binding.local).ty
+                    if task_value(context.env, ty) {
+                        push(captures, atom(ExprKind.Local, ty, node, binding.local))
+                    }
+                }
+                head = binding.previous
+            }
+            Result.Ok(expression(ExprKind.Deferred, value.ty, node, "comptime selection", -1, captures, true))
+        }
         GuardDecision.Known(yes, chosen) => {
             if yes { return block(chosen, child(source, 1), expected, enforce) }
             if length(source.children) == 3 { return block(chosen, child(source, 2), expected, enforce) }

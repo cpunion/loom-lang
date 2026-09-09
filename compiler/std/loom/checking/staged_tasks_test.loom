@@ -1,0 +1,40 @@
+test fn selected_task_transfers_support_static_values_types_and_aggregates() {
+    let prefix = "async fn item[T](value T) T { value }\n"
+    discard accepted(concat(prefix, "fn pick[T](task Task[T], comptime flag Bool) Task[T] { comptime if flag { task } else { task } }\nasync fn read[T](task Task[T]) T { comptime if T == Int { task.await + 1 } else { task.await } }\nasync fn main() { assert read(pick(item(3), true)).await == 4\nassert read(pick(item(\"text\"), false)).await == \"text\" }"))
+    discard accepted(concat(prefix, "fn flip[A, B](pair (Task[A], Task[B]), comptime forward Bool) (Task[A], Task[B]) { comptime if forward { pair } else { let a, b = pair\n(a, b) } }\nasync fn main() { let a, b = flip((item(1), item(true)), false)\nassert a.await == 1\nassert b.await }"))
+    discard accepted(concat(prefix, "enum Wrapped[T] { Some(Task[T]) None }\nasync fn read[T](value Wrapped[T], comptime consume Bool) { match value { Wrapped.Some(task) => { comptime if consume { discard task.await } else { discard task.await } }, Wrapped.None => {} } }\nasync fn main() { read(Wrapped.Some(item(1)), true).await }") )
+}
+
+test fn pending_selections_merge_without_claiming_known_branch_or_loop_transfers() {
+    let prefix = "async fn item() Int { 1 }\n"
+    let branches = "async fn run(task Task[Int], runtime Bool, comptime consume Bool) { if runtime { comptime if consume { discard task.await } else {} } else { discard task.await } }\n"
+    discard accepted(concat(concat(prefix, branches), "async fn main() { run(item(), true, true).await }"))
+    rejects(concat(concat(prefix, branches), "async fn main() { run(item(), true, false).await }"))
+    let short = "async fn run(task Task[Int], runtime Bool, comptime consume Bool) { discard runtime && (comptime if consume { task.await == 1 } else { true })\ndiscard task.await }\n"
+    discard accepted(concat(concat(prefix, short), "async fn main() { run(item(), false, false).await }"))
+    rejects(concat(concat(prefix, short), "async fn main() { run(item(), false, true).await }"))
+    let loops = "async fn run(task Task[Int], runtime Bool, comptime consume Bool) { while runtime { comptime if consume { discard task.await } else {} }\ndiscard task.await }\n"
+    discard accepted(concat(concat(prefix, loops), "async fn main() { run(item(), false, false).await }"))
+    rejects(concat(concat(prefix, loops), "async fn main() { run(item(), false, true).await }"))
+    let exits = "async fn run(task Task[Int], comptime early Bool) Int { while true { comptime if early { return task.await } else { break } }\ntask.await }\n"
+    discard accepted(concat(concat(prefix, exits), "async fn main() { assert run(item(), true).await == 1 && run(item(), false).await == 1 }"))
+    discard accepted(concat(prefix, "async fn run(comptime consume Bool) { var count = 0\nwhile count < 2 { let task = item()\ncomptime if consume { discard task.await } else { discard task.await }\ncount = count + 1\ncontinue } }\nasync fn main() { run(true).await }"))
+}
+
+test fn concrete_selection_keeps_task_resource_and_required_proof_gates() {
+    let prefix = "async fn item() Int { 1 }\n"
+    let dynamic = "concept Forward { fn pass(self Self, task Task[Int], comptime flag Bool) Task[Int] { comptime if flag { task } else { let moved = task\ntask } } }\nimpl Forward for Int {}\n"
+    discard accepted(concat(concat(prefix, dynamic), "async fn main() { let source dyn Forward = 1\nassert source.pass(item(), true).await == 1 }"))
+    rejects(concat(concat(prefix, dynamic), "async fn main() { let source dyn Forward = 1\nassert source.pass(item(), false).await == 1 }"))
+    let missing = "async fn run(task Task[Int], comptime consume Bool) { comptime if consume { discard task.await } else {} }\n"
+    discard accepted(concat(concat(prefix, missing), "async fn main() { run(item(), true).await }"))
+    task_rejected(concat(concat(prefix, missing), "async fn main() { run(item(), false).await }"), "a task is still live at function exit; await or transfer it before returning")
+    rejects(concat(prefix, "async fn run(task Task[Int], comptime flag Bool) { comptime if flag { discard task.await\ndiscard task.await } else { discard task.await } }\nasync fn main() { run(item(), true).await }"))
+    rejects(concat(prefix, "async fn run(task Task[Int], comptime flag Bool) { comptime if flag {} else {}\ndiscard task.await\ndiscard task.await }"))
+    rejects(concat(prefix, "async fn run(task Task[Int], comptime flag Bool) { discard task.await\ndiscard task.await\ncomptime if flag {} else {} }"))
+    rejects(concat(prefix, "async fn run(comptime flag Bool) { var task = item()\ncomptime if flag {} else { discard task.await }\ntask = item()\ndiscard task.await }\nasync fn main() { run(true).await }"))
+    rejects(concat(prefix, "fn run(task Task[Int], comptime flag Bool) Int ensures result == 1 { comptime if flag { discard task\n1 } else { 1 } }"))
+    suspension_reject(concat(suspension_header(), "async fn run(comptime flag Bool) { let held = token()\ncomptime if flag { discard tick().await } else {} }\nasync fn main() { run(true).await }"), "a NoSuspend value is still in scope; leave its block before awaiting")
+    resource_reject(concat(resource_header(), "fn run(comptime flag Bool) { comptime if flag { discard make([0]) } else {} }\nfn main() { run(true) }"))
+    rejects(concat(prefix, "async fn run(task Task[Int], comptime flag Bool) { defer { comptime if flag { discard task.await } else {} }\ndiscard task.await }\nasync fn main() { run(item(), true).await }"))
+}
