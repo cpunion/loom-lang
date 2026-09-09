@@ -347,7 +347,8 @@ file, recursive, check-only, and stdin modes. The
 buffers to the same compiler for diagnostics, formatting, type hovers and checked
 definition navigation. An actual VS Code extension-host smoke passes on macOS.
 Name completion now reuses package bindings and lexical scopes, including partial
-identifiers in bodies with type errors. Member completion, rename, and incremental
+identifiers in bodies with type errors and additive cursor/EOF syntax recovery
+confined to virtual completion snapshots. Member completion, rename, and incremental
 semantic reuse are subsequent tooling work, not completed language features.
 Native failing assertions now report their source location and current test,
 including helper assertions and standalone test executables. The first fault

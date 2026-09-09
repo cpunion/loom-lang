@@ -173,9 +173,31 @@ fn editor_execute(args List[Text]) EditorOutput {
             return editor_error(message)
         }
     }
-    let project = match load_overlaid(options.path, options.std_root, options.tests, options.overlays) {
+    var recovery = EditorRecovery {
+        changed = false
+        inserted = false
+    }
+    var loaded = load_overlaid(options.path, options.std_root, options.tests, options.overlays)
+    if get(args, 1) == "editor-complete" {
+        match loaded {
+            Result.Ok(_) => {
+            }
+            Result.Err(_) => {
+                recovery = editor_recover(options)
+                if recovery.changed {
+                    loaded = load_overlaid(options.path, options.std_root, options.tests, options.overlays)
+                }
+            }
+        }
+    }
+    let project = match loaded {
         Result.Ok(value) => value
         Result.Err(failed) => {
+            // Repaired snapshots supply candidates only. Diagnostics still come
+            // from editor-check on the original buffers, not synthetic text.
+            if recovery.changed {
+                return editor_no_completion()
+            }
             return if failed.path == "" {
                 editor_error(failed.diagnostic.message)
             } else {
@@ -186,6 +208,9 @@ fn editor_execute(args List[Text]) EditorOutput {
     let bound = match bind(project, options.tests) {
         Result.Ok(value) => value
         Result.Err(failed) => {
+            if recovery.changed {
+                return editor_no_completion()
+            }
             return editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
         }
     }
@@ -198,7 +223,7 @@ fn editor_execute(args List[Text]) EditorOutput {
                     return editor_error("query byte offset is outside the source")
                 }
                 return if get(args, 1) == "editor-complete" {
-                    editor_completion(bound, index, options.offset)
+                    editor_completion(bound, index, options.offset, recovery.inserted)
                 } else {
                     editor_query(bound, index, options.offset)
                 }

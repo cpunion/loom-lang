@@ -1,0 +1,168 @@
+import std.text.slice
+import std.text.byte
+import std.text.codepoint
+import std.text.width
+import std.unicode.is_whitespace
+import std.list.set
+
+// An editor-only virtual source. An inserted '_' occupies one byte at the
+// requested cursor; optional closing delimiters follow the original EOF.
+// Parse spans refer to this text, not to the original buffer. Never use this
+// operation in ordinary build/check or as evidence that the source is valid.
+pub record CompletionSource {
+    text Text
+    inserted Bool
+}
+
+fn completion_closers(tokens List[Token]) Result[Text, Diagnostic] {
+    let stack = new[Kind]()
+    var depth = 0
+    var index = 0
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        let kind = token.kind
+        if kind == Kind.LParen || kind == Kind.LBracket || kind == Kind.LBrace {
+            let closing = if kind == Kind.LParen {
+                Kind.RParen
+            } else {
+                if kind == Kind.LBracket {
+                    Kind.RBracket
+                } else {
+                    Kind.RBrace
+                }
+            }
+            if depth == length(stack) {
+                push(stack, closing)
+            } else {
+                set(stack, depth, closing)
+            }
+            depth = depth + 1
+        }
+        if kind == Kind.RParen || kind == Kind.RBracket || kind == Kind.RBrace {
+            if depth == 0 || get(stack, depth - 1) != kind {
+                return Result.Err(Diagnostic {
+                        span = token.span
+                        message = "mismatched closing delimiter"
+                    })
+            }
+            depth = depth - 1
+        }
+        index = index + 1
+    }
+    // Start a fresh line so a trailing line comment cannot swallow the repair.
+    var suffix = if depth == 0 {
+        ""
+    } else {
+        "\n"
+    }
+    while depth > 0 {
+        depth = depth - 1
+        let kind = get(stack, depth)
+        suffix = concat(suffix, if kind == Kind.RParen {
+                ")"
+            } else {
+                if kind == Kind.RBracket {
+                    "]"
+                } else {
+                    "}"
+                }
+            })
+    }
+    Result.Ok(suffix)
+}
+
+fn completion_gap(text Text, tokens List[Token], offset Int) Bool {
+    var end = 0
+    var index = 0
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        if token.kind == Kind.Name && token.span.start <= offset && offset <= token.span.end {
+            return false
+        }
+        if token.kind == Kind.Text && token.span.start <= offset && offset < token.span.end {
+            return false
+        }
+        if token.span.start >= offset {
+            while end < offset {
+                if !is_whitespace(codepoint(text, end)) {
+                    return false
+                }
+                end = end + width(text, end)
+            }
+            return true
+        }
+        if offset < token.span.end {
+            return false
+        }
+        end = token.span.end
+        index = index + 1
+    }
+    false
+}
+
+// Try only additive repairs: close unmatched delimiters at EOF, then (if needed)
+// insert one missing name/value at the cursor. Other syntax and lexical errors
+// retain the original diagnostic. No token deletion or arbitrary resynchronizing.
+pub fn completion_source(text Text, offset Int) Result[CompletionSource, Diagnostic] {
+    if offset < 0 || offset > length(text) {
+        return Result.Err(Diagnostic {
+                span = Span {
+                    start = 0
+                    end = 0
+                }
+                message = "completion cursor is outside the source"
+            })
+    }
+    if offset < length(text) && byte(text, offset) >= 128 && byte(text, offset) < 192 {
+        return Result.Err(Diagnostic {
+                span = Span {
+                    start = offset
+                    end = offset
+                }
+                message = "completion cursor must be a UTF-8 boundary"
+            })
+    }
+    let failed = match parse(text) {
+        Result.Ok(_) => {
+            return Result.Ok(CompletionSource {
+                    text = text
+                    inserted = false
+                })
+        }
+        Result.Err(failed) => failed
+    }
+    let tokens = lex(text)?
+    let suffix = match completion_closers(tokens) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(failed)
+        }
+    }
+    let closed = concat(text, suffix)
+    if suffix != "" {
+        match parse(closed) {
+            Result.Ok(_) => {
+                return Result.Ok(CompletionSource {
+                        text = closed
+                        inserted = false
+                    })
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    if completion_gap(text, tokens, offset) {
+        let repaired = concat(slice(text, 0, offset), concat("_", slice(closed, offset, length(closed))))
+        match parse(repaired) {
+            Result.Ok(_) => {
+                return Result.Ok(CompletionSource {
+                        text = repaired
+                        inserted = true
+                    })
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    Result.Err(failed)
+}

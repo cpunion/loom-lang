@@ -463,6 +463,9 @@ Name completion now uses `std.loom.analysis.complete_names` over the same packag
 bindings and source scopes. It preserves local shadowing, overload signatures,
 test isolation and UTF-8 replacement spans, including when bodies have type
 errors. Member completion, rename, and incremental semantic caching are not implemented.
+Completion-only source recovery can insert one cursor placeholder and close
+unmatched EOF delimiters. It never modifies source files or supplies executable
+or proof evidence; other syntax errors still reject and normal diagnostics remain.
 
 [Compile-time execution](../../compiler/README.md#compile-time-execution) uses a
 bounded Loom evaluator over the native compiler's checked model. Explicit
@@ -519,7 +522,7 @@ same-directory tests, a separate library package, Unicode text and file I/O.
 Development compiler paths resolve std/native from their checkout, allowing
 check/build/test/run from the application's own directory; `run --` forwards
 program arguments. The VS Code development host has a dedicated trial workspace.
-Real host/protocol smoke tests cover the editing loop. Member completion, syntax-error
+Real host/protocol smoke tests cover the editing loop. Member completion, broader syntax-error
 recovery and typed queries within erroneous functions remain programming-experience
 gaps. Native assertions now carry static
 definition-file/line/Unicode-column diagnostics. Test entries set one current

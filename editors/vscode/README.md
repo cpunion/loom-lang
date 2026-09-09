@@ -117,8 +117,12 @@ signatures. Test-only names never enter production scope. Partial identifiers an
 body type errors work; choosing a candidate replaces the whole identifier, even
 when the cursor is in its middle. These are visible candidates, not a claim that
 each overload or value is valid at this expression. There is no automatic import,
-member/qualified completion, or recovery from an unparseable snapshot yet. Strings
-and comments offer no names. Requests reuse all unsaved buffers and cancellation
+member/qualified completion yet. A cursor-local recovery can fill one missing
+name/value and close unmatched delimiters at EOF in a virtual completion snapshot.
+It does not change the user's buffer, relax ordinary parsing/checking, or clear
+the original syntax diagnostic. Other syntax/lexical errors still block results;
+recovery is not a general error-tolerant parser. Strings and comments offer no
+names. Requests reuse all unsaved buffers and cancellation
 rules; completion results are not cached across edits.
 
 ```sh

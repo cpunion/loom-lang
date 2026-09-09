@@ -1,14 +1,72 @@
 import std.loom.analysis.complete_names
 import std.loom.analysis.CompletionKind
+import std.loom.parser.completion_source
+import std.list.set
 
-fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int) EditorOutput {
+record EditorRecovery {
+    changed Bool
+    inserted Bool
+}
+
+fn editor_recover(options EditorOptions) EditorRecovery {
+    let unchanged = EditorRecovery {
+        changed = false
+        inserted = false
+    }
+    var selected = -1
+    var index = 0
+    while index < length(options.overlays) {
+        if get(options.overlays, index).path == options.query_path {
+            selected = index
+        }
+        index = index + 1
+    }
+    let text = if selected >= 0 {
+        get(options.overlays, selected).text
+    } else {
+        match read_text(options.query_path) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return unchanged
+            }
+        }
+    }
+    let repaired = match completion_source(text, options.offset) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return unchanged
+        }
+    }
+    if repaired.text == text {
+        return unchanged
+    }
+    let overlay = SourceOverlay {
+        path = options.query_path
+        text = repaired.text
+    }
+    if selected < 0 {
+        std.list.push(options.overlays, overlay)
+    } else {
+        set(options.overlays, selected, overlay)
+    }
+    EditorRecovery {
+        changed = true
+        inserted = repaired.inserted
+    }
+}
+
+fn editor_no_completion() EditorOutput {
+    EditorOutput {
+        text = "{\"diagnostics\":[],\"completion\":null}\n"
+        failed = false
+    }
+}
+
+fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int, inserted Bool) EditorOutput {
     let completion = match complete_names(bindings, file, offset) {
         Option.Some(value) => value
         Option.None => {
-            return EditorOutput {
-                text = "{\"diagnostics\":[],\"completion\":null}\n"
-                failed = false
-            }
+            return editor_no_completion()
         }
     }
     var items = "["
@@ -27,7 +85,12 @@ fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int) Ed
         items = concat(items, concat(fields, concat(",\"detail\":", concat(editor_quoted(item.detail), "}"))))
         index = index + 1
     }
-    let span = concat("{\"start\":", concat(to_text(completion.span.start), concat(",\"end\":", to_text(completion.span.end))))
+    let end = if inserted && completion.span.end > offset {
+        completion.span.end - 1
+    } else {
+        completion.span.end
+    }
+    let span = concat("{\"start\":", concat(to_text(completion.span.start), concat(",\"end\":", to_text(end))))
     EditorOutput {
         text = concat("{\"diagnostics\":[],\"completion\":", concat(span, concat(",\"items\":", concat(items, "]}}\n"))))
         failed = false

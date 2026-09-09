@@ -1,0 +1,58 @@
+fn completion_repaired(text Text, offset Int) CompletionSource {
+    match completion_source(text, offset) {
+        Result.Ok(value) => {
+            discard parsed(value.text)
+            value
+        }
+        Result.Err(_) => {
+            assert false
+            completion_repaired(text, offset)
+        }
+    }
+}
+
+test fn completion_repairs_only_virtual_cursor_gaps_and_eof_delimiters() {
+    let open = "fn main() { let count = 1\nlet next = "
+    discard rejected(open)
+    let repaired = completion_repaired(open, length(open))
+    assert repaired.inserted && repaired.text == concat(open, "_\n}")
+    let partial = "fn main() { let count = 1\ndiscard cou"
+    let closed = completion_repaired(partial, length(partial))
+    assert !closed.inserted && closed.text == concat(partial, "\n}")
+    let member = "fn main() { discard value."
+    assert completion_repaired(member, length(member)).text == concat(member, "_\n}")
+    let nested = "fn main() { discard call([1, "
+    assert completion_repaired(nested, length(nested)).text == concat(nested, "\n])}")
+    let comment = "fn main() { let count = 1 // comment"
+    assert completion_repaired(comment, length(comment)).text == concat(comment, "\n}")
+    let valid = "fn main() {}"
+    let unchanged = completion_repaired(valid, 0)
+    assert unchanged.text == valid && !unchanged.inserted
+    let interior = "fn main() { let copied = }"
+    let gap = length(interior) - 1
+    let middle = completion_repaired(interior, gap)
+    assert middle.inserted && middle.text == "fn main() { let copied = _}"
+}
+
+test fn completion_does_not_rewrite_other_errors_or_split_unicode_names() {
+    let invalid = ["fn main() { let x: Int = 1 }", "fn main() { discard (1] }", "fn main() { discard \"unfinished", "fn main() { let x = // missing value"]
+    var index = 0
+    while index < length(invalid) {
+        let text = get(invalid, index)
+        let expected = rejected(text)
+        match completion_source(text, length(text)) {
+            Result.Err(failed) => {
+                assert failed.message == expected.message && failed.span.start == expected.span.start
+            }
+            Result.Ok(_) => {
+                assert false
+            }
+        }
+        index = index + 1
+    }
+    let unicode = "fn main() { discard 名"
+    assert match completion_source(unicode, length(unicode) - 1) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
