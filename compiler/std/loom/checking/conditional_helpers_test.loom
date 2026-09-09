@@ -1,0 +1,55 @@
+test fn conditional_helpers_prove_body_results_and_contract_predicates() {
+    let minimum = "fn minimum(a Int, b Int) Int { if a <= b { a } else { b } }\n"
+    discard accepted(concat(minimum, "pub fn low(a Int, b Int) Int ensures result <= a && result <= b { minimum(a, b) }"))
+    discard accepted(concat(minimum, "pub fn keep(v Int, high Int) Int ensures minimum(result, high) <= high { v }"))
+    let range = "fn inside(v Int, low Int, high Int) Bool { if v < low { return false }\nif v > high { return false }\ntrue }\n"
+    discard accepted(concat(range, "pub fn keep(v Int, low Int, high Int) Int requires inside(v, low, high) ensures inside(result, low, high) { v }"))
+    discard accepted(concat(range, "pub fn keep(v Int) Int requires v >= 1 && v <= 10 ensures inside(result, 1, 10) { v }"))
+    discard accepted("fn branch(v Int, yes Bool) Int { let offset = if yes { 1 } else { 2 }\nv + offset }\npub fn choose(v Int, yes Bool) Int ensures (yes && result == v + 1) || (!yes && result == v + 2) { branch(v, yes) }")
+    rejects(concat(minimum, "pub fn wrong(a Int, b Int) Int ensures result >= a && result >= b { minimum(a, b) }"))
+    rejects(concat(range, "pub fn wrong(v Int) Int ensures inside(result, 1, 10) { v }"))
+}
+
+test fn conditional_helpers_preserve_guards_eager_arguments_and_requirements() {
+    let definitions = "fn admitted(v Int) Bool requires v > 0 { true }\nfn guarded(v Int) Bool { if v <= 0 { return true }\nadmitted(v) }\nfn touched(v Int) Bool { if v == 9223372036854775807 { return true }\nlet unused = v + 1\ntrue }\n"
+    discard accepted(concat(definitions, "pub fn keep(v Int) Int ensures guarded(result) && touched(result) { v }"))
+    discard accepted("fn safe(v Int) Bool { if v == 0 { true } else { false } }\nfn partial(v Int) Bool { if 10 / v > 0 { true } else { false } }\npub fn keep(v Int) Int requires v == 0 ensures safe(result) || partial(result) { v }")
+    discard accepted("fn checked(v Int) Bool { if v > 0 { assert v > 0 }\ntrue }\npub fn keep(v Int) Int ensures checked(result) { v }")
+    rejects("fn checked(v Int) Bool { if v >= 0 { assert v > 0 }\ntrue }\npub fn keep(v Int) Int ensures checked(result) { v }")
+    rejects("fn touched(v Int) Bool { if v == 0 { return true }\nlet unused = v + 1\ntrue }\npub fn keep(v Int) Int ensures touched(result) { v }")
+    rejects(concat(definitions, "fn eager(a Bool, b Bool) Bool { if a { true } else { b } }\npub fn keep(v Int) Int ensures eager(true, admitted(result)) { v }"))
+    rejects("fn hidden(v Int) Bool { if v > 0 { return true }\nreturn v > 0 }\npub fn keep(v Int) Int ensures hidden(result) { v }")
+    // Branch-local substitutions must not leak across paths.
+    discard accepted("fn same(v Int) Int { if v > 0 { let other = v\nreturn other } else { let other = 0\nreturn other } }\npub fn keep(v Int) Int ensures result >= 0 { same(v) }")
+}
+
+test fn conditional_helper_expansion_preserves_ieee_and_rejects_unsupported_paths() {
+    let floating = "fn not_positive(v Float) Bool { if v > 0.0 { false } else { true } }\ntype Source = Float where !(self > 0.0)\ntype Target = Float where not_positive(self)\n"
+    let program = accepted(concat(floating, "pub fn convert(v Source) Target { Target(v) }"))
+    assert get(get(program.functions, 0).body.children, 0).kind == ExprKind.Coerce
+    rejects("fn mutable(v Int) Bool { var value = v\nif value > 0 { value = 0 }\nvalue == 0 }\npub fn keep(v Int) Int ensures mutable(result) { v }")
+    rejects("fn partial(v Int) Bool { if v > 0 { true } else { partial(v) } }\npub fn keep(v Int) Int requires v > 0 ensures partial(result) { v }")
+    let source = "import std.result.Result\nimport std.result.ConstraintError\nfn duplicate(v Int) Int { if v > 0 { v + v } else { v - v } }\ntype Whole = Int where true\ntype Huge = Int where "
+    var duplicated = "self"
+    var index = 0
+    while index < 10 {
+        duplicated = concat("duplicate(", concat(duplicated, ")"))
+        index = index + 1
+    }
+    let bounded = flow_program(concat(source, concat(duplicated, " >= 0\npub fn checked(v Whole) Result[Huge, ConstraintError] { Huge(v) }")))
+    assert get(get(bounded.functions, 0).body.children, 0).kind == ExprKind.Block
+}
+
+test fn conditional_refinement_helpers_remove_only_proved_boundaries() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nfn nonnegative(v Int) Bool { if v >= 0 { true } else { false } }\nfn guarded(v Int) Bool { if v <= 0 { return true }\nadmitted(v) }\nfn admitted(v Int) Bool requires v > 0 { true }\nfn touched(v Int) Bool { if v == 9223372036854775807 { return true }\nlet unused = v + 1\ntrue }\ntype Positive = Int where self > 0\ntype Wide = Int where nonnegative(self)\ntype Whole = Int where true\ntype Guarded = Int where guarded(self)\ntype Touched = Int where touched(self)\n"
+    let program = flow_program(concat(definitions, "pub fn widen(v Positive) Wide { Wide(v) }\npub fn safe(v Whole) Guarded { Guarded(v) }\npub fn bounds(v Whole) Touched { Touched(v) }\npub fn unknown(v Whole) Result[Wide, ConstraintError] { Wide(v) }\npub fn skipped(v Guarded) Result[Positive, ConstraintError] { Positive(v) }"))
+    var index = 0
+    while index < 3 {
+        assert get(get(program.functions, index).body.children, 0).kind == ExprKind.Coerce
+        index = index + 1
+    }
+    while index < 5 {
+        assert get(get(program.functions, index).body.children, 0).kind == ExprKind.Block
+        index = index + 1
+    }
+}

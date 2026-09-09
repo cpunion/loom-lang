@@ -80,6 +80,26 @@ test fn branches_and_contradictions_keep_separate_facts() {
     assert !holds(Predicate.Constant(false), consistent)
 }
 
+test fn linear_guards_reverse_relations_and_exclude_only_interval_endpoints() {
+    let difference = add(variable(0), scale(variable(1), integer(-1)))
+    let reverse = scale(difference, integer(-1))
+    let facts = predicates(Predicate.Compare(">", difference))
+    assert holds(Predicate.Compare("<", reverse), facts)
+    assert !holds(Predicate.Compare(">", reverse), facts)
+    let offset = add(reverse, constant(integer(1)))
+    assert holds(Predicate.Compare("<=", offset), facts)
+    assert !holds(Predicate.Compare("<", offset), facts)
+    let whole = Bounds { low = integer(-9223372036854775808) high = integer(9223372036854775807) }
+    let interior = tighten(whole, "!=", integer(0))
+    assert compare(interior.low, whole.low) == 0 && compare(interior.high, whole.high) == 0
+    let lower = tighten(whole, "!=", whole.low)
+    let upper = tighten(whole, "!=", whole.high)
+    assert compare(lower.low, integer(-9223372036854775807)) == 0
+    assert compare(upper.high, integer(9223372036854775806)) == 0
+    let empty = tighten(Bounds { low = integer(7) high = integer(7) }, "!=", integer(7))
+    assert compare(empty.low, empty.high) > 0
+}
+
 test fn short_circuit_contracts_skip_only_proved_unreachable_operands() {
     let yes = expression(ExprKind.Bool, 2, "true", -1, new[Expr]())
     let no = expression(ExprKind.Bool, 2, "false", -1, new[Expr]())
