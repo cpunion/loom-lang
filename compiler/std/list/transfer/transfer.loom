@@ -4,6 +4,13 @@ intrinsic fn list_append[T](values List[T], value T) List[T]
 
 intrinsic fn list_take[T](values List[T]) Option[(T, List[T])]
 
+intrinsic fn list_replace[T](values List[T], index Int, value T) (T, List[T])
+
+// Bounds checked; return the displaced element and the same updated header.
+pub fn replace[T](values List[T], index Int, value T) (T, List[T]) {
+    list_replace(values, index, value)
+}
+
 // Both operations mutate the shared header. Returning it also permits transfer
 // of a one-shot List without copying its Task-bearing elements.
 pub fn append[T](values List[T], value T) List[T] {

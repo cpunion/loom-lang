@@ -166,7 +166,7 @@ recursive enum/List layouts. Loops consume the group through actual break/return
 exits. See the [dynamic list example](compiler/examples/task_lists).
 
 The next async gates are socket readiness adapters, general worker
-operations and joins. Task scheduling is cooperative, not parallel Loom threads.
+operations and tuple joins. Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 Private multi-task completion observation now retains terminal order, wakes
 typed Loom frames and detaches selections without consuming their results.
@@ -174,8 +174,11 @@ Children register once; cancellation removes observations before parent cleanup.
 Typed outcome extraction and explicit draining cancellation now support source
 `std.task.outcome` and `cancel`, including no-result and Task-valued results.
 Already-terminal children keep their result; cleanup faults become owned data.
-The next boundary is source join policies: sequential awaits in input order
-alone still cannot provide prompt cancellation when a different child faults.
+List `all/settled/any/race` policies now run in Loom over one-time registration,
+typed outcomes and indexed slot transfer. Joins retire losing subtrees before
+returning; inferred no-result payloads and returned Tasks keep the same generic
+rules. Tuple joins/await remain open, alongside socket adapters and general
+worker APIs. See the [dynamic join example](compiler/examples/task_joins).
 
 Extend the self-hosted path with the remaining accepted capabilities:
 
@@ -262,8 +265,8 @@ calls and required Float reasoning remain open.
 
 Structural tuples, numeric projection, and plain-name destructuring now use the
 native aggregate path, including generics, shared containers, and compile-time
-results. More general patterns and runtime-sized task composition remain later
-work; a tuple does not substitute for a dynamically sized List.
+results. More general patterns and heterogeneous tuple task composition remain
+later work; dynamic List joins use the separate source policies above.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time

@@ -379,6 +379,13 @@ fn evaluate(graph Graph, source Expr, start Int, loop Loop) Value {
         index = index + 1
     }
     let output = changed(source, source.text, children, source.falls)
+    if current >= 0 && !source.falls {
+        append(graph, current, if statement(output.kind) { output } else {
+            node(ExprKind.Discard, 0, source.span, -1, one(output))
+        })
+        finish(graph, current, Exit.Unreachable, empty(source.span), new[Edge](), new[Arm]())
+        return Value { state = -1 expression = empty(source.span) }
+    }
     if statement(output.kind) {
         append(graph, current, output)
         return Value {

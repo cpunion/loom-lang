@@ -303,7 +303,7 @@ mod tests {
         FINISHED.with(|value| *value.borrow_mut() = None);
     }
 
-    unsafe extern "C-unwind" fn cancel_running(_: *mut u8) -> i64 {
+    unsafe fn cancel_or_drain(drain: bool) -> i64 {
         let owner = unsafe { &*OWNER.get() };
         let parent = owner.core.borrow().current.unwrap();
         let child = unsafe { construct() };
@@ -319,11 +319,23 @@ mod tests {
         owner.core.borrow_mut().current = Some(parent);
         FINISHED.with(|value| assert!(!value.borrow().as_ref().unwrap().load(Ordering::SeqCst)));
         finish_later(release);
-        outcomes::loom_rt_task_cancel_begin(child);
-        assert_eq!(outcomes::loom_rt_task_status(child), 2);
-        loom_rt_task_release(child);
+        if drain {
+            outcomes::loom_rt_task_drain(child, 0);
+        } else {
+            outcomes::loom_rt_task_cancel_begin(child);
+            assert_eq!(outcomes::loom_rt_task_status(child), 2);
+            loom_rt_task_release(child);
+        }
         assert!(owner.core.borrow().tasks[&parent].children.is_empty());
         0
+    }
+
+    unsafe extern "C-unwind" fn cancel_running(_: *mut u8) -> i64 {
+        unsafe { cancel_or_drain(false) }
+    }
+
+    unsafe extern "C-unwind" fn drain_running(_: *mut u8) -> i64 {
+        unsafe { cancel_or_drain(true) }
     }
 
     unsafe extern "C-unwind" fn cancel_constructor() -> u64 {
@@ -331,11 +343,18 @@ mod tests {
         unsafe { loom_rt_task_create(frame, cancel_running, ptr::null(), 0) }
     }
 
+    unsafe extern "C-unwind" fn drain_constructor() -> u64 {
+        let frame = crate::loom_rt_box_new(16, None);
+        unsafe { loom_rt_task_create(frame, drain_running, ptr::null(), 0) }
+    }
+
     #[test]
-    fn explicit_cancellation_is_terminal_only_after_running_work_and_cleanup() {
-        FINISHED.with(|value| *value.borrow_mut() = Some(Arc::new(AtomicBool::new(false))));
-        unsafe { loom_rt_task_run(cancel_constructor) };
-        assert!(OWNER.get().is_null());
-        FINISHED.with(|value| *value.borrow_mut() = None);
+    fn cancellation_and_join_drain_finish_running_work_before_cleanup() {
+        for constructor in [cancel_constructor as Constructor, drain_constructor] {
+            FINISHED.with(|value| *value.borrow_mut() = Some(Arc::new(AtomicBool::new(false))));
+            unsafe { loom_rt_task_run(constructor) };
+            assert!(OWNER.get().is_null());
+            FINISHED.with(|value| *value.borrow_mut() = None);
+        }
     }
 }

@@ -33,7 +33,7 @@ fn tuple_literal(context Context, node Node, expected Int) Result[Expr, Failure]
         let source = child(node, index)
         let hint = if length(hints) == 0 { -1 } else { get(hints, index) }
         let value = expr(context, source, hint)?
-        if value.ty == 0 { return Result.Err(error(context, source, "tuple elements must produce a value")) }
+        if value.ty == 0 && !inferred_empty(context) { return Result.Err(error(context, source, "tuple elements must produce a value")) }
         push(elements, value.ty)
         push(fields, expression(ExprKind.Field, value.ty, source, "", index, expressions(value), value.falls))
         index = index + 1

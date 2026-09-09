@@ -352,6 +352,8 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
             runtime_values, all_fall(runtime_values)))
     }
     let target = if context.emit { schedule(context.env, instance.signature, instance.arguments, constants, node)? } else { -1 }
+    let returns = !(has(symbol(context.env, signature.symbol).node, NodeKind.Intrinsic) &&
+        symbol(context.env, signature.symbol).name == "fault_text")
     Result.Ok(expression(if asynchronous { ExprKind.TaskCall } else { ExprKind.Call }, output, node,
-        if asynchronous { task_creation_message(context, node) } else { "" }, target, runtime_values, all_fall(runtime_values)))
+        if asynchronous { task_creation_message(context, node) } else { "" }, target, runtime_values, returns && all_fall(runtime_values)))
 }

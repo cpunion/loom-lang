@@ -19,5 +19,5 @@ blocking OS operation may delay the owner. A cleanup fault returns `Faulted`;
 an already-completed Task retains its real result. Task-valued results still
 must be consumed. OOM and unexpected runtime failures remain process faults.
 
-These are single-task operations. Public tuple/List `all`, `settled`, `any` and
-`race` policies are not implemented yet.
+These are single-task operations. See [dynamic joins](../task_joins/README.md)
+for List `all`, `settled`, `any` and `race`. Tuple joins remain unimplemented.

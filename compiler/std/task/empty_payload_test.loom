@@ -1,0 +1,44 @@
+fn package_empty[T](value T) (T, List[T]) {
+    let saved = value
+    (saved, [saved])
+}
+
+fn call_empty[T](callback fn() T) (T, List[T]) {
+    package_empty(callback())
+}
+
+fn nothing() {
+}
+
+async fn pass_empty[T](value T) T {
+    sleep_ms(0).await
+    value
+}
+
+async fn invoke_empty[T](callback fn() T) T {
+    let saved = callback()
+    pass_empty(saved).await
+}
+
+test fn inferred_empty_values_use_zero_sized_native_generic_arguments() {
+    let packed = call_empty(nothing)
+    assert length(packed.1) == 1
+    let staged = comptime {
+        call_empty(nothing)
+    }
+    assert length(staged.1) == 1
+}
+
+test async fn empty_task_lists_can_be_transferred_through_generic_tuples() {
+    invoke_empty(nothing).await
+    let values = all([sleep_ms(0)]).await
+    match take_last(values) {
+        Option.Some(pair) => {
+            discard pair.0
+            assert length(pair.1) == 0
+        }
+        _ => {
+            assert false
+        }
+    }
+}

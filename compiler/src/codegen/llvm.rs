@@ -226,7 +226,9 @@ fn emit_checked(
             })
             .collect::<NativeResult<Vec<_>>>()?;
         for (index, value) in function.get_param_iter().enumerate() {
-            builder.build_store(locals[index].ok_or("invalid checked parameter")?, value)?;
+            if source.params[index] != Type::Unit {
+                builder.build_store(locals[index].ok_or("invalid checked parameter")?, value)?;
+            }
         }
         let size_type = context.ptr_sized_int_type(&machine.get_target_data(), None);
         let roots = if allocating.contains(&id)
@@ -608,8 +610,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> NativeResult<Option<Vec<BasicValueEnum<'ctx>>>> {
         let mut pending = Vec::new();
         for expression in expressions {
-            let Some(value) = self.expr(expression)? else {
-                return Ok(None);
+            let value = match self.expr(expression)? {
+                Some(value) => value,
+                None if expression.ty == Type::Unit && self.live() => {
+                    self.context.struct_type(&[], false).const_zero().into()
+                }
+                None => return Ok(None),
             };
             pending.push((expression, value));
         }
@@ -647,6 +653,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskStatus
             | Primitive::TaskFailure
             | Primitive::TaskCancelBegin
+            | Primitive::TaskDrain
+            | Primitive::FaultText
             | Primitive::TaskResult
             | Primitive::TaskRelease
             | Primitive::TaskRun
@@ -820,6 +828,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     fn store_local(&self, local: usize, value: BasicValueEnum<'ctx>) -> NativeResult<()> {
+        if self.local_types[local] == Type::Unit {
+            return Ok(());
+        }
         self.builder
             .build_store(self.locals[local].ok_or("invalid checked local")?, value)?;
         if let Some(slot) = self.roots.locals.get(&local) {
@@ -841,13 +852,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     }
                 }
                 checked::StmtKind::Return(value) => {
+                    let empty = value.as_ref().is_none_or(|value| value.ty == Type::Unit);
                     let value = match value {
                         Some(value) => self.expr(value)?,
                         None => None,
                     };
                     if self.live() {
                         self.leave_roots()?;
-                        match value {
+                        match if empty { None } else { value } {
                             Some(value) => {
                                 self.builder.build_return(Some(&value))?;
                             }
@@ -981,6 +993,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 return self.dyn_call(receiver, *slot, arguments);
             }
             checked::ExprKind::Local(local) => {
+                if expr.ty == Type::Unit {
+                    return Ok(Some(
+                        self.context.struct_type(&[], false).const_zero().into(),
+                    ));
+                }
                 let Some(pointer) = self.locals[*local] else {
                     return Ok(None);
                 };

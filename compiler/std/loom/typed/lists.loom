@@ -1,6 +1,12 @@
 import std.list.get
 import std.list.length
 
+pub fn list_replace_result(types List[Type], ty Int, element Int, list Int) Bool {
+    let shape = get(types, ty)
+    shape.kind == TypeKind.Tuple && length(shape.fields) == 2 &&
+    get(shape.fields, 0).ty == element && get(shape.fields, 1).ty == list
+}
+
 // The irreducible operation uses a structural optional pair. Names and variant
 // order belong to the source enum, not the compiler or runtime.
 pub fn list_take_result(types List[Type], ty Int, element Int, list Int) Bool {

@@ -290,6 +290,14 @@ pub(super) fn raise_owned(failure: OwnedFault) -> ! {
 }
 
 #[unsafe(no_mangle)]
+unsafe extern "C-unwind" fn loom_rt_fault_text(message: *const u8) -> ! {
+    // Copy before cleanup can move/reclaim the source Text. In an async resume
+    // the normal fault boundary retains this data and drains descendants first.
+    let bytes = unsafe { super::text_bytes(message) }.to_vec();
+    fault(&bytes)
+}
+
+#[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn loom_rt_fault(message: *const u8, length: usize) -> ! {
     // SAFETY: The compiler passes a nonempty static diagnostic byte string.
     fault(unsafe { std::slice::from_raw_parts(message, length) })

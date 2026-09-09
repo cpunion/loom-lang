@@ -1429,7 +1429,7 @@ close still block the owner, and cancellation can wait for a stuck OS call.
 Private async intrinsics must be awaited directly and suspend the current frame,
 without creating another Task. The synchronous `std.file` API remains unchanged.
 
-Socket adapters, general worker operations and joins
+Socket adapters, general worker operations and tuple joins
 are not available yet. These are implementation
 limits; the [accepted design](../docs/rfcs/tasks.md) remains the target.
 
@@ -1440,8 +1440,8 @@ Task-bearing List must also be transferred or consumed. Ordinary get/index/push/
 and length queries do not borrow Task-bearing Lists; use the transfer API.
 Normal Lists still share mutations, including at compile time. See the
 [dynamic Task list example](examples/task_lists) for iterative draining and
-recursive payloads. This is not a completed `all` implementation: sequential
-awaits alone cannot observe a different child's fault promptly.
+recursive payloads. `replace(values, index, replacement)` returns the displaced
+element and the same updated header, with bounds checks and compile-time support.
 
 Private completion primitives now register each child once and deliver terminal
 indices through the same typed suspension path, preserving actual completion
@@ -1453,8 +1453,12 @@ completed values. `std.task.cancel(task)` consumes and drains a child before
 returning its actual terminal outcome; it can block the owner while native work
 finishes. Already-completed results and Task-valued payload obligations survive.
 No-result Tasks match `Outcome.Completed(_)`, without source Unit syntax.
-See the [outcome example](examples/task_outcomes). Public multi-task join
-policies remain next work.
+See the [outcome example](examples/task_outcomes). List `std.task.all/settled/any/race`
+now use one-time completion registration and indexed transfer. They support
+dynamic counts, no-result payloads and returned Tasks, draining losing subtrees
+before return. Cleanup faults fail an otherwise successful join; existing primary
+faults retain precedence. See the [join example](examples/task_joins).
+Heterogeneous tuple joins/await remain next work.
 
 ## Next boundary
 

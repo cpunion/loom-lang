@@ -9,6 +9,7 @@ import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.Function
 import std.loom.typed.list_take_result
+import std.loom.typed.list_replace_result
 import std.loom.typed.task_outcome_result
 import std.list.new
 import std.list.get
@@ -112,6 +113,7 @@ fn three_types(a Int, b Int, c Int) List[Int] { let values = two_types(a, b)
     values
 }
 fn runtime_signature(env Environment, name Text) RuntimeSignature {
+    if name == "fault_text" { return runtime(0, ints(3), 0) }
     if name == "clock_monotonic_ns" { return runtime(0, new[Int](), 1) }
     if name == "timer_until_ns" { return runtime(0, ints(1), 0) }
     if name == "task_next" { return runtime(0, new[Int](), 1) }
@@ -162,6 +164,9 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "directory_create" || name == "file_remove" || name == "directory_remove" || name == "path_entry_kind" { return runtime(0, ints(3), 1) }
     if name == "path_rename" { return runtime(0, two_types(3, 3), 1) }
     let parameter = get(abstract_arguments(env, 1), 0)
+    if name == "task_drain" {
+        return runtime(1, two_types(intern(env, TypeKind.Task, -1, ints(parameter)), 2), 0)
+    }
     if name == "task_observe" {
         let task = intern(env, TypeKind.Task, -1, ints(parameter))
         return runtime(1, two_types(task, 1), task)
@@ -188,16 +193,19 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
         }
         runtime(1, ints(intern(env, TypeKind.Task, -1, ints(parameter))), current.result)
     } else {
-        if item.name == "list_take" {
+        if item.name == "list_take" || item.name == "list_replace" {
             let parameter = get(abstract_arguments(env, 1), 0)
             let list = intern(env, TypeKind.List, -1, ints(parameter))
             if get(env.type_states, current.result).phase == 0 {
                 discard expand_type(env, current.result, 0)?
             }
-            if !std.loom.typed.list_take_result(env.types, current.result, parameter, list) {
+            if item.name == "list_take" && !std.loom.typed.list_take_result(env.types, current.result, parameter, list) {
                 return Result.Err(failure(env, current.symbol, item.node, "list_take requires an optional (element, remaining List) result"))
             }
-            runtime(1, ints(list), current.result)
+            if item.name == "list_replace" && !std.loom.typed.list_replace_result(env.types, current.result, parameter, list) {
+                return Result.Err(failure(env, current.symbol, item.node, "list_replace requires an (element, remaining List) result"))
+            }
+            runtime(1, if item.name == "list_take" { ints(list) } else { three_types(list, 1, parameter) }, current.result)
         } else {
             runtime_signature(env, item.name)
         }
@@ -302,8 +310,8 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
             index = index + 1
         }
         let call = expression(if has(item.node, NodeKind.Async) { ExprKind.Suspend } else { ExprKind.Intrinsic },
-            current.result, item.node, runtime_name, -1, values, true)
-        expression(ExprKind.Block, current.result, item.node, "", -1, expressions(call), true)
+            current.result, item.node, runtime_name, -1, values, runtime_name != "fault_text")
+        expression(ExprKind.Block, current.result, item.node, "", -1, expressions(call), call.falls)
     }
     var result_local = -1
     if has(item.node, NodeKind.Ensures) {

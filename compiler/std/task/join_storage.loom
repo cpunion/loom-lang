@@ -1,0 +1,116 @@
+import std.list.new
+import std.list.transfer.append
+import std.list.transfer.take_last
+import std.list.transfer.replace
+import std.option.Option
+
+intrinsic fn fault_text(message Text)
+
+intrinsic fn task_drain[T](task Task[T], suppress_cleanup_fault Bool)
+
+record Batch[T] {
+    slots List[Option[Task[T]]]
+    count Int
+}
+
+// Slots are reversed input order. One registration per child; terminal
+// notifications identify slots without rescanning or extra per-element Tasks.
+fn watch[T](tasks List[Task[T]]) Batch[T] {
+    var pending = tasks
+    var slots = new[Option[Task[T]]]()
+    var count = 0
+    while true {
+        match take_last(pending) {
+            Option.Some(pair) => {
+                let task, rest = pair
+                pending = rest
+                slots = append(slots, Option.Some(task_observe(task, count)))
+                count = count + 1
+            }
+            Option.None => {
+                return Batch[T] {
+                    slots = slots
+                    count = count
+                }
+            }
+        }
+    }
+}
+
+fn take_slot[T](slots List[Option[T]], index Int) (T, List[Option[T]]) {
+    let previous, rest = replace(slots, index, Option.None)
+    match previous {
+        Option.Some(value) =>(value, rest)
+        Option.None => {
+            fault_text("task completion selected an empty slot")
+        }
+    }
+}
+
+fn put_slot[T](slots List[Option[T]], index Int, value T) List[Option[T]] {
+    let previous, rest = replace(slots, index, Option.Some(value))
+    match previous {
+        Option.None => rest
+        Option.Some(previous) => {
+            fault_text("task completion selected an occupied result slot")
+        }
+    }
+}
+
+fn filled[T](slots List[Option[T]]) List[T] {
+    var pending = slots
+    var values = new[T]()
+    while true {
+        match take_last(pending) {
+            Option.Some(pair) => {
+                let value, rest = pair
+                pending = rest
+                match value {
+                    Option.Some(value) => {
+                        values = append(values, value)
+                    }
+                    Option.None => {
+                        fault_text("task result slot is empty")
+                    }
+                }
+            }
+            Option.None => {
+                return values
+            }
+        }
+    }
+}
+
+fn drain[T](slots List[Option[Task[T]]], suppress Bool) {
+    var pending = slots
+    while true {
+        match take_last(pending) {
+            Option.Some(pair) => {
+                let value, rest = pair
+                pending = rest
+                match value {
+                    Option.Some(task) => {
+                        task_drain(task, suppress)
+                    }
+                    Option.None => {
+                    }
+                }
+            }
+            Option.None => {
+                break
+            }
+        }
+    }
+}
+
+fn completed[T](value Outcome[T]) T {
+    match value {
+        Outcome.Completed(value) => value
+        Outcome.Faulted(error) => {
+            fault_text(error.message)
+        }
+        Outcome.Cancelled => {
+            fault_text("task was cancelled")
+        }
+    }
+}

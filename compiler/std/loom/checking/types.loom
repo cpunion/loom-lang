@@ -56,7 +56,8 @@ fn tuple_type(env Environment, owner Int, node Node, elements List[Int]) Result[
     var index = 0
     while index < length(elements) {
         let element = get(elements, index)
-        if element == 0 { return Result.Err(failure(env, owner, node, "tuple elements must produce a value")) }
+        // An inferred generic parameter may be the internal zero-sized result.
+        // Source Unit spelling and ordinary no-result expressions still reject.
         if type_depth(env, element) >= 64 {
             return Result.Err(failure(env, owner, node, "type specialization depth exceeded; expansion must be finite"))
         }

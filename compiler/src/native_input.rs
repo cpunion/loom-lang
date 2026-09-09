@@ -536,6 +536,17 @@ impl Converter<'_> {
         result: Type,
     ) -> Result<()> {
         match operation {
+            Primitive::TaskDrain => {
+                self.task_result(arguments[0].ty)?;
+                if arguments[1].ty != Type::Bool || result != Type::Unit {
+                    return Err("checked task drain signature mismatch".into());
+                }
+            }
+            Primitive::FaultText => {
+                if arguments[0].ty != Type::Text || result != Type::Unit {
+                    return Err("checked fault signature mismatch".into());
+                }
+            }
             Primitive::TaskObserve => {
                 self.task_result(arguments[0].ty)?;
                 if arguments[1].ty != Type::Int || result != arguments[0].ty {
@@ -1005,7 +1016,11 @@ impl Converter<'_> {
                 let value = self.expr(self.child(node, 1, 2)?)?;
                 let field = index(node.index)?;
                 if ty != Type::Unit || value.ty != at(self.frame(frame.ty)?, field)?.1 {
-                    return Err("checked frame store type mismatch".into());
+                    return Err(format!(
+                        "checked frame store type mismatch: field {field}, expected {:?}, found {:?}",
+                        at(self.frame(frame.ty)?, field)?.1,
+                        value.ty
+                    ));
                 }
                 E::FrameStore {
                     frame: Box::new(frame),
@@ -1261,6 +1276,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_status" => P::TaskStatus,
         "task_failure" => P::TaskFailure,
         "task_cancel_begin" => P::TaskCancelBegin,
+        "task_drain" => P::TaskDrain,
+        "fault_text" => P::FaultText,
         "task_result" => P::TaskResult,
         "task_release" => P::TaskRelease,
         "task_run" => P::TaskRun,
@@ -1322,6 +1339,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskStatus
         | P::TaskFailure
         | P::TaskCancelBegin
+        | P::FaultText
         | P::TaskRun => 1,
         P::TaskWaitTimer | P::TaskFileReadResult | P::TaskWaitFileClose | P::FileAbort => 1,
         P::TextByte
@@ -1337,6 +1355,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::EnvGet
         | P::TaskAdopt
         | P::TaskObserve
+        | P::TaskDrain
         | P::TaskCleanupPush
         | P::TaskWaitFileRead
         | P::TaskWaitFileOpen

@@ -12,7 +12,7 @@ fn pure_intrinsic(name Text) Bool {
     name == "float_from_int" || name == "float_to_int" || name == "float_parse" || name == "float_format" ||
     name == "text_len" || name == "text_byte" || name == "text_concat" || name == "text_equal" || name == "text_slice" ||
     name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" ||
-    name == "list_new" || name == "list_len" || name == "list_get" || name == "list_push" || name == "list_set" || name == "list_append" || name == "list_take" ||
+    name == "list_new" || name == "list_len" || name == "list_get" || name == "list_push" || name == "list_set" || name == "list_append" || name == "list_take" || name == "list_replace" ||
     name == "bytes_new" || name == "bytes_len" || name == "bytes_push" || name == "bytes_get" || name == "bytes_set" ||
     name == "bytes_utf8" || name == "bytes_text_copy"
 }

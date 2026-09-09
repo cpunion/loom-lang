@@ -1,0 +1,85 @@
+import std.task.all
+import std.task.settled
+import std.task.any
+import std.task.race
+import std.task.Outcome
+import std.time.sleep_ms
+import std.list.new
+import std.list.length
+import std.list.transfer.append
+import std.env.get
+import std.int.parse
+import std.option.Option
+import std.result.Result
+import std.io.write_text
+
+async fn item(value Int) Int {
+    sleep_ms(value % 3).await
+    value
+}
+
+fn start(count Int) List[Task[Int]] {
+    var tasks = new[Task[Int]]()
+    var index = 0
+    while index < count {
+        tasks = append(tasks, item(index))
+        index = index + 1
+    }
+    tasks
+}
+
+fn count() Int {
+    match get("LOOM_TASK_COUNT") {
+        Result.Ok(found) => {
+            match found {
+                Option.Some(text) => {
+                    match parse(text) {
+                        Result.Ok(value) => {
+                            assert value >= 0 && value <= 1000
+                            value
+                        }
+                        _ => {
+                            assert false
+                            0
+                        }
+                    }
+                }
+                Option.None => 5
+            }
+        }
+        _ => 5
+    }
+}
+
+async fn main() {
+    let count = count()
+    let values = all(start(count)).await
+    let outcomes = settled(start(count)).await
+    assert length(values) == count && length(outcomes) == count
+    var index = 0
+    while index < count {
+        assert values[index] == index
+        match outcomes[index] {
+            Outcome.Completed(value) => {
+                assert value == index
+            }
+            _ => {
+                assert false
+            }
+        }
+        index = index + 1
+    }
+    if count > 0 {
+        let winner = any(start(count)).await
+        assert winner >= 0 && winner < count
+        match race(start(count)).await {
+            Outcome.Completed(value) => {
+                assert value >= 0 && value < count
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    discard write_text("joins finished\n")
+}

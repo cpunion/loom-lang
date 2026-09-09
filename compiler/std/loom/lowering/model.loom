@@ -307,7 +307,7 @@ fn statement(kind ExprKind) Bool {
 }
 
 fn split(value Expr) Bool {
-    if value.kind == ExprKind.Await || value.kind == ExprKind.Suspend || value.kind == ExprKind.Return || value.kind == ExprKind.Break || value.kind == ExprKind.Continue {
+    if !value.falls || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend || value.kind == ExprKind.Return || value.kind == ExprKind.Break || value.kind == ExprKind.Continue {
         return true
     }
     // A cleanup body never suspends and has its own local control boundary.
