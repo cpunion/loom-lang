@@ -18,8 +18,9 @@ pub enum NodeKind {
 }
 
 // TupleType/Tuple/List children are ordered elements. Destructure stores "let" or
-// "var", with children [Bindings(patterns...), initializer]; binding patterns
-// contain Names, Wildcards and recursive Tuples. Numeric Select values
+// "var", with children [Bindings(tuple patterns...) or RecordPattern, initializer];
+// binding patterns contain Names, Wildcards and recursive Tuples/RecordPatterns.
+// Numeric Select values
 // identify tuple positions; a parenthesized single item without a comma groups.
 // Concept children include flags, associated types and functions with optional
 // default bodies. Impl starts with concept and target Types, TypeParameters,

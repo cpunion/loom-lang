@@ -55,5 +55,27 @@ test fn record_patterns_preserve_field_order_and_require_explicit_separators() {
     discard rejected("fn f() { match x { Pair { ... } => 0 } }")
     discard rejected("fn f() { match x { Pair { . . } => 0 } }")
     discard rejected("fn f() { match x { .. => 0 } }")
-    discard rejected("fn f() { let Pair { first = a } = x }")
+    discard rejected("fn f() { let Pair { first = true } = x }")
+}
+
+test fn record_bindings_keep_product_shapes_and_reject_refutable_fields() {
+    let source = "fn f() { let app.Pair { second = (a, Box { value = b }), .. } = input\nvar Pair { first = n, .. }, _ = other }"
+    let statements = body(child(parsed(source), 0))
+    let first = child(statements, 0)
+    assert first.kind == NodeKind.Destructure && first.value == "let"
+    let pattern = child(first, 0)
+    assert pattern.kind == NodeKind.RecordPattern && pattern.value == "app.Pair"
+    let tuple = child(child(pattern, 0), 0)
+    assert tuple.kind == NodeKind.Tuple && child(tuple, 1).kind == NodeKind.RecordPattern
+    assert child(child(child(tuple, 1), 0), 0).value == "b"
+    let second = child(statements, 1)
+    assert second.kind == NodeKind.Destructure && second.value == "var"
+    assert child(second, 0).kind == NodeKind.Bindings
+    assert child(child(second, 0), 0).kind == NodeKind.RecordPattern
+    discard parsed("fn f() { let Empty {} = value\nlet (Box { value = item }) = other }")
+    discard rejected("fn f() { let Box { value = 0 } = input }")
+    discard rejected("fn f() { let Box { value = Some(item) } = input }")
+    discard rejected("fn f() { let Box { value = Option.None } = input }")
+    discard rejected("fn f() { scoped Box { value = item } = input }")
+    discard rejected("fn f() { let Box { value = item } Box[Int] = input }")
 }

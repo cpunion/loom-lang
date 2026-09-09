@@ -86,6 +86,20 @@ fn destructure_fields(context Context, node Node, value Expr, values List[Expr],
         return Result.Ok(current)
     }
     let shape = get(context.env.types, value.ty)
+    if node.kind == NodeKind.RecordPattern {
+        discard resource_binding(context, node, value)?
+        let fields = record_pattern_fields(context, node, value.ty)?
+        var current = context
+        var index = 0
+        while index < length(fields) {
+            let field = get(fields, index)
+            let ty = get(shape.fields, field.index).ty
+            let projection = expression(ExprKind.Field, ty, field.source, "", field.index, expressions(value), true)
+            current = destructure_fields(current, field.source, projection, values, mutable, boundary, depth + 1)?
+            index = index + 1
+        }
+        return Result.Ok(current)
+    }
     if shape.kind != TypeKind.Tuple { return Result.Err(error(context, node, "destructuring requires a tuple")) }
     if length(node.children) != length(shape.arguments) {
         return Result.Err(error(context, node, "destructuring element count must match the tuple"))

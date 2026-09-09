@@ -40,6 +40,8 @@ fn round_trip(text Text) Text {
 }
 
 test fn inline_members_and_blocks_get_structural_line_breaks() {
+    assert round_trip("fn f(v Box) {let Box{value=item,..}=v\nvar Box{value=(first,second)},_=other}") ==
+    "fn f(v Box) {\n    let Box {\n        value = item,\n        ..\n    } = v\n    var Box {\n        value = (first, second)\n    }, _ = other\n}\n"
     assert round_trip("fn f(v Pair) Int {match v{Pair{second=0,first=n,..}=>n\n_=>0}}") ==
     "fn f(v Pair) Int {\n    match v {\n        Pair {\n            second = 0,\n            first = n,\n            ..\n        } => n\n        _ => 0\n    }\n}\n"
     discard round_trip("fn f(v Pair) Int {match v{Pair { first = n // binding\n.. // omitted\n}=>n}}")

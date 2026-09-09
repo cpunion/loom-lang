@@ -536,10 +536,17 @@ for two or more elements. `let (value,) = single` binds a singleton's element.
 All names enter scope after the initializer; `var` makes every bound name mutable.
 `_` explicitly discards an element, never its initializer's effects; it cannot
 discard Tasks or MustScope resources. Use `discard expression` for a whole value,
-not `let _ = expression`. Enum/record binding patterns, scoped destructuring and
+not `let _ = expression`. Enum binding patterns, scoped destructuring and
 parallel reassignment are not implemented. Copying a tuple shares its managed
 fields just as copying a record does; compile-time results construct fresh graphs
 while preserving internal sharing.
+
+Records also support `let Packet { value = item, .. } = packet` and the same
+form with `var`. Named fields can reorder and nest record/tuple bindings; generic
+arguments follow the initializer type. List every field or use `..` explicitly,
+with the same discard restrictions. All bindings refer to one saved initializer,
+and rebinding a `var` does not update the original record. Literal and enum
+patterns belong in `match`, not ordinary bindings.
 
 `match` supports nested enum and tuple patterns:
 
@@ -570,7 +577,7 @@ patterns compare decoded UTF-8 contents. Records use named patterns such as
 `Packet { value = item, ready = true }`. Fields may reorder; separate them with
 commas or newlines. Omission requires explicit `..` and cannot discard live Tasks
 or scoped resources. Generic record arguments follow the matched type. Guards
-and record `let`/`var` patterns remain unsupported.
+remain unsupported.
 Expansion has a bounded decision budget; normal flat matches
 retain their direct path. No runtime pattern engine or checked-artifact change is
 needed, and compiler production sources do not adopt the new syntax.
