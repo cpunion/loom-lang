@@ -212,8 +212,11 @@ Arms keep source-order inference and first-match selection; type-based coverage
 rejects missing combinations and unreachable arms. Whole fallbacks reconstruct
 decomposed values from live fields, preserving shared data and one-shot Tasks.
 The [pattern example](../../compiler/examples/patterns/README.md) covers native,
-compile-time and suspended execution. Literal/record patterns and guards remain
-open. Compiler production sources retain flat patterns.
+compile-time and suspended execution. Int/Bool/Text/Float literal patterns now
+share this matrix, using ordinary equality and typed branches. Bool coverage is
+finite; other scalars require a fallback, including NaN for Float. Checked keys
+normalize equal numeric spellings and decoded Text without rewriting source.
+Record patterns and guards remain open. Compiler production sources retain flat patterns.
 
 Named function values have structural signatures, contextual overload/generic
 selection, and native calls through an entry/environment pair. Parameters, returned

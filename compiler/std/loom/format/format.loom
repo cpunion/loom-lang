@@ -59,7 +59,7 @@ fn marks(node Node, tokens List[Token], layout Layout) {
     if (node.kind == NodeKind.Type || node.kind == NodeKind.TupleType) && get(tokens, start).kind == Kind.LParen {
         set(layout.spaces, start, true)
     }
-    if node.kind == NodeKind.Unary || (node.kind == NodeKind.Integer && length(node.value) > 0 && byte(node.value, 0) == 45) {
+    if node.kind == NodeKind.Unary || ((node.kind == NodeKind.Integer || node.kind == NodeKind.Float) && length(node.value) > 0 && byte(node.value, 0) == 45) {
         var prefix = start
         while get(tokens, prefix).kind == Kind.LParen || get(tokens, prefix).kind == Kind.Newline {
             prefix = prefix + 1

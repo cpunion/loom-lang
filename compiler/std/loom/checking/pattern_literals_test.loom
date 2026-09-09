@@ -1,0 +1,35 @@
+test fn literal_patterns_check_types_and_exhaustiveness() {
+    discard accepted("pub fn bit(v Bool) Int ensures result >= 0 && result <= 1 { match v { true => 1\nfalse => 0 } }")
+    discard accepted("pub fn choose[T](v (Bool, T)) T { match v { (true, value) => value\n(false, value) => value } }")
+    discard accepted("pub fn pick(v Int) Int { match v { -9223372036854775808 => 0\n9223372036854775807 => 1\nrest => rest } }")
+    discard accepted("type Count Int where value >= 0\npub fn pick(v Count) Int { match v { 0 => 1\nrest => rest } }")
+    rejects("pub fn bit(v Bool) Int { match v { true => 1 } }")
+    rejects("pub fn bit(v Bool) Int { match v { true => 1\nfalse => 0\n_ => 2 } }")
+    rejects("pub fn pick(v Int) Int { match v { 0 => 0 } }")
+    rejects("pub fn pick(v Text) Int { match v { \"\" => 0 } }")
+    rejects("pub fn pick(v Float) Int { match v { 0.0 => 0 } }")
+    rejects("pub fn pick(v Int) Int { match v { true => 0\n_ => 1 } }")
+    rejects("pub fn pick(v Float) Int { match v { 0 => 0\n_ => 1 } }")
+    rejects("pub fn pick(v Text) Int { match v { 0 => 0\n_ => 1 } }")
+    rejects("pub fn pick[T](v T) Int { match v { 0 => 0\n_ => 1 } }")
+}
+
+test fn equal_literal_spellings_are_unreachable_but_cross_column_overlap_is_valid() {
+    rejects("pub fn pick(v Int) Int { match v { 0 => 0\n-0 => 1\n_ => 2 } }")
+    rejects("pub fn pick(v Int) Int { match v { 01 => 0\n1 => 1\n_ => 2 } }")
+    rejects("pub fn pick(v Float) Int { match v { 0.0 => 0\n-0.0 => 1\n_ => 2 } }")
+    rejects("pub fn pick(v Float) Int { match v { 1e0 => 0\n1.0 => 1\n_ => 2 } }")
+    rejects("pub fn pick(v Text) Int { match v { \"雪\" => 0\n\"\\u{96ea}\" => 1\n_ => 2 } }")
+    rejects("pub fn pick(v Int) Int { match v { _ => 0\n1 => 1 } }")
+    discard accepted("pub fn pick(v (Int, Bool)) Int { match v { (0, true) => 1\n(1, false) => 2\n(0, _) => 3\n_ => 4 } }")
+    rejects("pub fn pick(v (Int, Bool)) Int { match v { (0, true) => 1\n(_, false) => 2\n(0, false) => 3\n_ => 4 } }")
+}
+
+test fn scalar_tests_preserve_nested_payload_and_task_obligations() {
+    let header = "enum Item[T] { Some(Bool, T) None }\n"
+    discard accepted(concat(header, "pub fn pick(v Item[Text]) Text { match v { Item.Some(true, \"ready\") => \"yes\"\nItem.Some(_, text) => text\nItem.None => \"empty\" } }"))
+    rejects(concat(header, "pub fn pick(v Item[Int]) Int { match v { Item.Some(true, 0) => 0\nItem.None => 1 } }"))
+    discard accepted(concat(header, "async fn pick(v Item[Task[Int]]) Int { match v { Item.Some(true, task) => task.await\nItem.Some(false, task) => task.await\nItem.None => 0 } }"))
+    rejects(concat(header, "async fn pick(v Item[Task[Int]]) { match v { Item.Some(true, task) => { discard task.await }\n_ => {} } }"))
+    rejects(concat(header, "async fn pick(v Item[Task[Int]]) { match v { Item.Some(true, _) => {}\nItem.Some(false, task) => { discard task.await }\nItem.None => {} } }"))
+}

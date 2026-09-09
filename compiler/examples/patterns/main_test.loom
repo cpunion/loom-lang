@@ -1,10 +1,13 @@
 test fn nested_value_patterns_work_at_runtime_and_compile_time() {
     exercise_values()
+    literal_values()
     comptime {
         exercise_values()
+        literal_values()
     }
 }
 
 test async fn nested_task_patterns_transfer_once_and_keep_cleanup() {
     exercise_tasks().await
+    literal_tasks().await
 }

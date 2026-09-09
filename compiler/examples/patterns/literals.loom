@@ -1,0 +1,109 @@
+import std.text.concat
+import std.list.push
+import std.list.length
+import std.time.sleep_ms
+
+fn bit(value Bool) Int
+ensures result >= 0 && result <= 1 {
+    match value {
+        true => 1
+        false => 0
+    }
+}
+
+fn sign(value Int) Int {
+    match value {
+        -9223372036854775808 => -1
+        0 => 0
+        9223372036854775807 => 1
+        rest => rest
+    }
+}
+
+fn label(value Text) Int {
+    match value {
+        "" => 0
+        "雪\0" => 1
+        "ready" => 2
+        _ => 3
+    }
+}
+
+fn decimal(value Float) Int {
+    match value {
+        -0.0 => 0
+        1e0 => 1
+        -1.5 => 2
+        1e999 => 3
+        _ => 4
+    }
+}
+
+fn overlapping(value (Int, Bool)) Int {
+    match value {
+        (0, true) => 1
+        (1, false) => 2
+        (0, _) => 3
+        _ => 4
+    }
+}
+
+fn snapshot(trace List[Int]) (Text, Bool) {
+    push(trace, 7)
+    (concat("rea", "dy"), true)
+}
+
+fn literal_values() {
+    assert bit(true) == 1 && bit(false) == 0
+    assert sign(-9223372036854775808) == -1 && sign(9223372036854775807) == 1
+    assert sign(0) == 0 && sign(17) == 17
+    assert label(concat("雪", "\0")) == 1 && label("") == 0
+    assert label(concat("rea", "dy")) == 2 && label("other") == 3
+    assert decimal(0.0) == 0 && decimal(-0.0) == 0
+    assert decimal(1.0) == 1 && decimal(-1.5) == 2
+    assert decimal(1.0 / 0.0) == 3 && decimal(0.0 / 0.0) == 4
+    assert overlapping((0, true)) == 1 && overlapping((0, false)) == 3
+    assert overlapping((1, false)) == 2 && overlapping((1, true)) == 4
+    let trace List[Int] = []
+    let selected = match snapshot(trace) {
+        ("ready", true) => 1
+        (_, false) => 2
+        rest => {
+            let (text, _) = rest
+            label(text)
+        }
+    }
+    assert selected == 1 && length(trace) == 1
+}
+
+enum Tagged {
+    Value(Text, Bool, Task[Int])
+    Empty
+}
+
+async fn tagged(value Tagged, trace List[Int]) Int {
+    match value {
+        Tagged.Value("ready", true, task) => {
+            defer {
+                push(trace, 1)
+            }
+            sleep_ms(1).await
+            task.await
+        }
+        rest => {
+            match rest {
+                Tagged.Value(_, _, task) => task.await
+                Tagged.Empty => 0
+            }
+        }
+    }
+}
+
+async fn literal_tasks() {
+    let trace List[Int] = []
+    assert tagged(Tagged.Value(concat("rea", "dy"), true, delayed(7)), trace).await == 7
+    assert length(trace) == 1
+    assert tagged(Tagged.Value("ready", false, delayed(8)), trace).await == 8
+    assert tagged(Tagged.Value("other", true, delayed(9)), trace).await == 9
+    assert tagged(Tagged.Empty(), trace).await == 0
+}

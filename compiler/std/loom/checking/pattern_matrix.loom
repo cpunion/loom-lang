@@ -34,14 +34,14 @@ fn pattern_replace(plan PatternPlan, value Expr, local Int, replacement Expr, de
     }
     Result.Ok(Expr { kind = value.kind ty = value.ty span = value.span text = value.text index = value.index children = children arms = value.arms falls = value.falls })
 }
-fn pattern_rows(plan PatternPlan, rows List[PatternRow], column Int, variant Int, value Expr, fields List[Expr], rebuilt Expr, depth Int) Result[List[PatternRow], Failure] {
+fn pattern_rows(plan PatternPlan, rows List[PatternRow], column Int, variant Int, literal Text, value Expr, fields List[Expr], rebuilt Expr, depth Int) Result[List[PatternRow], Failure] {
     let selected = new[PatternRow]()
     var index = 0
     while index < length(rows) {
         discard pattern_step(plan, depth)?
         let row = get(rows, index)
         let pattern = get(row.patterns, column)
-        if pattern.variant == -1 || pattern.variant == variant {
+        if pattern.variant == -1 || (pattern.variant == variant && (variant != -3 || pattern.source.value == literal)) {
             let bindings = new[Expr]()
             var binding = 0
             while binding < length(row.bindings) {
@@ -106,6 +106,7 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
     while column < length(first.patterns) && get(first.patterns, column).variant == -1 { column = column + 1 }
     if column == length(first.patterns) { return Result.Ok(pattern_leaf(plan, first, values)) }
     let value = get(values, column)
+    if get(first.patterns, column).variant == -3 { return literal_decision(plan, rows, values, column, depth + 1) }
     let shape = get(plan.context.env.types, value.ty)
     let tuple = shape.kind == TypeKind.Tuple
     let count = if tuple { 1 } else { length(shape.variants) }
@@ -133,7 +134,7 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
             field = field + 1
         }
         let rebuilt = expression(if tuple { ExprKind.Record } else { ExprKind.Variant }, value.ty, plan.source, "", if tuple { -1 } else { variant }, reconstructed, true)
-        let selected = pattern_rows(plan, rows, column, if tuple { -2 } else { variant }, value, fields, rebuilt, depth + 1)?
+        let selected = pattern_rows(plan, rows, column, if tuple { -2 } else { variant }, "", value, fields, rebuilt, depth + 1)?
         let body = pattern_decision(plan, selected, pattern_slots(values, column, fields), depth + 1)?
         if tuple { return Result.Ok(pattern_block(plan.source, initializers, body)) }
         falls = falls || body.falls

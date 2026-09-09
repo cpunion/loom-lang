@@ -560,7 +560,13 @@ Arms are selected in source order. Exhaustiveness includes combinations of neste
 variants; wholly covered arms reject. Inputs evaluate once. Whole-value fallbacks
 and payload bindings preserve shared fields and one-shot Task obligations. The
 [pattern example](examples/patterns/README.md) also exercises tuple patterns and
-real async waits. This does not add literal/record patterns or guards.
+real async waits. Int, Bool, Text and Float literals also work at any pattern
+position, such as `Some("ready", true, task)`. They use ordinary equality with
+exact scalar types; Int does not implicitly match Float. `true` and `false`
+exhaust Bool. Other scalar types require a binding or `_` fallback; refinement
+predicates do not narrow this coverage domain. Equal numeric spellings denote
+the same case, including `0.0` and `-0.0`; Float NaN reaches the fallback. Text
+patterns compare decoded UTF-8 contents. This does not add record patterns or guards.
 Expansion has a bounded decision budget; normal flat matches
 retain their direct path. No runtime pattern engine or checked-artifact change is
 needed, and compiler production sources do not adopt the new syntax.
