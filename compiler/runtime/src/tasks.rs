@@ -25,6 +25,10 @@ type CleanupCallback = unsafe extern "C-unwind" fn(*mut u8);
 #[path = "tasks_file_io.rs"]
 mod file_io;
 
+#[path = "tasks_observation.rs"]
+mod observation;
+use observation::Observation;
+
 #[derive(Clone, Copy)]
 struct TaskCleanup {
     site: i64,
@@ -35,9 +39,19 @@ enum State {
     Queued,
     Running,
     Waiting(u64),
+    Observing,
     ExternalWaiting,
-    Completed,
-    Faulted(OwnedFault),
+    Completed(u64),
+    Faulted(OwnedFault, u64),
+}
+
+impl State {
+    fn terminal_order(&self) -> Option<u64> {
+        match self {
+            Self::Completed(order) | Self::Faulted(_, order) => Some(*order),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -58,6 +72,7 @@ struct Task {
     returned_to_parent: bool,
     cleanups: Vec<TaskCleanup>,
     waiter: Option<u64>,
+    observation: Option<Box<Observation>>,
     state: State,
     external: Option<ExternalWait>,
     operation: Option<Arc<Job>>,
@@ -70,6 +85,7 @@ struct Core {
     ready: VecDeque<u64>,
     current: Option<u64>,
     root: Option<u64>,
+    // Opaque task identities and terminal-order stamps share one counter.
     next: u64,
     pending: usize,
 }
@@ -217,6 +233,7 @@ impl Owner {
                 self.cancel_operation(id);
                 self.drain_cleanups(id, first);
                 let mut core = self.core.borrow_mut();
+                observation::remove(&mut core, id);
                 let task = core.tasks.remove(&id).expect("live cancelled task");
                 if let Some(parent) = task.parent {
                     core.tasks
@@ -255,6 +272,7 @@ impl Owner {
             }
             (0, _) => Err("task completed with outstanding children or wait"),
             (1, State::Waiting(_)) if task.external.is_none() && task.returned == 0 => Ok(()),
+            (1, State::Observing) if task.external.is_none() && task.returned == 0 => Ok(()),
             (1, State::ExternalWaiting)
                 if task.returned == 0 && task.external.is_some_and(|wait| wait.ready.is_none()) =>
             {
@@ -280,22 +298,27 @@ impl Owner {
         let mut core = self.core.borrow_mut();
         let terminal = match outcome {
             Ok(0) => {
-                core.tasks.get_mut(&id).unwrap().state = State::Completed;
+                let order = next_stamp(&mut core);
+                core.tasks.get_mut(&id).unwrap().state = State::Completed(order);
                 true
             }
             Ok(1) => false,
             Ok(_) => fatal("unchecked task resume state"),
             Err(mut failure) => {
+                let order = next_stamp(&mut core);
                 let task = core.tasks.get_mut(&id).unwrap();
                 append_creation(&mut failure, task.creation);
-                task.state = State::Faulted(failure);
+                task.state = State::Faulted(failure, order);
                 true
             }
         };
         if terminal {
             let task = &core.tasks[&id];
-            let priority = matches!(task.state, State::Faulted(_));
+            let priority = matches!(task.state, State::Faulted(_, _));
             if let Some(parent) = task.waiter {
+                if observation::completed(&mut core, parent, id) {
+                    return;
+                }
                 let parent_task = core.tasks.get_mut(&parent).expect("live task waiter");
                 if !matches!(parent_task.state, State::Waiting(child) if child == id) {
                     fatal("invalid task waiter state");
@@ -321,7 +344,7 @@ impl Owner {
                 let mut core = self.core.borrow_mut();
                 if matches!(
                     core.tasks[&root].state,
-                    State::Completed | State::Faulted(_)
+                    State::Completed(_) | State::Faulted(_, _)
                 ) {
                     let task = core.tasks.remove(&root).unwrap();
                     assert!(task.children.is_empty() && core.tasks.is_empty() && core.pending == 0);
@@ -329,8 +352,8 @@ impl Owner {
                     core.root = None;
                     core.ready.clear();
                     return match task.state {
-                        State::Completed => Ok(()),
-                        State::Faulted(failure) => Err(failure),
+                        State::Completed(_) => Ok(()),
+                        State::Faulted(failure, _) => Err(failure),
                         _ => unreachable!(),
                     };
                 }
@@ -528,6 +551,14 @@ fn parent(core: &Core, child: u64) -> Result<u64, &'static str> {
     Ok(parent)
 }
 
+fn next_stamp(core: &mut Core) -> u64 {
+    core.next = core
+        .next
+        .checked_add(1)
+        .unwrap_or_else(|| fatal("task identities exhausted"));
+    core.next
+}
+
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_task_cleanup_push(site: i64, callback: CleanupCallback) {
     edit(|_, core| {
@@ -645,10 +676,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
         } else if core.root.is_some() {
             return Err("async entry constructor must create one root task");
         }
-        let id = core
-            .next
-            .checked_add(1)
-            .unwrap_or_else(|| fatal("task identities exhausted"));
+        let id = next_stamp(core);
         // SAFETY: The caller roots construction across allocation; insert itself
         // never collects, so no snapshot gap exists before scheduler ownership.
         let frame = unsafe { owner.roots().insert(frame) };
@@ -664,13 +692,13 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
                 returned_to_parent: false,
                 cleanups: Vec::new(),
                 waiter: None,
+                observation: None,
                 state: State::Queued,
                 external: None,
                 operation: None,
                 creation: (creation, creation_len),
             },
         );
-        core.next = id;
         if let Some(parent) = parent {
             core.tasks.get_mut(&parent).unwrap().children.insert(id);
         } else {
@@ -685,6 +713,9 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
 pub(super) extern "C-unwind" fn loom_rt_task_await(child: u64) -> i32 {
     edit(|_, core| {
         let parent = parent(core, child)?;
+        if observation::contains(core, parent, child) {
+            return Err("select an observed task before awaiting it");
+        }
         if core.tasks[&parent].external.is_some() {
             return Err("task already has an external wait");
         }
@@ -700,7 +731,7 @@ pub(super) extern "C-unwind" fn loom_rt_task_await(child: u64) -> i32 {
         if task.waiter.is_some_and(|waiter| waiter != parent) {
             return Err("task already has a waiter");
         }
-        let ready = matches!(task.state, State::Completed | State::Faulted(_));
+        let ready = task.state.terminal_order().is_some();
         task.waiter = Some(parent);
         if !ready {
             core.tasks.get_mut(&parent).unwrap().state = State::Waiting(child);
@@ -718,7 +749,7 @@ pub(super) extern "C-unwind" fn loom_rt_task_result(child: u64) -> *mut u8 {
             return Err("task result requires await");
         }
         match &task.state {
-            State::Completed => {
+            State::Completed(_) => {
                 let frame = task.frame;
                 if task.returned != 0 {
                     if task.children.len() != task.returned {
@@ -737,7 +768,7 @@ pub(super) extern "C-unwind" fn loom_rt_task_result(child: u64) -> *mut u8 {
                 }
                 Ok(Ok(owner.roots().get(frame).expect("rooted task result")))
             }
-            State::Faulted(failure) => Ok(Err(OwnedFault {
+            State::Faulted(failure, _) => Ok(Err(OwnedFault {
                 message: failure.message.clone(),
                 test_name: failure.test_name.clone(),
             })),
@@ -756,7 +787,7 @@ pub(super) extern "C-unwind" fn loom_rt_task_release(child: u64) {
     edit(|owner, core| {
         let parent = parent(core, child)?;
         let task = &core.tasks[&child];
-        if task.waiter != Some(parent) || !matches!(task.state, State::Completed) {
+        if task.waiter != Some(parent) || !matches!(task.state, State::Completed(_)) {
             return Err("task release requires a completed awaited result");
         }
         if !task.children.is_empty() {

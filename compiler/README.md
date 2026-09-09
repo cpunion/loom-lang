@@ -1443,6 +1443,13 @@ Normal Lists still share mutations, including at compile time. See the
 recursive payloads. This is not a completed `all` implementation: sequential
 awaits alone cannot observe a different child's fault promptly.
 
+Private completion primitives now register each child once and deliver terminal
+indices through the same typed suspension path, preserving actual completion
+order and one-shot result extraction. They retain IDs, not managed pointers;
+parent cancellation removes observations before cleanup. `loom test compiler/std/task`
+exercises the native source path. No public join API is exposed yet: typed outcomes,
+explicit cancellation and source composition policies remain next work.
+
 ## Next boundary
 
 The [native basic benchmark](../benchmarks/basic/README.md) compares the current

@@ -147,6 +147,18 @@ fn waiting(graph Graph, source Expr, start Int, loop Loop) Value {
 }
 
 fn parking(graph Graph, source Expr, start Int, loop Loop) Value {
+    if source.text == "task_next" {
+        let park = state(graph)
+        let after = state(graph)
+        jump(graph, start, park)
+        finish(graph, park, Exit.Park, operation("task_wait_next", 2, source.span, new[Expr]()), edges(after), new[Arm]())
+        Value { state = after expression = operation("task_next_result", 1, source.span, new[Expr]()) }
+    } else {
+        external_parking(graph, source, start, loop)
+    }
+}
+
+fn external_parking(graph Graph, source Expr, start Int, loop Loop) Value {
     if source.text != "timer_until_ns" {
         let arguments = new[Expr]()
         var current = start

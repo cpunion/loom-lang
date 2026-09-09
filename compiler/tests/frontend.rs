@@ -142,6 +142,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/fs",
         "std/env",
         "std/time",
+        "std/task",
         "std/process",
         "examples/scalar",
         "examples/contracts",

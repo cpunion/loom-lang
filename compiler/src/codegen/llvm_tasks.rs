@@ -127,6 +127,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )
             }
             Primitive::TaskAwait
+            | Primitive::TaskWaitNext
             | Primitive::TaskWaitTimer
             | Primitive::TaskWaitFileRead
             | Primitive::TaskWaitFileWrite
@@ -165,6 +166,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )?))
             }
             Primitive::TaskRelease => self.runtime_call("task_release", None, values),
+            Primitive::TaskObserve | Primitive::TaskNextResult => self.runtime_call(
+                if operation == Primitive::TaskObserve {
+                    "task_observe"
+                } else {
+                    "task_next_result"
+                },
+                Some(self.context.i64_type().into()),
+                values,
+            ),
             Primitive::TaskFileResult | Primitive::TaskFileReadResult => {
                 let name = if operation == Primitive::TaskFileResult {
                     "task_file_result"
@@ -200,6 +210,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         let name = match operation {
             Primitive::TaskAwait => "task_await",
+            Primitive::TaskWaitNext => "task_wait_next",
             Primitive::TaskWaitFileRead => "task_wait_file_read",
             Primitive::TaskWaitFileWrite => "task_wait_file_write",
             Primitive::TaskWaitFileWriteBytes => "task_wait_file_write_bytes",

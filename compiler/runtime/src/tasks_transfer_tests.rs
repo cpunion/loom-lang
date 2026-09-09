@@ -155,10 +155,10 @@ unsafe extern "C-unwind" fn parent_resume(frame: *mut u8) -> i64 {
             inspect(|core| {
                 let producer = &core.tasks[&outer];
                 if matches!(CASE.get(), Case::ProducerFault | Case::DuplicateReturn) {
-                    assert!(matches!(producer.state, State::Faulted(_)));
+                    assert!(matches!(producer.state, State::Faulted(_, _)));
                     assert!(producer.children.is_empty());
                 } else {
-                    assert!(matches!(producer.state, State::Completed));
+                    assert!(matches!(producer.state, State::Completed(_)));
                     assert_eq!(producer.returned, 1);
                     let inner = *producer.children.first().unwrap();
                     assert!(core.tasks[&inner].returned_to_parent);
@@ -166,7 +166,7 @@ unsafe extern "C-unwind" fn parent_resume(frame: *mut u8) -> i64 {
                     if CASE.get() == Case::ReturnedChildFault {
                         // The outer completed normally; its child's failure
                         // belongs to the later inner await, not extraction.
-                        assert!(matches!(core.tasks[&inner].state, State::Faulted(_)));
+                        assert!(matches!(core.tasks[&inner].state, State::Faulted(_, _)));
                         return;
                     }
                     // The returned task itself waits on a timer child. Moving
