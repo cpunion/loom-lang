@@ -285,6 +285,10 @@ nested Task payloads and finite Bool coverage. Named record patterns reuse the
 tuple product decisions, with explicit field omission and ordinary resource
 obligations. Guards and heterogeneous tuple task composition remain later work;
 dynamic List joins use the separate source policies above.
+Named record bindings now also use the direct tuple-destructuring path, sharing
+field validation with matches and retaining initializer order, ordinary mutability,
+Task/resource obligations and compile-time execution. This adds no matcher or
+bootstrap checkpoint; refutable and scoped bindings remain open.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time

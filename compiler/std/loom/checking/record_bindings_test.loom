@@ -1,0 +1,44 @@
+test fn record_bindings_infer_fields_and_project_one_saved_initializer_in_source_order() {
+    let program = accepted("record Pair[T] { first Int second T }\nfn pair() Pair[Bool] { Pair { first = 7 second = true } }\nfn main() { var Pair { second = flag, first = number } = pair()\nnumber = 8\nflag = false\nassert number == 8 && !flag }")
+    let main = get(program.functions, program.entry)
+    let binding = get(main.body.children, 0)
+    assert binding.kind == ExprKind.Block && length(binding.children) == 3
+    let saved = get(binding.children, 0)
+    assert get(saved.children, 0).kind == ExprKind.Call
+    let first = get(get(binding.children, 1).children, 0)
+    let second = get(get(binding.children, 2).children, 0)
+    assert first.kind == ExprKind.Field && first.index == 1
+    assert second.kind == ExprKind.Field && second.index == 0
+    assert get(first.children, 0).index == saved.index && get(second.children, 0).index == saved.index
+    assert get(main.locals, get(binding.children, 1).index).mutable
+    assert get(main.locals, get(binding.children, 2).index).mutable
+    discard accepted("record Box[T] { value T }\nfn split[T](v Box[(Int, T)]) T { let Box { value = (_, item) } = v\nitem }\nfn main() { assert split(Box { value = (1, true) }) }")
+    discard accepted("record Empty {}\nfn main() { let Empty {} = Empty {} }")
+}
+
+test fn record_binding_names_share_ordinary_scope_and_nominal_visibility() {
+    let header = "record Pair { first Int second Bool }\n"
+    rejects(concat(header, "fn f(v Pair) { let Pair { first = n, .. } = v\nn = 3 }"))
+    rejects(concat(header, "fn f(v Pair) { let Pair { first = n, second = n } = v }"))
+    rejects(concat(header, "fn f(v Pair) { let Pair { first = n } = v }"))
+    rejects(concat(header, "fn f(v Pair) { let Pair { absent = n, .. } = v }"))
+    rejects(concat(header, "fn f(v Pair) { let Pair { first = n, first = m, .. } = v }"))
+    rejects(concat(header, "fn f(v Pair) { if true { let Pair { first = n, .. } = v }\ndiscard n }"))
+    rejects(concat(header, "fn f(v Pair) { let Pair { first = n, .. } = Pair { first = n second = true } }"))
+    rejects(concat(header, "record Other { first Int second Bool }\nfn f(v Pair) { let Other { .. } = v }"))
+    let files = source_files("import helper.make\nfn main() { let helper.Hidden { .. } = make() }")
+    push(files, source_file("helper", "record Hidden { value Int }\npub fn make() Hidden { Hidden { value = 1 } }", false))
+    assert match checked(files) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn record_bindings_cannot_hide_resource_or_one_shot_obligations() {
+    let header = "record Pending { flag Bool task Task[Int] }\n"
+    discard accepted(concat(header, "async fn f(v Pending) Int { let Pending { task = task, .. } = v\ntask.await }"))
+    rejects(concat(header, "async fn f(v Pending) { let Pending { flag = flag, .. } = v\ndiscard flag }"))
+    rejects(concat(header, "async fn f(v Pending) { let Pending { task = _, .. } = v }"))
+    rejects(concat(header, "async fn f(v Pending) { let Pending { task = task, .. } = v\ndiscard task.await\ndiscard task.await }"))
+    resource_reject("import std.resource.Dispose\nimport std.resource.MustScope\nrecord Handle { value Int }\nimpl Dispose for Handle { fn dispose(self Handle) {} }\nimpl MustScope for Handle {}\nfn bad() { let Handle { value = value } = Handle { value = 1 }\ndiscard value }")
+}

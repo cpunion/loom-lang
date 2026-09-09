@@ -247,6 +247,11 @@ fn statement(cursor Cursor) Result[Step, Diagnostic] {
         if kind == NodeKind.Scoped && (named.node.value == "_" || at(rest, Kind.Comma)) {
             return Result.Err(error(next(cursor), "scoped requires one named binding"))
         }
+        if named.node.kind == NodeKind.RecordPattern && !at(rest, Kind.Comma) {
+            rest = expect(rest, Kind.Assign, "'=' after destructuring pattern")?
+            let value = expr(rest, 0, false, true)?
+            return Result.Ok(done(cursor, value.rest, NodeKind.Destructure, token(cursor).value, two(named.node, value.node)))
+        }
         if at(rest, Kind.Comma) || named.node.kind == NodeKind.Tuple {
             let names = if at(rest, Kind.Comma) { one(named.node) } else { named.node.children }
             while at(rest, Kind.Comma) {

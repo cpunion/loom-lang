@@ -1,4 +1,11 @@
-fn record_pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, depth Int) Result[PatternScope, Failure] {
+record RecordPatternField {
+    source Node
+    index Int
+}
+
+// Match arms and ordinary bindings share nominal identity, visibility and field
+// completeness. Explicit fields stay in source order; omitted fields follow.
+fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordPatternField], Failure] {
     let shape = get(context.env.types, ty)
     if shape.kind != TypeKind.Record {
         return Result.Err(error(context, node, "record pattern requires a record value"))
@@ -12,18 +19,16 @@ fn record_pattern_scope(context Context, node Node, ty Int, body Node, boundary 
     if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
         return Result.Err(error(context, node, "cannot inspect a private record from another package"))
     }
-    let positions = new[Int]()
+    let fields = new[RecordPatternField]()
+    let seen = new[Bool]()
     var index = 0
     while index < length(shape.fields) {
-        push(positions, -1)
+        push(seen, false)
         index = index + 1
     }
-    let checked = new[CheckedPattern]()
-    var current = context
     var omitted = node
     var rest = false
     index = 0
-    // Check named fields in source order; matrix columns use declaration order.
     while index < length(node.children) {
         let member = child(node, index)
         if member.kind == NodeKind.RestPattern {
@@ -41,23 +46,20 @@ fn record_pattern_scope(context Context, node Node, ty Int, body Node, boundary 
             if field < 0 {
                 return Result.Err(error(context, member, "unknown record field in pattern"))
             }
-            if get(positions, field) >= 0 {
+            if get(seen, field) {
                 return Result.Err(error(context, member, "duplicate record field in pattern"))
             }
-            let nested = pattern_scope(current, child(member, 0), get(shape.fields, field).ty, body, boundary, depth + 1)?
-            current = nested.context
-            set(positions, field, length(checked))
-            push(checked, nested.pattern)
+            set(seen, field, true)
+            push(fields, RecordPatternField {
+                    source = child(member, 0)
+                    index = field
+                })
         }
         index = index + 1
     }
-    let children = new[CheckedPattern]()
     index = 0
     while index < length(shape.fields) {
-        let position = get(positions, index)
-        if position >= 0 {
-            push(children, get(checked, position))
-        } else {
+        if !get(seen, index) {
             if !rest {
                 return Result.Err(error(context, node, "match every record field or explicitly omit fields with '..'"))
             }
@@ -67,10 +69,40 @@ fn record_pattern_scope(context Context, node Node, ty Int, body Node, boundary 
                 span = omitted.span
                 children = new[Node]()
             }
-            let nested = pattern_scope(current, wildcard, get(shape.fields, index).ty, body, boundary, depth + 1)?
-            current = nested.context
-            push(children, nested.pattern)
+            push(fields, RecordPatternField {
+                    source = wildcard
+                    index = index
+                })
         }
+        index = index + 1
+    }
+    Result.Ok(fields)
+}
+
+fn record_pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, depth Int) Result[PatternScope, Failure] {
+    let fields = record_pattern_fields(context, node, ty)?
+    let shape = get(context.env.types, ty)
+    let positions = new[Int]()
+    let checked = new[CheckedPattern]()
+    var current = context
+    var index = 0
+    while index < length(fields) {
+        push(positions, -1)
+        index = index + 1
+    }
+    index = 0
+    while index < length(fields) {
+        let field = get(fields, index)
+        let nested = pattern_scope(current, field.source, get(shape.fields, field.index).ty, body, boundary, depth + 1)?
+        current = nested.context
+        set(positions, field.index, length(checked))
+        push(checked, nested.pattern)
+        index = index + 1
+    }
+    let children = new[CheckedPattern]()
+    index = 0
+    while index < length(positions) {
+        push(children, get(checked, get(positions, index)))
         index = index + 1
     }
     Result.Ok(PatternScope {

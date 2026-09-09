@@ -252,9 +252,15 @@ fn pattern_at(cursor Cursor, depth Int, payload Bool, binding Bool) Result[Step,
         if !tuple { return Result.Ok(Step { rest = rest node = get(items, 0) }) }
         return Result.Ok(done(cursor, rest, NodeKind.Tuple, "", items))
     }
-    // Binding positions admit only names, wildcards and tuples, never variants.
-    // Stop before '(' so an ordinary binding can still have a tuple annotation.
-    if binding { return name(cursor) }
+    // A binding can have a tuple annotation, so stop before '(' after its name.
+    // Dotted paths only identify record patterns here, never enum variants.
+    if binding {
+        let named = name(cursor)?
+        let selected = if at(named.rest, Kind.Dot) { path(cursor)? } else { named }
+        if at(selected.rest, Kind.LBrace) { return record_pattern(cursor, selected, depth, true) }
+        if selected.rest.index != named.rest.index { return Result.Err(error(selected.rest, "expected '{' after a record pattern name")) }
+        return Result.Ok(named)
+    }
     let negative = at(cursor, Kind.Minus)
     let literal = if negative { newlines(next(cursor)) } else { cursor }
     let value = token(literal).value
@@ -275,7 +281,7 @@ fn pattern_at(cursor Cursor, depth Int, payload Bool, binding Bool) Result[Step,
         return Result.Ok(done(cursor, next(cursor), NodeKind.Bool, value, new[Node]()))
     }
     let named = path(cursor)?
-    if at(named.rest, Kind.LBrace) { return record_pattern(cursor, named, depth) }
+    if at(named.rest, Kind.LBrace) { return record_pattern(cursor, named, depth, false) }
     if !at(named.rest, Kind.LParen) {
         // Bare payload names remain bindings; qualified paths identify variants.
         if payload && named.rest.index == cursor.index + 1 { return Result.Ok(named) }

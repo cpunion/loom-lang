@@ -221,6 +221,11 @@ source-ordered field bindings and explicit `..` omission. Typed field projection
 and fallback reconstruction preserve shared data and Task obligations without new
 runtime or checked-artifact operations. Guards remain open. Compiler production
 sources retain flat patterns.
+Record `let`/`var` patterns now share that field validation and the existing tuple
+binding projections. Initializers evaluate once before any new name enters scope;
+mutable names rebind locally without changing record fields. Nested bindings,
+explicit omission, compile-time execution, shared aliases and one-shot Task
+transfers have native evidence. Refutable or scoped binding patterns remain unsupported.
 
 Named function values have structural signatures, contextual overload/generic
 selection, and native calls through an entry/environment pair. Parameters, returned

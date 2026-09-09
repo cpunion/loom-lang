@@ -89,7 +89,7 @@ language server sends source snapshots to the same Loom package/type/contract
 checker; it does not implement another parser or checker in JavaScript.
 Name completion uses package bindings and lexical scopes without type checking;
 member completion infers the receiver through ordinary signature/body-prefix
-checking. Nested tuple bindings contribute ordinary names and receiver types.
+checking. Nested tuple/record bindings contribute ordinary names and receiver types.
 It offers fields, tuple indices, admitted concept methods and async
 Task `.await`, not proof of an applicable call or valid body. Rename and incremental
 semantic caching remain open. Completion

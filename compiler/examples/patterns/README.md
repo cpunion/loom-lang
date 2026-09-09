@@ -38,5 +38,12 @@ whole fallback preserves every remaining field and shared alias. See `records.lo
 The implementation uses ordinary typed matches, comparisons and fields, not a
 runtime matcher. Input expressions are evaluated once.
 
-These are `match` patterns, not new `let`/`var` binding patterns. Guards and field
-shorthand are not implemented. Resource aggregate restrictions still apply.
+Record/tuple bindings also work in `let` and `var`, for example
+`let Packet { value = (text, items), .. } = packet`. The initializer runs once,
+before any bound name enters scope. `var` makes each name rebindable; it does not
+turn those names into references to the record's fields. Shared Lists still
+share their contents. Omitted fields cannot drop Tasks or MustScope resources,
+and a MustScope record still requires `scoped`, not destructuring.
+
+Literal and enum patterns remain `match`-only. Guards, field shorthand, scoped
+destructuring and parallel reassignment are not implemented.

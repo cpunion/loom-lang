@@ -109,3 +109,83 @@ async fn record_tasks() {
         }, trace).await == 8
     assert length(trace) == 1 && trace[0] == 2
 }
+
+fn unpack_binding[T](packet Packet[T]) T {
+    let Packet {
+        value = item,
+        ..
+    } = packet
+    item
+}
+
+fn record_bindings() {
+    let trace List[Int] = []
+    let values List[Int] = []
+    let Packet {
+        value = (text, items),
+        ready = ready
+    } = packet(trace, values)
+    assert length(trace) == 1 && text == "ready" && ready
+    push(items, 7)
+    assert length(values) == 1 && values[0] == 7
+    {
+        // All initializer names resolve before the new bindings enter scope.
+        let Packet {
+            value = values,
+            ..
+        } = Packet {
+            ready = true
+            value = values
+        }
+        push(values, 8)
+    }
+    assert length(values) == 2 && values[1] == 8
+    var Packet {
+        value = (number, Packet {
+                value = flag,
+                ..
+            }),
+        ..
+    }, _ =
+    (Packet {
+            ready = true
+            value = (3, Packet {
+                    ready = false
+                    value = true
+                })
+        }, 0)
+    number = 4
+    flag = false
+    assert number == 4 && !flag
+    let Empty {
+    } = Empty {
+    }
+    assert unpack_binding(Packet {
+            ready = false
+            value = text
+        }) == "ready"
+}
+
+async fn record_task_bindings() {
+    let Packet {
+        value = (first, Packet {
+                value = second,
+                ..
+            }),
+        ..
+    } =
+    Packet {
+        ready = true
+        value = (delayed(4), Packet {
+                ready = false
+                value = delayed(5)
+            })
+    }
+    sleep_ms(1).await
+    assert first.await + second.await == 9
+    let pending = unpack_binding(Packet {
+            ready = true
+            value = delayed(6)
+        })
+    assert pending.await == 6
+}

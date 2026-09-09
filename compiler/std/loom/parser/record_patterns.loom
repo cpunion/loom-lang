@@ -1,4 +1,4 @@
-fn record_pattern(start Cursor, named Step, depth Int) Result[Step, Diagnostic] {
+fn record_pattern(start Cursor, named Step, depth Int, binding Bool) Result[Step, Diagnostic] {
     var rest = newlines(next(named.rest))
     let fields = new[Node]()
     while !at(rest, Kind.RBrace) {
@@ -15,7 +15,7 @@ fn record_pattern(start Cursor, named Step, depth Int) Result[Step, Diagnostic] 
             return Result.Ok(done(start, expect(rest, Kind.RBrace, "'}' after '..'")?, NodeKind.RecordPattern, named.node.value, fields))
         }
         let field = name(rest)?
-        let value = pattern_at(newlines(expect(field.rest, Kind.Assign, "'=' after the field name")?), depth + 1, true, false)?
+        let value = pattern_at(newlines(expect(field.rest, Kind.Assign, "'=' after the field name")?), depth + 1, true, binding)?
         push(fields, done(rest, value.rest, NodeKind.Field, field.node.value, one(value.node)).node)
         rest = value.rest
         if at(rest, Kind.Comma) {

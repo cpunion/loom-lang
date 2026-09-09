@@ -81,6 +81,14 @@ test fn name_completion_preserves_unicode_ranges_and_avoids_strings_comments_and
 }
 
 test fn nested_destructuring_completion_uses_only_established_names() {
+    let record_text = "fn demo() { var Pair { second = (nested, Box { value = inner }), .. } = input\ndiscard ne\ndiscard in }"
+    let record_bindings = query_bindings(input(record_text))
+    let record_names = completed_names(record_bindings, 0, query_offset(record_text, "discard ne") + 8)
+    assert completion_found(record_names, "nested").detail == "var nested"
+    assert completion_found(record_names, "inner").detail == "var inner"
+    assert !completion_named(record_names.items, "Pair") && !completion_named(record_names.items, "second")
+    let before = completed_names(record_bindings, 0, query_offset(record_text, "= input") + 2)
+    assert !completion_named(before.items, "nested") && !completion_named(before.items, "inner")
     let text = "fn demo() { var a, (nested, _) = (1, (true, 0))\ndiscard ne\n{ let (inner,), _ = ((nested,), 0)\ndiscard in }\ndiscard ne }"
     let bindings = query_bindings(input(text))
     let found = completed_names(bindings, 0, query_offset(text, "discard ne") + 8)
