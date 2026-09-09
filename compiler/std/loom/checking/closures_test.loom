@@ -1,4 +1,5 @@
 test fn closures_keep_fixed_signatures_generic_evidence_and_private_scopes() {
+    discard accepted("fn selected[T](value T) Bool { comptime if T == fn() Int { true } else { false } }\nfn one() Int { 1 }\nfn main() { assert selected(one)\nif (fn() Bool { true })() {} }")
     discard accepted("fn make[T](value T) fn() T { fn() T { value } }\nfn main() { let action = make(3)\nassert action() == 3 }")
     discard accepted("fn make[T](value T) fn() Int { fn() Int { comptime if T == Int { value } else { 0 } } }\nfn main() { assert make(3)() == 3\nassert make(true)() == 0 }")
     discard accepted("fn make(comptime enabled Bool) fn() Int { fn() Int { comptime if enabled { 1 } else { 2 } } }\nfn main() { assert make(true)() == 1\nassert make(false)() == 2 }")

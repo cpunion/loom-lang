@@ -20,6 +20,9 @@ A variable declared inside a loop has a new binding on each iteration; a
 variable declared outside remains shared across iterations.
 
 `async fn(...)` literals use the same Task and await rules as named functions.
+In a control-flow header, parenthesize an immediately called zero-argument
+literal (`if (fn() Bool { true })() { ... }`); an unparenthesized `fn() Int`
+remains a function type, including in `comptime if T == fn() Int { ... }`.
 Capturing a scoped, MustScope, NoSuspend or live Task value is rejected. A closure
 can instead accept Task arguments or create Tasks when called. Merely having an
 unused resource or Task in the enclosing scope does not capture it.

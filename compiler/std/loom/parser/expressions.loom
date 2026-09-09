@@ -86,6 +86,14 @@ fn expr(cursor Cursor, minimum Int, multiline Bool, records Bool) Result[Step, D
     Result.Ok(parsed)
 }
 fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] {
+    // As with record construction, a control-flow header must leave its block
+    // to the caller. Parentheses admit an immediately invoked fn() literal.
+    if !records && word(cursor, "fn") {
+        match type_ref(cursor) {
+            Result.Ok(value) => { return fields(cursor, value) }
+            Result.Err(_) => {}
+        }
+    }
     if word(cursor, "fn") || word(cursor, "async") { return fields(cursor, function_expression(cursor)?) }
     if word(cursor, "dyn") { return fields(cursor, type_ref(cursor)?) }
     if word(cursor, "comptime") { return fields(cursor, comptime_expr(cursor)?) }

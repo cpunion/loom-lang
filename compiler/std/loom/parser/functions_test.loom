@@ -34,6 +34,7 @@ test fn anonymous_functions_and_types_remain_distinct() {
     assert child(child(values, 1), 0).kind == NodeKind.Function
     assert child(child(values, 2), 0).kind == NodeKind.Function
     assert child(child(values, 3), 0).kind == NodeKind.Function
+    discard parsed("fn selected[T](value T) Bool { comptime if T == fn() Int { true } else { false } }\nfn main() { if (fn() Bool { true })() {} }")
     discard rejected("fn main() { let action = fn() Unit {} }")
     discard rejected("fn main() { let action = fn(value) { value } }")
     discard rejected("fn main() { let action = async {} }")
