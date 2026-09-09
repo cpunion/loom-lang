@@ -29,9 +29,10 @@ unused resource or Task in the enclosing scope does not capture it.
 
 Pure closures execute inside `comptime` blocks. Returned environments preserve
 sharing, while separate evaluations create independent mutable state. Runtime
-bindings cannot enter compile-time execution. Captured closures as explicit
-`comptime` function parameters and anonymous functions with their own generic or
-compile-time parameters remain unsupported.
+bindings cannot enter compile-time execution. Captured closures also work as
+[`comptime` function parameters](../comptime_closures/README.md): their target is
+static and their environment is passed as ordinary managed data. Anonymous
+functions with their own generic or compile-time parameters remain unsupported.
 
 From the repository root:
 

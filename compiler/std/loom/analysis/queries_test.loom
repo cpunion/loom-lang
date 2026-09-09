@@ -48,6 +48,19 @@ test fn closure_queries_keep_source_parameters_and_captured_bindings() {
     only_definition(field, member, member + 5)
 }
 
+test fn static_capture_slots_do_not_shift_source_parameters_or_leak_frame_types() {
+    let text = "fn make() fn(Int) Int { let extra = 1\nfn(item Int) Int { extra + item } }\nfn use(comptime action fn(Int) Int, value Int) Int { action(value) }\nfn main() { assert use(make(), 2) == 3 }"
+    let analysis = accepted(input(text))
+    let parameter = inspection(analysis, text, "value) }")
+    only_type(parameter, "Int")
+    let declared = query_offset(text, "value Int")
+    only_definition(parameter, declared, declared + 5)
+    let call = inspection(analysis, text, "action(value)")
+    only_type(call, "fn(Int) Int")
+    let closure = query_offset(text, "fn(item")
+    only_definition(call, closure, closure + 2)
+}
+
 test fn async_calls_tasks_and_await_have_distinct_editor_types() {
     let text = "async fn item() Int { 7 }\nasync fn main() { let task = item()\nassert task.await == 7 }"
     let analysis = accepted(input(text))

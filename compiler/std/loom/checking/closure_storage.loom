@@ -36,7 +36,7 @@ fn capture_precondition(scope Lexical, value Expr) Expr {
         while index < length(scope.captures) {
             let capture = get(scope.captures, index)
             if capture.local == value.index {
-                let storage = if capture.cell >= 0 { capture.cell } else { capture.ty }
+                let storage = if capture.cell >= 0 { capture.cell } else { value.ty }
                 let environment = storage_node(value, ExprKind.Local, scope.environment, scope.local, new[Expr]())
                 let field = storage_node(value, ExprKind.Field, storage, capture.field, expressions(environment))
                 if capture.cell >= 0 { return storage_node(value, ExprKind.Field, capture.ty, 0, expressions(field)) }

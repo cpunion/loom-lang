@@ -1,0 +1,94 @@
+import std.process.arguments
+import std.list.length
+import std.time.sleep_ms
+
+fn paired[T](comptime first fn() T, comptime second fn() T) (T, T) {
+    (first(), second())
+}
+
+fn shared_pair(comptime action fn() Int) (Int, Int) {
+    paired(action, action)
+}
+
+test fn compile_time_invocation_preserves_forwarded_environments() {
+    let values = comptime {
+        twice(counter(0))
+    }
+    assert values.0 == 1 && values.1 == 2
+    let next = comptime {
+        keep(counter(0))
+    }
+    assert next() == 2
+    assert next() == 3
+    let shared = shared_pair(counter(0))
+    assert shared.0 == 1 && shared.1 == 2
+    let separate = paired(counter(0), counter(0))
+    assert separate.0 == 1 && separate.1 == 1
+}
+
+concept Apply {
+    fn apply(self Self, comptime action fn() Int) Int
+}
+
+impl Apply for Int {
+    fn apply(self Int, comptime action fn() Int) Int {
+        self + action()
+    }
+}
+
+test fn static_and_dynamic_methods_accept_captured_static_callbacks() {
+    assert 3.apply(comptime {
+            counter(2)
+        }) == 6
+    let value dyn Apply = 5
+    assert value.apply(comptime {
+            counter(2)
+        }) == 8
+}
+
+async fn queued(comptime action fn() Int) Int {
+    step(action)
+}
+
+test async fn asynchronous_calls_keep_the_static_capture_alive() {
+    assert queued(comptime {
+            counter(4)
+        }).await == 5
+}
+
+fn process_reader(offset Int) fn() Int {
+    fn() Int {
+        offset + length(arguments())
+    }
+}
+
+test fn only_the_callback_construction_executes_at_compile_time() {
+    assert step(process_reader(3)) >= 3
+    let read = comptime {
+        process_reader(4)
+    }
+    assert read() >= 4
+}
+
+fn async_counter(start Int) fn(Int) Task[Int] {
+    var value = start
+    async fn(step Int) Int {
+        sleep_ms(0).await
+        value = value + step
+        value
+    }
+}
+
+async fn sequence(comptime action fn(Int) Task[Int]) (Int, Int) {
+    let first = action(1).await
+    (first, action(2).await)
+}
+
+test async fn constructing_async_callbacks_does_not_create_tasks() {
+    let values = sequence(async_counter(0)).await
+    assert values.0 == 1 && values.1 == 3
+    let action = comptime {
+        async_counter(4)
+    }
+    assert action(3).await == 7
+}

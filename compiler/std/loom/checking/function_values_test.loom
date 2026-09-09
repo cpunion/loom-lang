@@ -44,7 +44,7 @@ test fn compile_time_callback_results_rebind_source_symbols_and_type_arguments()
     rejects("fn identity(value Int) Int { value }\nfn unproved(callback fn(Int) Int, value Int) Int ensures result == value { callback(value) }")
 }
 
-test fn compile_time_callback_purity_scans_references_even_without_invocation() {
+test fn compile_time_callback_purity_checks_calls_not_stored_bodies() {
     let declarations = "import std.io.effect\nfn pure(value Int) Int { value }\nfn impure(value Int) Int { effect()\nvalue }\nfn invoke(callback fn(Int) Int) Int { callback(1) }\n"
     let outputs = new[Text]()
     push(outputs, "fn main() { discard comptime { invoke(impure) } }")
@@ -53,9 +53,14 @@ test fn compile_time_callback_purity_scans_references_even_without_invocation() 
     var index = 0
     while index < length(outputs) {
         let files = source_files(concat(declarations, get(outputs, index)))
-        push(files, source_file("std.io", "intrinsic fn write(fd Int, value Text) Int\npub fn effect() { discard write(1, \"effect\") }", true))
-        match checked(files) { Result.Err(_) => {}
-            Result.Ok(_) => { assert false } }
+        push(files, source_file("std.io", "intrinsic fn write(fd Int, value Text, offset Int) Int\npub fn effect() { discard write(1, \"effect\", 0) }", true))
+        match checked(files) {
+            Result.Err(failed) => {
+                assert index != 2
+                assert failed.diagnostic.message == "compile-time evaluation forbids intrinsic write"
+            }
+            Result.Ok(_) => { assert index == 2 }
+        }
         index = index + 1
     }
 }

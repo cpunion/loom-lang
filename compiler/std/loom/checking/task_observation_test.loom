@@ -21,5 +21,6 @@ test fn observation_primitives_preserve_task_transfer_and_private_wait_rules() {
     observation_checked("discard task_observe(item(), 0)", false)
     observation_checked("discard task_next", false)
     observation_checked("defer { discard task_next().await }", false)
-    observation_checked("discard comptime { task_observe[Int] }", false)
+    observation_checked("discard comptime { task_observe[Int] }", true)
+    observation_checked("discard comptime { task_observe(item(), 0) }", false)
 }

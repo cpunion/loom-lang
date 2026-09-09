@@ -41,7 +41,7 @@ test fn task_fields_keep_storage_owner_and_resource_boundaries() {
     task_rejected(concat(task_fields_header(), "fn hidden() { let pair = start() }"), "task creation or transfer requires an async function or a Task-bearing parameter or return type")
     discard accepted(concat(task_fields_header(), "fn forward(value List[Pair]) List[Pair] { value }"))
     discard accepted(concat(task_fields_header(), "enum Choice { Some(Pair) None }\nfn transfer(value Choice) Choice { value }"))
-    task_rejected(concat(task_fields_header(), "fn main() { discard comptime { pass[Pair] } }"), "compile-time evaluation cannot transfer tasks")
+    discard accepted(concat(task_fields_header(), "fn main() { discard comptime { pass[Pair] } }"))
     resource_reject(concat(resource_header(), "record Held { task Task[Handle] }\nfn transfer(value Held) Held { value }"))
     suspension_reject(concat(suspension_header(), "record Held { task Task[Token] }\nfn transfer(value Held) Held { value }"), "Task results cannot contain NoSuspend values")
 }

@@ -19,7 +19,7 @@ test fn closure_staging_rejects_runtime_capture_and_impure_execution() {
     rejects("fn main() { var value = 1\nlet action = comptime { fn() Int { value } }\ndiscard action }")
     rejects("fn choose(value Int) Int { comptime { let action = fn() Int { value }\naction() } }")
     rejects("fn main() { discard comptime { let limit = 3\nlet action = fn(value Int) Int requires value > limit { value }\naction(2) } }")
-    rejects("fn use(comptime action fn() Int) Int { action() }\nfn main() { let answer = use(comptime { var n = 1\nfn() Int { n = n + 1\nn } })\ndiscard answer }")
+    discard accepted("fn use(comptime action fn() Int) Int { action() }\nfn main() { let answer = use(comptime { var n = 1\nfn() Int { n = n + 1\nn } })\nassert answer == 2 }")
 }
 
 test fn closures_do_not_hide_scoped_or_one_shot_obligations() {

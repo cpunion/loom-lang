@@ -1,0 +1,49 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.list.get
+import std.list.length
+import std.result.Result
+
+// Capture snapshots reuse the current checking basis's computation table.
+// Native calls pass only an environment, not a runtime-selected entry pointer.
+fn static_environment_type(env Environment, value StaticValue) Int {
+    if value.capture < 0 { return -1 }
+    let snapshot = get(env.computations, value.capture).value
+    get(snapshot.items, length(snapshot.items) - 1).ty
+}
+
+fn static_source_binding(context Context, node Node) Int {
+    if node.kind != NodeKind.Name { return -1 }
+    let binding = lookup(context, node.value)
+    if binding >= 0 && get(context.bindings, binding).constant >= 0 { return binding }
+    -1
+}
+
+fn static_environment_local(context Context, constant Int) Int {
+    var binding = length(context.bindings) - 1
+    while binding >= 0 {
+        let value = get(context.bindings, binding)
+        if value.constant == constant { return value.local }
+        binding = binding - 1
+    }
+    -1
+}
+
+fn static_environment_argument(context Context, node Node, value StaticValue) Result[Expr, Failure] {
+    let forwarded = static_source_binding(context, node)
+    if forwarded >= 0 {
+        let binding = get(context.bindings, forwarded)
+        return Result.Ok(atom(ExprKind.Local, static_environment_type(context.env, value), node, binding.local))
+    }
+    // Materialize the full graph once at this source argument, retaining cycles
+    // and aliases. Its final expression is the environment passed to the callee.
+    let snapshot = get(context.env.computations, value.capture).value
+    let rebuilt = materialize(context, node, snapshot)?
+    let body = std.list.clone(rebuilt.children)
+    let reference = get(body, length(body) - 1)
+    let environment = get(reference.children, 0)
+    std.list.set(body, length(body) - 1, environment)
+    Result.Ok(expression(ExprKind.Block, environment.ty, node, "", -1, body, true))
+}

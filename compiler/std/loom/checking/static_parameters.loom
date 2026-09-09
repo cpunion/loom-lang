@@ -25,7 +25,7 @@ fn unknown_constants(signature Signature) List[StaticValue] {
     let values = new[StaticValue]()
     var index = 0
     while index < length(signature.compile_time) {
-        push(values, StaticValue { ty = get(signature.params, get(signature.compile_time, index)) known = false number = 0 text = "" arguments = new[Int]() })
+        push(values, StaticValue { ty = get(signature.params, get(signature.compile_time, index)) known = false number = 0 text = "" arguments = new[Int]() capture = -1 })
         index = index + 1
     }
     values
@@ -36,7 +36,10 @@ fn same_constants(left List[StaticValue], right List[StaticValue]) Bool {
     while index < length(left) {
         let a = get(left, index)
         let b = get(right, index)
-        if a.ty != b.ty || a.known != b.known || a.number != b.number || a.text != b.text || !same(a.arguments, b.arguments) { return false }
+        // Captured state travels as a runtime environment. Its contents do not
+        // specialize code; the source target and argument recipe fix the layout.
+        if a.ty != b.ty || a.known != b.known || a.number != b.number || a.text != b.text ||
+            (a.capture >= 0) != (b.capture >= 0) || !same(a.arguments, b.arguments) { return false }
         index = index + 1
     }
     true
@@ -70,7 +73,14 @@ fn static_expression(context Context, node Node, index Int) Result[Expr, Failure
         // Abstract declaration checking sees only its written callback shape,
         // not incidental concrete capabilities supplied by one caller.
         if !concrete(context.env, declared) { return Result.Ok(expression(ExprKind.Deferred, declared, node, "", -1, new[Expr](), true)) }
-        return reify_function(context, node, value.ty, value.number, value.arguments)
+        let reference = reify_function(context, node, value.ty, value.number, value.arguments)?
+        if value.capture >= 0 {
+            let local = static_environment_local(context, index)
+            if local < 0 { return Result.Err(error(context, node, "the captured comptime parameter has no runtime environment")) }
+            return Result.Ok(expression(ExprKind.FunctionRef, reference.ty, node, "", reference.index,
+                expressions(atom(ExprKind.Local, static_environment_type(context.env, value), node, local)), true))
+        }
+        return Result.Ok(reference)
     }
     let kind = if value.ty == 1 { ExprKind.Integer } else { if value.ty == 2 { ExprKind.Bool } else { ExprKind.Text } }
     let text = if value.ty == 1 { std.int.to_text(value.number) } else {
@@ -152,37 +162,40 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
             cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
             facts = stage.facts fact_head = stage.fact_head emit = false }
         discard isolated(context, node, expr(validation, node, expected)?, length(context.locals))?
-        return Result.Ok(StaticValue { ty = expected known = false number = 0 text = "" arguments = new[Int]() })
+        return Result.Ok(StaticValue { ty = expected known = false number = 0 text = "" arguments = new[Int]() capture = -1 })
     }
+    // Static identity forwards separately from the live, possibly changed
+    // environment. It must not be recomputed from the original snapshot.
+    let forwarded = static_source_binding(context, node)
+    if forwarded >= 0 { return Result.Ok(get(context.constants, get(context.bindings, forwarded).constant)) }
     if get(context.env.types, expected).kind == TypeKind.Function {
         let stage = staging(context, node)?
         let reference = expr(stage, node, expected)?
         discard isolated(context, node, reference, length(context.locals))?
-        if reference.kind == ExprKind.FunctionRef {
+        if reference.kind == ExprKind.FunctionRef && length(reference.children) == 0 {
             // Naming a function does not execute its body: an effectful target
             // is valid here, but cannot be called by the pure evaluator.
             let instance = get(stage.env.pending, reference.index)
             if instance.signature < 0 {
-                if length(reference.children) != 0 { return Result.Err(error(context, node, "captured closures are not yet supported as comptime parameters")) }
                 let closure = get(stage.env.closures, -1 - instance.signature)
-                return Result.Ok(StaticValue { ty = expected known = true number = closure.signature.symbol text = "" arguments = ints(closure.environment) })
+                return Result.Ok(StaticValue { ty = expected known = true number = closure.signature.symbol text = "" arguments = ints(closure.environment) capture = -1 })
             }
             return Result.Ok(StaticValue { ty = expected known = true number = get(stage.env.signatures, instance.signature).symbol
-                text = "" arguments = instance.arguments })
+                text = "" arguments = instance.arguments capture = -1 })
         }
     }
     let value = computed(context, node, node, expected)?
-    if value.text == "closure" && get(context.env.types, value.ty).kind == TypeKind.Function {
-        return Result.Err(error(context, node, "captured closures are not yet supported as comptime parameters"))
-    }
+    let captured = value.text == "closure" && get(context.env.types, value.ty).kind == TypeKind.Function
     let arguments = new[Int]()
     if get(context.env.types, expected).kind == TypeKind.Function {
         var index = 0
-        while index < length(value.items) { push(arguments, get(value.items, index).number)
+        let count = length(value.items) - if captured { 1 } else { 0 }
+        while index < count { push(arguments, get(value.items, index).number)
             index = index + 1 }
     }
     Result.Ok(StaticValue { ty = expected known = true number = if expected == 3 { 0 } else { value.number }
-        text = if expected == 3 { value.text } else { "" } arguments = arguments })
+        text = if expected == 3 { value.text } else { "" } arguments = arguments
+        capture = if captured { computation(context, node, expected, value.ty) } else { -1 } })
 }
 
 // A selected static tuple is checked with abstract types and only the public

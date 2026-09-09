@@ -63,7 +63,7 @@ test fn suspension_requires_async_and_cannot_run_inside_cleanup() {
     rejects("async fn item() Int { 1 }\nasync fn main() { defer { discard item().await } }")
     discard accepted("async fn item() Int { 1 }\nasync fn main() { if true { defer {} }\ndiscard item().await }")
     rejects("async fn item() Int { 1 }\nasync fn main() { discard comptime { item().await } }")
-    rejects("async fn item() Int { 1 }\nfn main() { discard comptime { item } }")
+    discard accepted("async fn item() Int { 1 }\nfn main() { discard comptime { item } }")
     rejects("async fn item() Int { 1 }\nfn main() { discard comptime { item() } }")
 }
 
@@ -123,7 +123,7 @@ test fn task_owner_requirements_cannot_escape_through_function_or_compile_time_v
     task_rejected(concat(prefix, "fn main() { let task = factory() }"), owner)
     task_rejected(concat(prefix, "fn sink(task Task[Int]) { sink(task) }\nfn main() { sink(item()) }"), owner)
     discard accepted(concat(prefix, "fn main() { let callback = factory\ndiscard callback }"))
-    task_rejected(concat(prefix, "fn main() { discard comptime { pass[Task[Int]] } }"), "compile-time evaluation cannot transfer tasks")
+    discard accepted(concat(prefix, "fn main() { discard comptime { pass[Task[Int]] } }"))
     rejects(concat(prefix, "fn ignored(value List[Task[Int]]) {}"))
     task_rejected("fn empty[T]() List[T] { [] }\nfn unused() { discard empty[Task[Int]]() }", owner)
     discard accepted(concat(prefix, "fn forward(value Task[List[Task[Int]]]) Task[List[Task[Int]]] { value }"))

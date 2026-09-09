@@ -182,7 +182,7 @@ fn add_location(report Inspection, file Int, span Span) {
 fn declaration(analysis SemanticView, report Inspection, file Int, node Node) {
     match lex(get(analysis.bindings.files, file).text) {
         Result.Ok(tokens) => {
-            match name_span(tokens, node, node.value) {
+            match name_span(tokens, node, if node.kind == NodeKind.Function && node.value == "" { "fn" } else { node.value }) {
                 Option.Some(span) => {
                     add_location(report, file, span)
                 }
@@ -251,7 +251,9 @@ fn local_location(analysis SemanticView, report Inspection, function Function, l
             var child = 0
             while child < length(group.children) {
                 let node = get(group.children, child)
-                if !has(node, NodeKind.Comptime) {
+                let environment = has(node, NodeKind.Comptime) && parameter < length(function.params) &&
+                    get(function.locals, parameter).name == node.value && get(analysis.data.types, get(function.params, parameter)).kind == TypeKind.Frame
+                if !has(node, NodeKind.Comptime) || environment {
                     if parameter == local {
                         declaration(analysis, report, symbol.file, node)
                         return
@@ -334,11 +336,13 @@ fn source_local_type(analysis SemanticView, ty Int) Int {
 fn signature_name(analysis SemanticView, params List[Int], output Int) Text {
     var label = "fn("
     var index = 0
+    var count = 0
     while index < length(params) {
-        if index > 0 {
-            label = concat(label, ", ")
+        if get(analysis.data.types, get(params, index)).kind != TypeKind.Frame {
+            if count > 0 { label = concat(label, ", ") }
+            label = concat(label, query_type_name(analysis, get(params, index)))
+            count = count + 1
         }
-        label = concat(label, query_type_name(analysis, get(params, index)))
         index = index + 1
     }
     label = concat(label, ")")
@@ -441,6 +445,8 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
         if value.index < 0 || get(function.locals, value.index).name != target.token.value {
             return
         }
+        let shape = get(analysis.data.types, get(function.locals, value.index).ty)
+        if shape.kind == TypeKind.Frame && shape.symbol >= 0 { return }
         if (path && target.segment == 0) || kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign {
             add_type(report, query_type_name(analysis, source_local_type(analysis, get(function.locals, value.index).ty)))
             local_location(analysis, report, function, value.index)
@@ -504,12 +510,13 @@ fn inspect_tree(analysis SemanticView, report Inspection, function Function, tar
     // Result variants reuse the call span. Only that block's result is source
     // evidence; its synthetic children are not references written by the user.
     if target.node.kind == NodeKind.Call && value.kind == ExprKind.Block && same_span(value.span, target.node.span) {
-        if target.segment + 1 == target.segments {
+        if target.segment + 1 == target.segments && get(analysis.data.types, value.ty).kind != TypeKind.Frame {
             add_type(report, query_type_name(analysis, value.ty))
         }
         return
     }
     inspect_expression(analysis, report, function, target, value, parent_type)
+    if value.kind == ExprKind.FunctionRef && same_span(value.span, target.node.span) { return }
     var index = 0
     while index < length(value.children) {
         inspect_tree(analysis, report, function, target, get(value.children, index), if value.kind == ExprKind.Record {

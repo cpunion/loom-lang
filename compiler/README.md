@@ -1014,8 +1014,8 @@ type arguments in the destination program, not an evaluation-local function ID.
 The [callback example](examples/callbacks/main.loom) uses source `std.list.map`,
 overloaded callbacks, returned functions, and GC-stressed argument
 ordering. Pure captured closures also execute and return from `comptime` blocks,
-preserving shared/cyclic environments. Explicit captured function `comptime`
-parameters and bound method values remain later work.
+preserving shared/cyclic environments. Captured function `comptime` parameters
+use the same environments, as described below. Bound method values remain later work.
 
 ## Contract boundary
 
@@ -1158,18 +1158,30 @@ fn main() { assert repeat(39, increment, 3) == 42 }
 This slice accepts exact `Int`, `Bool`, `Text`, and function static parameter types.
 Literals, pure computed expressions and forwarded static parameters specialize
 the declaration; static values participate in instance and computation keys.
-Only ordinary parameters remain in the native ABI, with their original relative
-evaluation order. A runtime value is an error, not an implicit runtime overload
+Ordinary parameters and captured callback environments remain in the native ABI,
+with their original relative evaluation order. A runtime value is an error, not an implicit runtime overload
 or fallback. Ordinary surrounding `let` bindings are not automatically promoted
 to static bindings.
 
 Function parameters accept named references (including contextually selected
 overloads and generics), forwarded static references, and pure computed
 selectors. Instance keys contain the source function and its concrete type
-arguments; calls to a static target are direct even before LLVM optimization.
+arguments. Non-Task calls to static targets are direct before LLVM optimization;
+Task-returning callbacks retain their typed creation-location adapter.
 Naming an effectful function does not execute it, but calling it during
 compile-time evaluation still rejects. Ordinary runtime callback parameters
 remain available when the target is not known during checking.
+
+Captured callbacks keep that static identity but pass their environment as
+ordinary managed data. The argument's pure construction materializes once per
+source call; forwarding passes its current shared state, and a separate
+construction starts fresh. Captured contents do not duplicate native instances
+with the same target and layout. A nested `comptime` block cannot read this live
+environment; the whole call can instead execute at compile time. Merely
+constructing an effectful or async callback is allowed; actually invoking it in
+the evaluator still rejects I/O and Tasks. Indirect purity checking considers
+all discovered targets of the checked shape, not only the observed branch.
+See the [captured callback example](examples/comptime_closures/README.md).
 
 Selected static branches are checked with abstract type arguments and declared
 requirements before concrete emission. A Boolean switch does not supply missing
@@ -1183,8 +1195,8 @@ ordinary and static callbacks, shared results and runtime argument order. Concep
 and implementation methods support the same parameter forms, including dynamic
 calls; intrinsics do not. Taking a reference to a declaration with static
 parameters still rejects until explicit partial
-specialization can supply a complete function identity. Captured `comptime` function parameters,
-variadics and general type-valued computation remain later work.
+specialization can supply a complete function identity. Variadics and general
+type-valued computation remain later work.
 
 ## Compile-time execution
 
@@ -1457,7 +1469,8 @@ Task-returning callback signatures carry a private creation label, with no extra
 runtime dispatch. Private coroutine entry/resume/cleanup operations retain their
 direct native callback ABI. Async closures and capturing synchronous factories
 use this same path; their environments cannot capture live Tasks or scoped
-resources. Compile-time Task references remain unsupported. Actual Task-bearing Lists use the transfer
+resources. Compile-time construction can retain these function references, but
+cannot create, transfer or await real Tasks. Actual Task-bearing Lists use the transfer
 operations described below. See the [callback example](examples/task_callbacks).
 
 Tuples and records now transfer Task fields individually or as whole values:

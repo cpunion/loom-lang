@@ -33,7 +33,8 @@ import std.text.concat
 record Requirement { ty Int capability Int }
 // Function constants use a source symbol plus concrete type arguments, never
 // an index into a transient emission/evaluation queue.
-record StaticValue { ty Int known Bool number Int text Text arguments List[Int] }
+// capture is a current-check computation index, or -1 for an uncaptured value.
+record StaticValue { ty Int known Bool number Int text Text arguments List[Int] capture Int }
 // compile_time contains ordered source parameter positions, empty for ordinary functions.
 record Signature { symbol Int parameters Int params List[Int] compile_time List[Int] result Int requirements List[Requirement] }
 record Instance { signature Int arguments List[Int] constants List[StaticValue] }

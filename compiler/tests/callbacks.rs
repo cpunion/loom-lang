@@ -73,24 +73,31 @@ fn callback_types_purity_and_entry_contracts_remain_checked() {
 fn source_closures_preserve_shared_cells_cleanup_and_entry_contracts() {
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::executable(temporary.path(), "closures");
-    let package = common::root().join("compiler/examples/closures");
-    for level in ["0", "2"] {
-        success(
-            &common::command(&[
-                "test",
-                package.to_str().unwrap(),
-                "--no-run",
-                "--output",
-                executable.to_str().unwrap(),
-            ])
-            .env("LOOM_OPT_LEVEL", level)
-            .output()
-            .unwrap(),
-        );
-        success(&common::run_tasks(&executable));
+    for example in ["closures", "comptime_closures"] {
+        let package = common::root().join("compiler/examples").join(example);
+        for level in ["0", "2"] {
+            success(
+                &common::command(&[
+                    "test",
+                    package.to_str().unwrap(),
+                    "--no-run",
+                    "--output",
+                    executable.to_str().unwrap(),
+                ])
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+            );
+            success(&common::run_tasks(&executable));
+        }
     }
     fs::write(temporary.path().join("main.loom"),
         "fn make(limit Int) fn(Int) Int { fn(value Int) Int requires value > limit { value } }\nfn main() { let action = make(3)\ndiscard action(2) }").unwrap();
+    let output = loom(&["run", temporary.path().to_str().unwrap()]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("precondition"));
+    fs::write(temporary.path().join("main.loom"),
+        "fn make(limit Int) fn(Int) Int { fn(value Int) Int requires value > limit { value } }\nfn call(comptime action fn(Int) Int) Int { action(2) }\nfn main() { discard call(make(3)) }").unwrap();
     let output = loom(&["run", temporary.path().to_str().unwrap()]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("precondition"));

@@ -20,7 +20,8 @@ test fn indirect_task_calls_preserve_owner_and_one_shot_boundaries() {
     task_rejected(concat(prefix, "async fn main() { let callback = both\nlet task = item(1)\ndiscard callback(task, task).await }"), "this task was already awaited or transferred")
     task_rejected(concat(prefix, "async fn wrong(flag Bool) { let callback = both\ndiscard callback(item(1), { if flag { return }\nitem(2) }).await }"), "a task argument is still pending; finish its call before returning")
     task_rejected(concat(prefix, "async fn main() { let callback = item[Int]\ndefer { discard callback(1).await } }"), "await in cleanup bodies is not yet implemented")
-    task_rejected(concat(prefix, "fn main() { discard comptime { item[Int] } }"), "compile-time evaluation cannot create or await tasks")
+    discard accepted(concat(prefix, "fn main() { discard comptime { item[Int] } }"))
+    task_rejected(concat(prefix, "async fn main() { discard comptime { let callback = item[Int]\ncallback(1) } }"), "compile-time evaluation cannot transfer tasks")
 }
 
 test fn task_callbacks_do_not_erase_resource_or_private_wait_rules() {
