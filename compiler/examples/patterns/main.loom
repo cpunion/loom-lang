@@ -107,6 +107,8 @@ async fn exercise_tasks() {
 }
 
 async fn main() {
+    record_values()
+    record_tasks().await
     exercise_values()
     literal_values()
     comptime {

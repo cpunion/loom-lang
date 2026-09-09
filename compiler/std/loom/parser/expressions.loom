@@ -275,6 +275,7 @@ fn pattern_at(cursor Cursor, depth Int, payload Bool, binding Bool) Result[Step,
         return Result.Ok(done(cursor, next(cursor), NodeKind.Bool, value, new[Node]()))
     }
     let named = path(cursor)?
+    if at(named.rest, Kind.LBrace) { return record_pattern(cursor, named, depth) }
     if !at(named.rest, Kind.LParen) {
         // Bare payload names remain bindings; qualified paths identify variants.
         if payload && named.rest.index == cursor.index + 1 { return Result.Ok(named) }

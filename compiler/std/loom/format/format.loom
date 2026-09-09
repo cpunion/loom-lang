@@ -80,6 +80,7 @@ fn marks(node Node, tokens List[Token], layout Layout) {
         let child = get(node.children, index)
         if node.kind == NodeKind.File || actual_block ||
         ((node.kind == NodeKind.Record || node.kind == NodeKind.Construct) && child.kind == NodeKind.Field) ||
+        (node.kind == NodeKind.RecordPattern && (child.kind == NodeKind.Field || child.kind == NodeKind.RestPattern)) ||
         (node.kind == NodeKind.Enum && child.kind == NodeKind.Variant) ||
         ((node.kind == NodeKind.Concept || node.kind == NodeKind.Impl) && (child.kind == NodeKind.Function || child.kind == NodeKind.AssociatedType)) ||
         (node.kind == NodeKind.Match && child.kind == NodeKind.Arm) ||

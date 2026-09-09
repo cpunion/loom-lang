@@ -566,7 +566,11 @@ exact scalar types; Int does not implicitly match Float. `true` and `false`
 exhaust Bool. Other scalar types require a binding or `_` fallback; refinement
 predicates do not narrow this coverage domain. Equal numeric spellings denote
 the same case, including `0.0` and `-0.0`; Float NaN reaches the fallback. Text
-patterns compare decoded UTF-8 contents. This does not add record patterns or guards.
+patterns compare decoded UTF-8 contents. Records use named patterns such as
+`Packet { value = item, ready = true }`. Fields may reorder; separate them with
+commas or newlines. Omission requires explicit `..` and cannot discard live Tasks
+or scoped resources. Generic record arguments follow the matched type. Guards
+and record `let`/`var` patterns remain unsupported.
 Expansion has a bounded decision budget; normal flat matches
 retain their direct path. No runtime pattern engine or checked-artifact change is
 needed, and compiler production sources do not adopt the new syntax.

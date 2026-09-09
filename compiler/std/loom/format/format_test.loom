@@ -40,6 +40,9 @@ fn round_trip(text Text) Text {
 }
 
 test fn inline_members_and_blocks_get_structural_line_breaks() {
+    assert round_trip("fn f(v Pair) Int {match v{Pair{second=0,first=n,..}=>n\n_=>0}}") ==
+    "fn f(v Pair) Int {\n    match v {\n        Pair {\n            second = 0,\n            first = n,\n            ..\n        } => n\n        _ => 0\n    }\n}\n"
+    discard round_trip("fn f(v Pair) Int {match v{Pair { first = n // binding\n.. // omitted\n}=>n}}")
     assert round_trip("record Pair[T] { first T second Int }\nenum Choice[T] { None Some(T) }\nfn main(){ let x=Pair { first=1 second=2 }\nif x.first==1 { assert true } else { discard x } }") ==
     "record Pair[T] {\n    first T\n    second Int\n}\n\nenum Choice[T] {\n    None\n    Some(T)\n}\n\nfn main() {\n    let x = Pair {\n        first = 1\n        second = 2\n    }\n    if x.first == 1 {\n        assert true\n    } else {\n        discard x\n    }\n}\n"
 }

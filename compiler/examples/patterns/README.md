@@ -1,4 +1,4 @@
-# Nested and literal patterns
+# Nested, literal and record patterns
 
 ```sh
 target/loom check compiler/examples/patterns
@@ -27,8 +27,16 @@ one case, including Float `0.0` and `-0.0`; NaN reaches the fallback. The exampl
 also checks Int endpoints, decoded Unicode/NUL text, Float infinities, overlapping
 tuple cases, and a proved Boolean-to-integer function.
 
+Records use named fields: `Packet { value = ("ready", items), ready = true }`.
+Fields may be reordered and are separated by commas or newlines. List every
+field or explicitly omit the rest with `..`, as in `Packet { value = item, .. }`.
+Omitted fields follow ordinary discard rules; this cannot erase Tasks or scoped
+resources. Names identify the actual nominal record; generic arguments come from
+the matched value. Record patterns nest inside enum/tuple/record patterns, and a
+whole fallback preserves every remaining field and shared alias. See `records.loom`.
+
 The implementation uses ordinary typed matches, comparisons and fields, not a
 runtime matcher. Input expressions are evaluated once.
 
-This adds enum/tuple/literal patterns in `match`, not record patterns, guards,
-or nested `let`/`var` destructuring. Resource aggregate restrictions still apply.
+These are `match` patterns, not new `let`/`var` binding patterns. Guards and field
+shorthand are not implemented. Resource aggregate restrictions still apply.
