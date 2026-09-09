@@ -46,6 +46,7 @@ record TypeState {
 }
 
 record Environment {
+    packs List[PackInstance]
     closures List[ClosurePlan]
     source std.loom.binding.Program
     types List[Type]
@@ -236,7 +237,7 @@ fn bind_name(context Context, node Node, value Text, local Int, constant Int, bo
 // Global declarations keep one meaning in production checks and editor queries.
 // Every invocation owns fresh mutable checking tables; failures are discarded.
 fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
-    let env = Environment { closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
+    let env = Environment { packs = new[PackInstance]() closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
         has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         associations = new[Association]() association_depth = 0
@@ -247,6 +248,9 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
     var index = 0
     while index < length(source.symbols) {
         let item = symbol(env, index)
+        if validate_pack(env, index)? {
+            push(env.packs, PackInstance { source = index arity = -1 signature = -1 state = -1 })
+        }
         if nominal_data(item.node.kind) {
             discard data_type(env, index, abstract_arguments(env, length(group(item.node, NodeKind.TypeParameters))), 0)?
         }
@@ -257,7 +261,7 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
         let item = symbol(env, index)
         // Impl headers are matched against complete concept signatures before
         // inheriting that exact overload's method parameter requirements.
-        if item.node.kind == NodeKind.Function && (item.owner < 0 || prototype(env, index)) {
+        if item.node.kind == NodeKind.Function && pack_parameter(item.node) < 0 && (item.owner < 0 || prototype(env, index)) {
             let arguments = abstract_arguments(env, function_parameter_count(env, index))
             discard register_signature(env, source_signature(env, index, arguments, requirements(env, index, arguments)?)?)?
         }
@@ -278,7 +282,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
     var index = 0
     while index < length(env.signatures) {
         let signature = get(env.signatures, index)
-        if !prototype(env, signature.symbol) || has(symbol(env, signature.symbol).node, NodeKind.Block) {
+        if pack_instance(env, index) < 0 && (!prototype(env, signature.symbol) || has(symbol(env, signature.symbol).node, NodeKind.Block)) {
             let checked = function(env, index, abstract_arguments(env, signature.parameters), unknown_constants(signature), false)?
             if resource_analysis_root(env, signature, checked.body)? { push(resource_roots, index) }
         }

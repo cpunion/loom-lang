@@ -127,9 +127,11 @@ The compiler and ordinary Loom programs use the same source implementation:
 | `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]`, editor-only `completion_source` / `CompletionSource`, lexical `import_cursor` / `ImportCursor` |
 | `std.loom.format` | `format(Text) Result[Text, Diagnostic]` |
 
-`NodeKind.Spread` retains the operand of postfix tuple expansion in source
-argument/element lists. Checking lowers it to ordinary values, one saved tuple
-where needed, and typed field projections; no expansion opcode reaches LLVM.
+`NodeKind.Spread` retains a postfix value/type expansion operand;
+`NodeKind.TypePack` retains the declared name and bounds. Selected function arities
+elaborate into ordinary generic parameters and typed bodies. Tuple operands use
+ordinary values and projections; no expansion opcode reaches LLVM. Unselected
+variadic bodies are not checked instances, and variadic postconditions reject.
 
 Import, for example, `std.loom.parser.parse` and `std.loom.ast.NodeKind` in
 any package. Parsing supplied text returns a file node or the first diagnostic;
@@ -330,5 +332,5 @@ The remaining `frontend` packages are:
   `std.process`. Process arguments are literal; no shell is implicitly invoked.
 
 This is the self-hosting subset, not the complete accepted language. Broader
-contracts, concepts, variadics/typed macros, resources, Tasks and module
+contracts, concepts, pack operations/typed macros, resources, Tasks and module
 resolution remain in [implementation status](../../docs/project/implementation-status.md).

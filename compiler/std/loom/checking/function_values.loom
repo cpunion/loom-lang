@@ -20,6 +20,9 @@ fn referenced_functions(context Context, path Text) List[Int] {
     while index < length(available) {
         let declaration = get(available, index)
         if symbol(context.env, declaration).node.kind == NodeKind.Function {
+            if length(context.env.packs) != 0 && pack_parameter(symbol(context.env, declaration).node) >= 0 {
+                push(options, -1 - declaration)
+            }
             var signature = 0
             while signature < length(context.env.signatures) {
                 if get(context.env.signatures, signature).symbol == declaration {
@@ -50,13 +53,14 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
     } else {
         -1
     }
+    let choices = pack_references(context, options, supplied_types, desired)?
     var selected = -1
     var output = -1
     var arguments = new[Int]()
     var static_only = false
     var index = 0
-    while index < length(options) {
-        let id = get(options, index)
+    while index < length(choices) {
+        let id = get(choices, index)
         let candidate = get(context.env.signatures, id)
         static_only = static_only || has_static(candidate)
         let count = candidate.parameters - parameter_offset(context.env, candidate.symbol)
@@ -96,6 +100,7 @@ fn function_value(context Context, node Node, options List[Int], supplied_types 
         return Result.Err(error(context, node, "no accessible function reference matches; provide an exact function type and required concept evidence"))
     }
     let selected_signature = get(context.env.signatures, selected)
+    if length(context.env.packs) != 0 { discard check_pack_arity(context.env, selected)? }
     if async_signature(context.env, selected_signature) && has(symbol(context.env, selected_signature.symbol).node, NodeKind.Intrinsic) {
         return Result.Err(error(context, node, "private async intrinsics must be awaited directly"))
     }

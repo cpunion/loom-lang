@@ -40,7 +40,7 @@ fn method_declaration(env Environment, owner Int) Int {
 fn source_signature(env Environment, owner Int, arguments List[Int], obligations List[Requirement]) Result[Signature, Failure] {
     let item = symbol(env, owner)
     let count = function_parameter_count(env, owner)
-    if item.owner >= 0 && !prototype(env, owner) && has(item.node, NodeKind.Requires) {
+    if item.owner >= 0 && symbol(env, item.owner).node.kind == NodeKind.Impl && has(item.node, NodeKind.Requires) {
         return Result.Err(failure(env, owner, item.node, "an implementation cannot add an undeclared precondition"))
     }
     let params = new[Int]()
@@ -54,7 +54,8 @@ fn source_signature(env Environment, owner Int, arguments List[Int], obligations
         if constant && has(item.node, NodeKind.Intrinsic) {
             return Result.Err(failure(env, owner, declaration, "intrinsic parameters cannot be comptime"))
         }
-        if constant && item.owner >= 0 && parameter == 0 {
+        if constant && item.owner >= 0 && parameter == 0 &&
+            (symbol(env, item.owner).node.kind == NodeKind.Concept || symbol(env, item.owner).node.kind == NodeKind.Impl) {
             return Result.Err(failure(env, owner, declaration, "the method receiver cannot be comptime"))
         }
         if constant && ty != 1 && ty != 2 && ty != 3 && get(env.types, ty).kind != TypeKind.Function {

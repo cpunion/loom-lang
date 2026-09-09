@@ -1,0 +1,4 @@
+test async fn variadic_functions_use_the_ordinary_value_and_task_rules() {
+    exercise()
+    exercise_tasks().await
+}

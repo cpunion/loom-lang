@@ -18,7 +18,7 @@ fn query_templates(env Environment) Result[Bool, Failure] {
     var index = 0
     while index < length(env.signatures) {
         let current = get(env.signatures, index)
-        if (current.parameters != 0 || has_static(current)) &&
+        if pack_instance(env, index) < 0 && (current.parameters != 0 || has_static(current)) &&
             (!prototype(env, current.symbol) || has(symbol(env, current.symbol).node, NodeKind.Block)) {
             discard function(env, index, abstract_arguments(env, current.parameters), unknown_constants(current), false)?
         }

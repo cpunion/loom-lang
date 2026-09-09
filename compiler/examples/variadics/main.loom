@@ -1,0 +1,92 @@
+import std.list.push
+import std.list.length
+
+pub fn pack[Ts...](values Ts...) (Ts...) {
+    values
+}
+
+fn checked_pack[Ts...](comptime enabled Bool, budget Int, values Ts...) (Ts...)
+requires budget >= 0 {
+    comptime if enabled {
+        pack[Ts...](values...)
+    } else {
+        values
+    }
+}
+
+fn forward[R, Ts...](callback fn(Ts...) R, values Ts...) R {
+    callback(values...)
+}
+
+fn combine(number Int, text Text) Text {
+    assert number == 2
+    text
+}
+
+fn mark(log List[Int], value Int) Int {
+    push(log, value)
+    value
+}
+
+fn take(values (Int, Int, Int), log List[Int]) {
+    assert values.0 == 1 && values.1 == 2 && values.2 == 3
+    assert length(log) == 3
+    assert log[0] == 1 && log[1] == 2 && log[2] == 3
+}
+
+fn exercise() {
+    let pair = pack(1, "two")
+    assert pair.0 == 1 && pair.1 == "two"
+    assert forward(combine, 2, "callback") == "callback"
+    let callback fn(Int, Text) (Int, Text) = pack
+    assert callback(3, "three").1 == "three"
+    let singleton = pack[Int]
+    assert singleton(4).0 == 4
+
+    let empty = pack()
+    discard pack(empty...)
+    let seven = pack(1, true, "three", 4, 5, 6, 7)
+    assert seven.6 == 7
+    assert comptime {
+        pack(8, true).0
+    } == 8
+    assert checked_pack(true, 0, 9, "nine").1 == "nine"
+    assert checked_pack(false, 0, 10, true).0 == 10
+    let log List[Int] = []
+    take(pack(mark(log, 1), mark(log, 2), mark(log, 3)), log)
+
+    let shared = [10]
+    let aliases = pack(shared, shared)
+    aliases.0[0] = 11
+    assert aliases.1[0] == 11
+    let compiled = comptime {
+        let list = [12]
+        pack(list, list)
+    }
+    compiled.0[0] = 13
+    assert compiled.1[0] == 13
+}
+
+async fn item[T](value T) T {
+    value
+}
+
+async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) {
+    values
+}
+
+async fn exercise_tasks() {
+    let tasks = task_pack(item(1), item("two")).await
+    assert tasks.0.await == 1
+    assert tasks.1.await == "two"
+    let direct = pack(item(3), item(true))
+    assert direct.0.await == 3
+    assert direct.1.await
+    let empty = task_pack().await
+    discard empty
+}
+
+async fn main() {
+    exercise()
+    exercise_tasks().await
+}

@@ -117,7 +117,7 @@ fn function_type(cursor Cursor) Result[Step, Diagnostic] {
 fn parameter(cursor Cursor) Result[Step, Diagnostic] {
     let compile_time = word(cursor, "comptime")
     let named = name(if compile_time { next(cursor) } else { cursor })?
-    let ty = type_ref(named.rest)?
+    let ty = type_item(named.rest)?
     let children = one(ty.node)
     if compile_time {
         push(children, done(cursor, next(cursor), NodeKind.Comptime, "", new[Node]()).node)
@@ -127,6 +127,8 @@ fn parameter(cursor Cursor) Result[Step, Diagnostic] {
 fn type_parameter(cursor Cursor) Result[Step, Diagnostic] {
     let named = name(cursor)?
     var rest = named.rest
+    let pack = ellipsis(rest)
+    if pack { rest = next(next(next(rest))) }
     let bounds = new[Node]()
     if at(rest, Kind.Name) && !reserved(token(rest).value) {
         var more = true
@@ -138,11 +140,17 @@ fn type_parameter(cursor Cursor) Result[Step, Diagnostic] {
             if more { rest = newlines(next(rest)) }
         }
     }
-    Result.Ok(done(cursor, rest, NodeKind.Name, named.node.value, bounds))
+    Result.Ok(done(cursor, rest, if pack { NodeKind.TypePack } else { NodeKind.Name }, named.node.value, bounds))
+}
+fn type_item(cursor Cursor) Result[Step, Diagnostic] {
+    let value = type_ref(cursor)?
+    if ellipsis(value.rest) {
+        Result.Ok(done(cursor, next(next(next(value.rest))), NodeKind.Spread, "", one(value.node)))
+    } else { Result.Ok(value) }
 }
 fn item(cursor Cursor, mode Items) Result[Step, Diagnostic] {
     match mode {
-        Items.Types => type_ref(cursor)
+        Items.Types => type_item(cursor)
         Items.Names => type_parameter(cursor)
         Items.Arguments => {
             let value = expr(cursor, 0, true, true)?

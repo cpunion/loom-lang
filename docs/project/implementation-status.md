@@ -231,8 +231,19 @@ Postfix tuple expansion now feeds ordinary calls, enum payloads, tuples and List
 literals. Literal operands expand before contextual checking; other tuples use
 one saved value and typed projections at their original evaluation position.
 Native/compile-time execution preserves sharing and one-shot Task transfer.
-There is no runtime argument pack or expansion opcode. Variadic declarations,
-type packs and expansion of saved tuples into comptime positions remain open.
+There is no runtime argument pack or expansion opcode. Expansion of saved tuples
+into comptime positions remains open.
+
+Top-level variadic functions now elaborate a final type/value pack into ordinary
+generic and native parameters for each selected arity. Elementwise type patterns,
+bounds, contextual function references and inferred empty tuples share the typed
+pipeline, including compile-time graphs and Task transfer. Selected bodies are
+checked with abstract element types before concrete specialization; unselected
+arities have not been verified. Variadic postconditions reject until the checker
+can prove every arity, including for uncalled declarations. Empty tuple operands
+must be bound before expansion so their effects cannot disappear. Pack iteration,
+multiple packs, methods/data packs and static value packs remain open. See the
+[variadic example](../../compiler/examples/variadics/main.loom).
 
 Named function values have structural signatures, contextual overload/generic
 selection, and native calls through an entry/environment pair. Parameters, returned
@@ -559,7 +570,7 @@ Runtime captures, external effects, faults, and exhausted
 budgets reject. Scalar constraint folding shares this evaluator; required
 postconditions still use the prover, with no evaluation-as-proof fallback.
 
-Stable schemas, lossless editing, variadics, typed macros, broader compile-time
+Stable schemas, lossless editing, pack iteration, typed macros, broader compile-time
 reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 
@@ -571,7 +582,7 @@ abstract type arguments and declared requirements, not incidental concrete
 conformances. Unknown runtime inputs and unproved abstract postconditions reject.
 The [static-parameter example](../../compiler/examples/comptime_parameters/main.loom)
 also exercises callbacks returned by specialized selectors. References
-to static-parameter declarations and variadics are not included in this slice.
+to static-parameter declarations and static value packs remain unsupported.
 Captured parameters now pass only a typed managed environment. Construction
 materializes once, forwarding shares current state, and returned closures retain
 it. Captured contents do not create extra native specializations of the same

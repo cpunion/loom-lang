@@ -560,9 +560,52 @@ ordinary typed arguments/projections, not runtime argument packing. A tuple
 literal expands directly, retaining contextual inference and explicit comptime
 arguments. Other tuple expressions use one saved snapshot and cannot currently
 expand into comptime parameter positions. Lists have runtime-sized contents and
-cannot expand into a fixed call signature. Variadic declarations/type packs,
-type-list expansion and tuple Task joins remain open; this is their argument
-expansion foundation, not a fixed-arity replacement for them.
+cannot expand into a fixed call signature. Empty tuple expressions must first
+be bound before expansion, so zero expanded arguments cannot discard an effectful
+initializer. Tuple Task joins remain open.
+
+### Variadic functions
+
+An ordinary top-level function can declare one final type pack and one final
+runtime parameter that expands it. Type patterns expand elementwise; the named
+value pack is an immutable tuple. Ordinary parameters may precede both packs.
+
+```loom
+pub fn pack[Ts...](values Ts...) (Ts...) { values }
+
+fn forward[R, Ts...](callback fn(Ts...) R, values Ts...) R {
+    callback(values...)
+}
+
+async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) { values }
+
+let pair = pack(1, "two")
+let empty = pack()
+discard pack(empty...)
+let callback fn(Int, Text) (Int, Text) = pack
+```
+
+Calls infer each element independently; explicit type arguments and contextual
+function references select the same ordinary signature. A pack bound such as
+`[Ts... Display]` applies to every element. Selection determines arity, then
+checks the body with independent abstract element types and only the declared
+bounds, before concrete instantiation. Zero-element packs produce an inferred
+empty tuple, not a no-result expression; source `()` and `Unit` remain unavailable.
+
+The compiler elaborates each selected arity into ordinary type parameters and
+native parameters, with a local tuple binding for the body. There is no runtime
+argument array, new LLVM operation, or hard-coded list of supported overload
+sizes. GC sharing, compile-time evaluation, cleanup, and one-shot Task transfer
+retain their normal checks. The [variadic example](examples/variadics/main.loom)
+exercises these paths through check/build/test/run.
+
+Unselected arities have not had their bodies verified. Variadic `ensures`
+declarations currently reject even when uncalled: proving selected arities is
+not a proof for every arity. Preconditions currently use fixed scalar parameters,
+not the tuple pack, and retain ordinary checked/runtime boundaries.
+Pack iteration, multiple packs, variadic methods and
+data declarations, static value packs, and general type-list reflection remain
+open. This implementation does not complete the accepted metaprogramming design.
 
 Records also support `let Packet { value = item, .. } = packet` and the same
 form with `var`. Named fields can reorder and nest record/tuple bindings; generic
@@ -1272,7 +1315,7 @@ ordinary and static callbacks, shared results and runtime argument order. Concep
 and implementation methods support the same parameter forms, including dynamic
 calls; intrinsics do not. Taking a reference to a declaration with static
 parameters still rejects until explicit partial
-specialization can supply a complete function identity. Variadics and general
+specialization can supply a complete function identity. Static value packs and general
 type-valued computation remain later work.
 
 ## Compile-time execution
@@ -1341,7 +1384,7 @@ type and purity checks.
 The Loom-written evaluator consumes the same checked model as native lowering;
 constraint folding and pure-predicate validation use this engine too.
 Evaluation is not proof: helper calls in function contracts undergo symbolic
-expansion, and declared postconditions still require the prover. Variadics, typed
+expansion, and declared postconditions still require the prover. Pack iteration, typed
 macros, and broader compile-time reflection remain later work.
 Float compile-time operations and numeric codecs use the same IEEE behavior as
 native code, including NaN, infinity, signed zero and subnormals. Float/refined

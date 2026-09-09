@@ -188,6 +188,19 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         }
         index = index + 1
     }
+    index = 0
+    while length(context.env.packs) != 0 && index < length(available) {
+        let owner = get(available, index)
+        let declaration = symbol(context.env, owner).node
+        let pack = pack_parameter(declaration)
+        if declaration.kind == NodeKind.Function && pack >= 0 {
+            let arity = length(inputs.nodes) - length(group(declaration, NodeKind.Parameters)) + 1
+            if arity >= 0 && (length(types) == 0 || length(types) == pack + arity) {
+                push(options, pack_signature(context.env, owner, arity)?)
+            }
+        }
+        index = index + 1
+    }
     invoke(context, node, options, types, inputs, new[Expr](), expected)
 }
 fn invoke(context Context, node Node, options List[Int], types List[Node], inputs CallInputs, prefix List[Expr], expected Int) Result[Expr, Failure] {
@@ -287,6 +300,7 @@ fn choose_overload(context Context, node Node, matches OverloadSet) Result[Insta
     Result.Ok(get(matches.candidates, selected))
 }
 fn invoke_selected(context Context, node Node, instance Instance, inputs CallInputs, values List[Expr], probes List[Bool]) Result[Expr, Failure] {
+    if length(context.env.packs) != 0 { discard check_pack_arity(context.env, instance.signature)? }
     let signature = get(context.env.signatures, instance.signature)
     let constants = new[StaticValue]()
     let filtered = has_static(signature)

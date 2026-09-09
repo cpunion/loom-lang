@@ -13,6 +13,6 @@ test fn expansions_do_not_turn_lists_into_types_or_standalone_expressions() {
     discard rejected("fn demo() { discard value... }")
     discard rejected("fn demo() { call(...) }")
     discard rejected("fn demo() { call(value . . .) }")
-    discard rejected("fn demo(value Int...) {}")
-    discard rejected("fn demo[T...]() {}")
+    discard rejected("fn demo(value Int....) {}")
+    discard rejected("fn demo[T....]() {}")
 }

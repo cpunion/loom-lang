@@ -14,7 +14,7 @@ pub enum NodeKind {
     TupleType Tuple Destructure Float
     Concept Impl Implements MethodCall DynType AssociatedType FunctionType Invoke
     Defer Bounds Break Continue List Apply Index IndexAssign Scoped Async Await
-    RecordPattern RestPattern Spread
+    RecordPattern RestPattern Spread TypePack
 }
 
 // TupleType/Tuple/List children are ordered elements. Destructure stores "let" or
@@ -45,7 +45,8 @@ pub enum NodeKind {
 // identify variants. The same source tree serves parsing, checking and tooling.
 // RecordPattern stores the nominal path and source-ordered Field(name, pattern)
 // children, with an optional final RestPattern for explicitly omitted fields.
-// Spread has one value child and expands a tuple in an argument/element list.
+// Spread has one value/type child. TypePack names a variadic type parameter;
+// its children are the same explicit concept bounds as an ordinary parameter.
 
 pub record Node {
     kind NodeKind
