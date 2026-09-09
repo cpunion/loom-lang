@@ -1,0 +1,115 @@
+import std.option.Option
+import std.result.Result
+import std.list.push
+import std.list.length
+import std.text.concat
+import std.time.sleep_ms
+
+enum Flag {
+    On
+    Off
+}
+
+enum Batch {
+    One(Option[Task[Int]])
+    Two(Task[Int], Task[Int])
+    Empty
+}
+
+fn flags(value (Flag, Flag)) Int {
+    match value {
+        (Flag.On, _) => 1
+        (_, Flag.On) => 2
+        (Flag.Off, Flag.Off) => 0
+    }
+}
+
+fn wrapped(trace List[Int], values List[Int]) Result[Option[(Text, List[Int])], Text] {
+    push(trace, 1)
+    Result.Ok(Option.Some((concat("rea", "dy"), values)))
+}
+
+fn inspect(value Result[Option[(Text, List[Int])], Text]) Text {
+    match value {
+        Result.Ok(Option.None) => "empty"
+        rest => {
+            match rest {
+                Result.Ok(Option.Some((label, values))) => {
+                    push(values, 9)
+                    label
+                }
+                Result.Ok(Option.None) => "unselected"
+                Result.Err(message) => message
+            }
+        }
+    }
+}
+
+async fn delayed(value Int) Int {
+    sleep_ms(1).await
+    value
+}
+
+async fn consume(value Batch, trace List[Int]) Int {
+    match value {
+        Batch.One(Option.Some(task)) => {
+            defer {
+                push(trace, 1)
+            }
+            task.await
+        }
+        rest => {
+            match rest {
+                Batch.One(Option.Some(task)) => task.await
+                Batch.One(Option.None) => 0
+                Batch.Two(first, second) => first.await + second.await
+                Batch.Empty => -1
+            }
+        }
+    }
+}
+
+async fn tuple_tasks(value (Option[Task[Int]], Task[Int])) Int {
+    match value {
+        (Option.Some(first), second) => first.await + second.await
+        rest => {
+            // The whole fallback retains the unconsumed second task even after
+            // its first field's discriminant was inspected.
+            match rest {
+                (Option.Some(first), second) => first.await + second.await
+                (Option.None, second) => second.await
+            }
+        }
+    }
+}
+
+fn exercise_values() {
+    assert flags((Flag.On(), Flag.On())) == 1
+    assert flags((Flag.Off(), Flag.On())) == 2
+    assert flags((Flag.Off(), Flag.Off())) == 0
+    let trace List[Int] = []
+    let values = [7]
+    assert inspect(wrapped(trace, values)) == "ready"
+    assert length(trace) == 1 && length(values) == 2 && values[1] == 9
+    assert inspect(Result.Err("error")) == "error"
+    assert inspect(Result.Ok(Option.None())) == "empty"
+}
+
+async fn exercise_tasks() {
+    let trace List[Int] = []
+    assert consume(Batch.One(Option.Some(delayed(7))), trace).await == 7
+    assert length(trace) == 1
+    assert consume(Batch.One(Option.None()), trace).await == 0
+    assert consume(Batch.Two(delayed(3), delayed(4)), trace).await == 7
+    assert consume(Batch.Empty(), trace).await == -1
+    assert tuple_tasks((Option.Some(delayed(3)), delayed(4))).await == 7
+    assert tuple_tasks((Option.None(), delayed(9))).await == 9
+}
+
+async fn main() {
+    exercise_values()
+    comptime {
+        exercise_values()
+    }
+    exercise_tasks().await
+}

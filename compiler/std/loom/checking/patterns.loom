@@ -1,0 +1,79 @@
+// Checked source patterns lower to ordinary Match/Field/Let expressions.
+// variant -2 is a tuple, -1 is a wildcard or binding; nonnegative IDs are enum
+// variants. Binding locals are allocated once before checking each arm body.
+record CheckedPattern { source Node ty Int variant Int local Int children List[CheckedPattern] }
+record PatternScope { context Context pattern CheckedPattern }
+
+// Flat matches, nested decisions and editor scopes share nominal lookup and
+// visibility. The flat path need not allocate a recursive pattern tree.
+fn pattern_variant(context Context, node Node, ty Int) Result[Int, Failure] {
+    let shape = get(context.env.types, ty)
+    var selected = -1
+    var index = 0
+    while index < length(shape.variants) {
+        if get(shape.variants, index).name == name(node.value) { selected = index }
+        index = index + 1
+    }
+    if package(node.value) != "" {
+        let target = find_data(context.env, context.signature.symbol, node, package(node.value))?
+        if shape.kind != TypeKind.Enum || target != shape.symbol { return Result.Err(error(context, node, "pattern belongs to a different nominal enum")) }
+    }
+    if selected < 0 {
+        if package(node.value) != "" || length(node.children) != 0 { return Result.Err(error(context, node, "unknown enum variant in pattern")) }
+    } else {
+        let declaration = symbol(context.env, shape.symbol)
+        let here = symbol(context.env, context.signature.symbol)
+        if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
+            return Result.Err(error(context, node, "cannot inspect a private enum from another package"))
+        }
+    }
+    Result.Ok(selected)
+}
+
+fn nested_pattern(node Node) Bool {
+    if node.kind == NodeKind.Tuple { return true }
+    let bindings = group(node, NodeKind.Bindings)
+    var index = 0
+    while index < length(bindings) {
+        let child = get(bindings, index)
+        if child.kind != NodeKind.Name && child.kind != NodeKind.Wildcard { return true }
+        index = index + 1
+    }
+    false
+}
+fn pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, depth Int) Result[PatternScope, Failure] {
+    if depth >= 64 { return Result.Err(error(context, node, "pattern nesting limit exceeded")) }
+    let shape = get(context.env.types, ty)
+    var selected = -1
+    if node.kind == NodeKind.Tuple {
+        if shape.kind != TypeKind.Tuple { return Result.Err(error(context, node, "tuple pattern requires a tuple value")) }
+        selected = -2
+    } else { if node.kind == NodeKind.Pattern {
+        selected = pattern_variant(context, node, ty)?
+    } }
+    if selected == -1 {
+        var current = context
+        var local = -1
+        if node.kind == NodeKind.Wildcard {
+            if must_scope(context, ty)? { return Result.Err(error(context, node, "a wildcard cannot discard a resource payload")) }
+        } else {
+            if must_scope(context, ty)? { discard resource_payload(context, node, body)? }
+            local = length(current.locals)
+            current = bind_local(current, node, node.value, ty, false, boundary)?
+        }
+        return Result.Ok(PatternScope { context = current pattern = CheckedPattern { source = node ty = ty variant = -1 local = local children = new[CheckedPattern]() } })
+    }
+    let fields = if selected == -2 { shape.arguments } else { get(shape.variants, selected).fields }
+    let patterns = if selected == -2 { node.children } else { group(node, NodeKind.Bindings) }
+    if length(fields) != length(patterns) { return Result.Err(error(context, node, "pattern payload count does not match")) }
+    let children = new[CheckedPattern]()
+    var current = context
+    var index = 0
+    while index < length(fields) {
+        let nested = pattern_scope(current, get(patterns, index), get(fields, index), body, boundary, depth + 1)?
+        current = nested.context
+        push(children, nested.pattern)
+        index = index + 1
+    }
+    Result.Ok(PatternScope { context = current pattern = CheckedPattern { source = node ty = ty variant = selected local = -1 children = children } })
+}

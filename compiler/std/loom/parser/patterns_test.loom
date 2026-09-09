@@ -1,0 +1,22 @@
+test fn patterns_nest_variants_and_tuples_without_changing_plain_bindings() {
+    let source = "fn f() { match x { Result.Ok(Option.Some((a, (b,))), _) => a\nResult.Err(message) => 0 } }"
+    let matched = child(body(child(parsed(source), 0)), 0)
+    let outer = child(child(matched, 1), 0)
+    assert outer.kind == NodeKind.Pattern && outer.value == "Result.Ok"
+    let some = child(child(outer, 0), 0)
+    assert some.kind == NodeKind.Pattern && some.value == "Option.Some"
+    let tuple = child(child(some, 0), 0)
+    assert tuple.kind == NodeKind.Tuple && length(tuple.children) == 2
+    assert child(tuple, 0).kind == NodeKind.Name && child(tuple, 0).value == "a"
+    assert child(tuple, 1).kind == NodeKind.Tuple && length(child(tuple, 1).children) == 1
+    let error = child(child(matched, 2), 0)
+    assert child(child(error, 0), 0).kind == NodeKind.Name
+    discard parsed("fn f() { match x { (Option.Some(a), b) => a\n(Option.None, _) => 0 } }")
+    discard rejected("fn f() { match x { () => 0 } }")
+    discard rejected("fn f() { match x { (a,, b) => 0 } }")
+    var pattern = "value"
+    var index = 0
+    while index < 65 { pattern = concat("Some(", concat(pattern, ")"))
+        index = index + 1 }
+    assert rejected(concat("fn f() { match x { ", concat(pattern, " => 0 } }"))).message == "pattern nesting limit exceeded"
+}

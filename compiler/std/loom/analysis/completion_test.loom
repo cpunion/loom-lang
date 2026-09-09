@@ -52,6 +52,13 @@ test fn name_completion_keeps_overloads_and_match_destructuring_and_scoped_bindi
     assert completion_found(arm, "resource").detail == "scoped resource"
     let other = completed_names(bindings, 0, query_offset(text, "None => { discard ma") + 18)
     assert !completion_named(other.items, "matched")
+    let nested = "fn demo() { match value { Outer.Some((Inner.Some(matched), _)) => { discard ma }\n_ => { discard ma } } }"
+    let nested_bindings = query_bindings(input(nested))
+    let inside = completed_names(nested_bindings, 0, query_offset(nested, "discard ma") + 10)
+    assert completion_found(inside, "matched").detail == "match binding matched"
+    assert !completion_named(inside.items, "Inner.Some") && !completion_named(inside.items, "")
+    let outside = completed_names(nested_bindings, 0, query_offset(nested, "_ => { discard ma") + 16)
+    assert !completion_named(outside.items, "matched")
 }
 
 test fn name_completion_preserves_unicode_ranges_and_avoids_strings_comments_and_members() {

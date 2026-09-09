@@ -138,21 +138,8 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
     var whole = -1
     let locals = new[Int]()
     if pattern.kind != NodeKind.Wildcard {
-        var variant = 0
-        while variant < length(shape.variants) {
-            if get(shape.variants, variant).name == name(pattern.value) { selected = variant }
-            variant = variant + 1
-        }
-        if package(pattern.value) != "" {
-            let target = find_data(context.env, context.signature.symbol, pattern, package(pattern.value))?
-            if shape.kind != TypeKind.Enum || target != shape.symbol { return Result.Err(error(context, pattern, "pattern belongs to a different nominal enum")) }
-        }
+        selected = pattern_variant(context, pattern, value.ty)?
         if selected >= 0 {
-            let declaration = symbol(context.env, shape.symbol)
-            let here = symbol(context.env, context.signature.symbol)
-            if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
-                return Result.Err(error(context, pattern, "cannot inspect a private enum from another package"))
-            }
             let fields = get(shape.variants, selected).fields
             let bindings = group(pattern, NodeKind.Bindings)
             if length(bindings) != length(fields) { return Result.Err(error(context, pattern, "pattern payload count does not match")) }
@@ -167,7 +154,6 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
                 field = field + 1
             }
         } else {
-            if package(pattern.value) != "" || length(pattern.children) != 0 { return Result.Err(error(context, pattern, "unknown enum variant in pattern")) }
             whole = length(current.locals)
             if must_scope(context, value.ty)? { discard resource_payload(context, pattern, child(arm, 1))? }
             current = bind_local(current, pattern, pattern.value, value.ty, false, context.head)?
@@ -183,6 +169,11 @@ fn matched(context Context, node Node, expected Int, enforce Bool) Result[Expr, 
     let marker = resource_concept(context.env, "MustScope")
     if marker >= 0 && satisfies(context, value.ty, marker)? {
         return Result.Err(error(context, node, "a MustScope value requires scoped; direct resource matching is not yet supported"))
+    }
+    var nested = 1
+    while nested < length(node.children) {
+        if nested_pattern(child(child(node, nested), 0)) { return nested_match(context, node, value, expected, enforce) }
+        nested = nested + 1
     }
     let shape = get(context.env.types, value.ty)
     let covered = new[Bool]()

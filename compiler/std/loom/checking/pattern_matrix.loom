@@ -1,0 +1,176 @@
+record PatternRow { patterns List[CheckedPattern] bindings List[Expr] body Expr arm Int }
+record PatternPlan { context Context source Node output Int used List[Bool] budget List[Int] }
+
+fn pattern_step(plan PatternPlan, depth Int) Result[Bool, Failure] {
+    if depth >= 64 || get(plan.budget, 0) == 0 { return Result.Err(error(plan.context, plan.source, "pattern decision budget exhausted")) }
+    set(plan.budget, 0, get(plan.budget, 0) - 1)
+    Result.Ok(true)
+}
+fn pattern_local(context Context, source Node, ty Int) Expr {
+    let local = length(context.locals)
+    push(context.locals, Local { name = "" ty = ty mutable = false is_scoped = false })
+    atom(ExprKind.Local, ty, source, local)
+}
+fn pattern_let(source Node, local Int, value Expr) Expr {
+    expression(ExprKind.Let, 0, source, "", local, expressions(value), value.falls)
+}
+fn pattern_block(source Node, values List[Expr], body Expr) Expr {
+    push(values, body)
+    expression(ExprKind.Block, body.ty, source, "", -1, values, body.falls)
+}
+
+// Whole bindings are deferred until a row is selected. If a containing value
+// was decomposed along this path, rebuild it from the still-live payloads.
+// This preserves one-shot Task transfer instead of reading a consumed parent.
+fn pattern_replace(plan PatternPlan, value Expr, local Int, replacement Expr, depth Int) Result[Expr, Failure] {
+    discard pattern_step(plan, depth)?
+    if value.kind == ExprKind.Local && value.index == local { return Result.Ok(replacement) }
+    if length(value.children) == 0 { return Result.Ok(value) }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, pattern_replace(plan, get(value.children, index), local, replacement, depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(Expr { kind = value.kind ty = value.ty span = value.span text = value.text index = value.index children = children arms = value.arms falls = value.falls })
+}
+fn pattern_rows(plan PatternPlan, rows List[PatternRow], column Int, variant Int, value Expr, fields List[Expr], rebuilt Expr, depth Int) Result[List[PatternRow], Failure] {
+    let selected = new[PatternRow]()
+    var index = 0
+    while index < length(rows) {
+        discard pattern_step(plan, depth)?
+        let row = get(rows, index)
+        let pattern = get(row.patterns, column)
+        if pattern.variant == -1 || pattern.variant == variant {
+            let bindings = new[Expr]()
+            var binding = 0
+            while binding < length(row.bindings) {
+                push(bindings, pattern_replace(plan, get(row.bindings, binding), value.index, rebuilt, depth + 1)?)
+                binding = binding + 1
+            }
+            if pattern.local >= 0 { push(bindings, pattern_let(pattern.source, pattern.local, rebuilt)) }
+            let patterns = new[CheckedPattern]()
+            var item = 0
+            while item < length(row.patterns) {
+                if item == column {
+                    var field = 0
+                    while field < length(fields) {
+                        push(patterns, if pattern.variant == -1 {
+                            CheckedPattern { source = pattern.source ty = get(fields, field).ty variant = -1 local = -1 children = new[CheckedPattern]() }
+                        } else { get(pattern.children, field) })
+                        field = field + 1
+                    }
+                } else { push(patterns, get(row.patterns, item)) }
+                item = item + 1
+            }
+            push(selected, PatternRow { patterns = patterns bindings = bindings body = row.body arm = row.arm })
+        }
+        index = index + 1
+    }
+    Result.Ok(selected)
+}
+fn pattern_slots(values List[Expr], column Int, fields List[Expr]) List[Expr] {
+    let output = new[Expr]()
+    var index = 0
+    while index < length(values) {
+        if index == column {
+            var field = 0
+            while field < length(fields) { push(output, get(fields, field))
+                field = field + 1 }
+        } else { push(output, get(values, index)) }
+        index = index + 1
+    }
+    output
+}
+fn pattern_leaf(plan PatternPlan, row PatternRow, values List[Expr]) Expr {
+    set(plan.used, row.arm, true)
+    let bindings = new[Expr]()
+    var index = 0
+    while index < length(row.bindings) { push(bindings, get(row.bindings, index))
+        index = index + 1 }
+    index = 0
+    while index < length(row.patterns) {
+        let pattern = get(row.patterns, index)
+        if pattern.local >= 0 { push(bindings, pattern_let(pattern.source, pattern.local, get(values, index))) }
+        index = index + 1
+    }
+    pattern_block(plan.source, bindings, row.body)
+}
+fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], depth Int) Result[Expr, Failure] {
+    discard pattern_step(plan, depth)?
+    if length(rows) == 0 { return Result.Err(error(plan.context, plan.source, "non-exhaustive match")) }
+    // The first row wins when all its remaining columns are irrefutable.
+    // Otherwise split one of that row's constructor columns, retaining row order.
+    let first = get(rows, 0)
+    var column = 0
+    while column < length(first.patterns) && get(first.patterns, column).variant == -1 { column = column + 1 }
+    if column == length(first.patterns) { return Result.Ok(pattern_leaf(plan, first, values)) }
+    let value = get(values, column)
+    let shape = get(plan.context.env.types, value.ty)
+    let tuple = shape.kind == TypeKind.Tuple
+    let count = if tuple { 1 } else { length(shape.variants) }
+    if count == 0 { return Result.Err(error(plan.context, plan.source, "non-exhaustive match")) }
+    let arms = new[Arm]()
+    var falls = false
+    var variant = 0
+    while variant < count {
+        let types = if tuple { shape.arguments } else { get(shape.variants, variant).fields }
+        let fields = new[Expr]()
+        let locals = new[Int]()
+        let initializers = new[Expr]()
+        let reconstructed = new[Expr]()
+        var field = 0
+        while field < length(types) {
+            let ty = get(types, field)
+            let local = pattern_local(plan.context, plan.source, ty)
+            push(fields, local)
+            push(locals, local.index)
+            push(reconstructed, if tuple { expression(ExprKind.Field, ty, plan.source, "", field, expressions(local), true) } else { local })
+            if tuple {
+                let projected = expression(ExprKind.Field, ty, plan.source, "", field, expressions(value), true)
+                push(initializers, pattern_let(plan.source, local.index, projected))
+            }
+            field = field + 1
+        }
+        let rebuilt = expression(if tuple { ExprKind.Record } else { ExprKind.Variant }, value.ty, plan.source, "", if tuple { -1 } else { variant }, reconstructed, true)
+        let selected = pattern_rows(plan, rows, column, if tuple { -2 } else { variant }, value, fields, rebuilt, depth + 1)?
+        let body = pattern_decision(plan, selected, pattern_slots(values, column, fields), depth + 1)?
+        if tuple { return Result.Ok(pattern_block(plan.source, initializers, body)) }
+        falls = falls || body.falls
+        let block = if body.kind == ExprKind.Block { body } else { pattern_block(plan.source, new[Expr](), body) }
+        push(arms, Arm { variant = variant bindings = locals whole = -1 body = expressions(block) })
+        variant = variant + 1
+    }
+    Result.Ok(Expr { kind = ExprKind.Match ty = plan.output span = plan.source.span text = "" index = -1 children = expressions(value) arms = arms falls = falls })
+}
+fn nested_match(context Context, node Node, value Expr, expected Int, enforce Bool) Result[Expr, Failure] {
+    let rows = new[PatternRow]()
+    let used = new[Bool]()
+    var output = if enforce { expected } else { -1 }
+    var index = 1
+    // Check each source arm once, in source order, before building decisions.
+    // Generic inference, diagnostics and cleanup locals do not depend on tag order.
+    while index < length(node.children) {
+        let arm = child(node, index)
+        let scope = pattern_scope(context, child(arm, 0), value.ty, child(arm, 1), context.head, 0)?
+        let body = block(scope.context, child(arm, 1), if output >= 0 { output } else { expected }, enforce || output >= 0)?
+        if body.falls { output = body.ty }
+        let patterns = new[CheckedPattern]()
+        push(patterns, scope.pattern)
+        push(rows, PatternRow { patterns = patterns bindings = new[Expr]() body = body arm = index - 1 })
+        push(used, false)
+        index = index + 1
+    }
+    let budget = new[Int]()
+    push(budget, 4096)
+    let plan = PatternPlan { context = context source = node output = if output < 0 { 0 } else { output } used = used budget = budget }
+    let saved = pattern_local(context, child(node, 0), value.ty)
+    let body = pattern_decision(plan, rows, expressions(saved), 0)?
+    index = 0
+    while index < length(used) {
+        if !get(used, index) { return Result.Err(error(context, child(child(node, index + 1), 0), "unreachable match arm")) }
+        index = index + 1
+    }
+    Result.Ok(expression(ExprKind.Block, plan.output, node, "", -1,
+        pair(pattern_let(child(node, 0), saved.index, value), body), value.falls && body.falls))
+}

@@ -54,6 +54,8 @@ test fn member_scope_reuses_match_bindings_and_selected_comptime_evidence() {
     let header = "record Box { value Int }\nenum Choice { Some(Box) None }\n"
     let matched = concat(header, "fn main() { match Choice.Some(Box { value = 7 }) { Choice.Some(box) => { discard box.va }\nChoice.None => {} } }")
     assert completion_found(member_completion(matched, ".va", 3), "value").detail == "value Int"
+    let nested = concat(header, "enum Outer { Wrap((Choice, Int)) }\nfn demo(value Outer) { match value { Outer.Wrap((Choice.Some(box), _)) => { discard box.va }\n_ => {} } }")
+    assert completion_found(member_completion(nested, ".va", 3), "value").detail == "value Int"
     let whole = concat(header, "fn demo(box Box) { match box { whole => { discard whole.va } } }")
     assert completion_found(member_completion(whole, ".va", 3), "value").detail == "value Int"
     let guarded = "concept Show { fn show(self Self) Text }\nfn demo[T Show](value T) { comptime if T implements Show { discard value.sh } else {} }"

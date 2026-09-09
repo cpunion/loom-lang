@@ -215,25 +215,47 @@ fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
     Result.Ok(parsed)
 }
 fn pattern(cursor Cursor) Result[Step, Diagnostic] {
+    pattern_at(cursor, 0, false)
+}
+fn pattern_at(cursor Cursor, depth Int, payload Bool) Result[Step, Diagnostic] {
+    if depth >= 64 { return Result.Err(error(cursor, "pattern nesting limit exceeded")) }
     if word(cursor, "_") {
         return Result.Ok(done(cursor, next(cursor), NodeKind.Wildcard, "", new[Node]()))
     }
+    if at(cursor, Kind.LParen) {
+        var rest = newlines(next(cursor))
+        if at(rest, Kind.RParen) { return Result.Err(error(rest, "empty tuple patterns are not supported")) }
+        let items = new[Node]()
+        var tuple = false
+        var more = true
+        while more {
+            let item = pattern_at(rest, depth + 1, true)?
+            push(items, item.node)
+            rest = newlines(item.rest)
+            more = at(rest, Kind.Comma)
+            if more {
+                tuple = true
+                rest = newlines(next(rest))
+                more = !at(rest, Kind.RParen)
+            }
+        }
+        rest = expect(rest, Kind.RParen, "')' after tuple pattern")?
+        if !tuple { return Result.Ok(Step { rest = rest node = get(items, 0) }) }
+        return Result.Ok(done(cursor, rest, NodeKind.Tuple, "", items))
+    }
     let named = path(cursor)?
     if !at(named.rest, Kind.LParen) {
+        // Bare payload names remain bindings; qualified paths identify variants.
+        if payload && named.rest.index == cursor.index + 1 { return Result.Ok(named) }
         return Result.Ok(done(cursor, named.rest, NodeKind.Pattern, named.node.value, new[Node]()))
     }
     var rest = newlines(next(named.rest))
     let bindings = new[Node]()
     var more = !at(rest, Kind.RParen)
     while more {
-        let binding = if word(rest, "_") {
-            done(rest, next(rest), NodeKind.Wildcard, "", new[Node]())
-        } else { name(rest)? }
+        let binding = pattern_at(rest, depth + 1, true)?
         push(bindings, binding.node)
         rest = binding.rest
-        if at(rest, Kind.LParen) || at(rest, Kind.Dot) || at(rest, Kind.LBrace) {
-            return Result.Err(error(rest, "nested patterns are not supported; bind the value and match it separately"))
-        }
         rest = newlines(rest)
         more = at(rest, Kind.Comma)
         if more {
