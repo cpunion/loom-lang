@@ -78,6 +78,9 @@ fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {
 }
 
 fn contains_task(env Environment, ty Int, seen List[Int]) Bool {
+    if ty <= 5 { return false }
+    let cached = get(env.type_states, ty).task_width
+    if cached >= 0 { return cached > 0 }
     std.loom.typed.contains_tasks(env.types, ty, seen)
 }
 

@@ -67,7 +67,11 @@ fn task_value(env Environment, ty Int) Bool {
 // evidence, but an unexpanded declaration keeps a negative result uncached.
 fn task_list_width(env Environment, ty Int, seen List[Int]) Int {
     if ty <= 5 || resource_seen(seen, ty) { return 0 }
-    if get(env.type_states, ty).phase != 2 { return -1 }
+    let state = get(env.type_states, ty)
+    if state.phase != 2 { return -1 }
+    // Only completed summaries are reusable; an in-progress cycle is not proof
+    // of absence. Reuse field summaries instead of walking their graphs again.
+    if state.task_width >= 0 { return if state.task_width > 0 { 1 } else { 0 } }
     push(seen, ty)
     let shape = get(env.types, ty)
     if shape.kind == TypeKind.Task { return 1 }
