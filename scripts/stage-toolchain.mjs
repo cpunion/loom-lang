@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Stage and exercise a local toolchain; this is not a standalone release packager.
 import { spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,11 +30,14 @@ function sources(from, to) {
   });
 }
 function run(executable, arguments_, cwd, environment = process.env) {
+  const command = [executable, ...arguments_].map(value => JSON.stringify(value)).join(" ");
+  writeSync(1, `Running ${command}\n`);
   const outcome = spawnSync(executable, arguments_, {
     cwd, env: environment, encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
   });
-  if (outcome.error) throw outcome.error;
-  if (outcome.status !== 0) throw new Error(`${executable} ${arguments_.join(" ")} failed:\n${outcome.stdout}${outcome.stderr}`);
+  if (outcome.error) throw new Error(`cannot start ${command}`, { cause: outcome.error });
+  writeSync(1, `Exit ${outcome.status}; signal ${outcome.signal ?? "none"}\n`);
+  if (outcome.status !== 0) throw new Error(`${command} failed:\n${outcome.stdout}${outcome.stderr}`);
   return outcome.stdout;
 }
 
