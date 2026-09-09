@@ -536,6 +536,22 @@ impl Converter<'_> {
         result: Type,
     ) -> Result<()> {
         match operation {
+            Primitive::TaskObserve => {
+                self.task_result(arguments[0].ty)?;
+                if arguments[1].ty != Type::Int || result != arguments[0].ty {
+                    return Err("checked task observation must preserve its typed handle".into());
+                }
+            }
+            Primitive::TaskWaitNext | Primitive::TaskNextResult => {
+                let expected = if operation == Primitive::TaskWaitNext {
+                    Type::Bool
+                } else {
+                    Type::Int
+                };
+                if result != expected {
+                    return Err("checked task observation result type mismatch".into());
+                }
+            }
             Primitive::TaskWaitFileOpen => {
                 if arguments[0].ty != Type::Text
                     || arguments[1].ty != Type::Bool
@@ -1232,6 +1248,9 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_cleanup_push" => P::TaskCleanupPush,
         "task_cleanup_pop" => P::TaskCleanupPop,
         "task_await" => P::TaskAwait,
+        "task_observe" => P::TaskObserve,
+        "task_wait_next" => P::TaskWaitNext,
+        "task_next_result" => P::TaskNextResult,
         "task_result" => P::TaskResult,
         "task_release" => P::TaskRelease,
         "task_run" => P::TaskRun,
@@ -1258,7 +1277,9 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::ListNew
         | P::MonotonicNs
         | P::TaskFileResult
-        | P::TaskFileOpenResult => 0,
+        | P::TaskFileOpenResult
+        | P::TaskWaitNext
+        | P::TaskNextResult => 0,
         P::FloatFromInt
         | P::FloatToInt
         | P::FloatParse
@@ -1302,6 +1323,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::PathCanonical
         | P::EnvGet
         | P::TaskAdopt
+        | P::TaskObserve
         | P::TaskCleanupPush
         | P::TaskWaitFileRead
         | P::TaskWaitFileOpen

@@ -1,0 +1,5 @@
+// Private substrate for source join policies. Register once, then receive
+// completion indices without scanning a source container on every wake.
+intrinsic fn task_observe[T](task Task[T], index Int) Task[T]
+
+async intrinsic fn task_next() Int

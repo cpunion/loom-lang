@@ -62,8 +62,16 @@ cannot be copied through indexing or ordinary get/push/set. Memoized typed helpe
 functions visit recursive enum/List layouts without a runtime container visitor.
 Unconditional loops merge actual break states and may consume the group before
 breaking or returning. See the [list example](../../compiler/examples/task_lists).
-Socket adapters, general worker operations and joins remain unfinished; sequential
-await loops do not provide multi-task fault observation or tuple-await sugar.
+Private multi-task observation now registers each child once and wakes its parent
+from terminal notifications, without scanning a source container on every wait.
+Ready entries preserve terminal order even when already-completed children are
+registered later. Selection returns a caller-supplied index and detaches that
+notification; the original typed handle still requires ordinary await. Unrelated
+parent waits retain queued notifications. Parent cancellation removes observations
+and waits before cleanup. Native `std/task` tests cover real Loom frames and moving
+GC; these primitives are private, not public join APIs. Outcome extraction,
+explicit cancellation and source join policies remain unfinished, as do socket
+adapters and general worker APIs.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;

@@ -168,8 +168,12 @@ exits. See the [dynamic list example](compiler/examples/task_lists).
 The next async gates are socket readiness adapters, general worker
 operations and joins. Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
-Join APIs need multi-task completion observation: sequential awaits in input
-order alone cannot provide prompt cancellation when a different child faults.
+Private multi-task completion observation now retains terminal order, wakes
+typed Loom frames and detaches selections without consuming their results.
+Children register once; cancellation removes observations before parent cleanup.
+The next join boundary is typed outcome extraction and explicit cancellation,
+then source policies: sequential awaits in input order alone still cannot provide
+prompt cancellation when a different child faults.
 
 Extend the self-hosted path with the remaining accepted capabilities:
 

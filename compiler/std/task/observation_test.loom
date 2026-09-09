@@ -1,0 +1,37 @@
+import std.time.sleep_ms
+import std.text.concat
+
+async fn value(text Text) Text {
+    concat(text, " result")
+}
+
+test async fn completion_notifications_preserve_typed_handles_and_unit_results() {
+    let delayed = task_observe(sleep_ms(10), 0)
+    let immediate = task_observe(value("ready"), 1)
+    assert task_next().await == 1
+    assert immediate.await == "ready result"
+    assert task_next().await == 0
+    delayed.await
+}
+
+test async fn completed_children_keep_completion_not_registration_order() {
+    let first = value("first")
+    let second = value("second")
+    sleep_ms(1).await
+    let later = task_observe(second, 0)
+    let earlier = task_observe(first, 1)
+    assert task_next().await == 1
+    assert earlier.await == "first result"
+    assert task_next().await == 0
+    assert later.await == "second result"
+}
+
+test async fn observations_queue_while_the_parent_has_an_unrelated_wait() {
+    let first = task_observe(value("first"), 7)
+    let second = task_observe(value("second"), 2)
+    sleep_ms(1).await
+    assert task_next().await == 7
+    assert first.await == "first result"
+    assert task_next().await == 2
+    assert second.await == "second result"
+}

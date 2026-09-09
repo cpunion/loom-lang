@@ -103,6 +103,9 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::FileAbort
         | Primitive::MonotonicNs
         | Primitive::TaskAwait
+        | Primitive::TaskObserve
+        | Primitive::TaskWaitNext
+        | Primitive::TaskNextResult
         | Primitive::TaskResult
         | Primitive::TaskRelease
         | Primitive::FloatToInt

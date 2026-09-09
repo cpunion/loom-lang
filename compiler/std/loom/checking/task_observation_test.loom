@@ -1,0 +1,25 @@
+fn observation_checked(body Text, valid Bool) {
+    let files = source_files("import std.task.run\nasync fn main() { run().await }")
+    let header = "intrinsic fn task_observe[T](task Task[T], index Int) Task[T]\nasync intrinsic fn task_next() Int\nasync fn item() Int { 7 }\npub async fn run() {\n"
+    push(files, source_file("std.task", concat(concat(header, body), "\n}"), true))
+    match checked(files) {
+        Result.Ok(_) => {
+            assert valid
+        }
+        Result.Err(failed) => {
+            if valid {
+                discard write_error(failed.diagnostic.message)
+            }
+            assert !valid
+        }
+    }
+}
+
+test fn observation_primitives_preserve_task_transfer_and_private_wait_rules() {
+    observation_checked("let task = task_observe(item(), 0)\nassert task_next().await == 0\nassert task.await == 7", true)
+    observation_checked("let task = item()\nlet observed = task_observe(task, 0)\ndiscard task.await\ndiscard observed.await", false)
+    observation_checked("discard task_observe(item(), 0)", false)
+    observation_checked("discard task_next", false)
+    observation_checked("defer { discard task_next().await }", false)
+    observation_checked("discard comptime { task_observe[Int] }", false)
+}

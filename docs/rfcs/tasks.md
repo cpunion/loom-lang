@@ -144,6 +144,14 @@ Loop backedges must preserve entry obligations; all continuing exits must agree.
 Literal `while true` has no zero-iteration exit, so it can consume an outer group
 before breaking or returning. See the [list example](../../compiler/examples/task_lists).
 
+Private completion observation now records children once and orders ready
+notifications by actual terminal order, including registration after completion.
+It keeps only IDs/indices, not managed pointers. Selecting a notification leaves
+the typed Task obligation intact for ordinary await, and unrelated parent waits
+do not lose notifications. Parent cancellation removes registered observations
+before its cleanup. The private `std/task` tests exercise these operations through
+Loom suspension lowering; public outcome/cancellation/join APIs are not complete.
+
 Socket adapters, general worker operations
 and joins are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread. Public outcome inspection remains

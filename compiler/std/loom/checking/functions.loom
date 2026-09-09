@@ -113,6 +113,7 @@ fn three_types(a Int, b Int, c Int) List[Int] { let values = two_types(a, b)
 fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "clock_monotonic_ns" { return runtime(0, new[Int](), 1) }
     if name == "timer_until_ns" { return runtime(0, ints(1), 0) }
+    if name == "task_next" { return runtime(0, new[Int](), 1) }
     if name == "async_read" || name == "async_write_bytes" { return runtime(0, three_types(1, 4, 1), 1) }
     if name == "async_write" { return runtime(0, three_types(1, 3, 1), 1) }
     if name == "async_open" { return runtime(0, two_types(3, 2), 1) }
@@ -160,6 +161,10 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "directory_create" || name == "file_remove" || name == "directory_remove" || name == "path_entry_kind" { return runtime(0, ints(3), 1) }
     if name == "path_rename" { return runtime(0, two_types(3, 3), 1) }
     let parameter = get(abstract_arguments(env, 1), 0)
+    if name == "task_observe" {
+        let task = intern(env, TypeKind.Task, -1, ints(parameter))
+        return runtime(1, two_types(task, 1), task)
+    }
     let list = intern(env, TypeKind.List, -1, ints(parameter))
     if name == "list_new" { return runtime(1, new[Int](), list) }
     if name == "list_len" { return runtime(1, ints(list), 1) }
@@ -184,7 +189,7 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
         runtime(1, ints(list), current.result)
     } else { runtime_signature(env, item.name) }
     if expected.parameters < 0 { return Result.Err(failure(env, current.symbol, item.node, "unknown private runtime intrinsic")) }
-    if has(item.node, NodeKind.Async) != (item.name == "timer_until_ns" || item.name == "async_read" || item.name == "async_write" || item.name == "async_write_bytes" || item.name == "async_open" || item.name == "async_close") {
+    if has(item.node, NodeKind.Async) != (item.name == "timer_until_ns" || item.name == "task_next" || item.name == "async_read" || item.name == "async_write" || item.name == "async_write_bytes" || item.name == "async_open" || item.name == "async_close") {
         return Result.Err(failure(env, current.symbol, item.node, "intrinsic declaration has an incorrect async modifier"))
     }
     if current.parameters != expected.parameters || !same(current.params, expected.params) || current.result != expected.result {

@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add private multi-task completion observation through typed Loom frames.
+  Register children once, retain terminal order even for late registration,
+  and detach one notification before ordinary typed await. Cancellation removes
+  observations before parent cleanup. Public join policies remain unfinished.
+
 - Transfer Task-bearing Lists, including recursive enum/List payloads. Add
   source `std.list.transfer.append/take_last`, retaining ordinary shared-header
   semantics and compile-time removal. Typed visitor functions adopt/retain each
