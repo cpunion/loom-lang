@@ -3,6 +3,38 @@
 use super::*;
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    pub(super) fn list_pop(
+        &self,
+        list: PointerValue<'ctx>,
+        element: Type,
+    ) -> NativeResult<BasicValueEnum<'ctx>> {
+        let length = self
+            .builder
+            .build_load(self.size_type, list, "list.length")?
+            .into_int_value();
+        self.guard(
+            self.builder.build_int_compare(
+                IntPredicate::UGT,
+                length,
+                self.size_type.const_zero(),
+                "list.nonempty",
+            )?,
+            "cannot pop an empty list",
+        )?;
+        let index = self.builder.build_int_nuw_sub(
+            length,
+            self.size_type.const_int(1, false),
+            "list.last",
+        )?;
+        let native = native_type(self.context, self.program, element)?;
+        let slot = self.buffer_slot(list, index, native)?;
+        let value = self.builder.build_load(native, slot, "list.removed")?;
+        // No allocation or user code intervenes. The list tracer immediately
+        // stops visiting the removed slot; its returned value uses normal roots.
+        self.builder.build_store(list, index)?;
+        Ok(value)
+    }
+
     pub(super) fn list_new(
         &mut self,
         ty: Type,

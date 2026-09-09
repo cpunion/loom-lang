@@ -1,37 +1,24 @@
-// Completed inline layouts only: function signatures and nominal arguments
-// describe types, not stored Task handles. Share this cache across constructors.
+import std.loom.typed.contains_tasks
+
+record TaskVisitor { list Int owner Int function Int }
+record TaskVisits { program Program cache List[Int] helpers List[TaskVisitor] }
+
+// Cache completed reachability queries, including recursive List edges. Do not
+// cache intermediate negative results from a cycle in progress.
 fn task_present(types List[Type], cache List[Int], ty Int) Bool {
     if ty <= 5 { return false }
     while length(cache) <= ty { push(cache, -1) }
     if get(cache, ty) >= 0 { return get(cache, ty) == 1 }
-    let shape = get(types, ty)
-    var found = shape.kind == TypeKind.Task
-    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
-        var field = 0
-        while !found && field < length(shape.fields) {
-            found = task_present(types, cache, get(shape.fields, field).ty)
-            field = field + 1
-        }
-    }
-    if shape.kind == TypeKind.Enum {
-        var variant = 0
-        while !found && variant < length(shape.variants) {
-            let fields = get(shape.variants, variant).fields
-            var field = 0
-            while !found && field < length(fields) {
-                found = task_present(types, cache, get(fields, field))
-                field = field + 1
-            }
-            variant = variant + 1
-        }
-    }
+    let found = std.loom.typed.contains_tasks(types, ty, new[Int]())
     set(cache, ty, if found { 1 } else { 0 })
     found
 }
 
 // Typed projections and ordinary matches visit only the active payload. These
 // private operations do not allocate or suspend, including empty enum branches.
-fn task_visit(types List[Type], cache List[Int], locals List[Local], value Expr, owner Expr, returning Bool) Expr {
+fn task_visit(visits TaskVisits, locals List[Local], value Expr, owner Expr, returning Bool) Expr {
+    let types = visits.program.types
+    let cache = visits.cache
     let shape = get(types, value.ty)
     if shape.kind == TypeKind.Task {
         if returning {
@@ -40,13 +27,16 @@ fn task_visit(types List[Type], cache List[Int], locals List[Local], value Expr,
         }
         return operation("task_adopt", 0, value.span, pair(owner, value))
     }
+    if shape.kind == TypeKind.List {
+        return task_list_visit(visits, value, owner, returning)
+    }
     let body = new[Expr]()
     if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
         var field = 0
         while field < length(shape.fields) {
             let ty = get(shape.fields, field).ty
             if task_present(types, cache, ty) {
-                push(body, task_visit(types, cache, locals,
+                push(body, task_visit(visits, locals,
                     node(ExprKind.Field, ty, value.span, field, one(value)), owner, returning))
             }
             field = field + 1
@@ -66,7 +56,7 @@ fn task_visit(types List[Type], cache List[Int], locals List[Local], value Expr,
                 if task_present(types, cache, ty) {
                     binding = length(locals)
                     push(locals, Local { name = "" ty = ty mutable = false is_scoped = false })
-                    push(actions, task_visit(types, cache, locals,
+                    push(actions, task_visit(visits, locals,
                         node(ExprKind.Local, ty, value.span, binding, new[Expr]()), owner, returning))
                 }
                 push(bindings, binding)
@@ -82,8 +72,9 @@ fn task_visit(types List[Type], cache List[Int], locals List[Local], value Expr,
     block(body, 0, value.span, true)
 }
 
-fn task_results(program Program, cache List[Int], graph Graph) {
-    if !task_present(program.types, cache, graph.result) { return }
+fn task_results(visits TaskVisits, graph Graph) {
+    let program = visits.program
+    if !task_present(program.types, visits.cache, graph.result) { return }
     var index = 0
     while index < length(graph.states) {
         let current = get(graph.states, index)
@@ -97,7 +88,7 @@ fn task_results(program Program, cache List[Int], graph Graph) {
                 let saved = temporary(graph, graph.result)
                 let snapshot = local(graph, saved)
                 save(graph, index, saved, current.value)
-                append(graph, index, task_visit(program.types, cache, graph.locals,
+                append(graph, index, task_visit(visits, graph.locals,
                     snapshot, empty(graph.span), true))
                 finish(graph, index, Exit.Complete, snapshot, current.edges, current.arms)
             }

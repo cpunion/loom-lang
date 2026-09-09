@@ -134,8 +134,17 @@ matched or transferred at source level; native adoption/return visits only actua
 Tasks and creates none for empty branches. See the
 [enum example](../../compiler/examples/task_enums).
 
-Task-bearing Lists,
-socket adapters, general worker operations
+Task-bearing Lists now transfer as one dynamic group. The source
+`std.list.transfer` package supplies `append` (returning the same header) and
+`take_last` (returning `Option[(T, List[T])]`). The caller consumes each extracted
+element and transfers the remainder. Normal Lists retain shared mutation;
+Task-bearing Lists cannot use copying get/index/push/set operations. Recursive
+payloads use ordinary typed visitor functions for adoption and return marking.
+Loop backedges must preserve entry obligations; all continuing exits must agree.
+Literal `while true` has no zero-iteration exit, so it can consume an outer group
+before breaking or returning. See the [list example](../../compiler/examples/task_lists).
+
+Socket adapters, general worker operations
 and joins are explicitly unfinished, not removed requirements.
 Synchronous I/O still blocks the owner thread. Public outcome inspection remains
 future work.

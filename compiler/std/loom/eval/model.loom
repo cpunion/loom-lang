@@ -3,6 +3,7 @@ import std.loom.typed.Program
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.Type
+import std.loom.typed.TypeKind
 import std.loom.typed.Function
 import std.loom.typed.Interface
 import std.loom.typed.Witness
@@ -15,6 +16,8 @@ import std.result.Result
 
 // Mutable containers use a positive evaluation-local allocation ID in number;
 // records use zero and enums keep their variant tag. These are not addresses.
+// A List's items start with its shared logical length, followed by storage;
+// list_length/list_element expose initialized elements. Bytes use raw items.
 // Named functions use their source symbol in number and Int-wrapped type IDs
 // in items; these survive reification into a different function queue.
 // A dyn value keeps its concrete type ID in number and its receiver in items[0],
@@ -53,6 +56,16 @@ fn fresh(state State, ty Int, items List[Value]) Value {
     // execute's work budget bounds the number of allocations well below Int.
     let id = get(state.budget, 2) + 1
     set(state.budget, 2, id)
+    if ty >= 0 && ty < length(state.program.types) && get(state.program.types, ty).kind == TypeKind.List {
+        let storage = new[Value]()
+        push(storage, number(length(items)))
+        var index = 0
+        while index < length(items) {
+            push(storage, get(items, index))
+            index = index + 1
+        }
+        return aggregate(ty, id, storage)
+    }
     aggregate(ty, id, items)
 }
 fn fresh(state State, ty Int) Value { fresh(state, ty, new[Value]()) }

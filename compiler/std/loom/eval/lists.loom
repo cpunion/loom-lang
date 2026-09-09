@@ -1,0 +1,48 @@
+// Logical length lives in the shared storage, so copies retain alias semantics.
+// This uses the conservative bootstrap subset instead of requiring the seed to
+// implement removal. Popping neither copies the prefix nor retains its old value.
+pub fn list_length(value Value) Int {
+    get(value.items, 0).number
+}
+
+pub fn list_element(value Value, index Int) Value {
+    get(value.items, index + 1)
+}
+
+fn list_store(value Value, index Int, item Value) {
+    set(value.items, index + 1, item)
+}
+
+fn list_push_value(value Value, item Value) {
+    let size = list_length(value)
+    if size + 1 < length(value.items) {
+        set(value.items, size + 1, item)
+    }
+    else {
+        push(value.items, item)
+    }
+    set(value.items, 0, number(size + 1))
+}
+
+fn list_take_value(state State, expr Expr, value Value) Value {
+    let shape = get(state.program.types, expr.ty)
+    let present = if length(get(shape.variants, 0).fields) == 1 {
+        0
+    } else {
+        1
+    }
+    let size = list_length(value)
+    if size == 0 {
+        return aggregate(expr.ty, 1 - present, new[Value]())
+    }
+    let element = list_element(value, size - 1)
+    set(value.items, size, unknown())
+    set(value.items, 0, number(size - 1))
+    let fields = new[Value]()
+    push(fields, element)
+    push(fields, value)
+    let pair = aggregate(get(get(shape.variants, present).fields, 0), 0, fields)
+    let payload = new[Value]()
+    push(payload, pair)
+    aggregate(expr.ty, present, payload)
+}

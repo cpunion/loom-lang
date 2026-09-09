@@ -1,6 +1,7 @@
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.TypeKind
+import std.loom.typed.contains_tasks
 import std.list.get
 import std.list.push
 import std.list.length
@@ -11,7 +12,7 @@ fn pure_intrinsic(name Text) Bool {
     name == "float_from_int" || name == "float_to_int" || name == "float_parse" || name == "float_format" ||
     name == "text_len" || name == "text_byte" || name == "text_concat" || name == "text_equal" || name == "text_slice" ||
     name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" ||
-    name == "list_new" || name == "list_len" || name == "list_get" || name == "list_push" || name == "list_set" ||
+    name == "list_new" || name == "list_len" || name == "list_get" || name == "list_push" || name == "list_set" || name == "list_append" || name == "list_take" ||
     name == "bytes_new" || name == "bytes_len" || name == "bytes_push" || name == "bytes_get" || name == "bytes_set" ||
     name == "bytes_utf8" || name == "bytes_text_copy"
 }
@@ -23,27 +24,7 @@ fn task_type(state State, ty Int) Bool {
     if ty <= 5 { return false }
     while length(state.task_types) <= ty { push(state.task_types, -1) }
     if get(state.task_types, ty) >= 0 { return get(state.task_types, ty) == 1 }
-    let shape = get(state.program.types, ty)
-    var found = shape.kind == TypeKind.Task
-    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
-        var index = 0
-        while !found && index < length(shape.fields) {
-            found = task_type(state, get(shape.fields, index).ty)
-            index = index + 1
-        }
-    }
-    if shape.kind == TypeKind.Enum {
-        var variant = 0
-        while !found && variant < length(shape.variants) {
-            let fields = get(shape.variants, variant).fields
-            var field = 0
-            while !found && field < length(fields) {
-                found = task_type(state, get(fields, field))
-                field = field + 1
-            }
-            variant = variant + 1
-        }
-    }
+    let found = std.loom.typed.contains_tasks(state.program.types, ty, std.list.new[Int]())
     set(state.task_types, ty, if found { 1 } else { 0 })
     found
 }

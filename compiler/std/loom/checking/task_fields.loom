@@ -1,5 +1,5 @@
 // Only stored value fields contribute obligations. Function signatures and
-// nominal arguments are metadata; shared Lists need a separate transfer API.
+// nominal arguments are metadata. A List is one dynamic group of obligations.
 fn task_width(env Environment, ty Int) Int {
     let width = task_width_known(env, ty)
     if width < 0 { 0 } else { width }
@@ -25,6 +25,9 @@ fn task_width_uncached(env Environment, ty Int) Int {
     let shape = get(env.types, ty)
     if shape.kind == TypeKind.Task {
         return 1
+    }
+    if shape.kind == TypeKind.List {
+        return task_list_width(env, ty, new[Int]())
     }
     if shape.kind == TypeKind.Enum {
         var variant = 0
@@ -60,38 +63,46 @@ fn task_value(env Environment, ty Int) Bool {
     task_width(env, ty) > 0
 }
 
-fn task_storage(env Environment, ty Int) Bool {
-    if ty <= 5 {
-        return true
-    }
+// Lists may close a recursive layout graph. A seen edge contributes no new
+// evidence, but an unexpanded declaration keeps a negative result uncached.
+fn task_list_width(env Environment, ty Int, seen List[Int]) Int {
+    if ty <= 5 || resource_seen(seen, ty) { return 0 }
+    let state = get(env.type_states, ty)
+    if state.phase != 2 { return -1 }
+    // Only completed summaries are reusable; an in-progress cycle is not proof
+    // of absence. Reuse field summaries instead of walking their graphs again.
+    if state.task_width >= 0 { return if state.task_width > 0 { 1 } else { 0 } }
+    push(seen, ty)
     let shape = get(env.types, ty)
-    if shape.kind == TypeKind.Task {
-        return true
-    }
-    if shape.kind == TypeKind.Enum {
-        var variant = 0
-        while variant < length(shape.variants) {
-            let fields = get(shape.variants, variant).fields
-            var field = 0
-            while field < length(fields) {
-                if !task_storage(env, get(fields, field)) { return false }
-                field = field + 1
-            }
-            variant = variant + 1
-        }
-        return true
-    }
-    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
-        return !contains_task(env, ty, new[Int]())
-    }
+    if shape.kind == TypeKind.Task { return 1 }
+    var pending = 0
     var index = 0
+    while shape.kind == TypeKind.List && index < length(shape.arguments) {
+        let width = task_list_width(env, get(shape.arguments, index), seen)
+        if width > 0 { return 1 }
+        if width < 0 { pending = -1 }
+        index = index + 1
+    }
+    index = 0
     while index < length(shape.fields) {
-        if !task_storage(env, get(shape.fields, index).ty) {
-            return false
+        let width = task_list_width(env, get(shape.fields, index).ty, seen)
+        if width > 0 { return 1 }
+        if width < 0 { pending = -1 }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            let width = task_list_width(env, get(fields, field), seen)
+            if width > 0 { return 1 }
+            if width < 0 { pending = -1 }
+            field = field + 1
         }
         index = index + 1
     }
-    true
+    pending
 }
 
 fn task_field_offset(env Environment, ty Int, field Int) Int {

@@ -1388,7 +1388,7 @@ records/Lists or returned through Tasks. Calling them retains owner requirements
 and one-shot Task transfers; code pointers are not Task obligations. Only
 Task-returning callback signatures carry a private creation label, with no extra
 runtime dispatch. Compile-time Task references, capturing closures and actual
-Task-bearing Lists remain unsupported. See the [callback example](examples/task_callbacks).
+Task-bearing Lists use transfer operations described below. See the [callback example](examples/task_callbacks).
 
 Tuples and records now transfer Task fields individually or as whole values:
 
@@ -1432,6 +1432,16 @@ without creating another Task. The synchronous `std.file` API remains unchanged.
 Socket adapters, general worker operations, joins and
 public task-outcome handling are not available yet. These are implementation
 limits; the [accepted design](../docs/rfcs/tasks.md) remains the target.
+
+`std.list.transfer.append(values, value)` returns the same shared List header;
+`take_last(values)` returns `Option[(element, remaining List)]`. This supports
+dynamically sized Task groups without copying one-shot elements. A known empty
+Task-bearing List must also be transferred or consumed. Ordinary get/index/push/set
+and length queries do not borrow Task-bearing Lists; use the transfer API.
+Normal Lists still share mutations, including at compile time. See the
+[dynamic Task list example](examples/task_lists) for iterative draining and
+recursive payloads. This is not a completed `all` implementation: sequential
+awaits alone cannot observe a different child's fault promptly.
 
 ## Next boundary
 

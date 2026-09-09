@@ -4,6 +4,7 @@ import std.loom.ast.has
 import std.loom.typed.TypeKind
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
+import std.loom.typed.contains_tasks
 import std.loom.source.Diagnostic
 import std.loom.source.render
 import std.list.get
@@ -77,43 +78,10 @@ fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {
 }
 
 fn contains_task(env Environment, ty Int, seen List[Int]) Bool {
-    if ty <= 5 || resource_seen(seen, ty) {
-        return false
-    }
-    push(seen, ty)
-    let shape = get(env.types, ty)
-    if shape.kind == TypeKind.Task {
-        return true
-    }
-    // Nominal arguments, dyn associated bindings and function signatures are
-    // metadata, not stored Tasks. Function values hold only a code pointer.
-    var index = 0
-    while shape.kind == TypeKind.List && index < length(shape.arguments) {
-        if contains_task(env, get(shape.arguments, index), seen) {
-            return true
-        }
-        index = index + 1
-    }
-    index = 0
-    while index < length(shape.fields) {
-        if contains_task(env, get(shape.fields, index).ty, seen) {
-            return true
-        }
-        index = index + 1
-    }
-    index = 0
-    while index < length(shape.variants) {
-        let fields = get(shape.variants, index).fields
-        var field = 0
-        while field < length(fields) {
-            if contains_task(env, get(fields, field), seen) {
-                return true
-            }
-            field = field + 1
-        }
-        index = index + 1
-    }
-    false
+    if ty <= 5 { return false }
+    let cached = get(env.type_states, ty).task_width
+    if cached >= 0 { return cached > 0 }
+    std.loom.typed.contains_tasks(env.types, ty, seen)
 }
 
 fn task_transfer_type(env Environment, signature Signature, ty Int, node Node) Result[Bool, Failure] {
@@ -134,8 +102,9 @@ fn task_transfer_visit(env Environment, signature Signature, ty Int, node Node, 
     }
     let nested = contains_task(env, payload, new[Int]())
     if nested {
-        if !task_storage(env, payload) {
-            return Result.Err(failure(env, signature.symbol, node, "Task-bearing lists are not yet implemented"))
+        let shape = get(env.types, payload)
+        if shape.kind == TypeKind.List {
+            discard task_transfer_visit(env, signature, get(shape.arguments, 0), node, seen)?
         }
         let fields = get(env.types, payload).fields
         var index = 0

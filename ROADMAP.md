@@ -160,8 +160,12 @@ including Option and Result propagation. Typed matches adopt/return only the
 selected variant's Tasks; empty variants create no task obligation at runtime.
 See the [enum example](compiler/examples/task_enums).
 
-The next async gates are Task-bearing Lists,
-socket readiness adapters, general worker
+Task-bearing Lists now use source transfer operations with a shared header and
+one dynamic obligation group. Typed helpers adopt/retain nested children, including
+recursive enum/List layouts. Loops consume the group through actual break/return
+exits. See the [dynamic list example](compiler/examples/task_lists).
+
+The next async gates are socket readiness adapters, general worker
 operations and joins. Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 Join APIs need multi-task completion observation: sequential awaits in input

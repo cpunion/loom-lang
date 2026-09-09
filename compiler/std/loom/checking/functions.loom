@@ -8,6 +8,7 @@ import std.loom.typed.Local
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.Function
+import std.loom.typed.list_take_result
 import std.list.new
 import std.list.get
 import std.list.push
@@ -164,13 +165,24 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "list_len" { return runtime(1, ints(list), 1) }
     if name == "list_get" { return runtime(1, two_types(list, 1), parameter) }
     if name == "list_push" { return runtime(1, two_types(list, parameter), 0) }
+    if name == "list_append" { return runtime(1, two_types(list, parameter), list) }
     if name == "list_set" { return runtime(1, three_types(list, 1, parameter), 0) }
     runtime(-1, new[Int](), -1)
 }
 fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
     let current = get(env.signatures, id)
     let item = symbol(env, current.symbol)
-    let expected = runtime_signature(env, item.name)
+    let expected = if item.name == "list_take" {
+        let parameter = get(abstract_arguments(env, 1), 0)
+        let list = intern(env, TypeKind.List, -1, ints(parameter))
+        if get(env.type_states, current.result).phase == 0 {
+            discard expand_type(env, current.result, 0)?
+        }
+        if !std.loom.typed.list_take_result(env.types, current.result, parameter, list) {
+            return Result.Err(failure(env, current.symbol, item.node, "list_take requires an optional (element, remaining List) result"))
+        }
+        runtime(1, ints(list), current.result)
+    } else { runtime_signature(env, item.name) }
     if expected.parameters < 0 { return Result.Err(failure(env, current.symbol, item.node, "unknown private runtime intrinsic")) }
     if has(item.node, NodeKind.Async) != (item.name == "timer_until_ns" || item.name == "async_read" || item.name == "async_write" || item.name == "async_write_bytes" || item.name == "async_open" || item.name == "async_close") {
         return Result.Err(failure(env, current.symbol, item.node, "intrinsic declaration has an incorrect async modifier"))

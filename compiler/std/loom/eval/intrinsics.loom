@@ -21,7 +21,7 @@ import std.float.to_text
 
 fn arity(name Text) Int {
     if name == "list_new" || name == "bytes_new" { return 0 }
-    if name == "text_len" || name == "list_len" || name == "bytes_len" || name == "bytes_utf8" || name == "bytes_text_copy" ||
+    if name == "text_len" || name == "list_len" || name == "list_take" || name == "bytes_len" || name == "bytes_utf8" || name == "bytes_text_copy" ||
         name == "float_from_int" || name == "float_to_int" || name == "float_parse" || name == "float_format" ||
         name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" { return 1 }
     if name == "text_slice" || name == "list_set" || name == "bytes_set" { return 3 }
@@ -123,29 +123,33 @@ fn primitive(state State, expr Expr, values List[Value]) Result[Value, Failure] 
             return Result.Err(failure(expr, "compile-time intrinsic needs a List"))
         }
     }
-    if name == "list_len" || name == "bytes_len" { return Result.Ok(number(length(first.items))) }
-    if name == "list_push" || name == "bytes_push" {
+    let size = if bytes { length(first.items) } else { list_length(first) }
+    if name == "list_take" { return Result.Ok(list_take_value(state, expr, first)) }
+    if name == "list_len" || name == "bytes_len" { return Result.Ok(number(size)) }
+    if name == "list_push" || name == "list_append" || name == "bytes_push" {
         let value = get(values, 1)
         if bytes {
             let byte = integer_argument(expr, value)?
             if byte < 0 || byte > 255 { return Result.Err(failure(expr, "compile-time byte out of range")) }
         }
         discard spend(state, expr, 1, 64)?
-        std.list.push(first.items, value)
-        return Result.Ok(unit())
+        if bytes { std.list.push(first.items, value) } else { list_push_value(first, value) }
+        return Result.Ok(if name == "list_append" { first } else { unit() })
     }
     if name == "list_get" || name == "list_set" || name == "bytes_get" || name == "bytes_set" {
         let index = integer_argument(expr, get(values, 1))?
-        if index < 0 || index >= length(first.items) {
+        if index < 0 || index >= size {
             return Result.Err(failure(expr, if bytes { "compile-time Bytes index out of bounds" } else { "compile-time List index out of bounds" }))
         }
-        if name == "list_get" || name == "bytes_get" { return Result.Ok(get(first.items, index)) }
+        if name == "list_get" || name == "bytes_get" {
+            return Result.Ok(if bytes { get(first.items, index) } else { list_element(first, index) })
+        }
         let value = get(values, 2)
         if bytes {
             let byte = integer_argument(expr, value)?
             if byte < 0 || byte > 255 { return Result.Err(failure(expr, "compile-time byte out of range")) }
         }
-        set(first.items, index, value)
+        if bytes { set(first.items, index, value) } else { list_store(first, index, value) }
         return Result.Ok(unit())
     }
     discard spend(state, expr, 0, length(first.items) + 1)?

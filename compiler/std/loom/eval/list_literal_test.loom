@@ -52,12 +52,12 @@ test fn list_elements_execute_once_in_order_and_propagate_control() {
         two(assigned(0, binary("+", 1, local(0, 1), literal(1))), local(0, 1)))
     let list = list_literal(6, two(increment, increment))
     let computed = accepted(program, node(ExprKind.Block, 6, "", -1, two(assigned(0, literal(0)), list)), 1)
-    assert get(computed.items, 0).number == 1 && get(computed.items, 1).number == 2
+    assert list_element(computed, 0).number == 1 && list_element(computed, 1).number == 2
     let returned = node(ExprKind.Return, 0, "", -1, one(literal(42)))
     let skipped = binary("/", 1, literal(1), literal(0))
     assert accepted(program, list_literal(6, two(returned, skipped)), 0).number == 42
     let empty = accepted(program, list_literal(6, new[Expr]()), 0)
-    assert empty.number > 0 && length(empty.items) == 0
+    assert empty.number > 0 && list_length(empty) == 0
 
     let state = state(program, false)
     set(state.budget, 1, 511)
@@ -79,12 +79,12 @@ test fn list_literals_preserve_nested_sharing_and_record_snapshots() {
     push(elements, initial)
     let nested = list_literal(7, elements)
     let computed = accepted(program, node(ExprKind.Block, 7, "", -1, two(assigned(0, initial), nested)), 1)
-    let first = get(computed.items, 0)
-    let alias = get(computed.items, 1)
-    let independent = get(computed.items, 2)
+    let first = list_element(computed, 0)
+    let alias = list_element(computed, 1)
+    let independent = list_element(computed, 2)
     assert first.number > 0 && first.number == alias.number && first.number != independent.number
-    push(first.items, number(9))
-    assert length(alias.items) == 2 && length(independent.items) == 1
+    list_push_value(first, number(9))
+    assert list_length(alias) == 2 && list_length(independent) == 1
 
     let old = node(ExprKind.Record, 8, "", -1, two(node(ExprKind.Field, 1, "", 0, one(literal(1))),
             node(ExprKind.Field, 6, "", 1, one(initial))))
@@ -97,7 +97,7 @@ test fn list_literals_preserve_nested_sharing_and_record_snapshots() {
     push(arguments, literal(20))
     push(body, node(ExprKind.Intrinsic, 0, "list_set", -1, arguments))
     push(body, local(1, 9))
-    let snapshot = get(accepted(program, node(ExprKind.Block, 9, "", -1, body), 2).items, 0)
+    let snapshot = list_element(accepted(program, node(ExprKind.Block, 9, "", -1, body), 2), 0)
     assert get(snapshot.items, 0).number == 1
-    assert get(get(snapshot.items, 1).items, 0).number == 20
+    assert list_element(get(snapshot.items, 1), 0).number == 20
 }
