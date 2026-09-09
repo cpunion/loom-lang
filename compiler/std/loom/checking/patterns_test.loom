@@ -1,0 +1,31 @@
+test fn nested_patterns_are_exhaustive_ordered_and_nominal() {
+    let header = "enum Inner { One(Int) None }\nenum Outer { Some(Inner) Error(Text) }\n"
+    discard accepted(concat(header, "pub fn read(v Outer) Int { match v { Outer.Some(Inner.One(n)) => n\nOuter.Some(Inner.None) => 0\nOuter.Error(_) => -1 } }"))
+    discard accepted(concat(header, "pub fn read(v Outer) Int { match v { Outer.Some(Inner.One(n)) => n\nrest => { match rest { Outer.Some(_) => 0\nOuter.Error(_) => -1 } } } }"))
+    rejects(concat(header, "pub fn read(v Outer) Int { match v { Outer.Some(Inner.One(n)) => n\nOuter.Error(_) => 0 } }"))
+    rejects(concat(header, "pub fn read(v Outer) Int { match v { Outer.Some(_) => 0\nOuter.Some(Inner.One(n)) => n\nOuter.Error(_) => 0 } }"))
+    rejects(concat(header, "pub fn read(v Outer) Int { match v { _ => 0\nOuter.Some(Inner.One(n)) => n } }"))
+    rejects(concat(header, "enum Other { One(Int) None }\npub fn read(v Outer) Int { match v { Outer.Some(Other.One(n)) => n\n_ => 0 } }"))
+    rejects(concat(header, "pub fn read(v Outer) Int { match v { Outer.Some(Inner.One(n, extra)) => n\n_ => 0 } }"))
+    rejects(concat(header, "pub fn read(v Outer) Int { match v { Outer.Some(Inner.One(n)) => n\n_ => true } }"))
+}
+
+test fn tuple_patterns_cover_products_and_preserve_source_arm_inference() {
+    let header = "enum Flag { On Off }\n"
+    discard accepted(concat(header, "pub fn bits(v (Flag, Flag)) Int { match v { (Flag.On, _) => 1\n(_, Flag.On) => 2\n(Flag.Off, Flag.Off) => 0 } }"))
+    rejects(concat(header, "pub fn bits(v (Flag, Flag)) Int { match v { (Flag.On, _) => 1\n(_, Flag.On) => 2 } }"))
+    discard accepted("pub fn pick(v (Int, (Text,))) Text { match v { (_, (name,)) => name } }")
+    rejects("pub fn pick(v (Int, Int)) Int { match v { (same, same) => same } }")
+    rejects("pub fn pick(v (Int, Int)) Int { match v { (result, _) => result } }")
+    rejects("pub fn pick(v (Int, Int)) Int { match v { (a, b, c) => a } }")
+    rejects("pub fn pick(v Int) Int { match v { (a, b) => a } }")
+    discard accepted("enum Choice[T] { Second(T) First(T) }\npub fn choose(v (Choice[Int],)) Int { match v { (Choice.First(a),) => a\n(Choice.Second(b),) => b } }")
+}
+
+test fn nested_task_patterns_cannot_discard_duplicate_or_lose_sibling_tasks() {
+    let header = "enum Inner[T] { Some(T) None }\nenum Outer[T] { Some(Inner[T]) None }\nasync fn item() Int { 7 }\n"
+    discard accepted(concat(header, "async fn consume(v Outer[Task[Int]]) Int { match v { Outer.Some(Inner.Some(task)) => task.await\nOuter.Some(Inner.None) => 0\nOuter.None => 0 } }"))
+    rejects(concat(header, "async fn consume(v Outer[Task[Int]]) { match v { Outer.Some(Inner.Some(_)) => {}\n_ => {} } }"))
+    rejects(concat(header, "async fn consume(v Outer[Task[Int]]) { match v { Outer.Some(Inner.Some(task)) => { discard task.await\ndiscard task.await }\n_ => {} } }"))
+    rejects(concat(header, "async fn consume(v (Inner[Task[Int]], Task[Int])) { match v { (Inner.Some(first), second) => { discard first.await\ndiscard second.await }\n_ => {} } }"))
+}

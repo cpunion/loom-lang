@@ -265,7 +265,10 @@ calls and required Float reasoning remain open.
 
 Structural tuples, numeric projection, and plain-name destructuring now use the
 native aggregate path, including generics, shared containers, and compile-time
-results. More general patterns and heterogeneous tuple task composition remain
+results. Nested enum/tuple patterns in `match` now use typed decisions with
+source-order selection, exhaustive coverage and one-shot Task transfer, without
+a native matcher or a new bootstrap checkpoint. Literal/record patterns, guards,
+nested let/var destructuring and heterogeneous tuple task composition remain
 later work; dynamic List joins use the separate source policies above.
 
 Named function values now support ordinary higher-order functions, structural

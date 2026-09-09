@@ -336,7 +336,7 @@ timings; local variables remain conservatively rooted for the function.
 - Named function values with structural `fn(Int) Int` types, contextual overload
   selection, generic specialization, and native indirect calls. Functions can
   be passed, returned and stored in aggregates without a wrapper allocation.
-- Immutable records and tagged enums, flat exhaustive `match`, generic type and
+- Immutable records and tagged enums, nested exhaustive `match`, generic type and
   function parameters with inference or explicit arguments. Generic bodies are
   checked without hidden requirements; reachable instances use concrete layouts.
   Payload-free enums support equality within the same nominal type.
@@ -496,6 +496,30 @@ two or more plain names with exact arity; nested patterns, wildcards, and
 parallel reassignment are not implemented. Copying a tuple shares its managed
 fields just as copying a record does; compile-time results construct fresh graphs
 while preserving internal sharing.
+
+`match` supports nested enum and tuple patterns:
+
+```loom
+import std.option.Option
+import std.result.Result
+
+fn unpack(value Result[Option[Int], Text]) Int {
+    match value {
+        Result.Ok(Option.Some(number)) => number
+        Result.Ok(Option.None) => 0
+        Result.Err(_) => -1
+    }
+}
+```
+
+Arms are selected in source order. Exhaustiveness includes combinations of nested
+variants; wholly covered arms reject. Inputs evaluate once. Whole-value fallbacks
+and payload bindings preserve shared fields and one-shot Task obligations. The
+[pattern example](examples/patterns/README.md) also exercises tuple patterns and
+real async waits. This does not add literal/record patterns, guards, or nested
+let/var destructuring. Expansion has a bounded decision budget; normal flat matches
+retain their direct path. No runtime pattern engine or checked-artifact change is
+needed, and compiler production sources do not adopt the new syntax.
 
 ## List construction
 

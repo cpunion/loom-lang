@@ -37,6 +37,9 @@ pub enum NodeKind {
 // IndexAssign has [Apply/Index target, value]; rebinding retains named Assign.
 // Defer is a statement with one Block child; its span includes the keyword.
 // Scoped has the same name/optional type/initializer shape as Let.
+// Within match arms, Tuple contains patterns and Pattern contains Bindings of
+// recursive patterns. Bare payload Names bind values; qualified paths or calls
+// identify variants. The same source tree serves parsing, checking and tooling.
 
 pub record Node {
     kind NodeKind

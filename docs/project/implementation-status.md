@@ -196,6 +196,14 @@ compile-time evaluation, reification, and public typed analysis use the same
 aggregate semantics. The [tuple example](../../compiler/examples/tuples/main.loom)
 checks evaluation order and shared-container results under GC stress.
 
+Nested enum/tuple match patterns now lower to bounded typed decision trees.
+Arms keep source-order inference and first-match selection; type-based coverage
+rejects missing combinations and unreachable arms. Whole fallbacks reconstruct
+decomposed values from live fields, preserving shared data and one-shot Tasks.
+The [pattern example](../../compiler/examples/patterns/README.md) covers native,
+compile-time and suspended execution. Literal/record patterns, guards and nested
+let/var destructuring remain open. Compiler production sources retain flat patterns.
+
 Named function values have structural signatures, contextual overload/generic
 selection, and native calls through one code pointer. Parameters, returned
 callees and aggregate storage share the ordinary ABI and GC rules. Pure

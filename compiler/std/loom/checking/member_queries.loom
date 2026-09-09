@@ -67,6 +67,10 @@ fn member_context(context Context, node Node, offset Int) Result[Context, Failur
         while index < length(node.children) {
             let arm = child(node, index)
             if query_inside(child(arm, 1), offset) {
+                if nested_pattern(child(arm, 0)) {
+                    let scope = pattern_scope(context, child(arm, 0), value.ty, child(arm, 1), context.head, 0)?
+                    return member_context(scope.context, child(arm, 1), offset)
+                }
                 let scope = match_scope(context, value, arm)?
                 return member_context(scope.context, child(arm, 1), offset)
             }
