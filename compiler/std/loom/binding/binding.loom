@@ -26,7 +26,8 @@ import std.option.Option
 import std.result.Result
 
 pub record Failure { source Int diagnostic Diagnostic }
-// owner is the enclosing concept/impl symbol, or -1 for a top-level declaration.
+// owner is the enclosing concept/impl or function, or -1 at top level.
+// Checking may append private anonymous functions; they never enter name indexes.
 pub record Symbol { file Int node Node name Text public Bool test_only Bool owner Int }
 record Scope { package Int production Map[Text, List[Int]] testing Map[Text, List[Int]] }
 // Source-file and symbol indices are local to this binding result. Rebind after

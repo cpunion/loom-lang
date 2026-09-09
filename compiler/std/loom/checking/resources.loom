@@ -224,7 +224,7 @@ fn resource_unreached(env Environment, roots List[Int]) Result[Bool, Failure] {
     if resource_concept(env, "Dispose") < 0 && resource_concept(env, "MustScope") < 0 { return Result.Ok(true) }
     // Keep diagnostic-only instances out of native reachability. Generic
     // bodies retain obligations until a concrete specialization is selected.
-    let analysis = Environment { source = env.source types = env.types type_states = env.type_states expand_data = true
+    let analysis = Environment { closures = env.closures source = env.source types = env.types type_states = env.type_states expand_data = true
         has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers signatures = env.signatures
         pending = new[Instance]() stage_depth = env.stage_depth computations = env.computations validations = env.validations
         concepts = env.concepts implementations = env.implementations interfaces = env.interfaces
@@ -244,15 +244,13 @@ fn resource_unreached(env Environment, roots List[Int]) Result[Bool, Failure] {
     Result.Ok(true)
 }
 
-fn resource_computation(context Context, functions List[Function], value Expr) Result[Bool, Failure] {
+fn resource_computation(context Context, functions List[Function], value Function) Result[Bool, Failure] {
     if resource_concept(context.env, "Dispose") < 0 && resource_concept(context.env, "MustScope") < 0 { return Result.Ok(true) }
     let closure = new[Function]()
     var index = 0
     while index < length(functions) { push(closure, get(functions, index))
         index = index + 1 }
-    push(closure, Function { is_async = false symbol = context.signature.symbol arguments = context.arguments params = new[Int]() result = value.ty
-        locals = context.locals preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1
-        body = value runtime_name = "" span = value.span })
+    push(closure, value)
     discard resource_function(ResourceAnalysis { env = context.env functions = closure summaries = new[ResourceSummary]() }, length(functions), -1)?
     Result.Ok(true)
 }

@@ -164,6 +164,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/dynamic",
         "examples/associated",
         "examples/callbacks",
+        "examples/closures",
         "examples/collections",
         "examples/modules/app",
         "examples/comptime_parameters",

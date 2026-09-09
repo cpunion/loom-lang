@@ -280,8 +280,10 @@ Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time
 invocation/reification. Native captured environments now reuse typed managed
 payloads and GC snapshots, with shared escaping state tested at O0/O2. Source
-closure conversion and compile-time capture evaluation remain open; runtime callbacks are
-distinct from compile-time parameters.
+closure conversion now supports shared mutable bindings, nested/async literals
+and pure compile-time capture evaluation. Captures cannot erase scoped resource
+or one-shot Task obligations. Explicit captured function `comptime` parameters
+remain open; runtime callbacks are distinct from compile-time parameters.
 
 Compile-time parameters now specialize named calls with Int/Bool/Text values or
 known source-function identities and leave only runtime arguments in the native
@@ -291,8 +293,8 @@ retain explicit generic requirements and mandatory abstract proofs. Concept and
 implementation methods use the same static parameters; dynamic slots include
 static values in their identity and erase them from the runtime signature.
 Selected bodies retain abstract checking without emitting unused callers. Function
-references to partially specialized static declarations, capturing closures
-and heterogeneous packs remain open.
+references to partially specialized static declarations, captured function
+`comptime` parameters and heterogeneous packs remain open.
 
 Pure dynamic construction, calls and returned values now share the compile-time
 evaluator, with exact associated/generic/static witness slots. Purity follows the

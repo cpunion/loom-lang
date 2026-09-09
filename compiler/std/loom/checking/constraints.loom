@@ -48,7 +48,7 @@ fn predicate_node(env Environment, owner Int) Node {
 fn predicate_context(env Environment, owner Int, locals List[Local], self_local Int, emit Bool) Context {
     let bindings = new[Binding]()
     push(bindings, Binding { name = "self" local = self_local constant = -1 previous = -1 })
-    Context { env = env signature = Signature { symbol = owner parameters = 0 params = ints(get(locals, self_local).ty) compile_time = new[Int]() result = 2 requirements = new[Requirement]() }
+    Context { lexical = new_lexical() env = env signature = Signature { symbol = owner parameters = 0 params = ints(get(locals, self_local).ty) compile_time = new[Int]() result = 2 requirements = new[Requirement]() }
         arguments = new[Int]() constants = new[StaticValue]() locals = locals bindings = bindings head = 0
         cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2 facts = new[Fact]() fact_head = -1 emit = emit }
 }
@@ -208,7 +208,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
         return Result.Err(error(context, node, "type constraint expansion depth exceeded; check for a dependency cycle"))
     }
     // Guard expansion shares this function queue, unlike compile-time staging.
-    let env = Environment { source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true
+    let env = Environment { closures = context.env.closures source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true
         has_refinements = context.env.has_refinements expanding_helpers = context.env.expanding_helpers signatures = context.env.signatures
         pending = context.env.pending stage_depth = context.env.stage_depth + 1 computations = context.env.computations validations = context.env.validations
         concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces

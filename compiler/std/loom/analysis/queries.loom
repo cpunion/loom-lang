@@ -243,7 +243,8 @@ fn local_binding(value Expr, local Int, spans List[Span]) {
 fn local_location(analysis SemanticView, report Inspection, function Function, local Int) {
     let symbol = get(analysis.bindings.symbols, function.symbol)
     var index = 0
-    var parameter = 0
+    var parameter = if symbol.node.value == "" && length(function.params) != 0 &&
+        get(analysis.data.types, get(function.params, 0)).kind == TypeKind.Frame { 1 } else { 0 }
     while index < length(symbol.node.children) {
         let group = get(symbol.node.children, index)
         if group.kind == NodeKind.Parameters {
@@ -275,6 +276,59 @@ fn local_location(analysis SemanticView, report Inspection, function Function, l
         }
         index = index + 1
     }
+    if symbol.node.value == "" && symbol.owner >= 0 {
+        index = 0
+        while index < length(analysis.data.functions) {
+            let parent = get(analysis.data.functions, index)
+            if parent.symbol == symbol.owner {
+                capture_location(analysis, report, parent, function, get(function.locals, local).name, parent.body)
+            }
+            index = index + 1
+        }
+    }
+}
+
+// Follow the checked capture initializer back to its actual enclosing binding.
+// A same-spelled declaration elsewhere is not definition evidence.
+fn capture_location(analysis SemanticView, report Inspection, parent Function, function Function, name Text, value Expr) {
+    if value.kind == ExprKind.FunctionRef && value.index >= 0 && length(value.children) == 1 {
+        let callee = get(analysis.data.functions, value.index)
+        if callee.symbol == function.symbol && get(callee.arguments, 0) == get(function.arguments, 0) {
+            let environment = get(value.children, 0)
+            let fields = get(analysis.data.types, environment.ty).fields
+            var index = 0
+            while index < length(environment.children) {
+                let field = get(environment.children, index)
+                if get(fields, field.index).name == name {
+                    let source = get(field.children, 0)
+                    if source.kind == ExprKind.Local { local_location(analysis, report, parent, source.index) }
+                }
+                index = index + 1
+            }
+        }
+    }
+    var index = 0
+    while index < length(value.children) {
+        capture_location(analysis, report, parent, function, name, get(value.children, index))
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var item = 0
+        while item < length(arm.body) {
+            capture_location(analysis, report, parent, function, name, get(arm.body, item))
+            item = item + 1
+        }
+        index = index + 1
+    }
+}
+
+fn source_local_type(analysis SemanticView, ty Int) Int {
+    let shape = get(analysis.data.types, ty)
+    if shape.kind == TypeKind.Frame && shape.symbol == -1 && length(shape.arguments) == 1 {
+        get(shape.arguments, 0)
+    } else { ty }
 }
 
 fn signature_name(analysis SemanticView, params List[Int], output Int) Text {
@@ -360,14 +414,15 @@ fn dyn_location(analysis SemanticView, report Inspection, value Expr) {
     }
 }
 
-fn path_depth(value Expr) Int {
+fn path_depth(analysis SemanticView, value Expr) Int {
     if value.kind == ExprKind.Local {
         return 0
     }
     if value.kind == ExprKind.Field && length(value.children) == 1 {
         let child = get(value.children, 0)
         if same_span(value.span, child.span) {
-            let depth = path_depth(child)
+            if source_local_type(analysis, child.ty) != child.ty { return 0 }
+            let depth = path_depth(analysis, child)
             if depth >= 0 {
                 return depth + 1
             }
@@ -387,13 +442,13 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
             return
         }
         if (path && target.segment == 0) || kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign {
-            add_type(report, query_type_name(analysis, get(function.locals, value.index).ty))
+            add_type(report, query_type_name(analysis, source_local_type(analysis, get(function.locals, value.index).ty)))
             local_location(analysis, report, function, value.index)
         }
         return
     }
     if value.kind == ExprKind.Field {
-        if kind == NodeKind.Field || kind == NodeKind.Select ||(path && path_depth(value) == target.segment) {
+        if kind == NodeKind.Field || kind == NodeKind.Select ||(path && path_depth(analysis, value) == target.segment) {
             add_type(report, query_type_name(analysis, value.ty))
             let ty = if kind == NodeKind.Field {
                 parent_type

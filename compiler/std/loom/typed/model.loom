@@ -36,8 +36,9 @@ pub record Type {
     // Associated uses the member's source symbol and [receiver, member arguments...].
     // Concrete projections normalize before executable IR reaches the backend.
     // Function has symbol -1 and arguments [parameter types..., result type].
-    // Task has symbol -1 and [logical result]. Frame is lowering-only managed
-    // storage: result first, then program counter, parameters and live spills.
+    // Task has symbol -1 and [logical result]. Frame is private managed storage
+    // for captures/cells or coroutines. Only coroutine frames require a result,
+    // program counter, parameters and live spills in their lowering-defined order.
     // Dyn arguments are all associated bindings in concept declaration order;
     // its symbol identifies the exact concept-and-bindings interface instance.
     symbol Int
@@ -96,7 +97,9 @@ pub enum ExprKind {
     Suspend
 }
 
-// FunctionRef.index is a concrete scheduled function ID. IndirectCall children
+// FunctionRef.index is a concrete scheduled function ID; an optional child is
+// its managed environment, passed as the lifted target's first parameter.
+// IndirectCall children
 // are [callee, arguments...], evaluated once in source order.
 // Deferred never reaches native emission. A "comptime selection" has possible
 // Task-local captures, not evaluated arguments; ordinary deferred calls keep

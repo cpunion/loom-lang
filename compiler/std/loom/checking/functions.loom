@@ -263,7 +263,7 @@ record FunctionScope { context Context preconditions List[Expr] params List[Int]
 
 fn function_scope(env Environment, current Signature, arguments List[Int], constants List[StaticValue], emit Bool) Result[FunctionScope, Failure] {
     let item = symbol(env, current.symbol)
-    var context = Context { env = env signature = current arguments = arguments
+    var context = Context { lexical = new_lexical() env = env signature = current arguments = arguments
         constants = constants locals = new[Local]() bindings = new[Binding]() head = -1
         cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2 facts = new[Fact]() fact_head = -1 emit = emit }
     discard resource_parameters(context)?
@@ -295,6 +295,7 @@ fn function_scope(env Environment, current Signature, arguments List[Int], const
 // Construction and mandatory verification share one binder/body checker. A
 // private proof closure can construct its caller without verifying it recursively.
 fn function_body(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[CheckedBody, Failure] {
+    if id < 0 { return closure_body(env, -1 - id, new[Context](), emit) }
     let original = get(env.signatures, id)
     let item = symbol(env, original.symbol)
     let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
@@ -338,5 +339,6 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
 }
 fn function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
     let checked = function_body(env, id, arguments, constants, emit)?
-    checked_contracts(checked.context, id, checked.function)
+    let verified = checked_contracts(checked.context, id, checked.function)?
+    Result.Ok(close_function(checked.context, verified))
 }

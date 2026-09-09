@@ -31,6 +31,23 @@ fn only_type(found Inspection, expected Text) {
     assert length(found.types) == 1 && get(found.types, 0) == expected
 }
 
+test fn closure_queries_keep_source_parameters_and_captured_bindings() {
+    let text = "record Item { count Int }\nfn make(start Int) fn(Int) Int { var current = Item { count = start }\nfn(step Int) Int { current = Item { count = current.count + step }\ncurrent.count } }\nfn main() { assert make(1)(2) == 3 }"
+    let analysis = accepted(input(text))
+    let parameter = inspection(analysis, text, "step }")
+    only_type(parameter, "Int")
+    let start = query_offset(text, "step Int")
+    only_definition(parameter, start, start + 4)
+    let captured = inspection(analysis, text, "current.count +")
+    only_type(captured, "app.Item")
+    let binding = query_offset(text, "current =")
+    only_definition(captured, binding, binding + 7)
+    let field = inspection(analysis, text, "count +")
+    only_type(field, "Int")
+    let member = query_offset(text, "count Int")
+    only_definition(field, member, member + 5)
+}
+
 test fn async_calls_tasks_and_await_have_distinct_editor_types() {
     let text = "async fn item() Int { 7 }\nasync fn main() { let task = item()\nassert task.await == 7 }"
     let analysis = accepted(input(text))

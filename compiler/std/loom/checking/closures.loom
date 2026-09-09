@@ -1,0 +1,277 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.ast.has
+import std.loom.binding.Symbol
+import std.loom.typed.TypeKind
+import std.loom.typed.Local
+import std.loom.typed.Field
+import std.loom.typed.Function
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+record Cell { local Int ty Int }
+record Capture { name Text ty Int mutable Bool is_scoped Bool constant Int cell Int field Int local Int binding Int }
+record Lexical {
+    cells List[Cell]
+    outer List[Context]
+    captures List[Capture]
+    known List[Capture]
+    environment Int
+    local Int
+}
+record ClosurePlan {
+    signature Signature
+    arguments List[Int]
+    constants List[StaticValue]
+    captures List[Capture]
+    environment Int
+    checked Bool
+}
+fn new_lexical() List[Lexical] { new[Lexical]() }
+fn lexical(context Context) Lexical {
+    if length(context.lexical) == 0 {
+        push(context.lexical, Lexical { cells = new[Cell]() outer = new[Context]() captures = new[Capture]() known = new[Capture]() environment = -1 local = -1 })
+    }
+    get(context.lexical, 0)
+}
+fn copy_lexical(values List[Lexical]) List[Lexical] {
+    let copied = new[Lexical]()
+    if length(values) != 0 {
+        let value = get(values, 0)
+        push(copied, Lexical { cells = std.list.clone(value.cells) outer = value.outer captures = std.list.clone(value.captures)
+            known = value.known environment = value.environment local = value.local })
+    }
+    copied
+}
+fn lexical_owner(env Environment, owner Int) Int {
+    let item = symbol(env, owner)
+    if item.node.kind == NodeKind.Function && item.node.value == "" && item.owner >= 0 {
+        lexical_owner(env, item.owner)
+    } else { owner }
+}
+fn closure_symbol(context Context, node Node) Int {
+    var index = 0
+    while index < length(context.env.source.symbols) {
+        let item = symbol(context.env, index)
+        if item.owner == context.signature.symbol && item.node.kind == NodeKind.Function && item.node.value == "" &&
+            item.node.span.start == node.span.start && item.node.span.end == node.span.end { return index }
+        index = index + 1
+    }
+    let parent = symbol(context.env, context.signature.symbol)
+    let id = length(context.env.source.symbols)
+    push(context.env.source.symbols, Symbol { file = parent.file node = node name = "" public = false test_only = parent.test_only owner = context.signature.symbol })
+    id
+}
+fn cell_type(context Context, local Int) Int {
+    let scope = lexical(context)
+    var index = 0
+    while index < length(scope.cells) {
+        let cell = get(scope.cells, index)
+        if cell.local == local { return cell.ty }
+        index = index + 1
+    }
+    let ty = intern(context.env, TypeKind.Frame, -1, ints(get(context.locals, local).ty))
+    let shape = get(context.env.types, ty)
+    if length(shape.fields) == 0 { push(shape.fields, Field { name = "value" ty = get(context.locals, local).ty }) }
+    push(scope.cells, Cell { local = local ty = ty })
+    ty
+}
+// Ordinary lexical lookup stays unchanged. Only a missing name in a closure
+// asks its enclosing scope for a binding, so unused locals are never captured.
+fn capture_binding(context Context, name Text) Int {
+    if length(context.lexical) == 0 { return -1 }
+    let scope = get(context.lexical, 0)
+    if scope.environment < 0 { return -1 }
+    var index = 0
+    while index < length(scope.captures) {
+        let capture = get(scope.captures, index)
+        if capture.name == name { return capture.binding }
+        index = index + 1
+    }
+    var ty = -1
+    var mutable = false
+    var is_scoped = false
+    var constant = -1
+    var cell = -1
+    var field = -1
+    if length(scope.outer) != 0 {
+        let outer = get(scope.outer, 0)
+        let found = lookup(outer, name)
+        if found < 0 { return -1 }
+        let binding = get(outer.bindings, found)
+        constant = binding.constant
+        if constant >= 0 { ty = static_type(outer, constant) } else {
+            let value = get(outer.locals, binding.local)
+            ty = value.ty
+            mutable = value.mutable
+            is_scoped = value.is_scoped
+            if mutable { cell = cell_type(outer, binding.local) }
+            let fields = get(context.env.types, scope.environment).fields
+            field = length(fields)
+            push(fields, Field { name = name ty = if cell >= 0 { cell } else { ty } })
+        }
+    } else {
+        index = 0
+        while index < length(scope.known) {
+            let capture = get(scope.known, index)
+            if capture.name == name {
+                ty = capture.ty
+                mutable = capture.mutable
+                is_scoped = capture.is_scoped
+                constant = capture.constant
+                cell = capture.cell
+                field = capture.field
+            }
+            index = index + 1
+        }
+        if ty < 0 { return -1 }
+    }
+    let local = if constant >= 0 { -1 } else { length(context.locals) }
+    let binding = length(context.bindings)
+    push(context.bindings, Binding { name = name local = local constant = constant previous = -1 })
+    if local >= 0 {
+        push(context.locals, Local { name = name ty = ty mutable = mutable is_scoped = is_scoped })
+        if cell >= 0 { push(scope.cells, Cell { local = local ty = cell }) }
+    }
+    push(scope.captures, Capture { name = name ty = ty mutable = mutable is_scoped = is_scoped constant = constant cell = cell field = field local = local binding = binding })
+    binding
+}
+fn schedule_closure(env Environment, plan Int) Int {
+    let marker = -1 - plan
+    var index = 0
+    while index < length(env.pending) {
+        if get(env.pending, index).signature == marker { return index }
+        index = index + 1
+    }
+    let target = length(env.pending)
+    push(env.pending, Instance { signature = marker arguments = new[Int]() constants = new[StaticValue]() })
+    target
+}
+fn closure_literal(context Context, node Node) Result[Expr, Failure] {
+    let owner = closure_symbol(context, node)
+    let params = new[Int]()
+    let parameters = group(node, NodeKind.Parameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if has(parameter, NodeKind.Comptime) { return Result.Err(error(context, parameter, "anonymous functions have fixed runtime parameters")) }
+        push(params, context_type(context, child(parameter, 0))?)
+        index = index + 1
+    }
+    let output = group(node, NodeKind.ReturnType)
+    let returned = if length(output) == 0 { 0 } else { context_type(context, get(output, 0))? }
+    let signature = Signature { symbol = owner parameters = context.signature.parameters params = params compile_time = new[Int]() result = returned requirements = context.signature.requirements }
+    discard task_signature(context.env, signature, node)?
+    var plan = -1
+    index = 0
+    while index < length(context.env.closures) {
+        let saved = get(context.env.closures, index)
+        if saved.checked && saved.signature.symbol == owner && same(saved.arguments, context.arguments) && same_constants(saved.constants, context.constants) {
+            plan = index
+        }
+        index = index + 1
+    }
+    let outer = new[Context]()
+    if plan < 0 {
+        plan = length(context.env.closures)
+        let environment = length(context.env.types)
+        push(context.env.types, simple_type(TypeKind.Frame, owner, context.arguments))
+        push(context.env.type_states, TypeState { phase = 2 task_width = -1 })
+        push(context.env.closures, ClosurePlan { signature = signature arguments = context.arguments constants = context.constants
+            captures = new[Capture]() environment = environment checked = false })
+        push(outer, context)
+    }
+    // A recipe shares layout, not permission to skip checks in another stage.
+    let checked = closure_body(context.env, plan, outer, context.emit)?
+    discard checked_contracts(checked.context, -1 - plan, checked.function)?
+    let completed = get(context.env.closures, plan)
+    std.list.set(context.env.closures, plan, ClosurePlan { signature = completed.signature arguments = completed.arguments
+        constants = completed.constants captures = completed.captures environment = completed.environment checked = true })
+    let saved = get(context.env.closures, plan)
+    let fields = new[Expr]()
+    index = 0
+    while index < length(saved.captures) {
+        let capture = get(saved.captures, index)
+        if capture.constant < 0 {
+            let found = lookup(context, capture.name)
+            let binding = get(context.bindings, found)
+            let value = get(context.locals, binding.local)
+            let storage = if capture.mutable { cell_type(context, binding.local) } else { value.ty }
+            let input = atom(ExprKind.Local, storage, node, binding.local)
+            push(fields, expression(ExprKind.Field, storage, node, "", capture.field, expressions(input), true))
+        }
+        index = index + 1
+    }
+    let captures = if length(fields) == 0 { new[Expr]() } else {
+        expressions(expression(ExprKind.FrameNew, saved.environment, node, "", -1, fields, true))
+    }
+    Result.Ok(expression(ExprKind.FunctionRef, function_shape(context.env, signature), node, "",
+        if context.emit { schedule_closure(context.env, plan) } else { -1 }, captures, true))
+}
+fn closure_body(env Environment, plan Int, outer List[Context], emit Bool) Result[CheckedBody, Failure] {
+    let saved = get(env.closures, plan)
+    let node = symbol(env, saved.signature.symbol).node
+    let captures = if length(outer) == 0 { new[Capture]() } else { saved.captures }
+    let scope = Lexical { cells = new[Cell]() outer = outer captures = captures
+        known = if length(outer) == 0 { saved.captures } else { new[Capture]() }
+        environment = saved.environment local = length(saved.signature.params) }
+    let scopes = new[Lexical]()
+    push(scopes, scope)
+    var context = Context { lexical = scopes env = env signature = saved.signature arguments = saved.arguments constants = saved.constants
+        locals = new[Local]() bindings = new[Binding]() head = -1 cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2
+        facts = new[Fact]() fact_head = -1 emit = emit }
+    discard resource_parameters(context)?
+    let parameters = group(node, NodeKind.Parameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        context = bind_local(context, parameter, parameter.value, get(saved.signature.params, index), false, -1)?
+        index = index + 1
+    }
+    push(context.locals, Local { name = "" ty = saved.environment mutable = false is_scoped = false })
+    let preconditions = contracts(context, node, NodeKind.Requires)?
+    index = 0
+    while index < length(preconditions) {
+        context = assuming(context, get(preconditions, index), true, 0)
+        index = index + 1
+    }
+    let body = block(context, child(node, part(node, NodeKind.Block)), saved.signature.result, true)?
+    var result_local = -1
+    if has(node, NodeKind.Ensures) {
+        result_local = length(context.locals)
+        push(context.locals, Local { name = "result" ty = saved.signature.result mutable = false is_scoped = false })
+        let binding = length(context.bindings)
+        push(context.bindings, Binding { name = "result" local = result_local constant = -1 previous = context.head })
+        context = context_at(context, binding)
+        // Captures used only by a contract still belong to the environment.
+        discard contracts(context, node, NodeKind.Ensures)?
+    }
+    let prefix = new[Expr]()
+    index = 0
+    while index < length(captures) {
+        let capture = get(captures, index)
+        if capture.constant < 0 {
+            if capture.is_scoped || must_scope(context, capture.ty)? || task_value(env, capture.ty) ||
+                marker_type(env, context.signature.symbol, context.signature.requirements, capture.ty, resource_concept(env, "NoSuspend"), new[Int]())? {
+                return Result.Err(error(context, node, "a closure cannot capture a scoped, MustScope, NoSuspend or one-shot Task binding"))
+            }
+            let storage = if capture.cell >= 0 { capture.cell } else { capture.ty }
+            let source = expression(ExprKind.Field, storage, node, "", capture.field,
+                expressions(atom(ExprKind.Local, saved.environment, node, scope.local)), true)
+            push(prefix, expression(ExprKind.Let, 0, node, "", capture.local, expressions(source), true))
+        }
+        index = index + 1
+    }
+    push(prefix, body)
+    let function = Function { is_async = has(node, NodeKind.Async) symbol = saved.signature.symbol arguments = ints(saved.environment)
+        params = saved.signature.params result = saved.signature.result locals = context.locals preconditions = preconditions
+        postconditions = new[Expr]() result_local = result_local body = expression(ExprKind.Block, body.ty, node, "", -1, prefix, body.falls)
+        runtime_name = "" span = node.span }
+    discard task_flow(context, function)?
+    Result.Ok(CheckedBody { context = context function = function })
+}

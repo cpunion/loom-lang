@@ -111,20 +111,27 @@ fn call(state State, expr Expr, target Int, values List[Value], start Int, paren
     }
     Result.Ok(step(computed))
 }
-fn function_value(state State, expr Expr) Result[Step, Failure] {
+fn function_value(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
     if expr.index < 0 || expr.index >= length(state.program.functions) { return Result.Err(failure(expr, "compile-time function reference has no checked target")) }
     let function = get(state.program.functions, expr.index)
     let types = new[Value]()
     var index = 0
     while index < length(function.arguments) { push(types, number(get(function.arguments, index)))
         index = index + 1 }
+    if length(expr.children) != 0 {
+        if length(expr.children) != 1 { return Result.Err(failure(expr, "a checked closure has one environment")) }
+        let environment = execute(state, get(expr.children, 0), frame, depth + 1)?
+        if environment.control != Control.Normal { return Result.Ok(environment) }
+        push(types, environment.value)
+        return Result.Ok(step(Value { ty = expr.ty number = function.symbol floating = 0.0 text = "closure" items = types }))
+    }
     Result.Ok(step(aggregate(expr.ty, function.symbol, types)))
 }
 fn function_target(state State, expr Expr, value Value) Result[Int, Failure] {
     var index = 0
     while index < length(state.program.functions) {
         let function = get(state.program.functions, index)
-        if function.symbol == value.number && length(function.arguments) == length(value.items) {
+        if function.symbol == value.number && length(function.arguments) == length(value.items) - if value.text == "closure" { 1 } else { 0 } {
             var matches = true
             var argument = 0
             while argument < length(function.arguments) {
@@ -140,7 +147,7 @@ fn function_target(state State, expr Expr, value Value) Result[Int, Failure] {
 fn record_value(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
     if expr.ty < 0 || expr.ty >= length(state.program.types) { return Result.Err(failure(expr, "invalid checked record type")) }
     let shape = get(state.program.types, expr.ty)
-    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple { return Result.Err(failure(expr, "invalid checked aggregate construction")) }
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple && shape.kind != TypeKind.Frame { return Result.Err(failure(expr, "invalid checked aggregate construction")) }
     let fields = slots(state, expr, length(shape.fields))?
     var index = 0
     while index < length(expr.children) {
@@ -151,7 +158,7 @@ fn record_value(state State, expr Expr, frame Frame, depth Int) Result[Step, Fai
         set(fields, field.index, value.value)
         index = index + 1
     }
-    Result.Ok(step(aggregate(expr.ty, 0, fields)))
+    Result.Ok(step(if shape.kind == TypeKind.Frame { fresh(state, expr.ty, fields) } else { aggregate(expr.ty, 0, fields) }))
 }
 fn matched(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
     let value = execute(state, child(expr, 0)?, frame, depth + 1)?
@@ -239,7 +246,16 @@ fn invoked(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     if expr.kind == ExprKind.Call { return call(state, expr, expr.index, values.value.items, 0, frame, depth) }
     if expr.kind == ExprKind.DynCall { return dynamic_invoke(state, expr, values.value.items, frame, depth) }
     if expr.kind == ExprKind.IndirectCall {
-        let target = function_target(state, expr, get(values.value.items, 0))?
+        let callee = get(values.value.items, 0)
+        let target = function_target(state, expr, callee)?
+        if callee.text == "closure" {
+            let inputs = new[Value]()
+            push(inputs, get(callee.items, length(callee.items) - 1))
+            var index = 1
+            while index < length(values.value.items) { push(inputs, get(values.value.items, index))
+                index = index + 1 }
+            return call(state, expr, target, inputs, 0, frame, depth)
+        }
         return call(state, expr, target, values.value.items, 1, frame, depth)
     }
     if expr.kind == ExprKind.Intrinsic { return Result.Ok(step(primitive(state, expr, values.value.items)?)) }
@@ -265,7 +281,15 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     if expr.kind == ExprKind.Break || expr.kind == ExprKind.Continue {
         return Result.Ok(Step { value = unit() control = if expr.kind == ExprKind.Break { Control.Break } else { Control.Continue } })
     }
-    if expr.kind == ExprKind.FunctionRef { return function_value(state, expr) }
+    if expr.kind == ExprKind.FunctionRef { return function_value(state, expr, frame, depth) }
+    if expr.kind == ExprKind.FrameStore {
+        let values = arguments(state, expr, frame, depth)?
+        if values.control != Control.Normal { return Result.Ok(values) }
+        let target = get(values.value.items, 0)
+        if expr.index < 0 || expr.index >= length(target.items) { return Result.Err(failure(expr, "compile-time cell field is out of bounds")) }
+        set(target.items, expr.index, get(values.value.items, 1))
+        return Result.Ok(step(unit()))
+    }
     if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text || expr.kind == ExprKind.Local {
         return atomic(state, expr, frame)
     }
@@ -277,7 +301,7 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     }
     if expr.kind == ExprKind.If || expr.kind == ExprKind.While { return controlled(state, expr, frame, depth) }
     if expr.kind == ExprKind.Match { return matched(state, expr, frame, depth) }
-    if expr.kind == ExprKind.Record { return record_value(state, expr, frame, depth) }
+    if expr.kind == ExprKind.Record || expr.kind == ExprKind.FrameNew { return record_value(state, expr, frame, depth) }
     if expr.kind == ExprKind.DynBox { return dynamic_box(state, expr, frame, depth) }
     if expr.kind == ExprKind.Call || expr.kind == ExprKind.IndirectCall || expr.kind == ExprKind.DynCall || expr.kind == ExprKind.Intrinsic || expr.kind == ExprKind.Variant || expr.kind == ExprKind.List {
         return invoked(state, expr, frame, depth)

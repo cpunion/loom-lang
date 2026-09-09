@@ -21,7 +21,7 @@ fn registered_scoped(context Context, node Node, boundary Int) Result[Step, Fail
     let body = expression(ExprKind.Block, 0, node, "", -1, expressions(dispose), dispose.falls)
     let head = length(context.cleanups)
     push(context.cleanups, Cleanup { body = body previous = context.cleanup_head })
-    let next = Context { env = bound.env signature = bound.signature arguments = bound.arguments constants = bound.constants
+    let next = Context { lexical = bound.lexical env = bound.env signature = bound.signature arguments = bound.arguments constants = bound.constants
         locals = bound.locals bindings = bound.bindings head = bound.head cleanups = bound.cleanups cleanup_head = head loop_boundary = bound.loop_boundary
         facts = bound.facts fact_head = bound.fact_head emit = bound.emit }
     let initialized = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls)

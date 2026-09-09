@@ -1,0 +1,138 @@
+import std.list.map
+import std.list.get
+import std.list.new
+import std.list.push
+import std.time.sleep_ms
+
+test fn captures_share_reassignment_and_keep_lexical_shadowing() {
+    var value = 1
+    let read = fn() Int {
+        value
+    }
+    value = 2
+    assert read() == 2
+    let change = fn(next Int) {
+        value = next
+    }
+    change(7)
+    assert value == 7 && read() == 7
+    let shadow = fn(value Int) Int {
+        value + 1
+    }
+    assert shadow(20) == 21
+    assert read() == 7
+}
+
+test fn nested_closures_and_shared_containers_escape() {
+    let values = [1]
+    let write = fn(value Int) {
+        values[0] = value
+    }
+    let reads = map([0, 1], fn(ignored Int) fn() Int {
+            fn() Int {
+                get(values, 0) + ignored
+            }
+        })
+    write(10)
+    assert get(reads, 0)() == 10
+    assert get(reads, 1)() == 11
+    let next = counter(4)
+    assert next(1) == 5
+    assert next(2) == 7
+}
+
+test fn compile_time_closures_use_the_same_shared_cells() {
+    let folded = comptime {
+        var value = 1
+        let read = fn() Int {
+            value
+        }
+        value = 9
+        read()
+    }
+    assert folded == 9
+    let first = comptime {
+        counter(2)
+    }
+    let second = comptime {
+        counter(2)
+    }
+    assert first(3) == 5
+    assert first(1) == 6
+    assert second(1) == 3
+    let pair = comptime {
+        let next = counter(10)
+        (next, next)
+    }
+    assert pair.0(1) == 11
+    assert pair.1(2) == 13
+    assert comptime {
+        checked_after(3)(4)
+    } == 4
+    assert checked_after(4)(5) == 5
+    let recursive = comptime {
+        var action = fn(value Int) Int {
+            value
+        }
+        action = fn(value Int) Int {
+            if value <= 0 {
+                0
+            } else {
+                value + action(value - 1)
+            }
+        }
+        action
+    }
+    assert recursive(4) == 10
+}
+
+fn checked_after(limit Int) fn(Int) Int {
+    fn(value Int) Int
+    requires value > limit {
+        value
+    }
+}
+
+test async fn async_closures_and_captured_factories_keep_owner_and_shared_state() {
+    var total = 1
+    let action = async fn(step Int) Int {
+        sleep_ms(0).await
+        total = total + step
+        total
+    }
+    let factory = fn(step Int) Task[Int] {
+        action(step)
+    }
+    let pending = factory(2)
+    total = 5
+    assert pending.await == 7
+    assert total == 7
+}
+
+fn after_cleanup() fn() Int {
+    var value = 1
+    defer {
+        value = 9
+    }
+    fn() Int {
+        value
+    }
+}
+
+test fn loop_cells_and_deferred_writes_keep_lexical_lifetimes() {
+    let readers = new[fn() Int]()
+    var index = 0
+    while index < 3 {
+        var own = index
+        push(readers, fn() Int {
+                own = own + 1
+                own + index
+            })
+        index = index + 1
+    }
+    assert readers[0]() == 4
+    assert readers[0]() == 5
+    assert readers[1]() == 5
+    assert readers[2]() == 6
+    assert after_cleanup()() == 9
+}

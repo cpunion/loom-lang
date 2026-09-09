@@ -39,7 +39,7 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
         return Result.Err(error(state.context, state.node, "comptime result has no concrete type"))
     }
     let kind = get(state.context.env.types, value.ty).kind
-    let shared = kind == TypeKind.List || kind == TypeKind.Bytes
+    let shared = kind == TypeKind.List || kind == TypeKind.Bytes || kind == TypeKind.Frame
     if shared {
         if value.number <= 0 || value.number > 100000 {
             return Result.Err(error(state.context, state.node, "comptime result has no fresh container identity"))
@@ -56,6 +56,9 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
     }
     // Register containers before walking their contents: aliases and cycles
     // revisit an ID, while aggregate fields retain ordinary value semantics.
+    if kind == TypeKind.Function && value.text == "closure" {
+        return reify_visit(state, get(value.items, length(value.items) - 1), depth + 1)
+    }
     if shared || kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum || kind == TypeKind.Dyn {
         var index = 0
         let count = if kind == TypeKind.List { list_length(value) } else { length(value.items) }
@@ -72,7 +75,7 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
     discard reify_spend(state, 0, 2)?
     let node = state.node
     let kind = get(state.context.env.types, value.ty).kind
-    if kind == TypeKind.List || kind == TypeKind.Bytes {
+    if kind == TypeKind.List || kind == TypeKind.Bytes || kind == TypeKind.Frame {
         let object = get(state.objects, get(state.by_id, value.number))
         return Result.Ok(atom(ExprKind.Local, value.ty, node, object.local))
     }
@@ -80,9 +83,15 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
     if kind == TypeKind.Function {
         let arguments = new[Int]()
         var index = 0
-        while index < length(value.items) { push(arguments, get(value.items, index).number)
+        let count = length(value.items) - if value.text == "closure" { 1 } else { 0 }
+        while index < count { push(arguments, get(value.items, index).number)
             index = index + 1 }
-        return reify_function(state.context, node, value.ty, value.number, arguments)
+        let reference = reify_function(state.context, node, value.ty, value.number, arguments)?
+        if value.text == "closure" {
+            return Result.Ok(expression(ExprKind.FunctionRef, value.ty, node, "", reference.index,
+                expressions(reify_value(state, get(value.items, count), depth + 1)?), true))
+        }
+        return Result.Ok(reference)
     }
     if kind == TypeKind.Dyn {
         let receiver = reify_value(state, get(value.items, 0), depth + 1)?
@@ -129,6 +138,17 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
 fn reify_function(context Context, node Node, ty Int, source Int, arguments List[Int]) Result[Expr, Failure] {
     var target = -1
     var index = 0
+    if length(arguments) == 1 {
+        while index < length(context.env.closures) {
+            let closure = get(context.env.closures, index)
+            if closure.signature.symbol == source && closure.environment == get(arguments, 0) {
+                return Result.Ok(expression(ExprKind.FunctionRef, ty, node, "",
+                    if context.emit { schedule_closure(context.env, index) } else { -1 }, new[Expr](), true))
+            }
+            index = index + 1
+        }
+    }
+    index = 0
     while index < length(context.env.signatures) {
         if get(context.env.signatures, index).symbol == source { target = index }
         index = index + 1
@@ -151,7 +171,8 @@ fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
     while index < length(state.objects) {
         let object = get(state.objects, index)
         discard reify_spend(state, 0, 2)?
-        let create = expression(ExprKind.Intrinsic, object.value.ty, node,
+        let frame = get(context.env.types, object.value.ty).kind == TypeKind.Frame
+        let create = expression(if frame { ExprKind.FrameNew } else { ExprKind.Intrinsic }, object.value.ty, node,
             if object.value.ty == 4 { "bytes_new" } else { "list_new" }, -1, new[Expr](), true)
         push(body, expression(ExprKind.Let, 0, node, "", object.local, expressions(create), true))
         index = index + 1
@@ -159,15 +180,16 @@ fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
     index = 0
     while index < length(state.objects) {
         let object = get(state.objects, index)
+        let frame = get(context.env.types, object.value.ty).kind == TypeKind.Frame
         var item = 0
-        let count = if object.value.ty == 4 { length(object.value.items) } else { list_length(object.value) }
+        let count = if object.value.ty == 4 || frame { length(object.value.items) } else { list_length(object.value) }
         while item < count {
             discard reify_spend(state, 0, 2)?
-            let value = if object.value.ty == 4 { get(object.value.items, item) } else { list_element(object.value, item) }
+            let value = if object.value.ty == 4 || frame { get(object.value.items, item) } else { list_element(object.value, item) }
             let content = reify_value(state, value, 0)?
             let reference = atom(ExprKind.Local, object.value.ty, node, object.local)
-            push(body, expression(ExprKind.Intrinsic, 0, node,
-                if object.value.ty == 4 { "bytes_push" } else { "list_push" }, -1, pair(reference, content), true))
+            push(body, expression(if frame { ExprKind.FrameStore } else { ExprKind.Intrinsic }, 0, node,
+                if object.value.ty == 4 { "bytes_push" } else { "list_push" }, if frame { item } else { -1 }, pair(reference, content), true))
             item = item + 1
         }
         index = index + 1

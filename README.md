@@ -34,6 +34,7 @@ same-directory tests, and format/check/build/test/run tasks. See the
 - [Copy files with source Task APIs](compiler/examples/async_files/README.md)
 - [Use async methods through concepts and dyn](compiler/examples/async_methods/README.md)
 - [Pass and store Task callbacks](compiler/examples/task_callbacks/README.md)
+- [Capture shared state in closures](compiler/examples/closures/README.md)
 - [Transfer Task fields through tuples and records](compiler/examples/task_aggregates/README.md)
 - [Match and propagate Tasks in enums](compiler/examples/task_enums/README.md)
 - [Create and consume dynamic Task lists](compiler/examples/task_lists/README.md)

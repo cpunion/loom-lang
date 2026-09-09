@@ -108,6 +108,8 @@ annotations, uninstantiated bodies, and folded code without source identity have
 no result. Some names, such as match-bound locals, have hover but no definition.
 Dynamic calls navigate to concept declarations, not a guessed runtime
 implementation; ambiguous concept overloads omit the definition.
+Closure parameters and captured bindings navigate through checked source
+identities, without exposing private capture cells as user-facing types.
 
 Name completion uses the compiler's package bindings and source scopes without
 running type checking. It includes earlier locals, parameters, generic parameters,
