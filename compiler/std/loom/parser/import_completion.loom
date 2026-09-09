@@ -1,0 +1,118 @@
+import std.option.Option
+
+pub record ImportCursor {
+    span Span
+    qualifier Text
+    prefix Text
+}
+
+fn import_gap(text Text, start Int, end Int) Bool {
+    var index = start
+    while index < end {
+        let value = codepoint(text, index)
+        if value == 10 || value == 13 || !is_whitespace(value) {
+            return false
+        }
+        index = index + width(text, index)
+    }
+    true
+}
+
+fn import_cursor_path(text Text, tokens List[Token], start Int, offset Int) Option[ImportCursor] {
+    var index = start + 1
+    var end = get(tokens, start).span.end
+    var qualifier = ""
+    var expect_name = true
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        if offset < end {
+            return Option.None
+        }
+        if expect_name {
+            if token.kind == Kind.Name && token.span.start <= offset && offset <= token.span.end &&
+            import_gap(text, end, token.span.start) {
+                return Option.Some(ImportCursor {
+                        span = token.span
+                        qualifier = qualifier
+                        prefix = slice(text, token.span.start, offset)
+                    })
+            }
+            if offset <= token.span.start && import_gap(text, end, offset) {
+                return Option.Some(ImportCursor {
+                        span = Span {
+                            start = offset
+                            end = offset
+                        }
+                        qualifier = qualifier
+                        prefix = ""
+                    })
+            }
+            if token.kind != Kind.Name || reserved(token.value) || !import_gap(text, end, token.span.start) {
+                return Option.None
+            }
+            qualifier = if qualifier == "" {
+                token.value
+            } else {
+                concat(qualifier, concat(".", token.value))
+            }
+        } else {
+            if token.kind != Kind.Dot || !import_gap(text, end, token.span.start) {
+                return Option.None
+            }
+        }
+        end = token.span.end
+        expect_name = !expect_name
+        index = index + 1
+    }
+    Option.None
+}
+
+// Byte spans cover only the current path segment, including any suffix after
+// the cursor. This lexical query also works before an import can be parsed.
+// It never repairs source or accepts comments/strings as import paths.
+pub fn import_cursor(text Text, offset Int) Option[ImportCursor] {
+    if offset < 0 || offset > length(text) {
+        return Option.None
+    }
+    if offset < length(text) && byte(text, offset) >= 128 && byte(text, offset) < 192 {
+        return Option.None
+    }
+    var end = offset
+    while end < length(text) && byte(text, end) != 10 && byte(text, end) != 13 {
+        end = end + 1
+    }
+    let tokens = match lex(slice(text, 0, end)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    var depth = 0
+    var line_start = true
+    var index = 0
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        if token.span.start > offset {
+            return Option.None
+        }
+        if depth == 0 && line_start && token.kind == Kind.Name && token.value == "import" && token.span.end < offset {
+            let found = import_cursor_path(text, tokens, index, offset)
+            match found {
+                Option.Some(_) => {
+                    return found
+                },
+                Option.None => {
+                }
+            }
+        }
+        if token.kind == Kind.LBrace || token.kind == Kind.LParen || token.kind == Kind.LBracket {
+            depth = depth + 1
+        }
+        if token.kind == Kind.RBrace || token.kind == Kind.RParen || token.kind == Kind.RBracket {
+            depth = depth - 1
+        }
+        line_start = token.kind == Kind.Newline
+        index = index + 1
+    }
+    Option.None
+}

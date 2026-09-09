@@ -1,0 +1,31 @@
+test fn import_completion_maps_discovery_to_segment_replacement_and_source_signatures() {
+    let text = "import std.text.leRest\nfn unfinished("
+    let offset = query_offset(text, "leRest") + 2
+    let completion = match complete_imports("compiler/examples/scalar", "compiler/std", text, offset, new[SourceOverlay]()) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            Completion {
+                span = Span {
+                    start = 0
+                    end = 0
+                }
+                items = new[CompletionItem]()
+            }
+        }
+    }
+    assert length(completion.items) == 1
+    assert completion_found(completion, "length").kind == CompletionKind.Function
+    assert starts_with(completion_found(completion, "length").detail, "pub fn length(")
+    assert completion.span.start == offset - 2 && completion.span.end == offset + 4
+    let root = match complete_imports("compiler/examples/scalar", "compiler/std", "import st", 9, new[SourceOverlay]()) {
+        Option.Some(value) => value,
+        Option.None => completion
+    }
+    assert length(root.items) == 1 && completion_found(root, "std").kind == CompletionKind.Namespace
+    let missing = "import undeclared."
+    assert match complete_imports("compiler/examples/scalar", "compiler/std", missing, length(missing), new[SourceOverlay]()) {
+        Option.Some(value) => length(value.items) == 0,
+        Option.None => false
+    }
+}

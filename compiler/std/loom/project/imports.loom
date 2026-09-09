@@ -1,0 +1,99 @@
+pub record ImportDeclaration {
+    path Text
+    text Text
+    node Node
+}
+
+pub record ImportScope {
+    namespaces List[Text]
+    declarations List[ImportDeclaration]
+}
+
+// Discover one import segment without loading the importer's incomplete source
+// or checking a dependency closure. Namespace names are navigable directories,
+// not proof of a valid package. Declarations come from parseable production files.
+// Resolution is offline and uses the ordinary manifest, lock and snapshot rules.
+pub fn import_scope(path Text, std_root Text, qualifier Text, overlays List[SourceOverlay]) Result[ImportScope, Text] {
+    let loader, root, selected = prepare_loader(path, std_root, "git", overlay_files(overlays)?, new[LoadFailure]())?
+    let scope = ImportScope {
+        namespaces = new[Text]()
+        declarations = new[ImportDeclaration]()
+    }
+    let owner = get(loader.packages, root).instance
+    let module = get(loader.modules, owner)
+    if qualifier == "" {
+        include(scope.namespaces, "std")
+        if module.name != "" {
+            include(scope.namespaces, module.name)
+        }
+        var index = 0
+        while index < length(module.dependencies) {
+            include(scope.namespaces, get(module.dependencies, index).name)
+            index = index + 1
+        }
+        return Result.Ok(scope)
+    }
+    let target = imported_module(loader, owner, get(parts(qualifier, 46), 0), false)?
+    let directory = import_directory(loader, target, qualifier)?
+    let names = match entries(directory) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(concat(directory, ": cannot read directory"))
+        }
+    }
+    overlay_names(loader.overlays, directory, names)
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        let path = join_path(directory, name)
+        if segment(name) && match kind(path) {
+            Result.Ok(value) => value == FileKind.Directory,
+            Result.Err(_) => false
+        } {
+            // The normal resolver rejects nested modules and directory aliases.
+            match import_directory(loader, target, qualify(qualifier, name)) {
+                Result.Ok(_) => {
+                    include(scope.namespaces, name)
+                }
+                Result.Err(_) => {
+                }
+            }
+        }
+        if ends_with(name, ".loom") && !ends_with(name, "_test.loom") {
+            let physical = is_file(path)
+            let identity = if physical {
+                canonical(path)?
+            } else {
+                path
+            }
+            let overlay = overlay_index(loader.overlays, identity)
+            if physical || overlay >= 0 {
+                let source = if overlay < 0 {
+                    read(path)?
+                } else {
+                    get(loader.overlays, overlay).text
+                }
+                match std.loom.parser.parse(source) {
+                    Result.Ok(tree) => {
+                        var item = 0
+                        while item < length(tree.children) {
+                            let node = get(tree.children, item)
+                            if has(node, NodeKind.Public) && !has(node, NodeKind.Test) {
+                                push(scope.declarations, ImportDeclaration {
+                                        path = path
+                                        text = source
+                                        node = node
+                                    })
+                            }
+                            item = item + 1
+                        }
+                    }
+                    Result.Err(_) => {
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(scope)
+}

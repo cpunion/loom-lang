@@ -1,0 +1,42 @@
+fn import_position(text Text, offset Int) ImportCursor {
+    match import_cursor(text, offset) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            import_position(text, offset)
+        }
+    }
+}
+
+test fn import_completion_recognizes_partial_segments_without_a_parseable_file() {
+    let root = import_position("import ", 7)
+    assert root.qualifier == "" && root.prefix == "" && root.span.start == 7 && root.span.end == 7
+    let partial = import_position("import std.teRest\nfn broken(", 13)
+    assert partial.qualifier == "std" && partial.prefix == "te" && partial.span.start == 11 && partial.span.end == 17
+    let empty = import_position("import std.text.\r\n", 16)
+    assert empty.qualifier == "std.text" && empty.prefix == "" && empty.span.start == 16 && empty.span.end == 16
+    let spaces = import_position("import std . text . le", 22)
+    assert spaces.qualifier == "std.text" && spaces.prefix == "le"
+    let unicode = "// 😀\nimport app.名余"
+    let position = import_position(unicode, length(unicode) - 3)
+    assert position.qualifier == "app" && position.prefix == "名" && position.span.end == length(unicode)
+}
+
+test fn import_completion_does_not_guess_inside_comments_bodies_or_invalid_paths() {
+    let texts = ["import", "// import std.", "import std. // here", "fn demo() {\nimport std.",
+        "fn demo() { discard \"import std.\"", "import std..", "import std\n", "import std.名"]
+    var index = 0
+    while index < length(texts) {
+        let text = get(texts, index)
+        let offset = if index == length(texts) - 1 {
+            length(text) - 1
+        } else {
+            length(text)
+        }
+        assert match import_cursor(text, offset) {
+            Option.None => true,
+            Option.Some(_) => false
+        }
+        index = index + 1
+    }
+}

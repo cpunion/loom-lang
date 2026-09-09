@@ -199,6 +199,26 @@ impl Fixture {
     fn log(&self) -> String {
         fs::read_to_string(self.root().join("git.log")).unwrap_or_default()
     }
+
+    fn import_completion(&self, package: &Path) -> String {
+        let text = "import seed.va";
+        let snapshot = self.root().join("import-overlay.loom");
+        fs::write(&snapshot, text).unwrap();
+        let output = self
+            .command("editor-complete", package)
+            .arg("--std")
+            .arg(common::root().join("compiler/std"))
+            .arg("--at")
+            .arg(package.join("main.loom"))
+            .arg(text.len().to_string())
+            .arg("--overlay")
+            .arg(package.join("main.loom"))
+            .arg(snapshot)
+            .output()
+            .unwrap();
+        success(&output);
+        String::from_utf8(output.stdout).unwrap()
+    }
 }
 
 fn rejected(output: &Output, expected: &str) {
@@ -283,6 +303,7 @@ fn pinned_git_instances_survive_native_commands_and_verified_offline_cache_repai
         &fixture.command("check", &app).output().unwrap(),
         "run loom resolve",
     );
+    assert!(fixture.import_completion(&app).contains("\"items\":[]"));
     assert!(fixture.log().is_empty());
     success(&fixture.resolve(&app, false));
     let fetched = fixture.log();
@@ -312,6 +333,11 @@ fn pinned_git_instances_survive_native_commands_and_verified_offline_cache_repai
     let lock = fs::read(&lock_path).unwrap();
     let lock_modified = fs::metadata(&lock_path).unwrap().modified().unwrap();
     write(root, "offline", "no Git invocations allowed");
+    assert!(
+        fixture
+            .import_completion(&app)
+            .contains("\"label\":\"value\"")
+    );
     success(&fixture.command("check", &app).output().unwrap());
     let artifact = common::executable(root, "git-dependencies");
     let ir = root.join("git-dependencies.ll");
@@ -376,6 +402,7 @@ fn pinned_git_instances_survive_native_commands_and_verified_offline_cache_repai
             &fixture.command("check", &app).output().unwrap(),
             "cache is missing or changed",
         );
+        assert!(fixture.import_completion(&app).contains("\"items\":[]"));
         assert_eq!(
             fixture.log(),
             before,
