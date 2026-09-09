@@ -63,6 +63,15 @@ test fn multiline_groups_postfix_and_unary_operators_stay_parseable() {
     discard round_trip("fn f(){ discard 1 .0\ndiscard 1.0 .0\ndiscard ({ if true {} if false {} }) }")
 }
 
+test fn grouped_operands_have_spaces_but_calls_and_unary_prefixes_do_not() {
+    assert round_trip("fn f(){let x=(1,2)\nlet y=1+(2*3)\nassert true&&(!false||true)\ndiscard choose(x,(y))\ndiscard -(1+2)\ndiscard !(false)\n}") ==
+    "fn f() {\n    let x = (1, 2)\n    let y = 1 + (2 * 3)\n    assert true && (!false || true)\n    discard choose(x, (y))\n    discard -(1 + 2)\n    discard !(false)\n}\n"
+    assert round_trip("fn f(x Int) Int requires(x>0) ensures(result>0){match x{_ =>(x)}}") ==
+    "fn f(x Int) Int\nrequires (x > 0)\nensures (result > 0) {\n    match x {\n        _ => (x)\n    }\n}\n"
+    let calls = "fn f(){discard callbacks[0](1)\ndiscard (factory())(2)\ndiscard factory()?(3)\ndiscard (pair.0)(4)}"
+    assert round_trip(calls) == "fn f() {\n    discard callbacks[0](1)\n    discard (factory())(2)\n    discard factory()?(3)\n    discard (pair.0)(4)\n}\n"
+}
+
 test fn comments_unicode_and_literal_spelling_are_not_rewritten() {
     assert round_trip("// 注释\r\nrecord 数据 { 值 Text // 字段\r\n}\r\nfn 名称(){ // body\r\nlet 文本=\"a\\n\\u{41}\\\"\" // tail\r\nlet 数值=00012\r\nlet 浮点=1.20e+03\r\ndiscard 文本\r\ndiscard 数值\r\ndiscard 浮点\r\n}// end") ==
     "// 注释\nrecord 数据 {\n    值 Text // 字段\n}\n\nfn 名称() { // body\n    let 文本 = \"a\\n\\u{41}\\\"\" // tail\n    let 数值 = 00012\n    let 浮点 = 1.20e+03\n    discard 文本\n    discard 数值\n    discard 浮点\n} // end\n"

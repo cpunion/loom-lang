@@ -38,14 +38,14 @@ fn exercise() {
     assert number == 1 && label == "called" && get(counter, 0) == 1
 
     // Tuple elements evaluate in source order; destructuring does not repeat RHS.
-    let first, second =(counted(counter).0, counted(counter).0)
+    let first, second = (counted(counter).0, counted(counter).0)
     assert first == 2 && second == 3 && get(counter, 0) == 3
-    var left, right =(1, true)
+    var left, right = (1, true)
     left = 2
     right = false
     assert left == 2 && !right
 
-    let nested =(tagged(3),(true,))
+    let nested = (tagged(3), (true,))
     assert nested.0.0 == 3 && nested.0.1 == "item" && nested.1.0
     let pairs = new[(Int, Text)]()
     push(pairs, tagged[Int](4))

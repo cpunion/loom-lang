@@ -34,7 +34,7 @@ fn exercise_families() {
     let source = FamilyBox {
         value = words
     }
-    let pair = family_forward[FamilyBox[List[Text]], List[Text]](source,(words, words))
+    let pair = family_forward[FamilyBox[List[Text]], List[Text]](source, (words, words))
     set(words, 0, concat("shared", "!"))
     assert get(pair.0, 0) == "shared!" && get(pair.1, 0) == "shared!"
 
@@ -47,7 +47,7 @@ fn exercise_families() {
     let constant = comptime {
         family_forward[FamilyBox[Int], Bool](FamilyBox {
                 value = 3
-            },(3, true))
+            }, (3, true))
     }
     assert constant.0 == 3 && constant.1
 }

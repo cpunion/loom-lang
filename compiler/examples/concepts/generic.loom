@@ -111,7 +111,7 @@ fn exercise_generic_methods() {
     let constant = comptime {
         mixed(Wrapped {
                 value = 7
-            },("text", true))
+            }, ("text", true))
     }
     assert constant.0 == 7 && constant.1.0 == "text" && constant.1.1
 }

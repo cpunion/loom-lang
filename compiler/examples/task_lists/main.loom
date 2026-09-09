@@ -82,7 +82,7 @@ async fn tree_total(tree Tree) Int {
 
 async fn exercise(count Int) {
     let pending = forward(start(count)).await
-    assert total(pending).await == count *(count + 1) / 2
+    assert total(pending).await == count * (count + 1) / 2
     assert total(forward(start(0)).await).await == 0
     let tree = Tree.Branch([Tree.Leaf(item(1)), Tree.Branch([Tree.Leaf(item(2))])])
     assert tree_total(forward(tree).await).await == 3

@@ -16,7 +16,7 @@ async fn delayed[T](value T) T {
 
 fn start(values List[Int]) Work[List[Int], Text] {
     Work {
-        pair =(delayed(values), delayed("ready"))
+        pair = (delayed(values), delayed("ready"))
         label = concat("ba", "tch")
     }
 }
@@ -81,15 +81,15 @@ async fn exercise() {
     let relayed = source.relay(source.begin(values)).await
     assert consume(relayed).await == 42
 
-    var pair =(delayed(1), delayed("two"))
+    var pair = (delayed(1), delayed("two"))
     let first = pair.0
     assert pair.1.await == "two"
     assert first.await == 1
-    pair =(delayed(3), delayed("four"))
+    pair = (delayed(3), delayed("four"))
     let a, b = pair
     assert a.await == 3
     assert b.await == "four"
-    let left, right =(sleep_ms(1), sleep_ms(1))
+    let left, right = (sleep_ms(1), sleep_ms(1))
     left.await
     right.await
 }
