@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Recover missing cursor names/values and unmatched EOF delimiters in virtual
+  completion snapshots. Keep normal parsing/builds strict, retain original
+  diagnostics and map insertion ranges back to the untouched user buffer.
+
 - Keep spaces before grouped operands after binary operators, assignment,
   commas, match arrows and contract keywords in `loom fmt`, while retaining
   attached calls and unary prefixes. Preserve parsed structure and idempotence.

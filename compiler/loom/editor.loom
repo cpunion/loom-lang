@@ -173,9 +173,22 @@ fn editor_execute(args List[Text]) EditorOutput {
             return editor_error(message)
         }
     }
+    let recovery = if get(args, 1) == "editor-complete" {
+        editor_recover(options)
+    } else {
+        EditorRecovery {
+            changed = false
+            inserted = false
+        }
+    }
     let project = match load_overlaid(options.path, options.std_root, options.tests, options.overlays) {
         Result.Ok(value) => value
         Result.Err(failed) => {
+            // Repaired snapshots supply candidates only. Diagnostics still come
+            // from editor-check on the original buffers, not synthetic text.
+            if recovery.changed {
+                return editor_no_completion()
+            }
             return if failed.path == "" {
                 editor_error(failed.diagnostic.message)
             } else {
@@ -186,6 +199,9 @@ fn editor_execute(args List[Text]) EditorOutput {
     let bound = match bind(project, options.tests) {
         Result.Ok(value) => value
         Result.Err(failed) => {
+            if recovery.changed {
+                return editor_no_completion()
+            }
             return editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
         }
     }
@@ -198,7 +214,7 @@ fn editor_execute(args List[Text]) EditorOutput {
                     return editor_error("query byte offset is outside the source")
                 }
                 return if get(args, 1) == "editor-complete" {
-                    editor_completion(bound, index, options.offset)
+                    editor_completion(bound, index, options.offset, recovery.inserted)
                 } else {
                     editor_query(bound, index, options.offset)
                 }

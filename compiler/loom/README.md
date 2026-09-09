@@ -85,7 +85,9 @@ navigation for unsaved buffers. Its
 language server sends source snapshots to the same Loom package/type/contract
 checker; it does not implement another parser or checker in JavaScript.
 Name completion uses package bindings and lexical scopes without type checking;
-member completion, rename, and incremental semantic caching remain open. Semantic
+member completion, rename, and incremental semantic caching remain open. Completion
+can recover a missing cursor name/value or unmatched EOF delimiters
+without modifying the source or making normal builds accept it. Other semantic
 queries use concrete body instances. If package checking fails, an independently
 checked ordinary function can still provide hover and navigation; its own errors
 or a failing dependency suppress the result. Syntax, global declaration, and
@@ -104,7 +106,7 @@ The compiler and ordinary Loom programs use the same source implementation:
 | `std.loom.source` | `Span`, `Diagnostic`, `Position`, `position`, `render` |
 | `std.loom.lexer` | `lex`, `Token`, `Kind` |
 | `std.loom.ast` | `Node`, `NodeKind`, `has` (direct-child lookup), `same` (exact structural equality) |
-| `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]` |
+| `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]`, editor-only `completion_source` / `CompletionSource` |
 | `std.loom.format` | `format(Text) Result[Text, Diagnostic]` |
 
 Import, for example, `std.loom.parser.parse` and `std.loom.ast.NodeKind` in

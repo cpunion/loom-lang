@@ -113,6 +113,26 @@ async function main() {
     assert.deepEqual((await client.wait(file, 12)).diagnostics, []);
     const imported = await client.rpc.sendRequest('textDocument/completion', at(file, completed, 'count=42'));
     assert.ok(imported.items.some(item => item.label === 'helper' && item.detail === 'fn helper() Int'));
+    for (const [index, suffix] of ['co', ''].entries()) {
+      const unfinished = 'fn main(){discard "é😀"\nlet count=42\nlet copied = ' + suffix;
+      const version = 13 + index * 2;
+      await client.change(file, unfinished, version);
+      assert.ok((await client.wait(file, version)).diagnostics.length > 0);
+      const snapshot = TextDocument.create(params.textDocument.uri, 'loom', version, unfinished);
+      const recoveredNames = await client.rpc.sendRequest('textDocument/completion', {
+        ...params, position: snapshot.positionAt(unfinished.length),
+      });
+      const count = recoveredNames.items.find(item => item.label === 'count');
+      assert.ok(count);
+      assert.equal(snapshot.getText(count.textEdit.range), suffix);
+      assert.deepEqual(count.textEdit.range.end, snapshot.positionAt(unfinished.length));
+      // Completion does not clear the original syntax diagnostic or insert a
+      // synthetic '_' / closing delimiter into the user's buffer.
+      assert.ok(client.diagnostics.filter(report => report.uri === params.textDocument.uri).at(-1).diagnostics.length > 0);
+      const accepted = TextDocument.applyEdits(snapshot, [count.textEdit]) + '\n}\n';
+      await client.change(file, accepted, version + 1);
+      assert.deepEqual((await client.wait(file, version + 1)).diagnostics, []);
+    }
     // Following a dependency outside this folder retains its folder-scoped,
     // relative toolchain settings for diagnostics, hover and formatting.
     const external = path.join(stdRoot, 'loom/source/source.loom');

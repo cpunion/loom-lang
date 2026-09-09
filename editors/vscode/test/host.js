@@ -52,6 +52,18 @@ async function run() {
     const completions = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider',
       document.uri, document.positionAt(source.indexOf('value==') + 2));
     assert.ok(completions.items.some(item => item.label === 'value' && item.insertText === 'value'));
+    const unfinished = 'fn main(){let amount=42\nlet next = ';
+    await replace(unfinished);
+    await diagnostics(document.uri, values => values.length > 0);
+    const recovered = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider',
+      document.uri, document.positionAt(unfinished.length));
+    const amount = recovered.items.find(item => item.label === 'amount');
+    assert.ok(amount && amount.insertText === 'amount');
+    const range = amount.range.replacing || amount.range;
+    assert.ok(range.isEmpty && range.end.isEqual(document.positionAt(unfinished.length)));
+    assert.equal(document.getText(), unfinished);
+    await replace(source);
+    await diagnostics(document.uri, values => values.length === 0);
     const edits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { tabSize: 4, insertSpaces: true });
     assert.ok(edits.length > 0);
     const change = new vscode.WorkspaceEdit();
