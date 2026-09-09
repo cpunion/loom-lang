@@ -215,9 +215,9 @@ fn fields(start Cursor, value Step) Result[Step, Diagnostic] {
     Result.Ok(parsed)
 }
 fn pattern(cursor Cursor) Result[Step, Diagnostic] {
-    pattern_at(cursor, 0, false)
+    pattern_at(cursor, 0, false, false)
 }
-fn pattern_at(cursor Cursor, depth Int, payload Bool) Result[Step, Diagnostic] {
+fn pattern_at(cursor Cursor, depth Int, payload Bool, binding Bool) Result[Step, Diagnostic] {
     if depth >= 64 { return Result.Err(error(cursor, "pattern nesting limit exceeded")) }
     if word(cursor, "_") {
         return Result.Ok(done(cursor, next(cursor), NodeKind.Wildcard, "", new[Node]()))
@@ -229,7 +229,7 @@ fn pattern_at(cursor Cursor, depth Int, payload Bool) Result[Step, Diagnostic] {
         var tuple = false
         var more = true
         while more {
-            let item = pattern_at(rest, depth + 1, true)?
+            let item = pattern_at(rest, depth + 1, true, binding)?
             push(items, item.node)
             rest = newlines(item.rest)
             more = at(rest, Kind.Comma)
@@ -243,6 +243,9 @@ fn pattern_at(cursor Cursor, depth Int, payload Bool) Result[Step, Diagnostic] {
         if !tuple { return Result.Ok(Step { rest = rest node = get(items, 0) }) }
         return Result.Ok(done(cursor, rest, NodeKind.Tuple, "", items))
     }
+    // Binding positions admit only names, wildcards and tuples, never variants.
+    // Stop before '(' so an ordinary binding can still have a tuple annotation.
+    if binding { return name(cursor) }
     let named = path(cursor)?
     if !at(named.rest, Kind.LParen) {
         // Bare payload names remain bindings; qualified paths identify variants.
@@ -253,9 +256,9 @@ fn pattern_at(cursor Cursor, depth Int, payload Bool) Result[Step, Diagnostic] {
     let bindings = new[Node]()
     var more = !at(rest, Kind.RParen)
     while more {
-        let binding = pattern_at(rest, depth + 1, true)?
-        push(bindings, binding.node)
-        rest = binding.rest
+        let item = pattern_at(rest, depth + 1, true, false)?
+        push(bindings, item.node)
+        rest = item.rest
         rest = newlines(rest)
         more = at(rest, Kind.Comma)
         if more {

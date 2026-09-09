@@ -80,6 +80,20 @@ test fn name_completion_preserves_unicode_ranges_and_avoids_strings_comments_and
     }
 }
 
+test fn nested_destructuring_completion_uses_only_established_names() {
+    let text = "fn demo() { var a, (nested, _) = (1, (true, 0))\ndiscard ne\n{ let (inner,), _ = ((nested,), 0)\ndiscard in }\ndiscard ne }"
+    let bindings = query_bindings(input(text))
+    let found = completed_names(bindings, 0, query_offset(text, "discard ne") + 8)
+    assert completion_found(found, "nested").detail == "var nested"
+    assert completion_found(found, "a").detail == "var a"
+    assert !completion_named(found.items, "_") && !completion_named(found.items, "")
+    assert !completion_named(found.items, "inner")
+    let inside = completed_names(bindings, 0, query_offset(text, "discard in") + 10)
+    assert completion_found(inside, "inner").detail == "let inner"
+    let initializer = completed_names(bindings, 0, query_offset(text, "(1, (true") + 1)
+    assert !completion_named(initializer.items, "a") && !completion_named(initializer.items, "nested")
+}
+
 test fn completion_uses_package_imports_and_keeps_test_names_out_of_production() {
     let text = "import helper.public_name\nfn local_private() {}\nfn main() { discard local }\ntest fn embedded() { discard test_ }"
     let project = input(text)

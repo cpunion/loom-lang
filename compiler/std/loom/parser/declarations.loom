@@ -235,29 +235,29 @@ fn statement(cursor Cursor) Result[Step, Diagnostic] {
     }
     if word(rest, "let") || word(rest, "var") || word(rest, "scoped") {
         let kind = if word(rest, "scoped") { NodeKind.Scoped } else { if word(rest, "let") { NodeKind.Let } else { NodeKind.Var } }
-        let named = name(next(rest))?
+        if kind == NodeKind.Scoped && at(next(rest), Kind.LParen) {
+            return Result.Err(error(next(rest), "scoped requires one named binding"))
+        }
+        let named = if kind == NodeKind.Scoped { name(next(rest))? } else { pattern_at(next(rest), 0, true, true)? }
         rest = named.rest
         if kind == NodeKind.Scoped && (named.node.value == "_" || at(rest, Kind.Comma)) {
             return Result.Err(error(next(cursor), "scoped requires one named binding"))
         }
-        if at(rest, Kind.Comma) {
-            if named.node.value == "_" {
-                return Result.Err(error(next(cursor), "destructuring requires names, not wildcards"))
-            }
-            let names = one(named.node)
+        if at(rest, Kind.Comma) || named.node.kind == NodeKind.Tuple {
+            let names = if at(rest, Kind.Comma) { one(named.node) } else { named.node.children }
             while at(rest, Kind.Comma) {
                 rest = newlines(next(rest))
-                let binding = name(rest)?
-                if binding.node.value == "_" {
-                    return Result.Err(error(rest, "destructuring requires names, not wildcards"))
-                }
+                let binding = pattern_at(rest, 0, true, true)?
                 push(names, binding.node)
                 rest = binding.rest
             }
             let bindings = done(next(cursor), rest, NodeKind.Bindings, "", names)
-            rest = expect(rest, Kind.Assign, "'=' after destructuring names")?
+            rest = expect(rest, Kind.Assign, "'=' after destructuring pattern")?
             let value = expr(rest, 0, false, true)?
             return Result.Ok(done(cursor, value.rest, NodeKind.Destructure, token(cursor).value, two(bindings.node, value.node)))
+        }
+        if named.node.kind == NodeKind.Wildcard {
+            return Result.Err(error(next(cursor), "use discard to ignore a whole value"))
         }
         let children = new[Node]()
         if at(rest, Kind.Name) || at(rest, Kind.LParen) {

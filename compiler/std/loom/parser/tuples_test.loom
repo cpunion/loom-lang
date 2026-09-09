@@ -44,13 +44,32 @@ test fn tuple_values_destructuring_and_numeric_selection() {
     assert child(tuple, 0).span.start == 10 && child(tuple, 1).span.end == 16
 }
 
-test fn tuple_syntax_rejects_empty_and_unsupported_patterns() {
+test fn tuple_binding_patterns_share_grouping_and_nested_tuple_syntax() {
+    let statements = body(child(parsed("fn f() { let a, (_, (b,)) = pair\nvar ((c, d), _) = other\nlet (single,) = one\nlet (grouped) Int = 1 }"), 0))
+    let first = child(child(statements, 0), 0)
+    assert first.kind == NodeKind.Bindings && length(first.children) == 2
+    assert child(first, 0).value == "a"
+    assert child(first, 1).kind == NodeKind.Tuple
+    assert child(child(first, 1), 0).kind == NodeKind.Wildcard
+    assert child(child(child(first, 1), 1), 0).value == "b"
+    let second = child(statements, 1)
+    assert second.value == "var" && child(child(second, 0), 0).kind == NodeKind.Tuple
+    assert length(child(child(statements, 2), 0).children) == 1
+    assert child(statements, 3).kind == NodeKind.Let && child(statements, 3).value == "grouped"
+    assert child(child(statements, 3), 0).value == "Int"
+}
+
+test fn tuple_syntax_rejects_empty_and_refutable_binding_patterns() {
     assert rejected("fn f() { () }").message == "empty tuples are not supported"
     assert rejected("fn f(value ()) {}").message == "empty tuples are not supported"
-    assert rejected("fn f() { let a, _ = pair }").message == "destructuring requires names, not wildcards"
-    assert rejected("fn f() { var _, b = pair }").message == "destructuring requires names, not wildcards"
+    assert rejected("fn f() { let _ = pair }").message == "use discard to ignore a whole value"
+    assert rejected("fn f() { scoped (a, b) = pair }").message == "scoped requires one named binding"
+    discard rejected("fn f() { let a, Some(b) = pair }")
+    discard rejected("fn f() { let a, Choice.None = pair }")
+    discard rejected("fn f() { let () = pair }")
+    discard rejected("fn f() { let (a,, b) = pair }")
+    discard rejected("fn f() { let (1, b) = pair }")
     discard rejected("fn f() { let a, = pair }")
-    discard rejected("fn f() { let a, (b, c) = pair }")
     discard rejected("fn f() { let a, b (Int, Int) = pair }")
     discard rejected("fn f() { (1,,) }")
     discard rejected("fn f(value (Int,,)) {}")

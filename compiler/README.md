@@ -484,6 +484,8 @@ fn pair[T](value T) (T, Text) { (value, "item") }
 let number, label = pair(3)
 let single = (true,)
 assert single.0
+let (nested_number, _), (flag,) = (pair(3), (true,))
+var left, (_, right) = (1, (false, 2))
 ```
 
 Tuple elements and the destructuring initializer evaluate once, left to right.
@@ -491,8 +493,13 @@ Tuple types are structural: element types and arity determine identity.
 Existing tuple values require matching element types; aggregate widening is not
 implicit. Contextual tuple literals can use the existing scalar weakening rules.
 `(value)` is grouping, `(value,)` a singleton tuple; `()` remains unavailable.
-Numeric projections are checked at compilation. Destructuring currently binds
-two or more plain names with exact arity; nested patterns, wildcards, and
+Numeric projections are checked at compilation. Destructuring accepts nested
+tuple patterns with exact arity at each level; outer parentheses are optional
+for two or more elements. `let (value,) = single` binds a singleton's element.
+All names enter scope after the initializer; `var` makes every bound name mutable.
+`_` explicitly discards an element, never its initializer's effects; it cannot
+discard Tasks or MustScope resources. Use `discard expression` for a whole value,
+not `let _ = expression`. Enum/record binding patterns, scoped destructuring and
 parallel reassignment are not implemented. Copying a tuple shares its managed
 fields just as copying a record does; compile-time results construct fresh graphs
 while preserving internal sharing.
@@ -516,8 +523,8 @@ Arms are selected in source order. Exhaustiveness includes combinations of neste
 variants; wholly covered arms reject. Inputs evaluate once. Whole-value fallbacks
 and payload bindings preserve shared fields and one-shot Task obligations. The
 [pattern example](examples/patterns/README.md) also exercises tuple patterns and
-real async waits. This does not add literal/record patterns, guards, or nested
-let/var destructuring. Expansion has a bounded decision budget; normal flat matches
+real async waits. This does not add literal/record patterns or guards.
+Expansion has a bounded decision budget; normal flat matches
 retain their direct path. No runtime pattern engine or checked-artifact change is
 needed, and compiler production sources do not adopt the new syntax.
 

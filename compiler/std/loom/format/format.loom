@@ -183,6 +183,7 @@ fn spaced(previous Token, current Token, force Bool, prefix Bool) Bool {
         }
         if left == Kind.Name {
             return previous.value == "if" || previous.value == "while" || previous.value == "match" ||
+            previous.value == "let" || previous.value == "var" ||
             previous.value == "return" || previous.value == "assert" || previous.value == "discard" ||
             previous.value == "requires" || previous.value == "ensures"
         }

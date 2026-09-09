@@ -54,3 +54,15 @@ test fn tuples_stage_without_weakening_type_or_layout_rules() {
     rejects("type Bad = (Int, Int) where true\n")
     rejects("fn false_proof() (Int, Bool) ensures false { (1, true) }")
 }
+
+test fn nested_tuple_bindings_keep_types_scopes_and_mutability() {
+    discard accepted("fn split[T](value (T, (Int, Bool))) T { let result_value, (_, _) = value\nresult_value }\nfn main() { var ((number,), _), flag = (((3,), 9), true)\nnumber = 4\nflag = false\nassert number == 4 && !flag\nlet (single,) = (7,)\nassert split((single, (0, true))) == 7\n{ let number, (flag, _) = (number, (flag, 0))\nassert number == 4 && !flag }\nassert comptime { let ((value, _), _) = ((5, true), 0)\nvalue } == 5 }")
+    discard accepted_result("import std.result.Result\nfn split(value Result[((Int, Bool), Text), Text]) Result[Int, Text] { let (number, _), _ = value?\nResult.Ok(number) }\nfn main() { discard split(Result.Ok(((1, true), \"x\"))) }")
+    rejects("fn main() { let a, (b, c) = (1, true) }")
+    rejects("fn main() { let (a,), b = ((1, 2), 3) }")
+    rejects("fn main() { let a, (_, a) = (1, (2, 3)) }")
+    rejects("fn main() { let a, (b, _) = (1, (2, 3))\nb = 4 }")
+    rejects("fn main() { let a, (b, _) = (1, (2, 3))\ndiscard _ }")
+    rejects("fn main() { let a, (b, _) = (a, (2, 3)) }")
+    rejects("fn main() { if true { let a, (b, _) = (1, (2, 3)) }\ndiscard b }")
+}
