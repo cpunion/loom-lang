@@ -115,7 +115,7 @@ this does not establish a structured resource lifetime across a child call.
 See the [method example](../../compiler/examples/async_methods).
 
 Named async references have type `fn(A) Task[B]`, shared with synchronous Task
-factories. Copying or storing the code pointer creates no Task; invoking it retains
+factories. Copying or storing a named function value creates no Task; invoking it retains
 the direct-call owner and one-shot obligations. Async constructors receive the
 actual indirect call location. A synchronous factory runs inline and creates any
 children at its own body call sites. The [callback example](../../compiler/examples/task_callbacks)
