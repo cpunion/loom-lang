@@ -92,12 +92,17 @@ never disables source integer checks or contract obligations. The runtime is
 optimized even in Cargo dev builds, with dev assertions and overflow checks
 retained, so managed Loom code does not call an unoptimized allocation layer.
 
+`LOOM_TARGET_CPU=generic` emits the host architecture's generic CPU baseline
+without detected host extensions. The default, `native`, keeps host tuning.
+Neither selects another OS/architecture or changes arithmetic/contract checks.
+CPU and feature selection participate in native object-cache identities.
+
 The root Cargo workspace alone builds `loom-native` and the runtime, not the
 public `loom` compiler. Invoking that compiler by path locates `compiler/std`
 and `target/debug/loom-native` in its own checkout, so commands work directly
 in an application's directory. `--std` and `--native-tool` select explicit
-paths for other layouts. These are development commands, not a
-relocatable release package or a stable compiler-artifact ABI. `--help` lists
+paths for other layouts. The local staging layout below also works without a
+checkout; it is not a release package or stable compiler-artifact ABI. `--help` lists
 each tool's command surface.
 
 `loom test --no-run` produces the native test executable without running it;
@@ -117,6 +122,38 @@ cleanup also fails. Other faults do not yet carry source locations; this is not
 a stack trace or a recover-and-continue test runner. Ordinary executables have
 no test-entry instrumentation, and production builds exclude test-only names
 and source contents.
+
+## Relocatable local toolchain
+
+After bootstrap, Node.js can stage and verify the current build in a new directory:
+
+```sh
+node scripts/stage-toolchain.mjs target/local-toolchain
+target/local-toolchain/bin/loom check compiler/examples/wordcount
+```
+
+The layout is `bin/loom`, `lib/loom/loom-native`, `lib/loom/std`, and the adjacent
+runtime archive (`.exe` / `loom_runtime.lib` on Windows). CLI and editor commands
+discover these relative to the executable, never the application directory.
+The script compiles a generic-CPU frontend, copies the current Rust bridge/runtime
+and source std, and exercises the relocated toolchain outside the checkout in a
+path with spaces and Unicode. It checks formatting, check/build/test/run,
+same-directory/embedded test isolation, real file I/O, forced GC, and editor
+queries. Source checking and editor queries work with the native bridge absent.
+Existing output directories are never overwritten.
+
+Invoke `bin/loom` by path, or configure an absolute executable in VS Code and
+leave `loom.stdRoot` empty. Bare-command discovery still requires explicit tool
+paths; Loom does not guess which PATH entry actually ran. The staged toolchain
+needs no Rust compiler to compile applications, but its copied native bridge
+still requires this host's LLVM shared libraries and linker/SDK. The generic
+frontend does not change the copied dependencies' CPU or OS requirements.
+Use a staged compiler with `LOOM_BOOTSTRAP_COMPILER=/path/to/bin/loom` when
+bootstrapping another checkout with the same checked-artifact interface.
+
+This is a local staging/relocation gate, not a downloadable release, a
+self-contained LLVM distribution, or an older-OS support guarantee. Release
+packaging, dependency notices, and standalone Windows distribution remain open.
 
 ## Windows bootstrap
 

@@ -4,6 +4,7 @@ use super::{Optimization, OptimizationLevel, configure_codegen};
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
 use sha2::{Digest, Sha256};
 use std::{
+    ffi::OsStr,
     fs::File,
     io::{self, Read},
     path::{Path, PathBuf},
@@ -18,12 +19,23 @@ pub(super) struct NativeTarget {
 
 impl NativeTarget {
     pub(super) fn new(optimization: Optimization) -> Result<Self, String> {
+        Self::configured(optimization, std::env::var_os("LOOM_TARGET_CPU").as_deref())
+    }
+
+    fn configured(optimization: Optimization, cpu: Option<&OsStr>) -> Result<Self, String> {
+        let selection = cpu.map_or(Some("native"), OsStr::to_str);
+        let (cpu, features) = match selection {
+            Some("native") => (
+                TargetMachine::get_host_cpu_name().to_string(),
+                TargetMachine::get_host_cpu_features().to_string(),
+            ),
+            Some("generic") => ("generic".into(), String::new()),
+            _ => return Err("LOOM_TARGET_CPU must be native or generic".into()),
+        };
         configure_codegen();
         Target::initialize_native(&InitializationConfig::default())?;
         let triple = TargetMachine::get_default_triple();
         let target = Target::from_triple(&triple).map_err(|error| error.to_string())?;
-        let cpu = TargetMachine::get_host_cpu_name().to_string();
-        let features = TargetMachine::get_host_cpu_features().to_string();
         let optimization = match optimization {
             Optimization::O0 => OptimizationLevel::None,
             Optimization::O1 => OptimizationLevel::Less,
@@ -189,7 +201,7 @@ mod tests {
 
     #[test]
     fn content_identity_includes_every_profile_field_and_actual_file_bytes() {
-        let target = NativeTarget::new(Optimization::O2).unwrap();
+        let target = NativeTarget::configured(Optimization::O2, None).unwrap();
         let profile = target.profile(false);
         assert_eq!(
             profile[0],
@@ -223,7 +235,7 @@ mod tests {
             identity(b"native", b"llvm", &target.profile(true))
         );
         for optimization in [Optimization::O0, Optimization::O1, Optimization::O3] {
-            let different = NativeTarget::new(optimization).unwrap();
+            let different = NativeTarget::configured(optimization, None).unwrap();
             assert_ne!(
                 baseline,
                 identity(b"native", b"llvm", &different.profile(false))
@@ -254,5 +266,24 @@ mod tests {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         );
+    }
+
+    #[test]
+    fn generic_cpu_drops_host_features_and_uses_the_effective_cache_profile() {
+        let generic =
+            NativeTarget::configured(Optimization::O2, Some(OsStr::new("generic"))).unwrap();
+        let native =
+            NativeTarget::configured(Optimization::O2, Some(OsStr::new("native"))).unwrap();
+        let profile = generic.profile(false);
+        assert_eq!(profile[1], b"generic");
+        assert!(profile[2].is_empty());
+        let native_profile = native.profile(false);
+        // Host discovery can itself return generic with no features (for
+        // example in a VM). Equal effective targets should share a cache key.
+        assert_eq!(
+            identity(b"native", b"llvm", &profile) == identity(b"native", b"llvm", &native_profile),
+            profile == native_profile
+        );
+        assert!(NativeTarget::configured(Optimization::O2, Some(OsStr::new("typo"))).is_err());
     }
 }

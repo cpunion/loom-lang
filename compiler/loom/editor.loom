@@ -75,7 +75,7 @@ fn editor_diagnostic(path Text, diagnostic Diagnostic) EditorOutput {
 
 fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     var path = ""
-    var standard = "compiler/std"
+    var standard = ""
     var tests = false
     var query_path = ""
     var offset = -1
@@ -156,9 +156,10 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     if !starts_with(path, "/") && !is_windows_path(path) {
         return Result.Err("editor-check requires an absolute package directory")
     }
+    let tools = compiler_tools(get(args, 0), standard, "", false)?
     Result.Ok(EditorOptions {
             path = path
-            std_root = standard
+            std_root = tools.std_root
             tests = tests
             overlays = overlays
             query_path = query_path
@@ -215,22 +216,18 @@ fn editor_execute(args List[Text]) EditorOutput {
         }
     }
     if options.query_path != "" {
-        var index = 0
-        while index < length(project.files) {
-            let file = get(project.files, index)
-            if file.path == options.query_path {
-                if options.offset > std.text.length(file.text) {
-                    return editor_error("query byte offset is outside the source")
-                }
-                return if get(args, 1) == "editor-complete" {
-                    editor_completion(bound, index, options.offset, recovery.inserted)
-                } else {
-                    editor_query(bound, index, options.offset)
-                }
-            }
-            index = index + 1
+        let index = match editor_source(project, options.query_path) {
+            Result.Ok(value) => value,
+            Result.Err(message) => { return editor_error(message) }
         }
-        return editor_error("query source is outside the selected package and import closure")
+        if options.offset > std.text.length(get(project.files, index).text) {
+            return editor_error("query byte offset is outside the source")
+        }
+        return if get(args, 1) == "editor-complete" {
+            editor_completion(bound, index, options.offset, recovery.inserted)
+        } else {
+            editor_query(bound, index, options.offset)
+        }
     }
     match check(bound) {
         Result.Ok(_) => {

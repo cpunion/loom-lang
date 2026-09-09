@@ -1,4 +1,4 @@
-test fn development_tools_use_one_executable_relative_checkout() {
+test fn compiler_tools_use_one_executable_relative_checkout() {
     let root = match canonicalize(".") {
         Result.Ok(value) => value
         Result.Err(_) => {
@@ -12,7 +12,7 @@ test fn development_tools_use_one_executable_relative_checkout() {
         "loom"
     }
     let invoked = join_path(join_path(root, "target"), compiler_name)
-    match development_tools(invoked, "", "", true) {
+    match compiler_tools(invoked, "", "", true) {
         Result.Ok(value) => {
             assert value.std_root == join_path(join_path(root, "compiler"), "std")
             let native_name = if is_windows_path(root) {
@@ -26,11 +26,11 @@ test fn development_tools_use_one_executable_relative_checkout() {
             assert false
         }
     }
-    assert match compiler_checkout("loom") {
+    assert match compiler_directory("loom") {
         Result.Err(_) => true,
         _ => false
     }
-    match development_tools("not-an-executable", "selected-std", "selected-native", true) {
+    match compiler_tools("not-an-executable", "selected-std", "selected-native", true) {
         Result.Ok(value) => {
             assert value.std_root == "selected-std" && value.native_tool == "selected-native"
         }
@@ -38,7 +38,7 @@ test fn development_tools_use_one_executable_relative_checkout() {
             assert false
         }
     }
-    match development_tools("not-an-executable", "selected-std", "", false) {
+    match compiler_tools("not-an-executable", "selected-std", "", false) {
         Result.Ok(value) => {
             assert value.std_root == "selected-std" && value.native_tool == ""
         }

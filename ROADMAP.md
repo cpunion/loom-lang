@@ -79,6 +79,13 @@ CI transfers that temporary input from the validated macOS job in the same
 workflow; no checked-IR snapshot or second frontend is maintained. Native MSVC
 linking, Unicode/binary I/O, and Windows package paths pass the full native gate.
 
+Local toolchain staging now builds a generic-CPU frontend and relocates it with
+its source std and existing native bridge/runtime. CLI and editor discovery share
+one executable-relative layout, with an out-of-checkout programming trial in the
+three-platform workflow. This is not a release archive: the copied bridge still
+needs host LLVM/linker dependencies. Packaged notices/dependencies, published
+compiler artifacts and standalone Windows cold recovery remain delivery work.
+
 Keep the compiler and its production library closure on a conservative bootstrap
 subset. Implementing a language feature does not justify using it in the compiler
 or adding another source checkpoint. Raise the minimum seed only for a substantial
