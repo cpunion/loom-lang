@@ -8,6 +8,70 @@ import std.list.length
 import std.result.Result
 import std.text.concat
 
+record Effects { state State references List[Expr] calls List[Expr] }
+
+// Naming a callback does not execute it. Indirect calls add obligations for
+// every reachable reference of their checked shape, including later discoveries.
+fn purity(state State, expr Expr) Result[Bool, Failure] {
+    // Optional scalar folding never needs callback queues or target discovery.
+    if state.partial { return scalar_purity(state, expr, 0) }
+    let effects = Effects { state = state references = std.list.new[Expr]() calls = std.list.new[Expr]() }
+    let seen = std.list.new[Int]()
+    discard scan(effects, expr, seen, 0, 0)?
+    var references = -1
+    var calls = -1
+    while references != length(effects.references) || calls != length(effects.calls) {
+        references = length(effects.references)
+        calls = length(effects.calls)
+        var index = 0
+        while index < length(effects.calls) {
+            let call = get(effects.calls, index)
+            let shape = get(call.children, 0).ty
+            var reference = 0
+            while reference < length(effects.references) {
+                discard spend(state, call, 0, 1)?
+                let value = get(effects.references, reference)
+                if value.ty == shape { discard scan_function(effects, call, value.index, seen, 0)? }
+                reference = reference + 1
+            }
+            index = index + 1
+        }
+    }
+    var index = 0
+    while index < length(effects.calls) {
+        let call = get(effects.calls, index)
+        var found = false
+        var reference = 0
+        while reference < length(effects.references) {
+            discard spend(state, call, 0, 1)?
+            if get(effects.references, reference).ty == get(call.children, 0).ty { found = true }
+            reference = reference + 1
+        }
+        if !found { return Result.Err(failure(call, "compile-time indirect call has no checked target")) }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn scalar_purity(state State, expr Expr, depth Int) Result[Bool, Failure] {
+    if task_type(state, expr.ty) { return Result.Err(failure(expr, "compile-time evaluation cannot transfer tasks")) }
+    if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
+    discard spend(state, expr, 0, 1)?
+    if expr.kind != ExprKind.Integer && expr.kind != ExprKind.Float && expr.kind != ExprKind.Bool && expr.kind != ExprKind.Text &&
+        expr.kind != ExprKind.Local && expr.kind != ExprKind.Unary && expr.kind != ExprKind.Binary && expr.kind != ExprKind.Coerce {
+        return Result.Err(failure(expr, "expression is not a call-free scalar constant"))
+    }
+    if expr.ty >= 0 && expr.ty < length(state.program.types) && get(state.program.types, expr.ty).kind == TypeKind.Associated {
+        return Result.Err(failure(expr, "compile-time expression still has an unresolved associated type"))
+    }
+    var index = 0
+    while index < length(expr.children) {
+        discard scalar_purity(state, get(expr.children, index), depth + 1)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
 fn pure_intrinsic(name Text) Bool {
     name == "float_from_int" || name == "float_to_int" || name == "float_parse" || name == "float_format" ||
     name == "text_len" || name == "text_byte" || name == "text_concat" || name == "text_equal" || name == "text_slice" ||
@@ -29,18 +93,10 @@ fn task_type(state State, ty Int) Bool {
     found
 }
 
-fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) Result[Bool, Failure] {
+fn reference_signature(state State, expr Expr, target Int) Result[Bool, Failure] {
     if target < 0 || target >= length(state.program.functions) {
         return Result.Err(failure(expr, "compile-time call has no checked function body"))
     }
-    var index = 0
-    while index < length(seen) && get(seen, index) != target {
-        index = index + 1
-    }
-    if index < length(seen) {
-        return Result.Ok(true)
-    }
-    push(seen, target)
     let function = get(state.program.functions, target)
     if function.is_async {
         return Result.Err(failure(expr, "compile-time evaluation cannot create or await tasks"))
@@ -48,32 +104,44 @@ fn scan_function(state State, expr Expr, target Int, seen List[Int], depth Int) 
     if task_type(state, function.result) {
         return Result.Err(failure(expr, "compile-time evaluation cannot transfer tasks"))
     }
-    index = 0
+    var index = 0
     while index < length(function.params) {
         if task_type(state, get(function.params, index)) {
             return Result.Err(failure(expr, "compile-time evaluation cannot transfer tasks"))
         }
         index = index + 1
     }
+    Result.Ok(true)
+}
+
+fn scan_function(effects Effects, expr Expr, target Int, seen List[Int], depth Int) Result[Bool, Failure] {
+    let state = effects.state
+    discard reference_signature(state, expr, target)?
+    var index = 0
+    while index < length(seen) && get(seen, index) != target { index = index + 1 }
+    if index < length(seen) { return Result.Ok(true) }
+    push(seen, target)
+    let function = get(state.program.functions, target)
     if function.runtime_name != "" && !pure_intrinsic(function.runtime_name) {
         return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", function.runtime_name)))
     }
     // A called function cannot transfer control into its caller's loop.
-    discard scan(state, function.body, seen, depth + 1, 0)?
+    discard scan(effects, function.body, seen, depth + 1, 0)?
     index = 0
     while index < length(function.preconditions) {
-        discard scan(state, get(function.preconditions, index), seen, depth + 1, 0)?
+        discard scan(effects, get(function.preconditions, index), seen, depth + 1, 0)?
         index = index + 1
     }
     index = 0
     while index < length(function.postconditions) {
-        discard scan(state, get(function.postconditions, index), seen, depth + 1, 0)?
+        discard scan(effects, get(function.postconditions, index), seen, depth + 1, 0)?
         index = index + 1
     }
     Result.Ok(true)
 }
 
-fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Bool, Failure] {
+fn scan(effects Effects, expr Expr, seen List[Int], depth Int, loops Int) Result[Bool, Failure] {
+    let state = effects.state
     if expr.kind == ExprKind.TaskCall || expr.kind == ExprKind.Await || expr.kind == ExprKind.Suspend {
         return Result.Err(failure(expr, "compile-time evaluation cannot create or await tasks"))
     }
@@ -93,18 +161,32 @@ fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Boo
     if expr.ty >= 0 && expr.ty < length(state.program.types) && get(state.program.types, expr.ty).kind == TypeKind.Associated {
         return Result.Err(failure(expr, "compile-time expression still has an unresolved associated type"))
     }
-    if state.partial && expr.kind != ExprKind.Integer && expr.kind != ExprKind.Float && expr.kind != ExprKind.Bool && expr.kind != ExprKind.Text &&
-    expr.kind != ExprKind.Local && expr.kind != ExprKind.Unary && expr.kind != ExprKind.Binary && expr.kind != ExprKind.Coerce {
-        return Result.Err(failure(expr, "expression is not a call-free scalar constant"))
-    }
     if expr.kind == ExprKind.Intrinsic && !pure_intrinsic(expr.text) {
         return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", expr.text)))
     }
-    if expr.kind == ExprKind.Call || expr.kind == ExprKind.FunctionRef {
-        discard scan_function(state, expr, expr.index, seen, depth)?
+    if expr.kind == ExprKind.Call {
+        discard scan_function(effects, expr, expr.index, seen, depth)?
+    }
+    if expr.kind == ExprKind.FunctionRef {
+        if expr.index < 0 || expr.index >= length(state.program.functions) {
+            return Result.Err(failure(expr, "compile-time call has no checked function body"))
+        }
+        var index = 0
+        var found = false
+        while index < length(effects.references) {
+            discard spend(state, expr, 0, 1)?
+            let value = get(effects.references, index)
+            if value.ty == expr.ty && value.index == expr.index { found = true }
+            index = index + 1
+        }
+        if !found { push(effects.references, expr) }
+    }
+    if expr.kind == ExprKind.IndirectCall {
+        discard child(expr, 0)?
+        push(effects.calls, expr)
     }
     if expr.kind == ExprKind.DynCall {
-        discard scan_dynamic(state, expr, seen, depth)?
+        discard scan_dynamic(effects, expr, seen, depth)?
     }
     var index = 0
     while index < length(expr.children) {
@@ -119,7 +201,7 @@ fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Boo
                 loops
             }
         }
-        discard scan(state, get(expr.children, index), seen, depth + 1, nested)?
+        discard scan(effects, get(expr.children, index), seen, depth + 1, nested)?
         index = index + 1
     }
     index = 0
@@ -127,7 +209,7 @@ fn scan(state State, expr Expr, seen List[Int], depth Int, loops Int) Result[Boo
         let arm = get(expr.arms, index)
         var item = 0
         while item < length(arm.body) {
-            discard scan(state, get(arm.body, item), seen, depth + 1, loops)?
+            discard scan(effects, get(arm.body, item), seen, depth + 1, loops)?
             item = item + 1
         }
         index = index + 1

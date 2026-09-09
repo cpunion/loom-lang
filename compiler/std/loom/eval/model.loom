@@ -110,12 +110,12 @@ fn boolean(expr Expr, value Value) Result[Bool, Failure] {
 // supplies checked IR and establishes input isolation; this is not a general
 // effect proof for functions that receive externally shared mutable objects.
 pub fn validate(program Program, expression Expr) Result[Bool, Failure] {
-    scan(state(program, false), expression, new[Int](), 0, 0)
+    purity(state(program, false), expression)
 }
 
 pub fn evaluate(program Program, expression Expr, locals Int) Result[Value, Failure] {
     let state = state(program, false)
-    discard scan(state, expression, new[Int](), 0, 0)?
+    discard purity(state, expression)?
     let frame = Frame { locals = slots(state, expression, locals)? calls = 0 }
     finished(expression, execute(state, expression, frame, 0)?)
 }
@@ -126,7 +126,7 @@ pub fn scalar(expression Expr, self_value Value) Result[Value, Failure] {
     let program = Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() test_names = new[Text]() exports = new[Int]()
         interfaces = new[Interface]() witnesses = new[Witness]() }
     let state = state(program, true)
-    discard scan(state, expression, new[Int](), 0, 0)?
+    discard purity(state, expression)?
     let locals = new[Value]()
     push(locals, self_value)
     finished(expression, execute(state, expression, Frame { locals = locals calls = 0 }, 0)?)

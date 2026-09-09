@@ -282,12 +282,16 @@ invocation/reification. Native captured environments now reuse typed managed
 payloads and GC snapshots, with shared escaping state tested at O0/O2. Source
 closure conversion now supports shared mutable bindings, nested/async literals
 and pure compile-time capture evaluation. Captures cannot erase scoped resource
-or one-shot Task obligations. Explicit captured function `comptime` parameters
-remain open; runtime callbacks are distinct from compile-time parameters.
+or one-shot Task obligations. Captured function `comptime` parameters now fix
+the target while passing a typed environment. Construction materializes once;
+forwarding retains live shared state without specializing by captured contents.
+Callback construction may retain effectful or async targets; actual compile-time
+calls still validate the reachable target closure and prohibit real I/O or Tasks.
+See the [static closure example](compiler/examples/comptime_closures/README.md).
 
 Compile-time parameters now specialize named calls with Int/Bool/Text values or
-known source-function identities and leave only runtime arguments in the native
-ABI. Static callbacks become direct calls; generic forwarding and pure selectors
+known source-function identities and leave runtime arguments and any captured
+environments in the native ABI. Static callbacks use determined targets; generic forwarding and pure selectors
 preserve target preconditions and reject compile-time effects. Selected branches
 retain explicit generic requirements and mandatory abstract proofs. Concept and
 implementation methods use the same static parameters; dynamic slots include

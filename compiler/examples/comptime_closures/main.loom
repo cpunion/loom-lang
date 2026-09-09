@@ -1,0 +1,33 @@
+fn counter(start Int) fn() Int {
+    var value = start
+    fn() Int {
+        value = value + 1
+        value
+    }
+}
+
+fn step(comptime action fn() Int) Int {
+    action()
+}
+
+fn twice(comptime action fn() Int) (Int, Int) {
+    let first = action()
+    (first, step(action))
+}
+
+fn keep(comptime action fn() Int) fn() Int {
+    discard action()
+    fn() Int {
+        action()
+    }
+}
+
+fn main() {
+    let first, second = twice(counter(0))
+    assert first == 1 && second == 2
+    let again = twice(counter(0))
+    assert again.0 == 1 && again.1 == 2
+    let next = keep(counter(10))
+    assert next() == 12
+    assert next() == 13
+}

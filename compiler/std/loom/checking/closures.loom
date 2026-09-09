@@ -99,21 +99,28 @@ fn capture_binding(context Context, name Text) Int {
     var constant = -1
     var cell = -1
     var field = -1
+    var storage = -1
     if length(scope.outer) != 0 {
         let outer = get(scope.outer, 0)
         let found = lookup(outer, name)
         if found < 0 { return -1 }
         let binding = get(outer.bindings, found)
         constant = binding.constant
-        if constant >= 0 { ty = static_type(outer, constant) } else {
+        if constant >= 0 {
+            ty = static_type(outer, constant)
+            if binding.local >= 0 { storage = get(outer.locals, binding.local).ty }
+        } else {
             let value = get(outer.locals, binding.local)
             ty = value.ty
             mutable = value.mutable
             is_scoped = value.is_scoped
             if mutable { cell = cell_type(outer, binding.local) }
+            storage = if cell >= 0 { cell } else { ty }
+        }
+        if storage >= 0 {
             let fields = get(context.env.types, scope.environment).fields
             field = length(fields)
-            push(fields, Field { name = name ty = if cell >= 0 { cell } else { ty } })
+            push(fields, Field { name = name ty = storage })
         }
     } else {
         index = 0
@@ -130,12 +137,13 @@ fn capture_binding(context Context, name Text) Int {
             index = index + 1
         }
         if ty < 0 { return -1 }
+        if field >= 0 { storage = get(get(context.env.types, scope.environment).fields, field).ty }
     }
-    let local = if constant >= 0 { -1 } else { length(context.locals) }
+    let local = if field < 0 { -1 } else { length(context.locals) }
     let binding = length(context.bindings)
     push(context.bindings, Binding { name = name local = local constant = constant previous = -1 })
     if local >= 0 {
-        push(context.locals, Local { name = name ty = ty mutable = mutable is_scoped = is_scoped })
+        push(context.locals, Local { name = name ty = if constant >= 0 { storage } else { ty } mutable = mutable is_scoped = is_scoped })
         if cell >= 0 { push(scope.cells, Cell { local = local ty = cell }) }
     }
     push(scope.captures, Capture { name = name ty = ty mutable = mutable is_scoped = is_scoped constant = constant cell = cell field = field local = local binding = binding })
@@ -197,7 +205,7 @@ fn closure_literal(context Context, node Node) Result[Expr, Failure] {
     index = 0
     while index < length(saved.captures) {
         let capture = get(saved.captures, index)
-        if capture.constant < 0 {
+        if capture.field >= 0 {
             let found = lookup(context, capture.name)
             let binding = get(context.bindings, found)
             let value = get(context.locals, binding.local)
@@ -255,12 +263,12 @@ fn closure_body(env Environment, plan Int, outer List[Context], emit Bool) Resul
     index = 0
     while index < length(captures) {
         let capture = get(captures, index)
-        if capture.constant < 0 {
+        if capture.field >= 0 {
             if capture.is_scoped || must_scope(context, capture.ty)? || task_value(env, capture.ty) ||
                 marker_type(env, context.signature.symbol, context.signature.requirements, capture.ty, resource_concept(env, "NoSuspend"), new[Int]())? {
                 return Result.Err(error(context, node, "a closure cannot capture a scoped, MustScope, NoSuspend or one-shot Task binding"))
             }
-            let storage = if capture.cell >= 0 { capture.cell } else { capture.ty }
+            let storage = get(get(env.types, scope.environment).fields, capture.field).ty
             let source = expression(ExprKind.Field, storage, node, "", capture.field,
                 expressions(atom(ExprKind.Local, saved.environment, node, scope.local)), true)
             push(prefix, expression(ExprKind.Let, 0, node, "", capture.local, expressions(source), true))

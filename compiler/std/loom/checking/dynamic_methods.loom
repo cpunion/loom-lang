@@ -33,9 +33,14 @@ fn dynamic_slot(context Context, node Node, receiver Int, method Int, arguments 
     }
     let specialized = signature(env, method, arguments, node)?
     let params = new[Int]()
+    var constant = 0
     argument = 1
     while argument < length(specialized.params) {
-        if !is_static(specialized, argument) { push(params, get(specialized.params, argument)) }
+        if !is_static(specialized, argument) { push(params, get(specialized.params, argument)) } else {
+            let storage = static_environment_type(env, get(constants, constant))
+            if storage >= 0 { push(params, storage) }
+            constant = constant + 1
+        }
         argument = argument + 1
     }
     let seen = new[Int]()

@@ -119,7 +119,10 @@ factories. Copying or storing a named function value creates no Task; invoking i
 the direct-call owner and one-shot obligations. Async constructors receive the
 actual indirect call location. A synchronous factory runs inline and creates any
 children at its own body call sites. The [callback example](../../compiler/examples/task_callbacks)
-covers both. Compile-time Task references and capturing closures remain unsupported.
+covers both. Capturing closures use the same callable representation, excluding
+live Task and scoped resource captures. Compile-time construction may retain an
+async reference without invoking it; creating, transferring or awaiting real
+Tasks still cannot execute at compile time.
 
 Task-bearing tuples/records now transfer whole values or individual fields,
 including nested tuple destructuring. Async parameters adopt each contained Task;

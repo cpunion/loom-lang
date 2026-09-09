@@ -1,0 +1,40 @@
+test fn captured_static_callbacks_keep_exact_shapes_without_runtime_dispatch() {
+    let source = "fn make(value Int) fn(Int) Int { fn(next Int) Int { value + next } }\nfn apply(comptime action fn(Int) Int, value Int) Int { action(value) }\nfn main() { assert apply(make(2), 3) == 5\nassert apply(make(5), 4) == 9 }"
+    let program = accepted(source)
+    var index = 0
+    var instances = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        assert dynamic_count(function.body, ExprKind.IndirectCall) == 0
+        if function.symbol == 1 {
+            instances = instances + 1
+            assert length(function.params) == 2
+            assert get(program.types, get(function.params, 0)).kind == TypeKind.Frame
+            assert get(function.params, 1) == 1
+        }
+        index = index + 1
+    }
+    assert instances == 1
+    rejects("fn apply(comptime action fn() Int) Int { action() }\nfn use(value Int) Int { apply(fn() Int { value }) }")
+    rejects("fn apply(comptime action fn() Int) Int { comptime { action() } }\nfn main() { discard apply(comptime { let value = 1\nfn() Int { value } }) }")
+    rejects("fn apply(comptime action fn() Int) Int ensures result == 1 { action() }\nfn main() { discard apply(comptime { let value = 1\nfn() Int { value } }) }")
+    discard accepted("async fn item() Int { 1 }\nasync fn main() { let action = comptime { item }\nassert action().await == 1 }")
+    rejects("async fn item() Int { 1 }\nfn main() { discard comptime { let action = item\naction() } }")
+}
+
+fn static_io_files(body Text) List[TestFile] {
+    let files = source_files(concat("import std.process.read\nfn make(value Int) fn() Int { fn() Int { value + read() } }\nfn apply(comptime action fn() Int) Int { action() }\n", body))
+    push(files, source_file("std.process", "intrinsic fn arg_count() Int\npub fn read() Int { arg_count() }", true))
+    files
+}
+
+test fn constructing_an_effectful_callback_does_not_execute_its_body() {
+    match checked(static_io_files("fn main() { discard apply(make(1)) }")) {
+        Result.Ok(_) => {}, Result.Err(_) => { assert false }
+    }
+    match checked(static_io_files("fn main() { discard comptime { make(1)() } }")) {
+        Result.Ok(_) => { assert false }
+        Result.Err(failed) => { assert failed.diagnostic.message == "compile-time evaluation forbids intrinsic arg_count" }
+    }
+    rejects("fn use(value Int) Int { let action = fn() Int { value }\ncomptime { action() } }")
+}

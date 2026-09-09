@@ -301,7 +301,9 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs List[No
         let target = substitute(context.env, context.signature.symbol, get(signature.params, index), instance.arguments, node)?
         let input = get(inputs, index)
         if is_static(signature, index) {
-            push(constants, static_argument(context, input, get(values, index), target)?)
+            let value = static_argument(context, input, get(values, index), target)?
+            push(constants, value)
+            if value.capture >= 0 { push(runtime_values, static_environment_argument(context, input, value)?) }
         } else {
             let value = if length(probes) != 0 && get(probes, index) { expr(context, input, target)? } else {
                 typed(context, input, get(values, index), target)?

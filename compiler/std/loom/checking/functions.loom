@@ -275,7 +275,13 @@ fn function_scope(env Environment, current Signature, arguments List[Int], const
     while index < length(parameters) {
         let parameter = get(parameters, index)
         if is_static(current, index) {
-            context = bind_name(context, parameter, parameter.value, -1, constant, -1)?
+            let storage = static_environment_type(env, get(constants, constant))
+            let local = if storage >= 0 { length(context.locals) } else { -1 }
+            context = bind_name(context, parameter, parameter.value, local, constant, -1)?
+            if storage >= 0 {
+                push(context.locals, Local { name = parameter.value ty = storage mutable = false is_scoped = false })
+                push(runtime_params, storage)
+            }
             constant = constant + 1
         } else {
             context = bind_local(context, parameter, parameter.value, get(current.params, index), false, -1)?

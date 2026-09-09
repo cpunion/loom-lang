@@ -44,8 +44,9 @@ indirect creation location. Only Task-returning callback signatures gain a priva
 label argument; synchronous factories use one adapter per referenced target.
 Direct functions and private coroutine callbacks retain their ABI. Source async
 closures use the same callable shape and owner checks, but cannot capture live
-Tasks or scoped/NoSuspend resources. Compile-time Task references remain
-unsupported. See the [callback example](../../compiler/examples/task_callbacks).
+Tasks or scoped/NoSuspend resources. Compile-time construction can retain these
+references without creating Tasks; actual Task creation, transfer or await still
+rejects. See the [callback example](../../compiler/examples/task_callbacks).
 Tuples and records now carry one-shot Task fields, including nested fields,
 generic forwarding and callback/dynamic signatures. Whole-value reads transfer
 all fields; field reads and tuple destructuring track each Task independently.
@@ -230,8 +231,7 @@ only referenced enclosing bindings. Immutable bindings retain value semantics;
 mutable bindings share one typed managed cell with their enclosing scope.
 Nested closures, async literals and pure compile-time execution/reification use
 the same environments, without new runtime operations. Scoped, MustScope,
-NoSuspend and live Task captures reject before flow analysis. Explicit captured
-function `comptime` parameters remain unsupported. See the
+NoSuspend and live Task captures reject before flow analysis. See the
 [closure example](../../compiler/examples/closures/README.md).
 
 Source `std.list.map/filter/fold` use those function values without new runtime
@@ -532,15 +532,24 @@ reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 
 `comptime` parameters specialize named calls using canonical Int/Bool/Text or
-source-function identities and disappear before the native ABI. Known functions
-use direct calls; generic references, pure selectors and forwarding preserve
+source-function identities; scalar values and function identities disappear
+before the native ABI. Known functions use determined targets; generic references, pure selectors and forwarding preserve
 type checks and target preconditions. Static-value branches are checked with
 abstract type arguments and declared requirements, not incidental concrete
 conformances. Unknown runtime inputs and unproved abstract postconditions reject.
 The [static-parameter example](../../compiler/examples/comptime_parameters/main.loom)
 also exercises callbacks returned by specialized selectors. References
-to static-parameter declarations, capturing closure parameters and variadics
-are not included in this slice.
+to static-parameter declarations and variadics are not included in this slice.
+Captured parameters now pass only a typed managed environment. Construction
+materializes once, forwarding shares current state, and returned closures retain
+it. Captured contents do not create extra native specializations of the same
+target/layout. Static/dynamic methods and async calls share the existing ABI;
+ordinary runtime bindings still cannot enter compile-time execution. Constructing
+effectful or async references is distinct from calling them: indirect compile-time
+calls check all discovered targets of their shape, including unexecuted runtime
+branches. Nested staging cannot read a live parameter environment; whole-call
+compile-time execution remains available. See the
+[captured parameter example](../../compiler/examples/comptime_closures/README.md).
 
 The [lexical cleanup example](../../compiler/examples/cleanup/main.loom) runs
 late-bound `defer` blocks on normal, tail, return, `Result?`, `break` and `continue` exits, with LIFO

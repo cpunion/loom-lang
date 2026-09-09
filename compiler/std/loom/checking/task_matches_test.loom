@@ -27,7 +27,7 @@ test fn task_enums_reject_dropped_duplicated_and_unbound_payloads() {
 
 test fn task_enums_preserve_owner_purity_and_resource_rules() {
     task_rejected(concat(task_enum_header(), "fn hidden() { let value = start() }"), "task creation or transfer requires an async function or a Task-bearing parameter or return type")
-    task_rejected(concat(task_enum_header(), "fn main() { discard comptime { pass[Choice[Task[Int]]] } }"), "compile-time evaluation cannot transfer tasks")
+    discard accepted(concat(task_enum_header(), "fn main() { discard comptime { pass[Choice[Task[Int]]] } }"))
     resource_reject(concat(resource_header(), "enum Held { Some(Task[Handle]) None }\nfn transfer(value Held) Held { value }"))
     suspension_reject(concat(suspension_header(), "enum Held { Some(Task[Token]) None }\nfn transfer(value Held) Held { value }"), "Task results cannot contain NoSuspend values")
     discard accepted(concat(task_enum_header(), "enum Shared { Some(List[Task[Int]]) None }\nfn transfer(value Shared) Shared { value }"))
