@@ -23,7 +23,7 @@ for (const input of [compiler, native, runtime]) {
   if (!existsSync(input)) throw new Error(`missing ${input}; bootstrap this checkout first`);
 }
 
-function sources(from, to) {
+function copyTree(from, to) {
   cpSync(from, to, {
     recursive: true,
     filter: path => !relative(from, path).split(sep).includes("target"),
@@ -51,7 +51,7 @@ try {
   mkdirSync(privateTools, { recursive: true });
   copyFileSync(native, join(privateTools, `loom-native${suffix}`));
   copyFileSync(runtime, join(privateTools, runtimeName));
-  sources(join(root, "compiler/std"), join(privateTools, "std"));
+  copyTree(join(root, "compiler/std"), join(privateTools, "std"));
   copyFileSync(join(root, "LICENSE"), join(prefix, "LICENSE"));
   const buildEnvironment = { ...process.env, LOOM_TARGET_CPU: "generic", LOOM_OPT_LEVEL: "2" };
   delete buildEnvironment.LOOM_GC_STRESS;
@@ -66,7 +66,7 @@ try {
   prefix = moved;
   const loom = join(prefix, `bin/loom${suffix}`);
   const app = join(temporary, "application");
-  sources(join(root, "compiler/examples/wordcount"), app);
+  copyTree(join(root, "compiler/examples/wordcount"), app);
   const environment = { ...buildEnvironment };
   delete environment.LOOM_TARGET_CPU;
   // These native commands deliberately pass no --std or --native-tool flags.
@@ -99,9 +99,14 @@ try {
   renameSync(`${backend}.disabled`, backend);
   // The new compiler can itself serve as a source-checking bootstrap seed.
   run(loom, ["check", join(root, "compiler/loom")], app, environment);
+  writeSync(1, `Copying the verified toolchain to ${output}\n`);
   mkdirSync(dirname(output), { recursive: true });
   mkdirSync(output); // Never merge into or replace an existing toolchain.
-  cpSync(prefix, output, { recursive: true });
+  // Keep the filtered traversal above: Node's unfiltered native cpSync path
+  // can terminate on Windows Unicode paths instead of throwing a JS error.
+  // https://github.com/nodejs/node/issues/63970
+  copyTree(prefix, output);
+  run(join(output, `bin/loom${suffix}`), ["--version"], app, environment);
   console.log(`Relocated fmt/check/build/test/run, editor queries and forced-GC execution passed.\nStaged local toolchain: ${output}`);
   console.log("Invoke bin/loom by path. Native builds still require this host's LLVM libraries and linker/SDK; this is not a release archive.");
 } finally {
