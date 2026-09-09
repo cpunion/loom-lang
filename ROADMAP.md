@@ -351,7 +351,9 @@ identifiers in bodies with type errors and additive cursor/EOF syntax recovery
 confined to virtual completion snapshots. Receiver-type completion now offers
 fields, tuple indices, admitted concept methods and Task `.await`, sharing
 ordinary scope/type rules without claiming the incomplete body is verified.
-Package-qualified completion, rename, and incremental
+Qualified spelling completion now follows the same package/import visibility,
+including type positions and local receiver shadowing. Import-path discovery,
+automatic imports, rename, and incremental
 semantic reuse are subsequent tooling work, not completed language features.
 Native failing assertions now report their source location and current test,
 including helper assertions and standalone test executables. The first fault

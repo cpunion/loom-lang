@@ -38,6 +38,9 @@ Try these edits:
    the error appears but hover and navigation in `main` still work, then remove it.
 7. In `display`, remove `words` from `summary.words`. After `summary.`, completion
    should offer `lines`, `words`, and `bytes`; select `words` to restore the program.
+8. Replace a `to_text` call with `std.int.to_`, then complete `to_text`. Qualified
+   completion uses your existing import; it does not add imports or expose every
+   public function in a dependency.
 
 The missing-file command exits with `1`; omitting the file argument prints usage
 and exits with `2`. `loom run` preserves these application exit codes, just like

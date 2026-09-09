@@ -18,6 +18,7 @@ pub enum CompletionKind {
     Field
     Method
     Keyword
+    Namespace
 }
 
 pub record CompletionItem {
@@ -145,6 +146,9 @@ fn completion_binding(items List[CompletionItem], node Node) {
 
 fn completion_scope(node Node, text Text, offset Int, items List[CompletionItem]) Bool {
     var testing = has(node, NodeKind.Test)
+    if node.kind == NodeKind.Concept || node.kind == NodeKind.Impl {
+        push(items, CompletionItem { name = "Self" kind = CompletionKind.Type detail = "implementing type Self" })
+    }
     var index = 0
     while index < length(node.children) {
         let child = get(node.children, index)

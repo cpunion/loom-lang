@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Complete qualified package paths from existing binding spellings, retaining
+  overloads, local receiver precedence, private/test scopes and distinct source
+  instances. Filter type/constructor and dyn paths without guessing instantiations.
+  Import-path discovery and automatic imports remain open.
+
 - Add receiver-type member completion through shared Loom signature, local and
   match-scope checking. Offer visible fields, tuple indices, explicit concept
   methods and async Task `.await`, retaining generic/test visibility and full-token

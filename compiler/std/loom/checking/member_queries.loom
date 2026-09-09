@@ -7,6 +7,11 @@ pub record MemberCandidate {
     method Int
 }
 
+pub enum MemberQuery {
+    Members(List[MemberCandidate])
+    Qualified
+}
+
 fn query_inside(node Node, offset Int) Bool {
     node.span.start <= offset && offset < node.span.end
 }
@@ -103,8 +108,7 @@ fn member_context(context Context, node Node, offset Int) Result[Context, Failur
     Result.Ok(context)
 }
 
-fn member_hints(context Context, receiver Node, prefix Text) Result[List[MemberCandidate], Failure] {
-    let value = expr(context, receiver, -1)?
+fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCandidate], Failure] {
     let env = context.env
     let shape = get(env.types, value.ty)
     let hints = new[MemberCandidate]()
@@ -181,7 +185,7 @@ fn member_hints(context Context, receiver Node, prefix Text) Result[List[MemberC
 // Signature/body-prefix inference shares ordinary checking, but neither the
 // incomplete body nor its callees are claimed verified. Only candidate strings
 // leave the query. Unknown receiver types and earlier typing errors reject.
-pub fn member_candidates(source std.loom.binding.Program, file Int, offset Int, receiver Node, prefix Text) Result[List[MemberCandidate], Failure] {
+pub fn member_candidates(source std.loom.binding.Program, file Int, offset Int, receiver Node, prefix Text) Result[MemberQuery, Failure] {
     let env = prepare(source)?
     var index = 0
     while index < length(env.signatures) {
@@ -192,12 +196,23 @@ pub fn member_candidates(source std.loom.binding.Program, file Int, offset Int, 
             let scope = function_scope(env, signature(env, index, arguments, item.node)?, arguments, unknown_constants(current), false)?
             let body = child(item.node, part(item.node, NodeKind.Block))
             if !query_inside(body, offset) {
-                return Result.Ok(new[MemberCandidate]())
+                return Result.Ok(MemberQuery.Members(new[MemberCandidate]()))
             }
             let context = member_context(scope.context, body, offset)?
-            return member_hints(context, receiver, prefix)
+            let value = match expr(context, receiver, -1) {
+                Result.Ok(value) => value
+                Result.Err(failed) => {
+                    // A failed local receiver never falls back to a namespace.
+                    // Global function/enum values keep their member path too.
+                    if receiver.kind == NodeKind.Name && lookup(context, slice(receiver.value, 0, first_dot(receiver.value))) < 0 {
+                        return Result.Ok(MemberQuery.Qualified)
+                    }
+                    return Result.Err(failed)
+                }
+            }
+            return Result.Ok(MemberQuery.Members(member_hints(context, value, prefix)?))
         }
         index = index + 1
     }
-    Result.Ok(new[MemberCandidate]())
+    Result.Ok(MemberQuery.Members(new[MemberCandidate]()))
 }

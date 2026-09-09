@@ -1,0 +1,80 @@
+fn completion_segment(path Text) Text {
+    var end = 0
+    while end < std.text.length(path) && byte(path, end) != 46 {
+        end = end + 1
+    }
+    slice(path, 0, end)
+}
+
+// Enumerate only spellings already admitted by this package's binder. Source
+// dependencies are not automatic imports, and namespaces are not new values.
+fn qualified_completion(bindings std.loom.binding.Program, file Int, offset Int, span Span, receiver Node) Option[Completion] {
+    let source = get(bindings.files, file)
+    let locals = new[CompletionItem]()
+    let testing = completion_scope(source.tree, source.text, span.start, locals) || source.test_only
+    if testing && (!bindings.tests || source.package != bindings.root) {
+        return Option.None
+    }
+    let type_path = receiver.kind == NodeKind.Type || receiver.kind == NodeKind.DynType
+    let root = completion_segment(receiver.value)
+    var index = 0
+    while index < length(locals) {
+        let local = get(locals, index)
+        if local.name == root && (!type_path || local.kind == CompletionKind.Type) {
+            return Option.None
+        }
+        index = index + 1
+    }
+    let stem = concat(receiver.value, ".")
+    let prefix = slice(source.text, span.start, offset)
+    let items = new[CompletionItem]()
+    let names = visible_names(bindings, file, testing)
+    index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        if starts_with(name, stem) {
+            let tail = slice(name, std.text.length(stem), std.text.length(name))
+            let segment = completion_segment(tail)
+            if starts_with(segment, prefix) {
+                let symbols = candidates(bindings, file, testing, name)
+                var candidate = 0
+                while candidate < length(symbols) {
+                    let symbol = get(bindings.symbols, get(symbols, candidate))
+                    let admitted = if receiver.kind == NodeKind.DynType {
+                        symbol.node.kind == NodeKind.Concept
+                    }
+                    else {
+                        !type_path || symbol.node.kind != NodeKind.Function
+                    }
+                    if admitted {
+                        if std.text.length(segment) < std.text.length(tail) {
+                            if !completion_named(items, segment) {
+                                push(items, CompletionItem {
+                                        name = segment
+                                        kind = CompletionKind.Namespace
+                                        detail = concat("package ", concat(stem, segment))
+                                    })
+                            }
+                        } else {
+                            push(items, CompletionItem {
+                                    name = segment
+                                    kind = if symbol.node.kind == NodeKind.Function {
+                                        CompletionKind.Function
+                                    } else {
+                                        CompletionKind.Type
+                                    }
+                                    detail = completion_detail(get(bindings.files, symbol.file).text, symbol.node)
+                                })
+                        }
+                    }
+                    candidate = candidate + 1
+                }
+            }
+        }
+        index = index + 1
+    }
+    Option.Some(Completion {
+            span = span
+            items = items
+        })
+}

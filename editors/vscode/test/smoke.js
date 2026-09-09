@@ -138,6 +138,8 @@ async function main() {
       { text: 'record Receipt { amount Int }\nfn main(){let receipt=Receipt { amount=42 }\ndiscard receipt.', prefix: '', suffix: '', name: 'amount', kind: 5 },
       { text: 'concept Show { fn show(self Self) Int }\nimpl Show for Int { fn show(self Int) Int { self } }\nfn main(){let value=42\ndiscard value.sh', prefix: 'sh', suffix: 'sh', name: 'show', kind: 2, call: '()' },
       { text: 'async fn item() Int { 42 }\nasync fn main(){let pending=item()\ndiscard pending.aw', prefix: 'aw', suffix: 'aw', name: 'await', kind: 14 },
+      { text: 'import std.text.length\nfn main(){discard std.text.leRest', prefix: 'le', suffix: 'leRest', name: 'length', kind: 3, call: '("é")' },
+      { text: 'import std.text.length\nfn main(){discard std.teRest', prefix: 'te', suffix: 'teRest', name: 'text', kind: 9, call: '.length("é")' },
     ];
     for (const [index, item] of memberCases.entries()) {
       const version = 17 + index * 2;
@@ -156,6 +158,18 @@ async function main() {
       await client.change(file, accepted, version + 1);
       assert.deepEqual((await client.wait(file, version + 1)).diagnostics, []);
     }
+    const annotated = 'import std.option.Option\nfn demo(value std.option.OpRest[Int]) {}\nfn main() {}\n';
+    await client.change(file, annotated, 31);
+    assert.ok((await client.wait(file, 31)).diagnostics.length > 0);
+    const annotation = TextDocument.create(params.textDocument.uri, 'loom', 31, annotated);
+    const types = await client.rpc.sendRequest('textDocument/completion', {
+      ...params, position: annotation.positionAt(annotated.indexOf('OpRest') + 2),
+    });
+    assert.deepEqual(types.items.map(item => item.label), ['Option']);
+    assert.equal(types.items[0].kind, 7);
+    assert.equal(annotation.getText(types.items[0].textEdit.range), 'OpRest');
+    await client.change(file, TextDocument.applyEdits(annotation, [types.items[0].textEdit]), 32);
+    assert.deepEqual((await client.wait(file, 32)).diagnostics, []);
     // Following a dependency outside this folder retains its folder-scoped,
     // relative toolchain settings for diagnostics, hover and formatting.
     const external = path.join(stdRoot, 'loom/source/source.loom');
@@ -171,7 +185,7 @@ async function main() {
     assert.equal(await fs.readFile(file, 'utf8'), saved);
     await assert.rejects(fs.access(helper), { code: 'ENOENT' });
     await assert.rejects(fs.access(bad), { code: 'ENOENT' });
-    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition, name/member completion and replacement, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
+    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition, name/member/qualified completion and replacement, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

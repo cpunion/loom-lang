@@ -160,7 +160,7 @@ async function semanticQuery(params, token, kind) {
     } else if (kind === 'completion') {
       const result = report.completion;
       const kinds = { variable: CompletionItemKind.Variable, function: CompletionItemKind.Function, type: CompletionItemKind.Class,
-        field: CompletionItemKind.Field, method: CompletionItemKind.Method, keyword: CompletionItemKind.Keyword };
+        field: CompletionItemKind.Field, method: CompletionItemKind.Method, keyword: CompletionItemKind.Keyword, namespace: CompletionItemKind.Module };
       value = { isIncomplete: true, items: (result?.items || []).map(item => ({
         label: item.label, kind: kinds[item.kind], detail: item.detail,
         textEdit: { range: { start: compiler.bytePosition(document, result.start), end: compiler.bytePosition(document, result.end) }, newText: item.label },
