@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn generic_cpu_drops_host_features_and_changes_the_cache_profile() {
+    fn generic_cpu_drops_host_features_and_uses_the_effective_cache_profile() {
         let generic =
             NativeTarget::configured(Optimization::O2, Some(OsStr::new("generic"))).unwrap();
         let native =
@@ -277,9 +277,12 @@ mod tests {
         let profile = generic.profile(false);
         assert_eq!(profile[1], b"generic");
         assert!(profile[2].is_empty());
-        assert_ne!(
-            identity(b"native", b"llvm", &profile),
-            identity(b"native", b"llvm", &native.profile(false))
+        let native_profile = native.profile(false);
+        // Host discovery can itself return generic with no features (for
+        // example in a VM). Equal effective targets should share a cache key.
+        assert_eq!(
+            identity(b"native", b"llvm", &profile) == identity(b"native", b"llvm", &native_profile),
+            profile == native_profile
         );
         assert!(NativeTarget::configured(Optimization::O2, Some(OsStr::new("typo"))).is_err());
     }
