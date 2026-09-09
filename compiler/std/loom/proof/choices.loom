@@ -1,0 +1,79 @@
+// Lift scalar choices before translating Boolean results into guarded clauses.
+// Evaluation obligations stay in Expansion.checks; this is logical substitution,
+// not permission to omit eager arguments or calculations in an executed branch.
+fn choice_step(budget List[Int], depth Int) Result[Bool, Text] {
+    if depth >= 64 || !conjunction_step(budget) { return Result.Err("helper choice expansion budget exhausted") }
+    Result.Ok(true)
+}
+fn has_choice(value Expr) Bool {
+    if value.kind == ExprKind.If { return true }
+    var index = 0
+    while index < length(value.children) {
+        if has_choice(get(value.children, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+fn lifted_choice(condition Expr, yes Expr, no Expr, budget List[Int], depth Int) Result[Expr, Text] {
+    discard choice_step(budget, depth)?
+    if condition.kind == ExprKind.If {
+        let left = lifted_choice(get(condition.children, 1), yes, no, budget, depth + 1)?
+        let right = lifted_choice(get(condition.children, 2), yes, no, budget, depth + 1)?
+        return Result.Ok(proof_choice(get(condition.children, 0), left, right))
+    }
+    Result.Ok(proof_choice(condition, yes, no))
+}
+fn lifted_operation(value Expr, left Expr, right Expr, budget List[Int], depth Int) Result[Expr, Text] {
+    discard choice_step(budget, depth)?
+    if left.kind == ExprKind.If {
+        let yes = lifted_operation(value, get(left.children, 1), right, budget, depth + 1)?
+        let no = lifted_operation(value, get(left.children, 2), right, budget, depth + 1)?
+        return Result.Ok(proof_choice(get(left.children, 0), yes, no))
+    }
+    if value.kind == ExprKind.Binary && right.kind == ExprKind.If && (value.text == "&&" || value.text == "||") {
+        // Do not hoist a right-hand condition out of its short-circuit guard.
+        let and = value.text == "&&"
+        return Result.Ok(proof_choice(left, if and { right } else { proof_bool(value, true) },
+            if and { proof_bool(value, false) } else { right }))
+    }
+    if value.kind == ExprKind.Binary && right.kind == ExprKind.If {
+        let yes = lifted_operation(value, left, get(right.children, 1), budget, depth + 1)?
+        let no = lifted_operation(value, left, get(right.children, 2), budget, depth + 1)?
+        return Result.Ok(proof_choice(get(right.children, 0), yes, no))
+    }
+    let children = new[Expr]()
+    push(children, left)
+    if value.kind == ExprKind.Binary { push(children, right) }
+    Result.Ok(proof_expr(value, value.kind, value.ty, value.text, value.index, children))
+}
+fn lifted_choices(value Expr, budget List[Int], depth Int) Result[Expr, Text] {
+    discard choice_step(budget, depth)?
+    if length(value.children) == 0 { return Result.Ok(value) }
+    let left = lifted_choices(get(value.children, 0), budget, depth + 1)?
+    if value.kind == ExprKind.If {
+        let yes = lifted_choices(get(value.children, 1), budget, depth + 1)?
+        let no = lifted_choices(get(value.children, 2), budget, depth + 1)?
+        return lifted_choice(left, yes, no, budget, depth + 1)
+    }
+    let right = if value.kind == ExprKind.Binary { lifted_choices(get(value.children, 1), budget, depth + 1)? } else { left }
+    lifted_operation(value, left, right, budget, depth + 1)
+}
+fn choice_predicate(value Expr, budget List[Int], depth Int) Result[Expr, Text] {
+    discard choice_step(budget, depth)?
+    if value.kind != ExprKind.If { return Result.Ok(value) }
+    let condition = get(value.children, 0)
+    let yes = choice_predicate(get(value.children, 1), budget, depth + 1)?
+    let no = choice_predicate(get(value.children, 2), budget, depth + 1)?
+    if is_bool(yes, true) && is_bool(no, false) { return Result.Ok(condition) }
+    if is_bool(yes, false) && is_bool(no, true) { return Result.Ok(proof_not(condition)) }
+    Result.Ok(proof_and(guarded_value(condition, yes), guarded_value(proof_not(condition), no)))
+}
+fn normalized_predicate(value Expr) Result[Expr, Text] {
+    if value.ty != 2 || !bounded_contract(value) { return Result.Err("helper predicate expansion budget exhausted") }
+    if !has_choice(value) { return Result.Ok(value) }
+    let budget = new[Int]()
+    push(budget, 2048)
+    let output = choice_predicate(lifted_choices(value, budget, 0)?, budget, 0)?
+    if !bounded_contract(output) { return Result.Err("helper predicate expansion budget exhausted") }
+    Result.Ok(output)
+}

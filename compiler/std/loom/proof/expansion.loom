@@ -44,6 +44,7 @@ fn proof_children(left Expr, right Expr) List[Expr] {
 }
 fn proof_not(value Expr) Expr {
     if value.kind == ExprKind.Bool { return proof_bool(value, value.text != "true") }
+    if value.kind == ExprKind.Unary && value.text == "!" { return get(value.children, 0) }
     let children = new[Expr]()
     push(children, value)
     proof_expr(value, ExprKind.Unary, 2, "!", -1, children)
@@ -56,6 +57,8 @@ fn proof_and(left Expr, right Expr) Expr {
 fn guarded_value(guard Expr, value Expr) Expr {
     if is_bool(guard, true) { return value }
     if is_bool(guard, false) { return proof_bool(guard, true) }
+    if is_bool(value, true) { return value }
+    if is_bool(value, false) { return proof_not(guard) }
     proof_expr(guard, ExprKind.Binary, 2, "||", -1, proof_children(proof_not(guard), value))
 }
 fn evaluated(context Expansion, guard Expr, value Expr, required Bool) Result[Bool, Text] {
@@ -105,6 +108,16 @@ fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[Expans
 fn expanded_block(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int, returns Bool) Result[Expr, Text] {
     discard expansion_step(context, depth)?
     if value.kind != ExprKind.Block || length(value.children) == 0 { return Result.Err("helper needs a scalar body") }
+    // Keep the common straight-line path free of path lists; control-flow helpers
+    // use the same expression expansion and guarded evaluation obligations.
+    var scan = 0
+    while scan < length(value.children) {
+        let member = get(value.children, scan)
+        if member.kind == ExprKind.If || (member.kind == ExprKind.Return && scan + 1 < length(value.children)) || member.kind == ExprKind.Assert {
+            return expanded_branches(context, value, guard, bindings, locals, self, calls, depth + 1, returns)
+        }
+        scan = scan + 1
+    }
     var index = 0
     while index < length(value.children) {
         let member = get(value.children, index)
@@ -131,6 +144,7 @@ fn expanded_block(context Expansion, value Expr, guard Expr, bindings List[Expan
 fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int) Result[Expr, Text] {
     discard expansion_step(context, depth)?
     if value.kind == ExprKind.Block { return expanded_block(context, value, guard, bindings, locals, self, calls, depth + 1, false) }
+    if value.kind == ExprKind.If { return expanded_branches(context, value, guard, bindings, locals, self, calls, depth + 1, false) }
     if !scalar_type(value.ty) || length(value.arms) != 0 { return Result.Err("helper expression is not a primitive scalar") }
     if value.kind == ExprKind.Local {
         var index = length(bindings)
@@ -166,7 +180,7 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
 // separate from equality: a successfully evaluated NaN is not equal to itself.
 fn total_scalar(value Expr) Bool {
     if value.kind == ExprKind.Local || value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool { return true }
-    if value.kind != ExprKind.Unary && value.kind != ExprKind.Binary { return false }
+    if value.kind != ExprKind.Unary && value.kind != ExprKind.Binary && value.kind != ExprKind.If { return false }
     var index = 0
     while index < length(value.children) {
         if !total_scalar(get(value.children, index)) { return false }
@@ -184,7 +198,7 @@ fn bounded_evaluations(context Expansion) Bool {
     var index = 0
     while index < length(context.checks) {
         let check = get(context.checks, index)
-        if !bounded_expression(check.guard) || !bounded_expression(check.value) { return false }
+        if !bounded_contract(check.guard) || !bounded_contract(check.value) { return false }
         index = index + 1
     }
     true
@@ -211,19 +225,20 @@ fn evaluation_proved(premise Expr, guard Expr, value Expr, required Bool) Result
     push(locals, Value.Number(variable(0)))
     let initial = bounded(get(locals, 0), State { locals = locals facts = new[Predicate]() })
     let state = assume(initial, boolean(pure(premise, initial)?)?)
-    discard defined(guard, state)?
-    let selected = assume(state, boolean(pure(guard, state)?)?)
-    if holds(Predicate.Constant(false), selected.facts) { return Result.Ok(true) }
-    discard defined(value, selected)?
-    Result.Ok(!required || holds(boolean(pure(value, selected)?)?, selected.facts))
+    let predicate = if required { value } else {
+        proof_expr(value, ExprKind.Binary, 2, "==", -1, proof_children(value, value))
+    }
+    let condition = normalized_predicate(guarded_value(guard, predicate))?
+    discard defined(condition, state)?
+    postcondition_holds(condition, state, 256)
 }
 fn helper_implication(program Program, premise Expr, conclusion Expr) Result[Bool, Text] {
     let budget = new[Int]()
     push(budget, 1024)
     let source = Expansion { program = program budget = budget active = new[Int]() checks = new[Evaluation]() }
-    let left = expanded(source, premise, proof_bool(premise, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?
+    let left = normalized_predicate(expanded(source, premise, proof_bool(premise, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
     let target = Expansion { program = program budget = budget active = new[Int]() checks = new[Evaluation]() }
-    let right = expanded(target, conclusion, proof_bool(conclusion, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?
+    let right = normalized_predicate(expanded(target, conclusion, proof_bool(conclusion, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
     // Parameter substitution can share a small DAG whose unfolded tree is huge.
     // Bound every expression before unbudgeted symbolic/definedness traversal.
     if !bounded_expression(left) || !bounded_expression(right) || !bounded_evaluations(source) || !bounded_evaluations(target) { return Result.Ok(false) }
@@ -231,7 +246,7 @@ fn helper_implication(program Program, premise Expr, conclusion Expr) Result[Boo
     var index = 0
     while index < length(source.checks) {
         let check = get(source.checks, index)
-        if check.required { facts = proof_and(facts, guarded_value(check.guard, check.value)) }
+        if check.required { facts = proof_and(facts, normalized_predicate(guarded_value(check.guard, check.value))?) }
         index = index + 1
     }
     if !bounded_expression(facts) { return Result.Ok(false) }
@@ -240,10 +255,10 @@ fn helper_implication(program Program, premise Expr, conclusion Expr) Result[Boo
         let check = get(target.checks, index)
         if !is_bool(check.guard, false) && !known_evaluation(facts, check, source.checks) {
             if check.required {
-                if !implies(facts, guarded_value(check.guard, check.value)) &&
+                if !implies(facts, normalized_predicate(guarded_value(check.guard, check.value))?) &&
                     !evaluation_proved(facts, check.guard, check.value, true)? { return Result.Ok(false) }
             } else { if !total_scalar(check.value) {
-                discard evaluation_proved(facts, check.guard, check.value, false)?
+                if !evaluation_proved(facts, check.guard, check.value, false)? { return Result.Ok(false) }
             } }
         }
         index = index + 1
@@ -283,10 +298,11 @@ fn contract_at(value Expr, source Expr) Expr {
     proof_expr(source, value.kind, value.ty, value.text, value.index, children)
 }
 fn contract_clause(output List[Expr], value Expr, source Expr) Result[Bool, Text] {
-    if !bounded_contract(value) || length(output) >= 1024 {
+    let predicate = normalized_predicate(value)?
+    if length(output) >= 1024 {
         return Result.Err("contract helper proof expansion budget exhausted")
     }
-    push(output, contract_at(value, source))
+    push(output, contract_at(predicate, source))
     Result.Ok(true)
 }
 fn evaluated_bounds(value Expr) Expr {

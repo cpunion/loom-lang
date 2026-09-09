@@ -186,7 +186,8 @@ heap reads, cross-local relations, branch joins and general Float reasoning
 remain open; unsupported proofs keep their checks. Refinement-to-refinement
 implication can expand direct acyclic scalar helpers with immutable locals,
 preserving evaluated arguments, unused calculations, guarded preconditions and
-checked arithmetic. Helper loops, mutation and indirect calls remain unsupported
+checked arithmetic. Conditional helpers retain branch guards and early body returns;
+Boolean results normalize into bounded call-free predicates. Helper loops, mutation and indirect calls remain unsupported
 for this optional proof; they do not become proof assumptions.
 
 Structural tuples support positional access and plain-name `let`/`var`
@@ -307,7 +308,7 @@ Their supported operation/call closure is validated even for unused constrained
 declarations. Known true/false predicates remove the check or reject; unknown
 inputs or unsuccessful optional evaluation retain normal runtime construction
 and fault behavior. Function contracts now reuse direct acyclic scalar helpers
-with immutable locals and tail expressions/returns. A private checked closure
+with immutable locals, `if/else`, and tail expressions or early body returns. A private checked closure
 preserves helper preconditions, eager/unused arithmetic and short-circuit guards;
 successful entry checks provide facts, while exit checks must be proved. Helpers
 used only by postconditions stay out of native reachability. The
@@ -316,8 +317,11 @@ through the CLI and compile-time execution. Generic declarations still require
 abstract proofs. Direct scalar calls in a body requiring proof now compose
 verified callee postconditions, or expand a finite pure body without a summary.
 Argument snapshots preserve eager evaluation; proof-only temporaries do not
-change emitted calls or locals. Recursive proof dependencies, unexpanded helper
-control flow and indirect/dynamic calls remain unsupported; required proofs never
+change emitted calls or locals. Conditional scalar results reuse existing typed
+branches for body proofs and bounded Boolean normalization for contracts. Reversed
+linear relations and excluded integer interval endpoints retain branch facts.
+Recursive proof dependencies, helper loops/mutation, returns inside helper operands
+and indirect/dynamic calls remain unsupported; required proofs never
 fall back to runtime checks or sampled evaluation.
 
 Managed memory now uses stop-the-world copying collection with a traced

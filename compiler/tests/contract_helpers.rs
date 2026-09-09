@@ -9,6 +9,7 @@ fn contract_helpers_prove_postconditions_without_leaking_proof_only_targets() {
     let definitions = r#"
 fn positive(value Int) Bool { value > 0 }
 fn proof_only(value Int) Bool requires value > 0 {
+    if value < 0 { return false }
     let marker = 91827365
     marker > 0
 }

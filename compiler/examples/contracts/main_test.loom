@@ -12,3 +12,10 @@ test fn forwarding_uses_the_proved_result_contract() {
     assert forward(1) == 1
     assert forward(9223372036854775807) == 9223372036854775807
 }
+
+test fn conditional_helper_results_keep_both_branch_relations() {
+    assert lower(1, 7) == 1
+    assert lower(7, 1) == 1
+    assert lower(7, 7) == 7
+    assert lower(-9223372036854775808, 9223372036854775807) == -9223372036854775808
+}

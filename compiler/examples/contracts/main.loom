@@ -23,8 +23,13 @@ ensures result == value
 }
 
 fn between(value Int, low Int, high Int) Bool {
-    let above = value >= low
-    return above && value <= high
+    if value < low {
+        return false
+    }
+    if value > high {
+        return false
+    }
+    true
 }
 
 fn bounded(value Int, low Int, high Int) Int
@@ -34,6 +39,20 @@ ensures between(result, low, high)
     value
 }
 
+fn minimum(a Int, b Int) Int {
+    if a <= b {
+        a
+    } else {
+        b
+    }
+}
+
+fn lower(a Int, b Int) Int
+ensures result <= a && result <= b
+{
+    minimum(a, b)
+}
+
 fn main() {
     assert good(7) == 7
     assert forward(7) == 7
@@ -41,4 +60,8 @@ fn main() {
         good(7)
     } == 7
     assert bounded(12, 10, 20) == 12
+    assert lower(7, 3) == 3
+    assert comptime {
+        lower(3, 7)
+    } == 3
 }

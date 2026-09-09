@@ -52,6 +52,17 @@ fn same_terms(a List[Term], b List[Term]) Bool {
     }
     true
 }
+fn opposite_terms(a List[Term], b List[Term]) Bool {
+    if length(a) != length(b) { return false }
+    var index = 0
+    while index < length(a) {
+        let left = get(a, index)
+        let right = get(b, index)
+        if left.id != right.id || compare(left.factor, negate(right.factor)) != 0 { return false }
+        index = index + 1
+    }
+    true
+}
 fn same_predicates(a List[Predicate], b List[Predicate]) Bool {
     if length(a) != length(b) { return false }
     var index = 0
@@ -78,6 +89,10 @@ fn same(a Predicate, b Predicate) Bool {
 fn tighten(bounds Bounds, relation Text, value Number) Bounds {
     var low = bounds.low
     var high = bounds.high
+    if relation == "!=" {
+        if compare(low, value) == 0 { low = sum(low, integer(1)) }
+        if compare(high, value) == 0 { high = subtract(high, integer(1)) }
+    }
     if relation == "==" || relation == ">=" || relation == ">" {
         let minimum = if relation == ">" { sum(value, integer(1)) } else { value }
         if compare(low, minimum) < 0 { low = minimum }
@@ -123,7 +138,9 @@ fn range(value Linear, facts List[Predicate]) Bounds {
             Predicate.Compare(relation, term) => {
                 if same_terms(value.terms, term.terms) {
                     bounds = tighten(bounds, relation, subtract(value.constant, term.constant))
-                }
+                } else { if opposite_terms(value.terms, term.terms) {
+                    bounds = tighten(bounds, flip(relation), sum(value.constant, term.constant))
+                } }
             }
             _ => {}
         }
