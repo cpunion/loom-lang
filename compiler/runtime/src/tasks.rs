@@ -29,6 +29,9 @@ mod file_io;
 mod observation;
 use observation::Observation;
 
+#[path = "tasks_outcomes.rs"]
+mod outcomes;
+
 #[derive(Clone, Copy)]
 struct TaskCleanup {
     site: i64,
@@ -43,12 +46,15 @@ enum State {
     ExternalWaiting,
     Completed(u64),
     Faulted(OwnedFault, u64),
+    Cancelled(u64),
 }
 
 impl State {
     fn terminal_order(&self) -> Option<u64> {
         match self {
-            Self::Completed(order) | Self::Faulted(_, order) => Some(*order),
+            Self::Completed(order) | Self::Faulted(_, order) | Self::Cancelled(order) => {
+                Some(*order)
+            }
             _ => None,
         }
     }
@@ -787,8 +793,8 @@ pub(super) extern "C-unwind" fn loom_rt_task_release(child: u64) {
     edit(|owner, core| {
         let parent = parent(core, child)?;
         let task = &core.tasks[&child];
-        if task.waiter != Some(parent) || !matches!(task.state, State::Completed(_)) {
-            return Err("task release requires a completed awaited result");
+        if task.waiter != Some(parent) || task.state.terminal_order().is_none() {
+            return Err("task release requires a terminal awaited result");
         }
         if !task.children.is_empty() {
             return Err("task release requires extracting its Task result");

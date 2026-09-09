@@ -1,0 +1,40 @@
+fn outcome_checked(body Text, valid Bool) {
+    let files = source_files("import std.task.run\nasync fn main() { run().await }")
+    let header = "record Fault { message Text }\nenum Outcome[T] { Completed(T) Faulted(Fault) Cancelled }\nasync intrinsic fn task_outcome[T](task Task[T]) Outcome[T]\nintrinsic fn task_cancel[T](task Task[T]) Outcome[T]\nasync fn item() Int { 7 }\nasync fn empty() {}\nasync fn nested() Task[Int] { item() }\npub async fn run() {\n"
+    push(files, source_file("std.task", concat(concat(header, body), "\n}"), true))
+    match checked(files) {
+        Result.Ok(_) => {
+            assert valid
+        }
+        Result.Err(failed) => {
+            if valid {
+                discard write_error(failed.diagnostic.message)
+            }
+            assert !valid
+        }
+    }
+}
+
+test fn task_outcomes_consume_handles_without_erasing_nested_obligations() {
+    outcome_checked("discard task_outcome(item()).await\ndiscard task_cancel(empty())", true)
+    outcome_checked("match task_outcome(empty()).await { Outcome.Completed(_) => {} _ => {} }", true)
+    outcome_checked("match task_outcome(nested()).await { Outcome.Completed(task) => { discard task.await } _ => {} }", true)
+    outcome_checked("let task = item()\ndiscard task_cancel(task)\ndiscard task.await", false)
+    outcome_checked("discard task_outcome(nested()).await", false)
+    outcome_checked("discard task_cancel(nested())", false)
+    outcome_checked("defer { discard task_cancel(item()) }", false)
+    outcome_checked("discard task_outcome[Int]", false)
+}
+
+test fn task_outcome_intrinsics_validate_their_complete_typed_schema() {
+    let files = source_files("fn main() {}")
+    push(files, source_file("std.task", "enum Wrong[T] { Completed(T) Faulted(Int) Cancelled }\nasync intrinsic fn task_outcome[T](task Task[T]) Wrong[T]", true))
+    match checked(files) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "task outcome requires completed(T), faulted(Text record), and cancelled variants"
+        }
+        _ => {
+            assert false
+        }
+    }
+}

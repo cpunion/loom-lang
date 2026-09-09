@@ -1,0 +1,25 @@
+pub record TaskFault {
+    message Text
+}
+
+pub enum Outcome[T] {
+    Completed(T)
+    Faulted(TaskFault)
+    Cancelled
+}
+
+async intrinsic fn task_outcome[T](task Task[T]) Outcome[T]
+
+intrinsic fn task_cancel[T](task Task[T]) Outcome[T]
+
+// Result.Err is a completed value. Only child execution/cleanup faults become
+// fault data; OOM and unexpected runtime failures still terminate the process.
+pub async fn outcome[T](task Task[T]) Outcome[T] {
+    task_outcome(task).await
+}
+
+// Consume the handle and drain before returning. Already-terminal children keep
+// their real outcome; a cancellation cleanup fault is Faulted, not Cancelled.
+pub fn cancel[T](task Task[T]) Outcome[T] {
+    task_cancel(task)
+}

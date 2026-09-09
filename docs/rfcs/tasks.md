@@ -150,12 +150,24 @@ It keeps only IDs/indices, not managed pointers. Selecting a notification leaves
 the typed Task obligation intact for ordinary await, and unrelated parent waits
 do not lose notifications. Parent cancellation removes registered observations
 before its cleanup. The private `std/task` tests exercise these operations through
-Loom suspension lowering; public outcome/cancellation/join APIs are not complete.
+Loom suspension lowering.
+
+`std.task.outcome(task).await` now consumes a child and returns the source
+`Outcome[T]` enum, preserving successful values, ordinary Result errors and
+Task-valued result obligations. No-result Tasks match `Outcome.Completed(_)`,
+without an explicit source Unit type. `TaskFault.message` contains owned
+diagnostic Text, including creation locations and the test name when present.
+`std.task.cancel(task)` drains descendants, OS work and cleanup before returning
+that child's outcome. Already-terminal children retain their real result;
+cleanup faults return Faulted. This operation is synchronous and may delay the
+owner while an active blocking OS call finishes. Neither API catches OOM or
+unexpected runtime failures. The private outcome schema validates exact typed
+payloads; generated ordinary enum control flow constructs the source result.
+See the [outcome example](../../compiler/examples/task_outcomes).
 
 Socket adapters, general worker operations
 and joins are explicitly unfinished, not removed requirements.
-Synchronous I/O still blocks the owner thread. Public outcome inspection remains
-future work.
+Synchronous I/O still blocks the owner thread.
 
 `std.file.tasks` supplies byte/text read/write Tasks using the same completion
 notifications. A lazily created pool caps workers at four per owner; it does not

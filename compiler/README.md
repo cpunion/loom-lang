@@ -1429,8 +1429,8 @@ close still block the owner, and cancellation can wait for a stuck OS call.
 Private async intrinsics must be awaited directly and suspend the current frame,
 without creating another Task. The synchronous `std.file` API remains unchanged.
 
-Socket adapters, general worker operations, joins and
-public task-outcome handling are not available yet. These are implementation
+Socket adapters, general worker operations and joins
+are not available yet. These are implementation
 limits; the [accepted design](../docs/rfcs/tasks.md) remains the target.
 
 `std.list.transfer.append(values, value)` returns the same shared List header;
@@ -1447,8 +1447,14 @@ Private completion primitives now register each child once and deliver terminal
 indices through the same typed suspension path, preserving actual completion
 order and one-shot result extraction. They retain IDs, not managed pointers;
 parent cancellation removes observations before cleanup. `loom test compiler/std/task`
-exercises the native source path. No public join API is exposed yet: typed outcomes,
-explicit cancellation and source composition policies remain next work.
+exercises the native source path. `std.task.outcome(task).await` now returns
+typed Completed/Faulted/Cancelled data, with ordinary Result errors treated as
+completed values. `std.task.cancel(task)` consumes and drains a child before
+returning its actual terminal outcome; it can block the owner while native work
+finishes. Already-completed results and Task-valued payload obligations survive.
+No-result Tasks match `Outcome.Completed(_)`, without source Unit syntax.
+See the [outcome example](examples/task_outcomes). Public multi-task join
+policies remain next work.
 
 ## Next boundary
 

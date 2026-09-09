@@ -1,0 +1,41 @@
+import std.task.Outcome
+import std.task.outcome
+import std.task.cancel
+import std.time.sleep_ms
+import std.list.push
+import std.io.write_text
+
+async fn work(events List[Text]) {
+    defer {
+        push(events, "cleaned")
+    }
+    push(events, "started")
+    sleep_ms(10000).await
+}
+
+async fn fail() Int {
+    assert false
+    0
+}
+
+async fn main() {
+    let events = ["begin"]
+    let pending = work(events)
+    match outcome(fail()).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    match cancel(pending) {
+        Outcome.Cancelled => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert events[1] == "started"
+    assert events[2] == "cleaned"
+    discard write_text("outcomes finished\n")
+}

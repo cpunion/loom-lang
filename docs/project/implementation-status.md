@@ -69,9 +69,17 @@ registered later. Selection returns a caller-supplied index and detaches that
 notification; the original typed handle still requires ordinary await. Unrelated
 parent waits retain queued notifications. Parent cancellation removes observations
 and waits before cleanup. Native `std/task` tests cover real Loom frames and moving
-GC; these primitives are private, not public join APIs. Outcome extraction,
-explicit cancellation and source join policies remain unfinished, as do socket
-adapters and general worker APIs.
+GC; these observation primitives are private, not public join APIs.
+Source `std.task.outcome(task).await` now returns typed Completed/Faulted/Cancelled
+data, including no-result and Task-bearing payloads. Fault messages are owned
+Text; ordinary Result errors remain completed values. `cancel(task)` consumes and
+drains a child before returning its real terminal outcome, preserving completed
+results and reporting cleanup faults. Cancellation does not suspend the owner;
+running blocking work must finish first. Generated ordinary enum construction
+retains typed result extraction, GC snapshots and nested Task obligations.
+See the [outcome example](../../compiler/examples/task_outcomes).
+Source join policies remain unfinished, as do socket adapters and general worker
+APIs.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;

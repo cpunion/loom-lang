@@ -128,6 +128,7 @@ fn async_function(program Program, callbacks List[Int], visits TaskVisits, id In
         index = index + 1
     }
     let graph = Graph {
+        types = program.types
         states = new[State]()
         locals = locals
         result = source.result
@@ -371,7 +372,7 @@ pub fn lower(source Program) Program {
     var index = 0
     while index < length(source.functions) {
         let function = get(source.functions, index)
-        any = any || function.is_async || function.runtime_name == "list_append" || function.runtime_name == "list_take"
+        any = any || function.is_async || function.runtime_name == "list_append" || function.runtime_name == "list_take" || function.runtime_name == "task_cancel"
         index = index + 1
     }
     index = 0
@@ -420,7 +421,7 @@ pub fn lower(source Program) Program {
         if function.is_async {
             async_function(program, callbacks, visits, index)
         } else {
-            let selected = list_function(program.types, function)
+            let selected = outcome_function(program.types, list_function(program.types, function))
             set(program.functions, index, function_body(selected, remap(program, callbacks, selected.body, 0)))
         }
         index = index + 1

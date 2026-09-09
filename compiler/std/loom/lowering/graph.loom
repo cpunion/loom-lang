@@ -147,6 +147,9 @@ fn waiting(graph Graph, source Expr, start Int, loop Loop) Value {
 }
 
 fn parking(graph Graph, source Expr, start Int, loop Loop) Value {
+    if source.text == "task_outcome" {
+        return outcome_waiting(graph, source, start, loop)
+    }
     if source.text == "task_next" {
         let park = state(graph)
         let after = state(graph)
