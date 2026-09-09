@@ -170,6 +170,26 @@ async function main() {
     assert.equal(annotation.getText(types.items[0].textEdit.range), 'OpRest');
     await client.change(file, TextDocument.applyEdits(annotation, [types.items[0].textEdit]), 32);
     assert.deepEqual((await client.wait(file, 32)).diagnostics, []);
+    const importCases = [
+      { text: 'import std.teRest\nfn main() {}\n', suffix: 'teRest', prefix: 'te', name: 'text', kind: 9, append: '.length' },
+      { text: 'import std.text.leRest\nfn main() { assert length("é😀") == 6 }\n', suffix: 'leRest', prefix: 'le', name: 'length', kind: 3 },
+      { text: 'import std.option.\nfn main() {}\n', suffix: '', prefix: '', name: 'Option', kind: 7 },
+    ];
+    for (const [index, item] of importCases.entries()) {
+      const version = 33 + index * 2;
+      await client.change(file, item.text, version);
+      assert.ok((await client.wait(file, version)).diagnostics.length > 0);
+      const snapshot = TextDocument.create(params.textDocument.uri, 'loom', version, item.text);
+      const offset = item.text.indexOf('\n') - item.suffix.length + item.prefix.length;
+      const imports = await client.rpc.sendRequest('textDocument/completion', { ...params, position: snapshot.positionAt(offset) });
+      const selected = imports.items.find(value => value.label === item.name);
+      assert.ok(selected);
+      assert.equal(selected.kind, item.kind);
+      assert.equal(snapshot.getText(selected.textEdit.range), item.suffix);
+      const accepted = TextDocument.applyEdits(snapshot, [{ ...selected.textEdit, newText: selected.textEdit.newText + (item.append || '') }]);
+      await client.change(file, accepted, version + 1);
+      assert.deepEqual((await client.wait(file, version + 1)).diagnostics, []);
+    }
     // Following a dependency outside this folder retains its folder-scoped,
     // relative toolchain settings for diagnostics, hover and formatting.
     const external = path.join(stdRoot, 'loom/source/source.loom');
@@ -185,7 +205,7 @@ async function main() {
     assert.equal(await fs.readFile(file, 'utf8'), saved);
     await assert.rejects(fs.access(helper), { code: 'ENOENT' });
     await assert.rejects(fs.access(bad), { code: 'ENOENT' });
-    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition, name/member/qualified completion and replacement, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
+    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition, name/member/qualified/import completion and replacement, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

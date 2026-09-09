@@ -147,7 +147,13 @@ same-named dependency instances do not merge. Local value receivers take priorit
 over namespaces, including whole-value match bindings. Type annotations and
 constructors offer types; `dyn` offers concepts; type parameters hide matching
 namespace roots. These are spelling candidates, not validated instantiations.
-Import-statement path discovery and automatic imports are not implemented.
+Inside an import statement, completion also discovers the current module, direct
+dependencies, `std`, directory segments and public production declarations. It
+uses unsaved overlays and the ordinary offline resolver; missing or changed Git
+snapshots offer no declarations until explicitly resolved. It does not fetch,
+write locks, follow nested-module/directory aliases, or include private/test
+declarations. Malformed target files are skipped; candidates are not checked
+package validity. Automatic imports remain unimplemented.
 
 ```sh
 npm test           # Real LSP transport with a small process fixture

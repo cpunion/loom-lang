@@ -247,6 +247,40 @@ fn production(tree Node, tests Bool) Node {
     }
 }
 
+fn visit_import(loader Loader, source Int, spelling Text, depth Int, comptime fetch Bool) Result[Bool, Text] {
+    let loaded = match imported_package(loader, source, spelling, fetch) {
+        Result.Ok(target) => visit(loader, target.0, target.1, false, depth, fetch)
+        Result.Err(message) => Result.Err(message)
+    }
+    match loaded {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(message) => {
+            // Keep a dependency's own syntax/import error if one already exists.
+            // Otherwise anchor resolution/loading failures to the importing node.
+            if length(loader.failures) == 0 {
+                var index = 0
+                while index < length(loader.files) {
+                    let file = get(loader.files, index)
+                    if file.package == source {
+                        var item = 0
+                        while item < length(file.tree.children) {
+                            let node = get(file.tree.children, item)
+                            if node.kind == NodeKind.Import && package(node.value) == spelling {
+                                push(loader.failures, LoadFailure { path = file.path
+                                    diagnostic = Diagnostic { span = node.span message = message } })
+                                return Result.Err(message)
+                            }
+                            item = item + 1
+                        }
+                    }
+                    index = index + 1
+                }
+            }
+            Result.Err(message)
+        }
+    }
+}
+
 fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime fetch Bool) Result[Bool, Text] {
     let current = get(loader.packages, id)
     let owner = current.instance
@@ -363,8 +397,7 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
     index = 0
     while index < length(imports) {
         let target = get(imports, index)
-        let target_id, target_directory = imported_package(loader, id, target, fetch)?
-        discard visit(loader, target_id, target_directory, false, depth + 1, fetch)?
+        discard visit_import(loader, id, target, depth + 1, fetch)?
         index = index + 1
     }
     push(loader.complete, id)
@@ -373,8 +406,7 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
     index = 0
     while index < length(test_imports) {
         let target = get(test_imports, index)
-        let target_id, target_directory = imported_package(loader, id, target, fetch)?
-        discard visit(loader, target_id, target_directory, false, 0, fetch)?
+        discard visit_import(loader, id, target, 0, fetch)?
         index = index + 1
     }
     Result.Ok(true)
@@ -392,7 +424,7 @@ pub fn resolve(path Text, std_root Text, tests Bool, git_tool Text) Result[Proje
     load_selected(path, std_root, tests, true, git_tool, new[OverlayFile](), new[LoadFailure]())
 }
 
-fn load_selected(path Text, std_root Text, tests Bool, comptime fetch Bool, git_tool Text, overlays List[OverlayFile], failures List[LoadFailure]) Result[Project, Text] {
+fn prepare_loader(path Text, std_root Text, git_tool Text, overlays List[OverlayFile], failures List[LoadFailure]) Result[(Loader, Int, Text), Text] {
     let directory = canonical(path)?
     let is_directory = match kind(directory) {
         Result.Ok(value) => value == FileKind.Directory
@@ -437,9 +469,14 @@ fn load_selected(path Text, std_root Text, tests Bool, comptime fetch Bool, git_
         })?
     let owner = register_module(loader, module)?
     let root = registered_package(loader, owner, directory)?
+    Result.Ok((loader, root, directory))
+}
+
+fn load_selected(path Text, std_root Text, tests Bool, comptime fetch Bool, git_tool Text, overlays List[OverlayFile], failures List[LoadFailure]) Result[Project, Text] {
+    let loader, root, directory = prepare_loader(path, std_root, git_tool, overlays, failures)?
     discard visit(loader, root, directory, tests, 0, fetch)?
     comptime if fetch {
-        discard publish_lock(resolution)?
+        discard publish_lock(loader.resolution)?
     }
     let modules = new[ModuleInstance]()
     var index = 0
@@ -452,7 +489,7 @@ fn load_selected(path Text, std_root Text, tests Bool, comptime fetch Bool, git_
         index = index + 1
     }
     Result.Ok(Project {
-            files = files
+            files = loader.files
             modules = modules
             packages = loader.packages
             root = root

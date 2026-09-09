@@ -111,7 +111,9 @@ Package-qualified completion enumerates current-package and explicitly imported
 names, preserving overloads, private/test scopes and dependency instance identity.
 Local receivers do not fall back to namespaces. Type/constructor paths offer
 types and `dyn` paths offer concepts, without hiding a same-named type parameter.
-Import-path discovery and automatic imports remain open.
+Import statements additionally discover direct module edges, directory segments
+and public production declarations through the same offline resolver and unsaved
+overlays. Automatic imports remain open.
 
 ## Public syntax libraries
 
@@ -122,7 +124,7 @@ The compiler and ordinary Loom programs use the same source implementation:
 | `std.loom.source` | `Span`, `Diagnostic`, `Position`, `position`, `render` |
 | `std.loom.lexer` | `lex`, `Token`, `Kind` |
 | `std.loom.ast` | `Node`, `NodeKind`, `has` (direct-child lookup), `same` (exact structural equality) |
-| `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]`, editor-only `completion_source` / `CompletionSource` |
+| `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]`, editor-only `completion_source` / `CompletionSource`, lexical `import_cursor` / `ImportCursor` |
 | `std.loom.format` | `format(Text) Result[Text, Diagnostic]` |
 
 Import, for example, `std.loom.parser.parse` and `std.loom.ast.NodeKind` in
@@ -179,6 +181,12 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
 - `std.loom.binding.bind(project, tests)` returns `Result[Program, Failure]`
   after declaration/import validation. Inspect `Program.symbols` for
   declarations; `Failure.source` identifies the input file for its diagnostic.
+- `std.loom.project.import_scope(path, std_root, qualifier, overlays)` discovers
+  one import segment without loading the importer's source or dependency closure.
+  `ImportScope.namespaces` contains direct module names or navigable directories;
+  `declarations` contains public production `ImportDeclaration { path, text, node }`
+  snapshots. Malformed target files are skipped. Ordinary offline lock, snapshot
+  and module-boundary rules apply; discovery never fetches or publishes locks.
 
 `SourceFile.package` indexes the project's package table. Each package records
 its module instance, relative directory and resolved import edges. Module source
@@ -264,8 +272,12 @@ evidence; they do not check the unfinished body or prove its callees/contracts.
 Unknown receivers, earlier typing errors, undetermined compile-time branches and
 `comptime` execution blocks return no receiver result. Qualified type spelling
 queries need only bindings; expression paths retain the enclosing prefix checks.
-No import discovery or automatic imports are provided. The caller supplies matching source/AST bindings;
+These queries do not discover imports. The caller supplies matching source/AST bindings;
 CLI-only cursor recovery maps virtual insertion ranges back to the original buffer.
+`complete_imports(path, std_root, text, offset, overlays)` separately combines the
+lexical import cursor with project discovery, returning ordinary `Completion`
+items. It needs no parsed importer or LLVM backend; resolution failures yield
+empty candidates, not proof of valid imports. Automatic imports remain open.
 
 `inspect_at` selects the source token's role, so a receiver and its selected field
 have distinct answers even when lowering shares their spans. `Inspection.types`

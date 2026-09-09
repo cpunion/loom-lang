@@ -81,6 +81,15 @@ async function run() {
     assert.ok(text && text.kind === vscode.CompletionItemKind.Module && text.insertText === 'text');
     assert.ok((text.range.replacing || text.range).isEmpty);
     assert.equal(document.getText(), qualified);
+    const importing = 'import std.text.leRest\nfn main() {}\n';
+    await replace(importing);
+    await diagnostics(document.uri, values => values.length > 0);
+    const imports = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider',
+      document.uri, document.positionAt(importing.indexOf('leRest') + 2));
+    const length = imports.items.find(item => item.label === 'length');
+    assert.ok(length && length.kind === vscode.CompletionItemKind.Function && length.insertText === 'length');
+    assert.equal(document.getText(length.range.replacing || length.range), 'leRest');
+    assert.equal(document.getText(), importing);
     await replace(source);
     await diagnostics(document.uri, values => values.length === 0);
     const edits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { tabSize: 4, insertSpaces: true });

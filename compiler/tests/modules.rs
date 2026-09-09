@@ -190,3 +190,47 @@ fn selected_root_identity_does_not_leak_through_a_same_named_dependency() {
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("cycle"));
 }
+
+#[test]
+fn import_completion_respects_nested_modules_and_directory_identity() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    write(root, "app/loom.toml", "[module]\nname='app'\n");
+    write(root, "app/main.loom", "import app.");
+    write(
+        root,
+        "app/normal/main.loom",
+        "pub fn visible() {}\nfn hidden() {}\n",
+    );
+    write(root, "app/nested/loom.toml", "[module]\nname='nested'\n");
+    write(root, "app/nested/main.loom", "pub fn excluded() {}\n");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("app/normal"), root.join("app/alias")).unwrap();
+    let package = root.join("app");
+    let source = package.join("main.loom");
+    for (text, expected) in [
+        ("import app.", "\"label\":\"normal\""),
+        ("import app.normal.", "\"label\":\"visible\""),
+        ("import app.nested.", "\"items\":[]"),
+        ("import app.alias.", "\"items\":[]"),
+    ] {
+        fs::write(&source, text).unwrap();
+        let output = common::command(&["editor-complete", package.to_str().unwrap()])
+            .arg("--std")
+            .arg(common::root().join("compiler/std"))
+            .arg("--at")
+            .arg(&source)
+            .arg(text.len().to_string())
+            .output()
+            .unwrap();
+        success(&output);
+        let json = String::from_utf8(output.stdout).unwrap();
+        assert!(json.contains(expected), "{json}");
+        for excluded in ["alias", "nested", "hidden", "excluded"] {
+            assert!(
+                !json.contains(&format!("\"label\":\"{excluded}\"")),
+                "{json}"
+            );
+        }
+    }
+}

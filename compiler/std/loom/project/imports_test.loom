@@ -1,0 +1,76 @@
+fn discovered_imports(path Text, qualifier Text, overlays List[SourceOverlay]) ImportScope {
+    match import_scope(path, "compiler/std", qualifier, overlays) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            discovered_imports(path, qualifier, overlays)
+        }
+    }
+}
+
+test fn import_discovery_uses_the_importers_direct_module_edges() {
+    let overlays = new[SourceOverlay]()
+    let app = "compiler/examples/modules/app"
+    let roots = discovered_imports(app, "", overlays).namespaces
+    assert contains(roots, "std", length(roots)) && contains(roots, "codec", length(roots))
+    assert !contains(roots, "seed", length(roots))
+    let dependency = discovered_imports(app, "codec", overlays).namespaces
+    assert contains(dependency, "parser", length(dependency))
+    let declarations = discovered_imports(app, "codec.parser", overlays).declarations
+    assert length(declarations) == 1 && get(declarations, 0).node.value == "answer"
+    assert match import_scope(app, "compiler/std", "seed.number", overlays) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    let own = discovered_imports("compiler/examples/modules/codec/parser", "", overlays).namespaces
+    assert contains(own, "seed", length(own))
+    // The selected package does not need to parse for source discovery.
+    let directory = match canonical(app) {
+        Result.Ok(value) => value,
+        Result.Err(_) => ""
+    }
+    push(overlays, SourceOverlay {
+            path = join_path(directory, "main.loom")
+            text = "import codec."
+        })
+    assert length(discovered_imports(app, "codec.parser", overlays).declarations) == 1
+    set(overlays, 0, SourceOverlay {
+            path = join_path(directory, "main.loom")
+            text = "import codec.missing.answer\nfn main() {}"
+        })
+    match load_overlaid(app, "compiler/std", false, overlays) {
+        Result.Err(failure) => {
+            assert failure.path == join_path(directory, "main.loom")
+            assert failure.diagnostic.span.start == 0 && failure.diagnostic.span.end == 27
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+}
+
+test fn import_discovery_reads_overlaid_public_production_declarations_only() {
+    let directory = match canonical("compiler/examples/modules/codec/parser") {
+        Result.Ok(value) => value,
+        Result.Err(_) => ""
+    }
+    let overlays = new[SourceOverlay]()
+    push(overlays, SourceOverlay {
+            path = join_path(directory, "answer.loom")
+            text = "pub fn answer() Int { 4 }\nfn hidden() {}\ntest fn embedded() {}"
+        })
+    push(overlays, SourceOverlay {
+            path = join_path(directory, "new_import.loom")
+            text = "pub record Fresh {}\npub fn answer(value Int) Int { value }"
+        })
+    push(overlays, SourceOverlay {
+            path = join_path(directory, "new_import_test.loom")
+            text = "pub fn excluded() {}"
+        })
+    let declarations = discovered_imports("compiler/examples/modules/app", "codec.parser", overlays).declarations
+    assert length(declarations) == 3
+    assert get(declarations, 0).node.value == "answer"
+    assert get(declarations, 1).node.value == "Fresh"
+    assert get(declarations, 2).node.value == "answer"
+    assert !is_file(join_path(directory, "new_import.loom")) && !is_file(join_path(directory, "new_import_test.loom"))
+}

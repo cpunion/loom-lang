@@ -1,7 +1,10 @@
 import std.loom.analysis.complete_at
 import std.loom.analysis.CompletionKind
+import std.loom.analysis.Completion
+import std.loom.analysis.complete_imports
 import std.loom.parser.completion_source
 import std.list.set
+import std.text.ends_with
 
 record EditorRecovery {
     changed Bool
@@ -69,6 +72,10 @@ fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int, in
             return editor_no_completion()
         }
     }
+    editor_completion_output(completion, offset, inserted)
+}
+
+fn editor_completion_output(completion Completion, offset Int, inserted Bool) EditorOutput {
     var items = "["
     var index = 0
     while index < length(completion.items) {
@@ -98,5 +105,51 @@ fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int, in
     EditorOutput {
         text = concat("{\"diagnostics\":[],\"completion\":", concat(span, concat(",\"items\":", concat(items, "]}}\n"))))
         failed = false
+    }
+}
+
+fn editor_import_completion(options EditorOptions) Option[EditorOutput] {
+    // An incomplete import cannot establish a closure. Discover only for files
+    // in the selected package; ordinary queries still validate loaded identity.
+    let directory = match canonicalize(executable_directory(options.query_path)) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    let selected = match canonicalize(options.path) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    if directory != selected || !std.text.ends_with(options.query_path, ".loom") {
+        return Option.None
+    }
+    if !options.tests && std.text.ends_with(options.query_path, "_test.loom") {
+        return Option.None
+    }
+    var text = ""
+    var found = false
+    var index = 0
+    while index < length(options.overlays) {
+        let overlay = get(options.overlays, index)
+        if overlay.path == options.query_path {
+            text = overlay.text
+            found = true
+        }
+        index = index + 1
+    }
+    if !found {
+        text = match read_text(options.query_path) {
+            Result.Ok(value) => value,
+            Result.Err(_) => {
+                return Option.None
+            }
+        }
+    }
+    match complete_imports(options.path, options.std_root, text, options.offset, options.overlays) {
+        Option.Some(value) => Option.Some(editor_completion_output(value, options.offset, false)),
+        Option.None => Option.None
     }
 }

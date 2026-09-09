@@ -382,8 +382,9 @@ confined to virtual completion snapshots. Receiver-type completion now offers
 fields, tuple indices, admitted concept methods and Task `.await`, sharing
 ordinary scope/type rules without claiming the incomplete body is verified.
 Qualified spelling completion now follows the same package/import visibility,
-including type positions and local receiver shadowing. Import-path discovery,
-automatic imports, rename, and incremental
+including type positions and local receiver shadowing. Import-statement completion
+now discovers direct module edges, directory segments and public declarations
+through the same offline resolver, including unsaved overlays. Automatic imports, rename, and incremental
 semantic reuse are subsequent tooling work, not completed language features.
 Native failing assertions now report their source location and current test,
 including helper assertions and standalone test executables. The first fault

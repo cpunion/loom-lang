@@ -1,0 +1,54 @@
+import std.loom.parser.import_cursor
+import std.loom.project.import_scope
+import std.loom.project.SourceOverlay
+
+// Import candidates are source discovery, not checked overloads. No automatic
+// import, network resolution, lock write, or validity claim accompanies them.
+pub fn complete_imports(path Text, std_root Text, text Text, offset Int, overlays List[SourceOverlay]) Option[Completion] {
+    let cursor = match import_cursor(text, offset) {
+        Option.Some(value) => value
+        Option.None => {
+            return Option.None
+        }
+    }
+    let completion = Completion {
+        span = cursor.span
+        items = new[CompletionItem]()
+    }
+    let scope = match import_scope(path, std_root, cursor.qualifier, overlays) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Option.Some(completion)
+        }
+    }
+    var index = 0
+    while index < length(scope.namespaces) {
+        let name = get(scope.namespaces, index)
+        if starts_with(name, cursor.prefix) {
+            push(completion.items, CompletionItem {
+                    name = name
+                    kind = CompletionKind.Namespace
+                    detail = concat("import path ", qualify(cursor.qualifier, name))
+                })
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(scope.declarations) {
+        let declaration = get(scope.declarations, index)
+        let node = declaration.node
+        if starts_with(node.value, cursor.prefix) {
+            push(completion.items, CompletionItem {
+                    name = node.value
+                    kind = if node.kind == NodeKind.Function {
+                        CompletionKind.Function
+                    } else {
+                        CompletionKind.Type
+                    }
+                    detail = completion_detail(declaration.text, node)
+                })
+        }
+        index = index + 1
+    }
+    Option.Some(completion)
+}
