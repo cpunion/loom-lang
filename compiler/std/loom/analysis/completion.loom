@@ -1,0 +1,278 @@
+import std.loom.binding.visible_names
+import std.loom.binding.candidates
+import std.text.starts_with
+import std.text.length
+import std.text.contains
+import std.text.slice
+import std.text.trim
+import std.text.byte
+import std.text.codepoint
+import std.text.width
+import std.unicode.is_whitespace
+import std.list.set
+
+pub enum CompletionKind {
+    Variable
+    Function
+    Type
+}
+
+pub record CompletionItem {
+    name Text
+    kind CompletionKind
+    detail Text
+}
+
+pub record Completion {
+    span Span
+    items List[CompletionItem]
+}
+
+// Completion is binding evidence, not a checked type or an applicable overload.
+// Unknown names and body type errors do not prevent lexical scope queries.
+// The supplied source/AST must agree, as for the other binding queries.
+fn completion_span(text Text, offset Int) Option[Span] {
+    if offset < 0 || offset > std.text.length(text) {
+        return Option.None
+    }
+    if offset < std.text.length(text) && byte(text, offset) >= 128 && byte(text, offset) < 192 {
+        return Option.None
+    }
+    let tokens = match lex(text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    var index = 0
+    var previous_end = 0
+    var previous_dot = false
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        if token.kind == Kind.Text && token.span.start <= offset && offset < token.span.end {
+            return Option.None
+        }
+        if token.span.start <= offset && offset <= token.span.end && token.kind == Kind.Name {
+            if previous_dot {
+                return Option.None
+            }
+            return Option.Some(token.span)
+        }
+        if token.span.start >= offset {
+            var gap = previous_end
+            while gap < offset {
+                if !is_whitespace(codepoint(text, gap)) {
+                    return Option.None
+                }
+                gap = gap + width(text, gap)
+            }
+            if previous_dot {
+                return Option.None
+            }
+            return Option.Some(Span {
+                    start = offset
+                    end = offset
+                })
+        }
+        if offset < token.span.end {
+            return Option.None
+        }
+        previous_end = token.span.end
+        previous_dot = token.kind == Kind.Dot
+        index = index + 1
+    }
+    Option.None
+}
+
+fn completion_named(items List[CompletionItem], name Text) Bool {
+    var index = 0
+    while index < length(items) {
+        if get(items, index).name == name {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn completion_local(items List[CompletionItem], node Node, kind CompletionKind, detail Text) {
+    if node.value == "_" {
+        return
+    }
+    let item = CompletionItem {
+        name = node.value
+        kind = kind
+        detail = detail
+    }
+    var index = 0
+    while index < length(items) {
+        if get(items, index).name == node.value {
+            set(items, index, item)
+            return
+        }
+        index = index + 1
+    }
+    push(items, item)
+}
+
+fn completion_binding(items List[CompletionItem], node Node) {
+    if node.kind == NodeKind.Let || node.kind == NodeKind.Var || node.kind == NodeKind.Scoped {
+        let keyword = if node.kind == NodeKind.Let {
+            "let "
+        } else {
+            if node.kind == NodeKind.Var {
+                "var "
+            } else {
+                "scoped "
+            }
+        }
+        completion_local(items, node, CompletionKind.Variable, concat(keyword, node.value))
+    }
+    if node.kind == NodeKind.Destructure {
+        let bindings = get(node.children, 0)
+        var index = 0
+        while index < length(bindings.children) {
+            let binding = get(bindings.children, index)
+            completion_local(items, binding, CompletionKind.Variable, concat(node.value, concat(" ", binding.value)))
+            index = index + 1
+        }
+    }
+}
+
+fn completion_scope(node Node, text Text, offset Int, items List[CompletionItem]) Bool {
+    var testing = has(node, NodeKind.Test)
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.kind == NodeKind.TypeParameters {
+            var parameter = 0
+            while parameter < length(child.children) {
+                let named = get(child.children, parameter)
+                completion_local(items, named, CompletionKind.Type, concat("type parameter ", named.value))
+                parameter = parameter + 1
+            }
+        }
+        if child.kind == NodeKind.Parameters && node.kind == NodeKind.Function && child.span.end < offset {
+            var parameter = 0
+            while parameter < length(child.children) {
+                let named = get(child.children, parameter)
+                completion_local(items, named, CompletionKind.Variable, slice(text, named.span.start, named.span.end))
+                parameter = parameter + 1
+            }
+        }
+        if node.kind == NodeKind.Arm && child.kind == NodeKind.Pattern && child.span.end < offset {
+            var group = 0
+            while group < length(child.children) {
+                let bindings = get(child.children, group)
+                var binding = 0
+                while binding < length(bindings.children) {
+                    let named = get(bindings.children, binding)
+                    completion_local(items, named, CompletionKind.Variable, concat("match binding ", named.value))
+                    binding = binding + 1
+                }
+                group = group + 1
+            }
+        }
+        if node.kind == NodeKind.Block && child.span.end < offset {
+            completion_binding(items, child)
+        }
+        if child.span.start <= offset && offset < child.span.end {
+            testing = completion_scope(child, text, offset, items) || testing
+        }
+        index = index + 1
+    }
+    testing
+}
+
+fn completion_builtin(items List[CompletionItem], locals List[CompletionItem], prefix Text, name Text) {
+    if starts_with(name, prefix) && !completion_named(locals, name) {
+        push(items, CompletionItem {
+                name = name
+                kind = CompletionKind.Type
+                detail = concat("builtin type ", name)
+            })
+    }
+}
+
+fn completion_detail(text Text, node Node) Text {
+    if node.kind != NodeKind.Function {
+        return concat("type ", node.value)
+    }
+    var end = node.span.end
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.kind == NodeKind.Block || child.kind == NodeKind.Requires || child.kind == NodeKind.Ensures {
+            if child.span.start < end {
+                end = child.span.start
+            }
+        }
+        index = index + 1
+    }
+    trim(slice(text, node.span.start, end))
+}
+
+// Unqualified names only. Member/qualified completion needs receiver and path
+// evidence, not a fallback to unrelated package names. Strings/comments return
+// no candidates; replacement spans cover the entire partially typed identifier.
+pub fn complete_names(bindings std.loom.binding.Program, file Int, offset Int) Option[Completion] {
+    if file < 0 || file >= length(bindings.files) {
+        return Option.None
+    }
+    let source = get(bindings.files, file)
+    let span = match completion_span(source.text, offset) {
+        Option.Some(value) => value
+        Option.None => {
+            return Option.None
+        }
+    }
+    let prefix = slice(source.text, span.start, offset)
+    let locals = new[CompletionItem]()
+    let testing = completion_scope(source.tree, source.text, span.start, locals) || source.test_only
+    if testing && (!bindings.tests || source.package != bindings.root) {
+        return Option.None
+    }
+    let items = new[CompletionItem]()
+    var index = 0
+    while index < length(locals) {
+        let item = get(locals, index)
+        if starts_with(item.name, prefix) {
+            push(items, item)
+        }
+        index = index + 1
+    }
+    completion_builtin(items, locals, prefix, "Int")
+    completion_builtin(items, locals, prefix, "Float")
+    completion_builtin(items, locals, prefix, "Bool")
+    completion_builtin(items, locals, prefix, "Text")
+    completion_builtin(items, locals, prefix, "Bytes")
+    completion_builtin(items, locals, prefix, "List")
+    completion_builtin(items, locals, prefix, "Task")
+    let names = visible_names(bindings, file, testing)
+    index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        if !contains(name, ".") && starts_with(name, prefix) && !completion_named(locals, name) {
+            let symbols = candidates(bindings, file, testing, name)
+            var candidate = 0
+            while candidate < length(symbols) {
+                let symbol = get(bindings.symbols, get(symbols, candidate))
+                push(items, CompletionItem {
+                        name = name
+                        kind = if symbol.node.kind == NodeKind.Function {
+                            CompletionKind.Function
+                        } else {
+                            CompletionKind.Type
+                        }
+                        detail = completion_detail(get(bindings.files, symbol.file).text, symbol.node)
+                    })
+                candidate = candidate + 1
+            }
+        }
+        index = index + 1
+    }
+    Option.Some(Completion {
+            span = span
+            items = items
+        })
+}

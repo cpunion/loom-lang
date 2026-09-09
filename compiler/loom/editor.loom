@@ -79,18 +79,18 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     var tests = false
     var query_path = ""
     var offset = -1
-    let query = get(args, 1) == "editor-query"
+    let query = get(args, 1) == "editor-query" || get(args, 1) == "editor-complete"
     let overlays = std.list.new[SourceOverlay]()
     var index = 2
     while index < std.list.length(args) {
         let argument = get(args, index)
         if argument == "--at" {
             if !query || query_path != "" || index + 2 >= std.list.length(args) {
-                return Result.Err("editor-query requires one --at source-path byte-offset")
+                return Result.Err("editor queries require one --at source-path byte-offset")
             }
             query_path = get(args, index + 1)
             if !starts_with(query_path, "/") && !is_windows_path(query_path) {
-                return Result.Err("editor-query requires an absolute source path")
+                return Result.Err("editor queries require an absolute source path")
             }
             offset = match std.int.parse(get(args, index + 2)) {
                 Result.Ok(value) => value
@@ -148,7 +148,7 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
         index = index + 1
     }
     if query && query_path == "" {
-        return Result.Err("editor-query requires --at source-path byte-offset")
+        return Result.Err("editor queries require --at source-path byte-offset")
     }
     if path == "" {
         return Result.Err("editor-check requires an absolute package directory")
@@ -197,7 +197,11 @@ fn editor_execute(args List[Text]) EditorOutput {
                 if options.offset > std.text.length(file.text) {
                     return editor_error("query byte offset is outside the source")
                 }
-                return editor_query(bound, index, options.offset)
+                return if get(args, 1) == "editor-complete" {
+                    editor_completion(bound, index, options.offset)
+                } else {
+                    editor_query(bound, index, options.offset)
+                }
             }
             index = index + 1
         }

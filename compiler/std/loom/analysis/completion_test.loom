@@ -1,0 +1,128 @@
+fn completed_names(bindings std.loom.binding.Program, file Int, position Int) Completion {
+    match complete_names(bindings, file, position) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            completed_names(bindings, file, position)
+        }
+    }
+}
+
+fn completion_found(completion Completion, name Text) CompletionItem {
+    var index = 0
+    while index < length(completion.items) {
+        let item = get(completion.items, index)
+        if item.name == name {
+            return item
+        }
+        index = index + 1
+    }
+    assert false
+    completion_found(completion, name)
+}
+
+test fn name_completion_uses_lexical_scope_without_requiring_a_checked_body() {
+    let text = "fn count(value Int) Int { value }\nfn count(value Bool) Bool { value }\nfn collect() {}\nfn demo[T](parameter T) {\nvar count = 1\nif true {\nlet count = coSuffix\nlet nested = 3\ndiscard ne\n}\ndiscard co\n}\nfn broken() Int { true }"
+    let bindings = query_bindings(input(text))
+    let position = query_offset(text, "coSuffix") + 2
+    let inside = completed_names(bindings, 0, position)
+    assert inside.span.start == position - 2 && inside.span.end == position + 6
+    assert length(inside.items) == 2
+    assert completion_found(inside, "count").detail == "var count"
+    assert completion_found(inside, "collect").kind == CompletionKind.Function
+    let nested = completed_names(bindings, 0, query_offset(text, "discard ne") + 10)
+    assert length(nested.items) == 1 && get(nested.items, 0).name == "nested"
+    let outside = completed_names(bindings, 0, query_offset(text, "discard co") + 8)
+    assert !completion_named(outside.items, "nested")
+    assert completion_found(outside, "count").detail == "var count"
+    assert completion_found(outside, "parameter").detail == "parameter T"
+    assert completion_found(outside, "T").kind == CompletionKind.Type
+    assert !completion_named(outside.items, "Unit")
+}
+
+test fn name_completion_keeps_overloads_and_match_destructuring_and_scoped_bindings() {
+    let text = "enum Choice { Some(Int) None }\nfn pick(value Int) Int { value }\nfn pick(value Bool) Bool { value }\nfn main() {\nlet left, right = (1, true)\nscoped resource = open()\nmatch Choice.Some(1) {\nChoice.Some(matched) => {\ndiscard pi\ndiscard ma\n}\nChoice.None => { discard ma }\n}\n}"
+    let bindings = query_bindings(input(text))
+    let picks = completed_names(bindings, 0, query_offset(text, "discard pi") + 10)
+    assert length(picks.items) == 2
+    assert get(picks.items, 0).detail != get(picks.items, 1).detail
+    let arm = completed_names(bindings, 0, query_offset(text, "discard ma") + 8)
+    assert completion_found(arm, "matched").detail == "match binding matched"
+    assert completion_named(arm.items, "left") && completion_named(arm.items, "right")
+    assert completion_found(arm, "resource").detail == "scoped resource"
+    let other = completed_names(bindings, 0, query_offset(text, "None => { discard ma") + 18)
+    assert !completion_named(other.items, "matched")
+}
+
+test fn name_completion_preserves_unicode_ranges_and_avoids_strings_comments_and_members() {
+    let text = "fn main() {\nlet 名字 = 1\ndiscard 名余\ndiscard \"名字\"\n// 名字\ndiscard value.member\n}"
+    let bindings = query_bindings(input(text))
+    let start = query_offset(text, "名余")
+    let found = completed_names(bindings, 0, start + 3)
+    assert found.span.start == start && found.span.end == start + 6
+    assert length(found.items) == 1 && get(found.items, 0).name == "名字"
+    let positions = [start + 1, query_offset(text, "\"名字\"") + 2,
+        query_offset(text, "// 名字") + 4, query_offset(text, "member") + 2, -1, length(text) + 1]
+    var index = 0
+    while index < length(positions) {
+        assert match complete_names(bindings, 0, get(positions, index)) {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn completion_uses_package_imports_and_keeps_test_names_out_of_production() {
+    let text = "import helper.public_name\nfn local_private() {}\nfn main() { discard local }\ntest fn embedded() { discard test_ }"
+    let project = input(text)
+    push(project.modules, ModuleInstance {
+            name = "helper"
+            source = "/helper"
+        })
+    push(project.packages, Package {
+            instance = 1
+            relative = ""
+            imports = new[PackageImport]()
+        })
+    push(get(project.packages, 0).imports, PackageImport {
+            spelling = "helper"
+            target = 1
+        })
+    let dependency = "pub fn public_name() {}\npub fn unimported() {}\nfn hidden() {}"
+    push(project.files, SourceFile {
+            package = 1
+            path = "helper.loom"
+            text = dependency
+            tree = get(input(dependency).files, 0).tree
+            test_only = false
+            trusted_std = false
+        })
+    let tests = "fn test_helper() {}"
+    push(project.files, SourceFile {
+            package = 0
+            path = "main_test.loom"
+            text = tests
+            tree = get(input(tests).files, 0).tree
+            test_only = true
+            trusted_std = false
+        })
+    let bindings = match bind(project, true) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            query_bindings(project)
+        }
+    }
+    let production = completed_names(bindings, 0, query_offset(text, "discard local") + 8)
+    assert completion_named(production.items, "local_private")
+    assert completion_named(production.items, "public_name")
+    assert !completion_named(production.items, "unimported") && !completion_named(production.items, "hidden")
+    assert !completion_named(production.items, "test_helper") && !completion_named(production.items, "embedded")
+    let embedded = completed_names(bindings, 0, query_offset(text, "discard test_") + 13)
+    assert length(embedded.items) == 1 && get(embedded.items, 0).name == "test_helper"
+    assert match complete_names(query_bindings(project), 0, query_offset(text, "discard test_") + 13) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}

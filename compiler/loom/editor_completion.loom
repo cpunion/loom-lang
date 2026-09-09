@@ -1,0 +1,35 @@
+import std.loom.analysis.complete_names
+import std.loom.analysis.CompletionKind
+
+fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int) EditorOutput {
+    let completion = match complete_names(bindings, file, offset) {
+        Option.Some(value) => value
+        Option.None => {
+            return EditorOutput {
+                text = "{\"diagnostics\":[],\"completion\":null}\n"
+                failed = false
+            }
+        }
+    }
+    var items = "["
+    var index = 0
+    while index < length(completion.items) {
+        let item = get(completion.items, index)
+        if index > 0 {
+            items = concat(items, ",")
+        }
+        let kind = match item.kind {
+            CompletionKind.Variable => "variable"
+            CompletionKind.Function => "function"
+            CompletionKind.Type => "type"
+        }
+        let fields = concat("{\"label\":", concat(editor_quoted(item.name), concat(",\"kind\":", editor_quoted(kind))))
+        items = concat(items, concat(fields, concat(",\"detail\":", concat(editor_quoted(item.detail), "}"))))
+        index = index + 1
+    }
+    let span = concat("{\"start\":", concat(to_text(completion.span.start), concat(",\"end\":", to_text(completion.span.end))))
+    EditorOutput {
+        text = concat("{\"diagnostics\":[],\"completion\":", concat(span, concat(",\"items\":", concat(items, "]}}\n"))))
+        failed = false
+    }
+}

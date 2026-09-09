@@ -346,7 +346,8 @@ file, recursive, check-only, and stdin modes. The
 [VS Code development extension](editors/vscode/README.md) connects unsaved
 buffers to the same compiler for diagnostics, formatting, type hovers and checked
 definition navigation. An actual VS Code extension-host smoke passes on macOS.
-Completion, rename, and incremental
+Name completion now reuses package bindings and lexical scopes, including partial
+identifiers in bodies with type errors. Member completion, rename, and incremental
 semantic reuse are subsequent tooling work, not completed language features.
 Native failing assertions now report their source location and current test,
 including helper assertions and standalone test executables. The first fault

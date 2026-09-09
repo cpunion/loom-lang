@@ -47,8 +47,8 @@ function check(settings, directory, overlayArgs, signal) {
   return editorReport(settings, directory, 'editor-check', [], overlayArgs, signal);
 }
 
-function query(settings, directory, file, offset, overlayArgs, signal) {
-  return editorReport(settings, directory, 'editor-query', ['--at', file, String(offset)], overlayArgs, signal);
+function query(settings, directory, file, offset, overlayArgs, signal, complete = false) {
+  return editorReport(settings, directory, complete ? 'editor-complete' : 'editor-query', ['--at', file, String(offset)], overlayArgs, signal);
 }
 
 async function format(settings, directory, text, signal) {

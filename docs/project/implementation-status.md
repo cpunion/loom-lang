@@ -459,7 +459,10 @@ token-aware queries with ordinary Loom consumers. On package errors,
 in isolation, retaining hover/navigation alongside diagnostics. Global declaration
 and template errors can still block this fallback; failed functions produce no
 partial facts. Normal builds stay strict; dynamic calls never guess an implementation.
-Completion, rename, and incremental semantic caching are not implemented.
+Name completion now uses `std.loom.analysis.complete_names` over the same package
+bindings and source scopes. It preserves local shadowing, overload signatures,
+test isolation and UTF-8 replacement spans, including when bodies have type
+errors. Member completion, rename, and incremental semantic caching are not implemented.
 
 [Compile-time execution](../../compiler/README.md#compile-time-execution) uses a
 bounded Loom evaluator over the native compiler's checked model. Explicit
@@ -516,8 +519,8 @@ same-directory tests, a separate library package, Unicode text and file I/O.
 Development compiler paths resolve std/native from their checkout, allowing
 check/build/test/run from the application's own directory; `run --` forwards
 program arguments. The VS Code development host has a dedicated trial workspace.
-Real host/protocol smoke tests cover the editing loop. Completion, syntax-error
-recovery and queries within erroneous functions remain programming-experience
+Real host/protocol smoke tests cover the editing loop. Member completion, syntax-error
+recovery and typed queries within erroneous functions remain programming-experience
 gaps. Native assertions now carry static
 definition-file/line/Unicode-column diagnostics. Test entries set one current
 test name, retained with the first fault across cleanup. Standalone test binaries

@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add compiler-backed name completion to VS Code and public
+  `std.loom.analysis.complete_names`. Reuse package visibility and lexical
+  scopes, preserve overload signatures and whole-identifier replacement, and
+  accept body type errors without running proofs. Member completion and syntax
+  recovery remain open.
+
 - Implement List-based `std.task.all/settled/any/race` in Loom, using one-time
   notification registration and indexed slot transfer. Drain losing subtrees
   before returning, including returned Tasks; preserve primary faults and report

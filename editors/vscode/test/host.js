@@ -49,6 +49,9 @@ async function run() {
     assert.equal(definitions.length, 1);
     assert.equal((definitions[0].uri || definitions[0].targetUri).toString(), document.uri.toString());
     assert.match(document.getText(definitions[0].range || definitions[0].targetSelectionRange), /amount/);
+    const completions = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider',
+      document.uri, document.positionAt(source.indexOf('value==') + 2));
+    assert.ok(completions.items.some(item => item.label === 'value' && item.insertText === 'value'));
     const edits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { tabSize: 4, insertSpaces: true });
     assert.ok(edits.length > 0);
     const change = new vscode.WorkspaceEdit();

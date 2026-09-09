@@ -1,9 +1,9 @@
 # Loom for VS Code
 
 A small development extension: highlighting, brackets/comments, unsaved-buffer
-diagnostics, checked type hover, go to definition, and document formatting. The
+diagnostics, name completion, checked type hover, go to definition, and document formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
-Loom. Completion, references, rename, and incremental semantic caching are not
+Loom. Member completion, references, rename, and incremental semantic caching are not
 implemented.
 
 ## Try it
@@ -49,7 +49,7 @@ base, including standard-library files opened through navigation. For external
 files in a multi-root workspace, use absolute paths or a compiler on PATH; the
 server does not guess a folder for relative settings. With no workspace folder,
 relative paths resolve from the document's directory.
-The configured compiler must support `editor-check`, `editor-query`, and `fmt --stdin`. Compiler
+The configured compiler must support `editor-check`, `editor-query`, `editor-complete`, and `fmt --stdin`. Compiler
 execution requires a trusted, local-filesystem workspace; highlighting also works
 in restricted mode. Remote VS Code workspaces run the extension on the remote host.
 
@@ -109,6 +109,18 @@ no result. Some names, such as match-bound locals, have hover but no definition.
 Dynamic calls navigate to concept declarations, not a guessed runtime
 implementation; ambiguous concept overloads omit the definition.
 
+Name completion uses the compiler's package bindings and source scopes without
+running type checking. It includes earlier locals, parameters, generic parameters,
+match bindings, package-private declarations, imported public names and builtin
+types. Inner bindings hide outer names; overloads retain separate declaration
+signatures. Test-only names never enter production scope. Partial identifiers and
+body type errors work; choosing a candidate replaces the whole identifier, even
+when the cursor is in its middle. These are visible candidates, not a claim that
+each overload or value is valid at this expression. There is no automatic import,
+member/qualified completion, or recovery from an unparseable snapshot yet. Strings
+and comments offer no names. Requests reuse all unsaved buffers and cancellation
+rules; completion results are not cached across edits.
+
 ```sh
 npm test           # Real LSP transport with a small process fixture
 npm run smoke      # Real target/loom: overlays, hover/definition, formatting
@@ -139,6 +151,7 @@ The adapter calls:
 ```text
 loom editor-check PACKAGE --tests [--std STD] [--overlay ORIGINAL SNAPSHOT]...
 loom editor-query PACKAGE --at ORIGINAL UTF8_BYTE_OFFSET --tests [--std STD] [--overlay ORIGINAL SNAPSHOT]...
+loom editor-complete PACKAGE --at ORIGINAL UTF8_BYTE_OFFSET --tests [--std STD] [--overlay ORIGINAL SNAPSHOT]...
 loom fmt --stdin
 ```
 
@@ -149,6 +162,9 @@ Check output is `{ "diagnostics": [{ "path", "message", "start", "end" }],
 query results; a project `"error"` has none. Spans and query offsets use UTF-8 bytes;
 the server maps them to/from LSP UTF-16 positions using the captured text.
 Formatting reads and writes source on stdin/stdout.
+Completion output adds `"completion": null | { "start", "end", "items": [
+{ "label", "kind": "variable" | "function" | "type", "detail" }, ...] }`.
+Its spans are also UTF-8 bytes; it does not run proofs or produce an executable.
 
 The client/server use Microsoft's [Language Server SDK](https://github.com/microsoft/vscode-languageserver-node)
 and follow the [VS Code extension guide](https://code.visualstudio.com/api/language-extensions/language-server-extension-guide).

@@ -96,6 +96,23 @@ async function main() {
     assert.equal(recoveredDefinitions.length, 1);
     assert.equal(recoveredDefinitions[0].uri, URI.file(file).toString());
     assert.equal(TextDocument.create(recoveredDefinitions[0].uri, 'loom', 10, repaired).getText(recoveredDefinitions[0].range), 'broken');
+    // Complete an unknown identifier in the middle of a token, despite body
+    // errors, using the unsaved package (including its new helper file).
+    const partial = 'fn main(){discard "é😀"\nlet count=42\nlet copied=coRest\n}\n';
+    await client.change(file, partial, 11);
+    assert.ok((await client.wait(file, 11)).diagnostics.length > 0);
+    const partialDocument = TextDocument.create(params.textDocument.uri, 'loom', 11, partial);
+    const completions = await client.rpc.sendRequest('textDocument/completion', {
+      ...params, position: partialDocument.positionAt(partial.indexOf('coRest') + 2),
+    });
+    assert.equal(completions.isIncomplete, true);
+    assert.deepEqual(completions.items.map(item => item.label), ['count']);
+    assert.equal(partialDocument.getText(completions.items[0].textEdit.range), 'coRest');
+    const completed = TextDocument.applyEdits(partialDocument, [completions.items[0].textEdit]);
+    await client.change(file, completed, 12);
+    assert.deepEqual((await client.wait(file, 12)).diagnostics, []);
+    const imported = await client.rpc.sendRequest('textDocument/completion', at(file, completed, 'count=42'));
+    assert.ok(imported.items.some(item => item.label === 'helper' && item.detail === 'fn helper() Int'));
     // Following a dependency outside this folder retains its folder-scoped,
     // relative toolchain settings for diagnostics, hover and formatting.
     const external = path.join(stdRoot, 'loom/source/source.loom');
@@ -111,7 +128,7 @@ async function main() {
     assert.equal(await fs.readFile(file, 'utf8'), saved);
     await assert.rejects(fs.access(helper), { code: 'ENOENT' });
     await assert.rejects(fs.access(bad), { code: 'ENOENT' });
-    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition with unrelated errors, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
+    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition, scope completion and replacement, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
