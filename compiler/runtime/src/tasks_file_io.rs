@@ -255,7 +255,7 @@ mod tests {
         );
     }
 
-    unsafe extern "C-unwind" fn resume(_: *mut u8) -> i64 {
+    fn start_blocking() -> mpsc::Sender<()> {
         loom_rt_task_cleanup_push(0, cleaned);
         let finished = FINISHED.with(|value| value.borrow().as_ref().unwrap().clone());
         let (started, running) = mpsc::channel();
@@ -274,10 +274,18 @@ mod tests {
             0
         );
         running.recv_timeout(Duration::from_secs(5)).unwrap();
+        release
+    }
+
+    fn finish_later(release: mpsc::Sender<()>) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(20));
             release.send(()).unwrap();
         });
+    }
+
+    unsafe extern "C-unwind" fn resume(_: *mut u8) -> i64 {
+        finish_later(start_blocking());
         fault("fault after file registration");
     }
 
@@ -291,6 +299,42 @@ mod tests {
         FINISHED.with(|value| *value.borrow_mut() = Some(Arc::new(AtomicBool::new(false))));
         let failure = unsafe { catch_fault(|| loom_rt_task_run(construct)) }.unwrap_err();
         assert_eq!(failure.message, b"fault after file registration");
+        assert!(OWNER.get().is_null());
+        FINISHED.with(|value| *value.borrow_mut() = None);
+    }
+
+    unsafe extern "C-unwind" fn cancel_running(_: *mut u8) -> i64 {
+        let owner = unsafe { &*OWNER.get() };
+        let parent = owner.core.borrow().current.unwrap();
+        let child = unsafe { construct() };
+        // Focus on the drain boundary: submit a real worker operation under
+        // the child's activation, then cancel from its running parent. Source
+        // tests separately exercise normal coroutine scheduling and suspension.
+        {
+            let mut core = owner.core.borrow_mut();
+            core.current = Some(child);
+            core.tasks.get_mut(&child).unwrap().state = State::Running;
+        }
+        let release = start_blocking();
+        owner.core.borrow_mut().current = Some(parent);
+        FINISHED.with(|value| assert!(!value.borrow().as_ref().unwrap().load(Ordering::SeqCst)));
+        finish_later(release);
+        outcomes::loom_rt_task_cancel_begin(child);
+        assert_eq!(outcomes::loom_rt_task_status(child), 2);
+        loom_rt_task_release(child);
+        assert!(owner.core.borrow().tasks[&parent].children.is_empty());
+        0
+    }
+
+    unsafe extern "C-unwind" fn cancel_constructor() -> u64 {
+        let frame = crate::loom_rt_box_new(16, None);
+        unsafe { loom_rt_task_create(frame, cancel_running, ptr::null(), 0) }
+    }
+
+    #[test]
+    fn explicit_cancellation_is_terminal_only_after_running_work_and_cleanup() {
+        FINISHED.with(|value| *value.borrow_mut() = Some(Arc::new(AtomicBool::new(false))));
+        unsafe { loom_rt_task_run(cancel_constructor) };
         assert!(OWNER.get().is_null());
         FINISHED.with(|value| *value.borrow_mut() = None);
     }

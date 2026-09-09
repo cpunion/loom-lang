@@ -1,0 +1,18 @@
+import std.list.get
+import std.list.length
+
+// Private intrinsic ABI: completed payload, a one-Text diagnostic record, then
+// cancellation. Public names are source-owned; order and types are validated.
+pub fn task_outcome_result(types List[Type], ty Int, element Int) Bool {
+    let shape = get(types, ty)
+    if shape.kind != TypeKind.Enum || length(shape.variants) != 3 {
+        return false
+    }
+    let completed = get(shape.variants, 0).fields
+    let faulted = get(shape.variants, 1).fields
+    if length(completed) != 1 || get(completed, 0) != element || length(faulted) != 1 || length(get(shape.variants, 2).fields) != 0 {
+        return false
+    }
+    let fault = get(types, get(faulted, 0))
+    fault.kind == TypeKind.Record && length(fault.fields) == 1 && get(fault.fields, 0).ty == 3
+}

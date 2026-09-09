@@ -644,6 +644,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskObserve
             | Primitive::TaskWaitNext
             | Primitive::TaskNextResult
+            | Primitive::TaskStatus
+            | Primitive::TaskFailure
+            | Primitive::TaskCancelBegin
             | Primitive::TaskResult
             | Primitive::TaskRelease
             | Primitive::TaskRun

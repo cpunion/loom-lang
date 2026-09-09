@@ -178,16 +178,20 @@ fn task_expression(flow TaskFlow, value Expr, allowed Bool) Result[Bool, Failure
         return Result.Ok(task)
     }
     if value.kind == ExprKind.Suspend {
-        discard task_operands(flow, value.children)?
+        if value.text == "task_outcome" {
+            discard task_arguments(flow, value)?
+        } else {
+            discard task_operands(flow, value.children)?
+        }
         if get(flow.pending, 1) != 0 {
             return Result.Err(task_error(flow, value, "a NoSuspend operand is still pending; finish its operation before awaiting"))
         }
-        return Result.Ok(false)
+        return Result.Ok(task)
     }
     // A deferred call retains its runtime arguments during abstract checking.
     // Other Deferred expressions have no children and cannot hide transfers.
     if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.DynCall || value.kind == ExprKind.IndirectCall || value.kind == ExprKind.Deferred || value.kind == ExprKind.Record || value.kind == ExprKind.Variant || value.kind == ExprKind.List ||
-        (value.kind == ExprKind.Intrinsic && (value.text == "list_append" || value.text == "list_take" || value.text == "task_observe")) {
+        (value.kind == ExprKind.Intrinsic && (value.text == "list_append" || value.text == "list_take" || value.text == "task_observe" || value.text == "task_cancel")) {
         return task_arguments(flow, value)
     }
     if value.kind == ExprKind.Let || value.kind == ExprKind.Assign {

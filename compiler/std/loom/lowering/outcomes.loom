@@ -1,0 +1,59 @@
+// Outcome construction is typed source control flow. Runtime operations only
+// drain, inspect status, copy diagnostic text, or expose the exact result frame.
+fn outcome_value(types List[Type], ty Int, span Span, task Expr) Expr {
+    let variants = get(types, ty).variants
+    let payload = get(get(variants, 0).fields, 0)
+    let fault_type = get(get(variants, 1).fields, 0)
+    let completed = node(ExprKind.Variant, ty, span, 0,
+        one(operation("task_result", payload, span, one(task))))
+    let diagnostic = node(ExprKind.Record, fault_type, span, -1,
+        one(node(ExprKind.Field, 3, span, 0, one(operation("task_failure", 3, span, one(task))))))
+    let failed = node(ExprKind.Variant, ty, span, 1, one(diagnostic))
+    let cancelled = node(ExprKind.Variant, ty, span, 2, new[Expr]())
+    let status = operation("task_status", 1, span, one(task))
+    let fault = pair(labeled(node(ExprKind.Binary, 2, span, -1, pair(status, integer(1, span))), "=="),
+        block(one(failed), ty, span, true))
+    push(fault, block(one(cancelled), ty, span, true))
+    let branches = pair(labeled(node(ExprKind.Binary, 2, span, -1, pair(status, integer(0, span))), "=="),
+        block(one(completed), ty, span, true))
+    push(branches, block(one(node(ExprKind.If, ty, span, -1, fault)), ty, span, true))
+    node(ExprKind.If, ty, span, -1, branches)
+}
+
+fn outcome_waiting(graph Graph, source Expr, start Int, loop Loop) Value {
+    let task = snapshot(graph, evaluate(graph, get(source.children, 0), start, loop))
+    if task.state < 0 {
+        return task
+    }
+    let wait = state(graph)
+    let after = state(graph)
+    jump(graph, task.state, wait)
+    finish(graph, wait, Exit.Wait, task.expression, edges(after), new[Arm]())
+    let saved = temporary(graph, source.ty)
+    save(graph, after, saved, outcome_value(graph.types, source.ty, source.span, task.expression))
+    append(graph, after, operation("task_release", 0, source.span, one(task.expression)))
+    Value {
+        state = after
+        expression = local(graph, saved)
+    }
+}
+
+fn outcome_function(types List[Type], source Function) Function {
+    if source.runtime_name != "task_cancel" {
+        return source
+    }
+    let task = node(ExprKind.Local, get(source.params, 0), source.span, 0, new[Expr]())
+    let locals = clone(source.locals)
+    let saved = length(locals)
+    push(locals, Local {
+            name = ""
+            ty = source.result
+            mutable = false
+            is_scoped = false
+        })
+    let body = one(operation("task_cancel_begin", 0, source.span, one(task)))
+    push(body, node(ExprKind.Let, 0, source.span, saved, one(outcome_value(types, source.result, source.span, task))))
+    push(body, operation("task_release", 0, source.span, one(task)))
+    push(body, node(ExprKind.Local, source.result, source.span, saved, new[Expr]()))
+    generated(source, source.params, source.result, locals, block(body, source.result, source.span, true))
+}

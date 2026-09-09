@@ -5,6 +5,12 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add source `std.task.outcome` and `cancel`, with typed Completed/Faulted/Cancelled
+  results, including no-result and Task-valued payloads. Preserve ordinary
+  Result errors as successful values. Cancellation drains descendants, OS work
+  and cleanup before returning; already-terminal outcomes remain authoritative.
+  Fault diagnostics become owned Text. Public multi-task joins remain unfinished.
+
 - Add private multi-task completion observation through typed Loom frames.
   Register children once, retain terminal order even for late registration,
   and detach one notification before ordinary typed await. Cancellation removes

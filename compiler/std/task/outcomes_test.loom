@@ -1,0 +1,179 @@
+import std.list.push
+import std.result.Result
+import std.time.sleep_ms
+import std.text.concat
+import std.text.contains
+
+async fn successful() Text {
+    concat("typed", " result")
+}
+
+async fn ordinary_error() Result[Int, Text] {
+    Result.Err("ordinary error")
+}
+
+async fn failed() Int {
+    assert false
+    1
+}
+
+async fn nested() Task[Text] {
+    successful()
+}
+
+test async fn outcomes_keep_values_errors_and_no_result_tasks_distinct() {
+    match outcome(successful()).await {
+        Outcome.Completed(value) => {
+            assert value == "typed result"
+        }
+        _ => {
+            assert false
+        }
+    }
+    match outcome(ordinary_error()).await {
+        Outcome.Completed(value) => {
+            match value {
+                Result.Err(error) => {
+                    assert error == "ordinary error"
+                }
+                _ => {
+                    assert false
+                }
+            }
+        }
+        _ => {
+            assert false
+        }
+    }
+    match outcome(sleep_ms(1)).await {
+        Outcome.Completed(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    let retained = concat("retained", " across fault")
+    match outcome(failed()).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+            assert contains(error.message, "failed")
+            assert contains(error.message, "task created here")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert retained == "retained across fault"
+    assert successful().await == "typed result"
+}
+
+async fn pending_child(events List[Text]) {
+    defer {
+        push(events, concat("child", " cleaned"))
+    }
+    push(events, "child started")
+    sleep_ms(10000).await
+    assert false
+}
+
+async fn pending_parent(events List[Text]) {
+    defer {
+        push(events, concat("parent", " cleaned"))
+    }
+    pending_child(events).await
+}
+
+test async fn cancellation_consumes_queued_and_suspended_subtrees_before_return() {
+    match cancel(failed()) {
+        Outcome.Cancelled => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    let events = ["begin"]
+    let pending = pending_parent(events)
+    sleep_ms(5).await
+    match cancel(pending) {
+        Outcome.Cancelled => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert events[1] == "child started"
+    assert events[2] == "child cleaned"
+    assert events[3] == "parent cleaned"
+    assert successful().await == "typed result"
+}
+
+async fn cleanup_failure(events List[Text]) {
+    defer {
+        push(events, concat("remaining", " cleanup"))
+    }
+    defer {
+        assert false
+    }
+    sleep_ms(10000).await
+}
+
+test async fn cancellation_cleanup_faults_are_owned_data_after_complete_drain() {
+    let events = ["begin"]
+    let pending = cleanup_failure(events)
+    sleep_ms(5).await
+    match cancel(pending) {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+            assert events[1] == "remaining cleanup"
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert successful().await == "typed result"
+}
+
+test async fn already_terminal_cancellation_preserves_results_and_nested_tasks() {
+    let complete = nested()
+    let faulted = failed()
+    sleep_ms(1).await
+    match cancel(complete) {
+        Outcome.Completed(child) => {
+            assert child.await == "typed result"
+        }
+        _ => {
+            assert false
+        }
+    }
+    match cancel(faulted) {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    match outcome(nested()).await {
+        Outcome.Completed(child) => {
+            assert child.await == "typed result"
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+test async fn cancellation_removes_observations_without_losing_other_notifications() {
+    let cancelled = task_observe(sleep_ms(10000), 0)
+    let retained = task_observe(successful(), 1)
+    discard cancel(cancelled)
+    assert task_next().await == 1
+    match task_outcome(retained).await {
+        Outcome.Completed(value) => {
+            assert value == "typed result"
+        }
+        _ => {
+            assert false
+        }
+    }
+}

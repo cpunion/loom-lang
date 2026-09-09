@@ -155,7 +155,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .ok_or("missing completed frame")?
                     .into_pointer_value();
                 if result == Type::Unit {
-                    return Ok(None);
+                    // Internal zero-sized payload for Outcome of a no-result
+                    // Task. This does not introduce a source Unit value.
+                    return Ok(Some(
+                        self.context.struct_type(&[], false).const_zero().into(),
+                    ));
                 }
                 // Every frame for Task[T] begins with precisely T. No GC or
                 // child-root removal occurs before the receiver snapshots it.
@@ -166,6 +170,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )?))
             }
             Primitive::TaskRelease => self.runtime_call("task_release", None, values),
+            Primitive::TaskStatus => {
+                self.runtime_call("task_status", Some(self.context.i64_type().into()), values)
+            }
+            Primitive::TaskFailure | Primitive::TaskCancelBegin => {
+                let output = self.runtime_call(
+                    if operation == Primitive::TaskFailure {
+                        "task_failure"
+                    } else {
+                        "task_cancel_begin"
+                    },
+                    if operation == Primitive::TaskFailure {
+                        Some(pointer.into())
+                    } else {
+                        None
+                    },
+                    values,
+                )?;
+                self.restore_locals()?;
+                Ok(output)
+            }
             Primitive::TaskObserve | Primitive::TaskNextResult => self.runtime_call(
                 if operation == Primitive::TaskObserve {
                     "task_observe"

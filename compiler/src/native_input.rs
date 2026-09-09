@@ -663,11 +663,18 @@ impl Converter<'_> {
                     return Err("checked task return must preserve its handle type".into());
                 }
             }
-            Primitive::TaskAwait | Primitive::TaskResult | Primitive::TaskRelease => {
+            Primitive::TaskAwait
+            | Primitive::TaskResult
+            | Primitive::TaskRelease
+            | Primitive::TaskStatus
+            | Primitive::TaskFailure
+            | Primitive::TaskCancelBegin => {
                 let logical = self.task_result(arguments[0].ty)?;
                 let expected = match operation {
                     Primitive::TaskAwait => Type::Bool,
-                    Primitive::TaskRelease => Type::Unit,
+                    Primitive::TaskRelease | Primitive::TaskCancelBegin => Type::Unit,
+                    Primitive::TaskStatus => Type::Int,
+                    Primitive::TaskFailure => Type::Text,
                     _ => logical,
                 };
                 if result != expected {
@@ -1251,6 +1258,9 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_observe" => P::TaskObserve,
         "task_wait_next" => P::TaskWaitNext,
         "task_next_result" => P::TaskNextResult,
+        "task_status" => P::TaskStatus,
+        "task_failure" => P::TaskFailure,
+        "task_cancel_begin" => P::TaskCancelBegin,
         "task_result" => P::TaskResult,
         "task_release" => P::TaskRelease,
         "task_run" => P::TaskRun,
@@ -1309,6 +1319,9 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskCleanupPop
         | P::TaskResult
         | P::TaskRelease
+        | P::TaskStatus
+        | P::TaskFailure
+        | P::TaskCancelBegin
         | P::TaskRun => 1,
         P::TaskWaitTimer | P::TaskFileReadResult | P::TaskWaitFileClose | P::FileAbort => 1,
         P::TextByte

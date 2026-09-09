@@ -171,9 +171,11 @@ The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 Private multi-task completion observation now retains terminal order, wakes
 typed Loom frames and detaches selections without consuming their results.
 Children register once; cancellation removes observations before parent cleanup.
-The next join boundary is typed outcome extraction and explicit cancellation,
-then source policies: sequential awaits in input order alone still cannot provide
-prompt cancellation when a different child faults.
+Typed outcome extraction and explicit draining cancellation now support source
+`std.task.outcome` and `cancel`, including no-result and Task-valued results.
+Already-terminal children keep their result; cleanup faults become owned data.
+The next boundary is source join policies: sequential awaits in input order
+alone still cannot provide prompt cancellation when a different child faults.
 
 Extend the self-hosted path with the remaining accepted capabilities:
 

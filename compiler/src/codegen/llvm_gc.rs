@@ -86,6 +86,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::Read
         | Primitive::DirectoryRead
         | Primitive::PathCanonical => true,
+        Primitive::TaskFailure | Primitive::TaskCancelBegin => true,
         Primitive::FloatFromInt
         | Primitive::TaskCreate
         | Primitive::TaskAdopt
@@ -106,6 +107,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TaskObserve
         | Primitive::TaskWaitNext
         | Primitive::TaskNextResult
+        | Primitive::TaskStatus
         | Primitive::TaskResult
         | Primitive::TaskRelease
         | Primitive::FloatToInt
