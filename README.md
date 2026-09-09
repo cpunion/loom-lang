@@ -42,6 +42,7 @@ same-directory tests, and format/check/build/test/run tasks. See the
 - [Inspect Task outcomes and cancel with cleanup](compiler/examples/task_outcomes/README.md)
 - [Compose dynamic task groups](compiler/examples/task_joins/README.md)
 - [Build and run the compiler](compiler/README.md)
+- [Stage a local toolchain outside the checkout](compiler/README.md#relocatable-local-toolchain)
 - [Use Loom syntax and analysis libraries](compiler/loom/README.md#public-syntax-libraries)
 - [Format source and get editor feedback](compiler/loom/README.md#formatting-and-editor-feedback)
 - [Try the VS Code development extension](editors/vscode/README.md)

@@ -152,7 +152,7 @@ fn options(args List[Text]) Result[Options, Text] {
             return Result.Err(concat("cannot resolve package path ", path))
         }
     }
-    let tools = development_tools(get(args, 0), standard, tool, command == "build" || command == "test" || command == "run")?
+    let tools = compiler_tools(get(args, 0), standard, tool, command == "build" || command == "test" || command == "run")?
     Result.Ok(Options {
             command = command
             path = path

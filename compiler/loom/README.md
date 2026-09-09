@@ -35,7 +35,10 @@ the three-stage comparison is the bootstrap/CI validation gate.
 The source CLI provides `check`, `build`, `test`, and `run` for one directory
 package. When invoked by path, a development compiler locates `compiler/std`
 and `target/debug/loom-native` in its own checkout, independently of the working
-directory. Use `--std` and `--native-tool` for other layouts. `build` accepts
+directory. A [staged local toolchain](../README.md#relocatable-local-toolchain)
+instead uses its executable-relative `lib/loom` directory. Editor commands share
+this discovery and need no backend for source queries. Use `--std` and
+`--native-tool` for other layouts. `build` accepts
 `--output`; native commands also accept `--emit-ir`. Library builds produce an
 object, and production excludes test files and test declarations.
 `run [package] -- [arguments...]` forwards arguments verbatim to the program;
@@ -96,6 +99,9 @@ queries use concrete body instances. If package checking fails, an independently
 checked ordinary function can still provide hover and navigation; its own errors
 or a failing dependency suppress the result. Syntax, global declaration, and
 generic/comptime template errors can still block queries.
+Queries retain explicit overlay/source spellings and otherwise resolve physical
+file identity, including macOS path aliases and Windows verbatim paths. A physical
+file with multiple loaded package identities needs an explicit loaded source path.
 An isolated macOS VS Code extension-host test covers activation, unsaved errors,
 error clearing, name/member completion and applied formatting. The
 [file-tool trial](../examples/wordcount/README.md) exercises a multi-package

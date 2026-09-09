@@ -443,6 +443,16 @@ and the scalar/data examples.
 Linux CI independently passes the full historical-seed bootstrap and workspace
 test gate; it does not rely on a compiler exported from the macOS job.
 
+The [local staging gate](../../compiler/README.md#relocatable-local-toolchain)
+builds a generic-CPU frontend and relocates it with source std and the existing
+native bridge/runtime. CLI and editor commands share executable-relative tool
+discovery; canonical path aliases no longer lose read-only editor queries.
+The out-of-checkout file-tool trial exercises real native commands, isolated
+tests and moving GC, with source queries also tested while the backend is absent.
+The workflow includes this gate on all three hosts. This remains local staging,
+not a downloadable or self-contained release. Bare-command discovery, packaged
+dependency notices/libraries and standalone Windows distribution remain open.
+
 The Windows x64/MSVC implementation now includes native linking, binary file
 I/O with Unicode paths/arguments, drive/UNC/verbatim package paths, and native
 artifact suffixes. Its [CI job](../../.github/workflows/ci.yml) passes native

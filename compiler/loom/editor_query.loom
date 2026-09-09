@@ -4,6 +4,35 @@ import std.loom.analysis.Analysis
 import std.loom.analysis.Inspection
 import std.option.Option
 import std.loom.binding.Program
+import std.loom.project.Project
+
+fn editor_source(project Project, path Text) Result[Int, Text] {
+    var index = 0
+    while index < length(project.files) {
+        // Overlay spellings and explicit package identities take precedence.
+        if get(project.files, index).path == path { return Result.Ok(index) }
+        index = index + 1
+    }
+    let physical = match canonicalize(path) {
+        Result.Ok(value) => value,
+        Result.Err(_) => { return Result.Err("query source is outside the selected package and import closure") }
+    }
+    var selected = -1
+    index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        let same = if file.path == physical { true } else {
+            match canonicalize(file.path) { Result.Ok(value) => value == physical, Result.Err(_) => false }
+        }
+        if same {
+            if selected >= 0 { return Result.Err("query source has multiple package identities; use its loaded source path") }
+            selected = index
+        }
+        index = index + 1
+    }
+    if selected < 0 { return Result.Err("query source is outside the selected package and import closure") }
+    Result.Ok(selected)
+}
 
 fn editor_query(bindings std.loom.binding.Program, file Int, offset Int) EditorOutput {
     match check(bindings) {
@@ -63,6 +92,8 @@ fn editor_inspection(bindings std.loom.binding.Program, inspection Option[Inspec
 
 test fn query_options_require_an_explicit_source_and_byte_offset() {
     let args = cli_arguments("editor-query")
+    std.list.push(args, "--std")
+    std.list.push(args, "selected-std")
     std.list.push(args, "/app")
     match editor_options(args) {
         Result.Err(_) => {

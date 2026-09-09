@@ -3,7 +3,7 @@ import std.fs.FileKind
 import std.text.slice
 import std.text.contains
 
-record DevelopmentTools {
+record Toolchain {
     std_root Text
     native_tool Text
 }
@@ -31,11 +31,9 @@ fn checkout_source(root Text, component Text) Text {
     join_path(join_path(root, "compiler"), component)
 }
 
-// Development stages share one checkout's std and native bridge. Never search
-// the caller's package directory or mix a cached checkpoint's source with it.
-fn compiler_checkout(invoked Text) Result[Text, Text] {
+fn compiler_directory(invoked Text) Result[Text, Text] {
     if !contains(invoked, "/") && !is_windows_path(invoked) {
-        return Result.Err("cannot locate development tools from a bare command name; invoke Loom with a path or pass --std and --native-tool")
+        return Result.Err("cannot locate the toolchain from a bare command name; invoke Loom with a path or pass --std and --native-tool")
     }
     let executable = match canonicalize(invoked) {
         Result.Ok(value) => value
@@ -43,59 +41,73 @@ fn compiler_checkout(invoked Text) Result[Text, Text] {
             return Result.Err("cannot resolve the compiler executable; pass --std and --native-tool")
         }
     }
-    var directory = match canonicalize(executable_directory(executable)) {
-        Result.Ok(value) => value
-        Result.Err(_) => {
-            return Result.Err("cannot resolve the compiler directory; pass --std and --native-tool")
-        }
+    match canonicalize(executable_directory(executable)) {
+        Result.Ok(value) => Result.Ok(value),
+        Result.Err(_) => Result.Err("cannot resolve the compiler directory; pass --std and --native-tool")
     }
+}
+
+fn compiler_parent(directory Text) Result[Text, Text] {
+    // Canonical Windows paths are verbatim: do not append '/' or '..'.
+    match canonicalize(executable_directory(directory)) {
+        Result.Ok(value) => Result.Ok(value),
+        Result.Err(_) => Result.Err("cannot locate the toolchain; pass --std and --native-tool")
+    }
+}
+
+// Development stages share one checkout's std and native bridge. Never search
+// the caller's package directory or mix a cached checkpoint's source with it.
+fn checkout_root(start Text) Result[Text, Text] {
+    var directory = start
     while directory != "" {
         if tool_file(join_path(checkout_source(directory, "loom"), "loom.toml")) && tool_file(join_path(join_path(checkout_source(directory, "std"), "result"), "result.loom")) {
             return Result.Ok(directory)
         }
-        // Canonical Windows paths are verbatim: neither '/' nor '..' may be
-        // appended expecting the OS to normalize them.
-        let parent = match canonicalize(executable_directory(directory)) {
-            Result.Ok(value) => value
-            Result.Err(_) => {
-                return Result.Err("cannot locate the development checkout; pass --std and --native-tool")
-            }
-        }
+        let parent = compiler_parent(directory)?
         if parent == directory {
             directory = ""
         } else {
             directory = parent
         }
     }
-    Result.Err("cannot locate the development checkout; pass --std and --native-tool")
+    Result.Err("cannot locate the toolchain; pass --std and --native-tool")
 }
 
-fn development_tools(invoked Text, standard Text, native Text, needs_native Bool) Result[DevelopmentTools, Text] {
+fn discovered_tools(invoked Text) Result[Toolchain, Text] {
+    let directory = compiler_directory(invoked)?
+    let prefix = compiler_parent(directory)?
+    let installed = join_path(join_path(prefix, "lib"), "loom")
+    let standard = join_path(installed, "std")
+    let name = if is_windows_path(directory) { "loom-native.exe" } else { "loom-native" }
+    if tool_file(join_path(join_path(standard, "result"), "result.loom")) {
+        return Result.Ok(Toolchain { std_root = standard native_tool = join_path(installed, name) })
+    }
+    let root = checkout_root(directory)?
+    Result.Ok(Toolchain { std_root = checkout_source(root, "std")
+        native_tool = join_path(join_path(join_path(root, "target"), "debug"), name) })
+}
+
+fn compiler_tools(invoked Text, standard Text, native Text, needs_native Bool) Result[Toolchain, Text] {
     if standard != "" &&(!needs_native || native != "") {
-        return Result.Ok(DevelopmentTools {
+        return Result.Ok(Toolchain {
                 std_root = standard
                 native_tool = native
             })
     }
-    let root = compiler_checkout(invoked)?
+    let discovered = discovered_tools(invoked)?
     let std_root = if standard != "" {
         standard
     } else {
-        checkout_source(root, "std")
+        discovered.std_root
     }
     var native_tool = native
     if needs_native && native_tool == "" {
-        let name = if is_windows_path(root) {
-            "loom-native.exe"
-        } else {
-            "loom-native"
-        }
-        native_tool = join_path(join_path(join_path(root, "target"), "debug"), name)
+        native_tool = discovered.native_tool
         if !tool_file(native_tool) {
-            return Result.Err("cannot find the checkout's native tool; build it first or pass --native-tool")
+            return Result.Err("cannot find the toolchain's native tool; build or install it, or pass --native-tool")
         }
     }
-    Result.Ok(DevelopmentTools {
+    Result.Ok(Toolchain {
             std_root = std_root
             native_tool = native_tool
         })

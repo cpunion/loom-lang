@@ -35,12 +35,15 @@ for the smaller [receipt workspace](try-loom.code-workspace), whose run task
 prints `36`.
 
 For your own project, set workspace `loom.executable` to the absolute `target/loom`
-path (`loom.exe` on Windows) and `loom.stdRoot` to the repository's `compiler/std`.
+path (`loom.exe` on Windows), or a [staged toolchain's](../../compiler/README.md#relocatable-local-toolchain)
+`bin/loom`. Leave `loom.stdRoot` empty to use that compiler's std; an explicit
+path overrides discovery.
 The checkout's compiler can also run CLI commands directly in your project
 directory; use its absolute path or a relative path containing a separator.
 Do not assume a bare `loom` on PATH is this compiler: `target/loom --help` should
 start with `Loom source compiler`. The trial does not replace other installed
-tools. This is still a development extension, not a Marketplace release.
+tools. Bare-command discovery needs an explicit `loom.stdRoot`; prefer the
+absolute compiler path. This is still a development extension, not a Marketplace release.
 
 `loom.executable` defaults to `loom` on PATH; relative paths containing a separator
 and relative `loom.stdRoot` paths resolve from the containing workspace folder.
