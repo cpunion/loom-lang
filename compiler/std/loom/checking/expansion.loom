@@ -6,6 +6,12 @@ import std.loom.typed.Local
 record CallInputs {
     nodes List[Node]
     ready Option[List[Option[Expr]]]
+    effects Option[List[InputEffect]]
+}
+
+record InputEffect {
+    position Int
+    value Expr
 }
 
 fn source_nodes(node Node) List[Node] {
@@ -18,6 +24,7 @@ fn plain_inputs(nodes List[Node]) CallInputs {
     CallInputs {
         nodes = nodes
         ready = Option.None
+        effects = Option.None
     }
 }
 
@@ -33,9 +40,78 @@ fn input_value(context Context, inputs CallInputs, index Int, expected Int, prob
     if probe {
         return static_probe(context, node, expected)
     }
-    match saved_input(inputs, index) {
+    let value = match saved_input(inputs, index) {
         Option.Some(value) => typed(context, node, value, expected)
         Option.None => expr(context, node, expected)
+    }?
+    Result.Ok(input_effects(context, inputs, index, node, value))
+}
+
+// Empty expansion contributes evaluation, but no parameter. Keep that work at
+// its source gap; ordinary inputs have no effect table or extra typed nodes.
+fn effect_at(inputs CallInputs, position Int, index Int) Bool {
+    position == index || (index == length(inputs.nodes) - 1 && position == length(inputs.nodes))
+}
+
+fn has_input_effects(inputs CallInputs, index Int) Bool {
+    match inputs.effects {
+        Option.None => false
+        Option.Some(effects) => {
+            var current = 0
+            while current < length(effects) {
+                if effect_at(inputs, get(effects, current).position, index) { return true }
+                current = current + 1
+            }
+            false
+        }
+    }
+}
+
+fn input_effects(context Context, inputs CallInputs, index Int, node Node, value Expr) Expr {
+    if !has_input_effects(inputs, index) { return value }
+    let body = new[Expr]()
+    var saved = -1
+    match inputs.effects {
+        Option.None => {}
+        Option.Some(effects) => {
+            var current = 0
+            while current < length(effects) {
+                let effect = get(effects, current)
+                if effect_at(inputs, effect.position, index) {
+                    if effect.position > index && saved < 0 {
+                        saved = length(context.locals)
+                        push(context.locals, Local { name = "" ty = value.ty mutable = false is_scoped = false })
+                        push(body, expression(ExprKind.Let, 0, node, "", saved, expressions(value), value.falls))
+                    }
+                    push(body, expression(ExprKind.Discard, 0, node, "", -1, expressions(effect.value), effect.value.falls))
+                }
+                current = current + 1
+            }
+        }
+    }
+    push(body, if saved < 0 { value } else { atom(ExprKind.Local, value.ty, node, saved) })
+    expression(ExprKind.Block, value.ty, node, "", -1, body, all_fall(body))
+}
+
+fn empty_inputs(context Context, inputs CallInputs, node Node, value Expr) Expr {
+    if length(inputs.nodes) == 0 { input_effects(context, inputs, 0, node, value) } else { value }
+}
+
+fn shifted_effects(inputs CallInputs, offset Int) Option[List[InputEffect]] {
+    match inputs.effects {
+        Option.None => Option.None
+        Option.Some(effects) => {
+            let shifted = new[InputEffect]()
+            var index = 0
+            while index < length(effects) {
+                let effect = get(effects, index)
+                if offset > 0 || (length(inputs.nodes) > 1 && effect.position > 0) {
+                    push(shifted, InputEffect { position = effect.position + offset value = effect.value })
+                }
+                index = index + 1
+            }
+            if length(shifted) == 0 { Option.None } else { Option.Some(shifted) }
+        }
     }
 }
 
@@ -61,6 +137,7 @@ fn input_tail(inputs CallInputs) CallInputs {
     CallInputs {
         nodes = nodes
         ready = ready
+        effects = shifted_effects(inputs, -1)
     }
 }
 
@@ -87,10 +164,11 @@ fn input_receiver(inputs CallInputs, source Node) CallInputs {
     CallInputs {
         nodes = nodes
         ready = ready
+        effects = shifted_effects(inputs, 1)
     }
 }
 
-fn expand_input(context Context, source Node, nodes List[Node], ready List[Option[Expr]], depth Int) Result[Bool, Failure] {
+fn expand_input(context Context, source Node, nodes List[Node], ready List[Option[Expr]], effects List[InputEffect], depth Int) Result[Bool, Failure] {
     if source.kind != NodeKind.Spread {
         push(nodes, source)
         push(ready, Option.None)
@@ -105,7 +183,7 @@ fn expand_input(context Context, source Node, nodes List[Node], ready List[Optio
         // and static-argument selection, without manufacturing an aggregate.
         var index = 0
         while index < length(operand.children) {
-            discard expand_input(context, child(operand, index), nodes, ready, depth + 1)?
+            discard expand_input(context, child(operand, index), nodes, ready, effects, depth + 1)?
             index = index + 1
         }
         return Result.Ok(true)
@@ -117,7 +195,7 @@ fn expand_input(context Context, source Node, nodes List[Node], ready List[Optio
     }
     if length(shape.arguments) == 0 {
         if value.kind != ExprKind.Local && !(value.kind == ExprKind.Record && length(value.children) == 0) {
-            return Result.Err(error(context, source, "bind an empty tuple before expanding it; its evaluation must not be omitted"))
+            push(effects, InputEffect { position = length(nodes) value = value })
         }
         return Result.Ok(true)
     }
@@ -164,13 +242,15 @@ fn call_inputs(context Context, sources List[Node]) Result[CallInputs, Failure] 
     }
     let nodes = new[Node]()
     let ready = new[Option[Expr]]()
+    let effects = new[InputEffect]()
     index = 0
     while index < length(sources) {
-        discard expand_input(context, get(sources, index), nodes, ready, 0)?
+        discard expand_input(context, get(sources, index), nodes, ready, effects, 0)?
         index = index + 1
     }
     Result.Ok(CallInputs {
             nodes = nodes
             ready = Option.Some(ready)
+            effects = if length(effects) == 0 { Option.None } else { Option.Some(effects) }
         })
 }

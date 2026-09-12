@@ -38,5 +38,5 @@ fn list_literal(context Context, node Node, expected Int) Result[Expr, Failure] 
         return Result.Err(error(context, node, "type specialization depth exceeded; expansion must be finite"))
     }
     let ty = intern(context.env, TypeKind.List, -1, ints(element))
-    Result.Ok(expression(ExprKind.List, ty, node, "", -1, values, all_fall(values)))
+    Result.Ok(empty_inputs(context, inputs, node, expression(ExprKind.List, ty, node, "", -1, values, all_fall(values))))
 }

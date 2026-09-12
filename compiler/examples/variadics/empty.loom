@@ -1,0 +1,111 @@
+import std.list.push
+import std.list.length
+
+fn marked_empty[Ts...](log List[Int], tag Int, values Ts...) (Ts...) {
+    push(log, tag)
+    values
+}
+
+fn trace_is(log List[Int], expected List[Int]) {
+    assert length(log) == length(expected)
+    var index = 0
+    while index < length(log) {
+        assert log[index] == expected[index]
+        index = index + 1
+    }
+}
+
+fn answer() Int {
+    42
+}
+
+fn selected(log List[Int]) fn() Int {
+    push(log, 1)
+    answer
+}
+
+record Receiver {
+    log List[Int]
+    callback fn() Int
+}
+
+concept Step {
+    fn step(self Self) Int
+}
+
+impl Step for Receiver {
+    fn step(self Receiver) Int {
+        push(self.log, 3)
+        42
+    }
+}
+
+fn receiver(log List[Int]) Receiver {
+    push(log, 1)
+    Receiver {
+        log = log
+        callback = answer
+    }
+}
+
+enum Empty {
+    Done
+}
+
+fn empty_expansion() {
+    var log List[Int] = []
+    assert answer(marked_empty(log, 1)..., marked_empty(log, 2)...) == 42
+    trace_is(log, [1, 2])
+    log = []
+    assert selected(log)(marked_empty(log, 2)...) == 42
+    trace_is(log, [1, 2])
+    log = []
+    let mixed = pack(mark(log, 1), marked_empty(log, 2)..., mark(log, 3), marked_empty(log, 4)...)
+    assert mixed.0 == 1 && mixed.1 == 3
+    trace_is(log, [1, 2, 3, 4])
+    log = []
+    let expanded = (marked_empty(log, 1)..., pack(mark(log, 2), mark(log, 3))..., marked_empty(log, 4)...)
+    assert expanded.0 == 2 && expanded.1 == 3
+    trace_is(log, [1, 2, 3, 4])
+    log = []
+    assert receiver(log).step(marked_empty(log, 2)...) == 42
+    trace_is(log, [1, 2, 3])
+    log = []
+    assert Step.step(receiver(log), marked_empty(log, 2)...) == 42
+    trace_is(log, [1, 2, 3])
+    log = []
+    let dynamic dyn Step = receiver(log)
+    assert dynamic.step(marked_empty(log, 2)...) == 42
+    trace_is(log, [1, 2, 3])
+    log = []
+    assert receiver(log).callback(marked_empty(log, 2)...) == 42
+    trace_is(log, [1, 2])
+    log = []
+    let list List[Int] = [marked_empty(log, 1)...]
+    assert length(list) == 0
+    discard (marked_empty(log, 2)...)
+    match Empty.Done(marked_empty(log, 3)...) {
+        Empty.Done => {
+        }
+    }
+    trace_is(log, [1, 2, 3])
+    let compiled = comptime {
+        let events List[Int] = []
+        discard pack(marked_empty(events, 1)..., 7, marked_empty(events, 2)...)
+        events
+    }
+    trace_is(compiled, [1, 2])
+}
+
+async fn later_empty[Ts...](log List[Int], tag Int, values Ts...) (Ts...) {
+    discard item(0).await
+    push(log, tag)
+    values
+}
+
+async fn suspended_empty_expansion() {
+    let log List[Int] = []
+    let values = pack(mark(log, 1), later_empty(log, 2).await..., mark(log, 3), later_empty(log, 4).await...)
+    assert values.0 == 1 && values.1 == 3
+    trace_is(log, [1, 2, 3, 4])
+}

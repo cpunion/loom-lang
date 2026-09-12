@@ -21,5 +21,6 @@ test fn variadic_arity_checks_keep_declared_bounds_and_required_proofs() {
 test fn variadic_packs_transfer_tasks_through_ordinary_typed_parameters() {
     discard accepted("fn pack[Ts...](values Ts...) (Ts...) { values }\nasync fn item[T](value T) T { value }\nasync fn forward[Ts...](values Task[Ts]...) (Task[Ts]...) { values }\nasync fn main() { let tasks = forward(item(1), item(\"two\")).await\nassert tasks.0.await == 1\nassert tasks.1.await == \"two\"\nlet gathered = pack(item(3), item(true))\nassert gathered.0.await == 3\nassert gathered.1.await }")
     rejects("fn pack[Ts...](values Ts...) (Ts...) { values }\nasync fn item() Int { 1 }\nasync fn main() { let task = item()\nlet pair = pack(task, task)\ndiscard pair.0.await\ndiscard pair.1.await }")
-    rejects("fn pack[Ts...](values Ts...) (Ts...) { values }\nfn f() {}\nfn main() { f(pack()...) }")
+    discard accepted("fn pack[Ts...](values Ts...) (Ts...) { values }\nfn f() {}\nfn main() { f(pack()...) }")
+    rejects("fn pack[Ts...](values Ts...) (Ts...) { values }\nfn f(comptime value Int) Int { value }\nfn main() { discard f(pack()..., 1) }")
 }
