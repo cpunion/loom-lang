@@ -52,7 +52,8 @@ fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
     length(env.types) - 1
 }
 fn tuple_type(env Environment, owner Int, node Node, elements List[Int]) Result[Int, Failure] {
-    if length(elements) == 0 { return Result.Err(failure(env, owner, node, "a tuple needs at least one value element")) }
+    // Zero-length packs produce an inferred empty tuple. The parser still
+    // rejects source (), and no-result expressions remain a different type.
     var index = 0
     while index < length(elements) {
         let element = get(elements, index)

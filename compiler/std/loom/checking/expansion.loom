@@ -115,6 +115,12 @@ fn expand_input(context Context, source Node, nodes List[Node], ready List[Optio
     if shape.kind != TypeKind.Tuple {
         return Result.Err(error(context, source, "expansion requires a statically known tuple, not a runtime-sized List"))
     }
+    if length(shape.arguments) == 0 {
+        if value.kind != ExprKind.Local && !(value.kind == ExprKind.Record && length(value.children) == 0) {
+            return Result.Err(error(context, source, "bind an empty tuple before expanding it; its evaluation must not be omitted"))
+        }
+        return Result.Ok(true)
+    }
     let local = length(context.locals)
     push(context.locals, Local {
             name = ""

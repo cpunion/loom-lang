@@ -1,0 +1,10 @@
+test fn variadic_types_retain_pack_bounds_and_type_patterns() {
+    let declaration = child(parsed("fn forward[R, Ts... Display](callback fn(Ts...) R, values Ts...) R { callback(values...) }"), 0)
+    let pack = child(child(declaration, 0), 1)
+    assert pack.kind == NodeKind.TypePack && pack.value == "Ts"
+    assert child(pack, 0).value == "Display"
+    let parameters = child(declaration, 1)
+    assert child(child(parameters, 1), 0).kind == NodeKind.Spread
+    discard parsed("async fn collect[Ts...](tasks Task[Ts]...) (Task[Ts]...) { tasks }")
+    discard rejected("fn f[Ts....](values Ts...) {}")
+}

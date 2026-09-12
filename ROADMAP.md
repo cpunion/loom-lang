@@ -293,8 +293,13 @@ bootstrap checkpoint; refutable and scoped bindings remain open.
 Tuple value expansion now forwards heterogeneous arguments and assembles tuple
 or List literals through the same typed calls/projections. Saved operands evaluate
 once and preserve Task/resource obligations; literal expansion retains contextual
-and compile-time argument checking. This establishes argument expansion, not
-variadic declarations, type packs or heterogeneous Task join policies.
+and compile-time argument checking. Top-level variadic functions now select an
+arity, then elaborate one final type/value pack into ordinary generic/native
+parameters. Abstract element checking, mapped type patterns and contextual
+function references preserve the existing rules. Empty packs infer an empty
+tuple, without source Unit syntax. Unselected arities are not verified;
+variadic postconditions reject until every arity can be proved. Pack iteration,
+methods/data packs, static value packs and heterogeneous Task joins remain open.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time
@@ -317,7 +322,7 @@ retain explicit generic requirements and mandatory abstract proofs. Concept and
 implementation methods use the same static parameters; dynamic slots include
 static values in their identity and erase them from the runtime signature.
 Selected bodies retain abstract checking without emitting unused callers. Function
-references to partially specialized static declarations and heterogeneous packs
+references to partially specialized static declarations and static value packs
 remain open. Captured function parameters use the typed environments above.
 
 Pure dynamic construction, calls and returned values now share the compile-time
@@ -407,7 +412,7 @@ resolved by guessing later operands.
 Shared-container
 results preserve internal aliases and cycles while constructing a fresh graph
 on each runtime evaluation. Successful pure results can be reused within one
-check; persistent/incremental reuse, variadics, typed macros, and broader
+check; persistent/incremental reuse, pack iteration, typed macros, and broader
 reflection remain incomplete.
 `Int` type predicates can call pure helpers through the same bounded evaluator;
 known constants remove checks, while unknown results retain the runtime
