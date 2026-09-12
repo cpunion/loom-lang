@@ -41,7 +41,7 @@ fn tuple_literal(context Context, node Node, expected Int) Result[Expr, Failure]
         index = index + 1
     }
     let ty = tuple_type(context.env, context.signature.symbol, node, elements)?
-    Result.Ok(expression(ExprKind.Record, ty, node, "", -1, fields, all_fall(fields)))
+    Result.Ok(empty_inputs(context, inputs, node, expression(ExprKind.Record, ty, node, "", -1, fields, all_fall(fields))))
 }
 
 fn tuple_member(context Context, node Node, value Expr, field Text) Result[Expr, Failure] {

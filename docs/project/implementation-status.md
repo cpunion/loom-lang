@@ -241,7 +241,9 @@ pipeline, including compile-time graphs and Task transfer. Selected bodies are
 checked with abstract element types before concrete specialization; unselected
 arities have not been verified. Variadic postconditions reject until the checker
 can prove every arity, including for uncalled declarations. Empty tuple operands
-must be bound before expansion so their effects cannot disappear. Pack iteration,
+retain their evaluation at the source gap, even with no resulting arguments,
+indirect/method calls or suspension. Their effects cannot enter erased comptime
+arguments; those boundaries still require a prior binding. Pack iteration,
 multiple packs, methods/data packs and static value packs remain open. See the
 [variadic example](../../compiler/examples/variadics/main.loom).
 
