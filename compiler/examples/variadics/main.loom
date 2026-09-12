@@ -35,6 +35,7 @@ fn take(values (Int, Int, Int), log List[Int]) {
 }
 
 fn exercise() {
+    empty_expansion()
     let pair = pack(1, "two")
     assert pair.0 == 1 && pair.1 == "two"
     assert forward(combine, 2, "callback") == "callback"
@@ -76,6 +77,7 @@ async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) {
 }
 
 async fn exercise_tasks() {
+    suspended_empty_expansion().await
     let tasks = task_pack(item(1), item("two")).await
     assert tasks.0.await == 1
     assert tasks.1.await == "two"

@@ -31,7 +31,7 @@ fn variadic_functions_run_with_native_values_compile_time_graphs_and_tasks() {
 fn scalar_packs_do_not_introduce_runtime_storage_or_task_machinery() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("main.loom"),
-        "fn pack[Ts...](values Ts...) (Ts...) { values }\nfn main() { let values = pack(40, 2, true)\nassert values.0 + values.1 == 42\nassert values.2\nlet empty = pack()\ndiscard empty }").unwrap();
+        "fn pack[Ts...](values Ts...) (Ts...) { values }\nfn main() { let values = pack(40, 2, true)\nassert values.0 + values.1 == 42\nassert values.2\nlet empty = pack()\ndiscard empty\ndiscard pack(pack()...) }").unwrap();
     let ir = directory.path().join("packs.ll");
     let executable = common::executable(directory.path(), "packs");
     success(

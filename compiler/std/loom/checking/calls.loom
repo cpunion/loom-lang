@@ -134,7 +134,8 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
         set(values, index, typed(context, get(inputs.nodes, index), get(values, index), target)?)
         index = index + 1
     }
-    Result.Ok(expression(ExprKind.Variant, constructed_type(context, declaration, arguments, node)?, node, "", selected, values, all_fall(values)))
+    Result.Ok(empty_inputs(context, inputs, node,
+        expression(ExprKind.Variant, constructed_type(context, declaration, arguments, node)?, node, "", selected, values, all_fall(values))))
 }
 fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let types = child(node, 0).children
@@ -208,7 +209,7 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
     let probes = new[Bool]()
     let probing = static_options(context, options)
     var index = 0
-    while index < length(prefix) { push(values, get(prefix, index))
+    while index < length(prefix) { push(values, input_effects(context, inputs, index, get(inputs.nodes, index), get(prefix, index)))
         if probing { push(probes, false) }
         index = index + 1 }
     let inferred = if length(options) == 1 { supplied_call(context, node, types, get(context.env.signatures, get(options, 0)))? } else { new[Int]() }
@@ -234,7 +235,8 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
         index = index + 1
     }
     let matches = matching_overloads(context, node, options, types, values, expected)?
-    invoke_selected(context, node, choose_overload(context, node, matches)?, inputs, values, probes)
+    let value = invoke_selected(context, node, choose_overload(context, node, matches)?, inputs, values, probes)?
+    Result.Ok(empty_inputs(context, inputs, node, value))
 }
 record OverloadSet { candidates List[Instance] widening List[Bool] exact Bool missing_requirement Bool }
 fn matching_overloads(context Context, node Node, options List[Int], types List[Node], values List[Expr], expected Int) Result[OverloadSet, Failure] {
@@ -310,6 +312,9 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
         let target = substitute(context.env, context.signature.symbol, get(signature.params, index), instance.arguments, node)?
         let input = get(inputs.nodes, index)
         if is_static(signature, index) {
+            if has_input_effects(inputs, index) {
+                return Result.Err(error(context, input, "empty tuple evaluation cannot be erased by a comptime parameter; bind the tuple before expansion"))
+            }
             match saved_input(inputs, index) {
                 Option.Some(_) => { return Result.Err(error(context, input, "a saved tuple cannot expand into comptime parameters; supply static arguments explicitly or expand a tuple literal")) }
                 Option.None => {}

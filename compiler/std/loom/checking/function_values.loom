@@ -124,7 +124,8 @@ fn call_value(context Context, node Node, callee Expr, types List[Node], inputs 
     if length(inputs.nodes) != count {
         return Result.Err(error(context, node, "function value argument count does not match"))
     }
-    let values = expressions(callee)
+    let callable = if count == 0 { input_effects(context, inputs, -1, node, callee) } else { callee }
+    let values = expressions(callable)
     var index = 0
     while index < count {
         push(values, input_value(context, inputs, index, get(shape.arguments, index), false)?)
@@ -132,7 +133,7 @@ fn call_value(context Context, node Node, callee Expr, types List[Node], inputs 
     }
     let output = get(shape.arguments, count)
     discard task_call_context(context, node, values, output, false)?
-    if callee.kind == ExprKind.FunctionRef && callee.index >= 0 && !direct_task(context.env, output) {
+    if callable.kind == ExprKind.FunctionRef && callable.index >= 0 && !direct_task(context.env, output) {
         let arguments = new[Expr]()
         if length(callee.children) != 0 { push(arguments, get(callee.children, 0)) }
         index = 1
@@ -158,7 +159,7 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
     let count = length(shape) - 1
     var field_matches = count == length(inputs.nodes)
     let declarations = input_receiver(inputs, source)
-    let values = expressions(receiver)
+    let values = expressions(input_effects(context, declarations, 0, source, receiver))
     let probing = static_options(context, options)
     let probes = new[Bool]()
     if probing {
@@ -195,7 +196,7 @@ fn field_call(context Context, node Node, source Node, receiver Expr, callee Exp
         return Result.Err(error(context, node, "ambiguous function field and concept method; parenthesize the field or use Concept.method(value, ...)"))
     }
     if field_matches {
-        let arguments = expressions(callee)
+        let arguments = expressions(if count == 0 { input_effects(context, inputs, -1, node, callee) } else { callee })
         index = 0
         while index < count {
             let argument = if probing && get(probes, index + 1) {
