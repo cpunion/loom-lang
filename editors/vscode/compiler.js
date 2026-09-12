@@ -35,10 +35,11 @@ async function editorReport(settings, directory, mode, extraArgs, overlayArgs, s
   const args = [mode, directory, '--tests', ...extraArgs, ...overlayArgs];
   if (settings.stdRoot) args.push('--std', settings.stdRoot);
   const result = await run(settings.executable, args, directory, signal);
-  if (result.code !== 0 && result.code !== 1) throw new Error(result.stderr || `Compiler exited ${result.code}`);
+  const failure = detail => new Error(`${mode} failed using ${settings.executable}: ${detail}\nSet loom.executable to the current Loom compiler, not an older same-named tool.`);
+  if (result.code !== 0 && result.code !== 1) throw failure(result.stderr || `Compiler exited ${result.code}`);
   let report;
   try { report = JSON.parse(result.stdout); }
-  catch { throw new Error(result.stderr || `Compiler did not return ${mode} JSON; check the configured Loom executable.`); }
+  catch { throw failure(result.stderr || `Compiler did not return ${mode} JSON.`); }
   if (!Array.isArray(report.diagnostics)) throw new Error(`Invalid ${mode} diagnostics response.`);
   return report;
 }

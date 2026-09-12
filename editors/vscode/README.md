@@ -8,6 +8,13 @@ implemented.
 
 ## Try it
 
+With this extension installed and the checkout built, `code .` from the repository
+root also works. The committed `.vscode/settings.json` selects `target/loom` and
+`compiler/std` for compiler, library and example files. It enables Loom-only
+format-on-save without changing global settings or relying on a bare `loom` on
+PATH. A missing compiler requires a bootstrap build; intentional rejection
+fixtures can still report real source errors.
+
 Build the [compiler](../../compiler/README.md#build-and-try-it). With Node.js,
 npm, and VS Code installed, run from the repository root:
 
@@ -159,6 +166,7 @@ package validity. Automatic imports remain unimplemented.
 npm test           # Real LSP transport with a small process fixture
 npm run smoke      # Real target/loom: overlays, hover/definition, completion, formatting
 npm run smoke:host # Installed VS Code: actual extension activation and commands
+npm run smoke:checkout # Repository-root settings and real source packages
 ```
 
 The extensionless `test/fixtures/project/editor-check`, `editor-query`, and `fmt` files are small

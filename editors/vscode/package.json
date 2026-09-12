@@ -31,7 +31,8 @@
     "try": "node try.js",
     "test": "npm run check && node --test test/*.test.js",
     "smoke": "node test/smoke.js",
-    "smoke:host": "node test/launch-host.js"
+    "smoke:host": "node test/launch-host.js",
+    "smoke:checkout": "node test/launch-host.js --checkout"
   },
   "dependencies": {
     "vscode-languageclient": "10.1.1",
