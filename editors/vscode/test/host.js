@@ -113,9 +113,34 @@ async function run() {
   } finally { await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor'); }
 }
 
+async function checkout() {
+  const folder = vscode.workspace.workspaceFolders[0].uri.fsPath;
+  assert.equal(folder, process.env.LOOM_EDITOR_REPOSITORY);
+  // Exercise the committed code-dot configuration, not test-injected settings.
+  const settings = vscode.workspace.getConfiguration('loom');
+  assert.equal(settings.inspect('executable').workspaceValue, './target/loom');
+  assert.equal(settings.get('stdRoot'), './compiler/std');
+  await vscode.extensions.getExtension('cpunion.loom-language').activate();
+  for (const relative of ['compiler/loom/main.loom', 'compiler/std/text/text.loom', 'compiler/examples/wordcount/main.loom']) {
+    const file = path.join(folder, relative);
+    const original = await fs.readFile(file, 'utf8');
+    const document = await vscode.workspace.openTextDocument(file);
+    const editor = await vscode.window.showTextDocument(document);
+    const replace = text => editor.edit(edit => edit.replace(new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text));
+    try {
+      await replace(original + '\ntest fn loom_editor_checkout_failure() { let value Int = true\ndiscard value }\n');
+      await diagnostics(document.uri, values => values.some(value => value.source === 'loom' && value.range.start.line > 0));
+      await replace(original);
+      await diagnostics(document.uri, values => values.length === 0);
+      assert.equal(await fs.readFile(file, 'utf8'), original);
+    } finally { await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor'); }
+  }
+}
+
 exports.run = async function () {
   try {
-    await run();
+    if (process.env.LOOM_EDITOR_HOST_CHECKOUT === '1') await checkout();
+    else await run();
     await fs.writeFile(process.env.LOOM_EDITOR_HOST_RESULT, JSON.stringify({ passed: true }));
   } catch (error) {
     await fs.writeFile(process.env.LOOM_EDITOR_HOST_RESULT, JSON.stringify({ passed: false, error: error.stack || String(error) }));

@@ -17,6 +17,9 @@ in Git history.
 
 Already built this checkout? Open the programming trial directly:
 
+With the development extension already installed, `code .` uses the checked-in
+workspace settings to select this checkout's compiler and std. Otherwise:
+
 ```sh
 npm --prefix editors/vscode ci
 npm --prefix editors/vscode run try
