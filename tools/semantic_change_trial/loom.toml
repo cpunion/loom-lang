@@ -1,0 +1,5 @@
+[module]
+name = "semantic_change_trial"
+
+[dependencies.semantic_change]
+path = "../semantic_change"

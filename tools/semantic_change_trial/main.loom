@@ -1,0 +1,207 @@
+import semantic_change.File
+import semantic_change.Identity
+import semantic_change.Revision
+import semantic_change.merge
+import std.loom.ast.NodeKind
+import std.file.read_text
+import std.fs.entries
+import std.fs.entry_kind
+import std.fs.FileKind
+import std.io.write_error
+import std.io.write_text
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+import std.process.arguments
+import std.process.exit_code
+import std.result.Result
+import std.text.concat
+import std.text.ends_with
+import std.text.split
+import std.text.starts_with
+import std.text.trim
+
+fn path(directory Text, name Text) Text {
+    concat(concat(directory, "/"), name)
+}
+
+fn kind(name Text) Result[NodeKind, Text] {
+    if name == "fn" {
+        return Result.Ok(NodeKind.Function)
+    }
+    if name == "record" {
+        return Result.Ok(NodeKind.Record)
+    }
+    if name == "enum" {
+        return Result.Ok(NodeKind.Enum)
+    }
+    if name == "type" {
+        return Result.Ok(NodeKind.Refined)
+    }
+    if name == "concept" {
+        return Result.Ok(NodeKind.Concept)
+    }
+    Result.Err("identity kind must be fn, record, enum, type or concept")
+}
+
+fn kind_name(value NodeKind) Text {
+    if value == NodeKind.Function {
+        return "fn"
+    }
+    if value == NodeKind.Record {
+        return "record"
+    }
+    if value == NodeKind.Enum {
+        return "enum"
+    }
+    if value == NodeKind.Refined {
+        return "type"
+    }
+    "concept"
+}
+
+fn read(directory Text) Result[Revision, Text] {
+    let sidecar = path(directory, ".loom-ids")
+    let metadata = match read_text(sidecar) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(concat("cannot read ", sidecar))
+        }
+    }
+    let identities = new[Identity]()
+    var package_name = ""
+    let lines = split(metadata, "\n")
+    var index = 0
+    while index < length(lines) {
+        let line = trim(get(lines, index))
+        if line != "" && !starts_with(line, "#") {
+            let words = split(line, " ")
+            if length(words) == 2 && get(words, 0) == "package" && package_name == "" {
+                package_name = get(words, 1)
+            } else {
+                if length(words) != 5 || get(words, 0) != "id" {
+                    return Result.Err(concat("invalid identity line in ", sidecar))
+                }
+                let id = get(words, 1)
+                let name = get(words, 3)
+                let file = get(words, 4)
+                if starts_with(file, "/") || starts_with(file, "\\") ||
+                !ends_with(file, ".loom") || trim(file) != file {
+                    return Result.Err("identity file path must be a relative .loom filename")
+                }
+                push(identities, Identity {
+                        id = id
+                        path = file
+                        kind = kind(get(words, 2))?
+                        name = name
+                    })
+            }
+        }
+        index = index + 1
+    }
+    if package_name == "" {
+        return Result.Err("identity sidecar needs a package line")
+    }
+    let names = match entries(directory) {
+        Result.Ok(found) => found
+        Result.Err(_) => {
+            return Result.Err(concat("cannot list ", directory))
+        }
+    }
+    let files = new[File]()
+    index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        if ends_with(name, ".loom") {
+            let source = path(directory, name)
+            match entry_kind(source) {
+                Result.Ok(FileKind.File) => {
+                }
+                _ => {
+                    return Result.Err(concat("source is not a regular file: ", source))
+                }
+            }
+            let contents = match read_text(source) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Err(concat("cannot read ", source))
+                }
+            }
+            push(files, File {
+                    path = name
+                    text = contents
+                })
+        }
+        index = index + 1
+    }
+    Result.Ok(Revision {
+            package_name = package_name
+            files = files
+            identities = identities
+        })
+}
+
+fn show(revision Revision) Text {
+    var output = "dry-run semantic merge; no files written\n"
+    var index = 0
+    output = concat(output, "=== .loom-ids ===\n")
+    output = concat(output, concat("package ", concat(revision.package_name, "\n")))
+    while index < length(revision.identities) {
+        let identity = get(revision.identities, index)
+        output = concat(output, concat("id ", concat(identity.id,
+                    concat(" ", concat(kind_name(identity.kind), concat(" ",
+                                concat(identity.name, concat(" ", concat(identity.path, "\n")))))))))
+        index = index + 1
+    }
+    index = 0
+    while index < length(revision.files) {
+        let file = get(revision.files, index)
+        output = concat(output, concat("=== ", concat(file.path, " ===\n")))
+        output = concat(output, file.text)
+        if !ends_with(file.text, "\n") {
+            output = concat(output, "\n")
+        }
+        index = index + 1
+    }
+    output
+}
+
+fn main() {
+    let args = arguments()
+    if length(args) != 4 {
+        discard write_error("usage: semantic_change_trial BASE_DIR LEFT_DIR RIGHT_DIR\n")
+        exit_code(2)
+        return
+    }
+    let base = read(get(args, 1))
+    let left = read(get(args, 2))
+    let right = read(get(args, 3))
+    match base {
+        Result.Err(message) => {
+            discard write_error(concat(message, "\n"))
+            exit_code(1)
+        }
+        Result.Ok(base_revision) => match left {
+            Result.Err(message) => {
+                discard write_error(concat(message, "\n"))
+                exit_code(1)
+            }
+            Result.Ok(left_revision) => match right {
+                Result.Err(message) => {
+                    discard write_error(concat(message, "\n"))
+                    exit_code(1)
+                }
+                Result.Ok(right_revision) => match merge(base_revision, left_revision, right_revision) {
+                    Result.Ok(merged) => {
+                        discard write_text(show(merged))
+                    }
+                    Result.Err(message) => {
+                        discard write_error(concat(message, "\n"))
+                        exit_code(1)
+                    }
+                }
+            }
+        }
+    }
+}
