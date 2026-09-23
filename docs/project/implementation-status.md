@@ -688,9 +688,11 @@ records faster compiler-check CPU time but higher peak RSS, with noisy native
 kernel samples. Memory efficiency and the remaining language work are not closed
 by those results.
 
-The separate `tools/semantic_change` prototype previews stable-ID, single-package
-move-plus-edit merges from directories or Git blobs and rechecks production and
-test scopes. It does not apply merges or track identities automatically. The
+The separate `tools/semantic_change_trial` prototype initializes and refreshes
+stable-ID sidecars for root-level, single-package source. It previews
+move-plus-edit merges from directories or Git blobs, rechecks production and
+test scopes, and applies an exact reviewed result to a new directory. Identity
+refresh is explicit; it does not follow arbitrary edits automatically. The
 `tools/deployment` prototype analyzes schema conflicts and executes one bounded
 offline SQLite upgrade, rollback and re-upgrade with append-only events. Its
 fixed executor requires a same-build receipt for the candidate artifact and
