@@ -1,0 +1,63 @@
+import std.list.new
+import std.list.push
+import std.list.length
+import std.result.Result
+
+test fn migration_catalog_must_name_upgrade_and_downgrade_conflicts() {
+    let v1 = version("checked-v1", "amount >= 0", false)
+    let v2 = version("checked-v2", "amount > 0", true)
+    let forward = new[Handling]()
+    let recovery = new[Handling]()
+    let catalog = MigrationCatalog {
+        from_basis = v1.basis
+        to_basis = v2.basis
+        forward = forward
+        recovery = recovery
+    }
+    match coverage(v1, v2, catalog) {
+        Result.Ok(missing) => {
+            assert length(missing.forward) == 1
+            assert length(missing.recovery) == 2
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    push(forward, Handling {
+            kind = ConflictKind.ChangedPredicate
+            table = "orders"
+            column = "amount"
+            action = "upgrade_zero_amounts"
+        })
+    push(recovery, Handling {
+            kind = ConflictKind.ChangedPredicate
+            table = "orders"
+            column = "amount"
+            action = "restore_zero_amounts"
+        })
+    push(recovery, Handling {
+            kind = ConflictKind.RemovedTable
+            table = "notes"
+            column = ""
+            action = "archive_notes_for_reupgrade"
+        })
+    match coverage(v1, v2, catalog) {
+        Result.Ok(missing) => {
+            assert length(missing.forward) == 0
+            assert length(missing.recovery) == 0
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    push(recovery, Handling {
+            kind = ConflictKind.RemovedTable
+            table = "notes"
+            column = ""
+            action = "duplicate_archive"
+        })
+    assert match coverage(v1, v2, catalog) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+}
