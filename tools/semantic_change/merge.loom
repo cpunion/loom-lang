@@ -12,6 +12,7 @@ import std.list.new
 import std.list.push
 import std.result.Result
 import std.text.concat
+import std.text.contains
 import std.text.ends_with
 import std.text.length
 import std.text.slice
@@ -57,6 +58,17 @@ fn supported(kind NodeKind) Bool {
     kind == NodeKind.Refined || kind == NodeKind.Concept
 }
 
+fn source_leaf(path Text) Bool {
+    path != "" && ends_with(path, ".loom") && !contains(path, "/") &&
+    !contains(path, "\\") && !contains(path, " ") && !contains(path, "\t") &&
+    !contains(path, "\0") && !contains(path, "\n") && !contains(path, "\r")
+}
+
+fn sidecar_word(value Text) Bool {
+    value != "" && !contains(value, " ") && !contains(value, "\t") &&
+    !contains(value, "\0") && !contains(value, "\n") && !contains(value, "\r")
+}
+
 fn file_index(files List[File], path Text) Int {
     var index = 0
     while index < length(files) {
@@ -96,14 +108,14 @@ fn identity_index(identities List[Identity], path Text, kind NodeKind, name Text
 }
 
 fn indexed(revision Revision) Result[Indexed, Text] {
-    if revision.package_name == "" {
+    if !sidecar_word(revision.package_name) {
         return Result.Err("revision needs a package identity")
     }
     let entries = new[Entry]()
     var index = 0
     while index < length(revision.identities) {
         let identity = get(revision.identities, index)
-        if identity.id == "" || identity.path == "" || identity.name == "" ||
+        if !sidecar_word(identity.id) || !source_leaf(identity.path) || !sidecar_word(identity.name) ||
         !supported(identity.kind) {
             return Result.Err("invalid or unsupported declaration identity")
         }
@@ -119,8 +131,8 @@ fn indexed(revision Revision) Result[Indexed, Text] {
     index = 0
     while index < length(revision.files) {
         let file = get(revision.files, index)
-        if file.path == "" {
-            return Result.Err("source file needs a path")
+        if !source_leaf(file.path) {
+            return Result.Err("source file needs a root-level .loom filename")
         }
         var previous = 0
         while previous < index {
