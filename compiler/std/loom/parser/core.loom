@@ -66,7 +66,8 @@ fn reserved(value Text) Bool {
     value == "break" || value == "continue" || value == "async" || value == "await" ||
     value == "if" || value == "else" || value == "requires" || value == "ensures" ||
     value == "true" || value == "false" || value == "comptime" || value == "defer" || value == "scoped" ||
-    value == "concept" || value == "impl" || value == "for" || value == "implements" || value == "dyn"
+    value == "concept" || value == "impl" || value == "for" || value == "implements" || value == "dyn" ||
+    value == "old"
 }
 fn name(cursor Cursor) Result[Step, Diagnostic] {
     if !at(cursor, Kind.Name) || reserved(token(cursor).value) {

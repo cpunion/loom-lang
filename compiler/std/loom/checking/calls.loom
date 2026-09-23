@@ -5,6 +5,7 @@ import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
+import std.loom.typed.Local
 import std.loom.typed.TypeKind
 import std.list.new
 import std.list.get
@@ -59,6 +60,99 @@ fn template(context Context, declaration Int) Result[Int, Failure] {
     let count = length(group(symbol(context.env, declaration).node, NodeKind.TypeParameters))
     data_type(context.env, declaration, abstract_arguments(context.env, count), 0)
 }
+
+fn pending_resource_exit(node Node) Bool {
+    if node.kind == NodeKind.Return || node.kind == NodeKind.Try || node.kind == NodeKind.Break ||
+        node.kind == NodeKind.Continue || node.kind == NodeKind.Await { return true }
+    var index = 0
+    while index < length(node.children) {
+        if pending_resource_exit(child(node, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+
+// Register each completed resource field before evaluating the next field.
+// Successful construction transfers all fields into the result, deactivates
+// the guards and pops their registrations. Faults leave the earlier guards
+// active, so the normal fault drain disposes each completed field.
+fn pending_record(context Context, node Node, ty Int, fields List[Expr]) Result[Expr, Failure] {
+    let body = new[Expr]()
+    let rebuilt = new[Expr]()
+    let flags = new[Int]()
+    let cleanups = new[Int]()
+    var active = false
+    var index = 0
+    while index < length(fields) {
+        let field = get(fields, index)
+        let source = child(node, index + 1)
+        if active && pending_resource_exit(source) {
+            return Result.Err(error(context, source, "a resource field cannot precede return, ?, loop exit or await during aggregate construction"))
+        }
+        let value = get(field.children, 0)
+        let resource = must_scope(context, field.ty)?
+        if resource && (resource_concept(context.env, "Dispose") < 0 ||
+            !satisfies(context, field.ty, resource_concept(context.env, "Dispose"))?) {
+            return Result.Err(error(context, source, "a resource field must implement std.resource.Dispose"))
+        }
+        if resource {
+            let kind = get(context.env.types, field.ty).kind
+            if kind != TypeKind.Record && kind != TypeKind.Enum && kind != TypeKind.Refined {
+                return Result.Err(error(context, source, "pending cleanup requires a concrete resource field"))
+            }
+            let descendants = new[Text]()
+            discard scope_collect(context, source, field.ty, "", resource_concept(context.env, "Dispose"), descendants, 0)?
+            if length(descendants) != 1 {
+                return Result.Err(error(context, source, "pending cleanup of a nested resource field is not yet supported"))
+            }
+        }
+        let local = length(context.locals)
+        push(context.locals, Local { name = "" ty = field.ty mutable = false is_scoped = resource })
+        push(body, expression(ExprKind.Let, 0, source, "", local, expressions(value), value.falls))
+        push(rebuilt, expression(ExprKind.Field, field.ty, source, "", field.index,
+            expressions(atom(ExprKind.Local, field.ty, source, local)), true))
+        if resource {
+            let flag = length(context.locals)
+            push(context.locals, Local { name = "" ty = 2 mutable = true is_scoped = false })
+            push(body, expression(ExprKind.Let, 0, source, "", flag,
+                expressions(expression(ExprKind.Bool, 2, source, "true", -1, new[Expr](), true)), true))
+            let receiver = atom(ExprKind.Local, field.ty, source, local)
+            let dispose = method_call_checked(context, source, source, receiver, "dispose", new[Node](),
+                plain_inputs(new[Node]()), resource_concept(context.env, "Dispose"), 0)?
+            let dispose_body = expression(ExprKind.Block, 0, source, "", -1, expressions(dispose), true)
+            let guarded = expression(ExprKind.If, 0, source, "", -1,
+                pair(atom(ExprKind.Local, 2, source, flag), dispose_body), true)
+            let cleanup = expression(ExprKind.Block, 0, source, "", -1, expressions(guarded), true)
+            let head = length(context.cleanups)
+            push(context.cleanups, Cleanup { body = cleanup previous = if length(cleanups) == 0 { context.cleanup_head } else { get(cleanups, length(cleanups) - 1) } })
+            push(body, expression(ExprKind.Defer, 0, source, "resource-pending", head, expressions(cleanup), true))
+            push(flags, flag)
+            push(cleanups, head)
+            active = true
+        }
+        index = index + 1
+    }
+    let aggregate_local = length(context.locals)
+    push(context.locals, Local { name = "" ty = ty mutable = false is_scoped = false })
+    let assembled = expression(ExprKind.Record, ty, node, "resource-pending-transfer", -1, rebuilt, true)
+    push(body, expression(ExprKind.Let, 0, node, "", aggregate_local, expressions(assembled), true))
+    index = 0
+    while index < length(flags) {
+        push(body, expression(ExprKind.Assign, 0, node, "", get(flags, index),
+            expressions(expression(ExprKind.Bool, 2, node, "false", -1, new[Expr](), true)), true))
+        index = index + 1
+    }
+    index = length(cleanups)
+    while index > 0 {
+        index = index - 1
+        let head = get(cleanups, index)
+        push(body, expression(ExprKind.Cleanup, 0, node, "resource-disarm", head,
+            expressions(get(context.cleanups, head).body), true))
+    }
+    push(body, atom(ExprKind.Local, ty, node, aggregate_local))
+    Result.Ok(expression(ExprKind.Block, ty, node, "", -1, body, all_fall(body)))
+}
+
 fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
     let declaration = find_data(context.env, context.signature.symbol, node, node.value)?
     if declaration < 0 { return Result.Err(error(context, node, "unknown record type")) }
@@ -100,7 +194,21 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
         set(fields, index, expression(ExprKind.Field, target, member, "", field.index, expressions(value), value.falls))
         index = index + 1
     }
-    Result.Ok(expression(ExprKind.Record, constructed_type(context, declaration, arguments, node)?, node, "", -1, fields, all_fall(fields)))
+    let ty = constructed_type(context, declaration, arguments, node)?
+    var resources = 0
+    var last = -1
+    index = 0
+    while index < length(fields) {
+        if must_scope(context, get(fields, index).ty)? {
+            resources = resources + 1
+            last = index
+        }
+        index = index + 1
+    }
+    if resources > 1 || (resources == 1 && last + 1 != length(fields)) {
+        return pending_record(context, node, ty, fields)
+    }
+    Result.Ok(expression(ExprKind.Record, ty, node, "", -1, fields, all_fall(fields)))
 }
 fn variant(context Context, node Node, types List[Node], inputs CallInputs, expected Int) Result[Expr, Failure] {
     let declaration = find_data(context.env, context.signature.symbol, node, package(node.value))?

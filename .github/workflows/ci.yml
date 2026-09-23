@@ -54,6 +54,22 @@ jobs:
           target/loom fmt --check --recursive compiler/examples
           cargo test --locked --workspace
 
+      - name: Core experience source trials
+        run: |
+          target/loom test compiler/std/loom/checking
+          target/loom test compiler/std/task
+          target/loom run compiler/examples/contracts
+          target/loom test compiler/examples/record_contracts
+          target/loom test compiler/examples/concept_contracts
+          target/loom test compiler/examples/dyn_adapter
+          target/loom run compiler/examples/dyn_adapter
+          target/loom test compiler/examples/cleanup
+          target/loom test tools/semantic_change
+          target/loom test tools/deployment
+          migration_dir="$(mktemp -d "$RUNNER_TEMP/loom-migration.XXXXXX")"
+          target/loom run tools/deployment/sqlite_migration_trial -- \
+            "$migration_dir/success.sqlite" "$migration_dir/failure.sqlite"
+
       - name: Editor protocol and real compiler smoke
         working-directory: editors/vscode
         run: |

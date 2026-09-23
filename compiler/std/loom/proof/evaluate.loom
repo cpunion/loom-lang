@@ -2,6 +2,9 @@ import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.list.get
 import std.list.length
+import std.list.new
+import std.list.push
+import std.list.set
 import std.result.Result
 
 fn boolean(value Value) Result[Predicate, Text] {
@@ -72,6 +75,33 @@ fn pure(expr Expr, state State) Result[Value, Text] {
     if expr.kind == ExprKind.Bool { return Result.Ok(Value.Boolean(Predicate.Constant(expr.text == "true"))) }
     if expr.kind == ExprKind.Local { return Result.Ok(get(state.locals, expr.index)) }
     if expr.kind == ExprKind.Coerce { return pure(get(expr.children, 0), state) }
+    if expr.kind == ExprKind.Field {
+        match pure(get(expr.children, 0), state)? {
+            Value.Record(fields) => {
+                if expr.index < 0 || expr.index >= length(fields) { return Result.Err("invalid proof record field") }
+                return Result.Ok(get(fields, expr.index))
+            }
+            _ => { return Result.Err("field proof requires a scalar record") }
+        }
+    }
+    if expr.kind == ExprKind.Record {
+        let fields = new[Value]()
+        var index = 0
+        while index < length(expr.children) {
+            push(fields, Value.Empty)
+            index = index + 1
+        }
+        index = 0
+        while index < length(expr.children) {
+            let field = get(expr.children, index)
+            if field.kind != ExprKind.Field || field.index < 0 || field.index >= length(fields) {
+                return Result.Err("invalid proof record initializer")
+            }
+            set(fields, field.index, pure(get(field.children, 0), state)?)
+            index = index + 1
+        }
+        return Result.Ok(Value.Record(fields))
+    }
     if expr.kind == ExprKind.Unary { return unary(expr.text, pure(get(expr.children, 0), state)?) }
     if expr.kind == ExprKind.Binary {
         let left = pure(get(expr.children, 0), state)?
@@ -101,8 +131,15 @@ fn bounded(value Value, state State) State {
 // unlike body arithmetic, never assume a hypothetical overflow check passed.
 fn defined(expr Expr, state State) Result[Bool, Text] {
     if holds(Predicate.Constant(false), state.facts) { return Result.Ok(true) }
-    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce {
+    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || expr.kind == ExprKind.Field {
         discard defined(get(expr.children, 0), state)?
+    }
+    if expr.kind == ExprKind.Record {
+        var index = 0
+        while index < length(expr.children) {
+            discard defined(get(expr.children, index), state)?
+            index = index + 1
+        }
     }
     if expr.kind == ExprKind.Binary {
         let left = get(expr.children, 0)

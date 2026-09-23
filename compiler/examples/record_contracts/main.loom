@@ -1,0 +1,63 @@
+record Snapshot {
+    count Int
+    active Bool
+}
+
+record Envelope {
+    count Int
+    values List[Int]
+}
+
+record Nested {
+    inner Envelope
+    active Bool
+}
+
+fn copy_snapshot(value Snapshot) Snapshot
+requires value.count >= 0 && value.active
+ensures result.count == value.count
+ensures result.active == value.active
+{
+    Snapshot {
+        active = value.active
+        count = value.count
+    }
+}
+
+fn preserve_count(value Envelope) Envelope
+ensures result.count == value.count
+{
+    value
+}
+
+fn preserve_nested(value Nested) Nested
+ensures result.inner.count == value.inner.count
+ensures result.active == value.active
+{
+    value
+}
+
+fn main() {
+    let snapshot = copy_snapshot(Snapshot {
+            count = 3
+            active = true
+        })
+    assert snapshot.count == 3 && snapshot.active
+    let values = [1]
+    let envelope = preserve_count(Envelope {
+            count = 1
+            values = values
+        })
+    values[0] = 9
+    assert envelope.count == 1 && envelope.values[0] == 9
+    let nested_values = [2]
+    let nested = preserve_nested(Nested {
+            inner = Envelope {
+                count = 2
+                values = nested_values
+            }
+            active = true
+        })
+    nested_values[0] = 8
+    assert nested.inner.count == 2 && nested.inner.values[0] == 8 && nested.active
+}

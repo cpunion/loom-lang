@@ -10,6 +10,12 @@ async fn delayed(value Int, delay Int) Int {
     value
 }
 
+async fn fail_after(delay Int) Int {
+    sleep_ms(delay).await
+    assert false
+    0
+}
+
 async fn quick_child() Task[Int] {
     delayed(7, 0)
 }
@@ -43,6 +49,85 @@ test async fn list_all_and_settled_preserve_input_order_and_empty_inputs() {
             assert false
         }
     }
+}
+
+test async fn tuple_all_and_settled_keep_distinct_result_types_and_input_order() {
+    let number, text = all((delayed(3, 3), successful())).await
+    assert number == 3 && text == "typed result"
+    let left, right = settled((failed(), successful())).await
+    match left {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert completed(right) == "typed result"
+
+    let later, earlier = settled((delayed(4, 3), successful())).await
+    assert completed(later) == 4 && completed(earlier) == "typed result"
+    let first, second = all((successful(), delayed(5, 3))).await
+    assert first == "typed result" && second == 5
+}
+
+test async fn tuple_all_cancels_and_drains_after_an_out_of_order_failure() {
+    let events = ["begin"]
+    match outcome(all((pending_number(events), failed()))).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert events[1] == "started" && events[2] == "cleaned"
+
+    let first_events = ["begin"]
+    match outcome(all((fail_after(2), pending_number(first_events)))).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert first_events[1] == "started" && first_events[2] == "cleaned"
+
+    let cleanup_events = ["begin"]
+    match outcome(all((fail_after(2), cleanup_failure(cleanup_events)))).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert cleanup_events[1] == "remaining cleanup"
+}
+
+test async fn tuple_all_preserves_nested_task_obligations() {
+    let left, right = all((nested(), nested())).await
+    assert left.await == "typed result"
+    assert right.await == "typed result"
+    let _, number = all((sleep_ms(0), delayed(9, 1))).await
+    assert number == 9
+
+    let events = ["begin"]
+    match outcome(all((returned_pending(events), fail_after(5)))).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        Outcome.Completed(pair) => {
+            let child, _ = pair
+            discard child.await
+            assert false
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert events[1] == "started" && events[2] == "cleaned"
 }
 
 test async fn no_result_tasks_work_in_every_list_policy_without_source_unit() {

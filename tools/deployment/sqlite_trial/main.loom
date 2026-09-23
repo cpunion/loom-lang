@@ -1,0 +1,42 @@
+import deployment.prepare
+import deployment.register
+import deployment.start_attempt
+import deployment.note_failure
+import deployment.current
+import deployment.FailurePolicy
+import deployment.BasisEvidence
+import std.list.get
+import std.list.length
+import std.process.arguments
+import std.result.Result
+
+fn recorded_roundtrip(database Text) Result[Bool, Text] {
+    let target = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    let attempt = prepare("upgrade_2", "", target, FailurePolicy.Rollback)?
+    discard register("/usr/bin/sqlite3", database, attempt)?
+    discard start_attempt("/usr/bin/sqlite3", database, "upgrade_2")?
+    let other = prepare("upgrade_3", "", target, FailurePolicy.Stop)?
+    assert match register("/usr/bin/sqlite3", database, other) {
+        Result.Err(_) => true,
+        _ => false
+    }
+    discard note_failure("/usr/bin/sqlite3", database, "upgrade_2")?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.None => true,
+        _ => false
+    }
+    Result.Ok(true)
+}
+
+fn main() {
+    let args = arguments()
+    if length(args) == 2 {
+        match recorded_roundtrip(get(args, 1)) {
+            Result.Ok(_) => {
+            }
+            Result.Err(_) => {
+                assert false
+            }
+        }
+    }
+}

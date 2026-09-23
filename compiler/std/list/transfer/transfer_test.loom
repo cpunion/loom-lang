@@ -71,13 +71,13 @@ test fn compile_time_removal_reifies_only_live_elements_and_preserves_aliases() 
 fn replaced() (Text, List[Text], List[Text]) {
     let values = [concat("old", " value"), "untouched"]
     let alias = values
-    let old, updated = replace(values, 0, concat("new", " value"))
-    (old, updated, alias)
+    let previous, updated = replace(values, 0, concat("new", " value"))
+    (previous, updated, alias)
 }
 
 test fn replacement_preserves_the_displaced_value_and_shared_header() {
-    let old, updated, alias = replaced()
-    assert old == "old value" && updated[0] == "new value"
+    let previous, updated, alias = replaced()
+    assert previous == "old value" && updated[0] == "new value"
     assert length(updated) == 2 && alias[0] == "new value" && alias[1] == "untouched"
     let before, after, shared = comptime {
         replaced()

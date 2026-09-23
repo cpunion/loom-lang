@@ -1,0 +1,148 @@
+import std.int.to_text
+import std.option.Option
+import std.result.Result
+import std.text.concat
+
+fn trigger_present(name Text, table Text, definition Text) Text {
+    concat("EXISTS (SELECT 1 FROM main.sqlite_master WHERE type='trigger' AND name=",
+        concat(literal(name), concat(" AND tbl_name=", concat(literal(table),
+                    concat(" AND sql=", concat(literal(definition), ")"))))))
+}
+
+// Only reverses this package's fixed positive-amount upgrade. The notes and
+// archive tables are retained so downgrade never drops newly created data.
+// An amount changed by v2 is not overwritten by an older archived zero.
+pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, to Schema,
+    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade) Result[Attempt, Text] {
+    if !valid_plan(plan) {
+        return Result.Err("invalid SQLite downgrade plan")
+    }
+    discard exact_catalog(from, to, catalog, plan)?
+    let previous = match latest(tool, database)? {
+        Option.Some(value) => value,
+        Option.None => {
+            return Result.Err("deployment attempt is not registered")
+        }
+    }
+    if previous.attempt.id != plan.attempt_id || previous.attempt.from_basis != plan.from_basis ||
+    previous.attempt.to_basis != plan.to_basis || previous.attempt.policy != FailurePolicy.Stop {
+        return Result.Err("SQLite downgrade does not match the deployed attempt")
+    }
+    if previous.attempt.state == DeploymentState.Complete || previous.attempt.state == DeploymentState.RollbackFailed {
+        discard record_event(tool, database, plan.attempt_id, Transition.BeginRollback)?
+    } else {
+        if previous.attempt.state != DeploymentState.RollbackStarted {
+            return Result.Err("SQLite downgrade requires a completed or started rollback")
+        }
+    }
+    let started = match latest(tool, database)? {
+        Option.Some(value) => value,
+        Option.None => {
+            return Result.Err("rollback attempt disappeared")
+        }
+    }
+    if started.attempt.id != plan.attempt_id || started.attempt.state != DeploymentState.RollbackStarted {
+        return Result.Err("rollback attempt changed")
+    }
+    let completed = advance(started.attempt, Transition.FinishRollback)?
+    let orders = quoted(plan.orders)
+    let key = quoted(plan.order_id)
+    let amount = quoted(plan.amount)
+    let archive = quoted(plan.archive)
+
+    var script = "PRAGMA foreign_keys=ON;\nPRAGMA ignore_check_constraints=OFF;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_migration_checks(ok INTEGER NOT NULL CHECK(ok=1));\n"
+    var current_event = concat("(SELECT max(sequence) FROM loom_deploy_events)=", to_text(started.sequence))
+    current_event = concat(current_event,
+        concat(" AND EXISTS (SELECT 1 FROM loom_deploy_events WHERE sequence=", to_text(started.sequence)))
+    current_event = concat(current_event, concat(" AND attempt_id=", literal(plan.attempt_id)))
+    current_event = concat(current_event, concat(" AND from_basis=", literal(plan.from_basis)))
+    current_event = concat(current_event, concat(" AND to_basis=", literal(plan.to_basis)))
+    current_event = concat(current_event,
+        concat(" AND policy=", to_text(policy_number(started.attempt.policy))))
+    current_event = concat(current_event,
+        concat(" AND state=", concat(to_text(state_number(DeploymentState.RollbackStarted)), ")")))
+    script = concat(script, checked(current_event))
+    script = concat(script, checked(exact_table(plan.orders, source_ddl(plan))))
+    script = concat(script, checked(exact_table(plan.archive, archive_ddl(plan))))
+    script = concat(script, checked(exact_table(plan.notes, notes_ddl(plan))))
+    script = concat(script, checked("(SELECT count(*) FROM main.sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*')=4"))
+    script = concat(script, checked(concat("(SELECT count(*) FROM pragma_table_info(",
+                concat(literal(plan.orders), "))=2"))))
+    script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM pragma_foreign_key_list(",
+                concat(literal(plan.orders), "))"))))
+    script = concat(script, checked(integer_key(plan.orders, plan.order_id)))
+    script = concat(script, checked(required_integer(plan.orders, plan.amount)))
+    script = concat(script, checked(integer_key(plan.archive, "entity_id")))
+    script = concat(script, checked(required_integer(plan.archive, "original_amount")))
+    script = concat(script, checked(required_integer(plan.archive, "restorable")))
+    script = concat(script, checked(integer_key(plan.notes, plan.note_id)))
+    script = concat(script, checked(required_text(plan.notes, plan.note_body)))
+    script = concat(script, checked(concat("(SELECT count(*) FROM pragma_table_info(",
+                concat(literal(plan.archive), "))=3"))))
+    script = concat(script, checked(concat("(SELECT count(*) FROM pragma_table_info(",
+                concat(literal(plan.notes), "))=2"))))
+    script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM pragma_foreign_key_list(",
+                concat(literal(plan.archive), "))"))))
+    script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM pragma_foreign_key_list(",
+                concat(literal(plan.notes), "))"))))
+    script = concat(script, checked("(SELECT count(*) FROM main.sqlite_master WHERE type='trigger')=6"))
+    script = concat(script, checked("NOT EXISTS (SELECT 1 FROM main.sqlite_master WHERE type='index')"))
+    var trigger_index = 0
+    while trigger_index < 6 {
+        script = concat(script, checked(trigger_present(trigger_name(trigger_index),
+                        plan.orders, trigger_sql(plan, trigger_index))))
+        trigger_index = trigger_index + 1
+    }
+    let positive = concat("NOT EXISTS (SELECT 1 FROM ",
+        concat(orders, concat(" WHERE typeof(", concat(amount,
+                    concat(")!='integer' OR ", concat(amount, "<=0)"))))))
+    script = concat(script, checked(positive))
+    script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM ",
+                concat(archive, " WHERE typeof(original_amount)!='integer' OR original_amount!=0 OR typeof(restorable)!='integer' OR restorable NOT IN (0,1))"))))
+    script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM ",
+                concat(quoted(plan.notes), concat(" WHERE typeof(",
+                        concat(quoted(plan.note_body), ")!='text')"))))))
+    var untouched = concat("NOT EXISTS (SELECT 1 FROM ", concat(archive, " WHERE restorable=1 AND NOT EXISTS (SELECT 1 FROM "))
+    untouched = concat(untouched, orders)
+    untouched = concat(untouched, concat(" WHERE ", concat(orders, concat(".", key))))
+    untouched = concat(untouched, concat("=", concat(archive, ".entity_id AND ")))
+    untouched = concat(untouched, concat(orders, concat(".", amount)))
+    untouched = concat(untouched, concat("=", concat(to_text(plan.replacement), ")")))
+    script = concat(script, checked(concat(untouched, ")")))
+
+    script = concat(script, "DROP TRIGGER loom_positive_insert;\nDROP TRIGGER loom_positive_update;\n")
+    script = concat(script, "DROP TRIGGER loom_archive_amount_update;\nDROP TRIGGER loom_archive_key_update;\nDROP TRIGGER loom_archive_delete;\nDROP TRIGGER loom_archive_insert;\n")
+    var restore = concat("UPDATE ", concat(orders, concat(" SET ", concat(amount, "=0 WHERE EXISTS (SELECT 1 FROM "))))
+    restore = concat(restore, archive)
+    restore = concat(restore, concat(" WHERE entity_id=", concat(orders, concat(".", key))))
+    restore = concat(restore, concat(" AND restorable=1 AND original_amount=0 AND ", concat(orders, concat(".", amount))))
+    restore = concat(restore, concat("=", concat(to_text(plan.replacement), ");\n")))
+    script = concat(script, restore)
+    let nonnegative = concat("NOT EXISTS (SELECT 1 FROM ",
+        concat(orders, concat(" WHERE typeof(", concat(amount,
+                    concat(")!='integer' OR ", concat(amount, "<0)"))))))
+    script = concat(script, checked(nonnegative))
+    var event = "INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) SELECT "
+    event = concat(event, literal(plan.attempt_id))
+    event = concat(event, ",")
+    event = concat(event, literal(plan.from_basis))
+    event = concat(event, ",")
+    event = concat(event, literal(plan.to_basis))
+    event = concat(event, ",")
+    event = concat(event, to_text(policy_number(completed.policy)))
+    event = concat(event, concat(",", to_text(state_number(completed.state))))
+    event = concat(event, " WHERE (SELECT max(sequence) FROM loom_deploy_events)=")
+    event = concat(event, to_text(started.sequence))
+    script = concat(script, concat(event, ";\n"))
+    script = concat(script, checked("changes()=1"))
+    script = concat(script, "COMMIT;\n")
+    match execute(tool, database, script) {
+        Result.Ok(_) => Result.Ok(completed),
+        Result.Err(_) => {
+            match record_event(tool, database, plan.attempt_id, Transition.FailRollback) {
+                Result.Ok(_) => Result.Err("SQLite downgrade failed and was recorded as failed"),
+                Result.Err(_) => Result.Err("SQLite downgrade outcome needs inspection")
+            }
+        }
+    }
+}

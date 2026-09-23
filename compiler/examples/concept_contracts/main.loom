@@ -1,0 +1,59 @@
+fn is_positive(value Int) Bool {
+    value > 0
+}
+
+concept Positive {
+    fn preserve(self Self, value Int) Int
+    requires value > 0
+    ensures result > 0
+    fn echo(self Self, value Int) Int
+    requires value > 0
+    ensures result > 0 {
+        value
+    }
+    fn guarded(self Self, value Int) Int
+    requires is_positive(value)
+    ensures is_positive(result)
+}
+
+impl Positive for Int {
+    fn preserve(receiver Int, input Int) Int {
+        input
+    }
+    fn guarded(receiver Int, input Int) Int {
+        input
+    }
+}
+
+record Parcel {
+    label Text
+}
+
+impl Positive for Parcel {
+    fn preserve(receiver Parcel, input Int) Int {
+        input
+    }
+    fn guarded(receiver Parcel, input Int) Int {
+        input
+    }
+}
+
+test fn concept_contracts() {
+    assert 1.preserve(3) == 3
+    assert 1.echo(4) == 4
+    let erased dyn Positive = Parcel {
+        label = "ok"
+    }
+    assert erased.preserve(5) == 5
+    assert erased.echo(6) == 6
+    assert erased.guarded(7) == 7
+}
+
+fn main() {
+    let erased dyn Positive = Parcel {
+        label = "ok"
+    }
+    assert erased.preserve(7) == 7
+    assert erased.echo(8) == 8
+    assert erased.guarded(9) == 9
+}

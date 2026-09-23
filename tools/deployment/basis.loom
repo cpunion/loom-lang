@@ -1,0 +1,129 @@
+import std.bytes.new
+import std.bytes.push
+import std.hash.sha256.hex
+import std.int.to_text
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+import std.result.Result
+import std.text.byte
+import std.text.length
+
+fn text_part(output Bytes, value Text) {
+    let size = to_text(std.text.length(value))
+    var index = 0
+    while index < std.text.length(size) {
+        push(output, byte(size, index))
+        index = index + 1
+    }
+    push(output, 58)
+    index = 0
+    while index < std.text.length(value) {
+        push(output, byte(value, index))
+        index = index + 1
+    }
+}
+
+fn number_part(output Bytes, value Int) {
+    text_part(output, to_text(value))
+}
+
+fn kind_number(kind StorageType) Int {
+    match kind {
+        StorageType.Bool => 0,
+        StorageType.Int => 1,
+        StorageType.Float => 2,
+        StorageType.Text => 3,
+        StorageType.Bytes => 4
+    }
+}
+
+fn snapshot_tables(tables List[Table]) List[Table] {
+    let copied = std.list.new[Table]()
+    var table_index = 0
+    while table_index < length(tables) {
+        let table = get(tables, table_index)
+        let fields = std.list.new[Column]()
+        var column_index = 0
+        while column_index < length(table.columns) {
+            std.list.push(fields, get(table.columns, column_index))
+            column_index = column_index + 1
+        }
+        std.list.push(copied, Table {
+                id = table.id
+                name = table.name
+                columns = fields
+            })
+        table_index = table_index + 1
+    }
+    copied
+}
+
+// The basis includes the checked program, resolved dependency lock, target and
+// native toolchain, plus the complete ordered storage mapping. Every variable
+// length part has a length prefix, so adjacent fields cannot alias each other.
+// Callers must supply real content digests for the non-schema inputs.
+pub fn basis_for(schema Schema, checked Text, lock Text, target Text, native_tool Text) Result[Text, Text] {
+    discard validate(Schema {
+            basis = "pending"
+            tables = schema.tables
+        })?
+    if checked == "" || lock == "" || target == "" || native_tool == "" {
+        return Result.Err("deployment basis needs checked source, lock, target and native tool")
+    }
+    let output = new()
+    text_part(output, "loom-deployment-basis-v1")
+    text_part(output, checked)
+    text_part(output, lock)
+    text_part(output, target)
+    text_part(output, native_tool)
+    number_part(output, length(schema.tables))
+    var table_index = 0
+    while table_index < length(schema.tables) {
+        let table = get(schema.tables, table_index)
+        text_part(output, table.id)
+        text_part(output, table.name)
+        number_part(output, length(table.columns))
+        var column_index = 0
+        while column_index < length(table.columns) {
+            let column = get(table.columns, column_index)
+            text_part(output, column.id)
+            text_part(output, column.name)
+            number_part(output, kind_number(column.kind))
+            number_part(output, if column.required {
+                    1
+                } else {
+                    0
+                })
+            text_part(output, column.predicate)
+            column_index = column_index + 1
+        }
+        table_index = table_index + 1
+    }
+    Result.Ok(hex(output))
+}
+
+// Use this before comparing or registering a deployment. An existing, different
+// basis cannot be silently rebound to another checked program or mapping.
+pub fn bind_basis(schema Schema, checked Text, lock Text, target Text, native_tool Text) Result[Schema, Text] {
+    let frozen = Schema {
+        basis = schema.basis
+        tables = snapshot_tables(schema.tables)
+    }
+    let computed = basis_for(frozen, checked, lock, target, native_tool)?
+    if schema.basis != "" && schema.basis != computed {
+        return Result.Err("declared deployment basis differs from checked inputs")
+    }
+    Result.Ok(Schema {
+            basis = computed
+            tables = frozen.tables
+        })
+}
+
+pub fn verify_basis(schema Schema, checked Text, lock Text, target Text, native_tool Text) Result[Bool, Text] {
+    if schema.basis == "" || schema.basis != basis_for(schema, checked, lock, target, native_tool)? {
+        return Result.Err("declared deployment basis differs from checked inputs")
+    }
+    Result.Ok(true)
+}

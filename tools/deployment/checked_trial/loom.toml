@@ -1,0 +1,5 @@
+[module]
+name = "checked_trial"
+
+[dependencies.deployment]
+path = ".."

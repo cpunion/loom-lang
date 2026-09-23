@@ -1,0 +1,30 @@
+test fn copy_snapshot_preserves_scalar_fields() {
+    let snapshot = copy_snapshot(Snapshot {
+            count = 7
+            active = true
+        })
+    assert snapshot.count == 7 && snapshot.active
+}
+
+test fn record_contract_does_not_break_list_sharing() {
+    let values = [1]
+    let envelope = preserve_count(Envelope {
+            count = 1
+            values = values
+        })
+    values[0] = 9
+    assert envelope.count == 1 && envelope.values[0] == 9
+}
+
+test fn nested_record_contract_preserves_scalar_leaf_and_shared_list() {
+    let values = [2]
+    let nested = preserve_nested(Nested {
+            inner = Envelope {
+                count = 2
+                values = values
+            }
+            active = true
+        })
+    values[0] = 8
+    assert nested.inner.count == 2 && nested.inner.values[0] == 8 && nested.active
+}

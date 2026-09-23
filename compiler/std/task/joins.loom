@@ -55,6 +55,59 @@ pub async fn all[T](tasks List[Task[T]]) List[T] {
     }
 }
 
+// A tuple retains the element types rather than erasing them into a List.
+// Observe both children before suspending so a later-position failure can
+// cancel a slow first child instead of waiting for input order.
+pub async fn all[A, B](tasks (Task[A], Task[B])) (A, B) {
+    let left, right = tasks
+    let first_task = task_observe(left, 0)
+    let second_task = task_observe(right, 1)
+    if task_next().await == 0 {
+        match task_outcome(first_task).await {
+            Outcome.Completed(value) => {
+                assert task_next().await == 1
+                return (value, completed(task_outcome(second_task).await))
+            }
+            Outcome.Faulted(error) => {
+                task_drain(second_task, true)
+                fault_text(error.message)
+            }
+            Outcome.Cancelled => {
+                task_drain(second_task, false)
+                fault_text("task was cancelled")
+            }
+        }
+    }
+    match task_outcome(second_task).await {
+        Outcome.Completed(value) => {
+            assert task_next().await == 0
+            (completed(task_outcome(first_task).await), value)
+        }
+        Outcome.Faulted(error) => {
+            task_drain(first_task, true)
+            fault_text(error.message)
+        }
+        Outcome.Cancelled => {
+            task_drain(first_task, false)
+            fault_text("task was cancelled")
+        }
+    }
+}
+
+pub async fn settled[A, B](tasks (Task[A], Task[B])) (Outcome[A], Outcome[B]) {
+    let left, right = tasks
+    let first_task = task_observe(left, 0)
+    let second_task = task_observe(right, 1)
+    if task_next().await == 0 {
+        let first = task_outcome(first_task).await
+        assert task_next().await == 1
+        return (first, task_outcome(second_task).await)
+    }
+    let second = task_outcome(second_task).await
+    assert task_next().await == 0
+    (task_outcome(first_task).await, second)
+}
+
 async fn first[T](tasks List[Task[T]], success_only Bool) Outcome[T] {
     let batch = watch(tasks)
     var pending = batch.slots

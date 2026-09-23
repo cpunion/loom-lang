@@ -1,0 +1,4 @@
+fn amount() Int {
+    // amount may be revised independently of the move
+    2
+}

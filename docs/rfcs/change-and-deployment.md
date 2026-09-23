@@ -2,10 +2,15 @@
 
 Status: Accepted direction — 2026-09-06
 
-This is design direction, not implemented features or CLI grammar.
+This is the accepted target, not a claim that every workflow is implemented.
 It complements [Language foundation](language-foundation.md); the
 [roadmap](../../ROADMAP.md) sets implementation order. These acceptance stories
 do not require a new version-control or deployment control plane.
+
+The current prototypes are a [read-only semantic merge preview](../../tools/semantic_change_trial/README.md)
+and a [bounded offline SQLite migration trial](../../tools/deployment/sqlite_migration_trial/README.md).
+They do not yet provide automatic identity tracking, application of a merge,
+general migration packages, or artifact-bound deployment proof.
 
 ## Story 1: Evolve a library without hiding dependency changes
 

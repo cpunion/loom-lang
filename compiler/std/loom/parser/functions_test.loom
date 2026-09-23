@@ -61,3 +61,14 @@ test fn compile_time_parameters_preserve_types_spans_and_ordinary_calls() {
     discard rejected("fn f(comptime comptime count Int) {}")
     discard rejected("fn f(comptime count) {}")
 }
+
+test fn old_entry_expression_has_a_distinct_source_node() {
+    let tree = parsed("fn keep(value Int) Int ensures result == old(value) { value }")
+    let predicate = child(child(child(tree, 0), 3), 0)
+    assert predicate.kind == NodeKind.Binary
+    assert child(predicate, 1).kind == NodeKind.Old
+    assert child(child(predicate, 1), 0).value == "value"
+    discard rejected("fn f(x Int) Int ensures result == old() { x }")
+    discard rejected("fn f(x Int) Int ensures result == old(x, x) { x }")
+    discard rejected("fn old(x Int) Int { x }")
+}

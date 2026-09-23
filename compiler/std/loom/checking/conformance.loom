@@ -72,7 +72,7 @@ fn admit(env Environment, owner Int, obligations List[Requirement], ty Int, capa
     // prerequisite evidence was checked there, not rediscovered in this scope.
     if entailed(env, obligations, ty, capability) { return concrete_methods(env, owner, ty, capability) }
     if get(env.types, ty).kind == TypeKind.Dyn {
-        return Result.Ok(get(env.interfaces, get(env.types, ty).symbol).symbol == capability)
+        if get(env.interfaces, get(env.types, ty).symbol).symbol == capability { return Result.Ok(true) }
     }
     if get(env.types, ty).kind == TypeKind.Parameter || get(env.types, ty).kind == TypeKind.Associated {
         return promised(env, owner, obligations, ty, capability)

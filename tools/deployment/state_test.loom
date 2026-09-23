@@ -1,0 +1,66 @@
+import std.result.Result
+
+fn prepared(policy FailurePolicy) Attempt {
+    match prepare("upgrade-2", "checked-v1", "checked-v2", policy) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            Attempt {
+                id = ""
+                from_basis = ""
+                to_basis = ""
+                policy = policy
+                state = DeploymentState.NotDeployed
+            }
+        }
+    }
+}
+
+fn moved(attempt Attempt, event Transition) Attempt {
+    match advance(attempt, event) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            attempt
+        }
+    }
+}
+
+test fn failed_deploy_and_rollback_do_not_pretend_completion() {
+    let started = moved(prepared(FailurePolicy.Rollback), Transition.Begin)
+    assert match effective(started) {
+        BasisEvidence.None => true,
+        _ => false
+    }
+    let failed = moved(started, Transition.Fail)
+    assert match effective(failed) {
+        BasisEvidence.None => true,
+        _ => false
+    }
+    assert match advance(failed, Transition.Resume) {
+        Result.Err(_) => true,
+        _ => false
+    }
+    let rollback = moved(failed, Transition.BeginRollback)
+    assert match effective(rollback) {
+        BasisEvidence.None => true,
+        _ => false
+    }
+    let complete = moved(rollback, Transition.FinishRollback)
+    assert match effective(complete) {
+        BasisEvidence.Observed(basis) => basis == "checked-v1",
+        _ => false
+    }
+}
+
+test fn assumed_completion_never_becomes_observed_evidence() {
+    let assumed = moved(prepared(FailurePolicy.Stop), Transition.AssumeComplete)
+    assert match effective(assumed) {
+        BasisEvidence.Assumed(basis) => basis == "checked-v2",
+        _ => false
+    }
+    assert match advance(assumed, Transition.Finish) {
+        Result.Err(_) => true,
+        _ => false
+    }
+}

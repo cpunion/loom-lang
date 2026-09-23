@@ -15,7 +15,7 @@ enum Predicate {
     And(List[Predicate])
     Or(List[Predicate])
 }
-enum Value { Number(Linear) Boolean(Predicate) Empty }
+enum Value { Number(Linear) Boolean(Predicate) Record(List[Value]) Empty }
 record State { locals List[Value] facts List[Predicate] }
 record Outcome { state State value Value }
 record Bounds { low Number high Number }

@@ -1,0 +1,42 @@
+test fn concept_contracts_bind_declared_names_and_check_every_override() {
+    let declarations = "concept Positive { fn preserve(self Self, value Int) Int requires value > 0 ensures result > 0 }\n"
+    discard accepted(concat(declarations,
+            "impl Positive for Int { fn preserve(receiver Int, input Int) Int { input } }\nrecord Parcel { label Text }\nimpl Positive for Parcel { fn preserve(receiver Parcel, input Int) Int { input } }\nfn main() { assert 1.preserve(4) == 4\nlet erased dyn Positive = 2\nassert erased.preserve(5) == 5\nlet other dyn Positive = Parcel { label = \"ok\" }\nassert other.preserve(6) == 6 }"))
+    rejects(concat(declarations,
+            "impl Positive for Int { fn preserve(receiver Int, input Int) Int { 0 } }"))
+    rejects(concat(declarations,
+            "impl Positive for Int { fn preserve(receiver Int, input Int) Int requires input > 0 { input } }"))
+    discard accepted("concept C { fn keep[T](self Self, value Int) Int requires value > 0 ensures result > 0 }\nimpl C for Int { fn keep[U](receiver Int, input Int) Int { input } }\nfn main() { assert 1.keep[Bool](2) == 2 }")
+    discard accepted("fn positive[T](value Int) Bool { value > 0 }\nconcept C { fn keep[T](self Self, value Int) Int requires positive[T](value) ensures positive[T](result) }\nimpl C for Int { fn keep[U](receiver Int, input Int) Int { input } }\nfn main() { assert 1.keep[Bool](2) == 2 }")
+}
+
+test fn concept_contracts_validate_declarations_and_defaults() {
+    discard accepted("concept Positive { fn preserve(self Self, value Int) Int requires value > 0 ensures result > 0 { value } }\nimpl Positive for Int {}\nfn main() { assert 1.preserve(3) == 3 }")
+    rejects("concept C { fn value(self Self) Int requires unknown > 0 }\nimpl C for Int { fn value(self Int) Int { 1 } }")
+    let helper = "fn positive(value Int) Bool { value > 0 }\nconcept C { fn preserve(self Self, value Int) Int requires positive(value) ensures positive(result) }\n"
+    discard accepted(concat(helper, "impl C for Int { fn preserve(receiver Int, input Int) Int { input } }\nfn main() { assert 1.preserve(3) == 3 }"))
+    rejects(concat(helper, "impl C for Int { fn preserve(receiver Int, input Int) Int { 0 } }"))
+    rejects("fn positive(value Int) Bool { positive(value) }\nconcept C { fn preserve(self Self, value Int) Int requires positive(value) }\nimpl C for Int { fn preserve(self Int, input Int) Int { input } }")
+}
+
+test fn old_in_concept_contracts_follows_declared_scalar_parameters() {
+    discard accepted("concept Keep { fn keep(self Self, value Int) Int ensures result == old(value) }\nimpl Keep for Bool { fn keep(receiver Bool, input Int) Int { input } }\nfn main() { assert true.keep(8) == 8 }")
+    rejects("concept Keep { fn keep(self Self) Int ensures result == old(self) }\nimpl Keep for Int { fn keep(self Int) Int { self } }")
+}
+
+test fn inherited_helper_contracts_use_the_concept_package_scope() {
+    let files = source_files("import rules.C\nimpl C for Int { fn preserve(receiver Int, input Int) Int { input } }\nfn main() { assert 1.preserve(3) == 3 }")
+    push(files, source_file("rules", "fn positive(value Int) Bool { value > 0 }\npub concept C { fn preserve(self Self, value Int) Int requires positive(value) ensures positive(result) }", false))
+    match checked(files) {
+        Result.Ok(_) => {
+        }
+        Result.Err(failed) => {
+            show_failure(fixture_project(files), failed)
+            assert false
+        }
+    }
+}
+
+test fn dyn_cross_conversion_requires_explicit_source_adapter() {
+    rejects("concept Source { fn value(self Self) Int }\nconcept Readable { fn read(self Self) Int }\nimpl Source for Int { fn value(self Int) Int { self } }\nimpl Readable for Int { fn read(self Int) Int { self } }\nfn main() { let source dyn Source = 1\nlet readable dyn Readable = source\nassert readable.read() == 1 }")
+}

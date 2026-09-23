@@ -1,0 +1,442 @@
+import std.loom.analysis.analyze
+import std.loom.ast.NodeKind
+import std.loom.parser.parse
+import std.loom.project.ModuleInstance
+import std.loom.project.Package
+import std.loom.project.PackageImport
+import std.loom.project.Project
+import std.loom.project.SourceFile
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+import std.result.Result
+import std.text.concat
+import std.text.ends_with
+import std.text.length
+import std.text.slice
+
+// Identity is deliberately supplied by the change store, not inferred from
+// revision-relative AST spans or from a declaration's spelling. This first
+// merge model handles named top-level declarations in one package only.
+pub record File {
+    path Text
+    text Text
+}
+
+pub record Identity {
+    id Text
+    path Text
+    kind NodeKind
+    name Text
+}
+
+pub record Revision {
+    package_name Text
+    files List[File]
+    identities List[Identity]
+}
+
+record Entry {
+    id Text
+    path Text
+    kind NodeKind
+    name Text
+    start Int
+    end Int
+    body Text
+}
+
+record Indexed {
+    revision Revision
+    entries List[Entry]
+}
+
+fn supported(kind NodeKind) Bool {
+    kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum ||
+    kind == NodeKind.Refined || kind == NodeKind.Concept
+}
+
+fn file_index(files List[File], path Text) Int {
+    var index = 0
+    while index < length(files) {
+        if get(files, index).path == path {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn entry_index(entries List[Entry], id Text) Int {
+    var index = 0
+    while index < length(entries) {
+        if get(entries, index).id == id {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn identity_index(identities List[Identity], path Text, kind NodeKind, name Text) Int {
+    var found = -1
+    var index = 0
+    while index < length(identities) {
+        let value = get(identities, index)
+        if value.path == path && value.kind == kind && value.name == name {
+            if found >= 0 {
+                return -2
+            }
+            found = index
+        }
+        index = index + 1
+    }
+    found
+}
+
+fn indexed(revision Revision) Result[Indexed, Text] {
+    if revision.package_name == "" {
+        return Result.Err("revision needs a package identity")
+    }
+    let entries = new[Entry]()
+    var index = 0
+    while index < length(revision.identities) {
+        let identity = get(revision.identities, index)
+        if identity.id == "" || identity.path == "" || identity.name == "" ||
+        !supported(identity.kind) {
+            return Result.Err("invalid or unsupported declaration identity")
+        }
+        var previous = 0
+        while previous < index {
+            if get(revision.identities, previous).id == identity.id {
+                return Result.Err("duplicate stable declaration identity")
+            }
+            previous = previous + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(revision.files) {
+        let file = get(revision.files, index)
+        if file.path == "" {
+            return Result.Err("source file needs a path")
+        }
+        var previous = 0
+        while previous < index {
+            if get(revision.files, previous).path == file.path {
+                return Result.Err("duplicate source file path")
+            }
+            previous = previous + 1
+        }
+        let tree = match parse(file.text) {
+            Result.Ok(tree) => tree
+            Result.Err(problem) => {
+                return Result.Err(concat(concat("cannot parse ", file.path),
+                        concat(": ", problem.message)))
+            }
+        }
+        var declaration = 0
+        while declaration < length(tree.children) {
+            let node = get(tree.children, declaration)
+            if !supported(node.kind) {
+                return Result.Err(concat("unsupported top-level declaration in ", file.path))
+            }
+            let binding = identity_index(revision.identities, file.path, node.kind, node.value)
+            if binding < 0 {
+                return Result.Err(concat("missing or ambiguous stable identity in ", file.path))
+            }
+            let id = get(revision.identities, binding).id
+            if entry_index(entries, id) >= 0 {
+                return Result.Err(concat("ambiguous declaration in ", file.path))
+            }
+            push(entries, Entry {
+                    id = id
+                    path = file.path
+                    kind = node.kind
+                    name = node.value
+                    start = node.span.start
+                    end = node.span.end
+                    body = slice(file.text, node.span.start, node.span.end)
+                })
+            declaration = declaration + 1
+        }
+        index = index + 1
+    }
+    if length(entries) != length(revision.identities) {
+        return Result.Err("stable identity does not name exactly one declaration")
+    }
+    Result.Ok(Indexed {
+            revision = revision
+            entries = entries
+        })
+}
+
+fn entry_in_file(entries List[Entry], path Text, ordinal Int) Int {
+    var found = 0
+    var index = 0
+    while index < length(entries) {
+        if get(entries, index).path == path {
+            if found == ordinal {
+                return index
+            }
+            found = found + 1
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn same_layout(base Indexed, branch Indexed) Bool {
+    if length(base.revision.files) != length(branch.revision.files) {
+        return false
+    }
+    var index = 0
+    while index < length(base.revision.files) {
+        let path = get(base.revision.files, index).path
+        if file_index(branch.revision.files, path) < 0 {
+            return false
+        }
+        var ordinal = 0
+        while true {
+            let original = entry_in_file(base.entries, path, ordinal)
+            let changed = entry_in_file(branch.entries, path, ordinal)
+            if original < 0 || changed < 0 {
+                if original != changed {
+                    return false
+                }
+                break
+            }
+            if get(base.entries, original).id != get(branch.entries, changed).id {
+                return false
+            }
+            ordinal = ordinal + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+// The non-layout side may edit declaration bodies, but cannot silently change
+// comments, whitespace or any other text between declarations.
+fn same_scaffold(base Indexed, branch Indexed) Bool {
+    var file_index_value = 0
+    while file_index_value < length(base.revision.files) {
+        let original = get(base.revision.files, file_index_value)
+        let changed_index = file_index(branch.revision.files, original.path)
+        if changed_index < 0 {
+            return false
+        }
+        let changed = get(branch.revision.files, changed_index)
+        var original_end = 0
+        var changed_end = 0
+        var ordinal = 0
+        while true {
+            let original_index = entry_in_file(base.entries, original.path, ordinal)
+            let changed_entry_index = entry_in_file(branch.entries, original.path, ordinal)
+            if original_index < 0 || changed_entry_index < 0 {
+                if original_index != changed_entry_index {
+                    return false
+                }
+                break
+            }
+            let original_entry = get(base.entries, original_index)
+            let changed_entry = get(branch.entries, changed_entry_index)
+            if slice(original.text, original_end, original_entry.start) !=
+            slice(changed.text, changed_end, changed_entry.start) {
+                return false
+            }
+            original_end = original_entry.end
+            changed_end = changed_entry.end
+            ordinal = ordinal + 1
+        }
+        if slice(original.text, original_end, length(original.text)) !=
+        slice(changed.text, changed_end, length(changed.text)) {
+            return false
+        }
+        file_index_value = file_index_value + 1
+    }
+    true
+}
+
+fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text] {
+    var index = 0
+    while index < length(base.entries) {
+        let original = get(base.entries, index)
+        let left_index = entry_index(left.entries, original.id)
+        let right_index = entry_index(right.entries, original.id)
+        if left_index < 0 && right_index < 0 {
+            return Result.Err(concat("both sides deleted declaration ", original.id))
+        }
+        if left_index < 0 || right_index < 0 {
+            let remaining = if left_index < 0 {
+                get(right.entries, right_index)
+            }
+            else {
+                get(left.entries, left_index)
+            }
+            if remaining.body != original.body || remaining.path != original.path {
+                return Result.Err(concat("delete versus edit or move: ", original.id))
+            }
+        } else {
+            let edited_left = get(left.entries, left_index)
+            let edited_right = get(right.entries, right_index)
+            if ends_with(edited_left.path, "_test.loom") != ends_with(original.path, "_test.loom") ||
+            ends_with(edited_right.path, "_test.loom") != ends_with(original.path, "_test.loom") {
+                return Result.Err(concat("declaration crossed production/test boundary: ", original.id))
+            }
+            if edited_left.kind != original.kind || edited_left.name != original.name ||
+            edited_right.kind != original.kind || edited_right.name != original.name {
+                return Result.Err(concat("identity changed kind or name: ", original.id))
+            }
+            if edited_left.body != original.body && edited_right.body != original.body &&
+            edited_left.body != edited_right.body {
+                return Result.Err(concat("concurrent body edits: ", original.id))
+            }
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(left.entries) {
+        if entry_index(base.entries, get(left.entries, index).id) < 0 {
+            return Result.Err("added declarations are not supported by this merge")
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(right.entries) {
+        if entry_index(base.entries, get(right.entries, index).id) < 0 {
+            return Result.Err("added declarations are not supported by this merge")
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn chosen_body(base Indexed, left Indexed, right Indexed, id Text) Text {
+    let original = get(base.entries, entry_index(base.entries, id))
+    let edited_left = entry_index(left.entries, id)
+    let edited_right = entry_index(right.entries, id)
+    if edited_left >= 0 && get(left.entries, edited_left).body != original.body {
+        return get(left.entries, edited_left).body
+    }
+    if edited_right >= 0 && get(right.entries, edited_right).body != original.body {
+        return get(right.entries, edited_right).body
+    }
+    original.body
+}
+
+fn checked(revision Revision) Result[Revision, Text] {
+    let files = new[SourceFile]()
+    var index = 0
+    while index < length(revision.files) {
+        let file = get(revision.files, index)
+        let tree = match parse(file.text) {
+            Result.Ok(tree) => tree
+            Result.Err(problem) => {
+                return Result.Err(concat("merged source does not parse: ", problem.message))
+            }
+        }
+        push(files, SourceFile {
+                package = 0
+                path = file.path
+                text = file.text
+                tree = tree
+                test_only = ends_with(file.path, "_test.loom")
+                trusted_std = false
+            })
+        index = index + 1
+    }
+    let modules = new[ModuleInstance]()
+    push(modules, ModuleInstance {
+            name = revision.package_name
+            source = "semantic-merge"
+        })
+    let packages = new[Package]()
+    push(packages, Package {
+            instance = 0
+            relative = ""
+            imports = new[PackageImport]()
+        })
+    let project = Project {
+        files = files
+        modules = modules
+        packages = packages
+        root = 0
+    }
+    match analyze(project, false) {
+        Result.Ok(_) => {
+        }
+        Result.Err(problem) => {
+            return Result.Err(concat("merged program failed analysis (production): ",
+                    problem.diagnostic.message))
+        }
+    }
+    match analyze(project, true) {
+        Result.Ok(_) => Result.Ok(revision)
+        Result.Err(problem) => Result.Err(concat("merged program failed analysis (tests): ",
+                problem.diagnostic.message))
+    }
+}
+
+// One side may rearrange/remove declarations and files. The other side may
+// independently edit declaration bodies; its surrounding text must be intact.
+// The carrier side's complete file skeleton (including comments) is retained.
+// This deliberately refuses concurrent layout changes and added declarations.
+pub fn merge(base Revision, left Revision, right Revision) Result[Revision, Text] {
+    let original = indexed(base)?
+    let edited_left = indexed(left)?
+    let edited_right = indexed(right)?
+    if base.package_name != left.package_name || base.package_name != right.package_name {
+        return Result.Err("semantic merge cannot cross package identities")
+    }
+    discard validate_changes(original, edited_left, edited_right)?
+    let left_layout = !same_layout(original, edited_left)
+    let right_layout = !same_layout(original, edited_right)
+    if left_layout && right_layout {
+        return Result.Err("concurrent file or declaration layout changes need explicit resolution")
+    }
+    let carrier = if right_layout {
+        edited_right
+    } else {
+        edited_left
+    }
+    let other = if right_layout {
+        edited_left
+    } else {
+        edited_right
+    }
+    if !same_scaffold(original, other) {
+        return Result.Err("non-layout side changed text outside declaration bodies")
+    }
+    let files = new[File]()
+    var index = 0
+    while index < length(carrier.revision.files) {
+        let file = get(carrier.revision.files, index)
+        var output = ""
+        var offset = 0
+        var ordinal = 0
+        while true {
+            let entry_position = entry_in_file(carrier.entries, file.path, ordinal)
+            if entry_position < 0 {
+                break
+            }
+            let entry = get(carrier.entries, entry_position)
+            output = concat(output, slice(file.text, offset, entry.start))
+            output = concat(output, chosen_body(original, edited_left, edited_right, entry.id))
+            offset = entry.end
+            ordinal = ordinal + 1
+        }
+        output = concat(output, slice(file.text, offset, length(file.text)))
+        push(files, File {
+                path = file.path
+                text = output
+            })
+        index = index + 1
+    }
+    checked(Revision {
+            package_name = carrier.revision.package_name
+            files = files
+            identities = carrier.revision.identities
+        })
+}

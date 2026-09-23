@@ -18,6 +18,14 @@ fn resource_reject(source Text) {
     match resource_checked(source) { Result.Err(_) => {}, Result.Ok(_) => { discard write_error(source)
         assert false } }
 }
+fn resource_reject_reason(source Text, message Text) {
+    match resource_checked(source) {
+        Result.Err(failed) => { if failed.diagnostic.message != message { discard write_error(failed.diagnostic.message) }
+            assert failed.diagnostic.message == message }
+        Result.Ok(_) => { discard write_error(source)
+            assert false }
+    }
+}
 fn resource_header() Text {
     "import std.resource.Dispose\nimport std.resource.MustScope\nimport std.list.push\nrecord Handle { log List[Int] }\nimpl Dispose for Handle { fn dispose(self Handle) { push(self.log, 9) } }\nimpl MustScope for Handle {}\nconcept Use { fn use(self Self) Int }\nimpl Use for Handle { fn use(self Handle) Int { push(self.log, 1)\n7 } }\nfn make(log List[Int]) Handle { Handle { log = log } }\n"
 }
@@ -26,6 +34,29 @@ test fn scoped_resources_borrow_methods_and_transfer_fresh_factory_results() {
     resource_accept(concat(resource_header(), "fn main() { let log = [0]\n{ scoped value = make(log)\nassert value.use() == 7 }\nassert log[2] == 9 }"))
     resource_accept(concat(resource_header(), "import std.result.Result\nfn open(log List[Int]) Result[Handle, Text] { Result.Ok(make(log)) }\nfn run(log List[Int]) Result[Int, Text] { scoped value = open(log)?\nResult.Ok(value.use()) }\nfn main() { discard run([0]) }"))
     resource_accept(concat(resource_header(), "import std.result.Result\nfn open(log List[Int]) Result[Handle, Text] { Result.Ok(make(log)) }\nfn main() { match open([0]) { Result.Ok(payload) => { scoped value = payload\nassert value.use() == 7 }, Result.Err(_) => {} } }"))
+}
+
+test fn record_resource_fields_transfer_into_a_scoped_wrapper() {
+    let wrapper = "record Wrapped { tag Int inner Handle }\nimpl Dispose for Wrapped { fn dispose(self Wrapped) { push(self.inner.log, 2) } }\nfn wrap(log List[Int]) Wrapped { Wrapped { tag = 1 inner = make(log) } }\n"
+    resource_accept(concat(resource_header(), concat(wrapper,
+                "fn main() { let log = [0]\n{ scoped value = wrap(log)\nassert value.tag == 1 && value.inner.use() == 7 }\nassert log[2] == 2 && log[3] == 9 }")))
+    resource_accept(concat(resource_header(), concat(wrapper,
+                "fn reordered(log List[Int]) Wrapped { Wrapped { inner = make(log) tag = 1 } }\nfn main() { scoped value = reordered([0]) }")))
+    resource_reject(concat(resource_header(), concat(wrapper,
+                "fn main() { scoped value = wrap([0])\nscoped stolen = value.inner }")))
+    resource_accept(concat(resource_header(),
+            "record Double { first Handle second Handle }\nimpl Dispose for Double { fn dispose(self Double) {} }\nfn pair(log List[Int]) Double { Double { first = make(log) second = make(log) } }\nfn main() { scoped value = pair([0]) }"))
+    resource_reject_reason(concat(resource_header(),
+            "record Double { first Handle second Handle }\nimpl Dispose for Double { fn dispose(self Double) {} }\nfn pair(log List[Int]) Double { Double { first = make(log) second = { return pair(log)\nmake(log) } } }\nfn main() { scoped value = pair([0]) }"),
+        "a resource field cannot precede return, ?, loop exit or await during aggregate construction")
+    resource_reject_reason(concat(resource_header(),
+            "record Wrapped { inner Handle }\nimpl Dispose for Wrapped { fn dispose(self Wrapped) {} }\nrecord Double { first Wrapped second Handle }\nimpl Dispose for Double { fn dispose(self Double) {} }\nfn pair(log List[Int]) Double { Double { first = Wrapped { inner = make(log) } second = make(log) } }\nfn main() { scoped value = pair([0]) }"),
+        "pending cleanup of a nested resource field is not yet supported")
+    resource_reject_reason(concat(resource_header(),
+            "record Double[T Dispose + MustScope] { first T second Handle }\nimpl[T Dispose + MustScope] Dispose for Double[T] { fn dispose(self Double[T]) {} }\nfn pair[T Dispose + MustScope](factory fn(List[Int]) T, log List[Int]) Double[T] { Double { first = factory(log) second = make(log) } }\nfn main() { scoped value = pair(make, [0]) }"),
+        "pending cleanup requires a concrete resource field")
+    resource_reject(concat(resource_header(),
+            "record Invalid { inner Handle }\nimpl Dispose for Invalid { fn dispose(self Invalid) { self.inner.dispose() } }\nfn main() { scoped value = Invalid { inner = make([0]) } }"))
 }
 
 test fn indirect_resource_factories_preserve_type_level_transfer_obligations() {
@@ -59,7 +90,7 @@ test fn scoped_resources_reject_copy_discard_erasure_and_pending_aggregate_leaks
     resource_reject(concat(resource_header(), "fn bad() { scoped value = make([0])\ndefer { Dispose.dispose(value) } }"))
     resource_reject(concat(resource_header(), "fn bad() { scoped value = make([0])\nlet erased dyn Use = value }"))
     resource_reject(concat(resource_header(), "fn bad() List[Handle] { [make([0]), make([1])] }"))
-    resource_reject(concat(resource_header(), "record Pair { first Handle second Handle }\nfn bad() Pair { Pair { first = make([0]) second = make([1]) } }"))
+    resource_reject(concat(resource_header(), "record Pair { first Handle second Handle }\nfn bad() { let pair = Pair { first = make([0]) second = make([1]) } }"))
     resource_reject(concat(resource_header(), "enum Wrapped { Some(Handle) }\nimpl Dispose for Wrapped { fn dispose(self Wrapped) {} }\nfn bad() { scoped wrapped = Wrapped.Some(make([0])) }"))
     resource_reject(concat(resource_header(), "import std.result.Result\nfn bad() { match Result.Ok[Handle, Text](make([0])) { Result.Ok(_) => {}, Result.Err(_) => {} } }"))
     resource_reject(concat(resource_header(), "import std.result.Result\nfn bad() { match Result.Ok[Handle, Text](make([0])) { Result.Ok(payload) => { assert true\nscoped value = payload }, Result.Err(_) => {} } }"))
@@ -71,5 +102,5 @@ test fn dispose_only_scopes_require_freshness_and_transitive_receiver_safety() {
     resource_reject(concat(header, "fn bad() { scoped item = Item { id = 1 }\ndiscard item.forward() }"))
     resource_reject(concat(header, "fn bad() { let item = Item { id = 1 }\nscoped alias = item }"))
     resource_reject(concat(header, "fn identity(item Item) Item { item }\nfn bad() { scoped alias = identity(Item { id = 1 }) }"))
-    resource_reject(concat(header, "fn choose(item Item, old Bool) Item { if old { return item }\nItem { id = 2 } }\nfn bad() { scoped alias = choose(Item { id = 1 }, true) }"))
+    resource_reject(concat(header, "fn choose(item Item, previous Bool) Item { if previous { return item }\nItem { id = 2 } }\nfn bad() { scoped alias = choose(Item { id = 1 }, true) }"))
 }

@@ -1,0 +1,188 @@
+import std.resource.Dispose
+import std.resource.MustScope
+import std.task.outcome
+import std.task.Outcome
+import std.list.push
+import std.list.length
+
+record Leaf {
+    id Int
+    trace List[Int]
+}
+
+impl MustScope for Leaf {
+}
+
+impl Dispose for Leaf {
+    fn dispose(self Leaf) {
+        push(self.trace, self.id)
+    }
+}
+
+concept Touch {
+    fn touch(self Self)
+}
+
+impl Touch for Leaf {
+    fn touch(self Leaf) {
+        push(self.trace, 10)
+    }
+}
+
+record Wrapper {
+    label Int
+    fault_on_dispose Bool
+    inner Leaf
+}
+
+record Outer {
+    inner Wrapper
+}
+
+impl Dispose for Outer {
+    fn dispose(self Outer) {
+        push(self.inner.inner.trace, 3)
+    }
+}
+
+impl Dispose for Wrapper {
+    fn dispose(self Wrapper) {
+        push(self.inner.trace, 2)
+        if self.fault_on_dispose {
+            assert false
+        }
+    }
+}
+
+fn wrap(trace List[Int], fault_on_dispose Bool) Wrapper {
+    Wrapper {
+        label = 7
+        fault_on_dispose = fault_on_dispose
+        inner = Leaf {
+            id = 1
+            trace = trace
+        }
+    }
+}
+
+record Pair {
+    fault_on_dispose Bool
+    first Leaf
+    second Leaf
+}
+
+impl Dispose for Pair {
+    fn dispose(self Pair) {
+        push(self.first.trace, 3)
+        if self.fault_on_dispose {
+            assert false
+        }
+    }
+}
+
+fn acquire(id Int, trace List[Int]) Leaf {
+    push(trace, id * 10)
+    Leaf {
+        id = id
+        trace = trace
+    }
+}
+
+fn maybe_acquire(id Int, trace List[Int], fail Bool) Leaf {
+    if fail {
+        assert false
+    }
+    acquire(id, trace)
+}
+
+fn pair_resources(trace List[Int], fail_second Bool, fail_dispose Bool) Pair {
+    Pair {
+        fault_on_dispose = fail_dispose
+        first = acquire(1, trace)
+        second = maybe_acquire(2, trace, fail_second)
+    }
+}
+
+test fn two_resource_fields_dispose_in_reverse_order() {
+    let trace List[Int] = []
+    {
+        scoped value = pair_resources(trace, false, false)
+        value.first.touch()
+    }
+    assert length(trace) == 6
+    assert trace[0] == 10 && trace[1] == 20 && trace[2] == 10
+    assert trace[3] == 3 && trace[4] == 2 && trace[5] == 1
+}
+
+async fn second_factory_fault(trace List[Int]) {
+    scoped value = pair_resources(trace, true, false)
+}
+
+async fn outer_pair_dispose_fault(trace List[Int]) {
+    scoped value = pair_resources(trace, false, true)
+}
+
+test async fn pending_resource_cleans_first_field_when_second_faults() {
+    let trace List[Int] = []
+    match outcome(second_factory_fault(trace)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 2 && trace[0] == 10 && trace[1] == 1
+}
+
+test async fn both_children_clean_after_outer_dispose_fault() {
+    let trace List[Int] = []
+    match outcome(outer_pair_dispose_fault(trace)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 5
+    assert trace[0] == 10 && trace[1] == 20 && trace[2] == 3
+    assert trace[3] == 2 && trace[4] == 1
+}
+
+test fn nested_resource_scopes_dispose_outer_then_inner() {
+    let trace List[Int] = []
+    {
+        scoped value = wrap(trace, false)
+        assert value.label == 7
+        value.inner.touch()
+    }
+    assert length(trace) == 3
+    assert trace[0] == 10 && trace[1] == 2 && trace[2] == 1
+
+    let nested List[Int] = []
+    {
+        scoped value = Outer {
+            inner = wrap(nested, false)
+        }
+        value.inner.inner.touch()
+    }
+    assert length(nested) == 4
+    assert nested[0] == 10 && nested[1] == 3 && nested[2] == 2 && nested[3] == 1
+}
+
+async fn dispose_fault(trace List[Int]) {
+    scoped value = wrap(trace, true)
+    value.inner.touch()
+}
+
+test async fn nested_resource_child_cleans_after_outer_dispose_fault() {
+    let trace List[Int] = []
+    match outcome(dispose_fault(trace)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 3
+    assert trace[0] == 10 && trace[1] == 2 && trace[2] == 1
+}

@@ -1,0 +1,374 @@
+import std.bytes.to_text
+import std.int.parse
+import std.int.to_text
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+import std.option.Option
+import std.result.Result
+import std.text.byte
+import std.text.concat
+import std.text.length
+import std.text.split
+
+record Stored {
+    sequence Int
+    attempt Attempt
+}
+
+fn identifier(value Text) Bool {
+    if value == "" || std.text.length(value) > 128 {
+        return false
+    }
+    var index = 0
+    while index < std.text.length(value) {
+        let part = byte(value, index)
+        if !((part >= 97 && part <= 122) || (part >= 48 && part <= 57) || part == 95) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn digest(value Text) Bool {
+    if std.text.length(value) != 64 {
+        return false
+    }
+    var index = 0
+    while index < 64 {
+        let part = byte(value, index)
+        if !((part >= 48 && part <= 57) || (part >= 97 && part <= 102)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn valid(attempt Attempt) Bool {
+    identifier(attempt.id) && (attempt.from_basis == "" || digest(attempt.from_basis)) && digest(attempt.to_basis)
+}
+
+fn policy_number(policy FailurePolicy) Int {
+    if policy == FailurePolicy.Stop {
+        0
+    } else {
+        1
+    }
+}
+
+fn state_number(state DeploymentState) Int {
+    match state {
+        DeploymentState.NotDeployed => 0,
+        DeploymentState.Started => 1,
+        DeploymentState.Failed => 2,
+        DeploymentState.Complete => 3,
+        DeploymentState.RollbackStarted => 4,
+        DeploymentState.RollbackFailed => 5,
+        DeploymentState.RollbackComplete => 6,
+        DeploymentState.AssumedComplete => 7
+    }
+}
+
+fn from_policy(value Int) Result[FailurePolicy, Text] {
+    if value == 0 {
+        return Result.Ok(FailurePolicy.Stop)
+    }
+    if value == 1 {
+        return Result.Ok(FailurePolicy.Rollback)
+    }
+    Result.Err("invalid stored failure policy")
+}
+
+fn from_state(value Int) Result[DeploymentState, Text] {
+    if value == 0 {
+        return Result.Ok(DeploymentState.NotDeployed)
+    }
+    if value == 1 {
+        return Result.Ok(DeploymentState.Started)
+    }
+    if value == 2 {
+        return Result.Ok(DeploymentState.Failed)
+    }
+    if value == 3 {
+        return Result.Ok(DeploymentState.Complete)
+    }
+    if value == 4 {
+        return Result.Ok(DeploymentState.RollbackStarted)
+    }
+    if value == 5 {
+        return Result.Ok(DeploymentState.RollbackFailed)
+    }
+    if value == 6 {
+        return Result.Ok(DeploymentState.RollbackComplete)
+    }
+    if value == 7 {
+        return Result.Ok(DeploymentState.AssumedComplete)
+    }
+    Result.Err("invalid stored deployment state")
+}
+
+fn integer(value Text) Result[Int, Text] {
+    match parse(value) {
+        Result.Ok(number) => Result.Ok(number),
+        Result.Err(_) => Result.Err("invalid stored deployment sequence")
+    }
+}
+
+fn stored_line(line Text) Result[Stored, Text] {
+    let fields = split(line, "\t")
+    if length(fields) != 6 {
+        return Result.Err("invalid stored deployment record")
+    }
+    let sequence = integer(get(fields, 0))?
+    let attempt = Attempt {
+        id = get(fields, 1)
+        from_basis = get(fields, 2)
+        to_basis = get(fields, 3)
+        policy = from_policy(integer(get(fields, 4))?)?
+        state = from_state(integer(get(fields, 5))?)?
+    }
+    if sequence <= 0 || !valid(attempt) {
+        return Result.Err("invalid stored deployment record")
+    }
+    Result.Ok(Stored {
+            sequence = sequence
+            attempt = attempt
+        })
+}
+
+fn next_state(before Attempt, after Attempt) Bool {
+    if before.id != after.id || before.from_basis != after.from_basis ||
+    before.to_basis != after.to_basis || before.policy != after.policy {
+        return false
+    }
+    match before.state {
+        DeploymentState.NotDeployed => after.state == DeploymentState.Started ||
+        after.state == DeploymentState.AssumedComplete,
+        DeploymentState.Started => after.state == DeploymentState.Failed ||
+        after.state == DeploymentState.Complete,
+        DeploymentState.Failed => after.state == DeploymentState.RollbackStarted ||
+        (before.policy == FailurePolicy.Stop && after.state == DeploymentState.Started),
+        DeploymentState.Complete => after.state == DeploymentState.RollbackStarted,
+        DeploymentState.RollbackStarted => after.state == DeploymentState.RollbackFailed ||
+        after.state == DeploymentState.RollbackComplete,
+        DeploymentState.RollbackFailed => after.state == DeploymentState.RollbackStarted,
+        _ => false
+    }
+}
+
+fn new_attempt(before Attempt, after Attempt) Bool {
+    if after.state != DeploymentState.NotDeployed {
+        return false
+    }
+    match effective(before) {
+        BasisEvidence.Observed(basis) => basis == after.from_basis,
+        BasisEvidence.Assumed(basis) => basis == after.from_basis,
+        BasisEvidence.None => false
+    }
+}
+
+// State records contain only validated, non-sensitive IDs/digests and codes.
+// The schema is deliberately append-only: no UPDATE or DELETE path exists.
+pub fn initialize(tool Text, database Text) Result[Bool, Text] {
+    discard execute(tool, database,
+        "CREATE TABLE IF NOT EXISTS loom_deploy_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL);")?
+    Result.Ok(true)
+}
+
+fn latest(tool Text, database Text) Result[Option[Stored], Text] {
+    let exists = inspect(tool, database,
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='loom_deploy_events';")?
+    if to_text(exists) == "0\n" {
+        return Result.Ok(Option.None)
+    }
+    if to_text(exists) != "1\n" {
+        return Result.Err("invalid deployment ledger")
+    }
+    let output = inspect(tool, database,
+        "SELECT sequence, attempt_id, from_basis, to_basis, policy, state FROM loom_deploy_events ORDER BY sequence;")?
+    let lines = split(to_text(output), "\n")
+    if length(lines) == 0 || get(lines, 0) == "" {
+        return Result.Ok(Option.None)
+    }
+    let seen = std.list.new[Text]()
+    var previous = stored_line(get(lines, 0))?
+    if previous.attempt.state != DeploymentState.NotDeployed || previous.attempt.from_basis != "" {
+        return Result.Err("invalid initial deployment event")
+    }
+    std.list.push(seen, previous.attempt.id)
+    var index = 1
+    while index < length(lines) {
+        let line = get(lines, index)
+        if line != "" {
+            let current = stored_line(line)?
+            if current.sequence <= previous.sequence {
+                return Result.Err("deployment event order is invalid")
+            }
+            if current.attempt.id == previous.attempt.id {
+                if !next_state(previous.attempt, current.attempt) {
+                    return Result.Err("deployment event transition is invalid")
+                }
+            } else {
+                if !new_attempt(previous.attempt, current.attempt) {
+                    return Result.Err("deployment attempt sequence is invalid")
+                }
+                var used = 0
+                while used < length(seen) {
+                    if get(seen, used) == current.attempt.id {
+                        return Result.Err("deployment attempt identity was already used")
+                    }
+                    used = used + 1
+                }
+                std.list.push(seen, current.attempt.id)
+            }
+            previous = current
+        } else {
+            if index + 1 != length(lines) {
+                return Result.Err("deployment ledger contains an empty event")
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(Option.Some(previous))
+}
+
+fn event_values(attempt Attempt) Text {
+    concat("'", concat(attempt.id, concat("','", concat(attempt.from_basis,
+                    concat("','", concat(attempt.to_basis, concat("',", concat(to_text(policy_number(attempt.policy)),
+                                    concat(",", to_text(state_number(attempt.state)))))))))))
+}
+
+fn append(tool Text, database Text, expected Int, attempt Attempt) Result[Bool, Text] {
+    let values = event_values(attempt)
+    let sql = concat("INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) SELECT ",
+        concat(values, concat(" WHERE (SELECT IFNULL(MAX(sequence),0) FROM loom_deploy_events) = ",
+                concat(to_text(expected), "; SELECT changes();"))))
+    let output = execute(tool, database, sql)?
+    if to_text(output) != "1\n" {
+        return Result.Err("deployment record changed concurrently")
+    }
+    Result.Ok(true)
+}
+
+fn identity_used(tool Text, database Text, id Text) Result[Bool, Text] {
+    let sql = concat("SELECT count(*) FROM loom_deploy_events WHERE attempt_id = '", concat(id, "';"))
+    let output = inspect(tool, database, sql)?
+    let lines = split(to_text(output), "\n")
+    if length(lines) == 0 {
+        return Result.Err("invalid deployment ledger")
+    }
+    Result.Ok(integer(get(lines, 0))? > 0)
+}
+
+// A new attempt is allowed only after the previous attempt's effective basis
+// is known. Started/failed/rollback-in-progress never silently becomes success.
+pub fn register(tool Text, database Text, attempt Attempt) Result[Attempt, Text] {
+    if !valid(attempt) || attempt.state != DeploymentState.NotDeployed {
+        return Result.Err("deployment attempt needs validated identities and a failure policy")
+    }
+    discard initialize(tool, database)?
+    if identity_used(tool, database, attempt.id)? {
+        return Result.Err("deployment attempt identity was already used")
+    }
+    let expected = match latest(tool, database)? {
+        Option.None => {
+            if attempt.from_basis != "" {
+                return Result.Err("first deployment has no observed starting basis")
+            }
+            0
+        }
+        Option.Some(previous) => {
+            if previous.attempt.id == attempt.id {
+                return Result.Err("deployment attempt identity was already used")
+            }
+            match effective(previous.attempt) {
+                BasisEvidence.Observed(basis) => {
+                    if basis != attempt.from_basis {
+                        return Result.Err("starting basis differs from effective deployment")
+                    }
+                }
+                BasisEvidence.Assumed(basis) => {
+                    if basis != attempt.from_basis {
+                        return Result.Err("starting basis differs from assumed deployment")
+                    }
+                }
+                BasisEvidence.None => {
+                    return Result.Err("previous deployment outcome is unresolved")
+                }
+            }
+            previous.sequence
+        }
+    }
+    discard append(tool, database, expected, attempt)?
+    Result.Ok(attempt)
+}
+
+fn record_event(tool Text, database Text, id Text, event Transition) Result[Attempt, Text] {
+    if !identifier(id) {
+        return Result.Err("invalid deployment identity")
+    }
+    let previous = match latest(tool, database)? {
+        Option.Some(value) => value,
+        Option.None => {
+            return Result.Err("no deployment attempt is registered")
+        }
+    }
+    if previous.attempt.id != id {
+        return Result.Err("deployment attempt is not current")
+    }
+    let next = advance(previous.attempt, event)?
+    discard append(tool, database, previous.sequence, next)?
+    Result.Ok(next)
+}
+
+// Public callers may record an in-progress or failed attempt, but cannot
+// manufacture observed success. Completion belongs to a checked executor.
+pub fn start_attempt(tool Text, database Text, id Text) Result[Attempt, Text] {
+    record_event(tool, database, id, Transition.Begin)
+}
+
+pub fn note_failure(tool Text, database Text, id Text) Result[Attempt, Text] {
+    record_event(tool, database, id, Transition.Fail)
+}
+
+// An operator explicitly retries a stopped failure. This appends a Started
+// event but does not establish any effective basis. The checked executor must
+// revalidate the live database and commit data plus completion atomically.
+pub fn resume_failed_attempt(tool Text, database Text, id Text) Result[Attempt, Text] {
+    record_event(tool, database, id, Transition.Resume)
+}
+
+// Explicitly imports an already-existing database basis. It never produces
+// observed completion and is available only before the first ledger event.
+pub fn assume_historical(tool Text, database Text, id Text, basis Text) Result[Attempt, Text] {
+    if !identifier(id) || !digest(basis) {
+        return Result.Err("historical deployment needs a valid identity and basis")
+    }
+    match latest(tool, database)? {
+        Option.None => {
+        },
+        Option.Some(_) => {
+            return Result.Err("historical import needs an empty deployment ledger")
+        }
+    }
+    let attempt = prepare(id, "", basis, FailurePolicy.Stop)?
+    let assumed = advance(attempt, Transition.AssumeComplete)?
+    discard initialize(tool, database)?
+    // The empty-ledger check and both events share one write transaction. The
+    // guarded insert aborts if another writer won the race after latest().
+    // A failed sqlite3 process closes its connection and rolls back both rows.
+    let sql = concat("PRAGMA ignore_check_constraints=OFF;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_import_guard(ok INTEGER NOT NULL CHECK(ok=1));\nINSERT INTO loom_import_guard SELECT CASE WHEN EXISTS(SELECT 1 FROM loom_deploy_events) THEN 0 ELSE 1 END;\nINSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) VALUES (",
+        concat(event_values(attempt), concat("),(", concat(event_values(assumed), ");\nCOMMIT;"))))
+    discard execute(tool, database, sql)?
+    Result.Ok(assumed)
+}
+
+pub fn current(tool Text, database Text) Result[BasisEvidence, Text] {
+    match latest(tool, database)? {
+        Option.Some(value) => Result.Ok(effective(value.attempt)),
+        Option.None => Result.Ok(BasisEvidence.None)
+    }
+}

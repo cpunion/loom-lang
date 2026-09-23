@@ -74,8 +74,12 @@ fn implementation_type(env Environment, index Int, depth Int) Result[Int, Failur
     var parameter = 0
     while parameter < length(parameters) { push(seen, false)
         parameter = parameter + 1 }
-    if get(env.types, ty).kind == TypeKind.Dyn || !target_parameters(env, ty, seen) {
-        return Result.Err(failure(env, header.symbol, item.node, "implementation targets cannot be dynamic or contain associated projections"))
+    if !target_parameters(env, ty, seen) {
+        return Result.Err(failure(env, header.symbol, item.node, "implementation targets cannot contain associated projections"))
+    }
+    if get(env.types, ty).kind == TypeKind.Dyn &&
+        get(env.interfaces, get(env.types, ty).symbol).symbol == header.capability {
+        return Result.Err(failure(env, header.symbol, item.node, "dyn already carries its source concept conformance"))
     }
     parameter = 0
     while parameter < length(seen) {
@@ -216,12 +220,9 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, argumen
     }
     let shape = get(env.types, receiver)
     let capability = symbol(env, member).owner
-    if shape.kind == TypeKind.Dyn {
+    if shape.kind == TypeKind.Dyn && get(env.interfaces, shape.symbol).symbol == capability {
         if length(arguments) != 0 {
             return Result.Err(failure(env, owner, node, "dyn does not yet support generic associated type families"))
-        }
-        if get(env.interfaces, shape.symbol).symbol != capability {
-            return Result.Err(failure(env, owner, node, "dynamic receiver does not expose this associated type"))
         }
         let members = get(env.concepts, concept_index(env, capability)).associated
         var index = 0

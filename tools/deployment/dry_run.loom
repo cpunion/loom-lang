@@ -1,0 +1,30 @@
+import std.option.Option
+import std.result.Result
+
+pub record PlanInspection {
+    evidence BasisEvidence
+    missing Missing
+}
+
+// Offline, read-only metadata inspection. It checks the effective recorded
+// basis and catalog coverage in both directions. It does not inspect live data,
+// attest that named actions are implemented, or grant permission to execute.
+pub fn dry_run(tool Text, database Text, from Schema, to Schema,
+    catalog MigrationCatalog) Result[PlanInspection, Text] {
+    let previous = match latest(tool, database)? {
+        Option.None => { return Result.Err("no deployment basis has been recorded") }
+        Option.Some(value) => value
+    }
+    let evidence = effective(previous.attempt)
+    match evidence {
+        BasisEvidence.None => { return Result.Err("previous deployment outcome is unresolved") }
+        BasisEvidence.Observed(basis) => {
+            if basis != from.basis { return Result.Err("starting basis differs from observed deployment") }
+        }
+        BasisEvidence.Assumed(basis) => {
+            if basis != from.basis { return Result.Err("starting basis differs from assumed deployment") }
+        }
+    }
+    let missing = coverage(from, to, catalog)?
+    Result.Ok(PlanInspection { evidence = evidence missing = missing })
+}

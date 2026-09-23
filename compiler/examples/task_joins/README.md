@@ -9,7 +9,9 @@ target/loom test compiler/std/task
 ```
 
 The program prints `joins finished`. Its runtime count defaults to 5 and accepts
-0–1000. Each operation consumes a `List[Task[T]]`; results keep their native type.
+0–1000. List operations consume a `List[Task[T]]`; results keep their native type.
+The two-element `all((task_a, task_b))` and `settled((task_a, task_b))` overloads
+accept distinct result types and return a tuple in input order.
 
 | `std.task` function | Awaited result | Rule |
 | --- | --- | --- |
@@ -33,4 +35,5 @@ The Loom implementation registers each child once and selects indexed slots from
 completion notifications. It does not rescan a container on each wake, create a
 wrapper Task per input, or build a recursive join chain. Private helpers use one
 additional Task per group. Native scheduling remains cooperative, not parallel.
-Heterogeneous tuple joins and tuple-await syntax are still unimplemented.
+Arbitrary-arity heterogeneous tuple joins and tuple-await syntax remain
+unimplemented.

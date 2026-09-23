@@ -1,0 +1,339 @@
+import deployment.SqlitePositiveAmountUpgrade
+import deployment.Schema
+import deployment.Table
+import deployment.Column
+import deployment.StorageType
+import deployment.MigrationCatalog
+import deployment.Handling
+import deployment.ConflictKind
+import deployment.execute_positive_amount_upgrade
+import deployment.execute_positive_amount_downgrade
+import deployment.execute_positive_amount_reupgrade
+import deployment.assume_historical
+import deployment.prepare
+import deployment.register
+import deployment.start_attempt
+import deployment.resume_failed_attempt
+import deployment.current
+import deployment.dry_run
+import deployment.FailurePolicy
+import deployment.BasisEvidence
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.process.arguments
+import std.process.capture_input
+import std.process.ExitStatus
+import std.result.Result
+import std.text.byte
+import std.text.concat
+import std.text.length
+
+fn sql_bytes(value Text) Bytes {
+    let output = std.bytes.new()
+    var index = 0
+    while index < std.text.length(value) {
+        std.bytes.push(output, byte(value, index))
+        index = index + 1
+    }
+    output
+}
+
+// Fixed test-fixture SQL only. The production upgrade API never accepts SQL.
+fn fixture_sql(database Text, sql Text) Result[Text, Text] {
+    let args = std.list.new[Text]()
+    std.list.push(args, "/usr/bin/sqlite3")
+    std.list.push(args, "-batch")
+    std.list.push(args, "-bail")
+    std.list.push(args, "-list")
+    std.list.push(args, "--")
+    std.list.push(args, database)
+    match capture_input(args, sql_bytes(sql)) {
+        Result.Ok(output) => match output.status {
+            ExitStatus.Exited(code) => {
+                if code == 0 {
+                    Result.Ok(to_text(output.stdout))
+                } else {
+                    Result.Err("SQLite fixture failed")
+                }
+            }
+            ExitStatus.Terminated => Result.Err("SQLite fixture terminated")
+        },
+        Result.Err(_) => Result.Err("cannot start SQLite fixture")
+    }
+}
+
+fn migration(identity Text) SqlitePositiveAmountUpgrade {
+    SqlitePositiveAmountUpgrade {
+        attempt_id = identity
+        from_basis = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        to_basis = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        orders = "orders"
+        order_id = "id"
+        amount = "amount"
+        archive = "loom_archive_zero_amounts"
+        notes = "notes"
+        note_id = "id"
+        note_body = "body"
+        replacement = 1
+    }
+}
+
+fn field(name Text, kind StorageType, predicate Text) Column {
+    Column {
+        id = name
+        name = name
+        kind = kind
+        required = true
+        predicate = predicate
+    }
+}
+
+fn order_table(plan SqlitePositiveAmountUpgrade, predicate Text) Table {
+    let columns = std.list.new[Column]()
+    std.list.push(columns, field(plan.order_id, StorageType.Int, ""))
+    std.list.push(columns, field(plan.amount, StorageType.Int, predicate))
+    Table {
+        id = plan.orders
+        name = plan.orders
+        columns = columns
+    }
+}
+
+fn old_schema(plan SqlitePositiveAmountUpgrade) Schema {
+    let tables = std.list.new[Table]()
+    std.list.push(tables, order_table(plan, "amount >= 0"))
+    Schema {
+        basis = plan.from_basis
+        tables = tables
+    }
+}
+
+fn new_schema(plan SqlitePositiveAmountUpgrade) Schema {
+    let tables = std.list.new[Table]()
+    std.list.push(tables, order_table(plan, "amount > 0"))
+    let columns = std.list.new[Column]()
+    std.list.push(columns, field(plan.note_id, StorageType.Int, ""))
+    std.list.push(columns, field(plan.note_body, StorageType.Text, ""))
+    std.list.push(tables, Table {
+            id = plan.notes
+            name = plan.notes
+            columns = columns
+        })
+    Schema {
+        basis = plan.to_basis
+        tables = tables
+    }
+}
+
+fn forward_catalog(plan SqlitePositiveAmountUpgrade) MigrationCatalog {
+    let forward = std.list.new[Handling]()
+    std.list.push(forward, Handling {
+            kind = ConflictKind.ChangedPredicate
+            table = plan.orders
+            column = plan.amount
+            action = "archive_and_replace_zero_amounts"
+        })
+    std.list.push(forward, Handling {
+            kind = ConflictKind.AddedTable
+            table = plan.notes
+            column = ""
+            action = "create_notes_table"
+        })
+    std.list.push(forward, Handling {
+            kind = ConflictKind.ChangedBasis
+            table = ""
+            column = ""
+            action = "candidate_checked_externally"
+        })
+    let recovery = std.list.new[Handling]()
+    std.list.push(recovery, Handling {
+            kind = ConflictKind.ChangedPredicate
+            table = plan.orders
+            column = plan.amount
+            action = "restore_untouched_zero_amounts"
+        })
+    std.list.push(recovery, Handling {
+            kind = ConflictKind.RemovedTable
+            table = plan.notes
+            column = ""
+            action = "retain_notes_and_archive"
+        })
+    std.list.push(recovery, Handling {
+            kind = ConflictKind.ChangedBasis
+            table = ""
+            column = ""
+            action = "candidate_checked_externally"
+        })
+    MigrationCatalog {
+        from_basis = plan.from_basis
+        to_basis = plan.to_basis
+        forward = forward
+        recovery = recovery
+    }
+}
+
+fn started(database Text, plan SqlitePositiveAmountUpgrade) Result[Bool, Text] {
+    discard assume_historical("/usr/bin/sqlite3", database, "historical_v1", plan.from_basis)?
+    let inspection = dry_run("/usr/bin/sqlite3", database,
+        old_schema(plan), new_schema(plan), forward_catalog(plan))?
+    assert match inspection.evidence {
+        BasisEvidence.Assumed(basis) => basis == plan.from_basis,
+        _ => false
+    }
+    assert length(inspection.missing.forward) == 0 && length(inspection.missing.recovery) == 0
+    let attempt = prepare(plan.attempt_id, plan.from_basis, plan.to_basis, FailurePolicy.Stop)?
+    discard register("/usr/bin/sqlite3", database, attempt)?
+    discard start_attempt("/usr/bin/sqlite3", database, plan.attempt_id)?
+    Result.Ok(true)
+}
+
+fn succeeds(database Text) Result[Bool, Text] {
+    discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10),(3,0);")?
+    let plan = migration("upgrade_2")
+    discard started(database, plan)?
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='historical_v1' ORDER BY sequence;")? == "0\n7\n"
+    discard execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan)?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.Observed(basis) => basis == plan.to_basis,
+        _ => false
+    }
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|1\n2|10\n3|1\n"
+    assert fixture_sql(database, "SELECT entity_id,original_amount FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0\n3|0\n"
+    assert fixture_sql(database, "SELECT count(*) FROM notes;")? == "0\n"
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events WHERE attempt_id='upgrade_2' AND state=3;")? == "1\n"
+    assert match fixture_sql(database, "INSERT INTO orders VALUES (3,0);") {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert match fixture_sql(database, "UPDATE orders SET amount=0 WHERE id=2;") {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert match fixture_sql(database, "INSERT INTO orders VALUES (5,'bogus');") {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert match fixture_sql(database, "INSERT INTO notes VALUES (2,x'ff');") {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|1\n3|0|1\n"
+    discard fixture_sql(database, "UPDATE orders SET id=id, amount=amount WHERE id=3;")?
+    assert fixture_sql(database, "SELECT restorable FROM loom_archive_zero_amounts WHERE entity_id=3;")? == "1\n"
+    discard fixture_sql(database, "UPDATE orders SET amount=2 WHERE id=1;")?
+    assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|0|1\n"
+    discard fixture_sql(database, "INSERT INTO notes VALUES (1,'retained');")?
+    discard execute_positive_amount_downgrade("/usr/bin/sqlite3", database,
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan)?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.Observed(basis) => basis == plan.from_basis,
+        _ => false
+    }
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|0\n"
+    assert fixture_sql(database, "SELECT body FROM notes;")? == "retained\n"
+    discard fixture_sql(database, "INSERT INTO orders VALUES (4,0);")?
+    let again = migration("upgrade_3")
+    let inspection = dry_run("/usr/bin/sqlite3", database,
+        old_schema(again), new_schema(again), forward_catalog(again))?
+    assert match inspection.evidence {
+        BasisEvidence.Observed(basis) => basis == again.from_basis,
+        _ => false
+    }
+    assert length(inspection.missing.forward) == 0 && length(inspection.missing.recovery) == 0
+    let next = prepare(again.attempt_id, again.from_basis, again.to_basis, FailurePolicy.Stop)?
+    discard register("/usr/bin/sqlite3", database, next)?
+    discard start_attempt("/usr/bin/sqlite3", database, again.attempt_id)?
+    discard execute_positive_amount_reupgrade("/usr/bin/sqlite3", database,
+        old_schema(again), new_schema(again), forward_catalog(again), again)?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.Observed(basis) => basis == again.to_basis,
+        _ => false
+    }
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|1\n4|1\n"
+    assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|0|1\n4|0|1\n"
+    assert fixture_sql(database, "SELECT body FROM notes;")? == "retained\n"
+    assert match fixture_sql(database, "INSERT INTO orders VALUES (5,0);") {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    discard fixture_sql(database, "UPDATE OR REPLACE orders SET rowid=3 WHERE id=2;")?
+    assert fixture_sql(database, "SELECT restorable FROM loom_archive_zero_amounts WHERE entity_id=3;")? == "0\n"
+    discard fixture_sql(database, "INSERT OR REPLACE INTO orders VALUES (3,2);")?
+    discard fixture_sql(database, "DELETE FROM orders WHERE id=4;")?
+    assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|0|0\n4|0|0\n"
+    Result.Ok(true)
+}
+
+fn rolls_back_failed_transaction(database Text) Result[Bool, Text] {
+    let plan = migration("upgrade_2")
+    discard fixture_sql(database, "CREATE TABLE loom_deploy_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL); CREATE TRIGGER block_assumed BEFORE INSERT ON loom_deploy_events WHEN NEW.state=7 BEGIN SELECT RAISE(ABORT,'blocked'); END;")?
+    assert match assume_historical("/usr/bin/sqlite3", database, "historical_v1", plan.from_basis) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == "0\n"
+    discard fixture_sql(database, concat("DROP TRIGGER block_assumed; INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) VALUES ('dangling','', '", concat(plan.from_basis, "',0,0);")))?
+    assert match assume_historical("/usr/bin/sqlite3", database, "second_import", plan.from_basis) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT attempt_id,state FROM loom_deploy_events;")? == "dangling|0\n"
+    discard fixture_sql(database, "DROP TABLE loom_deploy_events;")?
+    discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10); CREATE VIEW notes AS SELECT 1 AS id, 'collision' AS body;")?
+    discard started(database, plan)?
+    assert match execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|0\n2|10\n"
+    assert fixture_sql(database, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='loom_archive_zero_amounts';")? == "0\n"
+    assert fixture_sql(database, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='notes';")? == "0\n"
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events WHERE attempt_id='upgrade_2' AND state=3;")? == "0\n"
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events ORDER BY sequence DESC LIMIT 1;")? == "2\n"
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.None => true,
+        _ => false
+    }
+    discard fixture_sql(database, "DROP VIEW notes;")?
+    discard resume_failed_attempt("/usr/bin/sqlite3", database, plan.attempt_id)?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.None => true,
+        _ => false
+    }
+    discard execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan)?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.Observed(basis) => basis == plan.to_basis,
+        _ => false
+    }
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|1\n2|10\n"
+    discard fixture_sql(database, "DROP TRIGGER loom_archive_amount_update; CREATE TRIGGER loom_archive_amount_update AFTER UPDATE OF amount ON orders BEGIN SELECT 1; END;")?
+    assert match execute_positive_amount_downgrade("/usr/bin/sqlite3", database,
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|1\n2|10\n"
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events WHERE attempt_id='upgrade_2' AND state=6;")? == "0\n"
+    Result.Ok(true)
+}
+
+fn main() {
+    let args = arguments()
+    assert length(args) == 3
+    assert match succeeds(get(args, 1)) {
+        Result.Ok(value) => value,
+        Result.Err(_) => false
+    }
+    assert match rolls_back_failed_transaction(get(args, 2)) {
+        Result.Ok(value) => value,
+        Result.Err(_) => false
+    }
+}

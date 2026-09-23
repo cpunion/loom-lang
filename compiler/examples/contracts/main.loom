@@ -53,6 +53,17 @@ ensures result <= a && result <= b
     minimum(a, b)
 }
 
+record Snapshot {
+    count Int
+    values List[Int]
+}
+
+fn snapshot_count(value Snapshot) Int
+ensures result == old(value.count)
+{
+    value.count
+}
+
 fn main() {
     assert good(7) == 7
     assert forward(7) == 7
@@ -61,6 +72,10 @@ fn main() {
     } == 7
     assert bounded(12, 10, 20) == 12
     assert lower(7, 3) == 3
+    assert snapshot_count(Snapshot {
+            count = 9
+            values = [1, 2]
+        }) == 9
     assert comptime {
         lower(3, 7)
     } == 3

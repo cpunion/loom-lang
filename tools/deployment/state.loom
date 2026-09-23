@@ -1,0 +1,131 @@
+import std.result.Result
+
+pub enum FailurePolicy {
+    Stop
+    Rollback
+}
+
+pub enum DeploymentState {
+    NotDeployed
+    Started
+    Failed
+    Complete
+    RollbackStarted
+    RollbackFailed
+    RollbackComplete
+    AssumedComplete
+}
+
+pub enum Transition {
+    Begin
+    Fail
+    Finish
+    BeginRollback
+    FailRollback
+    FinishRollback
+    Resume
+    AssumeComplete
+}
+
+pub record Attempt {
+    id Text
+    from_basis Text
+    to_basis Text
+    policy FailurePolicy
+    state DeploymentState
+}
+
+// The failure policy is mandatory before Begin. This value is a transition
+// model, not evidence that a database operation or rollback actually ran.
+pub fn prepare(id Text, from_basis Text, to_basis Text, policy FailurePolicy) Result[Attempt, Text] {
+    if id == "" || to_basis == "" || from_basis == to_basis {
+        return Result.Err("deployment needs an identity and a new target basis")
+    }
+    Result.Ok(Attempt {
+            id = id
+            from_basis = from_basis
+            to_basis = to_basis
+            policy = policy
+            state = DeploymentState.NotDeployed
+        })
+}
+
+pub fn advance(attempt Attempt, event Transition) Result[Attempt, Text] {
+    let next = match attempt.state {
+        DeploymentState.NotDeployed => match event {
+            Transition.Begin => DeploymentState.Started,
+            Transition.AssumeComplete => DeploymentState.AssumedComplete,
+            _ => {
+                return Result.Err("deployment has not started")
+            }
+        },
+        DeploymentState.Started => match event {
+            Transition.Fail => DeploymentState.Failed,
+            Transition.Finish => DeploymentState.Complete,
+            _ => {
+                return Result.Err("started deployment has an unknown outcome")
+            }
+        },
+        DeploymentState.Failed => match event {
+            Transition.BeginRollback => DeploymentState.RollbackStarted,
+            Transition.Resume => {
+                if attempt.policy == FailurePolicy.Rollback {
+                    return Result.Err("rollback policy does not permit continuing a failed deployment")
+                }
+                DeploymentState.Started
+            },
+            _ => {
+                return Result.Err("failed deployment needs its declared recovery policy")
+            }
+        },
+        DeploymentState.Complete => match event {
+            Transition.BeginRollback => DeploymentState.RollbackStarted,
+            _ => {
+                return Result.Err("completed deployment needs a new attempt or rollback")
+            }
+        },
+        DeploymentState.RollbackStarted => match event {
+            Transition.FailRollback => DeploymentState.RollbackFailed,
+            Transition.FinishRollback => DeploymentState.RollbackComplete,
+            _ => {
+                return Result.Err("rollback is still in progress")
+            }
+        },
+        DeploymentState.RollbackFailed => match event {
+            Transition.BeginRollback => DeploymentState.RollbackStarted,
+            _ => {
+                return Result.Err("failed rollback needs explicit retry")
+            }
+        },
+        DeploymentState.RollbackComplete => {
+            return Result.Err("rolled-back attempt is closed")
+        },
+        DeploymentState.AssumedComplete => {
+            return Result.Err("assumed historical completion is not an observed operation")
+        }
+    }
+    Result.Ok(Attempt {
+            id = attempt.id
+            from_basis = attempt.from_basis
+            to_basis = attempt.to_basis
+            policy = attempt.policy
+            state = next
+        })
+}
+
+// Only observed completion or rollback establishes an observed effective basis.
+// Assumed completion remains separate; Start/Fail/rollback-in-progress are unknown.
+pub enum BasisEvidence {
+    None
+    Observed(Text)
+    Assumed(Text)
+}
+
+pub fn effective(attempt Attempt) BasisEvidence {
+    match attempt.state {
+        DeploymentState.Complete => BasisEvidence.Observed(attempt.to_basis),
+        DeploymentState.RollbackComplete => BasisEvidence.Observed(attempt.from_basis),
+        DeploymentState.AssumedComplete => BasisEvidence.Assumed(attempt.to_basis),
+        _ => BasisEvidence.None
+    }
+}

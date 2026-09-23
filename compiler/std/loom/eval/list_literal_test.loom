@@ -86,12 +86,12 @@ test fn list_literals_preserve_nested_sharing_and_record_snapshots() {
     list_push_value(first, number(9))
     assert list_length(alias) == 2 && list_length(independent) == 1
 
-    let old = node(ExprKind.Record, 8, "", -1, two(node(ExprKind.Field, 1, "", 0, one(literal(1))),
+    let previous = node(ExprKind.Record, 8, "", -1, two(node(ExprKind.Field, 1, "", 0, one(literal(1))),
             node(ExprKind.Field, 6, "", 1, one(initial))))
     let shared = node(ExprKind.Field, 6, "", 1, one(local(0, 8)))
     let updated = node(ExprKind.Record, 8, "", -1, two(node(ExprKind.Field, 1, "", 0, one(literal(2))),
             node(ExprKind.Field, 6, "", 1, one(shared))))
-    let body = two(assigned(0, old), assigned(1, list_literal(9, one(local(0, 8)))))
+    let body = two(assigned(0, previous), assigned(1, list_literal(9, one(local(0, 8)))))
     push(body, assigned(0, updated))
     let arguments = two(shared, literal(0))
     push(arguments, literal(20))

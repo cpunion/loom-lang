@@ -27,7 +27,7 @@ fn flow_resource(flow ResourceFlow, ty Int) Result[Bool, Failure] {
     resource_type(flow.analysis.env, get(flow.analysis.functions, flow.function).symbol, new[Requirement](), ty, new[Int]())
 }
 fn resource_automatic(expr Expr, output List[Int]) {
-    if expr.kind == ExprKind.Defer && expr.text == "scoped" { push(output, expr.index) }
+    if expr.kind == ExprKind.Defer && (expr.text == "scoped" || expr.text == "resource-pending") { push(output, expr.index) }
     var index = 0
     while index < length(expr.children) { resource_automatic(get(expr.children, index), output)
         index = index + 1 }
@@ -157,6 +157,9 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         if value.pending == -2 { return Result.Err(resource_error(flow, expr, "a transferred resource payload cannot be used again")) }
         return Result.Ok(value)
     }
+    if kind == ExprKind.Cleanup && expr.text == "resource-disarm" {
+        return Result.Ok(resource_value(false, false, -1))
+    }
     if kind == ExprKind.Defer || kind == ExprKind.Cleanup {
         let cleanup = resource_branch(flow)
         discard resource_expression(cleanup, get(expr.children, 0), resource_seen(flow.automatic, expr.index))?
@@ -187,9 +190,9 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     if kind == ExprKind.If {
         discard resource_expression(flow, get(expr.children, 0), false)?
         let yes = resource_branch(flow)
-        let first = resource_expression(yes, get(expr.children, 1), false)?
+        let first = resource_expression(yes, get(expr.children, 1), automatic)?
         let no = resource_branch(flow)
-        let other = if length(expr.children) == 3 { resource_expression(no, get(expr.children, 2), false)? } else { resource_value(false, false, -1) }
+        let other = if length(expr.children) == 3 { resource_expression(no, get(expr.children, 2), automatic)? } else { resource_value(false, false, -1) }
         resource_join(flow, yes)
         resource_join(flow, no)
         return Result.Ok(resource_value(first.protected || other.protected, first.fresh && other.fresh, -1))
@@ -228,8 +231,27 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         // wrapper does not acquire exclusive ownership of its reachable data.
         return Result.Ok(resource_value(value.protected && flow_resource(flow, expr.ty)?, false, -1))
     }
+    if kind == ExprKind.Record && expr.text == "resource-pending-transfer" {
+        var field = 0
+        while field < length(expr.children) {
+            let input = get(get(expr.children, field).children, 0)
+            let value = resource_expression(flow, input, false)?
+            if flow_resource(flow, input.ty)? {
+                if input.kind != ExprKind.Local || !value.protected ||
+                    !get(current.locals, input.index).is_scoped || get(current.locals, input.index).name != "" {
+                    return Result.Err(resource_error(flow, input, "a pending resource field must transfer its fresh temporary"))
+                }
+                set(flow.locals, input.index, resource_value(false, false, -2))
+            } else if value.protected {
+                return Result.Err(resource_error(flow, input, "a scoped value cannot be stored in an aggregate"))
+            }
+            field = field + 1
+        }
+        return Result.Ok(resource_value(false, true, -1))
+    }
     var protected = false
     var resources = 0
+    var resource_index = -1
     var index = 0
     while index < length(expr.children) {
         let child = get(expr.children, index)
@@ -237,12 +259,17 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         if value.protected { protected = true }
         if flow_resource(flow, child.ty)? {
             resources = resources + 1
+            resource_index = index
             if !value.fresh { return Result.Err(resource_error(flow, child, "resource aggregates require a fresh transferred payload")) }
         }
         index = index + 1
     }
     if protected { return Result.Err(resource_error(flow, expr, "a scoped value cannot be copied, discarded, boxed, or stored in an aggregate")) }
-    if resources != 0 && (kind != ExprKind.Variant || length(expr.children) != 1) {
+    let last_record_resource = kind == ExprKind.Record && resources == 1 && resource_index + 1 == length(expr.children)
+    if resources != 0 && !last_record_resource && (kind != ExprKind.Variant || length(expr.children) != 1) {
+        if kind == ExprKind.Record && resources == 1 {
+            return Result.Err(resource_error(flow, expr, "a resource field must be initialized last until pending-transfer cleanup is supported"))
+        }
         return Result.Err(resource_error(flow, expr, "nested resource aggregates require pending-transfer cleanup, which is not yet supported"))
     }
     if kind == ExprKind.List && flow_resource(flow, expr.ty)? {

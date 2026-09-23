@@ -1,0 +1,104 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+// These entries name migration actions; they do not attest that the actions
+// preserve data or satisfy a target invariant. Execution needs separate proof
+// or runtime checks over the actual deployment basis and data.
+pub record Handling {
+    kind ConflictKind
+    table Text
+    column Text
+    action Text
+}
+
+pub record MigrationCatalog {
+    from_basis Text
+    to_basis Text
+    forward List[Handling]
+    recovery List[Handling]
+}
+
+pub record Missing {
+    forward List[Conflict]
+    recovery List[Conflict]
+}
+
+fn matches(handler Handling, conflict Conflict) Bool {
+    handler.kind == conflict.kind && handler.table == conflict.table && handler.column == conflict.column
+}
+
+fn contains_handler(handlers List[Handling], conflict Conflict) Bool {
+    var index = 0
+    while index < length(handlers) {
+        if matches(get(handlers, index), conflict) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn valid_handlers(handlers List[Handling], known List[Conflict]) Bool {
+    var index = 0
+    while index < length(handlers) {
+        let current = get(handlers, index)
+        if current.action == "" {
+            return false
+        }
+        var recognized = false
+        var candidate = 0
+        while candidate < length(known) {
+            if matches(current, get(known, candidate)) {
+                recognized = true
+            }
+            candidate = candidate + 1
+        }
+        if !recognized {
+            return false
+        }
+        var earlier = 0
+        while earlier < index {
+            let previous = get(handlers, earlier)
+            if previous.kind == current.kind && previous.table == current.table && previous.column == current.column {
+                return false
+            }
+            earlier = earlier + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn missing(known List[Conflict], handlers List[Handling]) List[Conflict] {
+    let pending = new[Conflict]()
+    var index = 0
+    while index < length(known) {
+        let conflict = get(known, index)
+        if !contains_handler(handlers, conflict) {
+            push(pending, conflict)
+        }
+        index = index + 1
+    }
+    pending
+}
+
+// Checks both directions directly; a forward upgrade catalog does not excuse
+// data loss on downgrade. Empty Missing lists mean only that every structural
+// conflict is named, never that execution or restoration is safe.
+pub fn coverage(from Schema, to Schema, catalog MigrationCatalog) Result[Missing, Text] {
+    if catalog.from_basis != from.basis || catalog.to_basis != to.basis {
+        return Result.Err("migration catalog does not match its declared bases")
+    }
+    let forward = conflicts(from, to)?
+    let recovery = conflicts(to, from)?
+    if !valid_handlers(catalog.forward, forward) || !valid_handlers(catalog.recovery, recovery) {
+        return Result.Err("migration catalog contains an empty, duplicate or unrelated action")
+    }
+    Result.Ok(Missing {
+            forward = missing(forward, catalog.forward)
+            recovery = missing(recovery, catalog.recovery)
+        })
+}

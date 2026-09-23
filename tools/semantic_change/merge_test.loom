@@ -1,0 +1,291 @@
+import std.loom.ast.NodeKind
+import std.io.write_error
+import std.list.get
+import std.list.new
+import std.list.push
+import std.result.Result
+import std.text.contains
+
+fn identities(amount_path Text) List[Identity] {
+    let bindings = new[Identity]()
+    push(bindings, Identity {
+            id = "amount-id"
+            path = amount_path
+            kind = NodeKind.Function
+            name = "amount"
+        })
+    push(bindings, Identity {
+            id = "entry-id"
+            path = "app.loom"
+            kind = NodeKind.Function
+            name = "entry"
+        })
+    bindings
+}
+
+fn revision(amount_path Text, source Text, app Text) Revision {
+    let files = new[File]()
+    push(files, File {
+            path = "value.loom"
+            text = source
+        })
+    push(files, File {
+            path = "app.loom"
+            text = app
+        })
+    Revision {
+        package_name = "sample"
+        files = files
+        identities = identities(amount_path)
+    }
+}
+
+fn baseline() Revision {
+    revision("value.loom", "fn amount() Int { 1 }\n",
+        "fn entry() Int { amount() }\n")
+}
+
+test fn move_and_independent_edit_merge_without_reformatting() {
+    let base = baseline()
+    let moved = revision("app.loom", "",
+        "// destination note\nfn amount() Int { 1 }\nfn entry() Int { amount() }\n")
+    let edited = revision("value.loom", "fn amount() Int {\n    // explanation\n    2\n}\n",
+        "fn entry() Int { amount() }\n")
+    match merge(base, moved, edited) {
+        Result.Ok(merged) => {
+            assert get(merged.files, 0).text == ""
+            assert get(merged.files, 1).text ==
+            "// destination note\nfn amount() Int {\n    // explanation\n    2\n}\nfn entry() Int { amount() }\n"
+            assert get(merged.identities, 0).path == "app.loom"
+        }
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+        }
+    }
+    match merge(base, edited, moved) {
+        Result.Ok(merged) => {
+            assert get(merged.files, 0).text == ""
+            assert get(merged.files, 1).text ==
+            "// destination note\nfn amount() Int {\n    // explanation\n    2\n}\nfn entry() Int { amount() }\n"
+        }
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+        }
+    }
+}
+
+test fn deletion_conflicts_with_edit_or_move() {
+    let base = baseline()
+    let files = new[File]()
+    push(files, File {
+            path = "value.loom"
+            text = ""
+        })
+    push(files, File {
+            path = "app.loom"
+            text = "fn entry() Int { 0 }\n"
+        })
+    let ids = new[Identity]()
+    push(ids, Identity {
+            id = "entry-id"
+            path = "app.loom"
+            kind = NodeKind.Function
+            name = "entry"
+        })
+    let removed = Revision {
+        package_name = "sample"
+        files = files
+        identities = ids
+    }
+    let edited = revision("value.loom", "fn amount() Int { 2 }\n",
+        "fn entry() Int { amount() }\n")
+    match merge(base, removed, edited) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "delete versus edit")
+        }
+    }
+}
+
+test fn ambiguous_identity_and_conflicting_body_edits_fail_closed() {
+    let base = baseline()
+    let overloaded = revision("value.loom",
+        "fn amount() Int { 1 }\nfn amount(value Int) Int { value }\n",
+        "fn entry() Int { amount() }\n")
+    match merge(base, overloaded, baseline()) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "ambiguous declaration")
+        }
+    }
+    let one = revision("value.loom", "fn amount() Int { 2 }\n",
+        "fn entry() Int { amount() }\n")
+    let two = revision("value.loom", "fn amount() Int { 3 }\n",
+        "fn entry() Int { amount() }\n")
+    match merge(base, one, two) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "concurrent body edits")
+        }
+    }
+}
+
+test fn independent_body_edits_merge_without_layout_change() {
+    let base = baseline()
+    let left = revision("value.loom", "fn amount() Int { 2 }\n",
+        "fn entry() Int { amount() }\n")
+    let right = revision("value.loom", "fn amount() Int { 1 }\n",
+        "fn entry() Int { amount() + 1 }\n")
+    match merge(base, left, right) {
+        Result.Ok(merged) => {
+            assert get(merged.files, 0).text == "fn amount() Int { 2 }\n"
+            assert get(merged.files, 1).text == "fn entry() Int { amount() + 1 }\n"
+        }
+        Result.Err(message) => {
+            assert false
+        }
+    }
+}
+
+test fn noncarrier_trivia_changes_are_not_silently_lost() {
+    let base = baseline()
+    let moved = revision("app.loom", "",
+        "fn amount() Int { 1 }\nfn entry() Int { amount() }\n")
+    let edited = revision("value.loom", "// new note\nfn amount() Int { 2 }\n",
+        "fn entry() Int { amount() }\n")
+    match merge(base, moved, edited) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "outside declaration")
+        }
+    }
+}
+
+test fn merged_program_must_pass_type_analysis() {
+    let base = revision("value.loom", "fn amount() Int { 1 }\n",
+        "fn entry() {}\n")
+    let left = revision("value.loom", "fn amount() Bool { true }\n",
+        "fn entry() {}\n")
+    let right = revision("value.loom", "fn amount() Int { 1 }\n",
+        "fn entry() { assert amount() == 1 }\n")
+    match merge(base, left, right) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "failed analysis")
+        }
+    }
+}
+
+test fn test_only_helpers_cannot_satisfy_production_calls() {
+    let files = new[File]()
+    push(files, File {
+            path = "app.loom"
+            text = "fn entry() Int { 1 }\n"
+        })
+    push(files, File {
+            path = "app_test.loom"
+            text = "fn helper() Int { 2 }\n"
+        })
+    let ids = new[Identity]()
+    push(ids, Identity {
+            id = "entry-id"
+            path = "app.loom"
+            kind = NodeKind.Function
+            name = "entry"
+        })
+    push(ids, Identity {
+            id = "helper-id"
+            path = "app_test.loom"
+            kind = NodeKind.Function
+            name = "helper"
+        })
+    let base = Revision {
+        package_name = "sample"
+        files = files
+        identities = ids
+    }
+    let edited_files = new[File]()
+    push(edited_files, File {
+            path = "app.loom"
+            text = "fn entry() Int { helper() }\n"
+        })
+    push(edited_files, File {
+            path = "app_test.loom"
+            text = "fn helper() Int { 2 }\n"
+        })
+    let edited = Revision {
+        package_name = "sample"
+        files = edited_files
+        identities = ids
+    }
+    match merge(base, edited, base) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "failed analysis (production)")
+        }
+    }
+    let invalid_test_files = new[File]()
+    push(invalid_test_files, File {
+            path = "app.loom"
+            text = "fn entry() Int { 1 }\n"
+        })
+    push(invalid_test_files, File {
+            path = "app_test.loom"
+            text = "fn helper() Int { missing() }\n"
+        })
+    let invalid_test = Revision {
+        package_name = "sample"
+        files = invalid_test_files
+        identities = ids
+    }
+    match merge(base, invalid_test, base) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "failed analysis (tests)")
+        }
+    }
+}
+
+fn boundary_revision(path Text, production Text, testing Text) Revision {
+    let files = new[File]()
+    push(files, File { path = "value.loom" text = production })
+    push(files, File { path = "value_test.loom" text = testing })
+    let ids = new[Identity]()
+    push(ids, Identity {
+            id = "amount-id"
+            path = path
+            kind = NodeKind.Function
+            name = "amount"
+        })
+    Revision { package_name = "sample" files = files identities = ids }
+}
+
+test fn moving_a_declaration_into_tests_requires_explicit_resolution() {
+    let base = boundary_revision("value.loom", "fn amount() Int { 1 }\n", "")
+    let moved = boundary_revision("value_test.loom", "", "fn amount() Int { 1 }\n")
+    let edited = boundary_revision("value.loom", "fn amount() Int { 2 }\n", "")
+    match merge(base, moved, edited) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "production/test boundary")
+        }
+    }
+}

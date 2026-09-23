@@ -303,8 +303,11 @@ pub fn decode(text: &str) -> Result<c::Program> {
     for (interface, concrete, methods) in witnesses {
         let shape = at(&program.interfaces, interface)?;
         let concrete = map(concrete)?;
-        if matches!(concrete, Type::Dyn(_) | Type::Parameter(_) | Type::Unit) {
-            return Err("checked witness requires a concrete value type".into());
+        // An explicit adapter may use an already-erased value as its source.
+        // Dyn has a known runtime layout (data plus witness); only unresolved
+        // parameters and Unit lack a boxable payload here.
+        if matches!(concrete, Type::Parameter(_) | Type::Unit) {
+            return Err("checked witness requires a runtime value type".into());
         }
         if methods.len() != shape.methods.len() {
             return Err("checked witness method count mismatch".into());

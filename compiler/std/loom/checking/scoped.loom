@@ -1,6 +1,7 @@
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.typed.Local
+import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.list.new
 import std.list.get
@@ -9,24 +10,66 @@ import std.list.push
 import std.list.length
 import std.result.Result
 
-fn registered_scoped(context Context, node Node, boundary Int) Result[Step, Failure] {
-    let annotation = if length(node.children) == 2 { context_type(context, child(node, 0))? } else { -1 }
-    let value = expr(context, child(node, length(node.children) - 1), annotation)?
-    discard scope_initializer(context, node, value)?
-    let local = length(context.locals)
-    let bound = bind_local(context, node, node.value, value.ty, false, boundary)?
-    set(context.locals, local, Local { name = node.value ty = value.ty mutable = false is_scoped = true })
-    let receiver = Node { kind = NodeKind.Name value = node.value span = node.span children = new[Node]() }
-    let dispose = method_call(bound, node, receiver, "dispose", new[Node](), plain_inputs(new[Node]()), resource_concept(context.env, "Dispose"), 0)?
+fn scope_register(context Context, node Node, path Text, registrations List[Expr]) Result[Context, Failure] {
+    let receiver = Node {
+        kind = NodeKind.Name
+        value = path
+        span = node.span
+        children = new[Node]()
+    }
+    let dispose = method_call(context, node, receiver, "dispose", new[Node](), plain_inputs(new[Node]()), resource_concept(context.env, "Dispose"), 0)?
     let body = expression(ExprKind.Block, 0, node, "", -1, expressions(dispose), dispose.falls)
     let head = length(context.cleanups)
-    push(context.cleanups, Cleanup { body = body previous = context.cleanup_head })
-    let next = Context { lexical = bound.lexical env = bound.env signature = bound.signature arguments = bound.arguments constants = bound.constants
-        locals = bound.locals bindings = bound.bindings head = bound.head cleanups = bound.cleanups cleanup_head = head loop_boundary = bound.loop_boundary
-        facts = bound.facts fact_head = bound.fact_head emit = bound.emit }
-    let initialized = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls)
-    // Registration follows successful initialization; it does not run dispose.
-    // The marker distinguishes compiler disposal from an explicit defer call.
-    let registered = expression(ExprKind.Defer, 0, node, "scoped", head, expressions(body), true)
-    Result.Ok(Step { context = next expression = expression(ExprKind.Block, 0, node, "", -1, pair(initialized, registered), value.falls) })
+    push(context.cleanups, Cleanup {
+            body = body
+            previous = context.cleanup_head
+        })
+    push(registrations, expression(ExprKind.Defer, 0, node, "scoped", head, expressions(body), true))
+    Result.Ok(Context {
+            lexical = context.lexical
+            env = context.env
+            signature = context.signature
+            arguments = context.arguments
+            constants = context.constants
+            locals = context.locals
+            bindings = context.bindings
+            head = context.head
+            cleanups = context.cleanups
+            cleanup_head = head
+            loop_boundary = context.loop_boundary
+            facts = context.facts
+            fact_head = context.fact_head
+            emit = context.emit
+        })
+}
+
+fn registered_scoped(context Context, node Node, boundary Int) Result[Step, Failure] {
+    let annotation = if length(node.children) == 2 {
+        context_type(context, child(node, 0))?
+    } else {
+        -1
+    }
+    let value = expr(context, child(node, length(node.children) - 1), annotation)?
+    let paths = scope_initializer(context, node, value)?
+    let local = length(context.locals)
+    let bound = bind_local(context, node, node.value, value.ty, false, boundary)?
+    set(context.locals, local, Local {
+            name = node.value
+            ty = value.ty
+            mutable = false
+            is_scoped = true
+        })
+    let body = expressions(expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls))
+    var next = bound
+    var index = 0
+    while index < length(paths) {
+        next = scope_register(next, node, get(paths, index), body)?
+        index = index + 1
+    }
+    // Each registration follows successful initialization. Register children
+    // first, so normal and fault exits dispose the outer wrapper before them.
+    Result.Ok(Step {
+            context = next
+            expression = expression(ExprKind.Block, 0, node, "", -1, body, value.falls)
+        })
 }

@@ -10,6 +10,7 @@ import std.list.get
 import std.list.push
 import std.list.length
 import std.result.Result
+import std.text.concat
 
 fn resource_concept(env Environment, name Text) Int {
     var index = 0
@@ -105,27 +106,16 @@ fn must_scope(context Context, ty Int) Result[Bool, Failure] {
     resource_type(context.env, context.signature.symbol, context.signature.requirements, ty, new[Int]())
 }
 
-fn scope_initializer(context Context, node Node, value Expr) Result[Bool, Failure] {
-    let capability = resource_concept(context.env, "Dispose")
-    if capability < 0 { return Result.Err(error(context, node, "scoped requires std.resource.Dispose")) }
-    if !satisfies(context, value.ty, capability)? {
-        return Result.Err(error(context, node, "scoped requires a value implementing std.resource.Dispose"))
-    }
-    let shape = get(context.env.types, value.ty)
+fn scope_collect(context Context, node Node, ty Int, path Text, capability Int, paths List[Text], depth Int) Result[Bool, Failure] {
+    if depth >= 64 { return Result.Err(error(context, node, "nested resource aggregate depth limit exceeded")) }
+    let shape = get(context.env.types, ty)
     var index = 0
-    while index < length(shape.fields) {
-        if must_scope(context, get(shape.fields, index).ty)? {
-            return Result.Err(error(context, node, "nested resource aggregates require pending-transfer cleanup, which is not yet supported"))
-        }
-        index = index + 1
-    }
-    index = 0
     while index < length(shape.variants) {
         let fields = get(shape.variants, index).fields
         var field = 0
         while field < length(fields) {
             if must_scope(context, get(fields, field))? {
-                return Result.Err(error(context, node, "nested resource aggregates require pending-transfer cleanup, which is not yet supported"))
+                return Result.Err(error(context, node, "resource enum payloads require pending-transfer cleanup, which is not yet supported"))
             }
             field = field + 1
         }
@@ -134,7 +124,30 @@ fn scope_initializer(context Context, node Node, value Expr) Result[Bool, Failur
     if shape.kind == TypeKind.List && must_scope(context, get(shape.arguments, 0))? {
         return Result.Err(error(context, node, "resource lists require pending-transfer cleanup, which is not yet supported"))
     }
+    index = 0
+    while index < length(shape.fields) {
+        let field = get(shape.fields, index)
+        if must_scope(context, field.ty)? {
+            if !satisfies(context, field.ty, capability)? {
+                return Result.Err(error(context, node, "a nested resource field must implement std.resource.Dispose"))
+            }
+            discard scope_collect(context, node, field.ty, concat(concat(path, "."), field.name), capability, paths, depth + 1)?
+        }
+        index = index + 1
+    }
+    push(paths, path)
     Result.Ok(true)
+}
+
+fn scope_initializer(context Context, node Node, value Expr) Result[List[Text], Failure] {
+    let capability = resource_concept(context.env, "Dispose")
+    if capability < 0 { return Result.Err(error(context, node, "scoped requires std.resource.Dispose")) }
+    if !satisfies(context, value.ty, capability)? {
+        return Result.Err(error(context, node, "scoped requires a value implementing std.resource.Dispose"))
+    }
+    let paths = new[Text]()
+    discard scope_collect(context, node, value.ty, node.value, capability, paths, 0)?
+    Result.Ok(paths)
 }
 
 fn resource_scope_node(node Node) Bool {
@@ -213,10 +226,24 @@ fn resource_payload(context Context, binding Node, body Node) Result[Bool, Failu
     Result.Err(error(context, binding, "a resource payload must immediately enter scoped before any other operation"))
 }
 
+fn scoped_receiver_root(context Context, value Expr) Bool {
+    if value.kind == ExprKind.Local {
+        return get(context.locals, value.index).is_scoped ||
+        (value.index == 0 && method_declaration(context.env, context.signature.symbol) >= 0)
+    }
+    if value.kind == ExprKind.Field {
+        return scoped_receiver_root(context, get(value.children, 0))
+    }
+    false
+}
+
 fn resource_receiver(context Context, node Node, value Expr) Result[Bool, Failure] {
-    if !must_scope(context, value.ty)? { return Result.Ok(true) }
-    if value.kind == ExprKind.Local && (get(context.locals, value.index).is_scoped ||
-        (value.index == 0 && method_declaration(context.env, context.signature.symbol) >= 0)) { return Result.Ok(true) }
+    if !must_scope(context, value.ty)? {
+        return Result.Ok(true)
+    }
+    if scoped_receiver_root(context, value) {
+        return Result.Ok(true)
+    }
     Result.Err(error(context, node, "a resource must enter scoped before a method call"))
 }
 
