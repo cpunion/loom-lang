@@ -43,6 +43,9 @@ this discovery and need no backend for source queries. Use `--std` and
 object, and production excludes test files and test declarations.
 `run [package] -- [arguments...]` forwards arguments verbatim to the program;
 relative file arguments remain relative to the caller's working directory.
+`loom init <name>` creates a new directory containing a minimal `loom.toml`,
+`main.loom`, same-directory `main_test.loom`, and `.gitignore`. The name must be
+a lowercase package identifier; an existing directory is never overwritten.
 `--object-cache` enables [trusted-local object reuse](../README.md#native-object-cache)
 for native commands. The Loom driver owns cache policy; the Rust bridge only
 identifies its implementation, emits objects and links/publishes requested files.

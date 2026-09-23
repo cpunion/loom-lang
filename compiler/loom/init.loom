@@ -1,0 +1,38 @@
+import std.file.write_text
+import std.fs.create_dir
+import std.loom.manifest.segment
+import std.result.Result
+import std.text.concat
+import std.list.get
+import std.list.length
+
+fn save(path Text, value Text) Result[Bool, Text] {
+    match write_text(path, value) {
+        Result.Ok(_) => Result.Ok(true)
+        Result.Err(_) => Result.Err(concat("cannot write ", path))
+    }
+}
+
+fn init_execute(args List[Text]) Result[Text, Text] {
+    if length(args) != 3 {
+        return Result.Err("usage: loom init <name>")
+    }
+    let name = get(args, 2)
+    if !segment(name) || name == "std" {
+        return Result.Err("project name must be a lowercase package identifier other than std")
+    }
+    match create_dir(name) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            return Result.Err(concat("cannot create new project directory: ", name))
+        }
+    }
+    let manifest = concat("[module]\nname = \"", concat(name, "\"\n"))
+    discard save(concat(name, "/loom.toml"), manifest)?
+    discard save(concat(name, "/main.loom"), "import std.io.write_text\n\nfn main() {\n    discard write_text(\"Hello, Loom!\\n\")\n}\n")?
+    discard save(concat(name, "/main_test.loom"), "test fn arithmetic() {\n    assert 1 + 1 == 2\n}\n")?
+    discard save(concat(name, "/.gitignore"), "target/\n")?
+    let next = concat(get(args, 0), concat(" test ", name))
+    Result.Ok(concat("created ", concat(name, concat("/\nnext: ", concat(next, "\n")))))
+}

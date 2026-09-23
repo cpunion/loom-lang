@@ -30,17 +30,29 @@ fn inspect(text Text, parse_mode Bool) Result[Text, Diagnostic] {
 fn main() {
     let args = arguments()
     if length(args) < 2 {
-        report("usage: loom <check|build|test|run|resolve|fmt> [package] [--std path]")
+        report("usage: loom <init|check|build|test|run|resolve|fmt> [package] [--std path]")
         exit_code(2)
         return
     }
     let mode = get(args, 1)
     if mode == "--help" || mode == "-h" {
-        discard write_text("Loom source compiler\n  loom <check|build|test|run> [package] [--std path] [--emit-ir path]\n  loom build [package] [--output path]\n  loom run [package] [options] -- [program arguments...]\n  loom test [package] --no-run [--output path]\n  loom <build|test|run> [package] --object-cache <trusted local directory>\n  loom resolve [package] [--tests] [--git-tool path]\n  loom fmt [--check] [--recursive] [files or directories...]\n  loom fmt --stdout <file> | loom fmt --stdin\n  loom <lex|parse> <source files...>\n  loom emit-checked [package] [--std path]  (private bootstrap format, stdout)\n  --native-tool selects the LLVM/platform tool.\n")
+        discard write_text("Loom source compiler\n  loom init <name>  (create a new project directory)\n  loom <check|build|test|run> [package] [--std path] [--emit-ir path]\n  loom build [package] [--output path]\n  loom run [package] [options] -- [program arguments...]\n  loom test [package] --no-run [--output path]\n  loom <build|test|run> [package] --object-cache <trusted local directory>\n  loom resolve [package] [--tests] [--git-tool path]\n  loom fmt [--check] [--recursive] [files or directories...]\n  loom fmt --stdout <file> | loom fmt --stdin\n  loom <lex|parse> <source files...>\n  loom emit-checked [package] [--std path]  (private bootstrap format, stdout)\n  --native-tool selects the LLVM/platform tool.\n")
         return
     }
     if mode == "--version" {
         discard write_text("loom source compiler (development)\n")
+        return
+    }
+    if mode == "init" {
+        match init_execute(args) {
+            Result.Ok(message) => {
+                discard write_text(message)
+            }
+            Result.Err(message) => {
+                report(message)
+                exit_code(1)
+            }
+        }
         return
     }
     if mode == "editor-check" || mode == "editor-query" || mode == "editor-complete" {

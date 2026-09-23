@@ -23,7 +23,8 @@ without an alternate language implementation or a dispatch/plugin framework.
 
 ## Build and try it
 
-Use Rust 1.88, LLVM 22 development libraries, and Clang. macOS, Linux, and Windows
+Use Rust 1.88 (pinned by `rust-toolchain.toml`), LLVM 22 development libraries,
+and Clang. macOS, Linux, and Windows
 pass the LLVM 22 bootstrap and native gate. On Ubuntu 24.04 use the signed
 [LLVM apt repository](https://apt.llvm.org/) and install `llvm-22-dev`, `clang-22`,
 and `libpolly-22-dev`; set `LLVM_SYS_221_PREFIX=/usr/lib/llvm-22` and
@@ -50,6 +51,10 @@ LOOM_GC_STRESS=1 compiler/std/list/target/tests
 target/loom test compiler/std/list --no-run --output target/list-tests
 target/loom build compiler/examples/arguments --output target/arguments
 target/arguments +0010
+
+target/loom init hello
+target/loom test hello
+target/loom run hello
 ```
 
 The [bootstrap script](../scripts/bootstrap.sh) builds the current Rust tool

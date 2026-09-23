@@ -616,6 +616,8 @@ cleanup; nested resource aggregates and transfer into Tasks remain unimplemented
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
 same-directory tests, a separate library package, Unicode text and file I/O.
+`loom init <name>` creates a fresh minimal directory package, entry point and
+same-directory test; it rejects existing directories and invalid module names.
 Development compiler paths resolve std/native from their checkout, allowing
 check/build/test/run from the application's own directory; `run --` forwards
 program arguments. The VS Code development host has a dedicated trial workspace.
