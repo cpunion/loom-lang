@@ -133,7 +133,7 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
     let shape = get(proof.program.types, ty)
     // An abstract receiver may be present without contributing any proof
     // fact. A scalar operation or field projection on Empty still rejects.
-    if shape.kind == TypeKind.Parameter {
+    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Dyn {
         return Result.Ok(Value.Empty)
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 1 {
@@ -331,6 +331,19 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     }
     if expr.kind == ExprKind.Record {
         return record_outcomes(proof, expr, state, depth - 1)
+    }
+    if expr.kind == ExprKind.DynBox {
+        let values = execute(proof, get(expr.children, 0), state, depth - 1)?
+        let output = new[Outcome]()
+        var index = 0
+        while index < length(values) {
+            discard add_outcome(output, Outcome {
+                    state = get(values, index).state
+                    value = Value.Empty
+                })?
+            index = index + 1
+        }
+        return Result.Ok(output)
     }
     if expr.kind == ExprKind.Call {
         return body_call(proof, expr, state, depth - 1)

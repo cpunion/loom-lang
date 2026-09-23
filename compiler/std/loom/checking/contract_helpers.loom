@@ -6,7 +6,10 @@ import std.loom.typed.ExprKind
 import std.loom.typed.Function
 import std.loom.proof.verify_with_types
 import std.loom.proof.verify_with_helpers
+import std.list.new
 import std.list.get
+import std.list.push
+import std.list.set
 import std.list.length
 import std.result.Result
 
@@ -35,7 +38,7 @@ fn with_contracts(function Function, preconditions List[Expr], postconditions Li
 }
 fn proof_body_calls(value Expr) Bool {
     if value.kind == ExprKind.Defer { return false }
-    if value.kind == ExprKind.Call { return true }
+    if value.kind == ExprKind.Call || value.kind == ExprKind.DynCall { return true }
     var index = 0
     while index < length(value.children) {
         if proof_body_calls(get(value.children, index)) { return true }
@@ -43,6 +46,69 @@ fn proof_body_calls(value Expr) Bool {
     }
     false
 }
+fn collect_dynamic_contracts(context Context, value Expr, summaries List[Function]) Result[Bool, Failure] {
+    if value.kind == ExprKind.Defer {
+        return Result.Ok(true)
+    }
+    if value.kind == ExprKind.DynCall {
+        push(summaries, dynamic_contract_summary(context, value)?)
+    }
+    var index = 0
+    while index < length(value.children) {
+        discard collect_dynamic_contracts(context, get(value.children, index), summaries)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn proof_dynamic_calls(value Expr, first Int, position List[Int]) Expr {
+    if value.kind == ExprKind.Defer {
+        return value
+    }
+    var target = value.index
+    if value.kind == ExprKind.DynCall {
+        target = first + get(position, 0)
+        set(position, 0, get(position, 0) + 1)
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, proof_dynamic_calls(get(value.children, index), first, position))
+        index = index + 1
+    }
+    Expr {
+        kind = if value.kind == ExprKind.DynCall {
+            ExprKind.Call
+        } else {
+            value.kind
+        }
+        ty = value.ty
+        span = value.span
+        text = value.text
+        index = target
+        children = children
+        arms = value.arms
+        falls = value.falls
+    }
+}
+
+fn with_body(function Function, body Expr) Function {
+    Function {
+        is_async = function.is_async
+        symbol = function.symbol
+        arguments = function.arguments
+        params = function.params
+        result = function.result
+        locals = function.locals
+        preconditions = function.preconditions
+        postconditions = function.postconditions
+        result_local = function.result_local
+        body = body
+        runtime_name = function.runtime_name
+        span = function.span
+    }
+}
+
 fn checked_contracts(context Context, id Int, function Function) Result[Function, Failure] {
     let node = symbol(context.env, context.signature.symbol).node
     let has_ensures = has(node, NodeKind.Ensures) || inherited_method_contract(context.env, context.signature.symbol, NodeKind.Ensures)
@@ -57,7 +123,7 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
         }
     } else {
         let stage = staging(context, node)?
-        let proof = if body_calls {
+        var proof = if body_calls {
             // Call-free declaration checking needs no queue. For a body proof,
             // rebuild once from a fresh entry scope, retaining its actual type
             // arguments, not one later concrete caller. Every direct Call now
@@ -69,7 +135,21 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
             with_contracts(function, add_contracts(contracts(stage, node, NodeKind.Requires)?, inherited_contracts(stage, NodeKind.Requires)?),
                 add_contracts(contracts(stage, node, NodeKind.Ensures)?, inherited_contracts(stage, NodeKind.Ensures)?))
         }
-        match verify_with_helpers(prepared(stage)?, proof) {
+        let summaries = new[Function]()
+        if body_calls { discard collect_dynamic_contracts(stage, proof.body, summaries)? }
+        let program = prepared(stage)?
+        let first = length(program.functions)
+        var index = 0
+        while index < length(summaries) {
+            push(program.functions, get(summaries, index))
+            index = index + 1
+        }
+        if body_calls {
+            let position = new[Int]()
+            push(position, 0)
+            proof = with_body(proof, proof_dynamic_calls(proof.body, first, position))
+        }
+        match verify_with_helpers(program, proof) {
             Result.Ok(conditions) => {
                 // Ensures are already proved; retain call-free checked clauses
                 // for reflection/CTFE, not private helper indices or runtime roots.
