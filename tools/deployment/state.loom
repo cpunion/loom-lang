@@ -31,6 +31,7 @@ pub record Attempt {
     id Text
     from_basis Text
     to_basis Text
+    plan_digest Text
     policy FailurePolicy
     state DeploymentState
 }
@@ -45,8 +46,26 @@ pub fn prepare(id Text, from_basis Text, to_basis Text, policy FailurePolicy) Re
             id = id
             from_basis = from_basis
             to_basis = to_basis
+            plan_digest = ""
             policy = policy
             state = DeploymentState.NotDeployed
+        })
+}
+
+// A concrete executor must bind its immutable plan before registration.
+pub fn prepare_plan(id Text, from_basis Text, to_basis Text, policy FailurePolicy,
+    plan_digest Text) Result[Attempt, Text] {
+    if !digest(plan_digest) {
+        return Result.Err("deployment plan identity must be a SHA-256 digest")
+    }
+    let attempt = prepare(id, from_basis, to_basis, policy)?
+    Result.Ok(Attempt {
+            id = attempt.id
+            from_basis = attempt.from_basis
+            to_basis = attempt.to_basis
+            plan_digest = plan_digest
+            policy = attempt.policy
+            state = attempt.state
         })
 }
 
@@ -108,6 +127,7 @@ pub fn advance(attempt Attempt, event Transition) Result[Attempt, Text] {
             id = attempt.id
             from_basis = attempt.from_basis
             to_basis = attempt.to_basis
+            plan_digest = attempt.plan_digest
             policy = attempt.policy
             state = next
         })

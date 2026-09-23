@@ -19,6 +19,7 @@ pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, 
     }
     discard verify_receipt_basis(from, target_receipt)?
     discard exact_catalog(from, to, catalog, plan)?
+    let plan_identity = positive_amount_plan_digest(plan)
     let previous = match latest(tool, database)? {
         Option.Some(value) => value,
         Option.None => {
@@ -26,7 +27,8 @@ pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, 
         }
     }
     if previous.attempt.id != plan.attempt_id || previous.attempt.from_basis != plan.from_basis ||
-    previous.attempt.to_basis != plan.to_basis || previous.attempt.policy != FailurePolicy.Stop {
+    previous.attempt.to_basis != plan.to_basis || previous.attempt.plan_digest != plan_identity ||
+    previous.attempt.policy != FailurePolicy.Stop {
         return Result.Err("SQLite downgrade does not match the deployed attempt")
     }
     if previous.attempt.state == DeploymentState.Complete || previous.attempt.state == DeploymentState.RollbackFailed {
@@ -58,6 +60,7 @@ pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, 
     current_event = concat(current_event, concat(" AND attempt_id=", literal(plan.attempt_id)))
     current_event = concat(current_event, concat(" AND from_basis=", literal(plan.from_basis)))
     current_event = concat(current_event, concat(" AND to_basis=", literal(plan.to_basis)))
+    current_event = concat(current_event, concat(" AND plan_digest=", literal(plan_identity)))
     current_event = concat(current_event,
         concat(" AND policy=", to_text(policy_number(started.attempt.policy))))
     current_event = concat(current_event,
@@ -123,12 +126,14 @@ pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, 
         concat(orders, concat(" WHERE typeof(", concat(amount,
                     concat(")!='integer' OR ", concat(amount, "<0)"))))))
     script = concat(script, checked(nonnegative))
-    var event = "INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) SELECT "
+    var event = "INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,plan_digest,policy,state) SELECT "
     event = concat(event, literal(plan.attempt_id))
     event = concat(event, ",")
     event = concat(event, literal(plan.from_basis))
     event = concat(event, ",")
     event = concat(event, literal(plan.to_basis))
+    event = concat(event, ",")
+    event = concat(event, literal(plan_identity))
     event = concat(event, ",")
     event = concat(event, to_text(policy_number(completed.policy)))
     event = concat(event, concat(",", to_text(state_number(completed.state))))

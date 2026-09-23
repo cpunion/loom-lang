@@ -1,3 +1,6 @@
+import std.bytes.new
+import std.bytes.push
+import std.hash.sha256.hex
 import std.int.to_text
 import std.list.get
 import std.list.length
@@ -25,6 +28,41 @@ pub record SqlitePositiveAmountUpgrade {
     note_id Text
     note_body Text
     replacement Int
+}
+
+fn plan_part(output Bytes, value Text) {
+    let size = to_text(length(value))
+    var index = 0
+    while index < length(size) {
+        push(output, byte(size, index))
+        index = index + 1
+    }
+    push(output, 58)
+    index = 0
+    while index < length(value) {
+        push(output, byte(value, index))
+        index = index + 1
+    }
+}
+
+// This marker identifies the fixed action and recovery semantics below. Change
+// it if the generated SQLite operations change. All plan inputs are framed so
+// retries cannot silently select another replacement or storage layout.
+pub fn positive_amount_plan_digest(plan SqlitePositiveAmountUpgrade) Text {
+    let output = new()
+    plan_part(output, "loom-sqlite-positive-amount-action-v1")
+    plan_part(output, plan.attempt_id)
+    plan_part(output, plan.from_basis)
+    plan_part(output, plan.to_basis)
+    plan_part(output, plan.orders)
+    plan_part(output, plan.order_id)
+    plan_part(output, plan.amount)
+    plan_part(output, plan.archive)
+    plan_part(output, plan.notes)
+    plan_part(output, plan.note_id)
+    plan_part(output, plan.note_body)
+    plan_part(output, to_text(plan.replacement))
+    hex(output)
 }
 
 fn sql_name(value Text) Bool {
@@ -305,6 +343,7 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
     }
     discard verify_receipt_basis(to, target_receipt)?
     discard exact_catalog(from, to, catalog, plan)?
+    let plan_identity = positive_amount_plan_digest(plan)
     let previous = match latest(tool, database)? {
         Option.Some(value) => value,
         Option.None => {
@@ -312,7 +351,8 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
         }
     }
     if previous.attempt.id != plan.attempt_id || previous.attempt.from_basis != plan.from_basis ||
-    previous.attempt.to_basis != plan.to_basis || previous.attempt.state != DeploymentState.Started {
+    previous.attempt.to_basis != plan.to_basis || previous.attempt.plan_digest != plan_identity ||
+    previous.attempt.state != DeploymentState.Started {
         return Result.Err("SQLite upgrade does not match the started attempt")
     }
     if previous.attempt.policy != FailurePolicy.Stop {
@@ -333,6 +373,7 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
     latest_is_started = concat(latest_is_started, concat(" AND attempt_id=", literal(plan.attempt_id)))
     latest_is_started = concat(latest_is_started, concat(" AND from_basis=", literal(plan.from_basis)))
     latest_is_started = concat(latest_is_started, concat(" AND to_basis=", literal(plan.to_basis)))
+    latest_is_started = concat(latest_is_started, concat(" AND plan_digest=", literal(plan_identity)))
     latest_is_started = concat(latest_is_started,
         concat(" AND policy=", to_text(policy_number(previous.attempt.policy))))
     latest_is_started = concat(latest_is_started,
@@ -421,12 +462,14 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
         trigger_index = trigger_index + 1
     }
     script = concat(script, checked("(SELECT count(*) FROM main.sqlite_master WHERE type='trigger')=6"))
-    var event = "INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) SELECT "
+    var event = "INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,plan_digest,policy,state) SELECT "
     event = concat(event, literal(plan.attempt_id))
     event = concat(event, ",")
     event = concat(event, literal(plan.from_basis))
     event = concat(event, ",")
     event = concat(event, literal(plan.to_basis))
+    event = concat(event, ",")
+    event = concat(event, literal(plan_identity))
     event = concat(event, ",")
     event = concat(event, to_text(policy_number(completed.policy)))
     event = concat(event, concat(",", to_text(state_number(completed.state))))

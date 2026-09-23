@@ -10,7 +10,8 @@ import deployment.execute_positive_amount_upgrade
 import deployment.execute_positive_amount_downgrade
 import deployment.execute_positive_amount_reupgrade
 import deployment.assume_historical
-import deployment.prepare
+import deployment.prepare_plan
+import deployment.positive_amount_plan_digest
 import deployment.register
 import deployment.start_attempt
 import deployment.resume_failed_attempt
@@ -94,6 +95,22 @@ fn migration_with_bases(identity Text, from_basis Text, to_basis Text) SqlitePos
         note_id = "id"
         note_body = "body"
         replacement = 1
+    }
+}
+
+fn migration_with_replacement(plan SqlitePositiveAmountUpgrade, replacement Int) SqlitePositiveAmountUpgrade {
+    SqlitePositiveAmountUpgrade {
+        attempt_id = plan.attempt_id
+        from_basis = plan.from_basis
+        to_basis = plan.to_basis
+        orders = plan.orders
+        order_id = plan.order_id
+        amount = plan.amount
+        archive = plan.archive
+        notes = plan.notes
+        note_id = plan.note_id
+        note_body = plan.note_body
+        replacement = replacement
     }
 }
 
@@ -207,7 +224,8 @@ fn started(database Text, plan SqlitePositiveAmountUpgrade) Result[Bool, Text] {
         _ => false
     }
     assert length(inspection.missing.forward) == 0 && length(inspection.missing.recovery) == 0
-    let attempt = prepare(plan.attempt_id, plan.from_basis, plan.to_basis, FailurePolicy.Stop)?
+    let attempt = prepare_plan(plan.attempt_id, plan.from_basis, plan.to_basis,
+        FailurePolicy.Stop, positive_amount_plan_digest(plan))?
     discard register("/usr/bin/sqlite3", database, attempt)?
     discard start_attempt("/usr/bin/sqlite3", database, plan.attempt_id)?
     Result.Ok(true)
@@ -272,7 +290,8 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text
         _ => false
     }
     assert length(inspection.missing.forward) == 0 && length(inspection.missing.recovery) == 0
-    let next = prepare(again.attempt_id, again.from_basis, again.to_basis, FailurePolicy.Stop)?
+    let next = prepare_plan(again.attempt_id, again.from_basis, again.to_basis,
+        FailurePolicy.Stop, positive_amount_plan_digest(again))?
     discard register("/usr/bin/sqlite3", database, next)?
     discard start_attempt("/usr/bin/sqlite3", database, again.attempt_id)?
     discard execute_positive_amount_reupgrade("/usr/bin/sqlite3", database,
@@ -298,13 +317,13 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text
 
 fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text] {
     let plan = migration("upgrade_2", old_receipt, new_receipt)?
-    discard fixture_sql(database, "CREATE TABLE loom_deploy_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL); CREATE TRIGGER block_assumed BEFORE INSERT ON loom_deploy_events WHEN NEW.state=7 BEGIN SELECT RAISE(ABORT,'blocked'); END;")?
+    discard fixture_sql(database, "CREATE TABLE loom_deploy_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, plan_digest TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL); CREATE TRIGGER block_assumed BEFORE INSERT ON loom_deploy_events WHEN NEW.state=7 BEGIN SELECT RAISE(ABORT,'blocked'); END;")?
     assert match assume_historical("/usr/bin/sqlite3", database, "historical_v1", plan.from_basis) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
     assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == "0\n"
-    discard fixture_sql(database, concat("DROP TRIGGER block_assumed; INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) VALUES ('dangling','', '", concat(plan.from_basis, "',0,0);")))?
+    discard fixture_sql(database, concat("DROP TRIGGER block_assumed; INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,plan_digest,policy,state) VALUES ('dangling','', '", concat(plan.from_basis, "','',0,0);")))?
     assert match assume_historical("/usr/bin/sqlite3", database, "second_import", plan.from_basis) {
         Result.Err(_) => true,
         Result.Ok(_) => false
@@ -333,6 +352,15 @@ fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Te
         BasisEvidence.None => true,
         _ => false
     }
+    let changed = migration_with_replacement(plan, 2)
+    assert positive_amount_plan_digest(changed) != positive_amount_plan_digest(plan)
+    assert match execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
+        old_schema(changed), new_schema(changed), forward_catalog(changed), changed, new_receipt) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|0\n2|10\n"
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events ORDER BY sequence DESC LIMIT 1;")? == "1\n"
     discard execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
         old_schema(plan), new_schema(plan), forward_catalog(plan), plan, new_receipt)?
     assert match current("/usr/bin/sqlite3", database)? {
