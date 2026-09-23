@@ -1,3 +1,5 @@
+import std.text.concat
+
 test fn scalar_record_fields_participate_in_required_contracts() {
     let source = "record Snapshot { count Int active Bool }\npub fn copied(value Snapshot) Snapshot\nrequires value.count >= 0 && value.active\nensures result.count == value.count\nensures result.active == value.active\n{ Snapshot { active = value.active count = value.count } }\nfn main() { let copied_value = copied(Snapshot { count = 3 active = true })\nassert copied_value.count == 3 && copied_value.active }"
     let program = accepted(source)
@@ -10,4 +12,20 @@ test fn record_proofs_keep_shared_fields_opaque() {
     // but no fact about its elements is introduced into the proof.
     discard accepted("record Snapshot { count Int values List[Int] }\npub fn copied(value Snapshot) Snapshot ensures result.count == value.count { value }")
     rejects("record Snapshot { count Int values List[Int] }\npub fn unknown(value Snapshot) Int ensures result == value.values[0] { 0 }")
+}
+
+test fn nested_record_scalar_leaves_remain_provable_beside_shared_data() {
+    let definitions = "record Details { count Int values List[Int] }\nrecord Envelope { details Details active Bool }\n"
+    discard accepted(concat(definitions,
+            "pub fn copied(value Envelope) Envelope requires value.details.count >= 0 ensures result.details.count == value.details.count ensures result.active == value.active { value }\nfn main() { let values = [1]\nlet envelope = copied(Envelope { details = Details { count = 1 values = values } active = true })\nvalues[0] = 9\nassert envelope.details.count == 1 && envelope.details.values[0] == 9 }"))
+    rejects(concat(definitions,
+            "pub fn broken(value Envelope) Envelope ensures result.details.count == value.details.count { Envelope { details = Details { count = 0 values = value.details.values } active = value.active } }"))
+}
+
+test fn int_refinement_leaves_keep_values_without_assuming_their_predicate() {
+    let definitions = "type Count = Int where self >= 0\nrecord Box { count Count }\n"
+    discard accepted(concat(definitions,
+            "pub fn copied(value Box) Box ensures result.count == value.count { value }\nfn main() { assert copied(Box { count = Count(3) }).count == 3 }"))
+    rejects(concat(definitions,
+            "pub fn invented(value Box) Box ensures result.count == value.count { Box { count = Count(0) } }"))
 }
