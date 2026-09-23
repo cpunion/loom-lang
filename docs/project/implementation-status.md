@@ -406,8 +406,10 @@ call expressions reject rather than treating a mutable alias as entry state.
 Record-backed refinements now admit only immutable inline scalar/record leaves.
 Unknown construction checks once; copies and base-record widening do not recheck.
 Shared `List`/`Bytes`/`Text` fields and unchecked replacement are rejected.
-Record literals are not optionally folded at construction, although explicit
-`comptime` can materialize a checked result. Shared-state invariants remain open.
+Closed inline record literals with a prover-supported `Int`/`Bool` predicate
+produce the refined type directly. Other constructions retain the `Result`
+boundary; explicit `comptime` can materialize a checked result. Shared-state
+invariants remain open.
 
 Managed memory now uses stop-the-world copying collection with a traced
 large-object space; stress mode relocates all sizes. Rewritable typed

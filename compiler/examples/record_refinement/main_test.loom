@@ -17,8 +17,5 @@ test fn checked_record_refinement_survives_copy_and_weakening() {
         Result.Err(_) => true,
         _ => false
     }
-    assert match prepared() {
-        Result.Ok(value) => value.inner.count == 7,
-        _ => false
-    }
+    assert prepared().inner.count == 7
 }
