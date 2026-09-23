@@ -1,0 +1,88 @@
+import std.io.write_text
+import std.list.length
+import std.list.push
+import std.resource.Dispose
+import std.resource.MustScope
+import std.result.ConstraintError
+import std.result.Result
+import std.text.concat
+import std.time.sleep_ms
+
+record Snapshot {
+    count Int
+    active Bool
+}
+
+type Ready = Snapshot where self.count > 0 && self.active
+
+fn checked(count Int) Result[Ready, ConstraintError] {
+    Ready(Snapshot {
+            count = count
+            active = true
+        })
+}
+
+concept Normalizer {
+    fn positive(self Self, value Int) Int
+    ensures result > 0
+}
+
+impl Normalizer for Int {
+    fn positive(self Int, value Int) Int {
+        if value > 0 {
+            value
+        } else {
+            1
+        }
+    }
+}
+
+fn normalized(source dyn Normalizer, value Int) Int
+ensures result > 0 {
+    source.positive(value)
+}
+
+record Guard {
+    trace List[Text]
+}
+
+impl MustScope for Guard {
+}
+
+impl Dispose for Guard {
+    fn dispose(self Guard) {
+        push(self.trace, "scoped")
+    }
+}
+
+async fn process(trace List[Text], count Int) Result[Ready, ConstraintError] {
+    scoped guard = Guard {
+        trace = trace
+    }
+    defer {
+        push(trace, "defer")
+    }
+    let held = concat("before ", "await")
+    let source dyn Normalizer = 0
+    sleep_ms(1).await
+    assert held == "before await"
+    push(trace, "resumed")
+    checked(normalized(source, count))
+}
+
+async fn main() {
+    let trace = ["created"]
+    let pending = process(trace, -2)
+    assert length(trace) == 1
+    match pending.await {
+        Result.Ok(value) => {
+            assert value.count == 1 && value.active
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    assert length(trace) == 4 && trace[1] == "resumed" &&
+    trace[2] == "defer" && trace[3] == "scoped"
+    discard write_text("core experience finished\n")
+}
