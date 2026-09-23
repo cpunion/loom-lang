@@ -1,0 +1,26 @@
+test async fn task_preserves_contracts_and_cleans_lexical_scope() {
+    let trace = ["created"]
+    let pending = process(trace, -5)
+    assert length(trace) == 1
+    match pending.await {
+        Result.Ok(value) => {
+            assert value.count == 1 && value.active
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    assert length(trace) == 4 && trace[1] == "resumed" &&
+    trace[2] == "defer" && trace[3] == "scoped"
+}
+
+test fn constrained_record_rejects_invalid_input() {
+    assert match checked(0) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert match checked(3) {
+        Result.Ok(value) => value.count == 3 && value.active,
+        Result.Err(_) => false
+    }
+}
