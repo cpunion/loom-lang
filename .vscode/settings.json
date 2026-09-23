@@ -1,0 +1,8 @@
+{
+  "loom.executable": "./target/loom",
+  "loom.stdRoot": "./compiler/std",
+  "[loom]": {
+    "editor.defaultFormatter": "cpunion.loom-language",
+    "editor.formatOnSave": true
+  }
+}
