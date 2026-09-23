@@ -1,0 +1,395 @@
+import std.list.get
+import std.list.length
+import std.list.set
+import std.option.Option
+import std.result.Result
+import std.bytes.new
+import std.bytes.push
+import std.bytes.get
+import std.bytes.length
+
+type Amount = Int where self >= 0 && self <= 1000000
+
+record Order {
+    id Int
+    amount Amount
+    price Float
+    note Option[Text]
+}
+
+record Note {
+    id Int
+    body Text
+    attachment Bytes
+}
+
+fn column(id Text, name Text, kind ValueKind, nullable Bool) Column {
+    Column {
+        id = id
+        physical_name = name
+        kind = kind
+        nullable = nullable
+    }
+}
+
+fn integer(value Value) Result[Int, CodecError] {
+    match value {
+        Value.Int(number) => Result.Ok(number),
+        _ => Result.Err(CodecError.Rejected)
+    }
+}
+
+fn floating(value Value) Result[Float, CodecError] {
+    match value {
+        Value.Float(number) => Result.Ok(number),
+        _ => Result.Err(CodecError.Rejected)
+    }
+}
+
+fn string(value Value) Result[Text, CodecError] {
+    match value {
+        Value.Text(text) => Result.Ok(text),
+        _ => Result.Err(CodecError.Rejected)
+    }
+}
+
+fn blob(value Value) Result[Bytes, CodecError] {
+    match value {
+        Value.Bytes(bytes) => Result.Ok(bytes),
+        _ => Result.Err(CodecError.Rejected)
+    }
+}
+
+fn encode_order(order Order) Result[List[Value], CodecError] {
+    let note = match order.note {
+        Option.Some(text) => Value.Text(text),
+        Option.None => Value.Null
+    }
+    Result.Ok([Value.Int(order.id), Value.Int(order.amount), Value.Float(order.price), note])
+}
+
+fn decode_order(values List[Value]) Result[Order, CodecError] {
+    let id = integer(get(values, 0))?
+    let amount = match Amount(integer(get(values, 1))?) {
+        Result.Ok(checked) => checked,
+        Result.Err(_) => {
+            return Result.Err(CodecError.Rejected)
+        }
+    }
+    let price = floating(get(values, 2))?
+    let note Option[Text] = match get(values, 3) {
+        Value.Null => Option.None,
+        Value.Text(text) => Option.Some(text),
+        _ => {
+            return Result.Err(CodecError.Rejected)
+        }
+    }
+    Result.Ok(Order {
+            id = id
+            amount = amount
+            price = price
+            note = note
+        })
+}
+
+fn order_codec() RowCodec[Order] {
+    RowCodec {
+        table = Table {
+            id = "orders/v1"
+            physical_name = "orders"
+            columns = [
+                column("order-id", "id", ValueKind.Int, false),
+                column("amount", "total_cents", ValueKind.Int, false),
+                column("price", "price", ValueKind.Float, false),
+                column("note", "note", ValueKind.Text, true)
+            ]
+        }
+        encode_value = encode_order
+        decode_value = decode_order
+    }
+}
+
+fn encode_note(note Note) Result[List[Value], CodecError] {
+    Result.Ok([Value.Int(note.id), Value.Text(note.body), Value.Bytes(note.attachment)])
+}
+
+fn decode_note(values List[Value]) Result[Note, CodecError] {
+    let id = integer(get(values, 0))?
+    let body = string(get(values, 1))?
+    let attachment = blob(get(values, 2))?
+    Result.Ok(Note {
+            id = id
+            body = body
+            attachment = attachment
+        })
+}
+
+fn note_codec() RowCodec[Note] {
+    RowCodec {
+        table = Table {
+            id = "notes/v1"
+            physical_name = "notes"
+            columns = [
+                column("note-id", "id", ValueKind.Int, false),
+                column("body", "body", ValueKind.Text, false),
+                column("attachment", "attachment", ValueKind.Bytes, false)
+            ]
+        }
+        encode_value = encode_note
+        decode_value = decode_note
+    }
+}
+
+test fn order_round_trip_with_optional_note() {
+    let codec = order_codec()
+    assert match encode_row(codec, Order {
+            id = 7
+            amount = Amount(1250)
+            price = 12.5
+            note = Option.Some("gift")
+        }) {
+        Result.Ok(values) => {
+            assert length(values) == 4
+            assert match get(values, 3) {
+                Value.Text("gift") => true,
+                _ => false
+            }
+            match decode_row(codec, values) {
+                Result.Ok(decoded) => decoded.id == 7 && decoded.amount == 1250 && decoded.price == 12.5 &&
+                (match decoded.note {
+                        Option.Some("gift") => true,
+                        _ => false
+                    }),
+                _ => false
+            }
+        },
+        _ => false
+    }
+    assert match encode_row(codec, Order {
+            id = 8
+            amount = Amount(0)
+            price = 0.0
+            note = Option.None
+        }) {
+        Result.Ok(values) => {
+            assert match get(values, 3) {
+                Value.Null => true,
+                _ => false
+            }
+            match decode_row(codec, values) {
+                Result.Ok(decoded) => match decoded.note {
+                    Option.None => decoded.id == 8,
+                    _ => false
+                },
+                _ => false
+            }
+        },
+        _ => false
+    }
+}
+
+test fn note_round_trip_preserves_blob_bytes() {
+    let attachment = std.bytes.new()
+    std.bytes.push(attachment, 0)
+    std.bytes.push(attachment, 255)
+    let codec = note_codec()
+    assert match encode_row(codec, Note {
+            id = 3
+            body = "raw"
+            attachment = attachment
+        }) {
+        Result.Ok(values) => match decode_row(codec, values) {
+            Result.Ok(decoded) => decoded.id == 3 && decoded.body == "raw" &&
+            std.bytes.length(decoded.attachment) == 2 &&
+            std.bytes.get(decoded.attachment, 0) == 0 && std.bytes.get(decoded.attachment, 1) == 255,
+            _ => false
+        },
+        _ => false
+    }
+}
+
+test fn decode_rejects_width_kind_null_and_invalid_amount() {
+    let codec = order_codec()
+    assert match decode_row(codec, [Value.Int(1)]) {
+        Result.Err(CodecError.WrongWidth(4, 1)) => true,
+        _ => false
+    }
+    assert match decode_row(codec, [Value.Text("1"), Value.Int(2), Value.Float(2.0), Value.Null]) {
+        Result.Err(CodecError.WrongKind(0)) => true,
+        _ => false
+    }
+    assert match decode_row(codec, [Value.Int(1), Value.Null, Value.Float(2.0), Value.Null]) {
+        Result.Err(CodecError.NullNotAllowed(1)) => true,
+        _ => false
+    }
+    assert match decode_row(codec, [Value.Int(1), Value.Int(-1), Value.Float(2.0), Value.Null]) {
+        Result.Err(CodecError.Rejected) => true,
+        _ => false
+    }
+}
+
+fn with_encoded_row(values List[Value]) RowCodec[Order] {
+    let encoder = fn(_ Order) Result[List[Value], CodecError] {
+        Result.Ok(values)
+    }
+    let codec = order_codec()
+    RowCodec {
+        table = codec.table
+        encode_value = encoder
+        decode_value = decode_order
+    }
+}
+
+test fn encode_rejects_malformed_callback_rows() {
+    let order = sample_order()
+    assert match encode_row(with_encoded_row([Value.Int(1)]), order) {
+        Result.Err(CodecError.WrongWidth(4, 1)) => true,
+        _ => false
+    }
+    assert match encode_row(with_encoded_row([Value.Int(1), Value.Int(2), Value.Text("wrong"), Value.Null]), order) {
+        Result.Err(CodecError.WrongKind(2)) => true,
+        _ => false
+    }
+    assert match encode_row(with_encoded_row([Value.Int(1), Value.Null, Value.Float(2.0), Value.Null]), order) {
+        Result.Err(CodecError.NullNotAllowed(1)) => true,
+        _ => false
+    }
+}
+
+test fn table_requires_distinct_nonempty_ids_and_physical_names() {
+    let valid = order_codec().table
+    assert match validate_table(valid) {
+        Result.Ok(true) => true,
+        _ => false
+    }
+    let duplicate_id = order_codec().table
+    set(duplicate_id.columns, 1, column("order-id", "other", ValueKind.Int, false))
+    assert match validate_table(duplicate_id) {
+        Result.Err(CodecError.InvalidSchema) => true,
+        _ => false
+    }
+    let duplicate_name = order_codec().table
+    set(duplicate_name.columns, 1, column("other", "id", ValueKind.Int, false))
+    assert match validate_table(duplicate_name) {
+        Result.Err(CodecError.InvalidSchema) => true,
+        _ => false
+    }
+    let missing = Table {
+        id = ""
+        physical_name = "orders"
+        columns = valid.columns
+    }
+    assert match validate_table(missing) {
+        Result.Err(CodecError.InvalidSchema) => true,
+        _ => false
+    }
+}
+
+fn change_columns(columns List[Column], duplicate Bool) {
+    let first = get(columns, 0)
+    let second = get(columns, 1)
+    if duplicate {
+        set(columns, 1, first)
+    } else {
+        set(columns, 0, second)
+        set(columns, 1, first)
+    }
+}
+
+fn changing_encoder(columns List[Column], duplicate Bool) fn(Order) Result[List[Value], CodecError] {
+    fn(order Order) Result[List[Value], CodecError] {
+        change_columns(columns, duplicate)
+        encode_order(order)
+    }
+}
+
+fn changing_decoder(columns List[Column], duplicate Bool) fn(List[Value]) Result[Order, CodecError] {
+    fn(values List[Value]) Result[Order, CodecError] {
+        change_columns(columns, duplicate)
+        decode_order(values)
+    }
+}
+
+fn sample_order() Order {
+    Order {
+        id = 1
+        amount = Amount(2)
+        price = 2.0
+        note = Option.None
+    }
+}
+
+fn sample_row() List[Value] {
+    [Value.Int(1), Value.Int(2), Value.Float(2.0), Value.Null]
+}
+
+fn changing_codec(duplicate Bool) RowCodec[Order] {
+    let codec = order_codec()
+    RowCodec {
+        table = codec.table
+        encode_value = changing_encoder(codec.table.columns, duplicate)
+        decode_value = changing_decoder(codec.table.columns, duplicate)
+    }
+}
+
+test fn callbacks_cannot_change_schema_during_a_call() {
+    assert match encode_row(changing_codec(true), sample_order()) {
+        Result.Err(CodecError.SchemaChanged) => true,
+        _ => false
+    }
+    assert match encode_row(changing_codec(false), sample_order()) {
+        Result.Err(CodecError.SchemaChanged) => true,
+        _ => false
+    }
+    assert match decode_row(changing_codec(true), sample_row()) {
+        Result.Err(CodecError.SchemaChanged) => true,
+        _ => false
+    }
+    assert match decode_row(changing_codec(false), sample_row()) {
+        Result.Err(CodecError.SchemaChanged) => true,
+        _ => false
+    }
+}
+
+fn changing_input_decoder(values List[Value]) Result[Order, CodecError] {
+    let decoded = decode_order(values)
+    set(values, 0, Value.Text("changed"))
+    decoded
+}
+
+fn changing_captured_row(row List[Value]) fn(List[Value]) Result[Order, CodecError] {
+    fn(values List[Value]) Result[Order, CodecError] {
+        let decoded = decode_order(values)
+        set(row, 0, Value.Text("changed"))
+        decoded
+    }
+}
+
+test fn decode_checks_mutations_and_passes_a_separate_row_list() {
+    let codec = order_codec()
+    let input_row = sample_row()
+    let changing_input = RowCodec {
+        table = codec.table
+        encode_value = encode_order
+        decode_value = changing_input_decoder
+    }
+    assert match decode_row(changing_input, input_row) {
+        Result.Err(CodecError.WrongKind(0)) => true,
+        _ => false
+    }
+    assert match get(input_row, 0) {
+        Value.Int(1) => true,
+        _ => false
+    }
+
+    let captured_row = sample_row()
+    let changing_captured = RowCodec {
+        table = codec.table
+        encode_value = encode_order
+        decode_value = changing_captured_row(captured_row)
+    }
+    assert match decode_row(changing_captured, captured_row) {
+        Result.Err(CodecError.WrongKind(0)) => true,
+        _ => false
+    }
+}
