@@ -12,6 +12,27 @@ record Snapshot {
 
 type ActiveCount = Snapshot where self.inner.count >= 0 && self.active
 
+record Quote {
+    amount Float
+    active Bool
+}
+
+type ValidQuote = Quote where self.amount >= 0.0 && self.amount <= 100.0 && self.active
+
+fn fixed_quote() ValidQuote {
+    ValidQuote(Quote {
+            amount = 10.5
+            active = true
+        })
+}
+
+fn checked_quote(amount Float) Result[ValidQuote, ConstraintError] {
+    ValidQuote(Quote {
+            amount = amount
+            active = true
+        })
+}
+
 fn checked(value Snapshot) Result[ActiveCount, ConstraintError] {
     ActiveCount(value)
 }
@@ -60,4 +81,9 @@ fn main() {
         _ => false
     }
     assert prepared().inner.count == 7
+    assert fixed_quote().amount == 10.5
+    assert match checked_quote(-1.0) {
+        Result.Err(_) => true,
+        _ => false
+    }
 }

@@ -18,4 +18,9 @@ test fn checked_record_refinement_survives_copy_and_weakening() {
         _ => false
     }
     assert prepared().inner.count == 7
+    assert fixed_quote().amount == 10.5
+    assert match checked_quote(3.5) {
+        Result.Ok(value) => value.amount == 3.5,
+        _ => false
+    }
 }
