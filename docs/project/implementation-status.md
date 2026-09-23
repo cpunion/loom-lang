@@ -281,6 +281,12 @@ snapshot and shared elements. It works with pure compile-time and allocating
 native comparators. `std.fs.entries` reuses it for deterministic byte ordering;
 comparator ordering laws remain a caller obligation, not a completed proof gate.
 
+Source `std.list.nonempty.NonEmpty[T]` keeps a nonempty shared List behind
+private state. Its `copy_from` explicitly copies an ordinary List's outer header
+before checking nonemptiness; wrapper aliases still share permitted updates.
+This is a library invariant-preserving API, not a language-level constrained
+List conversion or a fixed-shape view into the original List.
+
 Source `std.map` and `std.set` now use shared Lists and ordinary bounded generics
 for open-addressed hash tables. Explicit `std.equal.Equal`/`std.hash.Hash`
 implementations cover Int, Bool and Text; custom managed keys use the same direct

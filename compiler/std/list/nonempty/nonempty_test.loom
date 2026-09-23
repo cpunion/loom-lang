@@ -1,0 +1,48 @@
+import std.list.transfer.take_last
+
+test fn wrapper_copies_share_permitted_edits() {
+    let values = new(1)
+    let alias = values
+    push(alias, 2)
+    assert length(values) == 2 && first(values) == 1
+    set_first(values, 9)
+    assert first(alias) == 9 && length(alias) == 2
+}
+
+test fn explicit_copy_survives_source_resizing() {
+    let source = [3]
+    match copy_from(source) {
+        Result.Ok(wrapped) => {
+            discard take_last(source)
+            assert std.list.length(source) == 0
+            assert length(wrapped) == 1 && first(wrapped) == 3
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
+test fn empty_copy_is_rejected() {
+    let empty List[Int] = []
+    assert match copy_from(empty) {
+        Result.Err(ConstraintError.Rejected) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn copied_outer_header_keeps_shared_elements() {
+    let element = [5]
+    let source = [element]
+    match copy_from(source) {
+        Result.Ok(wrapped) => {
+            element[0] = 7
+            assert first(wrapped)[0] == 7
+            discard take_last(source)
+            assert length(wrapped) == 1
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}

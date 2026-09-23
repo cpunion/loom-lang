@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add source `std.list.nonempty.NonEmpty[T]` with an explicit outer-copy
+  conversion and a private invariant-preserving API. This is not an implicit
+  constrained conversion of shared Lists.
+
 - Prove required contracts over scalar fields of nested records and Int-backed
   constrained values; support `old(expr)` for immutable entry-state scalars;
   enforce inherited concept method contracts for default, override, static and
