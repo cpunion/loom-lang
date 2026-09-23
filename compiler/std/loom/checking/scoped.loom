@@ -61,10 +61,10 @@ fn registered_scoped(context Context, node Node, boundary Int) Result[Step, Fail
         })
     let body = expressions(expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls))
     var next = bound
-    var index = length(paths)
-    while index > 0 {
-        index = index - 1
+    var index = 0
+    while index < length(paths) {
         next = scope_register(next, node, get(paths, index), body)?
+        index = index + 1
     }
     // Each registration follows successful initialization. Register children
     // first, so normal and fault exits dispose the outer wrapper before them.

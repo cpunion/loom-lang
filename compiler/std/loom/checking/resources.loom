@@ -106,60 +106,48 @@ fn must_scope(context Context, ty Int) Result[Bool, Failure] {
     resource_type(context.env, context.signature.symbol, context.signature.requirements, ty, new[Int]())
 }
 
+fn scope_collect(context Context, node Node, ty Int, path Text, capability Int, paths List[Text], depth Int) Result[Bool, Failure] {
+    if depth >= 64 { return Result.Err(error(context, node, "nested resource aggregate depth limit exceeded")) }
+    let shape = get(context.env.types, ty)
+    var index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if must_scope(context, get(fields, field))? {
+                return Result.Err(error(context, node, "resource enum payloads require pending-transfer cleanup, which is not yet supported"))
+            }
+            field = field + 1
+        }
+        index = index + 1
+    }
+    if shape.kind == TypeKind.List && must_scope(context, get(shape.arguments, 0))? {
+        return Result.Err(error(context, node, "resource lists require pending-transfer cleanup, which is not yet supported"))
+    }
+    index = 0
+    while index < length(shape.fields) {
+        let field = get(shape.fields, index)
+        if must_scope(context, field.ty)? {
+            if !satisfies(context, field.ty, capability)? {
+                return Result.Err(error(context, node, "a nested resource field must implement std.resource.Dispose"))
+            }
+            discard scope_collect(context, node, field.ty, concat(concat(path, "."), field.name), capability, paths, depth + 1)?
+        }
+        index = index + 1
+    }
+    push(paths, path)
+    Result.Ok(true)
+}
+
 fn scope_initializer(context Context, node Node, value Expr) Result[List[Text], Failure] {
     let capability = resource_concept(context.env, "Dispose")
-    if capability < 0 {
-        return Result.Err(error(context, node, "scoped requires std.resource.Dispose"))
-    }
+    if capability < 0 { return Result.Err(error(context, node, "scoped requires std.resource.Dispose")) }
     if !satisfies(context, value.ty, capability)? {
         return Result.Err(error(context, node, "scoped requires a value implementing std.resource.Dispose"))
     }
     let paths = new[Text]()
-    var current = value.ty
-    var path = node.value
-    push(paths, path)
-    var depth = 0
-    while depth < 64 {
-        let shape = get(context.env.types, current)
-        var index = 0
-        while index < length(shape.variants) {
-            let fields = get(shape.variants, index).fields
-            var field = 0
-            while field < length(fields) {
-                if must_scope(context, get(fields, field))? {
-                    return Result.Err(error(context, node, "resource enum payloads require pending-transfer cleanup, which is not yet supported"))
-                }
-                field = field + 1
-            }
-            index = index + 1
-        }
-        if shape.kind == TypeKind.List && must_scope(context, get(shape.arguments, 0))? {
-            return Result.Err(error(context, node, "resource lists require pending-transfer cleanup, which is not yet supported"))
-        }
-        var child = -1
-        index = 0
-        while index < length(shape.fields) {
-            if must_scope(context, get(shape.fields, index).ty)? {
-                if child >= 0 {
-                    return Result.Err(error(context, node, "multiple resource fields require pending-transfer cleanup, which is not yet supported"))
-                }
-                child = index
-            }
-            index = index + 1
-        }
-        if child < 0 {
-            return Result.Ok(paths)
-        }
-        let field = get(shape.fields, child)
-        if !satisfies(context, field.ty, capability)? {
-            return Result.Err(error(context, node, "a nested resource field must implement std.resource.Dispose"))
-        }
-        path = concat(concat(path, "."), field.name)
-        push(paths, path)
-        current = field.ty
-        depth = depth + 1
-    }
-    Result.Err(error(context, node, "nested resource aggregate depth limit exceeded"))
+    discard scope_collect(context, node, value.ty, node.value, capability, paths, 0)?
+    Result.Ok(paths)
 }
 
 fn resource_scope_node(node Node) Bool {
