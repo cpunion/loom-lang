@@ -25,12 +25,14 @@ callee's result is considered.
 to see its failure. `ensures` must be proved during checking; helpers used only
 for the proof, such as `admitted`, do not become runtime call targets.
 
-This proof fragment supports direct scalar calls, not general function-body
-verification. Calls without a usable result contract need bounded, nonrecursive
-scalar helper bodies with immutable locals, `if/else` and early returns from body
-or branch blocks. Returns inside operands, mutation, loops and indirect/dynamic
-calls remain unsupported for helper expansion. Branches retain their evaluation
-guards; eager arguments, discarded arithmetic and assertions still create proof
+This proof fragment supports direct scalar calls and synchronous `dyn` concept
+calls with a declared scalar postcondition, not general function-body
+verification. A `dyn` proof uses that declaration, never the concrete witness.
+Calls without a usable result contract need bounded, nonrecursive scalar helper
+bodies with immutable locals, `if/else` and early returns from body or branch
+blocks. Returns inside operands, mutation, loops and indirect calls remain
+unsupported for helper expansion. Branches retain their evaluation guards;
+eager arguments, discarded arithmetic and assertions still create proof
 obligations. Expansion and conditional normalization have finite budgets.
 Arithmetic that executed in a body may rely on its runtime overflow check having
 passed. Arithmetic written only in `ensures` must still be proved safe.

@@ -792,8 +792,8 @@ omitted methods use the default and matching methods override it. Defaults are
 checked with abstract `Self` and the concept's declared capabilities, including
 its associated types. They may call other methods, which select that type's
 override. Static calls specialize directly; `dyn` tables retain only used slots
-in closed executable builds. Method contracts on the concept declaration remain
-unsupported. Implementation postconditions still require proofs; an implementation
+in closed executable builds. Concept-declared contracts are inherited by defaults
+and implementations, which must prove their postconditions. An implementation
 cannot add an undeclared precondition.
 
 Implementation headers can declare type parameters and prerequisites:
@@ -816,8 +816,8 @@ not a negative `implements` answer. Test-only evidence retains its normal scope.
 This slice supports nongeneric concepts and generic implementation targets.
 Concept-typed parameter shorthand remains
 later work.
-Concept method contracts and extra implementation preconditions currently reject;
-implementation postconditions still require proof.
+Concept method contracts are checked against every implementation; extra
+implementation preconditions reject.
 
 Methods can declare their own type parameters, independently of the receiver:
 
@@ -1000,7 +1000,9 @@ Reification registers new output-queue witnesses and preserves shared/cyclic
 containers, rather than retaining evaluation-local indices. Only methods needed
 by the runtime program survive. The [compile-time dynamic example](examples/comptime_dynamic/main.loom)
 exercises both computed scalar results and managed receivers used after compilation.
-This does not permit runtime-local capture or add required proofs over dyn values.
+This does not permit runtime-local capture. Required proofs can use a declared
+scalar postcondition of a synchronous `dyn` concept call, without inspecting its
+concrete runtime receiver.
 
 ## Module dependencies
 
@@ -1247,7 +1249,9 @@ when the caller is unused. Verified postconditions retain call-free checked
 expressions for compile-time execution.
 
 Direct `Int`/`Bool` calls in a body requiring proof use the callee's verified
-postconditions as a summary. For example, `identity(value)` with
+postconditions as a summary. Synchronous `dyn` calls can use the exact concept
+method's declared scalar contract, which every implementation must satisfy;
+the proof never guesses a concrete witness. For example, `identity(value)` with
 `ensures result == value` lets a forwarding function prove the same contract.
 Without a summary, the prover can expand a finite pure scalar body. Arguments
 are evaluated in order and their values captured before applying the summary;
@@ -1261,8 +1265,9 @@ provides a fact only after that assertion succeeds; the compiler never inserts
 an assertion to rescue a failed postcondition proof. Postcondition arithmetic
 must itself be defined within `Int` bounds.
 
-Helper loops/mutation, returns inside helper operands, recursive proof dependencies, dynamic or indirect
-calls, nonlinear arithmetic and nonconstant division remain outside this
+Helper loops/mutation, returns inside helper operands, recursive proof dependencies,
+dynamic calls without a usable declared scalar contract, indirect calls,
+nonlinear arithmetic and nonconstant division remain outside this
 proof fragment. Required Float proofs remain unsupported, while pure Float entry
 predicates can run normally. Solver work is bounded; exhaustion is a diagnostic,
 not permission to trust an obligation. These are normal-return guarantees, not

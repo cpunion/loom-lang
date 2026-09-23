@@ -37,6 +37,39 @@ test fn inherited_helper_contracts_use_the_concept_package_scope() {
     }
 }
 
+test fn declared_dyn_postconditions_compose_in_required_caller_proofs() {
+    let declarations = concat("concept C { fn keep(self Self, value Int) Int requires value > 0 ensures result == old(value) }\n",
+        "impl C for Int { fn keep(receiver Int, input Int) Int { input } }\n")
+    let source = concat(declarations, concat(
+            "fn forward(receiver dyn C, value Int) Int requires value > 0 ensures result == value { receiver.keep(value) }\n",
+            concat("fn boxed(value Int) Int requires value > 0 ensures result == value { let receiver dyn C = value\nreceiver.keep(value) }\n",
+                "fn main() { let receiver dyn C = 7\nassert forward(receiver, 3) == 3\nassert boxed(4) == 4 }")))
+    let program = accepted(source)
+    var dynamic_calls = 0
+    var index = 0
+    while index < length(program.functions) {
+        dynamic_calls = dynamic_calls + dynamic_count(get(program.functions, index).body, ExprKind.DynCall)
+        index = index + 1
+    }
+    assert dynamic_calls >= 2
+}
+
+test fn dyn_proof_never_invents_a_witness_result_or_precondition() {
+    let declarations = concat("concept C { fn keep(self Self, value Int) Int requires value > 0 ensures result >= 0 }\n",
+        "impl C for Int { fn keep(receiver Int, input Int) Int { input } }\n")
+    // A failed requires exits before returning; required proofs concern normal
+    // returns, so a caller need not duplicate the runtime entry guard.
+    discard accepted(concat(declarations,
+            "fn guarded(receiver dyn C, value Int) Int ensures result >= 0 { receiver.keep(value) }"))
+    rejects(concat(declarations,
+            "fn too_strong(receiver dyn C, value Int) Int requires value > 0 ensures result == 0 { receiver.keep(value) }"))
+    rejects(concat(declarations,
+            "fn confused(receiver dyn C, value Int) Bool requires value > 0 ensures result { receiver.keep(value) == receiver.keep(value) }"))
+    rejects(concat("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\n",
+            "fn unsupported(receiver dyn C) Int ensures result >= 0 { receiver.value() }"))
+    rejects("concept C { fn value(self Self) Int ensures result > 0 }\nimpl C for Int { fn value(self Int) Int { 0 } }\nfn main() {}")
+}
+
 test fn dyn_cross_conversion_requires_explicit_source_adapter() {
     rejects("concept Source { fn value(self Self) Int }\nconcept Readable { fn read(self Self) Int }\nimpl Source for Int { fn value(self Int) Int { self } }\nimpl Readable for Int { fn read(self Int) Int { self } }\nfn main() { let source dyn Source = 1\nlet readable dyn Readable = source\nassert readable.read() == 1 }")
 }

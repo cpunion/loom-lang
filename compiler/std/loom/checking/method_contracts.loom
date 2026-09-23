@@ -1,7 +1,10 @@
 import std.loom.ast.NodeKind
 import std.loom.ast.has
 import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.Function
 import std.loom.typed.Local
+import std.loom.typed.TypeKind
 import std.list.new
 import std.list.get
 import std.list.push
@@ -133,4 +136,78 @@ fn validate_concept_contracts(env Environment, id Int) Result[Bool, Failure] {
         discard contracts(context_at(context, binding), node, NodeKind.Ensures)?
     }
     Result.Ok(true)
+}
+
+// A dyn proof sees the declared method, never a guessed concrete witness.
+// Every implementation (including a default) independently proves this same
+// declaration before the program is accepted. This summary exists only in the
+// private required-proof program; the executable call remains DynCall.
+fn dynamic_contract_summary(context Context, call Expr) Result[Function, Failure] {
+    let env = context.env
+    let node = Node {
+        kind = NodeKind.Call
+        value = ""
+        children = new[Node]()
+        span = call.span
+    }
+    if call.kind != ExprKind.DynCall || length(call.children) == 0 {
+        return Result.Err(error(context, node, "required proof needs a dynamic concept method"))
+    }
+    let receiver = get(call.children, 0).ty
+    if receiver < 0 || receiver >= length(env.types) || get(env.types, receiver).kind != TypeKind.Dyn {
+        return Result.Err(error(context, node, "required proof needs a dynamic concept receiver"))
+    }
+    let interface = get(env.types, receiver).symbol
+    let slots = get(env.dynamic_interfaces, interface).slots
+    if call.index < 0 || call.index >= length(slots) {
+        return Result.Err(error(context, node, "required proof has no checked dynamic method slot"))
+    }
+    let slot = get(slots, call.index)
+    let declaration = symbol(env, get(env.signatures, slot.signature).symbol).node
+    if !has(declaration, NodeKind.Ensures) || call.ty != 1 && call.ty != 2 {
+        return Result.Err(error(context, node, "required proof needs a scalar declared dynamic method postcondition"))
+    }
+    let arguments = ints(receiver)
+    var index = 0
+    while index < length(slot.arguments) {
+        push(arguments, get(slot.arguments, index))
+        index = index + 1
+    }
+    let current = signature(env, slot.signature, arguments, node)?
+    if async_signature(env, current) || current.result != call.ty {
+        return Result.Err(error(context, node, "required proof needs a synchronous scalar dynamic method"))
+    }
+    let scope = function_scope(env, current, arguments, slot.constants, true)?
+    let result_local = length(scope.context.locals)
+    push(scope.context.locals, Local {
+            name = "result"
+            ty = current.result
+            mutable = false
+            is_scoped = false
+        })
+    let binding = length(scope.context.bindings)
+    push(scope.context.bindings, Binding {
+            name = "result"
+            local = result_local
+            constant = -1
+            previous = scope.context.head
+        })
+    let postconditions = contracts(context_at(scope.context, binding), declaration, NodeKind.Ensures)?
+    if length(postconditions) == 0 || length(scope.params) != length(call.children) {
+        return Result.Err(error(context, node, "required proof has no matching dynamic method contract"))
+    }
+    Result.Ok(Function {
+            is_async = false
+            symbol = current.symbol
+            arguments = arguments
+            params = scope.params
+            result = current.result
+            locals = scope.context.locals
+            preconditions = scope.preconditions
+            postconditions = postconditions
+            result_local = result_local
+            body = call
+            runtime_name = ""
+            span = call.span
+        })
 }

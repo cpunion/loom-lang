@@ -358,7 +358,8 @@ bodies cannot hide an invalid selected branch. Overrides do not instantiate the
 default body they replace. Dynamic slots distinguish static
 values and omit those arguments from their native signatures. Default forwarding,
 generic methods and static-method compile-time execution use the same checked
-model. Concept contracts remain unsupported.
+model. Concept-declared contracts are inherited by defaults and implementations;
+each implementation must prove its postconditions.
 
 Pure compile-time dynamic construction/calls now use those same checked witnesses,
 including associated, generic, default and static method instances. Purity checking
@@ -367,8 +368,9 @@ even in an unexecuted runtime branch. Reified dyn results preserve admitted evid
 receiver values and shared/cyclic containers while rebuilding witnesses in the
 output queue; compile-time-only methods do not become runtime roots. The
 [dynamic computation example](../../compiler/examples/comptime_dynamic/main.loom)
-also runs natively under forced moving collection. Runtime capture and required
-proofs over dynamic values remain unsupported.
+also runs natively under forced moving collection. Runtime capture remains
+unsupported. A required proof may use the declared scalar postcondition of a
+synchronous dyn concept call without learning the concrete receiver type.
 
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The
@@ -386,14 +388,15 @@ successful entry checks provide facts, while exit checks must be proved. Helpers
 used only by postconditions stay out of native reachability. The
 [contract example](../../compiler/examples/contracts/README.md) exercises this
 through the CLI and compile-time execution. Generic declarations still require
-abstract proofs. Direct scalar calls in a body requiring proof now compose
-verified callee postconditions, or expand a finite pure body without a summary.
+abstract proofs. Direct scalar calls in a body requiring proof compose verified
+callee postconditions, or expand a finite pure body without a summary. Synchronous
+dyn calls use only the exact concept method's declared scalar contract.
 Argument snapshots preserve eager evaluation; proof-only temporaries do not
 change emitted calls or locals. Conditional scalar results reuse existing typed
 branches for body proofs and bounded Boolean normalization for contracts. Reversed
 linear relations and excluded integer interval endpoints retain branch facts.
-Recursive proof dependencies, helper loops/mutation, returns inside helper operands
-and indirect/dynamic calls remain unsupported; required proofs never
+Recursive proof dependencies, helper loops/mutation, returns inside helper operands,
+indirect calls and dyn calls without a usable contract remain unsupported; required proofs never
 fall back to runtime checks or sampled evaluation.
 Required contracts also follow scalar fields through nested inline records and
 Int-backed refinements. In `ensures`, `old(expr)` currently denotes an immutable

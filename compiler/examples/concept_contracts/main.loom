@@ -38,6 +38,19 @@ impl Positive for Parcel {
     }
 }
 
+fn forward(value dyn Positive, input Int) Int
+requires input > 0
+ensures result > 0 {
+    value.guarded(input)
+}
+
+fn box_and_forward(input Int) Int
+requires input > 0
+ensures result > 0 {
+    let value dyn Positive = input
+    value.preserve(input)
+}
+
 test fn concept_contracts() {
     assert 1.preserve(3) == 3
     assert 1.echo(4) == 4
@@ -47,6 +60,8 @@ test fn concept_contracts() {
     assert erased.preserve(5) == 5
     assert erased.echo(6) == 6
     assert erased.guarded(7) == 7
+    assert forward(erased, 10) == 10
+    assert box_and_forward(11) == 11
 }
 
 fn main() {
@@ -56,4 +71,6 @@ fn main() {
     assert erased.preserve(7) == 7
     assert erased.echo(8) == 8
     assert erased.guarded(9) == 9
+    assert forward(erased, 10) == 10
+    assert box_and_forward(11) == 11
 }
