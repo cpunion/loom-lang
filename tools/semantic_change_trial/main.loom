@@ -3,6 +3,7 @@ import semantic_change.Identity
 import semantic_change.Revision
 import semantic_change.merge
 import std.loom.ast.NodeKind
+import std.bytes.decode_utf8
 import std.file.read_text
 import std.fs.entries
 import std.fs.entry_kind
@@ -14,13 +15,24 @@ import std.list.length
 import std.list.new
 import std.list.push
 import std.process.arguments
+import std.process.capture
 import std.process.exit_code
+import std.process.ExitStatus
 import std.result.Result
 import std.text.concat
+import std.text.contains
 import std.text.ends_with
+import std.text.find
+import std.text.length
+import std.text.slice
 import std.text.split
 import std.text.starts_with
 import std.text.trim
+
+record Header {
+    package_name Text
+    identities List[Identity]
+}
 
 fn path(directory Text, name Text) Text {
     concat(concat(directory, "/"), name)
@@ -61,14 +73,7 @@ fn kind_name(value NodeKind) Text {
     "concept"
 }
 
-fn read(directory Text) Result[Revision, Text] {
-    let sidecar = path(directory, ".loom-ids")
-    let metadata = match read_text(sidecar) {
-        Result.Ok(value) => value
-        Result.Err(_) => {
-            return Result.Err(concat("cannot read ", sidecar))
-        }
-    }
+fn header(metadata Text, sidecar Text) Result[Header, Text] {
     let identities = new[Identity]()
     var package_name = ""
     let lines = split(metadata, "\n")
@@ -86,7 +91,7 @@ fn read(directory Text) Result[Revision, Text] {
                 let id = get(words, 1)
                 let name = get(words, 3)
                 let file = get(words, 4)
-                if starts_with(file, "/") || starts_with(file, "\\") ||
+                if starts_with(file, "/") || contains(file, "/") || contains(file, "\\") ||
                 !ends_with(file, ".loom") || trim(file) != file {
                     return Result.Err("identity file path must be a relative .loom filename")
                 }
@@ -103,6 +108,21 @@ fn read(directory Text) Result[Revision, Text] {
     if package_name == "" {
         return Result.Err("identity sidecar needs a package line")
     }
+    Result.Ok(Header {
+            package_name = package_name
+            identities = identities
+        })
+}
+
+fn read(directory Text) Result[Revision, Text] {
+    let sidecar = path(directory, ".loom-ids")
+    let metadata = match read_text(sidecar) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(concat("cannot read ", sidecar))
+        }
+    }
+    let parsed = header(metadata, sidecar)?
     let names = match entries(directory) {
         Result.Ok(found) => found
         Result.Err(_) => {
@@ -110,7 +130,7 @@ fn read(directory Text) Result[Revision, Text] {
         }
     }
     let files = new[File]()
-    index = 0
+    var index = 0
     while index < length(names) {
         let name = get(names, index)
         if ends_with(name, ".loom") {
@@ -136,14 +156,125 @@ fn read(directory Text) Result[Revision, Text] {
         index = index + 1
     }
     Result.Ok(Revision {
-            package_name = package_name
+            package_name = parsed.package_name
             files = files
-            identities = identities
+            identities = parsed.identities
+        })
+}
+
+// Every Git operation reads an existing object or tree. Arguments are passed
+// directly to the process API, never through a shell.
+fn git(git_executable Text, repository Text, operation List[Text]) Result[Text, Text] {
+    let command = new[Text]()
+    push(command, git_executable)
+    push(command, "-C")
+    push(command, repository)
+    var index = 0
+    while index < length(operation) {
+        push(command, get(operation, index))
+        index = index + 1
+    }
+    let captured = match capture(command) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("could not execute Git")
+        }
+    }
+    match captured.status {
+        ExitStatus.Exited(0) => match decode_utf8(captured.stdout) {
+            Result.Ok(value) => Result.Ok(value)
+            Result.Err(_) => Result.Err("Git output is not UTF-8")
+        },
+        _ => Result.Err("Git could not read the requested revision or path")
+    }
+}
+
+fn git_commit(git_executable Text, repository Text, revision Text) Result[Text, Text] {
+    if revision == "" || starts_with(revision, "-") {
+        return Result.Err("invalid Git revision")
+    }
+    let operation = new[Text]()
+    push(operation, "rev-parse")
+    push(operation, "--verify")
+    push(operation, "--end-of-options")
+    push(operation, concat(revision, "^{commit}"))
+    let commit = trim(git(git_executable, repository, operation)?)
+    if commit == "" || contains(commit, "\n") {
+        return Result.Err("invalid Git commit identity")
+    }
+    Result.Ok(commit)
+}
+
+fn git_blob(git_executable Text, repository Text, commit Text, name Text) Result[Text, Text] {
+    let operation = new[Text]()
+    push(operation, "show")
+    push(operation, concat(concat(commit, ":"), name))
+    git(git_executable, repository, operation)
+}
+
+fn read_git(git_executable Text, repository Text, directory Text, revision Text) Result[Revision, Text] {
+    if directory == "" || directory == "." || starts_with(directory, "/") ||
+    contains(directory, "..") || contains(directory, "\\") || ends_with(directory, "/") {
+        return Result.Err("Git package path must be a relative directory")
+    }
+    let commit = git_commit(git_executable, repository, revision)?
+    let operation = new[Text]()
+    push(operation, "ls-tree")
+    push(operation, "-r")
+    push(operation, "-z")
+    push(operation, commit)
+    push(operation, "--")
+    push(operation, directory)
+    let tree = git(git_executable, repository, operation)?
+    let records = split(tree, "\0")
+    let prefix = concat(directory, "/")
+    let files = new[File]()
+    var metadata = ""
+    var sidecar_found = false
+    var index = 0
+    while index < length(records) {
+        let line = get(records, index)
+        if line != "" {
+            let separator = find(line, "\t")
+            if separator < 0 {
+                return Result.Err("invalid Git tree entry")
+            }
+            let mode = std.text.slice(line, 0, separator)
+            let full_path = std.text.slice(line, separator + 1, std.text.length(line))
+            if starts_with(full_path, prefix) {
+                let name = std.text.slice(full_path, std.text.length(prefix), std.text.length(full_path))
+                if !contains(name, "/") && (name == ".loom-ids" || ends_with(name, ".loom")) {
+                    if !starts_with(mode, "100644 blob ") && !starts_with(mode, "100755 blob ") {
+                        return Result.Err(concat("Git source is not a regular blob: ", full_path))
+                    }
+                    let contents = git_blob(git_executable, repository, commit, full_path)?
+                    if name == ".loom-ids" {
+                        metadata = contents
+                        sidecar_found = true
+                    } else {
+                        push(files, File {
+                                path = name
+                                text = contents
+                            })
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    if !sidecar_found {
+        return Result.Err("Git revision has no .loom-ids in the package directory")
+    }
+    let parsed = header(metadata, concat(prefix, ".loom-ids"))?
+    Result.Ok(Revision {
+            package_name = parsed.package_name
+            files = files
+            identities = parsed.identities
         })
 }
 
 fn show(revision Revision) Text {
-    var output = "dry-run semantic merge; no files written\n"
+    var output = "dry-run semantic merge; no source or Git state written\n"
     var index = 0
     output = concat(output, "=== .loom-ids ===\n")
     output = concat(output, concat("package ", concat(revision.package_name, "\n")))
@@ -167,41 +298,39 @@ fn show(revision Revision) Text {
     output
 }
 
+fn preview(base Result[Revision, Text], left Result[Revision, Text],
+    right Result[Revision, Text]) Result[Text, Text] {
+    let original = base?
+    let edited_left = left?
+    let edited_right = right?
+    Result.Ok(show(merge(original, edited_left, edited_right)?))
+}
+
 fn main() {
     let args = arguments()
-    if length(args) != 4 {
+    if length(args) != 4 && (length(args) != 8 || get(args, 1) != "--git") {
         discard write_error("usage: semantic_change_trial BASE_DIR LEFT_DIR RIGHT_DIR\n")
+        discard write_error("   or: semantic_change_trial --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         exit_code(2)
         return
     }
-    let base = read(get(args, 1))
-    let left = read(get(args, 2))
-    let right = read(get(args, 3))
-    match base {
+    let outcome = if length(args) == 4 {
+        preview(read(get(args, 1)), read(get(args, 2)), read(get(args, 3)))
+    } else {
+        let executable = get(args, 2)
+        let repository = get(args, 3)
+        let directory = get(args, 4)
+        preview(read_git(executable, repository, directory, get(args, 5)),
+            read_git(executable, repository, directory, get(args, 6)),
+            read_git(executable, repository, directory, get(args, 7)))
+    }
+    match outcome {
+        Result.Ok(summary) => {
+            discard write_text(summary)
+        }
         Result.Err(message) => {
             discard write_error(concat(message, "\n"))
             exit_code(1)
-        }
-        Result.Ok(base_revision) => match left {
-            Result.Err(message) => {
-                discard write_error(concat(message, "\n"))
-                exit_code(1)
-            }
-            Result.Ok(left_revision) => match right {
-                Result.Err(message) => {
-                    discard write_error(concat(message, "\n"))
-                    exit_code(1)
-                }
-                Result.Ok(right_revision) => match merge(base_revision, left_revision, right_revision) {
-                    Result.Ok(merged) => {
-                        discard write_text(show(merged))
-                    }
-                    Result.Err(message) => {
-                        discard write_error(concat(message, "\n"))
-                        exit_code(1)
-                    }
-                }
-            }
         }
     }
 }
