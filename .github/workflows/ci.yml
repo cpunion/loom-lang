@@ -62,7 +62,7 @@ jobs:
           npm run smoke
 
       - name: Relocated toolchain and generic CPU gate
-        run: node scripts/stage-toolchain.mjs target/relocated-toolchain
+        run: node scripts/stage-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain"
 
       - name: Export checked compiler for the Windows bootstrap
         run: target/loom emit-checked compiler/loom > target/compiler.checked
@@ -113,7 +113,7 @@ jobs:
           cargo test --locked --workspace
 
       - name: Relocated toolchain and generic CPU gate
-        run: node scripts/stage-toolchain.mjs target/relocated-toolchain
+        run: node scripts/stage-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain"
 
   windows-llvm22:
     name: Windows native compiler (LLVM 22)
@@ -198,4 +198,4 @@ jobs:
           cargo test --locked --workspace --no-fail-fast
 
       - name: Relocated toolchain and generic CPU gate
-        run: node scripts/stage-toolchain.mjs target/relocated-toolchain
+        run: node scripts/stage-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain"
