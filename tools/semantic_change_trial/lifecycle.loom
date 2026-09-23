@@ -1,0 +1,418 @@
+import semantic_change.File
+import semantic_change.Identity
+import semantic_change.Revision
+import std.loom.ast.NodeKind
+import std.loom.manifest.segment
+import std.loom.parser.parse
+import std.bytes.new
+import std.file.read_text
+import std.file.write_text
+import std.fs.create_dir
+import std.fs.entry_kind
+import std.fs.FileKind
+import std.fs.remove_empty_dir
+import std.fs.rename
+import std.hash.sha256.hex
+import std.int.to_text
+import std.list.get
+import std.list.length
+import std.list.new
+import std.list.push
+import std.list.set
+import std.result.Result
+import std.text.concat
+import std.text.contains
+import std.text.ends_with
+
+record Resolution {
+    id Text
+    path Text
+    name Text
+    deletion Bool
+}
+
+fn lifecycle_word(value Text) Bool {
+    value != "" && !contains(value, " ") && !contains(value, "\t") &&
+    !contains(value, "\n") && !contains(value, "\r") && !contains(value, "\0")
+}
+
+fn lifecycle_leaf(value Text) Bool {
+    lifecycle_word(value) && ends_with(value, ".loom") &&
+    !contains(value, "/") && !contains(value, "\\")
+}
+
+fn lifecycle_kind(kind NodeKind) Bool {
+    kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum ||
+    kind == NodeKind.Refined || kind == NodeKind.Concept
+}
+
+fn declarations(files List[File]) Result[List[Identity], Text] {
+    let found = new[Identity]()
+    var file_index = 0
+    while file_index < length(files) {
+        let file = get(files, file_index)
+        if !lifecycle_leaf(file.path) {
+            return Result.Err("source path is not a safe root-level .loom filename")
+        }
+        let tree = match std.loom.parser.parse(file.text) {
+            Result.Ok(tree) => tree,
+            Result.Err(problem) => {
+                return Result.Err(concat(concat("cannot parse ", file.path), concat(": ", problem.message)))
+            }
+        }
+        var index = 0
+        while index < length(tree.children) {
+            let node = get(tree.children, index)
+            if !lifecycle_kind(node.kind) || !lifecycle_word(node.value) {
+                return Result.Err(concat("unsupported or unnamed top-level declaration in ", file.path))
+            }
+            var previous = 0
+            while previous < length(found) {
+                if get(found, previous).name == node.value {
+                    return Result.Err(concat("overloaded or same-name declarations need explicit identity support: ", node.value))
+                }
+                previous = previous + 1
+            }
+            push(found, Identity {
+                    id = ""
+                    path = file.path
+                    kind = node.kind
+                    name = node.value
+                })
+            index = index + 1
+        }
+        file_index = file_index + 1
+    }
+    Result.Ok(found)
+}
+
+fn same_declaration(left Identity, right Identity) Bool {
+    left.path == right.path && left.kind == right.kind && left.name == right.name
+}
+
+fn identity_at(identities List[Identity], id Text) Int {
+    var index = 0
+    while index < length(identities) {
+        if get(identities, index).id == id {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn candidate_at(candidates List[Identity], path Text, kind NodeKind, name Text) Int {
+    var index = 0
+    while index < length(candidates) {
+        let value = get(candidates, index)
+        if value.path == path && value.kind == kind && value.name == name {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn fresh_id(package_name Text, candidate Identity, sequence Int) Text {
+    let bytes = std.bytes.new()
+    frame(bytes, "loom-stable-id-v1")
+    frame(bytes, package_name)
+    frame(bytes, candidate.path)
+    frame(bytes, kind_name(candidate.kind))
+    frame(bytes, candidate.name)
+    frame(bytes, to_text(sequence))
+    concat("d-", hex(bytes))
+}
+
+fn files_stamp(files List[File]) Text {
+    let bytes = std.bytes.new()
+    frame_files(bytes, files)
+    hex(bytes)
+}
+
+// A private stage is created exclusively. The final rename publishes one
+// complete sidecar; refresh retains the old bytes in stage/previous. Native
+// rename may replace a racing target, so this is for trusted local workspaces.
+fn publish_sidecar(directory Text, previous Text, updated Text, files List[File], existing Bool) Result[Text, Text] {
+    let bytes = std.bytes.new()
+    frame(bytes, "loom-sidecar-stage-v1")
+    frame(bytes, previous)
+    frame(bytes, updated)
+    frame(bytes, files_stamp(files))
+    let stage = path(directory, concat(".loom-ids-stage-", hex(bytes)))
+    match create_dir(stage) {
+        Result.Ok(_) => {
+        }
+        _ => {
+            return Result.Err(concat("cannot create exclusive identity stage; inspect prior recovery state: ", stage))
+        }
+    }
+    let staged = path(stage, "new")
+    match std.file.write_text(staged, updated) {
+        Result.Ok(_) => {
+        }
+        _ => {
+            return Result.Err(concat("cannot write staged identities: ", stage))
+        }
+    }
+    if existing {
+        match std.file.write_text(path(stage, "previous"), previous) {
+            Result.Ok(_) => {
+            }
+            _ => {
+                return Result.Err(concat("cannot back up previous identities: ", stage))
+            }
+        }
+    }
+    if files_stamp(read_files(directory)?) != files_stamp(files) {
+        return Result.Err(concat("source changed before identity publication; staged bytes remain at ", stage))
+    }
+    let target = path(directory, ".loom-ids")
+    if existing {
+        match entry_kind(target) {
+            Result.Ok(FileKind.File) => {
+            }
+            _ => {
+                return Result.Err(concat("identity sidecar changed before publication; staged bytes remain at ", stage))
+            }
+        }
+        let current = match read_text(target) {
+            Result.Ok(value) => value,
+            Result.Err(_) => {
+                return Result.Err(concat("cannot re-read identity sidecar; staged bytes remain at ", stage))
+            }
+        }
+        if current != previous {
+            return Result.Err(concat("identity sidecar changed before publication; staged bytes remain at ", stage))
+        }
+    } else {
+        discard vacant(target)?
+    }
+    match rename(staged, target) {
+        Result.Ok(_) => {
+        }
+        _ => {
+            return Result.Err(concat("could not publish identities; staged bytes remain at ", stage))
+        }
+    }
+    if !existing {
+        discard remove_empty_dir(stage)
+        return Result.Ok("identities initialized\n")
+    }
+    Result.Ok(concat("identities refreshed; previous sidecar retained at ", concat(path(stage, "previous"), "\n")))
+}
+
+fn initialize(package_name Text, directory Text) Result[Text, Text] {
+    if !segment(package_name) || package_name == "std" {
+        return Result.Err("init needs a lowercase package identifier other than std")
+    }
+    let target = path(directory, ".loom-ids")
+    discard vacant(target)?
+    let files = read_files(directory)?
+    let candidates = declarations(files)?
+    let identities = new[Identity]()
+    var changes = ""
+    var next = 1
+    var index = 0
+    while index < length(candidates) {
+        let candidate = get(candidates, index)
+        let id = fresh_id(package_name, candidate, next)
+        push(identities, Identity {
+                id = id
+                path = candidate.path
+                kind = candidate.kind
+                name = candidate.name
+            })
+        changes = concat(changes, concat("added ", concat(id,
+                    concat(" ", concat(candidate.path, concat(" ", concat(candidate.name, "\n")))))))
+        next = next + 1
+        index = index + 1
+    }
+    let updated = sidecar(Revision {
+            package_name = package_name
+            files = files
+            identities = identities
+        }, next)
+    Result.Ok(concat(publish_sidecar(directory, "", updated, files, false)?, changes))
+}
+
+fn resolutions(args List[Text], start Int) Result[List[Resolution], Text] {
+    let output = new[Resolution]()
+    var index = start
+    while index < length(args) {
+        let option = get(args, index)
+        let deletion = option == "--delete"
+        if (!deletion && option != "--move") || index + if deletion {
+            1
+        } else {
+            3
+        } >= length(args) {
+            return Result.Err("refresh options are --move ID NEW_FILE NEW_NAME or --delete ID")
+        }
+        let id = get(args, index + 1)
+        var previous = 0
+        while previous < length(output) {
+            if get(output, previous).id == id {
+                return Result.Err("identity has more than one explicit resolution")
+            }
+            previous = previous + 1
+        }
+        push(output, Resolution {
+                id = id
+                path = if deletion {
+                    ""
+                } else {
+                    get(args, index + 2)
+                }
+                name = if deletion {
+                    ""
+                } else {
+                    get(args, index + 3)
+                }
+                deletion = deletion
+            })
+        index = index + if deletion {
+            2
+        } else {
+            4
+        }
+    }
+    Result.Ok(output)
+}
+
+fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
+    let loaded = read(directory)?
+    let previous = loaded.revision.identities
+    let candidates = declarations(loaded.revision.files)?
+    let selected = new[Text]()
+    let old_used = new[Bool]()
+    var index = 0
+    while index < length(previous) {
+        push(old_used, false)
+        let prior = get(previous, index)
+        if !lifecycle_word(prior.id) || !lifecycle_leaf(prior.path) || !lifecycle_word(prior.name) {
+            return Result.Err("existing sidecar has an invalid declaration identity")
+        }
+        var earlier = 0
+        while earlier < index {
+            if prior.id == get(previous, earlier).id || prior.name == get(previous, earlier).name ||
+            same_declaration(prior, get(previous, earlier)) {
+                return Result.Err("existing sidecar has ambiguous or duplicate identities")
+            }
+            earlier = earlier + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(candidates) {
+        let candidate = get(candidates, index)
+        var matched = -1
+        var prior_index = 0
+        while prior_index < length(previous) {
+            let prior = get(previous, prior_index)
+            var explicitly_deleted = false
+            var option_index = 0
+            while option_index < length(options) {
+                let option = get(options, option_index)
+                if option.id == prior.id && option.deletion {
+                    explicitly_deleted = true
+                }
+                option_index = option_index + 1
+            }
+            if !explicitly_deleted && same_declaration(prior, candidate) {
+                matched = prior_index
+            }
+            prior_index = prior_index + 1
+        }
+        push(selected, if matched >= 0 {
+                get(previous, matched).id
+            } else {
+                ""
+            })
+        if matched >= 0 {
+            set(old_used, matched, true)
+        }
+        index = index + 1
+    }
+    var changes = ""
+    index = 0
+    while index < length(options) {
+        let option = get(options, index)
+        let prior_index = identity_at(previous, option.id)
+        if prior_index < 0 || get(old_used, prior_index) {
+            return Result.Err("explicit resolution needs an unmatched existing identity")
+        }
+        if !option.deletion {
+            let old_identity = get(previous, prior_index)
+            let candidate = candidate_at(candidates, option.path, old_identity.kind, option.name)
+            if candidate < 0 || get(selected, candidate) != "" {
+                return Result.Err("--move target must be one unmatched declaration of the same kind")
+            }
+            set(selected, candidate, option.id)
+            changes = concat(changes, concat("moved ", concat(option.id,
+                        concat(" to ", concat(option.path, concat(" ", concat(option.name, "\n")))))))
+        } else {
+            changes = concat(changes, concat("deleted ", concat(option.id, "\n")))
+        }
+        set(old_used, prior_index, true)
+        index = index + 1
+    }
+    var remaining_old = 0
+    index = 0
+    while index < length(previous) {
+        if !get(old_used, index) {
+            remaining_old = remaining_old + 1
+            changes = concat(changes, concat("deleted ", concat(get(previous, index).id, "\n")))
+        }
+        index = index + 1
+    }
+    var remaining_new = 0
+    index = 0
+    while index < length(selected) {
+        if get(selected, index) == "" {
+            remaining_new = remaining_new + 1
+        }
+        index = index + 1
+    }
+    if remaining_old > 0 && remaining_new > 0 {
+        return Result.Err("possible move or rename: use --move ID NEW_FILE NEW_NAME, or --delete ID before assigning new identities")
+    }
+    let identities = new[Identity]()
+    var next = loaded.next
+    index = 0
+    while index < length(candidates) {
+        let candidate = get(candidates, index)
+        var id = get(selected, index)
+        if id == "" {
+            if next >= 9223372036854775806 {
+                return Result.Err("identity allocator exhausted")
+            }
+            id = fresh_id(loaded.revision.package_name, candidate, next)
+            next = next + 1
+            changes = concat(changes, concat("added ", concat(id, concat(" ",
+                            concat(candidate.path, concat(" ", concat(candidate.name, "\n")))))))
+        }
+        push(identities, Identity {
+                id = id
+                path = candidate.path
+                kind = candidate.kind
+                name = candidate.name
+            })
+        index = index + 1
+    }
+    let revised = Revision {
+        package_name = loaded.revision.package_name
+        files = loaded.revision.files
+        identities = identities
+    }
+    let updated = sidecar(revised, next)
+    if updated == loaded.sidecar {
+        return Result.Ok("identities unchanged\n")
+    }
+    let published = publish_sidecar(directory, loaded.sidecar, updated, loaded.revision.files, true)?
+    Result.Ok(concat(published, changes))
+}
+
+fn refresh_command(args List[Text]) Result[Text, Text] {
+    refresh(get(args, 2), resolutions(args, 3)?)
+}

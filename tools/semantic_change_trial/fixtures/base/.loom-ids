@@ -1,3 +1,4 @@
 package sample
+next 3
 id amount-id fn amount value.loom
 id entry-id fn entry app.loom
