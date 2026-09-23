@@ -14,6 +14,8 @@ concept Positive {
     fn guarded(self Self, value Int) Int
     requires is_positive(value)
     ensures is_positive(result)
+    fn preserve_with_peer(self Self, peer dyn Positive, value Int) Int
+    ensures result == value
 }
 
 impl Positive for Int {
@@ -21,6 +23,9 @@ impl Positive for Int {
         input
     }
     fn guarded(receiver Int, input Int) Int {
+        input
+    }
+    fn preserve_with_peer(receiver Int, peer dyn Positive, input Int) Int {
         input
     }
 }
@@ -34,6 +39,9 @@ impl Positive for Parcel {
         input
     }
     fn guarded(receiver Parcel, input Int) Int {
+        input
+    }
+    fn preserve_with_peer(receiver Parcel, peer dyn Positive, input Int) Int {
         input
     }
 }
@@ -51,6 +59,11 @@ ensures result > 0 {
     value.preserve(input)
 }
 
+fn forward_with_peer(value dyn Positive, peer dyn Positive, input Int) Int
+ensures result == input {
+    value.preserve_with_peer(peer, input)
+}
+
 test fn concept_contracts() {
     assert 1.preserve(3) == 3
     assert 1.echo(4) == 4
@@ -62,6 +75,8 @@ test fn concept_contracts() {
     assert erased.guarded(7) == 7
     assert forward(erased, 10) == 10
     assert box_and_forward(11) == 11
+    let peer dyn Positive = 1
+    assert forward_with_peer(erased, peer, 12) == 12
 }
 
 fn main() {
@@ -73,4 +88,6 @@ fn main() {
     assert erased.guarded(9) == 9
     assert forward(erased, 10) == 10
     assert box_and_forward(11) == 11
+    let peer dyn Positive = 1
+    assert forward_with_peer(erased, peer, 12) == 12
 }
