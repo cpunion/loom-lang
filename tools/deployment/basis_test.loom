@@ -1,4 +1,6 @@
 import std.list.new
+import std.list.get
+import std.list.length
 import std.list.push
 import std.result.Result
 
@@ -32,16 +34,18 @@ test fn basis_tracks_checked_code_mapping_and_native_inputs() {
         tables = tables
     }
     let original = digest(mapping, "checked-a", "lock-a", "arm64-macos", "llvm-a")
-    match bind_basis(mapping, "checked-a", "lock-a", "arm64-macos", "llvm-a") {
+    let bound = match bind_basis(mapping, "checked-a", "lock-a", "arm64-macos", "llvm-a") {
         Result.Ok(bound) => {
             assert bound.basis == original
             assert match bind_basis(bound, "checked-b", "lock-a", "arm64-macos", "llvm-a") {
                 Result.Err(_) => true,
                 Result.Ok(_) => false
             }
+            bound
         }
         Result.Err(_) => {
             assert false
+            mapping
         }
     }
     assert original == digest(mapping, "checked-a", "lock-a", "arm64-macos", "llvm-a")
@@ -56,6 +60,11 @@ test fn basis_tracks_checked_code_mapping_and_native_inputs() {
             required = false
             predicate = ""
         })
+    assert length(get(bound.tables, 0).columns) == 1
+    assert match verify_basis(bound, "checked-a", "lock-a", "arm64-macos", "llvm-a") {
+        Result.Ok(value) => value,
+        Result.Err(_) => false
+    }
     assert original != digest(mapping, "checked-a", "lock-a", "arm64-macos", "llvm-a")
 }
 

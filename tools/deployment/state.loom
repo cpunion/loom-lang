@@ -1,6 +1,9 @@
 import std.result.Result
 
-pub enum FailurePolicy { Stop Rollback }
+pub enum FailurePolicy {
+    Stop
+    Rollback
+}
 
 pub enum DeploymentState {
     NotDeployed
@@ -52,12 +55,16 @@ pub fn advance(attempt Attempt, event Transition) Result[Attempt, Text] {
         DeploymentState.NotDeployed => match event {
             Transition.Begin => DeploymentState.Started,
             Transition.AssumeComplete => DeploymentState.AssumedComplete,
-            _ => { return Result.Err("deployment has not started") }
+            _ => {
+                return Result.Err("deployment has not started")
+            }
         },
         DeploymentState.Started => match event {
             Transition.Fail => DeploymentState.Failed,
             Transition.Finish => DeploymentState.Complete,
-            _ => { return Result.Err("started deployment has an unknown outcome") }
+            _ => {
+                return Result.Err("started deployment has an unknown outcome")
+            }
         },
         DeploymentState.Failed => match event {
             Transition.BeginRollback => DeploymentState.RollbackStarted,
@@ -67,23 +74,35 @@ pub fn advance(attempt Attempt, event Transition) Result[Attempt, Text] {
                 }
                 DeploymentState.Started
             },
-            _ => { return Result.Err("failed deployment needs its declared recovery policy") }
+            _ => {
+                return Result.Err("failed deployment needs its declared recovery policy")
+            }
         },
         DeploymentState.Complete => match event {
             Transition.BeginRollback => DeploymentState.RollbackStarted,
-            _ => { return Result.Err("completed deployment needs a new attempt or rollback") }
+            _ => {
+                return Result.Err("completed deployment needs a new attempt or rollback")
+            }
         },
         DeploymentState.RollbackStarted => match event {
             Transition.FailRollback => DeploymentState.RollbackFailed,
             Transition.FinishRollback => DeploymentState.RollbackComplete,
-            _ => { return Result.Err("rollback is still in progress") }
+            _ => {
+                return Result.Err("rollback is still in progress")
+            }
         },
         DeploymentState.RollbackFailed => match event {
             Transition.BeginRollback => DeploymentState.RollbackStarted,
-            _ => { return Result.Err("failed rollback needs explicit retry") }
+            _ => {
+                return Result.Err("failed rollback needs explicit retry")
+            }
         },
-        DeploymentState.RollbackComplete => { return Result.Err("rolled-back attempt is closed") },
-        DeploymentState.AssumedComplete => { return Result.Err("assumed historical completion is not an observed operation") }
+        DeploymentState.RollbackComplete => {
+            return Result.Err("rolled-back attempt is closed")
+        },
+        DeploymentState.AssumedComplete => {
+            return Result.Err("assumed historical completion is not an observed operation")
+        }
     }
     Result.Ok(Attempt {
             id = attempt.id
@@ -96,7 +115,11 @@ pub fn advance(attempt Attempt, event Transition) Result[Attempt, Text] {
 
 // Only observed completion or rollback establishes an observed effective basis.
 // Assumed completion remains separate; Start/Fail/rollback-in-progress are unknown.
-pub enum BasisEvidence { None Observed(Text) Assumed(Text) }
+pub enum BasisEvidence {
+    None
+    Observed(Text)
+    Assumed(Text)
+}
 
 pub fn effective(attempt Attempt) BasisEvidence {
     match attempt.state {

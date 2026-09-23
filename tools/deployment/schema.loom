@@ -36,9 +36,12 @@ pub record Schema {
 }
 
 pub enum ConflictKind {
+    ChangedBasis
+    AddedTable
     RemovedTable
     RenamedTable
     RemovedColumn
+    AddedColumn
     RenamedColumn
     ChangedType
     NewRequiredColumn
@@ -126,8 +129,8 @@ fn add(conflicts List[Conflict], kind ConflictKind, table Text, column Text) {
         })
 }
 
-// Directly compares the declared starting schema with the candidate. Unknown
-// predicate changes are conflicts, not guessed weakenings or sampled proofs.
+// Reports physical mapping changes as well as compatibility obligations.
+// Unknown predicate changes are not guessed weakenings or sampled proofs.
 pub fn conflicts(from Schema, to Schema) Result[List[Conflict], Text] {
     discard validate(from)?
     discard validate(to)?
@@ -169,13 +172,29 @@ pub fn conflicts(from Schema, to Schema) Result[List[Conflict], Text] {
             field = 0
             while field < length(next_table.columns) {
                 let next_column = get(next_table.columns, field)
-                if column_by_id(old_table.columns, next_column.id) < 0 && next_column.required {
-                    add(found, ConflictKind.NewRequiredColumn, old_table.id, next_column.id)
+                if column_by_id(old_table.columns, next_column.id) < 0 {
+                    add(found, if next_column.required {
+                            ConflictKind.NewRequiredColumn
+                        } else {
+                            ConflictKind.AddedColumn
+                        },
+                        old_table.id, next_column.id)
                 }
                 field = field + 1
             }
         }
         index = index + 1
+    }
+    index = 0
+    while index < length(to.tables) {
+        let next_table = get(to.tables, index)
+        if table_by_id(from.tables, next_table.id) < 0 {
+            add(found, ConflictKind.AddedTable, next_table.id, "")
+        }
+        index = index + 1
+    }
+    if from.basis != to.basis {
+        add(found, ConflictKind.ChangedBasis, "", "")
     }
     Result.Ok(found)
 }

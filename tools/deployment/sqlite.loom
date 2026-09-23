@@ -52,15 +52,15 @@ fn invoke(tool Text, database Text, sql Text, read_only Bool) Result[Bytes, Text
     }
 }
 
-// The database is opened read-only. Query results stay private to the caller;
-// diagnostics never echo SQL, database contents, paths, or SQLite stderr.
-pub fn inspect(tool Text, database Text, sql Text) Result[Bytes, Text] {
+// Internal fixed queries only. `-readonly` does not sandbox arbitrary sqlite3
+// stdin (dot commands can reopen a writable database), so this is not public.
+// Diagnostics never echo SQL, database contents, paths, or SQLite stderr.
+fn inspect(tool Text, database Text, sql Text) Result[Bytes, Text] {
     invoke(tool, database, sql, true)
 }
 
-// Explicit execution boundary. Callers must establish compatibility, a
-// migration/recovery plan, and the selected failure policy before invoking it.
-// This wrapper alone does not attest transactionality or successful migration.
-pub fn execute(tool Text, database Text, sql Text) Result[Bytes, Text] {
+// Internal SQL transport. Only generated statements with validated identifiers
+// may cross this boundary; completion requires a separate checked transaction.
+fn execute(tool Text, database Text, sql Text) Result[Bytes, Text] {
     invoke(tool, database, sql, false)
 }
