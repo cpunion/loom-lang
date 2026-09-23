@@ -792,8 +792,8 @@ omitted methods use the default and matching methods override it. Defaults are
 checked with abstract `Self` and the concept's declared capabilities, including
 its associated types. They may call other methods, which select that type's
 override. Static calls specialize directly; `dyn` tables retain only used slots
-in closed executable builds. Method contracts on the concept declaration remain
-unsupported. Implementation postconditions still require proofs; an implementation
+in closed executable builds. Concept-declared contracts are inherited by defaults
+and implementations, which must prove their postconditions. An implementation
 cannot add an undeclared precondition.
 
 Implementation headers can declare type parameters and prerequisites:
@@ -816,8 +816,8 @@ not a negative `implements` answer. Test-only evidence retains its normal scope.
 This slice supports nongeneric concepts and generic implementation targets.
 Concept-typed parameter shorthand remains
 later work.
-Concept method contracts and extra implementation preconditions currently reject;
-implementation postconditions still require proof.
+Concept method contracts are checked against every implementation; extra
+implementation preconditions reject.
 
 Methods can declare their own type parameters, independently of the receiver:
 
@@ -1000,7 +1000,9 @@ Reification registers new output-queue witnesses and preserves shared/cyclic
 containers, rather than retaining evaluation-local indices. Only methods needed
 by the runtime program survive. The [compile-time dynamic example](examples/comptime_dynamic/main.loom)
 exercises both computed scalar results and managed receivers used after compilation.
-This does not permit runtime-local capture or add required proofs over dyn values.
+This does not permit runtime-local capture. Required proofs can use a declared
+scalar postcondition of a synchronous `dyn` concept call, without inspecting its
+concrete runtime receiver.
 
 ## Module dependencies
 
@@ -1157,6 +1159,17 @@ arithmetic returns `Int`, while generic inference retains nominal identity.
 Float needs no check. Money never implicitly converts to Int. Finiteness is a
 predicate choice, not an extra hidden restriction on Float constraints.
 
+A record with only inline `Int`, `Bool`, `Float`, or nested inline
+record/refined fields can also have a `where` predicate over `self.field` paths.
+Its constructor checks an unknown value once and returns `Result`; copying the
+refined value or widening it to the base record adds no check. Records with
+`List`, `Bytes`, `Text`, or other shared/reference-like fields are rejected as
+refinement bases, and fields cannot be assigned in place. Record literals do
+not yet use optional constant folding, so even an evident valid literal keeps
+the `Result` boundary; explicit `comptime` evaluation can materialize one.
+See the [record refinement example](examples/record_refinement/main.loom).
+This is not a general invariant over mutable shared data.
+
 An explicit conversion between Int refinements can also return the destination
 directly when the source predicate proves the destination predicate, including
 the absence of overflow in that predicate:
@@ -1247,7 +1260,9 @@ when the caller is unused. Verified postconditions retain call-free checked
 expressions for compile-time execution.
 
 Direct `Int`/`Bool` calls in a body requiring proof use the callee's verified
-postconditions as a summary. For example, `identity(value)` with
+postconditions as a summary. Synchronous `dyn` calls can use the exact concept
+method's declared scalar contract, which every implementation must satisfy;
+the proof never guesses a concrete witness. For example, `identity(value)` with
 `ensures result == value` lets a forwarding function prove the same contract.
 Without a summary, the prover can expand a finite pure scalar body. Arguments
 are evaluated in order and their values captured before applying the summary;
@@ -1261,8 +1276,9 @@ provides a fact only after that assertion succeeds; the compiler never inserts
 an assertion to rescue a failed postcondition proof. Postcondition arithmetic
 must itself be defined within `Int` bounds.
 
-Helper loops/mutation, returns inside helper operands, recursive proof dependencies, dynamic or indirect
-calls, nonlinear arithmetic and nonconstant division remain outside this
+Helper loops/mutation, returns inside helper operands, recursive proof dependencies,
+dynamic calls without a usable declared scalar contract, indirect calls,
+nonlinear arithmetic and nonconstant division remain outside this
 proof fragment. Required Float proofs remain unsupported, while pure Float entry
 predicates can run normally. Solver work is bounded; exhaustion is a diagnostic,
 not permission to trust an obligation. These are normal-return guarantees, not
@@ -1489,9 +1505,9 @@ This guarantee follows MustScope, not Dispose alone. A function returning an
 ordinary Dispose-only value may return a shared alias, so its function type alone
 cannot justify a scoped initializer. Direct calls still use checked body evidence.
 
-This synchronous slice conservatively rejects nested resource aggregates and
-resource lists, and matching a resource itself.
-Aggregate-transfer cleanup remains open. Lexical cleanup across suspension is
+Nested record resources now receive pending cleanup during construction.
+Resource lists, enum payloads, abstract resource fields, and matching a resource
+itself remain unsupported. Lexical cleanup across suspension is
 supported as described in [Source Tasks](#source-tasks).
 
 `break` exits the nearest enclosing `while` body; `continue` reevaluates that

@@ -1,0 +1,209 @@
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+import std.file.read_bytes
+import std.file.write_text
+import std.fs.canonicalize
+import std.fs.create_dir
+import std.fs.entry_kind
+import std.fs.FileKind
+import std.fs.FsError
+import std.fs.rename
+import std.fs.remove_file
+import std.fs.remove_empty_dir
+import std.hash.sha256.hex
+import std.int.to_text
+import std.list.get
+import std.list.length
+import std.loom.project.Project
+import std.loom.project.join_path
+import std.result.Result
+import std.text.byte
+import std.text.concat
+import std.text.length
+import std.text.slice
+import std.text.ends_with
+
+// Hex paths keep the receipt line-oriented even when a filename contains a
+// newline or tab. The digest fields below are SHA-256 of actual byte snapshots.
+fn receipt_hex(value Text) Text {
+    let encoded = std.bytes.new()
+    var index = 0
+    while index < std.text.length(value) {
+        let current = byte(value, index)
+        std.bytes.push(encoded, byte("0123456789abcdef", current >> 4))
+        std.bytes.push(encoded, byte("0123456789abcdef", current & 15))
+        index = index + 1
+    }
+    to_text(encoded)
+}
+
+fn receipt_path(path Text) Result[Text, Text] {
+    if path == "" {
+        return Result.Err("--receipt needs a nonempty path")
+    }
+    match entry_kind(path) {
+        Result.Ok(kind) => {
+            if kind != FileKind.File {
+                return Result.Err("build receipt path must be a regular file")
+            }
+            return match canonicalize(path) {
+                Result.Ok(value) => Result.Ok(value)
+                Result.Err(_) => Result.Err("cannot resolve build receipt path")
+            }
+        }
+        Result.Err(error) => {
+            if error != FsError.NotFound {
+                return Result.Err("cannot inspect build receipt path")
+            }
+        }
+    }
+    let directory = executable_directory(path)
+    let leaf = slice(path, length(directory), length(path))
+    if leaf == "" || leaf == "." || leaf == ".." {
+        return Result.Err("build receipt needs a file path")
+    }
+    let parent = match canonicalize(if directory == "" {
+            "."
+        } else {
+            directory
+        }) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("cannot resolve build receipt parent directory")
+        }
+    }
+    Result.Ok(join_path(parent, leaf))
+}
+
+fn receipt_text(artifact Text, artifact_hash Text, checked_hash Text, backend Text, project Project) Text {
+    var output = "loom-build-receipt 1\n"
+    output = concat(output, concat("checked-sha256 ", concat(checked_hash, "\n")))
+    output = concat(output, concat("artifact-sha256 ", concat(artifact_hash, "\n")))
+    output = concat(output, concat("backend-identity ", concat(backend, "\n")))
+    output = concat(output, concat("artifact-path ", concat(receipt_hex(artifact), "\n")))
+    output = concat(output, concat("module-count ", concat(to_text(length(project.modules)), "\n")))
+    var index = 0
+    while index < length(project.modules) {
+        let module = get(project.modules, index)
+        output = concat(output, concat("module ", concat(receipt_hex(module.name), concat(" ", concat(receipt_hex(module.source), "\n")))))
+        index = index + 1
+    }
+    output = concat(output, concat("source-count ", concat(to_text(length(project.files)), "\n")))
+    index = 0
+    while index < length(project.files) {
+        let source = get(project.files, index)
+        let owner = get(project.packages, source.package).instance
+        output = concat(output, concat("source ", concat(to_text(owner), concat(" ", concat(receipt_hex(source.path), concat(" ", concat(hex(cache_bytes(source.text)), "\n")))))))
+        index = index + 1
+    }
+    concat(output, "end\n")
+}
+
+fn receipt_stage(path Text) Result[Text, Text] {
+    var index = 0
+    while index < 1024 {
+        let stage = concat(path, concat(".stage-", to_text(index)))
+        match create_dir(stage) {
+            Result.Ok(_) => {
+                return Result.Ok(stage)
+            }
+            Result.Err(error) => {
+                if error != FsError.AlreadyExists {
+                    return Result.Err("cannot create build receipt staging directory")
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Err("build receipt staging directories are exhausted")
+}
+
+fn receipt_source_path(path Text, project Project) Bool {
+    var index = 0
+    while index < length(project.files) {
+        let source = get(project.files, index).path
+        if source == path || match canonicalize(source) {
+            Result.Ok(value) => value == path
+            Result.Err(_) => true
+        } {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(project.modules) {
+        let root = get(project.modules, index).source
+        if path == join_path(root, "loom.toml") || path == join_path(root, "loom.lock") {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn receipt_preflight(path Text, output Text, project Project) Result[Bool, Text] {
+    let destination = receipt_path(path)?
+    let artifact = match receipt_path(output) {
+        Result.Ok(value) => value
+        Result.Err(_) => output
+    }
+    if destination == artifact {
+        return Result.Err("build receipt cannot replace its artifact")
+    }
+    // Production loading excludes test files; a receipt must not overwrite
+    // those or another source-like file just because it was not selected.
+    if ends_with(destination, ".loom") || ends_with(destination, ".toml") ||
+    ends_with(destination, ".lock") || receipt_source_path(destination, project) {
+        return Result.Err("build receipt cannot replace a source or module input")
+    }
+    Result.Ok(true)
+}
+
+// Publication replaces only the named receipt, after the build and artifact
+// read succeed. Failed writes leave an earlier receipt intact. The rename is
+// same-directory atomic replacement, not a crash-durability guarantee.
+fn publish_build_receipt(path Text, output Text, checked Text, backend Text, project Project) Result[Bool, Text] {
+    let artifact = match entry_kind(output) {
+        Result.Ok(kind) => {
+            if kind != FileKind.File {
+                return Result.Err("built artifact is not a regular file")
+            }
+            match canonicalize(output) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Err("cannot resolve built artifact path")
+                }
+            }
+        }
+        Result.Err(_) => {
+            return Result.Err("cannot inspect built artifact")
+        }
+    }
+    discard receipt_preflight(path, output, project)?
+    let destination = receipt_path(path)?
+    let bytes = match read_bytes(output) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("cannot read built artifact for receipt")
+        }
+    }
+    let content = receipt_text(artifact, hex(bytes), hex(cache_bytes(checked)), backend, project)
+    let stage = receipt_stage(destination)?
+    let temporary = join_path(stage, "receipt")
+    defer {
+        discard remove_file(temporary)
+        discard remove_empty_dir(stage)
+    }
+    match write_text(temporary, content) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            return Result.Err("cannot write staged build receipt")
+        }
+    }
+    match rename(temporary, destination) {
+        Result.Ok(_) => Result.Ok(true)
+        Result.Err(_) => Result.Err("cannot publish build receipt")
+    }
+}

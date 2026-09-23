@@ -3,13 +3,20 @@ import semantic_change.Identity
 import semantic_change.Revision
 import semantic_change.merge
 import std.loom.ast.NodeKind
+import std.bytes.new
+import std.bytes.push
 import std.bytes.decode_utf8
 import std.file.read_text
+import std.file.write_text
+import std.fs.create_dir
 import std.fs.entries
 import std.fs.entry_kind
 import std.fs.FileKind
+import std.fs.FsError
+import std.hash.sha256.hex
 import std.io.write_error
 import std.io.write_text
+import std.int.to_text
 import std.list.get
 import std.list.length
 import std.list.new
@@ -21,6 +28,7 @@ import std.process.ExitStatus
 import std.result.Result
 import std.text.concat
 import std.text.contains
+import std.text.byte
 import std.text.ends_with
 import std.text.find
 import std.text.length
@@ -32,6 +40,17 @@ import std.text.trim
 record Header {
     package_name Text
     identities List[Identity]
+}
+
+record Loaded {
+    revision Revision
+    sidecar Text
+    commit Text
+}
+
+record Review {
+    merged Revision
+    token Text
 }
 
 fn path(directory Text, name Text) Text {
@@ -114,8 +133,23 @@ fn header(metadata Text, sidecar Text) Result[Header, Text] {
         })
 }
 
-fn read(directory Text) Result[Revision, Text] {
+fn read(directory Text) Result[Loaded, Text] {
+    discard checked_directory_path(directory, true)?
+    match entry_kind(directory) {
+        Result.Ok(FileKind.Directory) => {
+        }
+        _ => {
+            return Result.Err(concat("source is not a regular directory: ", directory))
+        }
+    }
     let sidecar = path(directory, ".loom-ids")
+    match entry_kind(sidecar) {
+        Result.Ok(FileKind.File) => {
+        }
+        _ => {
+            return Result.Err(concat("identity sidecar is not a regular file: ", sidecar))
+        }
+    }
     let metadata = match read_text(sidecar) {
         Result.Ok(value) => value
         Result.Err(_) => {
@@ -155,10 +189,14 @@ fn read(directory Text) Result[Revision, Text] {
         }
         index = index + 1
     }
-    Result.Ok(Revision {
-            package_name = parsed.package_name
-            files = files
-            identities = parsed.identities
+    Result.Ok(Loaded {
+            revision = Revision {
+                package_name = parsed.package_name
+                files = files
+                identities = parsed.identities
+            }
+            sidecar = metadata
+            commit = ""
         })
 }
 
@@ -213,7 +251,7 @@ fn git_blob(git_executable Text, repository Text, object Text) Result[Text, Text
     git(git_executable, repository, operation)
 }
 
-fn read_git(git_executable Text, repository Text, directory Text, revision Text) Result[Revision, Text] {
+fn read_git(git_executable Text, repository Text, directory Text, revision Text) Result[Loaded, Text] {
     if directory == "" || starts_with(directory, "/") ||
     contains(directory, "..") || contains(directory, "\\") || ends_with(directory, "/") {
         return Result.Err("Git package path must be a relative directory")
@@ -228,7 +266,11 @@ fn read_git(git_executable Text, repository Text, directory Text, revision Text)
     push(operation, directory)
     let tree = git(git_executable, repository, operation)?
     let records = split(tree, "\0")
-    let prefix = if directory == "." { "" } else { concat(directory, "/") }
+    let prefix = if directory == "." {
+        ""
+    } else {
+        concat(directory, "/")
+    }
     let files = new[File]()
     var metadata = ""
     var sidecar_found = false
@@ -270,18 +312,20 @@ fn read_git(git_executable Text, repository Text, directory Text, revision Text)
         return Result.Err("Git revision has no .loom-ids in the package directory")
     }
     let parsed = header(metadata, concat(prefix, ".loom-ids"))?
-    Result.Ok(Revision {
-            package_name = parsed.package_name
-            files = files
-            identities = parsed.identities
+    Result.Ok(Loaded {
+            revision = Revision {
+                package_name = parsed.package_name
+                files = files
+                identities = parsed.identities
+            }
+            sidecar = metadata
+            commit = commit
         })
 }
 
-fn show(revision Revision) Text {
-    var output = "dry-run semantic merge; no source or Git state written\n"
+fn sidecar(revision Revision) Text {
+    var output = concat("package ", concat(revision.package_name, "\n"))
     var index = 0
-    output = concat(output, "=== .loom-ids ===\n")
-    output = concat(output, concat("package ", concat(revision.package_name, "\n")))
     while index < length(revision.identities) {
         let identity = get(revision.identities, index)
         output = concat(output, concat("id ", concat(identity.id,
@@ -289,7 +333,68 @@ fn show(revision Revision) Text {
                                 concat(identity.name, concat(" ", concat(identity.path, "\n")))))))))
         index = index + 1
     }
+    output
+}
+
+fn frame(output Bytes, value Text) {
+    let size = to_text(std.text.length(value))
+    var index = 0
+    while index < std.text.length(size) {
+        std.bytes.push(output, byte(size, index))
+        index = index + 1
+    }
+    std.bytes.push(output, 58)
     index = 0
+    while index < std.text.length(value) {
+        std.bytes.push(output, byte(value, index))
+        index = index + 1
+    }
+}
+
+fn frame_files(output Bytes, files List[File]) {
+    frame(output, to_text(length(files)))
+    var index = 0
+    while index < length(files) {
+        let file = get(files, index)
+        frame(output, file.path)
+        frame(output, file.text)
+        index = index + 1
+    }
+}
+
+fn frame_loaded(output Bytes, loaded Loaded) {
+    frame(output, loaded.commit)
+    frame(output, loaded.sidecar)
+    frame_files(output, loaded.revision.files)
+}
+
+fn loaded_stamp(loaded Loaded) Text {
+    let output = std.bytes.new()
+    frame_loaded(output, loaded)
+    hex(output)
+}
+
+fn review(base Loaded, left Loaded, right Loaded) Result[Review, Text] {
+    let merged = merge(base.revision, left.revision, right.revision)?
+    let output = std.bytes.new()
+    frame(output, "loom-semantic-review-v1")
+    frame_loaded(output, base)
+    frame_loaded(output, left)
+    frame_loaded(output, right)
+    frame(output, sidecar(merged))
+    frame_files(output, merged.files)
+    Result.Ok(Review {
+            merged = merged
+            token = hex(output)
+        })
+}
+
+fn show(value Review) Text {
+    let revision = value.merged
+    var output = concat("dry-run semantic merge; no source or Git state written\nreview token: ", concat(value.token, "\n"))
+    output = concat(output, "=== .loom-ids ===\n")
+    output = concat(output, sidecar(revision))
+    var index = 0
     while index < length(revision.files) {
         let file = get(revision.files, index)
         output = concat(output, concat("=== ", concat(file.path, " ===\n")))
@@ -302,31 +407,187 @@ fn show(revision Revision) Text {
     output
 }
 
-fn preview(base Result[Revision, Text], left Result[Revision, Text],
-    right Result[Revision, Text]) Result[Text, Text] {
+fn preview(base Result[Loaded, Text], left Result[Loaded, Text],
+    right Result[Loaded, Text]) Result[Text, Text] {
     let original = base?
     let edited_left = left?
     let edited_right = right?
-    Result.Ok(show(merge(original, edited_left, edited_right)?))
+    Result.Ok(show(review(original, edited_left, edited_right)?))
+}
+
+// Output names are single-package leaves. The package directory itself must
+// be new, and every lexical ancestor must be an existing real directory.
+// Current std.fs metadata is a snapshot, not an openat-style race guarantee.
+fn checked_directory_path(value Text, include_last Bool) Result[Bool, Text] {
+    if value == "" || contains(value, "\\") || contains(value, "\0") ||
+    contains(value, "\n") || contains(value, "\r") {
+        return Result.Err("directory path is invalid")
+    }
+    let parts = split(value, "/")
+    let absolute = starts_with(value, "/")
+    let drive = length(value) >= 3 && byte(value, 1) == 58 && byte(value, 2) == 47
+    var prefix = if absolute {
+        "/"
+    } else {
+        if drive {
+            slice(value, 0, 3)
+        } else {
+            ""
+        }
+    }
+    if absolute || drive {
+        match entry_kind(prefix) {
+            Result.Ok(FileKind.Directory) => {
+            }
+            _ => {
+                return Result.Err(concat("directory root is missing or a symlink: ", prefix))
+            }
+        }
+    }
+    var index = if absolute || drive {
+        1
+    } else {
+        0
+    }
+    while index < length(parts) {
+        let component = get(parts, index)
+        if component == "" || component == "." || component == ".." || contains(component, ":") {
+            return Result.Err("directory path contains an unsafe component")
+        }
+        if include_last || index + 1 < length(parts) {
+            prefix = if prefix == "" || ends_with(prefix, "/") {
+                concat(prefix, component)
+            } else {
+                concat(concat(prefix, "/"), component)
+            }
+            match entry_kind(prefix) {
+                Result.Ok(FileKind.Directory) => {
+                }
+                _ => {
+                    return Result.Err(concat("directory ancestor is missing, not a directory, or a symlink: ", prefix))
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn vacant(path Text) Result[Bool, Text] {
+    match entry_kind(path) {
+        Result.Err(FsError.NotFound) => Result.Ok(true),
+        _ => Result.Err(concat("output entry already exists or cannot be checked: ", path))
+    }
+}
+
+fn write_new(directory Text, merged Revision) Result[Bool, Text] {
+    discard checked_directory_path(directory, false)?
+    // merge has already checked every source/identity leaf and the complete
+    // production/test program. No write happens until those checks pass.
+    match create_dir(directory) {
+        Result.Ok(_) => {
+        }
+        _ => {
+            return Result.Err("output directory must be new and creatable")
+        }
+    }
+    var index = 0
+    while index < length(merged.files) {
+        let file = get(merged.files, index)
+        let target = path(directory, file.path)
+        discard vacant(target)?
+        match std.file.write_text(target, file.text) {
+            Result.Ok(_) => {
+            }
+            _ => {
+                return Result.Err(concat("could not write merged source: ", target))
+            }
+        }
+        index = index + 1
+    }
+    // The identity sidecar is written last; a partial output is not a usable
+    // semantic-change package. We never remove or overwrite an old tree.
+    let target = path(directory, ".loom-ids")
+    discard vacant(target)?
+    match std.file.write_text(target, sidecar(merged)) {
+        Result.Ok(_) => Result.Ok(true),
+        _ => Result.Err(concat("could not write merged identities: ", target))
+    }
+}
+
+fn publish(expected Text, directory Text, value Review, base Loaded, left Loaded, right Loaded,
+    fresh_base Loaded, fresh_left Loaded, fresh_right Loaded) Result[Text, Text] {
+    if value.token != expected {
+        return Result.Err("review token does not match these source revisions or merged bytes")
+    }
+    if loaded_stamp(base) != loaded_stamp(fresh_base) ||
+    loaded_stamp(left) != loaded_stamp(fresh_left) ||
+    loaded_stamp(right) != loaded_stamp(fresh_right) {
+        return Result.Err("source revision or Git ref changed while preparing apply")
+    }
+    discard write_new(directory, value.merged)?
+    Result.Ok(concat("wrote checked semantic merge to ", concat(directory, "\n")))
+}
+
+fn apply_directories(expected Text, destination Text, base Text, left Text, right Text) Result[Text, Text] {
+    let original = read(base)?
+    let edited_left = read(left)?
+    let edited_right = read(right)?
+    let value = review(original, edited_left, edited_right)?
+    if value.token != expected {
+        return Result.Err("review token does not match these source revisions or merged bytes")
+    }
+    publish(expected, destination, value, original, edited_left, edited_right,
+        read(base)?, read(left)?, read(right)?)
+}
+
+fn apply_git(expected Text, destination Text, executable Text, repository Text, directory Text,
+    base Text, left Text, right Text) Result[Text, Text] {
+    let original = read_git(executable, repository, directory, base)?
+    let edited_left = read_git(executable, repository, directory, left)?
+    let edited_right = read_git(executable, repository, directory, right)?
+    let value = review(original, edited_left, edited_right)?
+    if value.token != expected {
+        return Result.Err("review token does not match these Git commits or merged bytes")
+    }
+    publish(expected, destination, value, original, edited_left, edited_right,
+        read_git(executable, repository, directory, base)?,
+        read_git(executable, repository, directory, left)?,
+        read_git(executable, repository, directory, right)?)
 }
 
 fn main() {
     let args = arguments()
-    if length(args) != 4 && (length(args) != 8 || get(args, 1) != "--git") {
+    let directories_preview = length(args) == 4 && get(args, 1) != "--apply" && get(args, 1) != "--git"
+    let git_preview = length(args) == 8 && get(args, 1) == "--git"
+    let directories_apply = length(args) == 7 && get(args, 1) == "--apply"
+    let git_apply = length(args) == 11 && get(args, 1) == "--apply" && get(args, 4) == "--git"
+    if !directories_preview && !git_preview && !directories_apply && !git_apply {
         discard write_error("usage: semantic_change_trial BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
+        discard write_error("   or: semantic_change_trial --apply TOKEN OUTPUT_DIR BASE_DIR LEFT_DIR RIGHT_DIR\n")
+        discard write_error("   or: semantic_change_trial --apply TOKEN OUTPUT_DIR --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         exit_code(2)
         return
     }
-    let outcome = if length(args) == 4 {
+    let outcome = if directories_preview {
         preview(read(get(args, 1)), read(get(args, 2)), read(get(args, 3)))
     } else {
-        let executable = get(args, 2)
-        let repository = get(args, 3)
-        let directory = get(args, 4)
-        preview(read_git(executable, repository, directory, get(args, 5)),
-            read_git(executable, repository, directory, get(args, 6)),
-            read_git(executable, repository, directory, get(args, 7)))
+        if git_preview {
+            let executable = get(args, 2)
+            let repository = get(args, 3)
+            let directory = get(args, 4)
+            preview(read_git(executable, repository, directory, get(args, 5)),
+                read_git(executable, repository, directory, get(args, 6)),
+                read_git(executable, repository, directory, get(args, 7)))
+        } else {
+            if directories_apply {
+                apply_directories(get(args, 2), get(args, 3), get(args, 4), get(args, 5), get(args, 6))
+            } else {
+                apply_git(get(args, 2), get(args, 3), get(args, 5), get(args, 6), get(args, 7),
+                    get(args, 8), get(args, 9), get(args, 10))
+            }
+        }
     }
     match outcome {
         Result.Ok(summary) => {

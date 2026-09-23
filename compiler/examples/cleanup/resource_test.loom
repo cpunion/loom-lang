@@ -103,6 +103,24 @@ fn pair_resources(trace List[Int], fail_second Bool, fail_dispose Bool) Pair {
     }
 }
 
+record NestedPair {
+    first Wrapper
+    second Leaf
+}
+
+impl Dispose for NestedPair {
+    fn dispose(self NestedPair) {
+        push(self.first.inner.trace, 4)
+    }
+}
+
+fn nested_pair(trace List[Int], fail_second Bool, fail_first_dispose Bool) NestedPair {
+    NestedPair {
+        first = wrap(trace, fail_first_dispose)
+        second = maybe_acquire(2, trace, fail_second)
+    }
+}
+
 test fn two_resource_fields_dispose_in_reverse_order() {
     let trace List[Int] = []
     {
@@ -132,6 +150,34 @@ test async fn pending_resource_cleans_first_field_when_second_faults() {
         }
     }
     assert length(trace) == 2 && trace[0] == 10 && trace[1] == 1
+}
+
+async fn nested_second_factory_fault(trace List[Int]) {
+    scoped value = nested_pair(trace, true, true)
+}
+
+test async fn pending_nested_resource_drains_children_after_dispose_fault() {
+    let trace List[Int] = []
+    match outcome(nested_second_factory_fault(trace)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 2
+    assert trace[0] == 2 && trace[1] == 1
+}
+
+test fn pending_nested_resource_transfers_into_outer_scope() {
+    let trace List[Int] = []
+    {
+        scoped value = nested_pair(trace, false, false)
+        value.second.touch()
+    }
+    assert length(trace) == 6
+    assert trace[0] == 20 && trace[1] == 10 && trace[2] == 4
+    assert trace[3] == 2 && trace[4] == 2 && trace[5] == 1
 }
 
 test async fn both_children_clean_after_outer_dispose_fault() {

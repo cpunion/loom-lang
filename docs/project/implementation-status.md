@@ -281,6 +281,12 @@ snapshot and shared elements. It works with pure compile-time and allocating
 native comparators. `std.fs.entries` reuses it for deterministic byte ordering;
 comparator ordering laws remain a caller obligation, not a completed proof gate.
 
+Source `std.list.nonempty.NonEmpty[T]` keeps a nonempty shared List behind
+private state. Its `copy_from` explicitly copies an ordinary List's outer header
+before checking nonemptiness; wrapper aliases still share permitted updates.
+This is a library invariant-preserving API, not a language-level constrained
+List conversion or a fixed-shape view into the original List.
+
 Source `std.map` and `std.set` now use shared Lists and ordinary bounded generics
 for open-addressed hash tables. Explicit `std.equal.Equal`/`std.hash.Hash`
 implementations cover Int, Bool and Text; custom managed keys use the same direct
@@ -352,7 +358,8 @@ bodies cannot hide an invalid selected branch. Overrides do not instantiate the
 default body they replace. Dynamic slots distinguish static
 values and omit those arguments from their native signatures. Default forwarding,
 generic methods and static-method compile-time execution use the same checked
-model. Concept contracts remain unsupported.
+model. Concept-declared contracts are inherited by defaults and implementations;
+each implementation must prove its postconditions.
 
 Pure compile-time dynamic construction/calls now use those same checked witnesses,
 including associated, generic, default and static method instances. Purity checking
@@ -361,8 +368,9 @@ even in an unexecuted runtime branch. Reified dyn results preserve admitted evid
 receiver values and shared/cyclic containers while rebuilding witnesses in the
 output queue; compile-time-only methods do not become runtime roots. The
 [dynamic computation example](../../compiler/examples/comptime_dynamic/main.loom)
-also runs natively under forced moving collection. Runtime capture and required
-proofs over dynamic values remain unsupported.
+also runs natively under forced moving collection. Runtime capture remains
+unsupported. A required proof may use the declared scalar postcondition of a
+synchronous dyn concept call without learning the concrete receiver type.
 
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The
@@ -380,19 +388,25 @@ successful entry checks provide facts, while exit checks must be proved. Helpers
 used only by postconditions stay out of native reachability. The
 [contract example](../../compiler/examples/contracts/README.md) exercises this
 through the CLI and compile-time execution. Generic declarations still require
-abstract proofs. Direct scalar calls in a body requiring proof now compose
-verified callee postconditions, or expand a finite pure body without a summary.
+abstract proofs. Direct scalar calls in a body requiring proof compose verified
+callee postconditions, or expand a finite pure body without a summary. Synchronous
+dyn calls use only the exact concept method's declared scalar contract.
 Argument snapshots preserve eager evaluation; proof-only temporaries do not
 change emitted calls or locals. Conditional scalar results reuse existing typed
 branches for body proofs and bounded Boolean normalization for contracts. Reversed
 linear relations and excluded integer interval endpoints retain branch facts.
-Recursive proof dependencies, helper loops/mutation, returns inside helper operands
-and indirect/dynamic calls remain unsupported; required proofs never
+Recursive proof dependencies, helper loops/mutation, returns inside helper operands,
+indirect calls and dyn calls without a usable contract remain unsupported; required proofs never
 fall back to runtime checks or sampled evaluation.
 Required contracts also follow scalar fields through nested inline records and
 Int-backed refinements. In `ensures`, `old(expr)` currently denotes an immutable
 parameter scalar or inline record scalar path; shared-data snapshots, index and
 call expressions reject rather than treating a mutable alias as entry state.
+Record-backed refinements now admit only immutable inline scalar/record leaves.
+Unknown construction checks once; copies and base-record widening do not recheck.
+Shared `List`/`Bytes`/`Text` fields and unchecked replacement are rejected.
+Record literals are not optionally folded at construction, although explicit
+`comptime` can materialize a checked result. Shared-state invariants remain open.
 
 Managed memory now uses stop-the-world copying collection with a traced
 large-object space; stress mode relocates all sizes. Rewritable typed
@@ -621,8 +635,9 @@ through stored or returned function values. Dispose-only callback results do not
 imply freshness. Unused concrete resource functions are checked without entering
 native reachability. Async functions use frame-backed registrations for suspended
 cleanup. Multi-field MustScope aggregates disarm pending field cleanup after
-successful construction; nested resource aggregates, resource Lists and
-transfer into Tasks remain unimplemented.
+successful construction. Nested record fields also register each completed
+resource's cleanup before a later field is evaluated. Resource Lists, enum
+payloads, abstract resource fields, and transfer into Tasks remain unsupported.
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
 same-directory tests, a separate library package, Unicode text and file I/O.
@@ -683,7 +698,10 @@ move-plus-edit merges from directories or Git blobs and rechecks production and
 test scopes. It does not apply merges or track identities automatically. The
 `tools/deployment` prototype analyzes schema conflicts and executes one bounded
 offline SQLite upgrade, rollback and re-upgrade with append-only events. Its
-caller-supplied basis is not yet bound to the checked application artifact.
+fixed executor requires a same-build receipt for the candidate artifact and
+rechecks its bytes before migration. The operator still supplies the storage
+mapping; the receipt is local build evidence, not a signature or a proof that
+the application obeys that mapping.
 
 Accepted language and deployment decisions remain targets, not claims that the
 whole design is implemented. Bootstrap agreement is not a correctness proof.

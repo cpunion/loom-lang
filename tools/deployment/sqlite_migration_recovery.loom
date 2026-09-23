@@ -13,10 +13,11 @@ fn trigger_present(name Text, table Text, definition Text) Text {
 // archive tables are retained so downgrade never drops newly created data.
 // An amount changed by v2 is not overwritten by an older archived zero.
 pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade) Result[Attempt, Text] {
+    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, target_receipt Text) Result[Attempt, Text] {
     if !valid_plan(plan) {
         return Result.Err("invalid SQLite downgrade plan")
     }
+    discard verify_receipt_basis(from, target_receipt)?
     discard exact_catalog(from, to, catalog, plan)?
     let plan_identity = positive_amount_plan_digest(plan)
     let previous = match latest(tool, database)? {
@@ -93,7 +94,7 @@ pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, 
     var trigger_index = 0
     while trigger_index < 6 {
         script = concat(script, checked(trigger_present(trigger_name(trigger_index),
-                        plan.orders, trigger_sql(plan, trigger_index))))
+                    plan.orders, trigger_sql(plan, trigger_index))))
         trigger_index = trigger_index + 1
     }
     let positive = concat("NOT EXISTS (SELECT 1 FROM ",

@@ -49,9 +49,8 @@ test fn record_resource_fields_transfer_into_a_scoped_wrapper() {
     resource_reject_reason(concat(resource_header(),
             "record Double { first Handle second Handle }\nimpl Dispose for Double { fn dispose(self Double) {} }\nfn pair(log List[Int]) Double { Double { first = make(log) second = { return pair(log)\nmake(log) } } }\nfn main() { scoped value = pair([0]) }"),
         "a resource field cannot precede return, ?, loop exit or await during aggregate construction")
-    resource_reject_reason(concat(resource_header(),
-            "record Wrapped { inner Handle }\nimpl Dispose for Wrapped { fn dispose(self Wrapped) {} }\nrecord Double { first Wrapped second Handle }\nimpl Dispose for Double { fn dispose(self Double) {} }\nfn pair(log List[Int]) Double { Double { first = Wrapped { inner = make(log) } second = make(log) } }\nfn main() { scoped value = pair([0]) }"),
-        "pending cleanup of a nested resource field is not yet supported")
+    resource_accept(concat(resource_header(),
+            "record Wrapped { inner Handle }\nimpl Dispose for Wrapped { fn dispose(self Wrapped) {} }\nrecord Double { first Wrapped second Handle }\nimpl Dispose for Double { fn dispose(self Double) {} }\nfn pair(log List[Int]) Double { Double { first = Wrapped { inner = make(log) } second = make(log) } }\nfn main() { scoped value = pair([0]) }"))
     resource_reject_reason(concat(resource_header(),
             "record Double[T Dispose + MustScope] { first T second Handle }\nimpl[T Dispose + MustScope] Dispose for Double[T] { fn dispose(self Double[T]) {} }\nfn pair[T Dispose + MustScope](factory fn(List[Int]) T, log List[Int]) Double[T] { Double { first = factory(log) second = make(log) } }\nfn main() { scoped value = pair(make, [0]) }"),
         "pending cleanup requires a concrete resource field")

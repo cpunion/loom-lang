@@ -19,6 +19,16 @@ import deployment.current
 import deployment.dry_run
 import deployment.FailurePolicy
 import deployment.BasisEvidence
+import deployment.bind_receipt_basis
+import deployment.read_build_receipt
+import std.file.read_bytes
+import std.file.read_text
+import std.file.write_bytes
+import std.file.write_text
+import std.fs.canonicalize
+import std.fs.create_dir
+import std.fs.remove_empty_dir
+import std.fs.remove_file
 import std.bytes.new
 import std.bytes.push
 import std.bytes.to_text
@@ -26,13 +36,17 @@ import std.list.new
 import std.list.push
 import std.list.get
 import std.list.length
+import std.list.set
+import std.loom.project.join_path
 import std.process.arguments
 import std.process.capture_input
 import std.process.ExitStatus
 import std.result.Result
 import std.text.byte
 import std.text.concat
+import std.text.join
 import std.text.length
+import std.text.split
 
 fn sql_bytes(value Text) Bytes {
     let output = std.bytes.new()
@@ -68,11 +82,11 @@ fn fixture_sql(database Text, sql Text) Result[Text, Text] {
     }
 }
 
-fn migration_with_replacement(identity Text, replacement Int) SqlitePositiveAmountUpgrade {
+fn migration_with_bases(identity Text, from_basis Text, to_basis Text) SqlitePositiveAmountUpgrade {
     SqlitePositiveAmountUpgrade {
         attempt_id = identity
-        from_basis = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        to_basis = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        from_basis = from_basis
+        to_basis = to_basis
         orders = "orders"
         order_id = "id"
         amount = "amount"
@@ -80,12 +94,24 @@ fn migration_with_replacement(identity Text, replacement Int) SqlitePositiveAmou
         notes = "notes"
         note_id = "id"
         note_body = "body"
-        replacement = replacement
+        replacement = 1
     }
 }
 
-fn migration(identity Text) SqlitePositiveAmountUpgrade {
-    migration_with_replacement(identity, 1)
+fn migration_with_replacement(plan SqlitePositiveAmountUpgrade, replacement Int) SqlitePositiveAmountUpgrade {
+    SqlitePositiveAmountUpgrade {
+        attempt_id = plan.attempt_id
+        from_basis = plan.from_basis
+        to_basis = plan.to_basis
+        orders = plan.orders
+        order_id = plan.order_id
+        amount = plan.amount
+        archive = plan.archive
+        notes = plan.notes
+        note_id = plan.note_id
+        note_body = plan.note_body
+        replacement = replacement
+    }
 }
 
 fn field(name Text, kind StorageType, predicate Text) Column {
@@ -135,6 +161,13 @@ fn new_schema(plan SqlitePositiveAmountUpgrade) Schema {
     }
 }
 
+fn migration(identity Text, old_receipt Text, new_receipt Text) Result[SqlitePositiveAmountUpgrade, Text] {
+    let unbound = migration_with_bases(identity, "", "")
+    let previous = bind_receipt_basis(old_schema(unbound), old_receipt)?
+    let next = bind_receipt_basis(new_schema(unbound), new_receipt)?
+    Result.Ok(migration_with_bases(identity, previous.basis, next.basis))
+}
+
 fn forward_catalog(plan SqlitePositiveAmountUpgrade) MigrationCatalog {
     let forward = std.list.new[Handling]()
     std.list.push(forward, Handling {
@@ -153,7 +186,7 @@ fn forward_catalog(plan SqlitePositiveAmountUpgrade) MigrationCatalog {
             kind = ConflictKind.ChangedBasis
             table = ""
             column = ""
-            action = "candidate_checked_externally"
+            action = "candidate_bound_to_build_receipt"
         })
     let recovery = std.list.new[Handling]()
     std.list.push(recovery, Handling {
@@ -172,7 +205,7 @@ fn forward_catalog(plan SqlitePositiveAmountUpgrade) MigrationCatalog {
             kind = ConflictKind.ChangedBasis
             table = ""
             column = ""
-            action = "candidate_checked_externally"
+            action = "candidate_bound_to_build_receipt"
         })
     MigrationCatalog {
         from_basis = plan.from_basis
@@ -198,13 +231,18 @@ fn started(database Text, plan SqlitePositiveAmountUpgrade) Result[Bool, Text] {
     Result.Ok(true)
 }
 
-fn succeeds(database Text) Result[Bool, Text] {
+fn succeeds(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text] {
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10),(3,0);")?
-    let plan = migration("upgrade_2")
+    let plan = migration("upgrade_2", old_receipt, new_receipt)?
     discard started(database, plan)?
     assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='historical_v1' ORDER BY sequence;")? == "0\n7\n"
+    assert match execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, old_receipt) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
     discard execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan)?
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, new_receipt)?
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.Observed(basis) => basis == plan.to_basis,
         _ => false
@@ -236,7 +274,7 @@ fn succeeds(database Text) Result[Bool, Text] {
     assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|0|1\n"
     discard fixture_sql(database, "INSERT INTO notes VALUES (1,'retained');")?
     discard execute_positive_amount_downgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan)?
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, old_receipt)?
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.Observed(basis) => basis == plan.from_basis,
         _ => false
@@ -244,7 +282,7 @@ fn succeeds(database Text) Result[Bool, Text] {
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|0\n"
     assert fixture_sql(database, "SELECT body FROM notes;")? == "retained\n"
     discard fixture_sql(database, "INSERT INTO orders VALUES (4,0);")?
-    let again = migration("upgrade_3")
+    let again = migration("upgrade_3", old_receipt, new_receipt)?
     let inspection = dry_run("/usr/bin/sqlite3", database,
         old_schema(again), new_schema(again), forward_catalog(again))?
     assert match inspection.evidence {
@@ -257,7 +295,7 @@ fn succeeds(database Text) Result[Bool, Text] {
     discard register("/usr/bin/sqlite3", database, next)?
     discard start_attempt("/usr/bin/sqlite3", database, again.attempt_id)?
     discard execute_positive_amount_reupgrade("/usr/bin/sqlite3", database,
-        old_schema(again), new_schema(again), forward_catalog(again), again)?
+        old_schema(again), new_schema(again), forward_catalog(again), again, new_receipt)?
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.Observed(basis) => basis == again.to_basis,
         _ => false
@@ -277,8 +315,8 @@ fn succeeds(database Text) Result[Bool, Text] {
     Result.Ok(true)
 }
 
-fn rolls_back_failed_transaction(database Text) Result[Bool, Text] {
-    let plan = migration("upgrade_2")
+fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text] {
+    let plan = migration("upgrade_2", old_receipt, new_receipt)?
     discard fixture_sql(database, "CREATE TABLE loom_deploy_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, plan_digest TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL); CREATE TRIGGER block_assumed BEFORE INSERT ON loom_deploy_events WHEN NEW.state=7 BEGIN SELECT RAISE(ABORT,'blocked'); END;")?
     assert match assume_historical("/usr/bin/sqlite3", database, "historical_v1", plan.from_basis) {
         Result.Err(_) => true,
@@ -295,7 +333,7 @@ fn rolls_back_failed_transaction(database Text) Result[Bool, Text] {
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10); CREATE VIEW notes AS SELECT 1 AS id, 'collision' AS body;")?
     discard started(database, plan)?
     assert match execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan) {
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, new_receipt) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
@@ -314,17 +352,17 @@ fn rolls_back_failed_transaction(database Text) Result[Bool, Text] {
         BasisEvidence.None => true,
         _ => false
     }
-    let changed = migration_with_replacement(plan.attempt_id, 2)
+    let changed = migration_with_replacement(plan, 2)
     assert positive_amount_plan_digest(changed) != positive_amount_plan_digest(plan)
     assert match execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
-        old_schema(changed), new_schema(changed), forward_catalog(changed), changed) {
+        old_schema(changed), new_schema(changed), forward_catalog(changed), changed, new_receipt) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|0\n2|10\n"
     assert fixture_sql(database, "SELECT state FROM loom_deploy_events ORDER BY sequence DESC LIMIT 1;")? == "1\n"
     discard execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan)?
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, new_receipt)?
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.Observed(basis) => basis == plan.to_basis,
         _ => false
@@ -332,7 +370,7 @@ fn rolls_back_failed_transaction(database Text) Result[Bool, Text] {
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|1\n2|10\n"
     discard fixture_sql(database, "DROP TRIGGER loom_archive_amount_update; CREATE TRIGGER loom_archive_amount_update AFTER UPDATE OF amount ON orders BEGIN SELECT 1; END;")?
     assert match execute_positive_amount_downgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan) {
+        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, old_receipt) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
@@ -341,15 +379,124 @@ fn rolls_back_failed_transaction(database Text) Result[Bool, Text] {
     Result.Ok(true)
 }
 
+fn hex_text(value Text) Text {
+    let encoded = std.bytes.new()
+    var index = 0
+    while index < std.text.length(value) {
+        let current = byte(value, index)
+        std.bytes.push(encoded, byte("0123456789abcdef", current >> 4))
+        std.bytes.push(encoded, byte("0123456789abcdef", current & 15))
+        index = index + 1
+    }
+    to_text(encoded)
+}
+
+fn rejects_corrupt_receipt_and_artifact(database Text, receipt_path Text) Bool {
+    let raw = match read_text(receipt_path) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let receipt = match read_build_receipt(receipt_path) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let original = match read_bytes(receipt.artifact_path) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let stage = concat(database, ".receipt-test")
+    if !match create_dir(stage) {
+        Result.Ok(_) => true,
+        Result.Err(_) => false
+    } {
+        return false
+    }
+    let artifact_copy = join_path(stage, "artifact")
+    let receipt_copy = join_path(stage, "receipt")
+    let malformed = join_path(stage, "malformed")
+    defer {
+        discard remove_file(artifact_copy)
+        discard remove_file(receipt_copy)
+        discard remove_file(malformed)
+        discard remove_empty_dir(stage)
+    }
+    if !match write_bytes(artifact_copy, original) {
+        Result.Ok(_) => true,
+        Result.Err(_) => false
+    } {
+        return false
+    }
+    let resolved = match canonicalize(artifact_copy) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let lines = split(raw, "\n")
+    if length(lines) < 5 {
+        return false
+    }
+    set(lines, 4, concat("artifact-path ", hex_text(resolved)))
+    let adapted = join(lines, "\n")
+    if !match write_text(receipt_copy, adapted) {
+        Result.Ok(_) => true,
+        Result.Err(_) => false
+    } {
+        return false
+    }
+    if !match read_build_receipt(receipt_copy) {
+        Result.Ok(_) => true,
+        Result.Err(_) => false
+    } {
+        return false
+    }
+    if !match write_text(malformed, concat(adapted, "x")) {
+        Result.Ok(_) => true,
+        Result.Err(_) => false
+    } {
+        return false
+    }
+    if !match read_build_receipt(malformed) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    } {
+        return false
+    }
+    let altered = match read_bytes(artifact_copy) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return false
+        }
+    }
+    std.bytes.push(altered, 0)
+    if !match write_bytes(artifact_copy, altered) {
+        Result.Ok(_) => true,
+        Result.Err(_) => false
+    } {
+        return false
+    }
+    match read_build_receipt(receipt_copy) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+}
+
 fn main() {
     let args = arguments()
-    assert length(args) == 3
-    assert match succeeds(get(args, 1)) {
+    assert length(args) == 5
+    assert match succeeds(get(args, 1), get(args, 3), get(args, 4)) {
         Result.Ok(value) => value,
         Result.Err(_) => false
     }
-    assert match rolls_back_failed_transaction(get(args, 2)) {
+    assert match rolls_back_failed_transaction(get(args, 2), get(args, 3), get(args, 4)) {
         Result.Ok(value) => value,
         Result.Err(_) => false
     }
+    assert rejects_corrupt_receipt_and_artifact(get(args, 2), get(args, 4))
 }

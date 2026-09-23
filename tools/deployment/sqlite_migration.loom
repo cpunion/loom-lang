@@ -104,7 +104,7 @@ fn archive_ddl(plan SqlitePositiveAmountUpgrade) Text {
 fn notes_ddl(plan SqlitePositiveAmountUpgrade) Text {
     concat("CREATE TABLE ", concat(quoted(plan.notes),
             concat("(", concat(quoted(plan.note_id), concat(" INTEGER PRIMARY KEY, ",
-                            concat(quoted(plan.note_body), " TEXT NOT NULL) STRICT"))))))
+                        concat(quoted(plan.note_body), " TEXT NOT NULL) STRICT"))))))
 }
 
 fn exact_table(name Text, ddl Text) Text {
@@ -122,11 +122,21 @@ fn retained_lineage(plan SqlitePositiveAmountUpgrade) Text {
 }
 
 fn trigger_name(index Int) Text {
-    if index == 0 { return "loom_positive_insert" }
-    if index == 1 { return "loom_positive_update" }
-    if index == 2 { return "loom_archive_amount_update" }
-    if index == 3 { return "loom_archive_key_update" }
-    if index == 4 { return "loom_archive_delete" }
+    if index == 0 {
+        return "loom_positive_insert"
+    }
+    if index == 1 {
+        return "loom_positive_update"
+    }
+    if index == 2 {
+        return "loom_archive_amount_update"
+    }
+    if index == 3 {
+        return "loom_archive_key_update"
+    }
+    if index == 4 {
+        return "loom_archive_delete"
+    }
     "loom_archive_insert"
 }
 
@@ -274,7 +284,7 @@ fn exact_catalog(from Schema, to Schema, catalog MigrationCatalog, plan SqlitePo
                 notes = true
             } else {
                 if item.kind == ConflictKind.ChangedBasis && item.table == "" &&
-                item.column == "" && item.action == "candidate_checked_externally" {
+                item.column == "" && item.action == "candidate_bound_to_build_receipt" {
                     basis = true
                 } else {
                     return Result.Err("SQLite upgrade catalog action is not implemented")
@@ -301,7 +311,7 @@ fn exact_catalog(from Schema, to Schema, catalog MigrationCatalog, plan SqlitePo
                 retain = true
             } else {
                 if item.kind == ConflictKind.ChangedBasis && item.table == "" &&
-                item.column == "" && item.action == "candidate_checked_externally" {
+                item.column == "" && item.action == "candidate_bound_to_build_receipt" {
                     rebound = true
                 } else {
                     return Result.Err("SQLite recovery catalog action is not implemented")
@@ -326,10 +336,12 @@ fn exact_catalog(from Schema, to Schema, catalog MigrationCatalog, plan SqlitePo
 // script, and the only interpolated strings pass the strict identifier/digest
 // checks above. The Started event is intentionally recorded before this call.
 fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, retained Bool) Result[Attempt, Text] {
+    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, target_receipt Text,
+    retained Bool) Result[Attempt, Text] {
     if !valid_plan(plan) {
         return Result.Err("invalid SQLite upgrade plan")
     }
+    discard verify_receipt_basis(to, target_receipt)?
     discard exact_catalog(from, to, catalog, plan)?
     let plan_identity = positive_amount_plan_digest(plan)
     let previous = match latest(tool, database)? {
@@ -482,11 +494,11 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
 // Fresh upgrade starts with no retained tables. Re-upgrade requires the exact
 // retained notes/archive shape left by this slice's downgrade.
 pub fn execute_positive_amount_upgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade) Result[Attempt, Text] {
-    upgrade_mode(tool, database, from, to, catalog, plan, false)
+    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, target_receipt Text) Result[Attempt, Text] {
+    upgrade_mode(tool, database, from, to, catalog, plan, target_receipt, false)
 }
 
 pub fn execute_positive_amount_reupgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade) Result[Attempt, Text] {
-    upgrade_mode(tool, database, from, to, catalog, plan, true)
+    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, target_receipt Text) Result[Attempt, Text] {
+    upgrade_mode(tool, database, from, to, catalog, plan, target_receipt, true)
 }

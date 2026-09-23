@@ -114,7 +114,10 @@ fn member_context(context Context, node Node, offset Int) Result[Context, Failur
 
 fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCandidate], Failure] {
     let env = context.env
-    let shape = get(env.types, value.ty)
+    let original = get(env.types, value.ty)
+    let shape = if original.kind == TypeKind.Refined && get(env.types, base_type(env, value.ty)).kind == TypeKind.Record {
+        get(env.types, base_type(env, value.ty))
+    } else { original }
     let hints = new[MemberCandidate]()
     if shape.kind == TypeKind.Record {
         let declaration = symbol(env, shape.symbol)

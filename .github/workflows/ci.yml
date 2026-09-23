@@ -57,6 +57,7 @@ jobs:
       - name: Core experience source trials
         run: |
           target/loom test compiler/std/loom/checking
+          target/loom test compiler/std/list/nonempty
           target/loom test compiler/std/task
           target/loom run compiler/examples/contracts
           target/loom test compiler/examples/record_contracts
@@ -67,8 +68,11 @@ jobs:
           target/loom test tools/semantic_change
           target/loom test tools/deployment
           migration_dir="$(mktemp -d "$RUNNER_TEMP/loom-migration.XXXXXX")"
+          target/loom build tools/deployment/fixture_v1 --output "$migration_dir/v1" --receipt "$migration_dir/v1.receipt"
+          target/loom build tools/deployment/fixture_v2 --output "$migration_dir/v2" --receipt "$migration_dir/v2.receipt"
           target/loom run tools/deployment/sqlite_migration_trial -- \
-            "$migration_dir/success.sqlite" "$migration_dir/failure.sqlite"
+            "$migration_dir/success.sqlite" "$migration_dir/failure.sqlite" \
+            "$migration_dir/v1.receipt" "$migration_dir/v2.receipt"
 
       - name: Editor protocol and real compiler smoke
         working-directory: editors/vscode

@@ -1,0 +1,58 @@
+import std.list.new
+import std.list.length
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.clone
+import std.result.Result
+import std.result.ConstraintError
+
+// The private state prevents callers from shrinking the shared List header.
+// Copies of NonEmpty still share that header and observe permitted edits.
+pub record NonEmpty[T] {
+    state State[T]
+}
+
+record State[T] {
+    values List[T]
+}
+
+pub fn new[T](first T) NonEmpty[T] {
+    let values = std.list.new[T]()
+    std.list.push(values, first)
+    NonEmpty {
+        state = State {
+            values = values
+        }
+    }
+}
+
+// Explicitly copy the outer List: retaining the source header would let an
+// existing alias remove the last element after this boundary check.
+pub fn copy_from[T](source List[T]) Result[NonEmpty[T], ConstraintError] {
+    let values = std.list.clone(source)
+    if std.list.length(values) == 0 {
+        return Result.Err(ConstraintError.Rejected)
+    }
+    Result.Ok(NonEmpty {
+            state = State {
+                values = values
+            }
+        })
+}
+
+pub fn length[T](values NonEmpty[T]) Int {
+    std.list.length(values.state.values)
+}
+
+pub fn first[T](values NonEmpty[T]) T {
+    std.list.get(values.state.values, 0)
+}
+
+pub fn set_first[T](values NonEmpty[T], item T) {
+    std.list.set(values.state.values, 0, item)
+}
+
+pub fn push[T](values NonEmpty[T], item T) {
+    std.list.push(values.state.values, item)
+}

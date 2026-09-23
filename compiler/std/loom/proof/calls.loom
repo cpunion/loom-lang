@@ -6,6 +6,7 @@ import std.loom.typed.Witness
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.Local
+import std.loom.typed.TypeKind
 import std.list.new
 import std.list.get
 import std.list.push
@@ -244,7 +245,11 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
     var index = 0
     while index < length(function.params) {
         let ty = get(function.params, index)
-        if ty != 1 && ty != 2 { return Result.Err("body proof helper parameters must be Int or Bool") }
+        let opaque_receiver = index == 0 && ty >= 0 && ty < length(proof.program.types) &&
+            get(proof.program.types, ty).kind == TypeKind.Dyn && length(function.postconditions) != 0
+        if ty != 1 && ty != 2 && !opaque_receiver {
+            return Result.Err("body proof helper parameters must be Int or Bool, apart from a contracted dyn receiver")
+        }
         index = index + 1
     }
     let arguments = call_arguments(proof, call, state, depth)?

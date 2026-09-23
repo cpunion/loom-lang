@@ -6,6 +6,7 @@ import std.fs.canonicalize
 import std.loom.binding.bind
 import std.loom.binding.Failure
 import std.loom.project.SourceFile
+import std.loom.project.Project
 import std.loom.checking.check
 import std.loom.lowering.lower
 import frontend.artifact.encode
@@ -23,6 +24,7 @@ import std.result.Result
 import std.text.concat
 import std.text.byte
 import std.text.length
+import std.option.Option
 
 record Options {
     command Text
@@ -35,7 +37,13 @@ record Options {
     tests Bool
     git_tool Text
     object_cache Text
+    receipt Text
     program_args List[Text]
+}
+
+record Prepared {
+    program std.loom.typed.Program
+    project Project
 }
 
 fn options(args List[Text]) Result[Options, Text] {
@@ -50,6 +58,7 @@ fn options(args List[Text]) Result[Options, Text] {
     var tests = false
     var git_tool = "git"
     var object_cache = ""
+    var receipt = ""
     let program_args = new[Text]()
     var forwarding = false
     var index = 2
@@ -76,7 +85,7 @@ fn options(args List[Text]) Result[Options, Text] {
                         }
                         no_run = true
                     } else {
-                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--object-cache" {
+                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--object-cache" || arg == "--receipt" {
                             index = index + 1
                             if index == length(args) {
                                 return Result.Err(concat(arg, " needs a value"))
@@ -99,6 +108,18 @@ fn options(args List[Text]) Result[Options, Text] {
                                     return Result.Err("--object-cache requires build, test or run")
                                 }
                                 object_cache = value
+                            }
+                            if arg == "--receipt" {
+                                if receipt != "" {
+                                    return Result.Err("duplicate --receipt")
+                                }
+                                if value == "" {
+                                    return Result.Err("--receipt needs a nonempty path")
+                                }
+                                if command != "build" {
+                                    return Result.Err("--receipt requires build")
+                                }
+                                receipt = value
                             }
                             if arg == "--git-tool" {
                                 if command != "resolve" {
@@ -143,6 +164,12 @@ fn options(args List[Text]) Result[Options, Text] {
     if command != "build" && !(command == "test" && no_run) && output != "" {
         return Result.Err("--output requires build or test --no-run")
     }
+    if receipt != "" && command != "build" {
+        return Result.Err("--receipt requires build")
+    }
+    if receipt != "" && ir != "" {
+        return Result.Err("--receipt cannot be combined with --emit-ir")
+    }
     if (command == "check" || command == "emit-checked" || command == "resolve") && ir != "" {
         return Result.Err("this command does not emit LLVM IR")
     }
@@ -164,6 +191,7 @@ fn options(args List[Text]) Result[Options, Text] {
             tests = tests
             git_tool = git_tool
             object_cache = object_cache
+            receipt = receipt
             program_args = program_args
         })
 }
@@ -173,7 +201,7 @@ fn diagnostic(files List[SourceFile], failure Failure) Text {
     render(source.path, source.text, failure.diagnostic)
 }
 
-fn prepared(options Options) Result[std.loom.typed.Program, Text] {
+fn prepared(options Options) Result[Prepared, Text] {
     let loaded = load(options.path, options.std_root, options.command == "test")?
     let bound = match bind(loaded, options.command == "test") {
         Result.Ok(value) => value
@@ -182,7 +210,10 @@ fn prepared(options Options) Result[std.loom.typed.Program, Text] {
         }
     }
     match check(bound) {
-        Result.Ok(value) => Result.Ok(value)
+        Result.Ok(value) => Result.Ok(Prepared {
+                program = value
+                project = loaded
+            })
         Result.Err(failure) => Result.Err(diagnostic(loaded.files, failure))
     }
 }
@@ -194,10 +225,9 @@ fn child_status(arguments List[Text]) Result[Int, Text] {
     }
 }
 
-fn compile(options Options, program std.loom.typed.Program, output Text) Result[Bool, Text] {
-    let input = encode(lower(program))
+fn compile(options Options, input Text, library Bool, output Text) Result[Bool, Text] {
     if options.object_cache != "" && options.ir == "" {
-        if compile_cached(options, input, options.command != "test" && program.entry < 0, output)? {
+        if compile_cached(options, input, library, output)? {
             return Result.Ok(true)
         }
     }
@@ -231,7 +261,8 @@ fn execute(args List[Text]) Result[Text, Text] {
         discard resolve(selected.path, selected.std_root, selected.tests, selected.git_tool)?
         return Result.Ok("resolved package dependencies\n")
     }
-    let program = prepared(selected)?
+    let prepared = prepared(selected)?
+    let program = prepared.program
     if selected.command == "check" {
         return Result.Ok("checked package\n")
     }
@@ -271,8 +302,34 @@ fn execute(args List[Text]) Result[Text, Text] {
     } else {
         join_path(join_path(selected.path, "target"), filename)
     }
-    discard compile(selected, program, output)?
+    if selected.receipt != "" {
+        discard receipt_preflight(selected.receipt, output, prepared.project)?
+    }
+    let input = encode(lower(program))
+    let before = if selected.receipt != "" {
+        match cache_identity(selected) {
+            Option.Some(value) => value
+            Option.None => {
+                return Result.Err("cannot identify native backend for build receipt")
+            }
+        }
+    } else {
+        ""
+    }
+    discard compile(selected, input, selected.command != "test" && program.entry < 0, output)?
     if selected.command == "build" {
+        if selected.receipt != "" {
+            let after = match cache_identity(selected) {
+                Option.Some(value) => value
+                Option.None => {
+                    return Result.Err("cannot recheck native backend for build receipt")
+                }
+            }
+            if before != after {
+                return Result.Err("native backend changed during build; receipt not published")
+            }
+            discard publish_build_receipt(selected.receipt, output, input, before, prepared.project)?
+        }
         return Result.Ok(concat("built ", concat(output, "\n")))
     }
     if selected.no_run {

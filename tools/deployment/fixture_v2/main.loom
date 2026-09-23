@@ -1,0 +1,23 @@
+type Amount = Int where self > 0
+
+record Order {
+    id Int
+    amount Amount
+}
+
+record Note {
+    id Int
+    body Text
+}
+
+fn main() {
+    let order = Order {
+        id = 1
+        amount = Amount(1)
+    }
+    let note = Note {
+        id = order.id
+        body = "retained"
+    }
+    assert order.amount > 0 && note.id == 1
+}

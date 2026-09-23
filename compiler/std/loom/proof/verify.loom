@@ -102,6 +102,9 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
         // is not assumed here; this only preserves exact value relationships.
         return fresh_result(proof, 1)
     }
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        return record_parameter_value(proof, get(shape.fields, 0).ty, depth + 1)
+    }
     if shape.kind != TypeKind.Record {
         return Value.Empty
     }
@@ -133,11 +136,15 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
     let shape = get(proof.program.types, ty)
     // An abstract receiver may be present without contributing any proof
     // fact. A scalar operation or field projection on Empty still rejects.
-    if shape.kind == TypeKind.Parameter {
+    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Dyn {
         return Result.Ok(Value.Empty)
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 1 {
         return Result.Ok(Value.Number(variable(id)))
+    }
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
+        get(proof.program.types, get(shape.fields, 0).ty).kind == TypeKind.Record {
+        return Result.Ok(record_parameter_value(proof, get(shape.fields, 0).ty, 0))
     }
     if shape.kind != TypeKind.Record {
         return Result.Err("required proof currently needs scalar parameters or scalar-field records")
@@ -331,6 +338,19 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     }
     if expr.kind == ExprKind.Record {
         return record_outcomes(proof, expr, state, depth - 1)
+    }
+    if expr.kind == ExprKind.DynBox {
+        let values = execute(proof, get(expr.children, 0), state, depth - 1)?
+        let output = new[Outcome]()
+        var index = 0
+        while index < length(values) {
+            discard add_outcome(output, Outcome {
+                    state = get(values, index).state
+                    value = Value.Empty
+                })?
+            index = index + 1
+        }
+        return Result.Ok(output)
     }
     if expr.kind == ExprKind.Call {
         return body_call(proof, expr, state, depth - 1)
