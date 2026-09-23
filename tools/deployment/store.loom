@@ -48,7 +48,8 @@ fn digest(value Text) Bool {
 }
 
 fn valid(attempt Attempt) Bool {
-    identifier(attempt.id) && (attempt.from_basis == "" || digest(attempt.from_basis)) && digest(attempt.to_basis)
+    identifier(attempt.id) && (attempt.from_basis == "" || digest(attempt.from_basis)) &&
+    digest(attempt.to_basis) && (attempt.plan_digest == "" || digest(attempt.plan_digest))
 }
 
 fn policy_number(policy FailurePolicy) Int {
@@ -119,7 +120,7 @@ fn integer(value Text) Result[Int, Text] {
 
 fn stored_line(line Text) Result[Stored, Text] {
     let fields = split(line, "\t")
-    if length(fields) != 6 {
+    if length(fields) != 7 {
         return Result.Err("invalid stored deployment record")
     }
     let sequence = integer(get(fields, 0))?
@@ -127,8 +128,9 @@ fn stored_line(line Text) Result[Stored, Text] {
         id = get(fields, 1)
         from_basis = get(fields, 2)
         to_basis = get(fields, 3)
-        policy = from_policy(integer(get(fields, 4))?)?
-        state = from_state(integer(get(fields, 5))?)?
+        plan_digest = get(fields, 4)
+        policy = from_policy(integer(get(fields, 5))?)?
+        state = from_state(integer(get(fields, 6))?)?
     }
     if sequence <= 0 || !valid(attempt) {
         return Result.Err("invalid stored deployment record")
@@ -141,7 +143,8 @@ fn stored_line(line Text) Result[Stored, Text] {
 
 fn next_state(before Attempt, after Attempt) Bool {
     if before.id != after.id || before.from_basis != after.from_basis ||
-    before.to_basis != after.to_basis || before.policy != after.policy {
+    before.to_basis != after.to_basis || before.plan_digest != after.plan_digest ||
+    before.policy != after.policy {
         return false
     }
     match before.state {
@@ -174,7 +177,7 @@ fn new_attempt(before Attempt, after Attempt) Bool {
 // The schema is deliberately append-only: no UPDATE or DELETE path exists.
 pub fn initialize(tool Text, database Text) Result[Bool, Text] {
     discard execute(tool, database,
-        "CREATE TABLE IF NOT EXISTS loom_deploy_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL);")?
+        "CREATE TABLE IF NOT EXISTS loom_deploy_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, plan_digest TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL);")?
     Result.Ok(true)
 }
 
@@ -188,7 +191,7 @@ fn latest(tool Text, database Text) Result[Option[Stored], Text] {
         return Result.Err("invalid deployment ledger")
     }
     let output = inspect(tool, database,
-        "SELECT sequence, attempt_id, from_basis, to_basis, policy, state FROM loom_deploy_events ORDER BY sequence;")?
+        "SELECT sequence, attempt_id, from_basis, to_basis, plan_digest, policy, state FROM loom_deploy_events ORDER BY sequence;")?
     let lines = split(to_text(output), "\n")
     if length(lines) == 0 || get(lines, 0) == "" {
         return Result.Ok(Option.None)
@@ -236,14 +239,17 @@ fn latest(tool Text, database Text) Result[Option[Stored], Text] {
 }
 
 fn event_values(attempt Attempt) Text {
-    concat("'", concat(attempt.id, concat("','", concat(attempt.from_basis,
-                    concat("','", concat(attempt.to_basis, concat("',", concat(to_text(policy_number(attempt.policy)),
-                                    concat(",", to_text(state_number(attempt.state)))))))))))
+    var values = concat("'", concat(attempt.id, "'"))
+    values = concat(values, concat(",'", concat(attempt.from_basis, "'")))
+    values = concat(values, concat(",'", concat(attempt.to_basis, "'")))
+    values = concat(values, concat(",'", concat(attempt.plan_digest, "'")))
+    values = concat(values, concat(",", to_text(policy_number(attempt.policy))))
+    concat(values, concat(",", to_text(state_number(attempt.state))))
 }
 
 fn append(tool Text, database Text, expected Int, attempt Attempt) Result[Bool, Text] {
     let values = event_values(attempt)
-    let sql = concat("INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) SELECT ",
+    let sql = concat("INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,plan_digest,policy,state) SELECT ",
         concat(values, concat(" WHERE (SELECT IFNULL(MAX(sequence),0) FROM loom_deploy_events) = ",
                 concat(to_text(expected), "; SELECT changes();"))))
     let output = execute(tool, database, sql)?
@@ -360,7 +366,7 @@ pub fn assume_historical(tool Text, database Text, id Text, basis Text) Result[A
     // The empty-ledger check and both events share one write transaction. The
     // guarded insert aborts if another writer won the race after latest().
     // A failed sqlite3 process closes its connection and rolls back both rows.
-    let sql = concat("PRAGMA ignore_check_constraints=OFF;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_import_guard(ok INTEGER NOT NULL CHECK(ok=1));\nINSERT INTO loom_import_guard SELECT CASE WHEN EXISTS(SELECT 1 FROM loom_deploy_events) THEN 0 ELSE 1 END;\nINSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) VALUES (",
+    let sql = concat("PRAGMA ignore_check_constraints=OFF;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_import_guard(ok INTEGER NOT NULL CHECK(ok=1));\nINSERT INTO loom_import_guard SELECT CASE WHEN EXISTS(SELECT 1 FROM loom_deploy_events) THEN 0 ELSE 1 END;\nINSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,plan_digest,policy,state) VALUES (",
         concat(event_values(attempt), concat("),(", concat(event_values(assumed), ");\nCOMMIT;"))))
     discard execute(tool, database, sql)?
     Result.Ok(assumed)

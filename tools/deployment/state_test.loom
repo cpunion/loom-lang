@@ -9,6 +9,7 @@ fn prepared(policy FailurePolicy) Attempt {
                 id = ""
                 from_basis = ""
                 to_basis = ""
+                plan_digest = ""
                 policy = policy
                 state = DeploymentState.NotDeployed
             }
@@ -63,4 +64,20 @@ test fn assumed_completion_never_becomes_observed_evidence() {
         Result.Err(_) => true,
         _ => false
     }
+}
+
+test fn concrete_plan_identity_survives_state_transitions() {
+    let identity = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert match prepare_plan("upgrade-2", "checked-v1", "checked-v2", FailurePolicy.Stop, "invalid") {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    let planned = match prepare_plan("upgrade-2", "checked-v1", "checked-v2", FailurePolicy.Stop, identity) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            prepared(FailurePolicy.Stop)
+        }
+    }
+    assert moved(planned, Transition.Begin).plan_digest == identity
 }
