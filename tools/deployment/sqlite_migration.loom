@@ -5,7 +5,9 @@ import std.option.Option
 import std.result.Result
 import std.text.byte
 import std.text.concat
+import std.text.join
 import std.text.length
+import std.text.split
 
 // This is one deliberately narrow, offline migration: a single two-column
 // orders table, no other application tables, triggers, or foreign keys. It
@@ -45,7 +47,95 @@ fn quoted(value Text) Text {
 }
 
 fn literal(value Text) Text {
-    concat("'", concat(value, "'"))
+    concat("'", concat(join(split(value, "'"), "''"), "'"))
+}
+
+fn source_ddl(plan SqlitePositiveAmountUpgrade) Text {
+    var ddl = concat("CREATE TABLE ", quoted(plan.orders))
+    ddl = concat(ddl, concat("(", quoted(plan.order_id)))
+    ddl = concat(ddl, concat(" INTEGER PRIMARY KEY, ", quoted(plan.amount)))
+    ddl = concat(ddl, concat(" INTEGER NOT NULL CHECK(", quoted(plan.amount)))
+    concat(ddl, ">=0)) STRICT")
+}
+
+fn archive_ddl(plan SqlitePositiveAmountUpgrade) Text {
+    concat("CREATE TABLE ", concat(quoted(plan.archive),
+            "(entity_id INTEGER PRIMARY KEY, original_amount INTEGER NOT NULL, restorable INTEGER NOT NULL DEFAULT 1 CHECK(restorable IN (0,1))) STRICT"))
+}
+
+fn notes_ddl(plan SqlitePositiveAmountUpgrade) Text {
+    concat("CREATE TABLE ", concat(quoted(plan.notes),
+            concat("(", concat(quoted(plan.note_id), concat(" INTEGER PRIMARY KEY, ",
+                            concat(quoted(plan.note_body), " TEXT NOT NULL) STRICT"))))))
+}
+
+fn exact_table(name Text, ddl Text) Text {
+    concat("EXISTS (SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=",
+        concat(literal(name), concat(" AND sql=", concat(literal(ddl), ")"))))
+}
+
+fn retained_lineage(plan SqlitePositiveAmountUpgrade) Text {
+    var query = "EXISTS (SELECT 1 FROM loom_deploy_events WHERE sequence=(SELECT max(sequence) FROM loom_deploy_events WHERE attempt_id!="
+    query = concat(query, concat(literal(plan.attempt_id), ")"))
+    query = concat(query, concat(" AND state=", to_text(state_number(DeploymentState.RollbackComplete))))
+    query = concat(query, concat(" AND from_basis=", literal(plan.from_basis)))
+    query = concat(query, concat(" AND to_basis=", literal(plan.to_basis)))
+    concat(query, ")")
+}
+
+fn trigger_name(index Int) Text {
+    if index == 0 { return "loom_positive_insert" }
+    if index == 1 { return "loom_positive_update" }
+    if index == 2 { return "loom_archive_amount_update" }
+    if index == 3 { return "loom_archive_key_update" }
+    if index == 4 { return "loom_archive_delete" }
+    "loom_archive_insert"
+}
+
+fn trigger_sql(plan SqlitePositiveAmountUpgrade, index Int) Text {
+    let orders = quoted(plan.orders)
+    let key = quoted(plan.order_id)
+    let amount = quoted(plan.amount)
+    let archive = quoted(plan.archive)
+    if index == 0 {
+        var sql = concat("CREATE TRIGGER loom_positive_insert BEFORE INSERT ON ", orders)
+        sql = concat(sql, concat(" WHEN typeof(NEW.", concat(amount, ")!='integer' OR NEW.")))
+        concat(sql, concat(amount, "<=0 BEGIN SELECT RAISE(ABORT,'amount must be positive integer'); END"))
+    } else {
+        if index == 1 {
+            var sql = concat("CREATE TRIGGER loom_positive_update BEFORE UPDATE OF ", amount)
+            sql = concat(sql, concat(" ON ", orders))
+            sql = concat(sql, concat(" WHEN typeof(NEW.", concat(amount, ")!='integer' OR NEW.")))
+            concat(sql, concat(amount, "<=0 BEGIN SELECT RAISE(ABORT,'amount must be positive integer'); END"))
+        } else {
+            if index == 2 {
+                var sql = concat("CREATE TRIGGER loom_archive_amount_update AFTER UPDATE OF ", amount)
+                sql = concat(sql, concat(" ON ", orders))
+                sql = concat(sql, concat(" WHEN NEW.", concat(amount, concat("!=OLD.", amount))))
+                sql = concat(sql, concat(" BEGIN UPDATE ", archive))
+                concat(sql, concat(" SET restorable=0 WHERE entity_id=OLD.", concat(key, "; END")))
+            } else {
+                if index == 3 {
+                    var sql = concat("CREATE TRIGGER loom_archive_key_update AFTER UPDATE OF ", key)
+                    sql = concat(sql, concat(" ON ", orders))
+                    sql = concat(sql, concat(" WHEN NEW.", concat(key, concat("!=OLD.", key))))
+                    sql = concat(sql, concat(" BEGIN UPDATE ", archive))
+                    sql = concat(sql, concat(" SET restorable=0 WHERE entity_id=OLD.", key))
+                    concat(sql, concat(" OR entity_id=NEW.", concat(key, "; END")))
+                } else {
+                    if index == 4 {
+                        var sql = concat("CREATE TRIGGER loom_archive_delete AFTER DELETE ON ", orders)
+                        sql = concat(sql, concat(" BEGIN UPDATE ", archive))
+                        concat(sql, concat(" SET restorable=0 WHERE entity_id=OLD.", concat(key, "; END")))
+                    } else {
+                        var sql = concat("CREATE TRIGGER loom_archive_insert AFTER INSERT ON ", orders)
+                        sql = concat(sql, concat(" BEGIN UPDATE ", archive))
+                        concat(sql, concat(" SET restorable=0 WHERE entity_id=NEW.", concat(key, "; END")))
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn checked(condition Text) Text {
@@ -223,10 +313,9 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
     let amount = quoted(plan.amount)
     let archive = quoted(plan.archive)
     let notes = quoted(plan.notes)
-    let note_key = quoted(plan.note_id)
     let note_body = quoted(plan.note_body)
 
-    var script = "PRAGMA foreign_keys=ON;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_migration_checks(ok INTEGER NOT NULL CHECK(ok=1));\n"
+    var script = "PRAGMA foreign_keys=ON;\nPRAGMA ignore_check_constraints=OFF;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_migration_checks(ok INTEGER NOT NULL CHECK(ok=1));\n"
     var latest_is_started = concat("(SELECT max(sequence) FROM loom_deploy_events)=", to_text(previous.sequence))
     latest_is_started = concat(latest_is_started,
         concat(" AND EXISTS (SELECT 1 FROM loom_deploy_events WHERE sequence=", to_text(previous.sequence)))
@@ -238,7 +327,7 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
     latest_is_started = concat(latest_is_started,
         concat(" AND state=", concat(to_text(state_number(DeploymentState.Started)), ")")))
     script = concat(script, checked(latest_is_started))
-    script = concat(script, checked(ordinary_table(plan.orders)))
+    script = concat(script, checked(exact_table(plan.orders, source_ddl(plan))))
     script = concat(script, checked(concat(
                 "(SELECT count(*) FROM main.sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*')=",
                 if retained {
@@ -247,6 +336,7 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
                     "2"
                 })))
     script = concat(script, checked("NOT EXISTS (SELECT 1 FROM main.sqlite_master WHERE type='trigger')"))
+    script = concat(script, checked("NOT EXISTS (SELECT 1 FROM main.sqlite_master WHERE type='index')"))
     script = concat(script, checked(concat("(SELECT count(*) FROM pragma_table_info(",
                 concat(literal(plan.orders), "))=2"))))
     script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM pragma_foreign_key_list(",
@@ -254,11 +344,13 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
     script = concat(script, checked(integer_key(plan.orders, plan.order_id)))
     script = concat(script, checked(required_integer(plan.orders, plan.amount)))
     let invalid_source = concat("NOT EXISTS (SELECT 1 FROM ",
-        concat(orders, concat(" WHERE ", concat(concat(amount, "<0 OR "), concat(amount, " IS NULL)")))))
+        concat(orders, concat(" WHERE typeof(", concat(amount,
+                    concat(")!='integer' OR ", concat(amount, "<0)"))))))
     script = concat(script, checked(invalid_source))
     if retained {
-        script = concat(script, checked(ordinary_table(plan.archive)))
-        script = concat(script, checked(ordinary_table(plan.notes)))
+        script = concat(script, checked(retained_lineage(plan)))
+        script = concat(script, checked(exact_table(plan.archive, archive_ddl(plan))))
+        script = concat(script, checked(exact_table(plan.notes, notes_ddl(plan))))
         script = concat(script, checked(integer_key(plan.archive, "entity_id")))
         script = concat(script, checked(required_integer(plan.archive, "original_amount")))
         script = concat(script, checked(required_integer(plan.archive, "restorable")))
@@ -273,7 +365,9 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
         script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM pragma_foreign_key_list(",
                     concat(literal(plan.notes), "))"))))
         script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM ",
-                    concat(archive, " WHERE original_amount!=0 OR restorable NOT IN (0,1))"))))
+                    concat(archive, " WHERE typeof(original_amount)!='integer' OR original_amount!=0 OR typeof(restorable)!='integer' OR restorable NOT IN (0,1))"))))
+        script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM ",
+                    concat(notes, concat(" WHERE typeof(", concat(note_body, ")!='text')"))))))
         var refresh = concat("UPDATE ", concat(archive, " SET restorable=CASE WHEN EXISTS (SELECT 1 FROM "))
         refresh = concat(refresh, orders)
         refresh = concat(refresh, concat(" WHERE ", concat(orders, concat(".", key))))
@@ -290,8 +384,7 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
     } else {
         script = concat(script, checked(concat("NOT ", ordinary_table(plan.archive))))
         script = concat(script, checked(concat("NOT ", ordinary_table(plan.notes))))
-        script = concat(script, concat("CREATE TABLE ", concat(archive,
-                    "(entity_id INTEGER PRIMARY KEY, original_amount INTEGER NOT NULL, restorable INTEGER NOT NULL DEFAULT 1 CHECK(restorable IN (0,1)));\n")))
+        script = concat(script, concat(archive_ddl(plan), ";\n"))
         script = concat(script, concat("INSERT INTO ", concat(archive,
                     concat("(entity_id,original_amount) SELECT ", concat(key,
                             concat(",", concat(amount, concat(" FROM ", concat(orders,
@@ -301,41 +394,21 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
                 concat(" SET ", concat(amount, concat("=", concat(to_text(plan.replacement),
                                 concat(" WHERE ", concat(amount, "=0;\n")))))))))
     let valid_target = concat("NOT EXISTS (SELECT 1 FROM ",
-        concat(orders, concat(" WHERE ", concat(concat(amount, "<=0 OR "), concat(amount, " IS NULL)")))))
+        concat(orders, concat(" WHERE typeof(", concat(amount,
+                    concat(")!='integer' OR ", concat(amount, "<=0)"))))))
     script = concat(script, checked(valid_target))
     if !retained {
-        script = concat(script, concat("CREATE TABLE ", concat(notes, concat("(",
-                        concat(note_key, concat(" INTEGER PRIMARY KEY, ", concat(note_body,
-                                    " TEXT NOT NULL);\n")))))))
+        script = concat(script, concat(notes_ddl(plan), ";\n"))
     }
     script = concat(script, checked(integer_key(plan.notes, plan.note_id)))
     script = concat(script, checked(required_text(plan.notes, plan.note_body)))
     script = concat(script, checked(required_integer(plan.archive, "original_amount")))
     script = concat(script, checked(required_integer(plan.archive, "restorable")))
-    script = concat(script, concat("CREATE TRIGGER loom_positive_insert BEFORE INSERT ON ", orders))
-    script = concat(script, concat(" WHEN NEW.", concat(amount,
-                concat(" IS NULL OR NEW.", concat(amount,
-                        "<=0 BEGIN SELECT RAISE(ABORT,'amount must be positive'); END;\n")))))
-    script = concat(script, concat("CREATE TRIGGER loom_positive_update BEFORE UPDATE OF ", amount))
-    script = concat(script, concat(" ON ", concat(orders, concat(" WHEN NEW.", concat(amount,
-                        concat(" IS NULL OR NEW.", concat(amount,
-                                "<=0 BEGIN SELECT RAISE(ABORT,'amount must be positive'); END;\n")))))))
-    script = concat(script, concat("CREATE TRIGGER loom_archive_amount_update AFTER UPDATE OF ", amount))
-    script = concat(script, concat(" ON ", concat(orders, concat(" WHEN NEW.", concat(amount,
-                        concat("!=OLD.", concat(amount, concat(" BEGIN UPDATE ", concat(archive,
-                                        concat(" SET restorable=0 WHERE entity_id=OLD.", concat(key, "; END;\n")))))))))))
-    var key_trigger = concat("CREATE TRIGGER loom_archive_key_update AFTER UPDATE OF ", key)
-    key_trigger = concat(key_trigger, concat(" ON ", orders))
-    key_trigger = concat(key_trigger, concat(" BEGIN UPDATE ", archive))
-    key_trigger = concat(key_trigger, concat(" SET restorable=0 WHERE entity_id=OLD.", key))
-    key_trigger = concat(key_trigger, concat(" OR entity_id=NEW.", key))
-    script = concat(script, concat(key_trigger, "; END;\n"))
-    script = concat(script, concat("CREATE TRIGGER loom_archive_delete AFTER DELETE ON ", orders))
-    script = concat(script, concat(" BEGIN UPDATE ", concat(archive,
-                concat(" SET restorable=0 WHERE entity_id=OLD.", concat(key, "; END;\n")))))
-    script = concat(script, concat("CREATE TRIGGER loom_archive_insert AFTER INSERT ON ", orders))
-    script = concat(script, concat(" BEGIN UPDATE ", concat(archive,
-                concat(" SET restorable=0 WHERE entity_id=NEW.", concat(key, "; END;\n")))))
+    var trigger_index = 0
+    while trigger_index < 6 {
+        script = concat(script, concat(trigger_sql(plan, trigger_index), ";\n"))
+        trigger_index = trigger_index + 1
+    }
     script = concat(script, checked("(SELECT count(*) FROM main.sqlite_master WHERE type='trigger')=6"))
     var event = "INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) SELECT "
     event = concat(event, literal(plan.attempt_id))

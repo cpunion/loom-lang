@@ -3,9 +3,10 @@ import std.option.Option
 import std.result.Result
 import std.text.concat
 
-fn trigger_present(name Text, table Text) Text {
+fn trigger_present(name Text, table Text, definition Text) Text {
     concat("EXISTS (SELECT 1 FROM main.sqlite_master WHERE type='trigger' AND name=",
-        concat(literal(name), concat(" AND tbl_name=", concat(literal(table), ")"))))
+        concat(literal(name), concat(" AND tbl_name=", concat(literal(table),
+                    concat(" AND sql=", concat(literal(definition), ")"))))))
 }
 
 // Only reverses this package's fixed positive-amount upgrade. The notes and
@@ -49,7 +50,7 @@ pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, 
     let amount = quoted(plan.amount)
     let archive = quoted(plan.archive)
 
-    var script = "PRAGMA foreign_keys=ON;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_migration_checks(ok INTEGER NOT NULL CHECK(ok=1));\n"
+    var script = "PRAGMA foreign_keys=ON;\nPRAGMA ignore_check_constraints=OFF;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_migration_checks(ok INTEGER NOT NULL CHECK(ok=1));\n"
     var current_event = concat("(SELECT max(sequence) FROM loom_deploy_events)=", to_text(started.sequence))
     current_event = concat(current_event,
         concat(" AND EXISTS (SELECT 1 FROM loom_deploy_events WHERE sequence=", to_text(started.sequence)))
@@ -61,9 +62,9 @@ pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, 
     current_event = concat(current_event,
         concat(" AND state=", concat(to_text(state_number(DeploymentState.RollbackStarted)), ")")))
     script = concat(script, checked(current_event))
-    script = concat(script, checked(ordinary_table(plan.orders)))
-    script = concat(script, checked(ordinary_table(plan.archive)))
-    script = concat(script, checked(ordinary_table(plan.notes)))
+    script = concat(script, checked(exact_table(plan.orders, source_ddl(plan))))
+    script = concat(script, checked(exact_table(plan.archive, archive_ddl(plan))))
+    script = concat(script, checked(exact_table(plan.notes, notes_ddl(plan))))
     script = concat(script, checked("(SELECT count(*) FROM main.sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*')=4"))
     script = concat(script, checked(concat("(SELECT count(*) FROM pragma_table_info(",
                 concat(literal(plan.orders), "))=2"))))
@@ -85,17 +86,22 @@ pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, 
     script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM pragma_foreign_key_list(",
                 concat(literal(plan.notes), "))"))))
     script = concat(script, checked("(SELECT count(*) FROM main.sqlite_master WHERE type='trigger')=6"))
-    script = concat(script, checked(trigger_present("loom_positive_insert", plan.orders)))
-    script = concat(script, checked(trigger_present("loom_positive_update", plan.orders)))
-    script = concat(script, checked(trigger_present("loom_archive_amount_update", plan.orders)))
-    script = concat(script, checked(trigger_present("loom_archive_key_update", plan.orders)))
-    script = concat(script, checked(trigger_present("loom_archive_delete", plan.orders)))
-    script = concat(script, checked(trigger_present("loom_archive_insert", plan.orders)))
+    script = concat(script, checked("NOT EXISTS (SELECT 1 FROM main.sqlite_master WHERE type='index')"))
+    var trigger_index = 0
+    while trigger_index < 6 {
+        script = concat(script, checked(trigger_present(trigger_name(trigger_index),
+                        plan.orders, trigger_sql(plan, trigger_index))))
+        trigger_index = trigger_index + 1
+    }
     let positive = concat("NOT EXISTS (SELECT 1 FROM ",
-        concat(orders, concat(" WHERE ", concat(concat(amount, "<=0 OR "), concat(amount, " IS NULL)")))))
+        concat(orders, concat(" WHERE typeof(", concat(amount,
+                    concat(")!='integer' OR ", concat(amount, "<=0)"))))))
     script = concat(script, checked(positive))
     script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM ",
-                concat(archive, " WHERE original_amount!=0 OR restorable NOT IN (0,1))"))))
+                concat(archive, " WHERE typeof(original_amount)!='integer' OR original_amount!=0 OR typeof(restorable)!='integer' OR restorable NOT IN (0,1))"))))
+    script = concat(script, checked(concat("NOT EXISTS (SELECT 1 FROM ",
+                concat(quoted(plan.notes), concat(" WHERE typeof(",
+                        concat(quoted(plan.note_body), ")!='text')"))))))
     var untouched = concat("NOT EXISTS (SELECT 1 FROM ", concat(archive, " WHERE restorable=1 AND NOT EXISTS (SELECT 1 FROM "))
     untouched = concat(untouched, orders)
     untouched = concat(untouched, concat(" WHERE ", concat(orders, concat(".", key))))
@@ -113,7 +119,8 @@ pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, 
     restore = concat(restore, concat("=", concat(to_text(plan.replacement), ");\n")))
     script = concat(script, restore)
     let nonnegative = concat("NOT EXISTS (SELECT 1 FROM ",
-        concat(orders, concat(" WHERE ", concat(concat(amount, "<0 OR "), concat(amount, " IS NULL)")))))
+        concat(orders, concat(" WHERE typeof(", concat(amount,
+                    concat(")!='integer' OR ", concat(amount, "<0)"))))))
     script = concat(script, checked(nonnegative))
     var event = "INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) SELECT "
     event = concat(event, literal(plan.attempt_id))

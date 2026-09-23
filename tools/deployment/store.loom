@@ -330,6 +330,13 @@ pub fn note_failure(tool Text, database Text, id Text) Result[Attempt, Text] {
     record_event(tool, database, id, Transition.Fail)
 }
 
+// An operator explicitly retries a stopped failure. This appends a Started
+// event but does not establish any effective basis. The checked executor must
+// revalidate the live database and commit data plus completion atomically.
+pub fn resume_failed_attempt(tool Text, database Text, id Text) Result[Attempt, Text] {
+    record_event(tool, database, id, Transition.Resume)
+}
+
 // Explicitly imports an already-existing database basis. It never produces
 // observed completion and is available only before the first ledger event.
 pub fn assume_historical(tool Text, database Text, id Text, basis Text) Result[Attempt, Text] {
