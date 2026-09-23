@@ -1,0 +1,5 @@
+import sample.math.bump
+
+// moved with its stable identity
+fn amount() Int { bump(0) }
+fn extra() Int { bump(2) }

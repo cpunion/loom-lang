@@ -2,7 +2,11 @@ import semantic_change.File
 import semantic_change.Identity
 import semantic_change.Revision
 import semantic_change.merge
+import semantic_change.merge_with_context
 import std.loom.ast.NodeKind
+import std.loom.project.Project
+import std.loom.project.load
+import std.loom.project.join_path
 import std.bytes.new
 import std.bytes.push
 import std.bytes.decode_utf8
@@ -11,6 +15,7 @@ import std.file.write_text
 import std.fs.create_dir
 import std.fs.entries
 import std.fs.entry_kind
+import std.fs.canonicalize
 import std.fs.FileKind
 import std.fs.FsError
 import std.hash.sha256.hex
@@ -56,6 +61,13 @@ record Review {
     merged Revision
     token Text
     next Int
+}
+
+record Context {
+    production Project
+    tests Project
+    directory Text
+    stamp Text
 }
 
 fn path(directory Text, name Text) Text {
@@ -405,6 +417,120 @@ fn frame_loaded(output Bytes, loaded Loaded) {
     frame_files(output, loaded.revision.files)
 }
 
+fn framed_project(output Bytes, project Project) Result[Bool, Text] {
+    frame(output, to_text(project.root))
+    frame(output, to_text(length(project.modules)))
+    var index = 0
+    while index < length(project.modules) {
+        let module = get(project.modules, index)
+        frame(output, module.name)
+        frame(output, module.source)
+        if module.name != "std" {
+            let manifest = join_path(module.source, "loom.toml")
+            match entry_kind(manifest) {
+                Result.Ok(FileKind.File) => {
+                }
+                _ => {
+                    return Result.Err(concat("project context has no regular manifest: ", manifest))
+                }
+            }
+            let contents = match read_text(manifest) {
+                Result.Ok(value) => value,
+                Result.Err(_) => {
+                    return Result.Err(concat("cannot read project manifest: ", manifest))
+                }
+            }
+            frame(output, contents)
+        }
+        index = index + 1
+    }
+    frame(output, to_text(length(project.packages)))
+    index = 0
+    while index < length(project.packages) {
+        let package = get(project.packages, index)
+        frame(output, to_text(package.instance))
+        frame(output, package.relative)
+        frame(output, to_text(length(package.imports)))
+        var edge = 0
+        while edge < length(package.imports) {
+            let imported = get(package.imports, edge)
+            frame(output, imported.spelling)
+            frame(output, to_text(imported.target))
+            edge = edge + 1
+        }
+        index = index + 1
+    }
+    frame(output, to_text(length(project.files)))
+    index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        frame(output, to_text(file.package))
+        frame(output, file.path)
+        frame(output, file.text)
+        frame(output, if file.test_only {
+                "test"
+            } else {
+                "production"
+            })
+        frame(output, if file.trusted_std {
+                "trusted"
+            } else {
+                "untrusted"
+            })
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn read_context(directory Text, standard Text) Result[Context, Text] {
+    discard checked_source_directory(directory)?
+    let canonical = match canonicalize(directory) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("cannot resolve project context package")
+        }
+    }
+    let std_root = match canonicalize(standard) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("cannot resolve project context standard library")
+        }
+    }
+    let production = load(canonical, std_root, false)?
+    let tests = load(canonical, std_root, true)?
+    let root = get(production.modules, get(production.packages, production.root).instance)
+    if root.name == "std" || root.name == "" {
+        return Result.Err("project context needs a named non-standard module")
+    }
+    let lock = join_path(root.source, "loom.lock")
+    match entry_kind(lock) {
+        Result.Ok(FileKind.File) => {
+        }
+        _ => {
+            return Result.Err("project context needs an explicit regular loom.lock")
+        }
+    }
+    let locked = match read_text(lock) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("cannot read project context loom.lock")
+        }
+    }
+    let bytes = std.bytes.new()
+    frame(bytes, "loom-semantic-context-v1")
+    frame(bytes, canonical)
+    frame(bytes, std_root)
+    frame(bytes, locked)
+    discard framed_project(bytes, production)?
+    discard framed_project(bytes, tests)?
+    Result.Ok(Context {
+            production = production
+            tests = tests
+            directory = canonical
+            stamp = hex(bytes)
+        })
+}
+
 fn loaded_stamp(loaded Loaded) Text {
     let output = std.bytes.new()
     frame_loaded(output, loaded)
@@ -419,6 +545,25 @@ fn review(base Loaded, left Loaded, right Loaded) Result[Review, Text] {
     frame_loaded(output, base)
     frame_loaded(output, left)
     frame_loaded(output, right)
+    frame(output, sidecar(merged, next))
+    frame_files(output, merged.files)
+    Result.Ok(Review {
+            merged = merged
+            token = hex(output)
+            next = next
+        })
+}
+
+fn review_context(base Loaded, left Loaded, right Loaded, context Context) Result[Review, Text] {
+    let merged = merge_with_context(base.revision, left.revision, right.revision,
+        context.production, context.tests, context.directory)?
+    let next = std.int.maximum(std.int.maximum(base.next, left.next), right.next)
+    let output = std.bytes.new()
+    frame(output, "loom-semantic-review-context-v1")
+    frame_loaded(output, base)
+    frame_loaded(output, left)
+    frame_loaded(output, right)
+    frame(output, context.stamp)
     frame(output, sidecar(merged, next))
     frame_files(output, merged.files)
     Result.Ok(Review {
@@ -452,6 +597,14 @@ fn preview(base Result[Loaded, Text], left Result[Loaded, Text],
     let edited_left = left?
     let edited_right = right?
     Result.Ok(show(review(original, edited_left, edited_right)?))
+}
+
+fn preview_context(directory Text, standard Text, base Text, left Text, right Text) Result[Text, Text] {
+    let original = read(base)?
+    let edited_left = read(left)?
+    let edited_right = read(right)?
+    let context = read_context(directory, standard)?
+    Result.Ok(show(review_context(original, edited_left, edited_right, context)?))
 }
 
 // Output names are single-package leaves. The package directory itself must
@@ -581,6 +734,23 @@ fn apply_directories(expected Text, destination Text, base Text, left Text, righ
         read(base)?, read(left)?, read(right)?)
 }
 
+fn apply_context(expected Text, destination Text, directory Text, standard Text,
+    base Text, left Text, right Text) Result[Text, Text] {
+    let original = read(base)?
+    let edited_left = read(left)?
+    let edited_right = read(right)?
+    let context = read_context(directory, standard)?
+    let value = review_context(original, edited_left, edited_right, context)?
+    if value.token != expected {
+        return Result.Err("review token does not match this project closure or merged bytes")
+    }
+    if read_context(directory, standard)?.stamp != context.stamp {
+        return Result.Err("project context changed while preparing apply")
+    }
+    publish(expected, destination, value, original, edited_left, edited_right,
+        read(base)?, read(left)?, read(right)?)
+}
+
 fn apply_git(expected Text, destination Text, executable Text, repository Text, directory Text,
     base Text, left Text, right Text) Result[Text, Text] {
     let original = read_git(executable, repository, directory, base)?
@@ -603,14 +773,19 @@ fn main() {
     let directories_preview = length(args) == 4 && get(args, 1) != "--apply" && get(args, 1) != "--git" &&
     get(args, 1) != "init" && get(args, 1) != "refresh"
     let git_preview = length(args) == 8 && get(args, 1) == "--git"
+    let context_preview = length(args) == 7 && get(args, 1) == "--context"
     let directories_apply = length(args) == 7 && get(args, 1) == "--apply"
+    let context_apply = length(args) == 10 && get(args, 1) == "--apply" && get(args, 4) == "--context"
     let git_apply = length(args) == 11 && get(args, 1) == "--apply" && get(args, 4) == "--git"
-    if !initializing && !refreshing && !directories_preview && !git_preview && !directories_apply && !git_apply {
+    if !initializing && !refreshing && !directories_preview && !git_preview && !context_preview &&
+    !directories_apply && !context_apply && !git_apply {
         discard write_error("usage: semantic_change_trial init PACKAGE_NAME DIR\n")
         discard write_error("   or: semantic_change_trial refresh DIR [--move ID NEW_FILE NEW_NAME | --delete ID]...\n")
         discard write_error("usage: semantic_change_trial BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
+        discard write_error("   or: semantic_change_trial --context PACKAGE_DIR STD_ROOT BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --apply TOKEN OUTPUT_DIR BASE_DIR LEFT_DIR RIGHT_DIR\n")
+        discard write_error("   or: semantic_change_trial --apply TOKEN OUTPUT_DIR --context PACKAGE_DIR STD_ROOT BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --apply TOKEN OUTPUT_DIR --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         exit_code(2)
         return
@@ -624,19 +799,28 @@ fn main() {
             if directories_preview {
                 preview(read(get(args, 1)), read(get(args, 2)), read(get(args, 3)))
             } else {
-                if git_preview {
-                    let executable = get(args, 2)
-                    let repository = get(args, 3)
-                    let directory = get(args, 4)
-                    preview(read_git(executable, repository, directory, get(args, 5)),
-                        read_git(executable, repository, directory, get(args, 6)),
-                        read_git(executable, repository, directory, get(args, 7)))
+                if context_preview {
+                    preview_context(get(args, 2), get(args, 3), get(args, 4), get(args, 5), get(args, 6))
                 } else {
-                    if directories_apply {
-                        apply_directories(get(args, 2), get(args, 3), get(args, 4), get(args, 5), get(args, 6))
+                    if git_preview {
+                        let executable = get(args, 2)
+                        let repository = get(args, 3)
+                        let directory = get(args, 4)
+                        preview(read_git(executable, repository, directory, get(args, 5)),
+                            read_git(executable, repository, directory, get(args, 6)),
+                            read_git(executable, repository, directory, get(args, 7)))
                     } else {
-                        apply_git(get(args, 2), get(args, 3), get(args, 5), get(args, 6), get(args, 7),
-                            get(args, 8), get(args, 9), get(args, 10))
+                        if directories_apply {
+                            apply_directories(get(args, 2), get(args, 3), get(args, 4), get(args, 5), get(args, 6))
+                        } else {
+                            if context_apply {
+                                apply_context(get(args, 2), get(args, 3), get(args, 5), get(args, 6),
+                                    get(args, 7), get(args, 8), get(args, 9))
+                            } else {
+                                apply_git(get(args, 2), get(args, 3), get(args, 5), get(args, 6), get(args, 7),
+                                    get(args, 8), get(args, 9), get(args, 10))
+                            }
+                        }
                     }
                 }
             }

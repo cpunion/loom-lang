@@ -1,0 +1,4 @@
+import sample.math.bump
+
+fn entry() Int { amount() }
+pub fn main() { assert entry() > 0 }

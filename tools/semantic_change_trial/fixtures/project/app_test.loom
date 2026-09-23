@@ -1,0 +1,1 @@
+test fn imported_package() { assert entry() > 0 }

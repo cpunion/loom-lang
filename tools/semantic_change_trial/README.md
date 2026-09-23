@@ -24,6 +24,35 @@ The Git executable path is explicit; the tool never invokes a shell.
 `REPO` may be the repository root or a subdirectory. Use `.` for a package at
 that location; source blobs are read by their tree object IDs.
 
+Import-bearing packages require an explicit offline project context. This must
+be the exact base package in a named module with `loom.toml` and a regular
+`loom.lock` (an empty lock is `loom-lock 1` followed by a newline). The tool
+loads the production and test import closures without resolving or fetching
+dependencies, checks the merged package against them, and includes selected
+source bytes, module manifests, lock bytes, resolved import edges, and canonical
+project/standard-library roots in the review token. Apply reloads that context
+and rejects changes before creating an output directory:
+
+```sh
+target/loom run tools/semantic_change_trial -- --context \
+  tools/semantic_change_trial/fixtures/project compiler/std \
+  tools/semantic_change_trial/fixtures/project \
+  tools/semantic_change_trial/fixtures/project_left \
+  tools/semantic_change_trial/fixtures/project_right
+```
+
+Use `--apply TOKEN OUTPUT_DIR --context PACKAGE_DIR STD_ROOT BASE_DIR LEFT_DIR
+RIGHT_DIR` after review. This mode requires each file's imports to remain
+unchanged, including the implicit `std.result` edge introduced by refined
+types. Imports are package-wide: a move can retain its bindings when the
+existing package import graph stays unchanged. It can add or remove package
+source files, but does not merge import-graph changes or output the dependency
+closure. The Git-object mode still rejects imports rather than borrowing a live
+checkout. The context and output paths must be trusted local paths. This does
+not make review and publication race-free against hostile concurrent filesystem
+writers. Merged type/contract analysis is not exhaustive proof that every
+reference or overload retains its original binding.
+
 Each directory contains ordinary root-level `.loom` files and a `.loom-ids`
 sidecar. The sidecar requires exactly one `package NAME` line and exactly one
 `next N` positive allocator line, followed by one
@@ -106,12 +135,13 @@ other edits declaration bodies. It preserves the layout side's surrounding
 source text and the chosen declaration body verbatim, then parses and checks
 the merged package. One side may also add uniquely named declarations with
 fresh stable IDs while the other edits existing bodies. Additions on both sides,
-additions mixed with deletions, names that could rebind existing calls,
-concurrent layout changes, conflicting edits, changes to the non-layout side's
-surrounding text, and unsupported declaration forms are reported instead of
-guessed.
+additions mixed with deletions, cross-side deletion plus body edits,
+cross-side signature or contract changes plus body edits, names that could
+rebind existing calls, concurrent layout changes, conflicting edits, changes
+to the non-layout side's surrounding text, and unsupported declaration forms
+are reported instead of guessed.
 
 This is a deliberately narrow proof of the move-plus-edit workflow. It does
-not yet manage Git/jj changes or commits, resolve imports or multi-package
-projects, accept `impl` or other non-identity top-level forms, distinguish
-overloads, or merge edits within a single declaration.
+not yet manage Git/jj changes or commits, reconcile import changes or
+multi-package source edits, accept `impl` or other non-identity top-level forms,
+distinguish overloads, or merge edits within a single declaration.

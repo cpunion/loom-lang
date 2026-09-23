@@ -1,0 +1,6 @@
+package sample
+next 5
+id amount-id fn amount app.loom
+id entry-id fn entry app.loom
+id main-id fn main app.loom
+id test-id fn imported_package app_test.loom
