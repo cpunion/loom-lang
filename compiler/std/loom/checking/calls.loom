@@ -72,6 +72,22 @@ fn pending_resource_exit(node Node) Bool {
     false
 }
 
+fn pending_receivers(context Context, node Node, receiver Expr, output List[Expr], depth Int) Result[Bool, Failure] {
+    if depth >= 64 { return Result.Err(error(context, node, "nested resource aggregate depth limit exceeded")) }
+    let shape = get(context.env.types, receiver.ty)
+    var index = 0
+    while index < length(shape.fields) {
+        let field = get(shape.fields, index)
+        if must_scope(context, field.ty)? {
+            let child = expression(ExprKind.Field, field.ty, node, "", index, expressions(receiver), true)
+            discard pending_receivers(context, node, child, output, depth + 1)?
+        }
+        index = index + 1
+    }
+    push(output, receiver)
+    Result.Ok(true)
+}
+
 // Register each completed resource field before evaluating the next field.
 // Successful construction transfers all fields into the result, deactivates
 // the guards and pops their registrations. Faults leave the earlier guards
@@ -102,9 +118,6 @@ fn pending_record(context Context, node Node, ty Int, fields List[Expr]) Result[
             }
             let descendants = new[Text]()
             discard scope_collect(context, source, field.ty, "", resource_concept(context.env, "Dispose"), descendants, 0)?
-            if length(descendants) != 1 {
-                return Result.Err(error(context, source, "pending cleanup of a nested resource field is not yet supported"))
-            }
         }
         let local = length(context.locals)
         push(context.locals, Local { name = "" ty = field.ty mutable = false is_scoped = resource })
@@ -112,22 +125,27 @@ fn pending_record(context Context, node Node, ty Int, fields List[Expr]) Result[
         push(rebuilt, expression(ExprKind.Field, field.ty, source, "", field.index,
             expressions(atom(ExprKind.Local, field.ty, source, local)), true))
         if resource {
-            let flag = length(context.locals)
-            push(context.locals, Local { name = "" ty = 2 mutable = true is_scoped = false })
-            push(body, expression(ExprKind.Let, 0, source, "", flag,
-                expressions(expression(ExprKind.Bool, 2, source, "true", -1, new[Expr](), true)), true))
-            let receiver = atom(ExprKind.Local, field.ty, source, local)
-            let dispose = method_call_checked(context, source, source, receiver, "dispose", new[Node](),
-                plain_inputs(new[Node]()), resource_concept(context.env, "Dispose"), 0)?
-            let dispose_body = expression(ExprKind.Block, 0, source, "", -1, expressions(dispose), true)
-            let guarded = expression(ExprKind.If, 0, source, "", -1,
-                pair(atom(ExprKind.Local, 2, source, flag), dispose_body), true)
-            let cleanup = expression(ExprKind.Block, 0, source, "", -1, expressions(guarded), true)
-            let head = length(context.cleanups)
-            push(context.cleanups, Cleanup { body = cleanup previous = if length(cleanups) == 0 { context.cleanup_head } else { get(cleanups, length(cleanups) - 1) } })
-            push(body, expression(ExprKind.Defer, 0, source, "resource-pending", head, expressions(cleanup), true))
-            push(flags, flag)
-            push(cleanups, head)
+            let receivers = new[Expr]()
+            discard pending_receivers(context, source, atom(ExprKind.Local, field.ty, source, local), receivers, 0)?
+            var child = 0
+            while child < length(receivers) {
+                let flag = length(context.locals)
+                push(context.locals, Local { name = "" ty = 2 mutable = true is_scoped = false })
+                push(body, expression(ExprKind.Let, 0, source, "", flag,
+                    expressions(expression(ExprKind.Bool, 2, source, "true", -1, new[Expr](), true)), true))
+                let dispose = method_call_checked(context, source, source, get(receivers, child), "dispose", new[Node](),
+                    plain_inputs(new[Node]()), resource_concept(context.env, "Dispose"), 0)?
+                let dispose_body = expression(ExprKind.Block, 0, source, "", -1, expressions(dispose), true)
+                let guarded = expression(ExprKind.If, 0, source, "", -1,
+                    pair(atom(ExprKind.Local, 2, source, flag), dispose_body), true)
+                let cleanup = expression(ExprKind.Block, 0, source, "", -1, expressions(guarded), true)
+                let head = length(context.cleanups)
+                push(context.cleanups, Cleanup { body = cleanup previous = if length(cleanups) == 0 { context.cleanup_head } else { get(cleanups, length(cleanups) - 1) } })
+                push(body, expression(ExprKind.Defer, 0, source, "resource-pending", head, expressions(cleanup), true))
+                push(flags, flag)
+                push(cleanups, head)
+                child = child + 1
+            }
             active = true
         }
         index = index + 1

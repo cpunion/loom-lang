@@ -1,0 +1,179 @@
+import std.file.read_bytes
+import std.file.read_text
+import std.file.write_text
+import std.fs.canonicalize
+import std.fs.remove_file
+import std.fs.remove_empty_dir
+import std.hash.sha256.hex
+import std.list.push
+import std.loom.project.join_path
+import std.result.Result
+import std.text.contains
+import std.text.concat
+
+test fn build_receipt_binds_the_native_artifact_checked_input_and_loaded_sources() {
+    let stage = match receipt_stage("compiler/loom/target/receipt-native-test") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let artifact = join_path(stage, "scalar")
+    let receipt = join_path(stage, "build.receipt")
+    defer {
+        discard remove_file(artifact)
+        discard remove_file(receipt)
+        discard remove_empty_dir(stage)
+    }
+    let args = driver_arguments("build")
+    push(args, "compiler/examples/scalar")
+    push(args, "--output")
+    push(args, artifact)
+    push(args, "--receipt")
+    push(args, receipt)
+    assert match execute(args) {
+        Result.Ok(_) => true,
+        Result.Err(_) => false
+    }
+    let actual_artifact = match read_bytes(artifact) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let actual_receipt = match read_text(receipt) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let selected = match options(args) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let snapshot = match prepared(selected) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let checked = encode(lower(snapshot.program))
+    let native = match cache_identity(selected) {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            return
+        }
+    }
+    let absolute = match canonicalize(artifact) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert contains(actual_receipt, concat("checked-sha256 ", concat(hex(cache_bytes(checked)), "\n")))
+    assert contains(actual_receipt, concat("artifact-sha256 ", concat(hex(actual_artifact), "\n")))
+    assert contains(actual_receipt, concat("backend-identity ", concat(native, "\n")))
+    assert contains(actual_receipt, concat("artifact-path ", concat(receipt_hex(absolute), "\n")))
+    assert contains(actual_receipt, "module-count 2\n")
+    let source = match canonicalize("compiler/examples/scalar/main.loom") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert receipt_source_path(source, snapshot.project)
+    assert receipt_source_path(join_path(selected.path, "loom.toml"), snapshot.project)
+    let text = match read_text(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert contains(actual_receipt, concat("source 1 ", concat(receipt_hex(source), concat(" ", concat(hex(cache_bytes(text)), "\n")))))
+    assert contains(actual_receipt, "end\n")
+
+    let failed = driver_arguments("build")
+    push(failed, "compiler/examples/scalar")
+    push(failed, "--output")
+    push(failed, stage)
+    push(failed, "--receipt")
+    push(failed, receipt)
+    assert match execute(failed) {
+        Result.Err(_) => true,
+        _ => false
+    }
+    assert match read_text(receipt) {
+        Result.Ok(value) => value == actual_receipt,
+        _ => false
+    }
+}
+
+test fn receipt_option_is_build_only_and_never_replaces_the_artifact() {
+    let args = driver_arguments("check")
+    push(args, "--receipt")
+    push(args, "build.receipt")
+    assert match options(args) {
+        Result.Err(message) => message == "--receipt requires build",
+        _ => false
+    }
+    let stage = match receipt_stage("compiler/loom/target/receipt-conflict-test") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let artifact = join_path(stage, "scalar")
+    discard write_text(artifact, "previous receipt")
+    defer {
+        discard remove_file(artifact)
+        discard remove_empty_dir(stage)
+    }
+    let build = driver_arguments("build")
+    push(build, "compiler/examples/scalar")
+    push(build, "--output")
+    push(build, artifact)
+    push(build, "--receipt")
+    push(build, artifact)
+    assert match execute(build) {
+        Result.Err(message) => message == "build receipt cannot replace its artifact"
+        _ => false
+    }
+    assert match read_text(artifact) {
+        Result.Ok(text) => text == "previous receipt",
+        _ => false
+    }
+    let test_source = "compiler/examples/scalar/main_test.loom"
+    let original = match read_text(test_source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let protected = driver_arguments("build")
+    push(protected, "compiler/examples/scalar")
+    push(protected, "--output")
+    push(protected, artifact)
+    push(protected, "--receipt")
+    push(protected, test_source)
+    assert match execute(protected) {
+        Result.Err(message) => message == "build receipt cannot replace a source or module input",
+        _ => false
+    }
+    assert match read_text(test_source) {
+        Result.Ok(value) => value == original,
+        _ => false
+    }
+}

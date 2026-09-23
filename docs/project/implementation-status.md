@@ -621,8 +621,9 @@ through stored or returned function values. Dispose-only callback results do not
 imply freshness. Unused concrete resource functions are checked without entering
 native reachability. Async functions use frame-backed registrations for suspended
 cleanup. Multi-field MustScope aggregates disarm pending field cleanup after
-successful construction; nested resource aggregates, resource Lists and
-transfer into Tasks remain unimplemented.
+successful construction. Nested record fields also register each completed
+resource's cleanup before a later field is evaluated. Resource Lists, enum
+payloads, abstract resource fields, and transfer into Tasks remain unsupported.
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
 same-directory tests, a separate library package, Unicode text and file I/O.
@@ -683,7 +684,10 @@ move-plus-edit merges from directories or Git blobs and rechecks production and
 test scopes. It does not apply merges or track identities automatically. The
 `tools/deployment` prototype analyzes schema conflicts and executes one bounded
 offline SQLite upgrade, rollback and re-upgrade with append-only events. Its
-caller-supplied basis is not yet bound to the checked application artifact.
+fixed executor requires a same-build receipt for the candidate artifact and
+rechecks its bytes before migration. The operator still supplies the storage
+mapping; the receipt is local build evidence, not a signature or a proof that
+the application obeys that mapping.
 
 Accepted language and deployment decisions remain targets, not claims that the
 whole design is implemented. Bootstrap agreement is not a correctness proof.

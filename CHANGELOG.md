@@ -17,8 +17,8 @@ implementation, not a compatibility ledger for previous prototypes.
 
 - Join two heterogeneous Tasks as a tuple and clean up multi-field `scoped`
   resource aggregates, including fault exits. Dynamic homogeneous List joins
-  remain available; general heterogeneous packs, nested resource aggregates,
-  and resource Lists are not yet supported.
+  remain available; general heterogeneous packs and resource Lists are not yet
+  supported. Nested record resources now receive pending cleanup.
 
 - Preview stable-ID source merges across ordinary files, including move plus
   independent edit. The read-only Git entry point reads three commits and
@@ -26,8 +26,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 - Add deployment-basis and conflict analysis, an append-only SQLite event
   ledger, and a bounded offline orders migration with data-preserving downgrade
-  and re-upgrade. This is not a general migration engine or a proof of a
-  caller-supplied target artifact.
+  and re-upgrade. `loom build --receipt` now binds the fixed executor's target
+  to a real checked build and artifact digest. This is not a general migration
+  engine, a signed receipt, or proof of the operator-declared storage mapping.
 
 - Complete qualified package paths from existing binding spellings, retaining
   overloads, local receiver precedence, private/test scopes and distinct source

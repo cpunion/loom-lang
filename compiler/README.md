@@ -1489,9 +1489,9 @@ This guarantee follows MustScope, not Dispose alone. A function returning an
 ordinary Dispose-only value may return a shared alias, so its function type alone
 cannot justify a scoped initializer. Direct calls still use checked body evidence.
 
-This synchronous slice conservatively rejects nested resource aggregates and
-resource lists, and matching a resource itself.
-Aggregate-transfer cleanup remains open. Lexical cleanup across suspension is
+Nested record resources now receive pending cleanup during construction.
+Resource lists, enum payloads, abstract resource fields, and matching a resource
+itself remain unsupported. Lexical cleanup across suspension is
 supported as described in [Source Tasks](#source-tasks).
 
 `break` exits the nearest enclosing `while` body; `continue` reevaluates that

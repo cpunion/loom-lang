@@ -39,7 +39,11 @@ directory. A [staged local toolchain](../README.md#relocatable-local-toolchain)
 instead uses its executable-relative `lib/loom` directory. Editor commands share
 this discovery and need no backend for source queries. Use `--std` and
 `--native-tool` for other layouts. `build` accepts
-`--output`; native commands also accept `--emit-ir`. Library builds produce an
+`--output`; `build --receipt <path>` publishes a local build receipt after a
+successful native build. It records the exact checked-input digest, selected
+source/module snapshot, backend identity, and final artifact digest/path. The
+receipt is not signed and is not a proof of application storage behavior.
+Native commands also accept `--emit-ir`. Library builds produce an
 object, and production excludes test files and test declarations.
 `run [package] -- [arguments...]` forwards arguments verbatim to the program;
 relative file arguments remain relative to the caller's working directory.
