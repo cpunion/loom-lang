@@ -45,6 +45,20 @@ fn baseline() Revision {
         "fn entry() Int { amount() }\n")
 }
 
+test fn refined_declaration_changes_the_implicit_project_closure() {
+    let before = baseline()
+    let after = revision("value.loom", "type Positive = Int where self > 0\nfn amount() Int { 1 }\n",
+        "fn entry() Int { amount() }\n")
+    match same_implicit_imports(before, after) {
+        Result.Ok(unchanged) => {
+            assert !unchanged
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
 test fn move_and_independent_edit_merge_without_reformatting() {
     let base = baseline()
     let moved = revision("app.loom", "",
@@ -195,6 +209,99 @@ test fn deletion_conflicts_with_edit_or_move() {
     }
 }
 
+test fn deleting_a_local_candidate_while_other_side_edits_a_call_is_not_a_safe_merge() {
+    let base = revision("value.loom",
+        "import sample.math.amount\nfn amount(value Int) Int { value }\n",
+        "fn entry() Int { amount(1) }\n")
+    let files = new[File]()
+    push(files, File {
+            path = "value.loom"
+            text = "import sample.math.amount\n"
+        })
+    push(files, File {
+            path = "app.loom"
+            text = "fn entry() Int { amount(1) }\n"
+        })
+    let ids = new[Identity]()
+    push(ids, Identity {
+            id = "entry-id"
+            path = "app.loom"
+            kind = NodeKind.Function
+            name = "entry"
+        })
+    let removed = Revision {
+        package_name = "sample"
+        files = files
+        identities = ids
+    }
+    let edited = revision("value.loom",
+        "import sample.math.amount\nfn amount(value Int) Int { value }\n",
+        "fn entry() Int { amount(2) }\n")
+    match merge(base, removed, edited) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "cross-side deletion")
+        }
+    }
+    match merge(base, edited, removed) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "cross-side deletion")
+        }
+    }
+}
+
+test fn signature_change_and_other_side_call_edit_need_resolution() {
+    let base = revision("value.loom", "fn amount(value Int) Int { value }\n",
+        "fn entry() Int { amount(1) }\n")
+    let changed = revision("value.loom", "fn amount(value Float) Int { 1 }\n",
+        "fn entry() Int { amount(1) }\n")
+    let caller = revision("value.loom", "fn amount(value Int) Int { value }\n",
+        "fn entry() Int { amount(2) }\n")
+    match merge(base, changed, caller) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "signature or contract change")
+        }
+    }
+}
+
+test fn signature_change_and_other_side_addition_need_resolution() {
+    let base = baseline()
+    let changed = revision("value.loom", "fn amount(value Int) Int { value }\n",
+        "fn entry() Int { amount() }\n")
+    let added = revision("value.loom", "fn amount() Int { 1 }\n",
+        "fn entry() Int { amount() }\nfn extra() Int { amount() }\n")
+    push(added.identities, Identity {
+            id = "extra-id"
+            path = "app.loom"
+            kind = NodeKind.Function
+            name = "extra"
+        })
+    match merge(base, changed, added) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "signature or contract change")
+        }
+    }
+    match merge(base, added, changed) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "signature or contract change")
+        }
+    }
+}
+
 test fn ambiguous_identity_and_conflicting_body_edits_fail_closed() {
     let base = baseline()
     let overloaded = revision("value.loom",
@@ -258,7 +365,7 @@ test fn noncarrier_trivia_changes_are_not_silently_lost() {
 test fn merged_program_must_pass_type_analysis() {
     let base = revision("value.loom", "fn amount() Int { 1 }\n",
         "fn entry() {}\n")
-    let left = revision("value.loom", "fn amount() Bool { true }\n",
+    let left = revision("value.loom", "fn amount() Int { true }\n",
         "fn entry() {}\n")
     let right = revision("value.loom", "fn amount() Int { 1 }\n",
         "fn entry() { assert amount() == 1 }\n")

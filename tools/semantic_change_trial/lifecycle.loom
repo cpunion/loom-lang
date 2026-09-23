@@ -63,6 +63,10 @@ fn declarations(files List[File]) Result[List[Identity], Text] {
         var index = 0
         while index < length(tree.children) {
             let node = get(tree.children, index)
+            if node.kind == NodeKind.Import {
+                index = index + 1
+                continue
+            }
             if !lifecycle_kind(node.kind) || !lifecycle_word(node.value) {
                 return Result.Err(concat("unsupported or unnamed top-level declaration in ", file.path))
             }

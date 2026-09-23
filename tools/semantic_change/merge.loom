@@ -1,4 +1,5 @@
 import std.loom.analysis.analyze
+import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.parser.parse
 import std.loom.project.ModuleInstance
@@ -6,6 +7,9 @@ import std.loom.project.Package
 import std.loom.project.PackageImport
 import std.loom.project.Project
 import std.loom.project.SourceFile
+import std.loom.project.join_path
+import std.loom.project.package_label
+import std.loom.project.name
 import std.list.get
 import std.list.length
 import std.list.new
@@ -46,6 +50,7 @@ record Entry {
     start Int
     end Int
     body Text
+    header Text
 }
 
 record Indexed {
@@ -107,6 +112,20 @@ fn identity_index(identities List[Identity], path Text, kind NodeKind, name Text
     found
 }
 
+fn declaration_header(source Text, node Node) Text {
+    if node.kind == NodeKind.Function {
+        var index = 0
+        while index < length(node.children) {
+            let child = get(node.children, index)
+            if child.kind == NodeKind.Block {
+                return slice(source, node.span.start, child.span.start)
+            }
+            index = index + 1
+        }
+    }
+    slice(source, node.span.start, node.span.end)
+}
+
 fn indexed(revision Revision) Result[Indexed, Text] {
     if !sidecar_word(revision.package_name) {
         return Result.Err("revision needs a package identity")
@@ -151,6 +170,10 @@ fn indexed(revision Revision) Result[Indexed, Text] {
         var declaration = 0
         while declaration < length(tree.children) {
             let node = get(tree.children, declaration)
+            if node.kind == NodeKind.Import {
+                declaration = declaration + 1
+                continue
+            }
             if !supported(node.kind) {
                 return Result.Err(concat("unsupported top-level declaration in ", file.path))
             }
@@ -170,6 +193,7 @@ fn indexed(revision Revision) Result[Indexed, Text] {
                     start = node.span.start
                     end = node.span.end
                     body = slice(file.text, node.span.start, node.span.end)
+                    header = declaration_header(file.text, node)
                 })
             declaration = declaration + 1
         }
@@ -283,11 +307,23 @@ fn reuses_name(base Indexed, added Entry) Bool {
 }
 
 fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text] {
+    var left_deleted = false
+    var right_deleted = false
+    var left_edited = false
+    var right_edited = false
+    var left_header_changed = false
+    var right_header_changed = false
     var index = 0
     while index < length(base.entries) {
         let original = get(base.entries, index)
         let left_index = entry_index(left.entries, original.id)
         let right_index = entry_index(right.entries, original.id)
+        if left_index < 0 {
+            left_deleted = true
+        }
+        if right_index < 0 {
+            right_deleted = true
+        }
         if left_index < 0 && right_index < 0 {
             return Result.Err(concat("both sides deleted declaration ", original.id))
         }
@@ -304,6 +340,18 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
         } else {
             let edited_left = get(left.entries, left_index)
             let edited_right = get(right.entries, right_index)
+            if edited_left.body != original.body {
+                left_edited = true
+            }
+            if edited_right.body != original.body {
+                right_edited = true
+            }
+            if edited_left.header != original.header {
+                left_header_changed = true
+            }
+            if edited_right.header != original.header {
+                right_header_changed = true
+            }
             if ends_with(edited_left.path, "_test.loom") != ends_with(original.path, "_test.loom") ||
             ends_with(edited_right.path, "_test.loom") != ends_with(original.path, "_test.loom") {
                 return Result.Err(concat("declaration crossed production/test boundary: ", original.id))
@@ -318,6 +366,11 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
             }
         }
         index = index + 1
+    }
+    // The merged program may type-check after a call silently chooses a
+    // different overload. Do not compose these cross-side changes as safe.
+    if (left_deleted && right_edited) || (right_deleted && left_edited) {
+        return Result.Err("cross-side deletion and declaration edit may rebind references; explicit resolution required")
     }
     var left_added = false
     index = 0
@@ -345,6 +398,10 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
     }
     if left_added && right_added {
         return Result.Err("concurrent added declarations need explicit resolution")
+    }
+    if (left_header_changed && (right_edited || right_added)) ||
+    (right_header_changed && (left_edited || left_added)) {
+        return Result.Err("cross-side signature or contract change may rebind references; explicit resolution required")
     }
     if left_added || right_added {
         index = 0
@@ -433,12 +490,219 @@ fn checked(revision Revision) Result[Revision, Text] {
     }
 }
 
+fn imports_in_file(revision Revision, path Text) Result[List[Text], Text] {
+    let imports = new[Text]()
+    let index = file_index(revision.files, path)
+    if index < 0 {
+        return Result.Ok(imports)
+    }
+    let tree = match parse(get(revision.files, index).text) {
+        Result.Ok(value) => value,
+        Result.Err(problem) => {
+            return Result.Err(problem.message)
+        }
+    }
+    var item = 0
+    while item < length(tree.children) {
+        let node = get(tree.children, item)
+        if node.kind == NodeKind.Import {
+            push(imports, node.value)
+        }
+        item = item + 1
+    }
+    Result.Ok(imports)
+}
+
+fn same_imports(base Revision, branch Revision) Result[Bool, Text] {
+    var index = 0
+    while index < length(base.files) {
+        let file = get(base.files, index)
+        let original = imports_in_file(base, file.path)?
+        let changed = imports_in_file(branch, file.path)?
+        if length(original) != length(changed) {
+            return Result.Ok(false)
+        }
+        var item = 0
+        while item < length(original) {
+            if get(original, item) != get(changed, item) {
+                return Result.Ok(false)
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(branch.files) {
+        let file = get(branch.files, index)
+        if file_index(base.files, file.path) < 0 && length(imports_in_file(branch, file.path)?) > 0 {
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn has_imports(revision Revision) Result[Bool, Text] {
+    var index = 0
+    while index < length(revision.files) {
+        if length(imports_in_file(revision, get(revision.files, index).path)?) > 0 {
+            return Result.Ok(true)
+        }
+        index = index + 1
+    }
+    Result.Ok(false)
+}
+
+fn needs_result_import(revision Revision, tests Bool) Result[Bool, Text] {
+    var index = 0
+    while index < length(revision.files) {
+        let file = get(revision.files, index)
+        if tests || !ends_with(file.path, "_test.loom") {
+            let tree = match parse(file.text) {
+                Result.Ok(value) => value,
+                Result.Err(problem) => {
+                    return Result.Err(problem.message)
+                }
+            }
+            var item = 0
+            while item < length(tree.children) {
+                if get(tree.children, item).kind == NodeKind.Refined {
+                    return Result.Ok(true)
+                }
+                item = item + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(false)
+}
+
+fn same_implicit_imports(base Revision, branch Revision) Result[Bool, Text] {
+    Result.Ok(needs_result_import(base, false)? == needs_result_import(branch, false)? &&
+        needs_result_import(base, true)? == needs_result_import(branch, true)?)
+}
+
+fn added_import_name(base Indexed, branch Indexed) Result[Bool, Text] {
+    var index = 0
+    while index < length(branch.entries) {
+        let added = get(branch.entries, index)
+        if entry_index(base.entries, added.id) < 0 {
+            var file = 0
+            while file < length(base.revision.files) {
+                let imports = imports_in_file(base.revision, get(base.revision.files, file).path)?
+                var item = 0
+                while item < length(imports) {
+                    if name(get(imports, item)) == added.name {
+                        return Result.Ok(true)
+                    }
+                    item = item + 1
+                }
+                file = file + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(false)
+}
+
+fn context_matches_base(project Project, directory Text, base Revision, tests Bool) Bool {
+    if package_label(project.modules, project.packages, project.root) != base.package_name {
+        return false
+    }
+    var roots = 0
+    var index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        if file.package == project.root {
+            roots = roots + 1
+            var found = false
+            var item = 0
+            while item < length(base.files) {
+                let source = get(base.files, item)
+                if file.path == join_path(directory, source.path) && file.text == source.text &&
+                file.test_only == ends_with(source.path, "_test.loom") {
+                    found = true
+                }
+                item = item + 1
+            }
+            if !found {
+                return false
+            }
+        }
+        index = index + 1
+    }
+    var expected = 0
+    index = 0
+    while index < length(base.files) {
+        if tests || !ends_with(get(base.files, index).path, "_test.loom") {
+            expected = expected + 1
+        }
+        index = index + 1
+    }
+    roots == expected
+}
+
+fn contextual(project Project, directory Text, revision Revision) Result[Project, Text] {
+    let files = new[SourceFile]()
+    var index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        if file.package != project.root {
+            push(files, file)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(revision.files) {
+        let file = get(revision.files, index)
+        let tree = match parse(file.text) {
+            Result.Ok(value) => value,
+            Result.Err(problem) => {
+                return Result.Err(concat("merged source does not parse: ", problem.message))
+            }
+        }
+        push(files, SourceFile {
+                package = project.root
+                path = join_path(directory, file.path)
+                text = file.text
+                tree = tree
+                test_only = ends_with(file.path, "_test.loom")
+                trusted_std = false
+            })
+        index = index + 1
+    }
+    Result.Ok(Project {
+            files = files
+            modules = project.modules
+            packages = project.packages
+            root = project.root
+        })
+}
+
+fn checked_context(base Revision, merged Revision, production Project, tests Project, directory Text) Result[Revision, Text] {
+    if !context_matches_base(production, directory, base, false) ||
+    !context_matches_base(tests, directory, base, true) {
+        return Result.Err("project context must contain the exact baseline package")
+    }
+    match analyze(contextual(production, directory, merged)?, false) {
+        Result.Ok(_) => {
+        }
+        Result.Err(problem) => {
+            return Result.Err(concat("merged program failed analysis (production): ", problem.diagnostic.message))
+        }
+    }
+    match analyze(contextual(tests, directory, merged)?, true) {
+        Result.Ok(_) => Result.Ok(merged),
+        Result.Err(problem) => Result.Err(concat("merged program failed analysis (tests): ", problem.diagnostic.message))
+    }
+}
+
 // One side may rearrange/remove declarations and files. The other side may
 // independently edit declaration bodies; its surrounding text must be intact.
 // The carrier side's complete file skeleton (including comments) is retained.
 // One carrier may add fresh, uniquely named declarations. Concurrent
 // structural changes still need explicit resolution.
-pub fn merge(base Revision, left Revision, right Revision) Result[Revision, Text] {
+fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text] {
     let original = indexed(base)?
     let edited_left = indexed(left)?
     let edited_right = indexed(right)?
@@ -489,9 +753,36 @@ pub fn merge(base Revision, left Revision, right Revision) Result[Revision, Text
             })
         index = index + 1
     }
-    checked(Revision {
+    Result.Ok(Revision {
             package_name = carrier.revision.package_name
             files = files
             identities = carrier.revision.identities
         })
+}
+
+pub fn merge(base Revision, left Revision, right Revision) Result[Revision, Text] {
+    let merged = proposed(base, left, right)?
+    if has_imports(base)? || has_imports(left)? || has_imports(right)? ||
+    needs_result_import(base, true)? || needs_result_import(left, true)? ||
+    needs_result_import(right, true)? {
+        return Result.Err("import-bearing merges require an explicit pinned project context")
+    }
+    checked(merged)
+}
+
+pub fn merge_with_context(base Revision, left Revision, right Revision,
+    production Project, tests Project, directory Text) Result[Revision, Text] {
+    if !same_imports(base, left)? || !same_imports(base, right)? ||
+    !same_implicit_imports(base, left)? || !same_implicit_imports(base, right)? {
+        return Result.Err("import bindings changed; this merge needs explicit resolution")
+    }
+    let original = indexed(base)?
+    if added_import_name(original, indexed(left)?)? || added_import_name(original, indexed(right)?)? {
+        return Result.Err("new declaration shadows an import; binding changes need explicit review")
+    }
+    let merged = proposed(base, left, right)?
+    if !same_imports(base, merged)? || !same_implicit_imports(base, merged)? {
+        return Result.Err("merged imports differ from the pinned project context")
+    }
+    checked_context(base, merged, production, tests, directory)
 }

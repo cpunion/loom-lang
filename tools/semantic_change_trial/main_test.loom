@@ -11,6 +11,8 @@ import std.fs.remove_file
 import std.int.to_text
 import std.list.get
 import std.list.length
+import std.list.new
+import std.list.push
 import std.result.Result
 import std.text.concat
 import std.text.starts_with
@@ -103,6 +105,16 @@ fn text_at(location Text) Text {
         Result.Err(_) => {
             assert false
             ""
+        }
+    }
+}
+
+fn snapshot_at(location Text) Loaded {
+    match read(location) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            loaded("", "", "")
         }
     }
 }
@@ -309,4 +321,74 @@ test fn reviewed_one_sided_addition_publishes_new_identity() {
     discard remove_file(path(output, "value.loom"))
     discard remove_empty_dir(output)
     discard remove_empty_dir(staging)
+}
+
+test fn imported_package_requires_an_exact_pinned_project_context() {
+    let base = snapshot_at("tools/semantic_change_trial/fixtures/project")
+    let left = snapshot_at("tools/semantic_change_trial/fixtures/project_left")
+    let right = snapshot_at("tools/semantic_change_trial/fixtures/project_right")
+    match review(base, left, right) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert std.text.contains(message, "explicit pinned project context")
+        }
+    }
+    match read_context("tools/semantic_change_trial/fixtures/project", "compiler/std") {
+        Result.Ok(context) => {
+            match review_context(right, left, right, context) {
+                Result.Ok(_) => {
+                    assert false
+                }
+                Result.Err(message) => {
+                    assert std.text.contains(message, "exact baseline package")
+                }
+            }
+            let files = new[File]()
+            var index = 0
+            while index < length(left.revision.files) {
+                let file = get(left.revision.files, index)
+                push(files, File {
+                        path = file.path
+                        text = if file.path == "value.loom" {
+                            "import sample.math.other\nfn amount() Int { bump(0) }\nfn extra() Int { bump(2) }\n"
+                        } else {
+                            file.text
+                        }
+                    })
+                index = index + 1
+            }
+            let changed = Loaded {
+                revision = Revision {
+                    package_name = left.revision.package_name
+                    files = files
+                    identities = left.revision.identities
+                }
+                sidecar = left.sidecar
+                commit = ""
+                next = left.next
+            }
+            match review_context(base, changed, right, context) {
+                Result.Ok(_) => {
+                    assert false
+                }
+                Result.Err(message) => {
+                    assert std.text.contains(message, "import bindings changed")
+                }
+            }
+            match review_context(base, left, right, context) {
+                Result.Ok(plan) => {
+                    assert plan.next == 6
+                    assert std.text.contains(show(plan), "fn amount() Int { bump(1) }")
+                }
+                Result.Err(_) => {
+                    assert false
+                }
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
 }
