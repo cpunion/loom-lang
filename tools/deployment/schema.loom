@@ -1,0 +1,181 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+import std.text.concat
+
+// IDs describe persistent identity, not spelling or a source location.
+pub enum StorageType {
+    Bool
+    Int
+    Float
+    Text
+    Bytes
+}
+
+pub record Column {
+    id Text
+    name Text
+    kind StorageType
+    required Bool
+    predicate Text
+}
+
+pub record Table {
+    id Text
+    name Text
+    columns List[Column]
+}
+
+// The caller supplies an artifact basis. The deployment ledger must bind this
+// value to a checked build before treating the schema as deployed.
+pub record Schema {
+    basis Text
+    tables List[Table]
+}
+
+pub enum ConflictKind {
+    RemovedTable
+    RenamedTable
+    RemovedColumn
+    RenamedColumn
+    ChangedType
+    NewRequiredColumn
+    TightenedRequiredColumn
+    ChangedPredicate
+}
+
+pub record Conflict {
+    kind ConflictKind
+    table Text
+    column Text
+}
+
+fn table_by_id(tables List[Table], id Text) Int {
+    var index = 0
+    while index < length(tables) {
+        if get(tables, index).id == id {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn column_by_id(columns List[Column], id Text) Int {
+    var index = 0
+    while index < length(columns) {
+        if get(columns, index).id == id {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn valid_columns(table Table) Result[Bool, Text] {
+    var index = 0
+    while index < length(table.columns) {
+        let column = get(table.columns, index)
+        if column.id == "" || column.name == "" {
+            return Result.Err(concat("empty column identity or name in table ", table.id))
+        }
+        var earlier = 0
+        while earlier < index {
+            let old = get(table.columns, earlier)
+            if old.id == column.id || old.name == column.name {
+                return Result.Err(concat("duplicate column identity or name in table ", table.id))
+            }
+            earlier = earlier + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+pub fn validate(schema Schema) Result[Bool, Text] {
+    if schema.basis == "" {
+        return Result.Err("deployment basis is required")
+    }
+    var index = 0
+    while index < length(schema.tables) {
+        let table = get(schema.tables, index)
+        if table.id == "" || table.name == "" {
+            return Result.Err("empty table identity or name")
+        }
+        discard valid_columns(table)?
+        var earlier = 0
+        while earlier < index {
+            let old = get(schema.tables, earlier)
+            if old.id == table.id || old.name == table.name {
+                return Result.Err("duplicate table identity or name")
+            }
+            earlier = earlier + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn add(conflicts List[Conflict], kind ConflictKind, table Text, column Text) {
+    push(conflicts, Conflict {
+            kind = kind
+            table = table
+            column = column
+        })
+}
+
+// Directly compares the declared starting schema with the candidate. Unknown
+// predicate changes are conflicts, not guessed weakenings or sampled proofs.
+pub fn conflicts(from Schema, to Schema) Result[List[Conflict], Text] {
+    discard validate(from)?
+    discard validate(to)?
+    let found = new[Conflict]()
+    var index = 0
+    while index < length(from.tables) {
+        let old_table = get(from.tables, index)
+        let next_index = table_by_id(to.tables, old_table.id)
+        if next_index < 0 {
+            add(found, ConflictKind.RemovedTable, old_table.id, "")
+        } else {
+            let next_table = get(to.tables, next_index)
+            if old_table.name != next_table.name {
+                add(found, ConflictKind.RenamedTable, old_table.id, "")
+            }
+            var field = 0
+            while field < length(old_table.columns) {
+                let old_column = get(old_table.columns, field)
+                let new_index = column_by_id(next_table.columns, old_column.id)
+                if new_index < 0 {
+                    add(found, ConflictKind.RemovedColumn, old_table.id, old_column.id)
+                } else {
+                    let next_column = get(next_table.columns, new_index)
+                    if old_column.name != next_column.name {
+                        add(found, ConflictKind.RenamedColumn, old_table.id, old_column.id)
+                    }
+                    if old_column.kind != next_column.kind {
+                        add(found, ConflictKind.ChangedType, old_table.id, old_column.id)
+                    }
+                    if !old_column.required && next_column.required {
+                        add(found, ConflictKind.TightenedRequiredColumn, old_table.id, old_column.id)
+                    }
+                    if old_column.predicate != next_column.predicate {
+                        add(found, ConflictKind.ChangedPredicate, old_table.id, old_column.id)
+                    }
+                }
+                field = field + 1
+            }
+            field = 0
+            while field < length(next_table.columns) {
+                let next_column = get(next_table.columns, field)
+                if column_by_id(old_table.columns, next_column.id) < 0 && next_column.required {
+                    add(found, ConflictKind.NewRequiredColumn, old_table.id, next_column.id)
+                }
+                field = field + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(found)
+}
