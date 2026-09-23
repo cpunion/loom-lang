@@ -19,6 +19,10 @@ fn empty_proof_program() Program {
     Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() test_names = new[Text]()
         exports = new[Int]() interfaces = new[Interface]() witnesses = new[Witness]() }
 }
+fn proof_program_with_types(types List[Type]) Program {
+    Program { types = types functions = new[Function]() entry = -1 tests = new[Int]() test_names = new[Text]()
+        exports = new[Int]() interfaces = new[Interface]() witnesses = new[Witness]() }
+}
 fn verification(function Function, program Program) Verification {
     let fresh = new[Int]()
     push(fresh, length(function.locals))

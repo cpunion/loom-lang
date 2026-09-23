@@ -15,6 +15,7 @@ import std.list.new
 import std.list.get
 import std.list.push
 import std.list.length
+import std.text.slice
 import std.result.Result
 
 record RuntimeSignature { parameters Int params List[Int] result Int }
@@ -224,7 +225,11 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
 }
 fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
     if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool { return Result.Ok(true) }
-    if node.kind == NodeKind.Name && package(node.value) == "" { return Result.Ok(true) }
+    if node.kind == NodeKind.Name {
+        if package(node.value) == "" || lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 {
+            return Result.Ok(true)
+        }
+    }
     if node.kind == NodeKind.Call {
         let arguments = child(node, 1).children
         var index = 0
@@ -289,7 +294,8 @@ fn function_scope(env Environment, current Signature, arguments List[Int], const
         }
         index = index + 1
     }
-    let preconditions = contracts(context, item.node, NodeKind.Requires)?
+    let preconditions = add_contracts(contracts(context, item.node, NodeKind.Requires)?,
+        inherited_contracts(context, NodeKind.Requires)?)
     index = 0
     while index < length(preconditions) {
         context = assuming(context, get(preconditions, index), true, 0)
@@ -330,7 +336,7 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
         expression(ExprKind.Block, current.result, item.node, "", -1, expressions(call), call.falls)
     }
     var result_local = -1
-    if has(item.node, NodeKind.Ensures) {
+    if has(item.node, NodeKind.Ensures) || inherited_method_contract(env, current.symbol, NodeKind.Ensures) {
         result_local = length(context.locals)
         push(context.locals, Local { name = "result" ty = current.result mutable = false is_scoped = false })
         let binding = length(context.bindings)

@@ -282,6 +282,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
     var index = 0
     while index < length(env.signatures) {
         let signature = get(env.signatures, index)
+        discard validate_concept_contracts(env, index)?
         if pack_instance(env, index) < 0 && (!prototype(env, signature.symbol) || has(symbol(env, signature.symbol).node, NodeKind.Block)) {
             let checked = function(env, index, abstract_arguments(env, signature.parameters), unknown_constants(signature), false)?
             if resource_analysis_root(env, signature, checked.body)? { push(resource_roots, index) }

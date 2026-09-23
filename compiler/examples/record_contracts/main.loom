@@ -1,0 +1,41 @@
+record Snapshot {
+    count Int
+    active Bool
+}
+
+record Envelope {
+    count Int
+    values List[Int]
+}
+
+fn copy_snapshot(value Snapshot) Snapshot
+requires value.count >= 0 && value.active
+ensures result.count == value.count
+ensures result.active == value.active
+{
+    Snapshot {
+        active = value.active
+        count = value.count
+    }
+}
+
+fn preserve_count(value Envelope) Envelope
+ensures result.count == value.count
+{
+    value
+}
+
+fn main() {
+    let snapshot = copy_snapshot(Snapshot {
+            count = 3
+            active = true
+        })
+    assert snapshot.count == 3 && snapshot.active
+    let values = [1]
+    let envelope = preserve_count(Envelope {
+            count = 1
+            values = values
+        })
+    values[0] = 9
+    assert envelope.count == 1 && envelope.values[0] == 9
+}

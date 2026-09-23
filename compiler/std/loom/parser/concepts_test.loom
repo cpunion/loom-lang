@@ -71,7 +71,11 @@ test fn implements_conditions_and_expression_receivers_preserve_chaining() {
 
 test fn concept_syntax_reports_incomplete_and_reserved_forms() {
     assert rejected("concept Display[T] {}").message == "concepts do not take type parameters"
-    assert rejected("concept Display { fn display(self Self) Text requires true }").message == "concept method contracts are not yet supported"
+    let contracted = child(child(parsed("concept Display { fn display(self Self) Text requires true ensures result == \"ok\" }"), 0), 0)
+    assert child(contracted, 3).kind == NodeKind.Requires
+    assert child(contracted, 4).kind == NodeKind.Ensures
+    let next_method = child(parsed("concept C { fn first(self Self) Int requires true\nfn second(self Self) Int }"), 0)
+    assert child(next_method, 1).value == "second"
     assert rejected("impl Display Person {}").message == "expected 'for' after the implemented concept"
     assert rejected("pub impl Display for Person {}").message == "impl blocks cannot be public"
     assert rejected("fn f[impl]() {}").message == "expected a name"

@@ -4,7 +4,7 @@ import std.loom.ast.has
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
 import std.loom.typed.Function
-import std.loom.proof.verify
+import std.loom.proof.verify_with_types
 import std.loom.proof.verify_with_helpers
 import std.list.get
 import std.list.length
@@ -45,11 +45,13 @@ fn proof_body_calls(value Expr) Bool {
 }
 fn checked_contracts(context Context, id Int, function Function) Result[Function, Failure] {
     let node = symbol(context.env, context.signature.symbol).node
-    let body_calls = has(node, NodeKind.Ensures) && proof_body_calls(function.body)
-    if !contract_helpers(node) && !body_calls {
-        if !has(node, NodeKind.Ensures) { return Result.Ok(function) }
-        let checked = with_contracts(function, function.preconditions, contracts(context, node, NodeKind.Ensures)?)
-        match verify(checked) {
+    let has_ensures = has(node, NodeKind.Ensures) || inherited_method_contract(context.env, context.signature.symbol, NodeKind.Ensures)
+    let body_calls = has_ensures && proof_body_calls(function.body)
+    if !contract_helpers(node) && !inherited_method_helpers(context.env, context.signature.symbol) && !body_calls {
+        if !has_ensures { return Result.Ok(function) }
+        let conditions = add_contracts(contracts(context, node, NodeKind.Ensures)?, inherited_contracts(context, NodeKind.Ensures)?)
+        let checked = with_contracts(function, function.preconditions, conditions)
+        match verify_with_types(context.env.types, checked) {
             Result.Ok(_) => Result.Ok(checked)
             Result.Err(message) => Result.Err(error(context, node, message))
         }
@@ -61,9 +63,11 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
             // arguments, not one later concrete caller. Every direct Call now
             // addresses this private queue. Callees still verify normally.
             let built = function_body(stage.env, id, context.arguments, context.constants, true)?
-            with_contracts(built.function, built.function.preconditions, contracts(built.context, node, NodeKind.Ensures)?)
+            with_contracts(built.function, built.function.preconditions,
+                add_contracts(contracts(built.context, node, NodeKind.Ensures)?, inherited_contracts(built.context, NodeKind.Ensures)?))
         } else {
-            with_contracts(function, contracts(stage, node, NodeKind.Requires)?, contracts(stage, node, NodeKind.Ensures)?)
+            with_contracts(function, add_contracts(contracts(stage, node, NodeKind.Requires)?, inherited_contracts(stage, NodeKind.Requires)?),
+                add_contracts(contracts(stage, node, NodeKind.Ensures)?, inherited_contracts(stage, NodeKind.Ensures)?))
         }
         match verify_with_helpers(prepared(stage)?, proof) {
             Result.Ok(conditions) => {

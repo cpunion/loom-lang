@@ -2,6 +2,8 @@ import std.loom.typed.Function
 import std.loom.typed.Program
 import std.loom.typed.Expr
 import std.loom.typed.ExprKind
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
 import std.list.new
 import std.list.get
 import std.list.push
@@ -9,6 +11,75 @@ import std.list.length
 import std.result.Result
 
 record Verification { function Function program Program fresh List[Int] budget List[Int] }
+record RecordPath { state State fields List[Value] }
+
+fn record_field_values(fields List[Value], index Int, value Value) List[Value] {
+    let copied = new[Value]()
+    var item = 0
+    while item < length(fields) { push(copied, if item == index { value } else { get(fields, item) })
+        item = item + 1 }
+    copied
+}
+fn record_outcomes(proof Verification, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+    let empty = new[Value]()
+    var index = 0
+    while index < length(expr.children) { push(empty, Value.Empty)
+        index = index + 1 }
+    var paths = new[RecordPath]()
+    push(paths, RecordPath { state = state fields = empty })
+    index = 0
+    while index < length(expr.children) {
+        let field = get(expr.children, index)
+        if field.kind != ExprKind.Field || field.index < 0 || field.index >= length(expr.children) {
+            return Result.Err("invalid proof record initializer")
+        }
+        let next = new[RecordPath]()
+        var path = 0
+        while path < length(paths) {
+            let previous = get(paths, path)
+            let values = execute(proof, get(field.children, 0), previous.state, depth - 1)?
+            var item = 0
+            while item < length(values) {
+                if length(next) >= 4096 { return Result.Err("proof path budget exhausted") }
+                let current = get(values, item)
+                push(next, RecordPath { state = current.state fields = record_field_values(previous.fields, field.index, current.value) })
+                item = item + 1
+            }
+            path = path + 1
+        }
+        paths = next
+        index = index + 1
+    }
+    let output = new[Outcome]()
+    index = 0
+    while index < length(paths) {
+        let path = get(paths, index)
+        discard add_outcome(output, Outcome { state = path.state value = Value.Record(path.fields) })?
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
+    if ty == 1 { return Result.Ok(Value.Number(variable(id))) }
+    if ty == 2 { return Result.Ok(Value.Boolean(Predicate.Variable(id))) }
+    if ty == 5 { return Result.Err("Float parameters are not supported in required proofs") }
+    if ty < 0 || ty >= length(proof.program.types) { return Result.Err("required proof currently needs scalar parameters") }
+    let shape = get(proof.program.types, ty)
+    // An abstract receiver may be present without contributing any proof
+    // fact. A scalar operation or field projection on Empty still rejects.
+    if shape.kind == TypeKind.Parameter { return Result.Ok(Value.Empty) }
+    if shape.kind != TypeKind.Record { return Result.Err("required proof currently needs scalar parameters or scalar-field records") }
+    let fields = new[Value]()
+    var index = 0
+    while index < length(shape.fields) {
+        let field = get(shape.fields, index)
+        // An immutable scalar field stays stable even if a sibling contains
+        // shared data. Never synthesize facts about that sibling's contents.
+        push(fields, if field.ty == 1 || field.ty == 2 { fresh_result(proof, field.ty) } else { Value.Empty })
+        index = index + 1
+    }
+    Result.Ok(Value.Record(fields))
+}
 
 fn postcondition_holds(condition Expr, state State, depth Int) Result[Bool, Text] {
     if depth <= 0 { return Result.Err("proof predicate depth budget exhausted") }
@@ -131,6 +202,7 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     if expr.kind == ExprKind.If { return conditional(proof, expr, state, depth) }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary { return operation(proof, expr, state, depth) }
     if expr.kind == ExprKind.Coerce { return execute(proof, get(expr.children, 0), state, depth - 1) }
+    if expr.kind == ExprKind.Record { return record_outcomes(proof, expr, state, depth - 1) }
     if expr.kind == ExprKind.Call { return body_call(proof, expr, state, depth - 1) }
     if expr.kind == ExprKind.Return && length(expr.children) == 0 {
         discard returned(proof.function, state, Value.Empty)?
@@ -172,13 +244,7 @@ fn verify_body(proof Verification) Result[Bool, Text] {
     index = 0
     while index < length(function.params) {
         let ty = get(function.params, index)
-        if ty == 5 { return Result.Err("Float parameters are not supported in required proofs") }
-        let value = if ty == 1 { Value.Number(variable(index)) } else {
-            if ty == 2 { Value.Boolean(Predicate.Variable(index)) } else {
-                return Result.Err("required proof currently needs scalar parameters")
-            }
-        }
-        state = assigned(state, index, value)
+        state = assigned(state, index, parameter_value(proof, ty, index)?)
         index = index + 1
     }
     index = 0
@@ -198,6 +264,10 @@ fn verify_body(proof Verification) Result[Bool, Text] {
 
 pub fn verify(function Function) Result[Bool, Text] {
     verify_body(verification(function, empty_proof_program()))
+}
+
+pub fn verify_with_types(types List[Type], function Function) Result[Bool, Text] {
+    verify_body(verification(function, proof_program_with_types(types)))
 }
 
 // Contract calls belong to this checked helper closure. Expansion is symbolic,

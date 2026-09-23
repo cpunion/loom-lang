@@ -1,0 +1,13 @@
+test fn scalar_record_fields_participate_in_required_contracts() {
+    let source = "record Snapshot { count Int active Bool }\npub fn copied(value Snapshot) Snapshot\nrequires value.count >= 0 && value.active\nensures result.count == value.count\nensures result.active == value.active\n{ Snapshot { active = value.active count = value.count } }\nfn main() { let copied_value = copied(Snapshot { count = 3 active = true })\nassert copied_value.count == 3 && copied_value.active }"
+    let program = accepted(source)
+    assert length(get(program.functions, 0).postconditions) == 2
+    rejects("record Snapshot { count Int active Bool }\npub fn broken(value Snapshot) Snapshot ensures result.count == value.count { Snapshot { count = 0 active = value.active } }")
+}
+
+test fn record_proofs_keep_shared_fields_opaque() {
+    // A shared List sibling does not invalidate the immutable scalar field,
+    // but no fact about its elements is introduced into the proof.
+    discard accepted("record Snapshot { count Int values List[Int] }\npub fn copied(value Snapshot) Snapshot ensures result.count == value.count { value }")
+    rejects("record Snapshot { count Int values List[Int] }\npub fn unknown(value Snapshot) Int ensures result == value.values[0] { 0 }")
+}

@@ -1,0 +1,42 @@
+concept Source {
+    fn value(self Self) Int
+}
+
+concept Readable {
+    fn read(self Self) Int
+}
+
+impl Source for Int {
+    fn value(self Int) Int {
+        self
+    }
+}
+
+record ReadableView {
+    source dyn Source
+}
+
+impl Readable for ReadableView {
+    fn read(self ReadableView) Int {
+        self.source.value()
+    }
+}
+
+// Explicit source adapter: the target evidence belongs to ReadableView.
+// The hidden concrete type inside dyn Source is never discovered at runtime.
+fn as_readable(source dyn Source) dyn Readable {
+    ReadableView {
+        source = source
+    }
+}
+
+test fn adapted_dynamic_value() {
+    let source dyn Source = 42
+    let readable = as_readable(source)
+    assert readable.read() == 42
+}
+
+fn main() {
+    let source dyn Source = 41
+    assert as_readable(source).read() == 41
+}

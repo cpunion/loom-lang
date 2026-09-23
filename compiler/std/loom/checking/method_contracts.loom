@@ -1,0 +1,136 @@
+import std.loom.ast.NodeKind
+import std.loom.ast.has
+import std.loom.typed.Expr
+import std.loom.typed.Local
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+
+fn inherited_method_contract(env Environment, owner Int, kind NodeKind) Bool {
+    let declaration = method_declaration(env, owner)
+    declaration >= 0 && declaration != owner && has(symbol(env, declaration).node, kind)
+}
+
+fn inherited_method_helpers(env Environment, owner Int) Bool {
+    let declaration = method_declaration(env, owner)
+    declaration >= 0 && declaration != owner && contract_helpers(symbol(env, declaration).node)
+}
+
+// Contract parameter names belong to the concept, not to the implementation.
+// Both signatures have the same runtime parameter positions after conformance.
+fn method_contract_context(context Context, declaration Int) Result[Context, Failure] {
+    let implementation = symbol(context.env, context.signature.symbol).node
+    let prototype = symbol(context.env, declaration).node
+    let current = context.signature
+    let arguments = ints(get(current.params, 0))
+    let method_arguments = argument_tail(context.arguments, method_parameter_prefix(context.env, current.symbol))
+    var argument = 0
+    while argument < length(method_arguments) {
+        push(arguments, get(method_arguments, argument))
+        argument = argument + 1
+    }
+    let declared = Signature {
+        symbol = declaration
+        parameters = length(arguments)
+        params = current.params
+        compile_time = current.compile_time
+        result = current.result
+        requirements = current.requirements
+    }
+    var aliases = Context {
+        lexical = context.lexical
+        env = context.env
+        signature = declared
+        arguments = arguments
+        constants = context.constants
+        locals = context.locals
+        bindings = context.bindings
+        head = -1
+        cleanups = context.cleanups
+        cleanup_head = context.cleanup_head
+        loop_boundary = context.loop_boundary
+        facts = context.facts
+        fact_head = context.fact_head
+        emit = context.emit
+    }
+    let source = group(implementation, NodeKind.Parameters)
+    let target = group(prototype, NodeKind.Parameters)
+    var index = 0
+    while index < length(source) {
+        let original = lookup(context, get(source, index).value)
+        let binding = get(context.bindings, original)
+        let parameter = get(target, index)
+        aliases = bind_name(aliases, parameter, parameter.value, binding.local, binding.constant, -1)?
+        index = index + 1
+    }
+    let result_binding = lookup(context, "result")
+    if result_binding >= 0 {
+        let local = get(context.bindings, result_binding).local
+        let binding = length(aliases.bindings)
+        push(aliases.bindings, Binding {
+                name = "result"
+                local = local
+                constant = -1
+                previous = aliases.head
+            })
+        aliases = context_at(aliases, binding)
+    }
+    Result.Ok(aliases)
+}
+
+fn inherited_contracts(context Context, kind NodeKind) Result[List[Expr], Failure] {
+    let declaration = method_declaration(context.env, context.signature.symbol)
+    if declaration < 0 || declaration == context.signature.symbol {
+        return Result.Ok(new[Expr]())
+    }
+    let prototype = symbol(context.env, declaration).node
+    if !has(prototype, kind) {
+        return Result.Ok(new[Expr]())
+    }
+    contracts(method_contract_context(context, declaration)?, prototype, kind)
+}
+
+fn add_contracts(base List[Expr], additional List[Expr]) List[Expr] {
+    var index = 0
+    while index < length(additional) {
+        push(base, get(additional, index))
+        index = index + 1
+    }
+    base
+}
+
+fn validate_concept_contracts(env Environment, id Int) Result[Bool, Failure] {
+    let original = get(env.signatures, id)
+    let node = symbol(env, original.symbol).node
+    if !prototype(env, original.symbol) ||
+    (!has(node, NodeKind.Requires) && !has(node, NodeKind.Ensures)) {
+        return Result.Ok(true)
+    }
+    if has(node, NodeKind.Block) {
+        return Result.Ok(true)
+    }
+    let arguments = abstract_arguments(env, original.parameters)
+    let current = signature(env, id, arguments, node)?
+    let scope = function_scope(env, current, arguments, unknown_constants(current), false)?
+    if has(node, NodeKind.Ensures) {
+        let context = scope.context
+        let local = length(context.locals)
+        push(context.locals, Local {
+                name = "result"
+                ty = current.result
+                mutable = false
+                is_scoped = false
+            })
+        let binding = length(context.bindings)
+        push(context.bindings, Binding {
+                name = "result"
+                local = local
+                constant = -1
+                previous = context.head
+            })
+        discard contracts(context_at(context, binding), node, NodeKind.Ensures)?
+    }
+    Result.Ok(true)
+}
