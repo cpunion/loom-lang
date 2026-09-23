@@ -104,9 +104,12 @@ target. A failed update leaves its private stage for inspection or recovery.
 The merge library accepts one side changing file/declaration layout while the
 other edits declaration bodies. It preserves the layout side's surrounding
 source text and the chosen declaration body verbatim, then parses and checks
-the merged package. Ambiguous identities, concurrent layout changes, new
-declarations, conflicting edits, changes to the non-layout side's surrounding
-text, and unsupported declaration forms are reported instead of guessed.
+the merged package. One side may also add uniquely named declarations with
+fresh stable IDs while the other edits existing bodies. Additions on both sides,
+additions mixed with deletions, names that could rebind existing calls,
+concurrent layout changes, conflicting edits, changes to the non-layout side's
+surrounding text, and unsupported declaration forms are reported instead of
+guessed.
 
 This is a deliberately narrow proof of the move-plus-edit workflow. It does
 not yet manage Git/jj changes or commits, resolve imports or multi-package

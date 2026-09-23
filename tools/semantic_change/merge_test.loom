@@ -76,6 +76,90 @@ test fn move_and_independent_edit_merge_without_reformatting() {
     }
 }
 
+test fn a_carrier_addition_and_an_independent_body_edit_merge() {
+    let base = baseline()
+    let moved = revision("app.loom", "",
+        "// destination note\nfn amount() Int { 1 }\nfn entry() Int { amount() }\nfn extra() Int { 9 }\n")
+    push(moved.identities, Identity {
+            id = "extra-id"
+            path = "app.loom"
+            kind = NodeKind.Function
+            name = "extra"
+        })
+    let edited = revision("value.loom", "fn amount() Int { 2 }\n",
+        "fn entry() Int { amount() }\n")
+    match merge(base, moved, edited) {
+        Result.Ok(merged) => {
+            assert get(merged.files, 0).text == ""
+            assert get(merged.files, 1).text ==
+            "// destination note\nfn amount() Int { 2 }\nfn entry() Int { amount() }\nfn extra() Int { 9 }\n"
+            assert get(merged.identities, 2).id == "extra-id"
+        }
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+        }
+    }
+    match merge(base, edited, moved) {
+        Result.Ok(merged) => {
+            assert get(merged.files, 1).text ==
+            "// destination note\nfn amount() Int { 2 }\nfn entry() Int { amount() }\nfn extra() Int { 9 }\n"
+        }
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+        }
+    }
+}
+
+test fn dual_additions_and_binding_sensitive_names_need_resolution() {
+    let base = baseline()
+    let left = revision("value.loom", "fn amount() Int { 1 }\nfn extra() Int { 3 }\n",
+        "fn entry() Int { amount() }\n")
+    push(left.identities, Identity {
+            id = "extra-id"
+            path = "value.loom"
+            kind = NodeKind.Function
+            name = "extra"
+        })
+    let right = revision("value.loom", "fn amount() Int { 1 }\n",
+        "fn entry() Int { amount() }\nfn another() Int { 4 }\n")
+    push(right.identities, Identity {
+            id = "another-id"
+            path = "app.loom"
+            kind = NodeKind.Function
+            name = "another"
+        })
+    match merge(base, left, right) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "concurrent added declarations")
+        }
+    }
+    let reused = revision("value.loom", "fn amount() Int { 1 }\n",
+        "fn entry() Int { amount() }\n")
+    push(reused.files, File {
+            path = "overload.loom"
+            text = "fn amount(value Int) Int { value }\n"
+        })
+    push(reused.identities, Identity {
+            id = "overload-id"
+            path = "overload.loom"
+            kind = NodeKind.Function
+            name = "amount"
+        })
+    match merge(base, reused, base) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "binding changes need explicit review")
+        }
+    }
+}
+
 test fn deletion_conflicts_with_edit_or_move() {
     let base = baseline()
     let files = new[File]()

@@ -253,3 +253,60 @@ test fn initialized_package_applies_once_to_a_new_tree() {
     discard remove_empty_dir(base)
     discard remove_empty_dir(staging)
 }
+
+test fn reviewed_one_sided_addition_publishes_new_identity() {
+    let raw = "package sample\nnext 1\nid value-id fn value value.loom\n"
+    let base = loaded("fn value() Int { 1 }\n", raw, "")
+    let changed = loaded("fn value() Int { 2 }\n", raw, "")
+    let added_revision = Revision {
+        package_name = "sample"
+        files = [File {
+                path = "value.loom"
+                text = "fn value() Int { 1 }\nfn extra() Int { 9 }\n"
+            }]
+        identities = [Identity {
+                id = "value-id"
+                path = "value.loom"
+                kind = NodeKind.Function
+                name = "value"
+            }, Identity {
+                id = "extra-id"
+                path = "value.loom"
+                kind = NodeKind.Function
+                name = "extra"
+            }]
+    }
+    let added = Loaded {
+        revision = added_revision
+        sidecar = sidecar(added_revision, 2)
+        commit = ""
+        next = 2
+    }
+    let plan = match review(base, added, changed) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            Review {
+                merged = base.revision
+                token = ""
+                next = 1
+            }
+        }
+    }
+    let staging = concat("tools/semantic_change_trial/target/addition-test-", to_text(monotonic_ns()))
+    let output = path(staging, "merged")
+    discard create_dir(staging)
+    match publish(plan.token, output, plan, base, added, changed, base, added, changed) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    assert text_at(path(output, "value.loom")) == "fn value() Int { 2 }\nfn extra() Int { 9 }\n"
+    assert text_at(path(output, ".loom-ids")) == sidecar(plan.merged, 2)
+    discard remove_file(path(output, ".loom-ids"))
+    discard remove_file(path(output, "value.loom"))
+    discard remove_empty_dir(output)
+    discard remove_empty_dir(staging)
+}
