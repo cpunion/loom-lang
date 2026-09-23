@@ -187,6 +187,8 @@ both children before suspending. The `all` overload cancels and drains a
 remaining child after the first fault. Arbitrary tuple arity and the
 `(a(), b()).await` sugar remain unfinished, as do socket adapters and general
 worker operations; these are not removed requirements.
+Two-argument homogeneous `any`/`race` calls delegate to their List policies,
+including loser cancellation and cleanup.
 Synchronous I/O still blocks the owner thread.
 
 `std.file.tasks` supplies byte/text read/write Tasks using the same completion

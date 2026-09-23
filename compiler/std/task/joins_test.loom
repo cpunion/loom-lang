@@ -236,6 +236,22 @@ test async fn first_policies_select_completion_order_and_drain_losers() {
     }
 }
 
+test async fn pair_any_and_race_share_list_completion_and_cleanup_rules() {
+    assert any(failed(), delayed(7, 2)).await == 7
+    let events = ["begin"]
+    assert any(delayed(8, 1), pending_number(events)).await == 8
+    assert events[1] == "started" && events[2] == "cleaned"
+    match race(delayed(1, 10000), failed()).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    any(sleep_ms(0), sleep_ms(1)).await
+}
+
 test async fn joins_preserve_managed_values_and_task_valued_results() {
     let text = concat("kept", " alive")
     let values = all([successful(), successful()]).await

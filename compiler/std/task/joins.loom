@@ -156,3 +156,13 @@ pub async fn any[T](tasks List[Task[T]]) T {
 pub async fn race[T](tasks List[Task[T]]) Outcome[T] {
     first(tasks, false).await
 }
+
+// Fixed-size homogeneous pairs use the same source policies as dynamic Lists.
+// Separate arguments keep an empty List literal unambiguous for callers.
+pub async fn any[T](first Task[T], second Task[T]) T {
+    any([first, second]).await
+}
+
+pub async fn race[T](first Task[T], second Task[T]) Outcome[T] {
+    race([first, second]).await
+}
