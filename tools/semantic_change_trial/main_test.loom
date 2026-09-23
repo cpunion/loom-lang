@@ -1,0 +1,64 @@
+import semantic_change.File
+import semantic_change.Identity
+import semantic_change.Revision
+import std.loom.ast.NodeKind
+import std.result.Result
+import std.text.concat
+
+fn loaded(text Text, sidecar Text, commit Text) Loaded {
+    Loaded {
+        revision = Revision {
+            package_name = "sample"
+            files = [File {
+                    path = "value.loom"
+                    text = text
+                }]
+            identities = [Identity {
+                    id = "value-id"
+                    path = "value.loom"
+                    kind = NodeKind.Function
+                    name = "value"
+                }]
+        }
+        sidecar = sidecar
+        commit = commit
+    }
+}
+
+fn reviewed(value Loaded) Text {
+    match review(value, value, value) {
+        Result.Ok(plan) => plan.token,
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+test fn review_token_binds_exact_source_sidecar_and_resolved_commit() {
+    let raw = "package sample\nid value-id fn value value.loom\n"
+    let source = "fn value() Int { 1 }\n"
+    let baseline = reviewed(loaded(source, raw, ""))
+    assert baseline == reviewed(loaded(source, raw, ""))
+    assert baseline != reviewed(loaded("fn value() Int { 2 }\n", raw, ""))
+    assert baseline != reviewed(loaded(source, concat(raw, "# changed\n"), ""))
+    assert baseline != reviewed(loaded(source, raw, "one-commit"))
+    assert reviewed(loaded(source, raw, "one-commit")) !=
+    reviewed(loaded(source, raw, "another-commit"))
+}
+
+fn path_rejected(path Text) Bool {
+    match checked_directory_path(path, false) {
+        Result.Ok(_) => false,
+        Result.Err(_) => true
+    }
+}
+
+test fn output_path_rejects_traversal_and_noncanonical_components() {
+    assert path_rejected("../escape")
+    assert path_rejected("folder/../escape")
+    assert path_rejected("folder//escape")
+    assert path_rejected("folder/./escape")
+    assert path_rejected("folder\\escape")
+    assert path_rejected("folder/")
+}
