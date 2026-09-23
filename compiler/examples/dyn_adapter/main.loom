@@ -1,3 +1,5 @@
+import std.text.concat
+
 concept Source {
     fn value(self Self) Int
 }
@@ -6,9 +8,28 @@ concept Readable {
     fn read(self Self) Int
 }
 
+concept Numbered {
+    type Value
+    fn number(self Self) Self.Value
+}
+
 impl Source for Int {
     fn value(self Int) Int {
         self
+    }
+}
+
+record Labeled {
+    label Text
+}
+
+impl Source for Labeled {
+    fn value(self Labeled) Int {
+        if self.label == "hello" {
+            42
+        } else {
+            0
+        }
     }
 }
 
@@ -19,6 +40,15 @@ record ReadableView {
 impl Readable for ReadableView {
     fn read(self ReadableView) Int {
         self.source.value()
+    }
+}
+
+// A second explicit adapter can target the erased source type directly.
+// Its witness wraps dyn Source; it never asks for the hidden concrete type.
+impl Numbered for dyn Source {
+    type Value = Int
+    fn number(self dyn Source) Int {
+        self.value()
     }
 }
 
@@ -34,9 +64,26 @@ test fn adapted_dynamic_value() {
     let source dyn Source = 42
     let readable = as_readable(source)
     assert readable.read() == 42
+    let numbered dyn Numbered[Value = Int] = source
+    assert numbered.number() == 42
+}
+
+test fn nested_erased_payload_survives_moving_gc() {
+    let source dyn Source = Labeled {
+        label = concat("hel", "lo")
+    }
+    let numbered dyn Numbered[Value = Int] = source
+    var index = 0
+    while index < 64 {
+        discard concat("temporary", " text")
+        index = index + 1
+    }
+    assert numbered.number() == 42
 }
 
 fn main() {
     let source dyn Source = 41
     assert as_readable(source).read() == 41
+    let numbered dyn Numbered[Value = Int] = source
+    assert numbered.number() == 41
 }

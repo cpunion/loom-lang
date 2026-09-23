@@ -70,11 +70,28 @@ test fn dynamic_object_safety_and_compile_time_boundaries_fail_closed() {
     rejects("concept C {}\nimpl C for Int {}\nfn main() { let value dyn C = 1\nlet concrete Int = value\ndiscard concrete }")
     rejects("concept Copy { fn copy(self Self) Self }\nfn invalid(value dyn Copy) {}")
     rejects("concept Same { fn same(self Self, other List[Self]) Bool }\nfn invalid(value dyn Same) {}")
-    rejects("concept C {}\nconcept D {}\nimpl D for dyn C {}")
+    rejects("concept C {}\nimpl C for dyn C {}")
     let definitions = "concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\n"
     discard accepted(concat(definitions, "fn computed() Int { comptime { let value dyn C = 1\nvalue.value() } }"))
     rejects(concat(definitions, "fn invalid(value dyn C) Int ensures result >= 0 { value.value() }"))
     discard accepted(concat(definitions, "fn selected[T](value T) Int { comptime if T implements C { value.value() } else { 0 } }\nfn main() { let value dyn C = 7\nassert selected(value) == 7 }"))
+}
+
+test fn dynamic_values_can_use_explicit_erased_source_adapters() {
+    let definitions = "concept Source { fn value(self Self) Int }\nconcept Readable { fn read(self Self) Int }\nimpl Source for Int { fn value(self Int) Int { self } }\nimpl Source for Bool { fn value(self Bool) Int { if self { 9 } else { 0 } } }\nimpl Readable for dyn Source { fn read(self dyn Source) Int { self.value() } }\nfn adapt(source dyn Source) dyn Readable { source }\n"
+    let program = accepted(concat(definitions, "fn main() { let first dyn Source = 7\nlet second dyn Source = true\nassert adapt(first).read() == 7\nassert adapt(second).read() == 9 }"))
+    assert length(program.witnesses) == 3
+    var adapters = 0
+    var index = 0
+    while index < length(program.witnesses) {
+        let witness = get(program.witnesses, index)
+        if get(program.types, witness.concrete).kind == TypeKind.Dyn { adapters = adapters + 1 }
+        index = index + 1
+    }
+    assert adapters == 1
+    rejects("concept Source {}\nconcept Readable {}\nimpl Source for Int {}\nimpl Readable for Int {}\nfn main() { let source dyn Source = 1\nlet target dyn Readable = source\ndiscard target }")
+    discard accepted("concept Source { type Item\nfn item(self Self) Self.Item }\nconcept Readable { type Item\nfn read(self Self) Self.Item }\nimpl Source for Int { type Item = Int\nfn item(self Int) Int { self } }\nimpl Readable for dyn Source[Item = Int] { type Item = Int\nfn read(self dyn Source[Item = Int]) Int { self.item() } }\nfn adapt(value dyn Source[Item = Int]) dyn Readable[Item = Int] { value }\nfn main() { let source dyn Source[Item = Int] = 11\nassert adapt(source).read() == 11 }")
+    discard accepted("concept Source { type Item\nfn item(self Self) Self.Item }\nconcept Readable { type Item\nfn read(self Self) Self.Item }\nimpl Source for Int { type Item = Int\nfn item(self Int) Int { self } }\nimpl Source for Bool { type Item = Bool\nfn item(self Bool) Bool { self } }\nimpl[T] Readable for dyn Source[Item = T] { type Item = T\nfn read(self dyn Source[Item = T]) T { self.item() } }\nfn adapt[T](value dyn Source[Item = T]) dyn Readable[Item = T] { value }\nfn main() { let number dyn Source[Item = Int] = 7\nlet flag dyn Source[Item = Bool] = true\nassert adapt(number).read() == 7\nassert adapt(flag).read() }")
 }
 
 test fn test_only_dynamic_evidence_is_explicit_and_does_not_change_production() {
