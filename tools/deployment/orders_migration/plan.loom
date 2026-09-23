@@ -1,0 +1,109 @@
+import deployment.Column
+import deployment.ConflictKind
+import deployment.declare_sqlite_migration
+import deployment.FailurePolicy
+import deployment.Handling
+import deployment.bind_receipt_basis
+import deployment.MigrationCatalog
+import deployment.Schema
+import deployment.SqliteMigrationPackage
+import deployment.SqlitePositiveAmountUpgrade
+import deployment.StorageType
+import deployment.Table
+import std.list.new
+import std.list.push
+import std.result.Result
+
+fn operation(attempt_id Text, from_basis Text, to_basis Text,
+    replacement Int) SqlitePositiveAmountUpgrade {
+    SqlitePositiveAmountUpgrade {
+        attempt_id = attempt_id
+        from_basis = from_basis
+        to_basis = to_basis
+        orders = "orders"
+        order_id = "id"
+        amount = "amount"
+        archive = "loom_archive_zero_amounts"
+        notes = "notes"
+        note_id = "id"
+        note_body = "body"
+        replacement = replacement
+    }
+}
+
+fn field(name Text, kind StorageType, predicate Text) Column {
+    Column {
+        id = name
+        name = name
+        kind = kind
+        required = true
+        predicate = predicate
+    }
+}
+
+fn order_table(plan SqlitePositiveAmountUpgrade, predicate Text) Table {
+    let columns = new[Column]()
+    push(columns, field(plan.order_id, StorageType.Int, ""))
+    push(columns, field(plan.amount, StorageType.Int, predicate))
+    Table { id = plan.orders name = plan.orders columns = columns }
+}
+
+fn old_schema(plan SqlitePositiveAmountUpgrade) Schema {
+    let tables = new[Table]()
+    push(tables, order_table(plan, "amount >= 0"))
+    Schema { basis = plan.from_basis tables = tables }
+}
+
+fn new_schema(plan SqlitePositiveAmountUpgrade) Schema {
+    let tables = new[Table]()
+    push(tables, order_table(plan, "amount > 0"))
+    let columns = new[Column]()
+    push(columns, field(plan.note_id, StorageType.Int, ""))
+    push(columns, field(plan.note_body, StorageType.Text, ""))
+    push(tables, Table { id = plan.notes name = plan.notes columns = columns })
+    Schema { basis = plan.to_basis tables = tables }
+}
+
+fn handling(kind ConflictKind, table Text, column Text, action Text) Handling {
+    Handling { kind = kind table = table column = column action = action }
+}
+
+fn catalog(plan SqlitePositiveAmountUpgrade) MigrationCatalog {
+    let forward = new[Handling]()
+    push(forward, handling(ConflictKind.ChangedPredicate, plan.orders, plan.amount,
+        "archive_and_replace_zero_amounts"))
+    push(forward, handling(ConflictKind.AddedTable, plan.notes, "", "create_notes_table"))
+    push(forward, handling(ConflictKind.ChangedBasis, "", "", "candidate_bound_to_build_receipt"))
+    let recovery = new[Handling]()
+    push(recovery, handling(ConflictKind.ChangedPredicate, plan.orders, plan.amount,
+        "restore_untouched_zero_amounts"))
+    push(recovery, handling(ConflictKind.RemovedTable, plan.notes, "", "retain_notes_and_archive"))
+    push(recovery, handling(ConflictKind.ChangedBasis, "", "", "candidate_bound_to_build_receipt"))
+    MigrationCatalog {
+        from_basis = plan.from_basis
+        to_basis = plan.to_basis
+        forward = forward
+        recovery = recovery
+    }
+}
+
+fn reupgrade(plan SqlitePositiveAmountUpgrade) List[Handling] {
+    let steps = new[Handling]()
+    push(steps, handling(ConflictKind.ChangedPredicate, plan.orders, plan.amount,
+        "refresh_archive_and_replace_zero_amounts"))
+    push(steps, handling(ConflictKind.AddedTable, plan.notes, "", "reuse_retained_notes_table"))
+    push(steps, handling(ConflictKind.ChangedBasis, "", "", "candidate_bound_to_build_receipt"))
+    steps
+}
+
+// A normal Loom module declares the supported migration. Values vary by
+// deployment attempt; the executor still recognizes only its fixed action.
+pub fn migration(package_id Text, attempt_id Text, replacement Int,
+    old_receipt Text, new_receipt Text) Result[SqliteMigrationPackage, Text] {
+    let unbound = operation(attempt_id, "", "", replacement)
+    let previous = bind_receipt_basis(old_schema(unbound), old_receipt)?
+    let next = bind_receipt_basis(new_schema(unbound), new_receipt)?
+    let plan = operation(attempt_id, previous.basis, next.basis, replacement)
+    declare_sqlite_migration(package_id, previous, next, old_receipt, new_receipt,
+        FailurePolicy.Stop, catalog(plan), reupgrade(plan), plan)
+}

@@ -1,0 +1,146 @@
+import std.bytes.new
+import std.hash.sha256.hex
+import std.list.get
+import std.list.length
+import std.result.Result
+
+// An ordinary Loom value describes the only SQLite migration action currently
+// implemented. Receipt paths are execution inputs; their verified identities,
+// not paths or database rows, enter the durable plan digest.
+pub record SqliteMigrationPackage {
+    id Text
+    from_schema Schema
+    to_schema Schema
+    from_receipt_path Text
+    to_receipt_path Text
+    from_receipt_id Text
+    to_receipt_id Text
+    policy FailurePolicy
+    catalog MigrationCatalog
+    reupgrade List[Handling]
+    operation SqlitePositiveAmountUpgrade
+}
+
+fn exact_reupgrade(steps List[Handling], plan SqlitePositiveAmountUpgrade) Bool {
+    if length(steps) != 3 {
+        return false
+    }
+    var amount = false
+    var notes = false
+    var basis = false
+    var index = 0
+    while index < length(steps) {
+        let step = get(steps, index)
+        if step.kind == ConflictKind.ChangedPredicate && step.table == plan.orders &&
+        step.column == plan.amount && step.action == "refresh_archive_and_replace_zero_amounts" {
+            if amount { return false }
+            amount = true
+        } else {
+            if step.kind == ConflictKind.AddedTable && step.table == plan.notes &&
+            step.column == "" && step.action == "reuse_retained_notes_table" {
+                if notes { return false }
+                notes = true
+            } else {
+                if step.kind == ConflictKind.ChangedBasis && step.table == "" &&
+                step.column == "" && step.action == "candidate_bound_to_build_receipt" {
+                    if basis { return false }
+                    basis = true
+                } else {
+                    return false
+                }
+            }
+        }
+        index = index + 1
+    }
+    amount && notes && basis
+}
+
+fn validated_package(value SqliteMigrationPackage) Result[Text, Text] {
+    if !identifier(value.id) || value.policy != FailurePolicy.Stop || !valid_plan(value.operation) {
+        return Result.Err("invalid or unsupported SQLite migration package")
+    }
+    discard exact_catalog(value.from_schema, value.to_schema, value.catalog, value.operation)?
+    if !exact_reupgrade(value.reupgrade, value.operation) {
+        return Result.Err("SQLite reupgrade catalog is not implemented")
+    }
+    let old_receipt = read_build_receipt(value.from_receipt_path)?
+    let new_receipt = read_build_receipt(value.to_receipt_path)?
+    discard verify_basis(value.from_schema, old_receipt.checked, old_receipt.receipt,
+        old_receipt.artifact, old_receipt.backend)?
+    discard verify_basis(value.to_schema, new_receipt.checked, new_receipt.receipt,
+        new_receipt.artifact, new_receipt.backend)?
+    if old_receipt.receipt != value.from_receipt_id || new_receipt.receipt != value.to_receipt_id {
+        return Result.Err("SQLite migration receipt identity changed")
+    }
+    let output = new()
+    plan_part(output, "loom-sqlite-migration-package-v1")
+    plan_part(output, value.id)
+    plan_part(output, value.from_receipt_id)
+    plan_part(output, value.to_receipt_id)
+    plan_part(output, positive_amount_plan_digest(value.operation))
+    Result.Ok(hex(output))
+}
+
+pub fn declare_sqlite_migration(id Text, from_schema Schema, to_schema Schema,
+    from_receipt_path Text, to_receipt_path Text, policy FailurePolicy,
+    catalog MigrationCatalog, reupgrade List[Handling],
+    operation SqlitePositiveAmountUpgrade) Result[SqliteMigrationPackage, Text] {
+    let old_receipt = read_build_receipt(from_receipt_path)?
+    let new_receipt = read_build_receipt(to_receipt_path)?
+    let value = SqliteMigrationPackage {
+        id = id
+        from_schema = from_schema
+        to_schema = to_schema
+        from_receipt_path = from_receipt_path
+        to_receipt_path = to_receipt_path
+        from_receipt_id = old_receipt.receipt
+        to_receipt_id = new_receipt.receipt
+        policy = policy
+        catalog = catalog
+        reupgrade = reupgrade
+        operation = operation
+    }
+    discard validated_package(value)?
+    Result.Ok(value)
+}
+
+pub fn sqlite_migration_identity(value SqliteMigrationPackage) Result[Text, Text] {
+    validated_package(value)
+}
+
+pub fn inspect_sqlite_migration(tool Text, database Text,
+    value SqliteMigrationPackage) Result[PlanInspection, Text] {
+    discard validated_package(value)?
+    dry_run(tool, database, value.from_schema, value.to_schema, value.catalog)
+}
+
+pub fn start_sqlite_migration(tool Text, database Text,
+    value SqliteMigrationPackage) Result[Attempt, Text] {
+    let identity = validated_package(value)?
+    discard dry_run(tool, database, value.from_schema, value.to_schema, value.catalog)?
+    let attempt = prepare_plan(value.operation.attempt_id, value.from_schema.basis,
+        value.to_schema.basis, value.policy, identity)?
+    discard register(tool, database, attempt)?
+    start_attempt(tool, database, attempt.id)
+}
+
+pub fn upgrade_sqlite_migration(tool Text, database Text,
+    value SqliteMigrationPackage) Result[Attempt, Text] {
+    let identity = validated_package(value)?
+    execute_positive_amount_upgrade(tool, database, value.from_schema, value.to_schema,
+        value.catalog, value.operation, identity)
+}
+
+pub fn downgrade_sqlite_migration(tool Text, database Text,
+    value SqliteMigrationPackage) Result[Attempt, Text] {
+    let identity = validated_package(value)?
+    execute_positive_amount_downgrade(tool, database, value.from_schema, value.to_schema,
+        value.catalog, value.operation, identity)
+}
+
+pub fn reupgrade_sqlite_migration(tool Text, database Text,
+    value SqliteMigrationPackage) Result[Attempt, Text] {
+    let identity = validated_package(value)?
+    execute_positive_amount_reupgrade(tool, database, value.from_schema, value.to_schema,
+        value.catalog, value.operation, identity)
+}

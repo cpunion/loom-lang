@@ -12,10 +12,23 @@ loom run tools/deployment/sqlite_migration_trial -- /tmp/loom-success.sqlite /tm
 The trial exercises a fixed offline orders upgrade, downgrade, and re-upgrade,
 plus a failed upgrade that must not record completion.
 
-This tests the SQLite data and event transactions, including an explicit retry after a failed transaction, rejection of a changed replacement plan on retry, and refusal to roll back after trigger tampering. The attempt ledger retains the fixed action version and all plan inputs as one digest; it stores no row values. This is not general deployment correctness. The executor accepts only the exact `STRICT` table definitions and migration catalog checked in `sqlite_migration.loom`; application writers must be stopped while it runs.
+The ordinary [`orders_migration`](../orders_migration/plan.loom) Loom module
+declares a typed `SqliteMigrationPackage`; the trial instantiates it twice with
+different package IDs and replacement values; the second reuses retained data
+after downgrade. The package binds source/target schemas and verified receipt
+identities, declares Stop policy and forward/recovery/re-upgrade actions, and
+selects the existing positive-amount operation. No arbitrary SQL is accepted.
+
+This tests the SQLite data and event transactions, including an explicit retry
+after a failed transaction, rejection of a changed package plan on retry, and
+refusal to roll back after trigger tampering. The attempt ledger retains the
+package ID, receipt identities, fixed action version, and plan inputs as one
+digest; it stores no row values. This is not general deployment correctness.
+The executor accepts only the exact `STRICT` table definitions and catalog
+checked in `sqlite_migration.loom`; application writers must be stopped.
 
 The fixture imports v1 as **assumed**. Both bases include verified receipts
-from real Loom builds; the executor rehashes the target artifact before each
+from real Loom builds; the package API rehashes both artifacts before each
 transition. An observed event means this narrow SQL transaction completed.
 The receipt does not prove the operator-supplied schema matches application
 behavior, and it is not signed supply-chain evidence.

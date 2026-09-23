@@ -48,7 +48,7 @@ fn plan_part(output Bytes, value Text) {
 // This marker identifies the fixed action and recovery semantics below. Change
 // it if the generated SQLite operations change. All plan inputs are framed so
 // retries cannot silently select another replacement or storage layout.
-pub fn positive_amount_plan_digest(plan SqlitePositiveAmountUpgrade) Text {
+fn positive_amount_plan_digest(plan SqlitePositiveAmountUpgrade) Text {
     let output = new()
     plan_part(output, "loom-sqlite-positive-amount-action-v1")
     plan_part(output, plan.attempt_id)
@@ -336,14 +336,8 @@ fn exact_catalog(from Schema, to Schema, catalog MigrationCatalog, plan SqlitePo
 // script, and the only interpolated strings pass the strict identifier/digest
 // checks above. The Started event is intentionally recorded before this call.
 fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, target_receipt Text,
-    retained Bool) Result[Attempt, Text] {
-    if !valid_plan(plan) {
-        return Result.Err("invalid SQLite upgrade plan")
-    }
-    discard verify_receipt_basis(to, target_receipt)?
-    discard exact_catalog(from, to, catalog, plan)?
-    let plan_identity = positive_amount_plan_digest(plan)
+    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade,
+    plan_identity Text, retained Bool) Result[Attempt, Text] {
     let previous = match latest(tool, database)? {
         Option.Some(value) => value,
         Option.None => {
@@ -493,12 +487,12 @@ fn upgrade_mode(tool Text, database Text, from Schema, to Schema,
 
 // Fresh upgrade starts with no retained tables. Re-upgrade requires the exact
 // retained notes/archive shape left by this slice's downgrade.
-pub fn execute_positive_amount_upgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, target_receipt Text) Result[Attempt, Text] {
-    upgrade_mode(tool, database, from, to, catalog, plan, target_receipt, false)
+fn execute_positive_amount_upgrade(tool Text, database Text, from Schema, to Schema,
+    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, plan_identity Text) Result[Attempt, Text] {
+    upgrade_mode(tool, database, from, to, catalog, plan, plan_identity, false)
 }
 
-pub fn execute_positive_amount_reupgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, target_receipt Text) Result[Attempt, Text] {
-    upgrade_mode(tool, database, from, to, catalog, plan, target_receipt, true)
+fn execute_positive_amount_reupgrade(tool Text, database Text, from Schema, to Schema,
+    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, plan_identity Text) Result[Attempt, Text] {
+    upgrade_mode(tool, database, from, to, catalog, plan, plan_identity, true)
 }

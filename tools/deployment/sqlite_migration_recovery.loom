@@ -12,14 +12,8 @@ fn trigger_present(name Text, table Text, definition Text) Text {
 // Only reverses this package's fixed positive-amount upgrade. The notes and
 // archive tables are retained so downgrade never drops newly created data.
 // An amount changed by v2 is not overwritten by an older archived zero.
-pub fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, to Schema,
-    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, target_receipt Text) Result[Attempt, Text] {
-    if !valid_plan(plan) {
-        return Result.Err("invalid SQLite downgrade plan")
-    }
-    discard verify_receipt_basis(from, target_receipt)?
-    discard exact_catalog(from, to, catalog, plan)?
-    let plan_identity = positive_amount_plan_digest(plan)
+fn execute_positive_amount_downgrade(tool Text, database Text, from Schema, to Schema,
+    catalog MigrationCatalog, plan SqlitePositiveAmountUpgrade, plan_identity Text) Result[Attempt, Text] {
     let previous = match latest(tool, database)? {
         Option.Some(value) => value,
         Option.None => {
