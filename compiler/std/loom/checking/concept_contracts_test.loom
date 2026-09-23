@@ -54,6 +54,24 @@ test fn declared_dyn_postconditions_compose_in_required_caller_proofs() {
     assert dynamic_calls >= 2
 }
 
+test fn contracted_non_receiver_dyn_arguments_stay_opaque() {
+    let declarations = "concept C { fn preserve(self Self, peer dyn C, value Int) Int ensures result == value }\nimpl C for Int { fn preserve(self Int, peer dyn C, value Int) Int { value } }\nimpl C for Bool { fn preserve(self Bool, peer dyn C, value Int) Int { value } }\n"
+    let caller = "fn forward(receiver dyn C, peer dyn C, value Int) Int ensures result == value { receiver.preserve(peer, value) }\nfn main() { let first dyn C = 1\nlet second dyn C = true\nassert forward(first, second, 7) == 7 }"
+    let program = accepted(concat(declarations, caller))
+    var dynamic_calls = 0
+    var index = 0
+    while index < length(program.functions) {
+        dynamic_calls = dynamic_calls + dynamic_count(get(program.functions, index).body, ExprKind.DynCall)
+        index = index + 1
+    }
+    assert dynamic_calls >= 1
+    rejects(concat(declarations,
+            "fn false_claim(receiver dyn C, peer dyn C, value Int) Int ensures result == value + 1 { receiver.preserve(peer, value) }"))
+    rejects(concat(declarations,
+            "fn peer_claim(receiver dyn C, peer dyn C, value Int) Int ensures result == peer.preserve(receiver, value) + 1 { receiver.preserve(peer, value) }"))
+    rejects("concept C { fn preserve(self Self, peer dyn C, value Int) Int ensures result == value }\nimpl C for Int { fn preserve(self Int, peer dyn C, value Int) Int { value + 1 } }")
+}
+
 test fn dyn_proof_never_invents_a_witness_result_or_precondition() {
     let declarations = concat("concept C { fn keep(self Self, value Int) Int requires value > 0 ensures result >= 0 }\n",
         "impl C for Int { fn keep(receiver Int, input Int) Int { input } }\n")

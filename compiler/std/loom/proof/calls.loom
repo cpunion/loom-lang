@@ -245,10 +245,12 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
     var index = 0
     while index < length(function.params) {
         let ty = get(function.params, index)
-        let opaque_receiver = index == 0 && ty >= 0 && ty < length(proof.program.types) &&
+        // A verified summary may carry additional dyn arguments, but their
+        // hidden witnesses contribute no proof facts at any position.
+        let opaque_dynamic = ty >= 0 && ty < length(proof.program.types) &&
             get(proof.program.types, ty).kind == TypeKind.Dyn && length(function.postconditions) != 0
-        if ty != 1 && ty != 2 && !opaque_receiver {
-            return Result.Err("body proof helper parameters must be Int or Bool, apart from a contracted dyn receiver")
+        if ty != 1 && ty != 2 && !opaque_dynamic {
+            return Result.Err("body proof helper parameters must be Int or Bool, apart from contracted dyn arguments")
         }
         index = index + 1
     }
