@@ -127,6 +127,20 @@ fn folded_predicate(env Environment, owner Int, known Value) Result[Value, Failu
         Result.Err(_) => Result.Ok(unknown())
     }
 }
+// A closed record expression may contain Float leaves. Evaluate the checked
+// construction and predicate together so their IEEE behavior is identical to
+// ordinary compile-time execution. Failure to evaluate is not proof.
+fn folded_record_predicate(env Environment, owner Int, base Int, value Expr) Result[Value, Failure] {
+    let predicate = predicate_node(env, owner)
+    let stage = staging(predicate_scope(env, owner, base), predicate)?
+    let condition = expr(stage, predicate, 2)?
+    let bind = expression(ExprKind.Let, 0, predicate, "", 0, expressions(value), value.falls)
+    let initialized = expression(ExprKind.Block, 2, predicate, "", -1, pair(bind, condition), value.falls)
+    match std.loom.eval.evaluate(prepared(stage)?, initialized, length(stage.locals)) {
+        Result.Ok(evaluated) => Result.Ok(evaluated)
+        Result.Err(_) => Result.Ok(unknown())
+    }
+}
 fn predicate_at(value Expr, node Node) Expr {
     let children = new[Expr]()
     var index = 0
@@ -174,7 +188,7 @@ fn closed_record_value(value Expr, depth Int) Bool {
     if depth >= 64 || length(value.arms) != 0 {
         return false
     }
-    if value.kind == ExprKind.Integer || value.kind == ExprKind.Bool {
+    if value.kind == ExprKind.Integer || value.kind == ExprKind.Bool || value.kind == ExprKind.Float {
         return true
     }
     let unary = value.kind == ExprKind.Unary || value.kind == ExprKind.Coerce || value.kind == ExprKind.Field
@@ -253,6 +267,13 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     }
     if length(destination.constraint) == 1 && proven_record(context, node, base, value, get(destination.constraint, 0)) {
         return Result.Ok(expression(ExprKind.Coerce, target, node, "", -1, expressions(value), value.falls))
+    }
+    if get(context.env.types, base).kind == TypeKind.Record && closed_record_value(value, 0) {
+        let checked = folded_record_predicate(context.env, declaration, base, value)?
+        if checked.ty == 2 {
+            if checked.number == 0 { return Result.Err(error(context, node, "this constant does not satisfy the type constraint")) }
+            return Result.Ok(expression(ExprKind.Coerce, target, node, "", -1, expressions(value), value.falls))
+        }
     }
     let known = folded(value, unknown())
     if known.ty == base {

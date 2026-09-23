@@ -27,6 +27,28 @@ test fn proven_inline_record_literal_has_a_direct_refined_type() {
             "fn invalid() ActiveCount { ActiveCount(Snapshot { inner = Inner { count = -1 } active = true }) }"))
 }
 
+test fn closed_float_record_literal_uses_the_compile_time_boundary() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nrecord Details { amount Float }\nrecord Price { details Details active Bool }\nfn amount_ok(amount Float) Bool { amount >= 0.0 && amount <= 100.0 }\ntype ValidPrice = Price where amount_ok(self.details.amount) && self.active\n"
+    let program = accepted_result(concat(definitions,
+            "pub fn literal() ValidPrice { ValidPrice(Price { details = Details { amount = 10.5 } active = true }) }\npub fn computed() ValidPrice { ValidPrice(Price { details = Details { amount = 4.0 + 6.5 } active = true }) }\npub fn dynamic(amount Float) Result[ValidPrice, ConstraintError] { ValidPrice(Price { details = Details { amount = amount } active = true }) }\nfn source() Float { 10.5 }\npub fn from_call() Result[ValidPrice, ConstraintError] { ValidPrice(Price { details = Details { amount = source() } active = true }) }"))
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 1
+    rejects_result(concat(definitions,
+            "fn invalid() ValidPrice { ValidPrice(Price { details = Details { amount = -1.0 } active = true }) }"))
+    match with_result(concat(definitions,
+            "fn nan() ValidPrice { ValidPrice(Price { details = Details { amount = 0.0 / 0.0 } active = true }) }")) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "this constant does not satisfy the type constraint"
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+    rejects_result(concat(definitions,
+            "fn infinite() ValidPrice { ValidPrice(Price { details = Details { amount = 1e99999 } active = true }) }"))
+}
+
 test fn inline_record_refinement_rejects_mutable_aliases_and_unchecked_replacement() {
     let imports = "import std.result.Result\nimport std.result.ConstraintError\n"
     rejects(concat(imports, "record Unsafe { values List[Int] }\ntype Guard = Unsafe where true"))
