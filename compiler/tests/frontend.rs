@@ -34,6 +34,37 @@ fn source_compiler(compiler: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn init_creates_a_runnable_project_without_overwriting_one() {
+    let temporary = tempfile::tempdir().unwrap();
+    let compiler = common::compiler();
+    let invoke = |args: &[&str]| {
+        Command::new(&compiler)
+            .args(args)
+            .current_dir(temporary.path())
+            .output()
+            .unwrap()
+    };
+
+    success(&invoke(&["init", "hello"]));
+    let project = temporary.path().join("hello");
+    assert_eq!(
+        fs::read_to_string(project.join("loom.toml")).unwrap(),
+        "[module]\nname = \"hello\"\n"
+    );
+    success(&invoke(&["check", "hello"]));
+    success(&invoke(&["test", "hello"]));
+    let run = invoke(&["run", "hello"]);
+    success(&run);
+    assert_eq!(run.stdout, b"Hello, Loom!\n");
+
+    let original = fs::read(project.join("main.loom")).unwrap();
+    assert_eq!(invoke(&["init", "hello"]).status.code(), Some(1));
+    assert_eq!(fs::read(project.join("main.loom")).unwrap(), original);
+    assert_eq!(invoke(&["init", "../outside"]).status.code(), Some(1));
+    assert!(!temporary.path().join("outside").exists());
+}
+
+#[test]
 fn checked_export_needs_no_native_tool_and_retains_required_proofs() {
     let temporary = tempfile::tempdir().unwrap();
     let package = temporary.path().join("package");

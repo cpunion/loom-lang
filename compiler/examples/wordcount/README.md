@@ -68,8 +68,8 @@ For a standalone executable:
 
 The development compiler locates its `std` and native tool from its checkout,
 not this application's working directory. For a custom toolchain layout, pass
-explicit `--std` and `--native-tool` paths. The compiler does not yet provide
-`loom init`; the small manifest and source files here are the complete project.
+explicit `--std` and `--native-tool` paths. `loom init <name>` creates a separate
+minimal project; this example's extra `stats` package is written by hand.
 
 See the [VS Code trial](../../../editors/vscode/README.md#try-it) for unsaved
 diagnostics, formatting, completion, hover, and definition navigation. Rename is

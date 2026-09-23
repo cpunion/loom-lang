@@ -15,6 +15,15 @@ in Git history.
 
 ## Start here
 
+After [building the compiler](compiler/README.md#build-and-try-it), start a
+small project from the repository root:
+
+```sh
+target/loom init hello
+target/loom test hello
+target/loom run hello
+```
+
 Already built this checkout? Open the programming trial directly:
 
 With the development extension already installed, `code .` uses the checked-in
