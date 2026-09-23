@@ -187,3 +187,77 @@ test fn merged_program_must_pass_type_analysis() {
         }
     }
 }
+
+test fn test_only_helpers_cannot_satisfy_production_calls() {
+    let files = new[File]()
+    push(files, File {
+            path = "app.loom"
+            text = "fn entry() Int { 1 }\n"
+        })
+    push(files, File {
+            path = "app_test.loom"
+            text = "fn helper() Int { 2 }\n"
+        })
+    let ids = new[Identity]()
+    push(ids, Identity {
+            id = "entry-id"
+            path = "app.loom"
+            kind = NodeKind.Function
+            name = "entry"
+        })
+    push(ids, Identity {
+            id = "helper-id"
+            path = "app_test.loom"
+            kind = NodeKind.Function
+            name = "helper"
+        })
+    let base = Revision {
+        package_name = "sample"
+        files = files
+        identities = ids
+    }
+    let edited_files = new[File]()
+    push(edited_files, File {
+            path = "app.loom"
+            text = "fn entry() Int { helper() }\n"
+        })
+    push(edited_files, File {
+            path = "app_test.loom"
+            text = "fn helper() Int { 2 }\n"
+        })
+    let edited = Revision {
+        package_name = "sample"
+        files = edited_files
+        identities = ids
+    }
+    match merge(base, edited, base) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "failed analysis (production)")
+        }
+    }
+    let invalid_test_files = new[File]()
+    push(invalid_test_files, File {
+            path = "app.loom"
+            text = "fn entry() Int { 1 }\n"
+        })
+    push(invalid_test_files, File {
+            path = "app_test.loom"
+            text = "fn helper() Int { missing() }\n"
+        })
+    let invalid_test = Revision {
+        package_name = "sample"
+        files = invalid_test_files
+        identities = ids
+    }
+    match merge(base, invalid_test, base) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "failed analysis (tests)")
+        }
+    }
+}

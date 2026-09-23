@@ -205,15 +205,16 @@ fn git_commit(git_executable Text, repository Text, revision Text) Result[Text, 
     Result.Ok(commit)
 }
 
-fn git_blob(git_executable Text, repository Text, commit Text, name Text) Result[Text, Text] {
+fn git_blob(git_executable Text, repository Text, object Text) Result[Text, Text] {
     let operation = new[Text]()
-    push(operation, "show")
-    push(operation, concat(concat(commit, ":"), name))
+    push(operation, "cat-file")
+    push(operation, "blob")
+    push(operation, object)
     git(git_executable, repository, operation)
 }
 
 fn read_git(git_executable Text, repository Text, directory Text, revision Text) Result[Revision, Text] {
-    if directory == "" || directory == "." || starts_with(directory, "/") ||
+    if directory == "" || starts_with(directory, "/") ||
     contains(directory, "..") || contains(directory, "\\") || ends_with(directory, "/") {
         return Result.Err("Git package path must be a relative directory")
     }
@@ -227,7 +228,7 @@ fn read_git(git_executable Text, repository Text, directory Text, revision Text)
     push(operation, directory)
     let tree = git(git_executable, repository, operation)?
     let records = split(tree, "\0")
-    let prefix = concat(directory, "/")
+    let prefix = if directory == "." { "" } else { concat(directory, "/") }
     let files = new[File]()
     var metadata = ""
     var sidecar_found = false
@@ -239,15 +240,18 @@ fn read_git(git_executable Text, repository Text, directory Text, revision Text)
             if separator < 0 {
                 return Result.Err("invalid Git tree entry")
             }
-            let mode = std.text.slice(line, 0, separator)
+            let entry_metadata = std.text.slice(line, 0, separator)
             let full_path = std.text.slice(line, separator + 1, std.text.length(line))
             if starts_with(full_path, prefix) {
                 let name = std.text.slice(full_path, std.text.length(prefix), std.text.length(full_path))
                 if !contains(name, "/") && (name == ".loom-ids" || ends_with(name, ".loom")) {
-                    if !starts_with(mode, "100644 blob ") && !starts_with(mode, "100755 blob ") {
+                    let fields = split(entry_metadata, " ")
+                    if length(fields) != 3 ||
+                    (get(fields, 0) != "100644" && get(fields, 0) != "100755") ||
+                    get(fields, 1) != "blob" || get(fields, 2) == "" {
                         return Result.Err(concat("Git source is not a regular blob: ", full_path))
                     }
-                    let contents = git_blob(git_executable, repository, commit, full_path)?
+                    let contents = git_blob(git_executable, repository, get(fields, 2))?
                     if name == ".loom-ids" {
                         metadata = contents
                         sidecar_found = true

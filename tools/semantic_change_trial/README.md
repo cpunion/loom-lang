@@ -21,6 +21,8 @@ target/loom run tools/semantic_change_trial -- --git /path/to/git \
 Each revision must contain `package/directory/.loom-ids` and its root-level
 `.loom` files. Revisions are resolved to commits before reading trees and blobs.
 The Git executable path is explicit; the tool never invokes a shell.
+`REPO` may be the repository root or a subdirectory. Use `.` for a package at
+that location; source blobs are read by their tree object IDs.
 
 Each directory contains ordinary root-level `.loom` files and a `.loom-ids`
 sidecar. The sidecar has one `package NAME` line and one

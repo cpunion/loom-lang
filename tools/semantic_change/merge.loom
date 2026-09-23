@@ -12,6 +12,7 @@ import std.list.new
 import std.list.push
 import std.result.Result
 import std.text.concat
+import std.text.ends_with
 import std.text.length
 import std.text.slice
 
@@ -337,7 +338,7 @@ fn checked(revision Revision) Result[Revision, Text] {
                 path = file.path
                 text = file.text
                 tree = tree
-                test_only = false
+                test_only = ends_with(file.path, "_test.loom")
                 trusted_std = false
             })
         index = index + 1
@@ -359,9 +360,17 @@ fn checked(revision Revision) Result[Revision, Text] {
         packages = packages
         root = 0
     }
+    match analyze(project, false) {
+        Result.Ok(_) => {
+        }
+        Result.Err(problem) => {
+            return Result.Err(concat("merged program failed analysis (production): ",
+                    problem.diagnostic.message))
+        }
+    }
     match analyze(project, true) {
         Result.Ok(_) => Result.Ok(revision)
-        Result.Err(problem) => Result.Err(concat("merged program failed analysis: ",
+        Result.Err(problem) => Result.Err(concat("merged program failed analysis (tests): ",
                 problem.diagnostic.message))
     }
 }
