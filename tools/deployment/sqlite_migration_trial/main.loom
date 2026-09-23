@@ -1,26 +1,16 @@
-import deployment.SqlitePositiveAmountUpgrade
-import deployment.Schema
-import deployment.Table
-import deployment.Column
-import deployment.StorageType
-import deployment.MigrationCatalog
-import deployment.Handling
-import deployment.ConflictKind
-import deployment.execute_positive_amount_upgrade
-import deployment.execute_positive_amount_downgrade
-import deployment.execute_positive_amount_reupgrade
+import deployment.SqliteMigrationPackage
+import deployment.upgrade_sqlite_migration
+import deployment.downgrade_sqlite_migration
+import deployment.reupgrade_sqlite_migration
+import deployment.inspect_sqlite_migration
+import deployment.start_sqlite_migration
+import deployment.sqlite_migration_identity
 import deployment.assume_historical
-import deployment.prepare_plan
-import deployment.positive_amount_plan_digest
-import deployment.register
-import deployment.start_attempt
 import deployment.resume_failed_attempt
 import deployment.current
-import deployment.dry_run
-import deployment.FailurePolicy
 import deployment.BasisEvidence
-import deployment.bind_receipt_basis
 import deployment.read_build_receipt
+import orders_migration.migration
 import std.file.read_bytes
 import std.file.read_text
 import std.file.write_bytes
@@ -82,169 +72,46 @@ fn fixture_sql(database Text, sql Text) Result[Text, Text] {
     }
 }
 
-fn migration_with_bases(identity Text, from_basis Text, to_basis Text) SqlitePositiveAmountUpgrade {
-    SqlitePositiveAmountUpgrade {
-        attempt_id = identity
-        from_basis = from_basis
-        to_basis = to_basis
-        orders = "orders"
-        order_id = "id"
-        amount = "amount"
-        archive = "loom_archive_zero_amounts"
-        notes = "notes"
-        note_id = "id"
-        note_body = "body"
-        replacement = 1
-    }
-}
-
-fn migration_with_replacement(plan SqlitePositiveAmountUpgrade, replacement Int) SqlitePositiveAmountUpgrade {
-    SqlitePositiveAmountUpgrade {
-        attempt_id = plan.attempt_id
-        from_basis = plan.from_basis
-        to_basis = plan.to_basis
-        orders = plan.orders
-        order_id = plan.order_id
-        amount = plan.amount
-        archive = plan.archive
-        notes = plan.notes
-        note_id = plan.note_id
-        note_body = plan.note_body
-        replacement = replacement
-    }
-}
-
-fn field(name Text, kind StorageType, predicate Text) Column {
-    Column {
-        id = name
-        name = name
-        kind = kind
-        required = true
-        predicate = predicate
-    }
-}
-
-fn order_table(plan SqlitePositiveAmountUpgrade, predicate Text) Table {
-    let columns = std.list.new[Column]()
-    std.list.push(columns, field(plan.order_id, StorageType.Int, ""))
-    std.list.push(columns, field(plan.amount, StorageType.Int, predicate))
-    Table {
-        id = plan.orders
-        name = plan.orders
-        columns = columns
-    }
-}
-
-fn old_schema(plan SqlitePositiveAmountUpgrade) Schema {
-    let tables = std.list.new[Table]()
-    std.list.push(tables, order_table(plan, "amount >= 0"))
-    Schema {
-        basis = plan.from_basis
-        tables = tables
-    }
-}
-
-fn new_schema(plan SqlitePositiveAmountUpgrade) Schema {
-    let tables = std.list.new[Table]()
-    std.list.push(tables, order_table(plan, "amount > 0"))
-    let columns = std.list.new[Column]()
-    std.list.push(columns, field(plan.note_id, StorageType.Int, ""))
-    std.list.push(columns, field(plan.note_body, StorageType.Text, ""))
-    std.list.push(tables, Table {
-            id = plan.notes
-            name = plan.notes
-            columns = columns
-        })
-    Schema {
-        basis = plan.to_basis
-        tables = tables
-    }
-}
-
-fn migration(identity Text, old_receipt Text, new_receipt Text) Result[SqlitePositiveAmountUpgrade, Text] {
-    let unbound = migration_with_bases(identity, "", "")
-    let previous = bind_receipt_basis(old_schema(unbound), old_receipt)?
-    let next = bind_receipt_basis(new_schema(unbound), new_receipt)?
-    Result.Ok(migration_with_bases(identity, previous.basis, next.basis))
-}
-
-fn forward_catalog(plan SqlitePositiveAmountUpgrade) MigrationCatalog {
-    let forward = std.list.new[Handling]()
-    std.list.push(forward, Handling {
-            kind = ConflictKind.ChangedPredicate
-            table = plan.orders
-            column = plan.amount
-            action = "archive_and_replace_zero_amounts"
-        })
-    std.list.push(forward, Handling {
-            kind = ConflictKind.AddedTable
-            table = plan.notes
-            column = ""
-            action = "create_notes_table"
-        })
-    std.list.push(forward, Handling {
-            kind = ConflictKind.ChangedBasis
-            table = ""
-            column = ""
-            action = "candidate_bound_to_build_receipt"
-        })
-    let recovery = std.list.new[Handling]()
-    std.list.push(recovery, Handling {
-            kind = ConflictKind.ChangedPredicate
-            table = plan.orders
-            column = plan.amount
-            action = "restore_untouched_zero_amounts"
-        })
-    std.list.push(recovery, Handling {
-            kind = ConflictKind.RemovedTable
-            table = plan.notes
-            column = ""
-            action = "retain_notes_and_archive"
-        })
-    std.list.push(recovery, Handling {
-            kind = ConflictKind.ChangedBasis
-            table = ""
-            column = ""
-            action = "candidate_bound_to_build_receipt"
-        })
-    MigrationCatalog {
-        from_basis = plan.from_basis
-        to_basis = plan.to_basis
-        forward = forward
-        recovery = recovery
-    }
-}
-
-fn started(database Text, plan SqlitePositiveAmountUpgrade) Result[Bool, Text] {
-    discard assume_historical("/usr/bin/sqlite3", database, "historical_v1", plan.from_basis)?
-    let inspection = dry_run("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan))?
+fn started(database Text, bundle SqliteMigrationPackage) Result[Bool, Text] {
+    discard assume_historical("/usr/bin/sqlite3", database, "historical_v1", bundle.from_schema.basis)?
+    let inspection = inspect_sqlite_migration("/usr/bin/sqlite3", database, bundle)?
     assert match inspection.evidence {
-        BasisEvidence.Assumed(basis) => basis == plan.from_basis,
+        BasisEvidence.Assumed(basis) => basis == bundle.from_schema.basis,
         _ => false
     }
     assert length(inspection.missing.forward) == 0 && length(inspection.missing.recovery) == 0
-    let attempt = prepare_plan(plan.attempt_id, plan.from_basis, plan.to_basis,
-        FailurePolicy.Stop, positive_amount_plan_digest(plan))?
-    discard register("/usr/bin/sqlite3", database, attempt)?
-    discard start_attempt("/usr/bin/sqlite3", database, plan.attempt_id)?
+    discard start_sqlite_migration("/usr/bin/sqlite3", database, bundle)?
     Result.Ok(true)
+}
+
+fn changed_receipt_path(bundle SqliteMigrationPackage, path Text) SqliteMigrationPackage {
+    SqliteMigrationPackage {
+        id = bundle.id
+        from_schema = bundle.from_schema
+        to_schema = bundle.to_schema
+        from_receipt_path = bundle.from_receipt_path
+        to_receipt_path = path
+        from_receipt_id = bundle.from_receipt_id
+        to_receipt_id = bundle.to_receipt_id
+        policy = bundle.policy
+        catalog = bundle.catalog
+        reupgrade = bundle.reupgrade
+        operation = bundle.operation
+    }
 }
 
 fn succeeds(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text] {
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10),(3,0);")?
-    let plan = migration("upgrade_2", old_receipt, new_receipt)?
-    discard started(database, plan)?
+    let bundle = migration("orders_first", "upgrade_2", 1, old_receipt, new_receipt)?
+    discard started(database, bundle)?
     assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='historical_v1' ORDER BY sequence;")? == "0\n7\n"
-    assert match execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, old_receipt) {
+    assert match sqlite_migration_identity(changed_receipt_path(bundle, old_receipt)) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
-    discard execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, new_receipt)?
+    discard upgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle)?
     assert match current("/usr/bin/sqlite3", database)? {
-        BasisEvidence.Observed(basis) => basis == plan.to_basis,
+        BasisEvidence.Observed(basis) => basis == bundle.to_schema.basis,
         _ => false
     }
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|1\n2|10\n3|1\n"
@@ -273,34 +140,29 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text
     discard fixture_sql(database, "UPDATE orders SET amount=2 WHERE id=1;")?
     assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|0|1\n"
     discard fixture_sql(database, "INSERT INTO notes VALUES (1,'retained');")?
-    discard execute_positive_amount_downgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, old_receipt)?
+    discard downgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle)?
     assert match current("/usr/bin/sqlite3", database)? {
-        BasisEvidence.Observed(basis) => basis == plan.from_basis,
+        BasisEvidence.Observed(basis) => basis == bundle.from_schema.basis,
         _ => false
     }
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|0\n"
     assert fixture_sql(database, "SELECT body FROM notes;")? == "retained\n"
     discard fixture_sql(database, "INSERT INTO orders VALUES (4,0);")?
-    let again = migration("upgrade_3", old_receipt, new_receipt)?
-    let inspection = dry_run("/usr/bin/sqlite3", database,
-        old_schema(again), new_schema(again), forward_catalog(again))?
+    let again = migration("orders_again", "upgrade_3", 2, old_receipt, new_receipt)?
+    assert sqlite_migration_identity(bundle)? != sqlite_migration_identity(again)?
+    let inspection = inspect_sqlite_migration("/usr/bin/sqlite3", database, again)?
     assert match inspection.evidence {
-        BasisEvidence.Observed(basis) => basis == again.from_basis,
+        BasisEvidence.Observed(basis) => basis == again.from_schema.basis,
         _ => false
     }
     assert length(inspection.missing.forward) == 0 && length(inspection.missing.recovery) == 0
-    let next = prepare_plan(again.attempt_id, again.from_basis, again.to_basis,
-        FailurePolicy.Stop, positive_amount_plan_digest(again))?
-    discard register("/usr/bin/sqlite3", database, next)?
-    discard start_attempt("/usr/bin/sqlite3", database, again.attempt_id)?
-    discard execute_positive_amount_reupgrade("/usr/bin/sqlite3", database,
-        old_schema(again), new_schema(again), forward_catalog(again), again, new_receipt)?
+    discard start_sqlite_migration("/usr/bin/sqlite3", database, again)?
+    discard reupgrade_sqlite_migration("/usr/bin/sqlite3", database, again)?
     assert match current("/usr/bin/sqlite3", database)? {
-        BasisEvidence.Observed(basis) => basis == again.to_basis,
+        BasisEvidence.Observed(basis) => basis == again.to_schema.basis,
         _ => false
     }
-    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|1\n4|1\n"
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|2\n4|2\n"
     assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|0|1\n4|0|1\n"
     assert fixture_sql(database, "SELECT body FROM notes;")? == "retained\n"
     assert match fixture_sql(database, "INSERT INTO orders VALUES (5,0);") {
@@ -316,24 +178,23 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text
 }
 
 fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text] {
-    let plan = migration("upgrade_2", old_receipt, new_receipt)?
+    let bundle = migration("orders_failure", "upgrade_2", 1, old_receipt, new_receipt)?
     discard fixture_sql(database, "CREATE TABLE loom_deploy_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, plan_digest TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL); CREATE TRIGGER block_assumed BEFORE INSERT ON loom_deploy_events WHEN NEW.state=7 BEGIN SELECT RAISE(ABORT,'blocked'); END;")?
-    assert match assume_historical("/usr/bin/sqlite3", database, "historical_v1", plan.from_basis) {
+    assert match assume_historical("/usr/bin/sqlite3", database, "historical_v1", bundle.from_schema.basis) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
     assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == "0\n"
-    discard fixture_sql(database, concat("DROP TRIGGER block_assumed; INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,plan_digest,policy,state) VALUES ('dangling','', '", concat(plan.from_basis, "','',0,0);")))?
-    assert match assume_historical("/usr/bin/sqlite3", database, "second_import", plan.from_basis) {
+    discard fixture_sql(database, concat("DROP TRIGGER block_assumed; INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,plan_digest,policy,state) VALUES ('dangling','', '", concat(bundle.from_schema.basis, "','',0,0);")))?
+    assert match assume_historical("/usr/bin/sqlite3", database, "second_import", bundle.from_schema.basis) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
     assert fixture_sql(database, "SELECT attempt_id,state FROM loom_deploy_events;")? == "dangling|0\n"
     discard fixture_sql(database, "DROP TABLE loom_deploy_events;")?
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10); CREATE VIEW notes AS SELECT 1 AS id, 'collision' AS body;")?
-    discard started(database, plan)?
-    assert match execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, new_receipt) {
+    discard started(database, bundle)?
+    assert match upgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
@@ -347,30 +208,27 @@ fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Te
         _ => false
     }
     discard fixture_sql(database, "DROP VIEW notes;")?
-    discard resume_failed_attempt("/usr/bin/sqlite3", database, plan.attempt_id)?
+    discard resume_failed_attempt("/usr/bin/sqlite3", database, bundle.operation.attempt_id)?
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.None => true,
         _ => false
     }
-    let changed = migration_with_replacement(plan, 2)
-    assert positive_amount_plan_digest(changed) != positive_amount_plan_digest(plan)
-    assert match execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
-        old_schema(changed), new_schema(changed), forward_catalog(changed), changed, new_receipt) {
+    let changed = migration("orders_failure", "upgrade_2", 2, old_receipt, new_receipt)?
+    assert sqlite_migration_identity(changed)? != sqlite_migration_identity(bundle)?
+    assert match upgrade_sqlite_migration("/usr/bin/sqlite3", database, changed) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|0\n2|10\n"
     assert fixture_sql(database, "SELECT state FROM loom_deploy_events ORDER BY sequence DESC LIMIT 1;")? == "1\n"
-    discard execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, new_receipt)?
+    discard upgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle)?
     assert match current("/usr/bin/sqlite3", database)? {
-        BasisEvidence.Observed(basis) => basis == plan.to_basis,
+        BasisEvidence.Observed(basis) => basis == bundle.to_schema.basis,
         _ => false
     }
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|1\n2|10\n"
     discard fixture_sql(database, "DROP TRIGGER loom_archive_amount_update; CREATE TRIGGER loom_archive_amount_update AFTER UPDATE OF amount ON orders BEGIN SELECT 1; END;")?
-    assert match execute_positive_amount_downgrade("/usr/bin/sqlite3", database,
-        old_schema(plan), new_schema(plan), forward_catalog(plan), plan, old_receipt) {
+    assert match downgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }

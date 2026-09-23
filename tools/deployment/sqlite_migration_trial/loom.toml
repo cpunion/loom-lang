@@ -3,3 +3,6 @@ name = "sqlite_migration_trial"
 
 [dependencies.deployment]
 path = ".."
+
+[dependencies.orders_migration]
+path = "../orders_migration"

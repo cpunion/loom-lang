@@ -1,0 +1,5 @@
+[module]
+name = "orders_migration"
+
+[dependencies.deployment]
+path = ".."
