@@ -261,3 +261,31 @@ test fn test_only_helpers_cannot_satisfy_production_calls() {
         }
     }
 }
+
+fn boundary_revision(path Text, production Text, testing Text) Revision {
+    let files = new[File]()
+    push(files, File { path = "value.loom" text = production })
+    push(files, File { path = "value_test.loom" text = testing })
+    let ids = new[Identity]()
+    push(ids, Identity {
+            id = "amount-id"
+            path = path
+            kind = NodeKind.Function
+            name = "amount"
+        })
+    Revision { package_name = "sample" files = files identities = ids }
+}
+
+test fn moving_a_declaration_into_tests_requires_explicit_resolution() {
+    let base = boundary_revision("value.loom", "fn amount() Int { 1 }\n", "")
+    let moved = boundary_revision("value_test.loom", "", "fn amount() Int { 1 }\n")
+    let edited = boundary_revision("value.loom", "fn amount() Int { 2 }\n", "")
+    match merge(base, moved, edited) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "production/test boundary")
+        }
+    }
+}

@@ -281,6 +281,10 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
         } else {
             let edited_left = get(left.entries, left_index)
             let edited_right = get(right.entries, right_index)
+            if ends_with(edited_left.path, "_test.loom") != ends_with(original.path, "_test.loom") ||
+            ends_with(edited_right.path, "_test.loom") != ends_with(original.path, "_test.loom") {
+                return Result.Err(concat("declaration crossed production/test boundary: ", original.id))
+            }
             if edited_left.kind != original.kind || edited_left.name != original.name ||
             edited_right.kind != original.kind || edited_right.name != original.name {
                 return Result.Err(concat("identity changed kind or name: ", original.id))
