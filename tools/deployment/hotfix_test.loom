@@ -1,0 +1,51 @@
+import std.list.get
+import std.list.set
+
+fn inspection_schema() Schema {
+    Schema {
+        basis = "basis"
+        tables = [Table {
+                id = "orders"
+                name = "orders"
+                columns = [Column {
+                        id = "id"
+                        name = "id"
+                        kind = StorageType.Int
+                        required = true
+                        predicate = ""
+                    }, Column {
+                        id = "amount"
+                        name = "amount"
+                        kind = StorageType.Int
+                        required = true
+                        predicate = "amount >= 0"
+                    }]
+            }]
+    }
+}
+
+test fn hotfix_mapping_requires_exact_declared_fields_and_order() {
+    let original = inspection_schema()
+    let changed_basis = Schema {
+        basis = "different"
+        tables = inspection_schema().tables
+    }
+    assert same_storage_mapping(original, changed_basis)
+    let changed = inspection_schema()
+    let table = get(changed.tables, 0)
+    let amount = get(table.columns, 1)
+    set(table.columns, 1, Column {
+            id = amount.id
+            name = amount.name
+            kind = amount.kind
+            required = amount.required
+            predicate = "amount > 0"
+        })
+    assert !same_storage_mapping(original, changed)
+    let reordered = inspection_schema()
+    let columns = get(reordered.tables, 0).columns
+    let first = get(columns, 0)
+    set(columns, 0, get(columns, 1))
+    set(columns, 1, first)
+    assert !same_storage_mapping(original, reordered)
+}

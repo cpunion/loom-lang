@@ -1,4 +1,8 @@
 import deployment.SqliteMigrationPackage
+import deployment.Schema
+import deployment.HotfixCompatibility
+import deployment.inspect_hotfix
+import deployment.bind_receipt_basis
 import deployment.upgrade_sqlite_migration
 import deployment.downgrade_sqlite_migration
 import deployment.reupgrade_sqlite_migration
@@ -72,8 +76,25 @@ fn fixture_sql(database Text, sql Text) Result[Text, Text] {
     }
 }
 
-fn started(database Text, bundle SqliteMigrationPackage) Result[Bool, Text] {
+fn hotfix_candidate(schema Schema, receipt Text) Result[Schema, Text] {
+    bind_receipt_basis(Schema {
+            basis = ""
+            tables = schema.tables
+        }, receipt)
+}
+
+fn started(database Text, bundle SqliteMigrationPackage, hotfix_receipt Text) Result[Bool, Text] {
     discard assume_historical("/usr/bin/sqlite3", database, "historical_v1", bundle.from_schema.basis)?
+    let candidate = hotfix_candidate(bundle.from_schema, hotfix_receipt)?
+    let hotfix = inspect_hotfix("/usr/bin/sqlite3", database, bundle.from_schema,
+        candidate, bundle.from_receipt_path, hotfix_receipt)?
+    assert match hotfix.starting {
+        BasisEvidence.Assumed(basis) => basis == bundle.from_schema.basis,
+        _ => false
+    }
+    assert hotfix.declared_mapping_unchanged &&
+    hotfix.compatibility == HotfixCompatibility.Unproven && !hotfix.can_execute
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == "2\n"
     let inspection = inspect_sqlite_migration("/usr/bin/sqlite3", database, bundle)?
     assert match inspection.evidence {
         BasisEvidence.Assumed(basis) => basis == bundle.from_schema.basis,
@@ -81,6 +102,11 @@ fn started(database Text, bundle SqliteMigrationPackage) Result[Bool, Text] {
     }
     assert length(inspection.missing.forward) == 0 && length(inspection.missing.recovery) == 0
     discard start_sqlite_migration("/usr/bin/sqlite3", database, bundle)?
+    assert match inspect_hotfix("/usr/bin/sqlite3", database, bundle.from_schema,
+        candidate, bundle.from_receipt_path, hotfix_receipt) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
     Result.Ok(true)
 }
 
@@ -100,16 +126,23 @@ fn changed_receipt_path(bundle SqliteMigrationPackage, path Text) SqliteMigratio
     }
 }
 
-fn succeeds(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text] {
+fn succeeds(database Text, old_receipt Text, new_receipt Text,
+    hotfix_receipt Text) Result[Bool, Text] {
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10),(3,0);")?
     let bundle = migration("orders_first", "upgrade_2", 1, old_receipt, new_receipt)?
-    discard started(database, bundle)?
+    discard started(database, bundle, hotfix_receipt)?
     assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='historical_v1' ORDER BY sequence;")? == "0\n7\n"
     assert match sqlite_migration_identity(changed_receipt_path(bundle, old_receipt)) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
     discard upgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle)?
+    let candidate = hotfix_candidate(bundle.from_schema, hotfix_receipt)?
+    assert match inspect_hotfix("/usr/bin/sqlite3", database, bundle.from_schema,
+        candidate, old_receipt, hotfix_receipt) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.Observed(basis) => basis == bundle.to_schema.basis,
         _ => false
@@ -147,6 +180,26 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text
     }
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|0\n"
     assert fixture_sql(database, "SELECT body FROM notes;")? == "retained\n"
+    let before = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
+    let hotfix = inspect_hotfix("/usr/bin/sqlite3", database, bundle.from_schema,
+        candidate, old_receipt, hotfix_receipt)?
+    assert match hotfix.starting {
+        BasisEvidence.Observed(basis) => basis == bundle.from_schema.basis,
+        _ => false
+    }
+    assert hotfix.declared_mapping_unchanged &&
+    hotfix.compatibility == HotfixCompatibility.Unproven && !hotfix.can_execute
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == before
+    assert match inspect_hotfix("/usr/bin/sqlite3", database, bundle.from_schema,
+        bundle.to_schema, old_receipt, new_receipt) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert match inspect_hotfix("/usr/bin/sqlite3", database, bundle.from_schema,
+        candidate, old_receipt, old_receipt) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
     discard fixture_sql(database, "INSERT INTO orders VALUES (4,0);")?
     let again = migration("orders_again", "upgrade_3", 2, old_receipt, new_receipt)?
     assert sqlite_migration_identity(bundle)? != sqlite_migration_identity(again)?
@@ -177,7 +230,8 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text
     Result.Ok(true)
 }
 
-fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Text) Result[Bool, Text] {
+fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Text,
+    hotfix_receipt Text) Result[Bool, Text] {
     let bundle = migration("orders_failure", "upgrade_2", 1, old_receipt, new_receipt)?
     discard fixture_sql(database, "CREATE TABLE loom_deploy_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, plan_digest TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL); CREATE TRIGGER block_assumed BEFORE INSERT ON loom_deploy_events WHEN NEW.state=7 BEGIN SELECT RAISE(ABORT,'blocked'); END;")?
     assert match assume_historical("/usr/bin/sqlite3", database, "historical_v1", bundle.from_schema.basis) {
@@ -193,7 +247,7 @@ fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Te
     assert fixture_sql(database, "SELECT attempt_id,state FROM loom_deploy_events;")? == "dangling|0\n"
     discard fixture_sql(database, "DROP TABLE loom_deploy_events;")?
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10); CREATE VIEW notes AS SELECT 1 AS id, 'collision' AS body;")?
-    discard started(database, bundle)?
+    discard started(database, bundle, hotfix_receipt)?
     assert match upgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle) {
         Result.Err(_) => true,
         Result.Ok(_) => false
@@ -347,12 +401,12 @@ fn rejects_corrupt_receipt_and_artifact(database Text, receipt_path Text) Bool {
 
 fn main() {
     let args = arguments()
-    assert length(args) == 5
-    assert match succeeds(get(args, 1), get(args, 3), get(args, 4)) {
+    assert length(args) == 6
+    assert match succeeds(get(args, 1), get(args, 3), get(args, 4), get(args, 5)) {
         Result.Ok(value) => value,
         Result.Err(_) => false
     }
-    assert match rolls_back_failed_transaction(get(args, 2), get(args, 3), get(args, 4)) {
+    assert match rolls_back_failed_transaction(get(args, 2), get(args, 3), get(args, 4), get(args, 5)) {
         Result.Ok(value) => value,
         Result.Err(_) => false
     }

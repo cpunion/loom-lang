@@ -1,0 +1,84 @@
+import std.list.get
+import std.list.length
+import std.result.Result
+
+// This inspection compares declared metadata only. A build receipt proves the
+// artifact bytes, not that application code obeys the declared storage mapping.
+pub enum HotfixCompatibility {
+    Unproven
+}
+
+pub record HotfixInspection {
+    starting BasisEvidence
+    declared_mapping_unchanged Bool
+    compatibility HotfixCompatibility
+    can_execute Bool
+}
+
+fn same_storage_mapping(from Schema, to Schema) Bool {
+    if length(from.tables) != length(to.tables) {
+        return false
+    }
+    var table_index = 0
+    while table_index < length(from.tables) {
+        let old_table = get(from.tables, table_index)
+        let new_table = get(to.tables, table_index)
+        if old_table.id != new_table.id || old_table.name != new_table.name ||
+        length(old_table.columns) != length(new_table.columns) {
+            return false
+        }
+        var column_index = 0
+        while column_index < length(old_table.columns) {
+            let old_column = get(old_table.columns, column_index)
+            let new_column = get(new_table.columns, column_index)
+            if old_column.id != new_column.id || old_column.name != new_column.name ||
+            old_column.kind != new_column.kind || old_column.required != new_column.required ||
+            old_column.predicate != new_column.predicate {
+                return false
+            }
+            column_index = column_index + 1
+        }
+        table_index = table_index + 1
+    }
+    true
+}
+
+// Offline read-only check. A matching declared mapping is not application
+// compatibility proof and cannot authorize a deployment or ledger transition.
+pub fn inspect_hotfix(tool Text, database Text, from Schema, to Schema,
+    from_receipt_path Text, to_receipt_path Text) Result[HotfixInspection, Text] {
+    let old_receipt = read_build_receipt(from_receipt_path)?
+    let new_receipt = read_build_receipt(to_receipt_path)?
+    discard verify_basis(from, old_receipt.checked, old_receipt.receipt,
+        old_receipt.artifact, old_receipt.backend)?
+    discard verify_basis(to, new_receipt.checked, new_receipt.receipt,
+        new_receipt.artifact, new_receipt.backend)?
+    if from.basis == to.basis {
+        return Result.Err("hotfix candidate must have a different build basis")
+    }
+    if !same_storage_mapping(from, to) {
+        return Result.Err("declared storage mapping changed; a hotfix without migration is not established")
+    }
+    let starting = current(tool, database)?
+    match starting {
+        BasisEvidence.None => {
+            return Result.Err("previous deployment outcome is unresolved")
+        }
+        BasisEvidence.Observed(basis) => {
+            if basis != from.basis {
+                return Result.Err("starting basis differs from observed deployment")
+            }
+        }
+        BasisEvidence.Assumed(basis) => {
+            if basis != from.basis {
+                return Result.Err("starting basis differs from assumed deployment")
+            }
+        }
+    }
+    Result.Ok(HotfixInspection {
+            starting = starting
+            declared_mapping_unchanged = true
+            compatibility = HotfixCompatibility.Unproven
+            can_execute = false
+        })
+}
