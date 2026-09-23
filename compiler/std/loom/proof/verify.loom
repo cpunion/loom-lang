@@ -102,6 +102,9 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
         // is not assumed here; this only preserves exact value relationships.
         return fresh_result(proof, 1)
     }
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        return record_parameter_value(proof, get(shape.fields, 0).ty, depth + 1)
+    }
     if shape.kind != TypeKind.Record {
         return Value.Empty
     }
@@ -138,6 +141,10 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 1 {
         return Result.Ok(Value.Number(variable(id)))
+    }
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
+        get(proof.program.types, get(shape.fields, 0).ty).kind == TypeKind.Record {
+        return Result.Ok(record_parameter_value(proof, get(shape.fields, 0).ty, 0))
     }
     if shape.kind != TypeKind.Record {
         return Result.Err("required proof currently needs scalar parameters or scalar-field records")

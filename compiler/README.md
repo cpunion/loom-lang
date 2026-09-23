@@ -1159,6 +1159,17 @@ arithmetic returns `Int`, while generic inference retains nominal identity.
 Float needs no check. Money never implicitly converts to Int. Finiteness is a
 predicate choice, not an extra hidden restriction on Float constraints.
 
+A record with only inline `Int`, `Bool`, `Float`, or nested inline
+record/refined fields can also have a `where` predicate over `self.field` paths.
+Its constructor checks an unknown value once and returns `Result`; copying the
+refined value or widening it to the base record adds no check. Records with
+`List`, `Bytes`, `Text`, or other shared/reference-like fields are rejected as
+refinement bases, and fields cannot be assigned in place. Record literals do
+not yet use optional constant folding, so even an evident valid literal keeps
+the `Result` boundary; explicit `comptime` evaluation can materialize one.
+See the [record refinement example](examples/record_refinement/main.loom).
+This is not a general invariant over mutable shared data.
+
 An explicit conversion between Int refinements can also return the destination
 directly when the source predicate proves the destination predicate, including
 the absence of overflow in that predicate:

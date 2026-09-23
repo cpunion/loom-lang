@@ -442,6 +442,23 @@ pub fn decode(text: &str) -> Result<c::Program> {
     Ok(program)
 }
 
+fn inline_constraint_base(program: &c::Program, ty: Type, depth: usize) -> bool {
+    if depth >= 64 {
+        return false;
+    }
+    match ty {
+        Type::Int | Type::Bool | Type::Float => true,
+        Type::Data(id) => match &program.types[id].kind {
+            c::DataKind::Record(fields) => fields
+                .iter()
+                .all(|(_, field)| inline_constraint_base(program, *field, depth + 1)),
+            c::DataKind::Refined(base) => inline_constraint_base(program, *base, depth + 1),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn layout(program: &c::Program, ty: Type, state: &mut [u8]) -> Result<()> {
     let Type::Data(id) = ty else { return Ok(()) };
     if state[id] == 2 {
@@ -466,9 +483,18 @@ fn layout(program: &c::Program, ty: Type, state: &mut [u8]) -> Result<()> {
             }
         }
         c::DataKind::Refined(base) => {
-            if *base != Type::Int && *base != Type::Float {
-                return Err("native refined layout must have an Int or Float base".into());
+            let inline_record = if let Type::Data(base_id) = base {
+                matches!(&program.types[*base_id].kind, c::DataKind::Record(_))
+                    && inline_constraint_base(program, *base, 0)
+            } else {
+                false
+            };
+            if *base != Type::Int && *base != Type::Float && !inline_record {
+                return Err(
+                    "native refined layout needs Int, Float or an immutable inline record".into(),
+                );
             }
+            layout(program, *base, state)?;
         }
     }
     state[id] = 2;

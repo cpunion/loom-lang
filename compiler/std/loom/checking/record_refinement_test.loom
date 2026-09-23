@@ -1,0 +1,31 @@
+import std.text.concat
+
+test fn inline_record_refinement_checks_dynamic_construction_once() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nrecord Inner { count Int }\nrecord Snapshot { inner Inner active Bool }\ntype ActiveCount = Snapshot where self.inner.count >= 0 && self.active\n"
+    let program = accepted_result(concat(definitions,
+            "fn source(value Snapshot) Snapshot { value }\npub fn make(value Snapshot) Result[ActiveCount, ConstraintError] { ActiveCount(source(value)) }\npub fn copy(value ActiveCount) ActiveCount ensures result.inner.count == value.inner.count { ActiveCount(value) }\npub fn widen(value ActiveCount) Snapshot { value }"))
+    let make = get(program.functions, 0)
+    let boundary = get(make.body.children, 0)
+    assert boundary.kind == ExprKind.Block && length(boundary.children) == 2
+    let saved = get(boundary.children, 0)
+    assert saved.kind == ExprKind.Let && get(get(saved.children, 0).children, 0).kind == ExprKind.Local
+    let condition = get(boundary.children, 1)
+    assert condition.kind == ExprKind.If
+    assert dynamic_count(make.body, ExprKind.If) == 1
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 0
+}
+
+test fn inline_record_refinement_rejects_mutable_aliases_and_unchecked_replacement() {
+    let imports = "import std.result.Result\nimport std.result.ConstraintError\n"
+    rejects(concat(imports, "record Unsafe { values List[Int] }\ntype Guard = Unsafe where true"))
+    rejects(concat(imports, "record Nested { name Text }\nrecord Unsafe { nested Nested }\ntype Guard = Unsafe where true"))
+    rejects(concat(imports, "record Unsafe { bytes Bytes }\ntype Guard = Unsafe where true"))
+    let definitions = "record Snapshot { count Int }\ntype Valid = Snapshot where self.count > 0\n"
+    rejects_result(concat(concat(imports, definitions),
+            "fn replace(value Snapshot) Result[Valid, ConstraintError] { var valid = Valid(value)?\nvalid = value\nResult.Ok(valid) }"))
+    // A literal record currently uses the runtime Result boundary; unlike a
+    // scalar literal, it is not yet folded into a direct refined value.
+    rejects_result(concat(concat(imports, definitions),
+            "fn literal() Valid { Valid(Snapshot { count = 1 }) }"))
+}

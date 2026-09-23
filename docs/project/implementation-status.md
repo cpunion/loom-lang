@@ -402,6 +402,11 @@ Required contracts also follow scalar fields through nested inline records and
 Int-backed refinements. In `ensures`, `old(expr)` currently denotes an immutable
 parameter scalar or inline record scalar path; shared-data snapshots, index and
 call expressions reject rather than treating a mutable alias as entry state.
+Record-backed refinements now admit only immutable inline scalar/record leaves.
+Unknown construction checks once; copies and base-record widening do not recheck.
+Shared `List`/`Bytes`/`Text` fields and unchecked replacement are rejected.
+Record literals are not optionally folded at construction, although explicit
+`comptime` can materialize a checked result. Shared-state invariants remain open.
 
 Managed memory now uses stop-the-world copying collection with a traced
 large-object space; stress mode relocates all sizes. Rewritable typed
