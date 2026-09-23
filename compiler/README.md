@@ -117,6 +117,8 @@ without creating a binary. Ordinary `loom test` still compiles and runs its test
 `loom run [package] -- [arguments...]` passes arguments to the built program.
 Try the [multi-package file tool](examples/wordcount/README.md) for a complete
 edit, format, test, and run exercise.
+The [core experience example](examples/core_experience/README.md) combines
+checked construction, a dynamic concept contract, a Task, and lexical cleanup.
 
 A failed native assertion reports the current test name and the assertion's
 definition file, line and Unicode-scalar column, including assertions in called
@@ -859,8 +861,10 @@ under their declared generic requirements, including known implementations in
 unused functions with generic nominal receivers. An override does not instantiate
 the default body it replaces. The [method example](examples/comptime_parameters/methods.loom)
 combines defaults, recursive static callbacks, Text/Bool options and dynamic calls.
-Concept contracts remain unsupported. Pure static and dynamic calls can also
-execute inside an isolated `comptime` computation.
+Bounded synchronous scalar concept method contracts are proved for each
+implementation; required proofs may use a declared dynamic method postcondition.
+Pure static and dynamic calls can also execute inside an isolated `comptime`
+computation.
 
 ### Associated types and bounded data
 
