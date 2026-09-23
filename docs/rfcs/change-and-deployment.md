@@ -10,7 +10,9 @@ do not require a new version-control or deployment control plane.
 The current prototypes are a [read-only semantic merge preview](../../tools/semantic_change_trial/README.md)
 and a [bounded offline SQLite migration trial](../../tools/deployment/sqlite_migration_trial/README.md).
 They do not yet provide automatic identity tracking, application of a merge,
-general migration packages, or artifact-bound deployment proof.
+general migration packages, or proof that application code obeys the declared
+storage mapping. The fixed SQLite executor now checks a local build receipt
+against its target artifact; this is not signed deployment evidence.
 
 ## Story 1: Evolve a library without hiding dependency changes
 

@@ -1,0 +1,14 @@
+type Amount = Int where self >= 0
+
+record Order {
+    id Int
+    amount Amount
+}
+
+fn main() {
+    let order = Order {
+        id = 1
+        amount = Amount(0)
+    }
+    assert order.amount == 0
+}

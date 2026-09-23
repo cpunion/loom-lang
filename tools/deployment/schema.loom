@@ -28,8 +28,9 @@ pub record Table {
     columns List[Column]
 }
 
-// The caller supplies an artifact basis. The deployment ledger must bind this
-// value to a checked build before treating the schema as deployed.
+// The operator declares this storage mapping. A fixed executor verifies that
+// its basis matches a build receipt before applying a migration; the receipt
+// does not prove that application code actually implements the mapping.
 pub record Schema {
     basis Text
     tables List[Table]

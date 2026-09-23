@@ -1,0 +1,239 @@
+import std.bytes.decode_utf8
+import std.bytes.length
+import std.bytes.new
+import std.bytes.push
+import std.file.read_bytes
+import std.fs.canonicalize
+import std.fs.entry_kind
+import std.fs.FileKind
+import std.hash.sha256.hex
+import std.int.parse
+import std.int.to_text
+import std.list.get
+import std.list.length
+import std.result.Result
+import std.text.byte
+import std.text.concat
+import std.text.length
+import std.text.slice
+import std.text.split
+import std.text.starts_with
+
+// This is local build evidence, not a signature or proof that the operator's
+// declared storage mapping matches the program's behavior.
+pub record BuildReceipt {
+    checked Text
+    artifact Text
+    backend Text
+    artifact_path Text
+    receipt Text
+}
+
+fn hex_digit(value Int) Int {
+    if value >= 48 && value <= 57 {
+        return value - 48
+    }
+    if value >= 97 && value <= 102 {
+        return value - 87
+    }
+    -1
+}
+
+fn digest_text(value Text) Bool {
+    if std.text.length(value) != 64 {
+        return false
+    }
+    var index = 0
+    while index < 64 {
+        if hex_digit(byte(value, index)) < 0 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn decoded_hex(value Text) Result[Text, Text] {
+    if std.text.length(value) % 2 != 0 {
+        return Result.Err("invalid build receipt hex field")
+    }
+    let bytes = new()
+    var index = 0
+    while index < std.text.length(value) {
+        let high = hex_digit(byte(value, index))
+        let low = hex_digit(byte(value, index + 1))
+        if high < 0 || low < 0 {
+            return Result.Err("invalid build receipt hex field")
+        }
+        push(bytes, high * 16 + low)
+        index = index + 2
+    }
+    match decode_utf8(bytes) {
+        Result.Ok(text) => Result.Ok(text),
+        Result.Err(_) => Result.Err("invalid build receipt UTF-8 field")
+    }
+}
+
+fn value(line Text, label Text) Result[Text, Text] {
+    let prefix = std.text.concat(label, " ")
+    if !starts_with(line, prefix) {
+        return Result.Err("invalid build receipt field")
+    }
+    Result.Ok(slice(line, std.text.length(prefix), std.text.length(line)))
+}
+
+fn count(line Text, label Text) Result[Int, Text] {
+    let raw = value(line, label)?
+    let parsed = match parse(raw) {
+        Result.Ok(number) => number,
+        Result.Err(_) => {
+            return Result.Err("invalid build receipt count")
+        }
+    }
+    if parsed < 1 || parsed > 100000 || to_text(parsed) != raw {
+        return Result.Err("invalid build receipt count")
+    }
+    Result.Ok(parsed)
+}
+
+fn module_line(line Text) Result[Bool, Text] {
+    let fields = split(line, " ")
+    if std.list.length(fields) != 3 || get(fields, 0) != "module" {
+        return Result.Err("invalid build receipt module")
+    }
+    if decoded_hex(get(fields, 1))? == "" || decoded_hex(get(fields, 2))? == "" {
+        return Result.Err("invalid build receipt module")
+    }
+    Result.Ok(true)
+}
+
+fn source_line(line Text, modules Int) Result[Bool, Text] {
+    let fields = split(line, " ")
+    if std.list.length(fields) != 4 || get(fields, 0) != "source" {
+        return Result.Err("invalid build receipt source")
+    }
+    let raw = get(fields, 1)
+    let module = match parse(raw) {
+        Result.Ok(number) => number,
+        Result.Err(_) => {
+            return Result.Err("invalid build receipt source module")
+        }
+    }
+    if module < 0 || module >= modules || to_text(module) != raw || decoded_hex(get(fields, 2))? == "" ||
+    !digest_text(get(fields, 3)) {
+        return Result.Err("invalid build receipt source")
+    }
+    Result.Ok(true)
+}
+
+// The receipt must be exactly the compiler's v1 line protocol. It is checked
+// against the artifact currently at its canonical path; source files need not
+// still exist because deployment may use an immutable earlier build.
+pub fn read_build_receipt(path Text) Result[BuildReceipt, Text] {
+    let bytes = match read_bytes(path) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("cannot read build receipt")
+        }
+    }
+    if std.bytes.length(bytes) > 16777216 {
+        return Result.Err("build receipt is too large")
+    }
+    let raw = match decode_utf8(bytes) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("build receipt is not UTF-8")
+        }
+    }
+    let lines = split(raw, "\n")
+    if std.list.length(lines) < 11 || get(lines, 0) != "loom-build-receipt 1" {
+        return Result.Err("invalid build receipt version")
+    }
+    let checked = value(get(lines, 1), "checked-sha256")?
+    let artifact = value(get(lines, 2), "artifact-sha256")?
+    let backend = value(get(lines, 3), "backend-identity")?
+    let output = decoded_hex(value(get(lines, 4), "artifact-path")?)?
+    if !digest_text(checked) || !digest_text(artifact) || !digest_text(backend) || output == "" {
+        return Result.Err("invalid build receipt identity")
+    }
+    let modules = count(get(lines, 5), "module-count")?
+    var position = 6
+    var index = 0
+    while index < modules {
+        if position >= std.list.length(lines) {
+            return Result.Err("truncated build receipt")
+        }
+        discard module_line(get(lines, position))?
+        position = position + 1
+        index = index + 1
+    }
+    if position >= std.list.length(lines) {
+        return Result.Err("truncated build receipt")
+    }
+    let sources = count(get(lines, position), "source-count")?
+    position = position + 1
+    index = 0
+    while index < sources {
+        if position >= std.list.length(lines) {
+            return Result.Err("truncated build receipt")
+        }
+        discard source_line(get(lines, position), modules)?
+        position = position + 1
+        index = index + 1
+    }
+    if position + 2 != std.list.length(lines) || get(lines, position) != "end" ||
+    get(lines, position + 1) != "" {
+        return Result.Err("invalid build receipt terminator")
+    }
+    let kind = match entry_kind(output) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("build artifact is missing")
+        }
+    }
+    if kind != FileKind.File {
+        return Result.Err("build artifact must be a regular file")
+    }
+    let resolved = match canonicalize(output) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("cannot resolve build artifact")
+        }
+    }
+    if resolved != output {
+        return Result.Err("build artifact path changed")
+    }
+    let artifact_bytes = match read_bytes(output) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("cannot read build artifact")
+        }
+    }
+    if hex(artifact_bytes) != artifact {
+        return Result.Err("build artifact digest differs from receipt")
+    }
+    Result.Ok(BuildReceipt {
+            checked = checked
+            artifact = artifact
+            backend = backend
+            artifact_path = output
+            receipt = hex(bytes)
+        })
+}
+
+// The complete receipt digest binds its dependency/source closure and artifact
+// path. The checked bytes, artifact and backend identity remain separate inputs.
+pub fn basis_from_receipt(schema Schema, receipt_path Text) Result[Text, Text] {
+    let receipt = read_build_receipt(receipt_path)?
+    basis_for(schema, receipt.checked, receipt.receipt, receipt.artifact, receipt.backend)
+}
+
+pub fn bind_receipt_basis(schema Schema, receipt_path Text) Result[Schema, Text] {
+    let receipt = read_build_receipt(receipt_path)?
+    bind_basis(schema, receipt.checked, receipt.receipt, receipt.artifact, receipt.backend)
+}
+
+pub fn verify_receipt_basis(schema Schema, receipt_path Text) Result[Bool, Text] {
+    let receipt = read_build_receipt(receipt_path)?
+    verify_basis(schema, receipt.checked, receipt.receipt, receipt.artifact, receipt.backend)
+}

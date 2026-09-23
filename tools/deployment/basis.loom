@@ -60,24 +60,24 @@ fn snapshot_tables(tables List[Table]) List[Table] {
     copied
 }
 
-// The basis includes the checked program, resolved dependency lock, target and
-// native toolchain, plus the complete ordered storage mapping. Every variable
-// length part has a length prefix, so adjacent fields cannot alias each other.
-// Callers must supply real content digests for the non-schema inputs.
-pub fn basis_for(schema Schema, checked Text, lock Text, target Text, native_tool Text) Result[Text, Text] {
+// The basis includes checked program bytes, the build receipt (including its
+// resolved source closure), artifact bytes, backend identity, and the declared
+// ordered storage mapping. This pure hash does not validate its inputs; the
+// SQLite executor obtains them only through a verified build receipt.
+pub fn basis_for(schema Schema, checked Text, provenance Text, artifact Text, backend Text) Result[Text, Text] {
     discard validate(Schema {
             basis = "pending"
             tables = schema.tables
         })?
-    if checked == "" || lock == "" || target == "" || native_tool == "" {
-        return Result.Err("deployment basis needs checked source, lock, target and native tool")
+    if checked == "" || provenance == "" || artifact == "" || backend == "" {
+        return Result.Err("deployment basis needs checked, provenance, artifact and backend identities")
     }
     let output = new()
     text_part(output, "loom-deployment-basis-v1")
     text_part(output, checked)
-    text_part(output, lock)
-    text_part(output, target)
-    text_part(output, native_tool)
+    text_part(output, provenance)
+    text_part(output, artifact)
+    text_part(output, backend)
     number_part(output, length(schema.tables))
     var table_index = 0
     while table_index < length(schema.tables) {
@@ -106,12 +106,12 @@ pub fn basis_for(schema Schema, checked Text, lock Text, target Text, native_too
 
 // Use this before comparing or registering a deployment. An existing, different
 // basis cannot be silently rebound to another checked program or mapping.
-pub fn bind_basis(schema Schema, checked Text, lock Text, target Text, native_tool Text) Result[Schema, Text] {
+pub fn bind_basis(schema Schema, checked Text, provenance Text, artifact Text, backend Text) Result[Schema, Text] {
     let frozen = Schema {
         basis = schema.basis
         tables = snapshot_tables(schema.tables)
     }
-    let computed = basis_for(frozen, checked, lock, target, native_tool)?
+    let computed = basis_for(frozen, checked, provenance, artifact, backend)?
     if schema.basis != "" && schema.basis != computed {
         return Result.Err("declared deployment basis differs from checked inputs")
     }
@@ -121,8 +121,8 @@ pub fn bind_basis(schema Schema, checked Text, lock Text, target Text, native_to
         })
 }
 
-pub fn verify_basis(schema Schema, checked Text, lock Text, target Text, native_tool Text) Result[Bool, Text] {
-    if schema.basis == "" || schema.basis != basis_for(schema, checked, lock, target, native_tool)? {
+pub fn verify_basis(schema Schema, checked Text, provenance Text, artifact Text, backend Text) Result[Bool, Text] {
+    if schema.basis == "" || schema.basis != basis_for(schema, checked, provenance, artifact, backend)? {
         return Result.Err("declared deployment basis differs from checked inputs")
     }
     Result.Ok(true)

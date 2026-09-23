@@ -347,8 +347,9 @@ transfer are supported. MustScope results retain their fresh-return obligation
 through runtime function values and dynamic factory methods; every selected
 implementation is checked. A Dispose-only callback result has no such guarantee.
 Multi-field MustScope aggregates now disarm per-field pending cleanup after
-successful construction. Nested resource aggregates and resource Lists remain
-open; suspended lexical cleanup is implemented as described above, not a
+successful construction. Nested record resources also receive pending cleanup;
+resource Lists, enum payloads and abstract resource fields remain open.
+Suspended lexical cleanup is implemented as described above, not a
 general resource-transfer facility.
 
 List literals now share typed/native/compile-time semantics. Runtime literals
@@ -445,8 +446,10 @@ merges, or provide general semantic version-control tooling.
 
 A bounded SQLite prototype now records assumed versus observed states and
 executes one offline orders upgrade, data-preserving downgrade and re-upgrade.
-Its catalog and physical checks do not prove caller-supplied artifact identities
-or generalize to arbitrary schemas. The accepted workflows below remain open.
+The fixed executor binds its candidate basis to a local same-build receipt and
+rehashes the artifact. This does not prove the operator-declared storage mapping,
+authenticate a hostile build environment, or generalize to arbitrary schemas.
+The accepted workflows below remain open.
 
 Build the accepted tools on the compiler's identities, bindings, contracts,
 effects, and immutable build basis. Reuse an existing version engine; do not
