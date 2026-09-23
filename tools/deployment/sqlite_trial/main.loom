@@ -1,0 +1,69 @@
+import deployment.execute
+import deployment.inspect
+import deployment.prepare
+import deployment.register
+import deployment.record_event
+import deployment.current
+import deployment.FailurePolicy
+import deployment.Transition
+import deployment.BasisEvidence
+import std.bytes.to_text
+import std.list.get
+import std.list.length
+import std.process.arguments
+import std.result.Result
+
+fn recorded_roundtrip(database Text) Result[Bool, Text] {
+    let target = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    let attempt = prepare("upgrade_2", "", target, FailurePolicy.Rollback)?
+    discard register("/usr/bin/sqlite3", database, attempt)?
+    discard record_event("/usr/bin/sqlite3", database, "upgrade_2", Transition.Begin)?
+    let other = prepare("upgrade_3", "", target, FailurePolicy.Stop)?
+    assert match register("/usr/bin/sqlite3", database, other) {
+        Result.Err(_) => true,
+        _ => false
+    }
+    discard record_event("/usr/bin/sqlite3", database, "upgrade_2", Transition.Fail)?
+    discard record_event("/usr/bin/sqlite3", database, "upgrade_2", Transition.BeginRollback)?
+    discard record_event("/usr/bin/sqlite3", database, "upgrade_2", Transition.FinishRollback)?
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.Observed(basis) => basis == "",
+        _ => false
+    }
+    let events = inspect("/usr/bin/sqlite3", database, "SELECT count(*) FROM loom_deploy_events;")?
+    assert to_text(events) == "5\n"
+    Result.Ok(true)
+}
+
+fn main() {
+    match execute("/usr/bin/sqlite3", ":memory:", "CREATE TABLE orders (amount INTEGER NOT NULL); INSERT INTO orders VALUES (10); SELECT amount FROM orders;") {
+        Result.Ok(output) => {
+            assert to_text(output) == "10\n"
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    match inspect("/usr/bin/sqlite3", ":memory:", "SELECT 1;") {
+        Result.Ok(output) => {
+            assert to_text(output) == "1\n"
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    assert match inspect("/usr/bin/sqlite3", ":memory:", "CREATE TABLE t(x);") {
+        Result.Err(message) => message == "SQLite command failed",
+        Result.Ok(_) => false
+    }
+    let args = arguments()
+    if length(args) == 2 {
+        match recorded_roundtrip(get(args, 1)) {
+            Result.Ok(_) => {
+            }
+            Result.Err(_) => {
+                assert false
+            }
+        }
+    }
+}

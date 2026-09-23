@@ -1,0 +1,66 @@
+import std.bytes.new
+import std.bytes.push
+import std.list.new
+import std.list.push
+import std.process.capture_input
+import std.process.ExitStatus
+import std.result.Result
+import std.text.byte
+import std.text.length
+
+fn bytes(value Text) Bytes {
+    let output = std.bytes.new()
+    var index = 0
+    while index < length(value) {
+        std.bytes.push(output, byte(value, index))
+        index = index + 1
+    }
+    output
+}
+
+// The SQLite executable is an explicit deployment-tool dependency, not a
+// language runtime intrinsic. Child arguments are literal; no shell is used.
+fn invoke(tool Text, database Text, sql Text, read_only Bool) Result[Bytes, Text] {
+    if tool == "" || database == "" {
+        return Result.Err("SQLite tool and database path are required")
+    }
+    let args = std.list.new[Text]()
+    std.list.push(args, tool)
+    std.list.push(args, "-batch")
+    std.list.push(args, "-bail")
+    std.list.push(args, "-list")
+    std.list.push(args, "-noheader")
+    std.list.push(args, "-separator")
+    std.list.push(args, "\t")
+    if read_only {
+        std.list.push(args, "-readonly")
+    }
+    std.list.push(args, "--")
+    std.list.push(args, database)
+    match capture_input(args, bytes(sql)) {
+        Result.Ok(output) => match output.status {
+            ExitStatus.Exited(code) => {
+                if code == 0 {
+                    Result.Ok(output.stdout)
+                } else {
+                    Result.Err("SQLite command failed")
+                }
+            }
+            ExitStatus.Terminated => Result.Err("SQLite command terminated")
+        },
+        Result.Err(_) => Result.Err("cannot start SQLite tool")
+    }
+}
+
+// The database is opened read-only. Query results stay private to the caller;
+// diagnostics never echo SQL, database contents, paths, or SQLite stderr.
+pub fn inspect(tool Text, database Text, sql Text) Result[Bytes, Text] {
+    invoke(tool, database, sql, true)
+}
+
+// Explicit execution boundary. Callers must establish compatibility, a
+// migration/recovery plan, and the selected failure policy before invoking it.
+// This wrapper alone does not attest transactionality or successful migration.
+pub fn execute(tool Text, database Text, sql Text) Result[Bytes, Text] {
+    invoke(tool, database, sql, false)
+}
