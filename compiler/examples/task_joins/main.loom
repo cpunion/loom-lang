@@ -75,6 +75,15 @@ async fn main() {
             assert false
         }
     }
+    assert any(item(7), item(8)).await >= 7
+    match race(item(1), item(2)).await {
+        Outcome.Completed(value) => {
+            assert value == 1 || value == 2
+        }
+        _ => {
+            assert false
+        }
+    }
     let count = count()
     let values = all(start(count)).await
     let outcomes = settled(start(count)).await

@@ -12,6 +12,8 @@ The program prints `joins finished`. Its runtime count defaults to 5 and accepts
 0–1000. List operations consume a `List[Task[T]]`; results keep their native type.
 The two-element `all((task_a, task_b))` and `settled((task_a, task_b))` overloads
 accept distinct result types and return a tuple in input order.
+Two-argument `any(task_a, task_b)` and `race(task_a, task_b)` overloads
+accept Tasks with the same result type and use the List join policies.
 
 | `std.task` function | Awaited result | Rule |
 | --- | --- | --- |

@@ -96,8 +96,9 @@ Tasks, without admitting ordinary void bindings or source Unit syntax. Source
 `std.list.transfer.replace` returns the displaced value and shared header, using
 ordinary native get/set and the same compile-time semantics.
 See the [join example](../../compiler/examples/task_joins).
-Two-task heterogeneous tuple `all/settled` joins are available. Arbitrary
-tuple packs, socket adapters and general worker APIs remain unfinished.
+Two-task heterogeneous tuple `all/settled` joins and two-argument homogeneous
+`any/race` joins are available. Arbitrary tuple packs, socket adapters and
+general worker APIs remain unfinished.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;
