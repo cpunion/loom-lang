@@ -6,7 +6,8 @@ with two nonexistent database paths:
 ```sh
 loom build tools/deployment/fixture_v1 --output /tmp/loom-v1 --receipt /tmp/loom-v1.receipt
 loom build tools/deployment/fixture_v2 --output /tmp/loom-v2 --receipt /tmp/loom-v2.receipt
-loom run tools/deployment/sqlite_migration_trial -- /tmp/loom-success.sqlite /tmp/loom-failure.sqlite /tmp/loom-v1.receipt /tmp/loom-v2.receipt
+loom build tools/deployment/fixture_v1_hotfix --output /tmp/loom-v1-hotfix --receipt /tmp/loom-v1-hotfix.receipt
+loom run tools/deployment/sqlite_migration_trial -- /tmp/loom-success.sqlite /tmp/loom-failure.sqlite /tmp/loom-v1.receipt /tmp/loom-v2.receipt /tmp/loom-v1-hotfix.receipt
 ```
 
 The trial exercises a fixed offline orders upgrade, downgrade, and re-upgrade,
@@ -32,5 +33,11 @@ from real Loom builds; the package API rehashes both artifacts before each
 transition. An observed event means this narrow SQL transaction completed.
 The receipt does not prove the operator-supplied schema matches application
 behavior, and it is not signed supply-chain evidence.
+
+The separate `inspect_hotfix` call verifies both build receipts, the effective
+recorded starting basis, and exact equality of the declared storage mappings.
+Its result is explicitly `Unproven` and `can_execute = false`; it never writes
+an event or authorizes a hotfix. Identical declarations cannot prove the new
+application reads and writes stored data compatibly.
 
 The archive, ledger, and migration triggers are tool-managed. Unrestricted external SQL can alter them after completion; SQLite `STRICT` also does not prove that stored `TEXT` bytes are valid UTF-8. Typed application access must enforce that boundary.
