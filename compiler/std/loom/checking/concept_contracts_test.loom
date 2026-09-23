@@ -19,6 +19,11 @@ test fn concept_contracts_validate_declarations_and_defaults() {
     rejects("fn positive(value Int) Bool { positive(value) }\nconcept C { fn preserve(self Self, value Int) Int requires positive(value) }\nimpl C for Int { fn preserve(self Int, input Int) Int { input } }")
 }
 
+test fn old_in_concept_contracts_follows_declared_scalar_parameters() {
+    discard accepted("concept Keep { fn keep(self Self, value Int) Int ensures result == old(value) }\nimpl Keep for Bool { fn keep(receiver Bool, input Int) Int { input } }\nfn main() { assert true.keep(8) == 8 }")
+    rejects("concept Keep { fn keep(self Self) Int ensures result == old(self) }\nimpl Keep for Int { fn keep(self Int) Int { self } }")
+}
+
 test fn inherited_helper_contracts_use_the_concept_package_scope() {
     let files = source_files("import rules.C\nimpl C for Int { fn preserve(receiver Int, input Int) Int { input } }\nfn main() { assert 1.preserve(3) == 3 }")
     push(files, source_file("rules", "fn positive(value Int) Bool { value > 0 }\npub concept C { fn preserve(self Self, value Int) Int requires positive(value) ensures positive(result) }", false))

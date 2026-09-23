@@ -102,5 +102,5 @@ test fn dispose_only_scopes_require_freshness_and_transitive_receiver_safety() {
     resource_reject(concat(header, "fn bad() { scoped item = Item { id = 1 }\ndiscard item.forward() }"))
     resource_reject(concat(header, "fn bad() { let item = Item { id = 1 }\nscoped alias = item }"))
     resource_reject(concat(header, "fn identity(item Item) Item { item }\nfn bad() { scoped alias = identity(Item { id = 1 }) }"))
-    resource_reject(concat(header, "fn choose(item Item, old Bool) Item { if old { return item }\nItem { id = 2 } }\nfn bad() { scoped alias = choose(Item { id = 1 }, true) }"))
+    resource_reject(concat(header, "fn choose(item Item, previous Bool) Item { if previous { return item }\nItem { id = 2 } }\nfn bad() { scoped alias = choose(Item { id = 1 }, true) }"))
 }

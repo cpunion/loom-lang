@@ -249,13 +249,74 @@ fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
     }
     Result.Err(error(context, node, "contracts require scalar predicates and pure helper calls"))
 }
+// Parameters cannot be rebound. A scalar parameter or scalar field reached
+// through immutable record values therefore has the same logical entry value
+// at every normal return. Shared containers are intentionally not snapshots.
+fn old_parameter(context Context, node Node) Bool {
+    let parameters = group(symbol(context.env, context.signature.symbol).node, NodeKind.Parameters)
+    let root = slice(node.value, 0, first_dot(node.value))
+    var index = 0
+    while index < length(parameters) {
+        if get(parameters, index).value == root { return true }
+        index = index + 1
+    }
+    false
+}
+fn old_place(context Context, node Node) Bool {
+    if node.kind == NodeKind.Name { return old_parameter(context, node) }
+    if node.kind == NodeKind.Select { return old_place(context, child(node, 0)) }
+    false
+}
+fn old_inline_path(context Context, value Expr) Bool {
+    if value.kind == ExprKind.Local {
+        return value.index >= 0 && value.index < length(context.locals) &&
+            !get(context.locals, value.index).mutable
+    }
+    if value.kind == ExprKind.Field {
+        let receiver = get(value.children, 0)
+        return get(context.env.types, receiver.ty).kind == TypeKind.Record && old_inline_path(context, receiver)
+    }
+    false
+}
+fn has_old(node Node) Bool {
+    if node.kind == NodeKind.Old { return true }
+    var index = 0
+    while index < length(node.children) {
+        if has_old(child(node, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+fn old_contract(context Context, node Node, kind NodeKind) Result[Node, Failure] {
+    if node.kind == NodeKind.Old {
+        if kind != NodeKind.Ensures { return Result.Err(error(context, node, "old is only valid in ensures")) }
+        let argument = child(node, 0)
+        if !old_place(context, argument) {
+            return Result.Err(error(context, node, "old requires a parameter or scalar record field"))
+        }
+        let value = expr(context, argument, -1)?
+        let ty = base_type(context.env, value.ty)
+        if (ty != 1 && ty != 2) || !old_inline_path(context, value) {
+            return Result.Err(error(context, node, "old requires an immutable inline scalar parameter path; shared data has no entry snapshot"))
+        }
+        return Result.Ok(argument)
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, old_contract(context, child(node, index), kind)?)
+        index = index + 1
+    }
+    Result.Ok(Node { kind = node.kind value = node.value span = node.span children = children })
+}
 fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failure] {
     let clauses = new[Expr]()
     var index = 0
     while index < length(node.children) {
         let member = child(node, index)
         if member.kind == kind {
-            let predicate = child(member, 0)
+            let source = child(member, 0)
+            let predicate = if has_old(source) { old_contract(context, source, kind)? } else { source }
             discard scalar_contract(context, predicate)?
             push(clauses, expr(context, predicate, 2)?)
         }

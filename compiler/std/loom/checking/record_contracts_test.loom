@@ -1,4 +1,5 @@
 import std.text.concat
+import std.result.Result
 
 test fn scalar_record_fields_participate_in_required_contracts() {
     let source = "record Snapshot { count Int active Bool }\npub fn copied(value Snapshot) Snapshot\nrequires value.count >= 0 && value.active\nensures result.count == value.count\nensures result.active == value.active\n{ Snapshot { active = value.active count = value.count } }\nfn main() { let copied_value = copied(Snapshot { count = 3 active = true })\nassert copied_value.count == 3 && copied_value.active }"
@@ -28,4 +29,32 @@ test fn int_refinement_leaves_keep_values_without_assuming_their_predicate() {
             "pub fn copied(value Box) Box ensures result.count == value.count { value }\nfn main() { assert copied(Box { count = Count(3) }).count == 3 }"))
     rejects(concat(definitions,
             "pub fn invented(value Box) Box ensures result.count == value.count { Box { count = Count(0) } }"))
+}
+
+test fn old_reads_only_immutable_entry_scalars() {
+    discard accepted("fn keep(value Int) Int ensures result == old(value) { value }\nfn main() { assert keep(7) == 7 }")
+    discard accepted("fn flip(value Bool) Bool ensures result != old(value) { !value }\nfn main() { assert flip(true) == false }")
+    let nested = "record Inner { count Int flag Bool }\nrecord Outer { inner Inner shared List[Int] }\n"
+    discard accepted(concat(nested,
+            "fn keep(value Outer) Int ensures result == old(value.inner.count) { value.inner.count }\nfn main() { assert keep(Outer { inner = Inner { count = 4 flag = true } shared = [1] }) == 4 }"))
+    rejects("fn lie(value Int) Int ensures result == old(value) { value + 1 }")
+    rejects(concat(nested, "fn wrong(value Outer) Int ensures result == old(value.inner.count) { 0 }"))
+}
+
+test fn old_rejects_aliases_calls_and_non_entry_places() {
+    let shared = "record Holder { count Int values List[Int] }\n"
+    let alias = concat(shared, "fn unsafe(value Holder) Int ensures result == old(value.values) { 1 }")
+    match checked(source_files(alias)) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "old requires an immutable inline scalar parameter path; shared data has no entry snapshot"
+        }
+        Result.Ok(_) => { assert false }
+    }
+    rejects(concat(shared, "fn unsafe(value Holder) Int ensures result == old(value.values[0]) { 1 }"))
+    rejects("fn identity(value Int) Int { value }\nfn unsafe(value Int) Int ensures result == old(identity(value)) { value }")
+    rejects("fn unsafe(value Int) Int ensures result == old(value + 1) { value }")
+    rejects("fn unsafe(value Int) Int ensures result == old(result) { value }")
+    rejects("fn unsafe(value Int) Int ensures result == old(other) { let other = value\nother }")
+    rejects("fn unsafe(value Int) Int requires old(value) > 0 { value }")
+    rejects("fn unsafe(value Int) Int { old(value) }")
 }

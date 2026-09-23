@@ -9,7 +9,7 @@ pub enum NodeKind {
     File Import Record Enum Refined Function Public Test Intrinsic
     TypeParameters Parameters Parameter Type TypeArguments Arguments ReturnType
     Field Variant Requires Ensures Block Let Var Assign Return Assert Discard While
-    Integer Text Bool Name Call Construct Unary Binary Select Try
+    Integer Text Bool Name Call Old Construct Unary Binary Select Try
     Match Arm Pattern Bindings Wildcard If Comptime
     TupleType Tuple Destructure Float
     Concept Impl Implements MethodCall DynType AssociatedType FunctionType Invoke
