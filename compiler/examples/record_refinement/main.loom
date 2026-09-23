@@ -26,7 +26,7 @@ fn widened(value ActiveCount) Snapshot {
     value
 }
 
-fn prepared() Result[ActiveCount, ConstraintError] {
+fn prepared() ActiveCount {
     comptime {
         ActiveCount(Snapshot {
                 inner = Inner {
@@ -59,8 +59,5 @@ fn main() {
         Result.Err(_) => true,
         _ => false
     }
-    assert match prepared() {
-        Result.Ok(value) => value.inner.count == 7,
-        _ => false
-    }
+    assert prepared().inner.count == 7
 }

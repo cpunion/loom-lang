@@ -16,6 +16,17 @@ test fn inline_record_refinement_checks_dynamic_construction_once() {
     assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 0
 }
 
+test fn proven_inline_record_literal_has_a_direct_refined_type() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nrecord Inner { count Int }\nrecord Snapshot { inner Inner active Bool }\ntype ActiveCount = Snapshot where self.inner.count >= 0 && self.active\n"
+    let program = accepted_result(concat(definitions,
+            "pub fn literal() ActiveCount { ActiveCount(Snapshot { inner = Inner { count = 3 } active = true }) }\npub fn dynamic(value Snapshot) Result[ActiveCount, ConstraintError] { ActiveCount(value) }\npub fn field(value Int) Result[ActiveCount, ConstraintError] { ActiveCount(Snapshot { inner = Inner { count = value } active = true }) }"))
+    assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 0
+    assert dynamic_count(get(program.functions, 1).body, ExprKind.If) == 1
+    assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 1
+    rejects_result(concat(definitions,
+            "fn invalid() ActiveCount { ActiveCount(Snapshot { inner = Inner { count = -1 } active = true }) }"))
+}
+
 test fn inline_record_refinement_rejects_mutable_aliases_and_unchecked_replacement() {
     let imports = "import std.result.Result\nimport std.result.ConstraintError\n"
     rejects(concat(imports, "record Unsafe { values List[Int] }\ntype Guard = Unsafe where true"))
@@ -24,8 +35,6 @@ test fn inline_record_refinement_rejects_mutable_aliases_and_unchecked_replaceme
     let definitions = "record Snapshot { count Int }\ntype Valid = Snapshot where self.count > 0\n"
     rejects_result(concat(concat(imports, definitions),
             "fn replace(value Snapshot) Result[Valid, ConstraintError] { var valid = Valid(value)?\nvalid = value\nResult.Ok(valid) }"))
-    // A literal record currently uses the runtime Result boundary; unlike a
-    // scalar literal, it is not yet folded into a direct refined value.
-    rejects_result(concat(concat(imports, definitions),
+    discard accepted_result(concat(concat(imports, definitions),
             "fn literal() Valid { Valid(Snapshot { count = 1 }) }"))
 }
