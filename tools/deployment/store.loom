@@ -235,10 +235,14 @@ fn latest(tool Text, database Text) Result[Option[Stored], Text] {
     Result.Ok(Option.Some(previous))
 }
 
-fn append(tool Text, database Text, expected Int, attempt Attempt) Result[Bool, Text] {
-    let values = concat("'", concat(attempt.id, concat("','", concat(attempt.from_basis,
+fn event_values(attempt Attempt) Text {
+    concat("'", concat(attempt.id, concat("','", concat(attempt.from_basis,
                     concat("','", concat(attempt.to_basis, concat("',", concat(to_text(policy_number(attempt.policy)),
                                     concat(",", to_text(state_number(attempt.state)))))))))))
+}
+
+fn append(tool Text, database Text, expected Int, attempt Attempt) Result[Bool, Text] {
+    let values = event_values(attempt)
     let sql = concat("INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) SELECT ",
         concat(values, concat(" WHERE (SELECT IFNULL(MAX(sequence),0) FROM loom_deploy_events) = ",
                 concat(to_text(expected), "; SELECT changes();"))))
@@ -351,8 +355,15 @@ pub fn assume_historical(tool Text, database Text, id Text, basis Text) Result[A
         }
     }
     let attempt = prepare(id, "", basis, FailurePolicy.Stop)?
-    discard register(tool, database, attempt)?
-    record_event(tool, database, id, Transition.AssumeComplete)
+    let assumed = advance(attempt, Transition.AssumeComplete)?
+    discard initialize(tool, database)?
+    // The empty-ledger check and both events share one write transaction. The
+    // guarded insert aborts if another writer won the race after latest().
+    // A failed sqlite3 process closes its connection and rolls back both rows.
+    let sql = concat("PRAGMA ignore_check_constraints=OFF;\nBEGIN IMMEDIATE;\nCREATE TEMP TABLE loom_import_guard(ok INTEGER NOT NULL CHECK(ok=1));\nINSERT INTO loom_import_guard SELECT CASE WHEN EXISTS(SELECT 1 FROM loom_deploy_events) THEN 0 ELSE 1 END;\nINSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) VALUES (",
+        concat(event_values(attempt), concat("),(", concat(event_values(assumed), ");\nCOMMIT;"))))
+    discard execute(tool, database, sql)?
+    Result.Ok(assumed)
 }
 
 pub fn current(tool Text, database Text) Result[BasisEvidence, Text] {

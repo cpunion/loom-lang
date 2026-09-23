@@ -30,6 +30,7 @@ import std.process.capture_input
 import std.process.ExitStatus
 import std.result.Result
 import std.text.byte
+import std.text.concat
 import std.text.length
 
 fn sql_bytes(value Text) Bytes {
@@ -195,6 +196,7 @@ fn succeeds(database Text) Result[Bool, Text] {
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10),(3,0);")?
     let plan = migration("upgrade_2")
     discard started(database, plan)?
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='historical_v1' ORDER BY sequence;")? == "0\n7\n"
     discard execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
         old_schema(plan), new_schema(plan), forward_catalog(plan), plan)?
     assert match current("/usr/bin/sqlite3", database)? {
@@ -269,8 +271,21 @@ fn succeeds(database Text) Result[Bool, Text] {
 }
 
 fn rolls_back_failed_transaction(database Text) Result[Bool, Text] {
-    discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10); CREATE VIEW notes AS SELECT 1 AS id, 'collision' AS body;")?
     let plan = migration("upgrade_2")
+    discard fixture_sql(database, "CREATE TABLE loom_deploy_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, from_basis TEXT NOT NULL, to_basis TEXT NOT NULL, policy INTEGER NOT NULL, state INTEGER NOT NULL); CREATE TRIGGER block_assumed BEFORE INSERT ON loom_deploy_events WHEN NEW.state=7 BEGIN SELECT RAISE(ABORT,'blocked'); END;")?
+    assert match assume_historical("/usr/bin/sqlite3", database, "historical_v1", plan.from_basis) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == "0\n"
+    discard fixture_sql(database, concat("DROP TRIGGER block_assumed; INSERT INTO loom_deploy_events(attempt_id,from_basis,to_basis,policy,state) VALUES ('dangling','', '", concat(plan.from_basis, "',0,0);")))?
+    assert match assume_historical("/usr/bin/sqlite3", database, "second_import", plan.from_basis) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT attempt_id,state FROM loom_deploy_events;")? == "dangling|0\n"
+    discard fixture_sql(database, "DROP TABLE loom_deploy_events;")?
+    discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10); CREATE VIEW notes AS SELECT 1 AS id, 'collision' AS body;")?
     discard started(database, plan)?
     assert match execute_positive_amount_upgrade("/usr/bin/sqlite3", database,
         old_schema(plan), new_schema(plan), forward_catalog(plan), plan) {
