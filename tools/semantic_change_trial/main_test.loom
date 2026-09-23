@@ -2,8 +2,19 @@ import semantic_change.File
 import semantic_change.Identity
 import semantic_change.Revision
 import std.loom.ast.NodeKind
+import std.file.read_text
+import std.file.write_text
+import std.fs.create_dir
+import std.fs.entries
+import std.fs.remove_empty_dir
+import std.fs.remove_file
+import std.int.to_text
+import std.list.get
+import std.list.length
 import std.result.Result
 import std.text.concat
+import std.text.starts_with
+import std.time.monotonic_ns
 
 fn loaded(text Text, sidecar Text, commit Text) Loaded {
     Loaded {
@@ -22,6 +33,7 @@ fn loaded(text Text, sidecar Text, commit Text) Loaded {
         }
         sidecar = sidecar
         commit = commit
+        next = 1
     }
 }
 
@@ -36,7 +48,7 @@ fn reviewed(value Loaded) Text {
 }
 
 test fn review_token_binds_exact_source_sidecar_and_resolved_commit() {
-    let raw = "package sample\nid value-id fn value value.loom\n"
+    let raw = "package sample\nnext 1\nid value-id fn value value.loom\n"
     let source = "fn value() Int { 1 }\n"
     let baseline = reviewed(loaded(source, raw, ""))
     assert baseline == reviewed(loaded(source, raw, ""))
@@ -45,12 +57,53 @@ test fn review_token_binds_exact_source_sidecar_and_resolved_commit() {
     assert baseline != reviewed(loaded(source, raw, "one-commit"))
     assert reviewed(loaded(source, raw, "one-commit")) !=
     reviewed(loaded(source, raw, "another-commit"))
+    let original = loaded(source, raw, "")
+    let newer = Loaded {
+        revision = original.revision
+        sidecar = original.sidecar
+        commit = ""
+        next = 4
+    }
+    match review(original, newer, original) {
+        Result.Ok(plan) => {
+            assert plan.next == 4
+            assert plan.token != baseline
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
+fn rejects_identity_header(metadata Text) Bool {
+    match header(metadata, ".loom-ids") {
+        Result.Ok(_) => false,
+        Result.Err(_) => true
+    }
+}
+
+test fn identity_sidecar_requires_one_valid_allocator_line() {
+    assert rejects_identity_header("package sample\nid value-id fn value value.loom\n")
+    assert rejects_identity_header("package sample\nnext 2\nnext 3\n")
+    assert rejects_identity_header("package sample\nnext 0\n")
+    assert rejects_identity_header("package sample\nnext nope\n")
+    assert !rejects_identity_header("package sample\nnext 2\nid value-id fn value value.loom\n")
 }
 
 fn path_rejected(path Text) Bool {
     match checked_directory_path(path, false) {
         Result.Ok(_) => false,
         Result.Err(_) => true
+    }
+}
+
+fn text_at(location Text) Text {
+    match read_text(location) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            ""
+        }
     }
 }
 
@@ -61,4 +114,142 @@ test fn output_path_rejects_traversal_and_noncanonical_components() {
     assert path_rejected("folder/./escape")
     assert path_rejected("folder\\escape")
     assert path_rejected("folder/")
+}
+
+test fn identity_allocator_changes_with_sequence_and_ambiguous_names_fail() {
+    let declaration = Identity {
+        id = ""
+        path = "value.loom"
+        kind = NodeKind.Function
+        name = "value"
+    }
+    assert fresh_id("sample", declaration, 1) != fresh_id("sample", declaration, 2)
+    match declarations([File {
+                path = "value.loom"
+                text = "fn value() Int { 1 }\nfn value(input Int) Int { input }\n"
+            }]) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+    match initialize("bad/name", "unused") {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+    match initialize("std", "unused") {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+}
+
+test fn initialized_package_applies_once_to_a_new_tree() {
+    let staging = concat("tools/semantic_change_trial/target/identity-test-", to_text(monotonic_ns()))
+    let base = path(staging, "base")
+    let output = path(staging, "output")
+    match create_dir(staging) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    discard create_dir(base)
+    discard std.file.write_text(path(base, "value.loom"), "fn value() Int { 1 }\n")
+    match initialize("sample", base) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    let snapshot = match read(base) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            loaded("", "", "")
+        }
+    }
+    let token = reviewed(snapshot)
+    match apply_directories(token, output, base, base, base) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    assert text_at(path(output, "value.loom")) == "fn value() Int { 1 }\n"
+    assert text_at(path(output, ".loom-ids")) == text_at(path(base, ".loom-ids"))
+    match apply_directories(token, output, base, base, base) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+    let original_sidecar = text_at(path(base, ".loom-ids"))
+    let original_id = get(snapshot.revision.identities, 0).id
+    match refresh(base, []) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    assert text_at(path(base, ".loom-ids")) == original_sidecar
+    // A hand-edited allocator may be stale; explicit replacement must still
+    // never reuse the prior identity for the same declaration.
+    discard write_text(path(base, ".loom-ids"), sidecar(snapshot.revision, 1))
+    match refresh(base, [Resolution {
+                id = original_id
+                path = ""
+                name = ""
+                deletion = true
+            }]) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    let replaced = match read(base) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            snapshot
+        }
+    }
+    assert get(replaced.revision.identities, 0).id != original_id
+    assert replaced.next == snapshot.next + 1
+    let names = match entries(base) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            []
+        }
+    }
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        if starts_with(name, ".loom-ids-stage-") {
+            let stage = path(base, name)
+            discard remove_file(path(stage, "previous"))
+            discard remove_empty_dir(stage)
+        }
+        index = index + 1
+    }
+    discard remove_file(path(output, ".loom-ids"))
+    discard remove_file(path(output, "value.loom"))
+    discard remove_empty_dir(output)
+    discard remove_file(path(base, ".loom-ids"))
+    discard remove_file(path(base, "value.loom"))
+    discard remove_empty_dir(base)
+    discard remove_empty_dir(staging)
 }
