@@ -1,0 +1,5 @@
+[module]
+name = "sqlite_migration_trial"
+
+[dependencies.deployment]
+path = ".."
