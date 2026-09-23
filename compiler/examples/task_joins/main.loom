@@ -18,6 +18,10 @@ async fn item(value Int) Int {
     value
 }
 
+async fn label() Text {
+    "ready"
+}
+
 fn start(count Int) List[Task[Int]] {
     var tasks = new[Task[Int]]()
     var index = 0
@@ -52,6 +56,25 @@ fn count() Int {
 }
 
 async fn main() {
+    let number, text = all((item(7), label())).await
+    assert number == 7 && text == "ready"
+    let first, second = settled((item(8), label())).await
+    match first {
+        Outcome.Completed(value) => {
+            assert value == 8
+        }
+        _ => {
+            assert false
+        }
+    }
+    match second {
+        Outcome.Completed(value) => {
+            assert value == "ready"
+        }
+        _ => {
+            assert false
+        }
+    }
     let count = count()
     let values = all(start(count)).await
     let outcomes = settled(start(count)).await

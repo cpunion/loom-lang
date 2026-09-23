@@ -181,8 +181,12 @@ as success. Losing producers are retired with their returned subtrees intact.
 A cleanup fault fails an otherwise successful join, while an existing primary
 fault remains authoritative. See the [join example](../../compiler/examples/task_joins).
 
-Socket adapters, general worker operations and heterogeneous tuple joins/await
-are explicitly unfinished, not removed requirements.
+Two-element heterogeneous tuple `std.task.all((a(), b()))` and
+`std.task.settled((a(), b()))` now preserve distinct result types and observe
+both children before suspending. The `all` overload cancels and drains a
+remaining child after the first fault. Arbitrary tuple arity and the
+`(a(), b()).await` sugar remain unfinished, as do socket adapters and general
+worker operations; these are not removed requirements.
 Synchronous I/O still blocks the owner thread.
 
 `std.file.tasks` supplies byte/text read/write Tasks using the same completion

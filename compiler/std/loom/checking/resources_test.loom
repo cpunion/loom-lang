@@ -28,6 +28,20 @@ test fn scoped_resources_borrow_methods_and_transfer_fresh_factory_results() {
     resource_accept(concat(resource_header(), "import std.result.Result\nfn open(log List[Int]) Result[Handle, Text] { Result.Ok(make(log)) }\nfn main() { match open([0]) { Result.Ok(payload) => { scoped value = payload\nassert value.use() == 7 }, Result.Err(_) => {} } }"))
 }
 
+test fn one_final_resource_field_can_transfer_into_a_scoped_wrapper() {
+    let wrapper = "record Wrapped { tag Int inner Handle }\nimpl Dispose for Wrapped { fn dispose(self Wrapped) { push(self.inner.log, 2) } }\nfn wrap(log List[Int]) Wrapped { Wrapped { tag = 1 inner = make(log) } }\n"
+    resource_accept(concat(resource_header(), concat(wrapper,
+                "fn main() { let log = [0]\n{ scoped value = wrap(log)\nassert value.tag == 1 && value.inner.use() == 7 }\nassert log[2] == 2 && log[3] == 9 }")))
+    resource_reject(concat(resource_header(), concat(wrapper,
+                "fn bad(log List[Int]) Wrapped { Wrapped { inner = make(log) tag = 1 } }\nfn main() { scoped value = bad([0]) }")))
+    resource_reject(concat(resource_header(), concat(wrapper,
+                "fn main() { scoped value = wrap([0])\nscoped stolen = value.inner }")))
+    resource_reject(concat(resource_header(),
+            "record Double { first Handle second Handle }\nimpl Dispose for Double { fn dispose(self Double) {} }\nfn bad(log List[Int]) Double { Double { first = make(log) second = make(log) } }\nfn main() { scoped value = bad([0]) }"))
+    resource_reject(concat(resource_header(),
+            "record Invalid { inner Handle }\nimpl Dispose for Invalid { fn dispose(self Invalid) { self.inner.dispose() } }\nfn main() { scoped value = Invalid { inner = make([0]) } }"))
+}
+
 test fn indirect_resource_factories_preserve_type_level_transfer_obligations() {
     let callbacks = "fn select(second Bool) fn(List[Int]) Handle { if second { make } else { make } }\nfn acquire[T MustScope](factory fn(List[Int]) T, log List[Int]) T { factory(log) }\nfn use_factory[T Dispose + MustScope](factory fn(List[Int]) T, log List[Int]) { scoped value = acquire(factory, log) }\n"
     resource_accept(concat(resource_header(), concat(callbacks, "fn main() { let factory = select(true)\nlet factories = [factory, make]\nuse_factory(factories[1], [0])\nassert comptime { let callback = make\nscoped value = callback([0])\nvalue.use() } == 7 }")))
