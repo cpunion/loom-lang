@@ -271,6 +271,17 @@ fn same_scaffold(base Indexed, branch Indexed) Bool {
     true
 }
 
+fn reuses_name(base Indexed, added Entry) Bool {
+    var index = 0
+    while index < length(base.entries) {
+        if get(base.entries, index).name == added.name {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
 fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text] {
     var index = 0
     while index < length(base.entries) {
@@ -308,27 +319,58 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
         }
         index = index + 1
     }
+    var left_added = false
     index = 0
     while index < length(left.entries) {
-        if entry_index(base.entries, get(left.entries, index).id) < 0 {
-            return Result.Err("added declarations are not supported by this merge")
+        let added = get(left.entries, index)
+        if entry_index(base.entries, added.id) < 0 {
+            left_added = true
+            if reuses_name(base, added) {
+                return Result.Err("new declaration reuses an existing name; binding changes need explicit review")
+            }
         }
         index = index + 1
     }
+    var right_added = false
     index = 0
     while index < length(right.entries) {
-        if entry_index(base.entries, get(right.entries, index).id) < 0 {
-            return Result.Err("added declarations are not supported by this merge")
+        let added = get(right.entries, index)
+        if entry_index(base.entries, added.id) < 0 {
+            right_added = true
+            if reuses_name(base, added) {
+                return Result.Err("new declaration reuses an existing name; binding changes need explicit review")
+            }
         }
         index = index + 1
+    }
+    if left_added && right_added {
+        return Result.Err("concurrent added declarations need explicit resolution")
+    }
+    if left_added || right_added {
+        index = 0
+        while index < length(base.entries) {
+            let id = get(base.entries, index).id
+            if entry_index(left.entries, id) < 0 || entry_index(right.entries, id) < 0 {
+                return Result.Err("addition with deletion needs explicit resolution")
+            }
+            index = index + 1
+        }
     }
     Result.Ok(true)
 }
 
 fn chosen_body(base Indexed, left Indexed, right Indexed, id Text) Text {
-    let original = get(base.entries, entry_index(base.entries, id))
     let edited_left = entry_index(left.entries, id)
     let edited_right = entry_index(right.entries, id)
+    let base_index = entry_index(base.entries, id)
+    if base_index < 0 {
+        return if edited_left >= 0 {
+            get(left.entries, edited_left).body
+        } else {
+            get(right.entries, edited_right).body
+        }
+    }
+    let original = get(base.entries, base_index)
     if edited_left >= 0 && get(left.entries, edited_left).body != original.body {
         return get(left.entries, edited_left).body
     }
@@ -394,7 +436,8 @@ fn checked(revision Revision) Result[Revision, Text] {
 // One side may rearrange/remove declarations and files. The other side may
 // independently edit declaration bodies; its surrounding text must be intact.
 // The carrier side's complete file skeleton (including comments) is retained.
-// This deliberately refuses concurrent layout changes and added declarations.
+// One carrier may add fresh, uniquely named declarations. Concurrent
+// structural changes still need explicit resolution.
 pub fn merge(base Revision, left Revision, right Revision) Result[Revision, Text] {
     let original = indexed(base)?
     let edited_left = indexed(left)?
