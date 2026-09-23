@@ -204,6 +204,9 @@ test fn initialized_package_applies_once_to_a_new_tree() {
         }
     }
     assert text_at(path(base, ".loom-ids")) == original_sidecar
+    // A hand-edited allocator may be stale; explicit replacement must still
+    // never reuse the prior identity for the same declaration.
+    discard write_text(path(base, ".loom-ids"), sidecar(snapshot.revision, 1))
     match refresh(base, [Resolution {
                 id = original_id
                 path = ""

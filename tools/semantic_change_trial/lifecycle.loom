@@ -384,11 +384,15 @@ fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
         let candidate = get(candidates, index)
         var id = get(selected, index)
         if id == "" {
-            if next >= 9223372036854775806 {
-                return Result.Err("identity allocator exhausted")
+            var allocated = false
+            while !allocated {
+                if next >= 9223372036854775806 {
+                    return Result.Err("identity allocator exhausted")
+                }
+                id = fresh_id(loaded.revision.package_name, candidate, next)
+                next = next + 1
+                allocated = identity_at(previous, id) < 0 && identity_at(identities, id) < 0
             }
-            id = fresh_id(loaded.revision.package_name, candidate, next)
-            next = next + 1
             changes = concat(changes, concat("added ", concat(id, concat(" ",
                             concat(candidate.path, concat(" ", concat(candidate.name, "\n")))))))
         }
