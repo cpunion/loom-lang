@@ -188,8 +188,9 @@ Already-terminal children keep their result; cleanup faults become owned data.
 List `all/settled/any/race` policies now run in Loom over one-time registration,
 typed outcomes and indexed slot transfer. Joins retire losing subtrees before
 returning; inferred no-result payloads and returned Tasks keep the same generic
-rules. Tuple joins/await remain open, alongside socket adapters and general
-worker APIs. See the [dynamic join example](compiler/examples/task_joins).
+rules. Two-task heterogeneous tuple `all/settled` joins now work; arbitrary
+tuple packs and tuple `.await` remain open, alongside socket adapters and
+general worker APIs. See the [dynamic join example](compiler/examples/task_joins).
 
 Extend the self-hosted path with the remaining accepted capabilities:
 
@@ -328,21 +329,27 @@ remain open. Captured function parameters use the typed environments above.
 Pure dynamic construction, calls and returned values now share the compile-time
 evaluator, with exact associated/generic/static witness slots. Purity follows the
 called slot's checked targets; reification rebuilds admitted witnesses without
-leaking evaluation queues, preserving shared/cyclic receiver data. Dynamic
-required proofs and cross-dyn conversions remain open.
+leaking evaluation queues, preserving shared/cyclic receiver data. Concept
+method contracts now inherit into implementations, with required override
+proofs and runtime dynamic preconditions. Broader dynamic proof composition
+remains open. Explicit `impl D for dyn C` adapters permit statically checked
+cross-concept conversion by boxing the known erased value; zero-allocation
+witness upcasts and implicit concept inclusion remain open.
 
 Lexical `defer` handles block completion, return, `Result?`, `break` and `continue`,
 preserving LIFO order and saved result values. Native stack registrations also
 drain synchronous language faults before process termination, preserving the
 first error if a cleanup faults. Only an explicit native resume boundary catches
-faults; OOM and external termination do not guarantee cleanup. Synchronous `scoped` now selects the source
+faults; OOM and external termination do not guarantee cleanup. Synchronous `scoped` selects the source
 Dispose capability and checks resource escape; MustScope also rejects ordinary
 bindings and discard. Direct factories and immediate single-payload Result/Option
 transfer are supported. MustScope results retain their fresh-return obligation
 through runtime function values and dynamic factory methods; every selected
 implementation is checked. A Dispose-only callback result has no such guarantee.
-Nested resource aggregates remain open; suspended lexical cleanup is implemented
-as described above, not a general resource-transfer facility.
+Multi-field MustScope aggregates now disarm per-field pending cleanup after
+successful construction. Nested resource aggregates and resource Lists remain
+open; suspended lexical cleanup is implemented as described above, not a
+general resource-transfer facility.
 
 List literals now share typed/native/compile-time semantics. Runtime literals
 allocate known capacity once and store elements directly; general compile-time
@@ -419,6 +426,9 @@ known constants remove checks, while unknown results retain the runtime
 construction boundary. Execution never substitutes for a required proof:
 function contracts use the documented symbolic proof fragment, including bounded
 expansion of checked scalar helpers.
+`old(expr)` in `ensures` currently accepts immutable parameter scalars and
+inline record scalar paths, where the entry value cannot change. Shared-data
+snapshots and general entry-state expressions remain open and reject.
 Explicit Int refinement conversion now reuses that fragment to eliminate a
 destination check only when both truth and definedness follow from the source
 predicate. Exact call-free conjunction reuse also handles Float without
@@ -426,12 +436,17 @@ arithmetic rewriting. Immutable local-flow facts and bounded direct scalar-helpe
 expansion extend this optional proof as described above; mutable/alias facts and
 general helper control flow remain open.
 
-Typed metaprogramming later reuses this infrastructure. Public analysis does not
-freeze the schemas or complete
-trivia-preserving editing, persistent identities, incremental reuse, or semantic
-version-control tooling.
+Typed metaprogramming later reuses this infrastructure. A narrow stable-ID
+move-plus-edit merge preview can read Git commits, preserve source trivia and
+recheck the result; public analysis does not yet automate identities, apply
+merges, or provide general semantic version-control tooling.
 
 ## N3 — Deliver semantic change and deployment workflows
+
+A bounded SQLite prototype now records assumed versus observed states and
+executes one offline orders upgrade, data-preserving downgrade and re-upgrade.
+Its catalog and physical checks do not prove caller-supplied artifact identities
+or generalize to arbitrary schemas. The accepted workflows below remain open.
 
 Build the accepted tools on the compiler's identities, bindings, contracts,
 effects, and immutable build basis. Reuse an existing version engine; do not

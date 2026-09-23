@@ -96,7 +96,8 @@ Tasks, without admitting ordinary void bindings or source Unit syntax. Source
 `std.list.transfer.replace` returns the displaced value and shared header, using
 ordinary native get/set and the same compile-time semantics.
 See the [join example](../../compiler/examples/task_joins).
-Tuple joins, socket adapters and general worker APIs remain unfinished.
+Two-task heterogeneous tuple `all/settled` joins are available. Arbitrary
+tuple packs, socket adapters and general worker APIs remain unfinished.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;
@@ -313,7 +314,10 @@ ordinary method instances and dynamic witnesses; structurally overlapping
 implementations reject rather than selecting by order. Explicit dynamic associated
 bindings participate in type/interface identity, normalize generic projections
 and check boxing exactly. They use the existing native witness ABI;
-cross-dyn conversions remain unsupported.
+an explicit `impl D for dyn C` can now adapt an erased value to another concept,
+including associated bindings, without hidden-type discovery. It boxes the
+known `dyn C` payload; implicit inclusion and zero-allocation upcasts remain
+unsupported.
 
 Associated member bounds and default bindings extend that same model. Explicit
 bindings override defaults; defaults keep their declaration's name scope and
@@ -385,6 +389,10 @@ linear relations and excluded integer interval endpoints retain branch facts.
 Recursive proof dependencies, helper loops/mutation, returns inside helper operands
 and indirect/dynamic calls remain unsupported; required proofs never
 fall back to runtime checks or sampled evaluation.
+Required contracts also follow scalar fields through nested inline records and
+Int-backed refinements. In `ensures`, `old(expr)` currently denotes an immutable
+parameter scalar or inline record scalar path; shared-data snapshots, index and
+call expressions reject rather than treating a mutable alias as entry state.
 
 Managed memory now uses stop-the-world copying collection with a traced
 large-object space; stress mode relocates all sizes. Rewritable typed
@@ -612,7 +620,9 @@ all selected implementations must establish freshness, including targets reached
 through stored or returned function values. Dispose-only callback results do not
 imply freshness. Unused concrete resource functions are checked without entering
 native reachability. Async functions use frame-backed registrations for suspended
-cleanup; nested resource aggregates and transfer into Tasks remain unimplemented.
+cleanup. Multi-field MustScope aggregates disarm pending field cleanup after
+successful construction; nested resource aggregates, resource Lists and
+transfer into Tasks remain unimplemented.
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
 same-directory tests, a separate library package, Unicode text and file I/O.
@@ -667,6 +677,13 @@ of copying GC or complete the remaining resource/async design. A separate
 records faster compiler-check CPU time but higher peak RSS, with noisy native
 kernel samples. Memory efficiency and the remaining language work are not closed
 by those results.
+
+The separate `tools/semantic_change` prototype previews stable-ID, single-package
+move-plus-edit merges from directories or Git blobs and rechecks production and
+test scopes. It does not apply merges or track identities automatically. The
+`tools/deployment` prototype analyzes schema conflicts and executes one bounded
+offline SQLite upgrade, rollback and re-upgrade with append-only events. Its
+caller-supplied basis is not yet bound to the checked application artifact.
 
 Accepted language and deployment decisions remain targets, not claims that the
 whole design is implemented. Bootstrap agreement is not a correctness proof.

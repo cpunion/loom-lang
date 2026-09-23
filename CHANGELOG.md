@@ -5,6 +5,30 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Prove required contracts over scalar fields of nested records and Int-backed
+  constrained values; support `old(expr)` for immutable entry-state scalars;
+  enforce inherited concept method contracts for default, override, static and
+  dynamic calls. Shared mutable List predicates and snapshots remain outside
+  this proof fragment.
+
+- Permit explicit `impl D for dyn C` adapters, including associated bindings,
+  without discovering a hidden concrete type at runtime. The current adapter
+  boxes the known erased value; it is not a zero-allocation upcast.
+
+- Join two heterogeneous Tasks as a tuple and clean up multi-field `scoped`
+  resource aggregates, including fault exits. Dynamic homogeneous List joins
+  remain available; general heterogeneous packs, nested resource aggregates,
+  and resource Lists are not yet supported.
+
+- Preview stable-ID source merges across ordinary files, including move plus
+  independent edit. The read-only Git entry point reads three commits and
+  rechecks the merged package; it does not apply or commit the result.
+
+- Add deployment-basis and conflict analysis, an append-only SQLite event
+  ledger, and a bounded offline orders migration with data-preserving downgrade
+  and re-upgrade. This is not a general migration engine or a proof of a
+  caller-supplied target artifact.
+
 - Complete qualified package paths from existing binding spellings, retaining
   overloads, local receiver precedence, private/test scopes and distinct source
   instances. Filter type/constructor and dyn paths without guessing instantiations.
