@@ -1,0 +1,24 @@
+test fn checked_record_refinement_survives_copy_and_weakening() {
+    assert match checked(Snapshot {
+            inner = Inner {
+                count = 5
+            }
+            active = true
+        }) {
+        Result.Ok(valid) => widened(copy(valid)).inner.count == 5,
+        _ => false
+    }
+    assert match checked(Snapshot {
+            inner = Inner {
+                count = 0
+            }
+            active = false
+        }) {
+        Result.Err(_) => true,
+        _ => false
+    }
+    assert match prepared() {
+        Result.Ok(value) => value.inner.count == 7,
+        _ => false
+    }
+}

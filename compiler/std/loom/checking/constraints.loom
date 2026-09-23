@@ -11,6 +11,7 @@ import std.list.push
 import std.list.set
 import std.list.length
 import std.text.concat
+import std.text.starts_with
 import std.float.to_text
 import std.result.Result
 import std.loom.eval.Value
@@ -22,7 +23,8 @@ import std.loom.proof.implies
 
 fn predicate_form(node Node, calls Bool) Bool {
     if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool || node.kind == NodeKind.Text { return true }
-    if node.kind == NodeKind.Name { return node.value == "self" }
+    if node.kind == NodeKind.Name { return node.value == "self" || starts_with(node.value, "self.") }
+    if node.kind == NodeKind.Select { return predicate_form(child(node, 0), calls) }
     if node.kind == NodeKind.Call {
         if !calls { return false }
         let arguments = child(node, 1).children

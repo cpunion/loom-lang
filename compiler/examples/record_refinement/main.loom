@@ -1,0 +1,66 @@
+import std.result.Result
+import std.result.ConstraintError
+
+record Inner {
+    count Int
+}
+
+record Snapshot {
+    inner Inner
+    active Bool
+}
+
+type ActiveCount = Snapshot where self.inner.count >= 0 && self.active
+
+fn checked(value Snapshot) Result[ActiveCount, ConstraintError] {
+    ActiveCount(value)
+}
+
+fn copy(value ActiveCount) ActiveCount
+ensures result.inner.count == value.inner.count
+{
+    ActiveCount(value)
+}
+
+fn widened(value ActiveCount) Snapshot {
+    value
+}
+
+fn prepared() Result[ActiveCount, ConstraintError] {
+    comptime {
+        ActiveCount(Snapshot {
+                inner = Inner {
+                    count = 7
+                }
+                active = true
+            })
+    }
+}
+
+fn main() {
+    assert match checked(Snapshot {
+            inner = Inner {
+                count = 3
+            }
+            active = true
+        }) {
+        Result.Ok(valid) => {
+            let plain = widened(copy(valid))
+            plain.inner.count == 3 && plain.active
+        },
+        _ => false
+    }
+    assert match checked(Snapshot {
+            inner = Inner {
+                count = -1
+            }
+            active = true
+        }) {
+        Result.Err(_) => true,
+        _ => false
+    }
+    assert match prepared() {
+        Result.Ok(value) => value.inner.count == 7,
+        _ => false
+    }
+}

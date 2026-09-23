@@ -24,6 +24,12 @@ fn first_dot(value Text) Int {
 }
 fn member(context Context, node Node, value Expr, field Text) Result[Expr, Failure] {
     let ty = get(context.env.types, value.ty)
+    if ty.kind == TypeKind.Refined && get(context.env.types, base_type(context.env, value.ty)).kind == TypeKind.Record {
+        // The refined record has the same inline representation. Projection
+        // reads a value copy; only whole-value replacement is assignable.
+        let base = base_type(context.env, value.ty)
+        return member(context, node, expression(ExprKind.Coerce, base, node, "", -1, expressions(value), value.falls), field)
+    }
     if ty.kind == TypeKind.Tuple { return tuple_member(context, node, value, field) }
     if ty.kind != TypeKind.Record { return Result.Err(error(context, node, "field access requires a known record type")) }
     let declaration = symbol(context.env, ty.symbol)
