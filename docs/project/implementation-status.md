@@ -407,9 +407,10 @@ Record-backed refinements now admit only immutable inline scalar/record leaves.
 Unknown construction checks once; copies and base-record widening do not recheck.
 Shared `List`/`Bytes`/`Text` fields and unchecked replacement are rejected.
 Closed inline record literals with a prover-supported `Int`/`Bool` predicate
-produce the refined type directly. Other constructions retain the `Result`
-boundary; explicit `comptime` can materialize a checked result. Shared-state
-invariants remain open.
+produce the refined type directly. Closed pure record literals with `Float`
+leaves can do the same when compile-time evaluation establishes the predicate.
+Unknown inputs and unevaluated expressions retain the `Result` boundary.
+Shared-state invariants remain open.
 
 Managed memory now uses stop-the-world copying collection with a traced
 large-object space; stress mode relocates all sizes. Rewritable typed
@@ -698,15 +699,22 @@ by those results.
 
 The separate `tools/semantic_change_trial` prototype initializes and refreshes
 stable-ID sidecars for root-level, single-package source. It previews
-move-plus-edit merges from directories or Git blobs, rechecks production and
-test scopes, and applies an exact reviewed result to a new directory. Identity
-refresh is explicit; it does not follow arbitrary edits automatically. The
-`tools/deployment` prototype analyzes schema conflicts and executes one bounded
-offline SQLite upgrade, rollback and re-upgrade with append-only events. Its
-fixed executor requires a same-build receipt for the candidate artifact and
-rechecks its bytes before migration. The operator still supplies the storage
-mapping; the receipt is local build evidence, not a signature or a proof that
-the application obeys that mapping.
+move-plus-edit and one-sided-addition merges from directories or Git blobs and
+applies an exact reviewed result to a new directory. Import-bearing packages
+require an explicit pinned project context: the review token covers the selected
+production/test closure and apply reloads it. Import changes and general
+cross-package edits do not merge. Merged type checking is not proof that every
+original reference retains its binding. Identity refresh is explicit; it does
+not follow arbitrary edits automatically.
+
+The `tools/deployment` prototype analyzes schema conflicts and executes one
+bounded offline SQLite migration package with upgrade, rollback and re-upgrade
+actions and append-only events. A plan digest binds the declared action and
+inputs across retry. Build receipts are reverified against artifact bytes, but
+the operator still supplies the storage mapping; a receipt is neither a
+signature nor proof that application code obeys that mapping. Read-only hotfix
+inspection checks receipts, the starting basis and declared schema equality,
+then reports compatibility as unproven and cannot execute a hotfix.
 
 Accepted language and deployment decisions remain targets, not claims that the
 whole design is implemented. Bootstrap agreement is not a correctness proof.
