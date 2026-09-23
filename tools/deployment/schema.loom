@@ -86,8 +86,8 @@ fn valid_columns(table Table) Result[Bool, Text] {
         }
         var earlier = 0
         while earlier < index {
-            let old = get(table.columns, earlier)
-            if old.id == column.id || old.name == column.name {
+            let previous = get(table.columns, earlier)
+            if previous.id == column.id || previous.name == column.name {
                 return Result.Err(concat("duplicate column identity or name in table ", table.id))
             }
             earlier = earlier + 1
@@ -110,8 +110,8 @@ pub fn validate(schema Schema) Result[Bool, Text] {
         discard valid_columns(table)?
         var earlier = 0
         while earlier < index {
-            let old = get(schema.tables, earlier)
-            if old.id == table.id || old.name == table.name {
+            let previous = get(schema.tables, earlier)
+            if previous.id == table.id || previous.name == table.name {
                 return Result.Err("duplicate table identity or name")
             }
             earlier = earlier + 1

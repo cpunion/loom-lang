@@ -260,6 +260,8 @@ fn succeeds(database Text) Result[Bool, Text] {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
+    discard fixture_sql(database, "UPDATE OR REPLACE orders SET rowid=3 WHERE id=2;")?
+    assert fixture_sql(database, "SELECT restorable FROM loom_archive_zero_amounts WHERE entity_id=3;")? == "0\n"
     discard fixture_sql(database, "INSERT OR REPLACE INTO orders VALUES (3,2);")?
     discard fixture_sql(database, "DELETE FROM orders WHERE id=4;")?
     assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|0|0\n4|0|0\n"
