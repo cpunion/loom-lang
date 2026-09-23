@@ -1,0 +1,89 @@
+import std.list.new
+import std.list.push
+import std.result.Result
+
+fn digest(mapping Schema, checked Text, lock Text, target Text, tool Text) Text {
+    match basis_for(mapping, checked, lock, target, tool) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+test fn basis_tracks_checked_code_mapping_and_native_inputs() {
+    let fields = new[Column]()
+    push(fields, Column {
+            id = "amount"
+            name = "amount"
+            kind = StorageType.Int
+            required = true
+            predicate = "amount >= 0"
+        })
+    let tables = new[Table]()
+    push(tables, Table {
+            id = "orders"
+            name = "orders"
+            columns = fields
+        })
+    let mapping = Schema {
+        basis = ""
+        tables = tables
+    }
+    let original = digest(mapping, "checked-a", "lock-a", "arm64-macos", "llvm-a")
+    match bind_basis(mapping, "checked-a", "lock-a", "arm64-macos", "llvm-a") {
+        Result.Ok(bound) => {
+            assert bound.basis == original
+            assert match bind_basis(bound, "checked-b", "lock-a", "arm64-macos", "llvm-a") {
+                Result.Err(_) => true,
+                Result.Ok(_) => false
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    assert original == digest(mapping, "checked-a", "lock-a", "arm64-macos", "llvm-a")
+    assert original != digest(mapping, "checked-b", "lock-a", "arm64-macos", "llvm-a")
+    assert original != digest(mapping, "checked-a", "lock-b", "arm64-macos", "llvm-a")
+    assert original != digest(mapping, "checked-a", "lock-a", "x86_64-linux", "llvm-a")
+    assert original != digest(mapping, "checked-a", "lock-a", "arm64-macos", "llvm-b")
+    push(fields, Column {
+            id = "note"
+            name = "note"
+            kind = StorageType.Text
+            required = false
+            predicate = ""
+        })
+    assert original != digest(mapping, "checked-a", "lock-a", "arm64-macos", "llvm-a")
+}
+
+test fn basis_rejects_invalid_mapping_or_missing_build_input() {
+    let empty = Schema {
+        basis = ""
+        tables = new[Table]()
+    }
+    assert match basis_for(empty, "", "lock", "target", "tool") {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    let tables = new[Table]()
+    push(tables, Table {
+            id = "orders"
+            name = "orders"
+            columns = new[Column]()
+        })
+    push(tables, Table {
+            id = "orders"
+            name = "other"
+            columns = new[Column]()
+        })
+    assert match basis_for(Schema {
+            basis = ""
+            tables = tables
+        }, "checked", "lock", "target", "tool") {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+}
