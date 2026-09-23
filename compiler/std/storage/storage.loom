@@ -1,0 +1,175 @@
+import std.list.get
+import std.list.length
+import std.list.clone
+import std.result.Result
+
+// These are SQLite-like storage classes, not SQL literals or database handles.
+// This package does not inspect a database or prove deployment compatibility.
+pub enum Value {
+    Null
+    Int(Int)
+    Float(Float)
+    Text(Text)
+    Bytes(Bytes)
+}
+
+// Nullability is described by Column, rather than by another physical kind.
+pub enum ValueKind {
+    Int
+    Float
+    Text
+    Bytes
+}
+
+// IDs are supplied by the application and remain independent of physical names.
+pub record Column {
+    id Text
+    physical_name Text
+    kind ValueKind
+    nullable Bool
+}
+
+pub record Table {
+    id Text
+    physical_name Text
+    columns List[Column]
+}
+
+pub enum CodecError {
+    InvalidSchema
+    SchemaChanged
+    WrongWidth(Int, Int)
+    WrongKind(Int)
+    NullNotAllowed(Int)
+    Rejected
+}
+
+// Callbacks implement the application mapping. A decoder should use checked
+// constructors for refined fields and map their failures to Rejected.
+pub record RowCodec[T] {
+    table Table
+    encode_value fn(T) Result[List[Value], CodecError]
+    decode_value fn(List[Value]) Result[T, CodecError]
+}
+
+fn snapshot(table Table) Table {
+    Table {
+        id = table.id
+        physical_name = table.physical_name
+        columns = clone(table.columns)
+    }
+}
+
+fn same_table(before Table, after Table) Bool {
+    if before.id != after.id || before.physical_name != after.physical_name || length(before.columns) != length(after.columns) {
+        return false
+    }
+    var index = 0
+    while index < length(before.columns) {
+        let left = get(before.columns, index)
+        let right = get(after.columns, index)
+        if left.id != right.id || left.physical_name != right.physical_name || left.kind != right.kind || left.nullable != right.nullable {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+// Metadata lists are mutable, so validation runs at each public boundary.
+// Bytes may alias mutable buffers; validation checks their class, not contents.
+// A returned row can be mutated later and must be validated again before use.
+pub fn validate_table(table Table) Result[Bool, CodecError] {
+    if table.id == "" || table.physical_name == "" || length(table.columns) == 0 {
+        return Result.Err(CodecError.InvalidSchema)
+    }
+    var index = 0
+    while index < length(table.columns) {
+        let column = get(table.columns, index)
+        if column.id == "" || column.physical_name == "" {
+            return Result.Err(CodecError.InvalidSchema)
+        }
+        var previous = 0
+        while previous < index {
+            let earlier = get(table.columns, previous)
+            if earlier.id == column.id || earlier.physical_name == column.physical_name {
+                return Result.Err(CodecError.InvalidSchema)
+            }
+            previous = previous + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn validate_values(table Table, values List[Value]) Result[Bool, CodecError] {
+    let expected = length(table.columns)
+    let actual = length(values)
+    if actual != expected {
+        return Result.Err(CodecError.WrongWidth(expected, actual))
+    }
+    var index = 0
+    while index < expected {
+        let column = get(table.columns, index)
+        match get(values, index) {
+            Value.Null => {
+                if !column.nullable {
+                    return Result.Err(CodecError.NullNotAllowed(index))
+                }
+            }
+            Value.Int(_) => {
+                if column.kind != ValueKind.Int {
+                    return Result.Err(CodecError.WrongKind(index))
+                }
+            }
+            Value.Float(_) => {
+                if column.kind != ValueKind.Float {
+                    return Result.Err(CodecError.WrongKind(index))
+                }
+            }
+            Value.Text(_) => {
+                if column.kind != ValueKind.Text {
+                    return Result.Err(CodecError.WrongKind(index))
+                }
+            }
+            Value.Bytes(_) => {
+                if column.kind != ValueKind.Bytes {
+                    return Result.Err(CodecError.WrongKind(index))
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+pub fn validate_row(table Table, values List[Value]) Result[Bool, CodecError] {
+    discard validate_table(table)?
+    validate_values(table, values)
+}
+
+pub fn encode_row[T](codec RowCodec[T], value T) Result[List[Value], CodecError] {
+    let table = snapshot(codec.table)
+    discard validate_table(table)?
+    let encoded = (codec.encode_value)(value)
+    if !same_table(table, codec.table) {
+        return Result.Err(CodecError.SchemaChanged)
+    }
+    let values = encoded?
+    discard validate_values(table, values)?
+    Result.Ok(values)
+}
+
+pub fn decode_row[T](codec RowCodec[T], values List[Value]) Result[T, CodecError] {
+    let table = snapshot(codec.table)
+    discard validate_table(table)?
+    let input = clone(values)
+    discard validate_values(table, input)?
+    let decoded = (codec.decode_value)(input)
+    if !same_table(table, codec.table) {
+        return Result.Err(CodecError.SchemaChanged)
+    }
+    discard validate_values(table, values)?
+    discard validate_values(table, input)?
+    decoded
+}

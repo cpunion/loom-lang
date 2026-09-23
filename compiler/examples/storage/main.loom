@@ -1,0 +1,93 @@
+import std.list.get
+import std.result.Result
+import std.storage.Value
+import std.storage.ValueKind
+import std.storage.Column
+import std.storage.Table
+import std.storage.RowCodec
+import std.storage.CodecError
+import std.storage.encode_row
+import std.storage.decode_row
+
+record Note {
+    id Int
+    body Text
+}
+
+fn encode_note(note Note) Result[List[Value], CodecError] {
+    Result.Ok([Value.Int(note.id), Value.Text(note.body)])
+}
+
+fn decode_note(values List[Value]) Result[Note, CodecError] {
+    let id = match get(values, 0) {
+        Value.Int(number) => number,
+        _ => {
+            return Result.Err(CodecError.Rejected)
+        }
+    }
+    let body = match get(values, 1) {
+        Value.Text(text) => text,
+        _ => {
+            return Result.Err(CodecError.Rejected)
+        }
+    }
+    Result.Ok(Note {
+            id = id
+            body = body
+        })
+}
+
+fn note_codec() RowCodec[Note] {
+    RowCodec {
+        table = Table {
+            id = "notes/v1"
+            physical_name = "notes"
+            columns = [
+                Column {
+                    id = "note-id"
+                    physical_name = "id"
+                    kind = ValueKind.Int
+                    nullable = false
+                },
+                Column {
+                    id = "note-body"
+                    physical_name = "body"
+                    kind = ValueKind.Text
+                    nullable = false
+                }
+            ]
+        }
+        encode_value = encode_note
+        decode_value = decode_note
+    }
+}
+
+fn round_trip() {
+    let codec = note_codec()
+    let encoded = match encode_row(codec, Note {
+            id = 4
+            body = "hello"
+        }) {
+        Result.Ok(values) => values,
+        Result.Err(_) => {
+            assert false
+            []
+        }
+    }
+    match decode_row(codec, encoded) {
+        Result.Ok(note) => {
+            assert note.id == 4 && note.body == "hello"
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
+fn main() {
+    round_trip()
+}
+
+test fn imported_storage_codec_round_trip() {
+    round_trip()
+}
