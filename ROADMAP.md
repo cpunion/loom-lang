@@ -84,9 +84,10 @@ pass the full native gate.
 Local toolchain staging now builds a generic-CPU frontend and relocates it with
 its source std and existing native bridge/runtime. CLI and editor discovery share
 one executable-relative layout, with an out-of-checkout programming trial in the
-three-platform workflow. This is not a release archive: the copied bridge still
-needs host LLVM/linker dependencies. Packaged notices/dependencies, published
-compiler artifacts remain delivery work.
+three-platform workflow. CI also packages and smoke-tests a relocatable local
+archive for each host, with dependency notices and a SHA-256 checksum. The bridge
+still needs host LLVM/linker dependencies. Formal release publication, bundled
+host dependencies, and broader target guarantees remain delivery work.
 
 Keep the compiler and its production library closure on a conservative bootstrap
 subset. Implementing a language feature does not justify using it in the compiler

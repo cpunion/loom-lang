@@ -518,9 +518,11 @@ native bridge/runtime. CLI and editor commands share executable-relative tool
 discovery; canonical path aliases no longer lose read-only editor queries.
 The out-of-checkout file-tool trial exercises real native commands, isolated
 tests and moving GC, with source queries also tested while the backend is absent.
-The workflow includes this gate on all three hosts. This remains local staging,
-not a downloadable or self-contained release. Bare-command discovery, packaged
-dependency notices/libraries and standalone Windows distribution remain open.
+The workflow includes this gate on all three hosts and retains a verified local
+archive for each, with installation notes, dependency notices, a SHA-256 checksum,
+and an extracted build/run smoke test. This is not a self-contained or formally
+published release: host LLVM/linker dependencies and SDKs remain external, and
+bare-command discovery still requires explicit tool paths.
 
 The Windows x64/MSVC implementation now includes native linking, binary file
 I/O with Unicode paths/arguments, drive/UNC/verbatim package paths, and native
