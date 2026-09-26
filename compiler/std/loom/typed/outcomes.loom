@@ -16,3 +16,20 @@ pub fn task_outcome_result(types List[Type], ty Int, element Int) Bool {
     let fault = get(types, get(faulted, 0))
     fault.kind == TypeKind.Record && length(fault.fields) == 1 && get(fault.fields, 0).ty == 3
 }
+
+// Private terminal notifications contain no typed result payload. The fault
+// record keeps the same one-Text layout as Outcome.Faulted.
+pub fn task_terminal_result(types List[Type], ty Int) Bool {
+    let shape = get(types, ty)
+    if shape.kind != TypeKind.Enum || length(shape.variants) != 3 {
+        return false
+    }
+    let completed = get(shape.variants, 0).fields
+    let faulted = get(shape.variants, 1).fields
+    if length(completed) != 0 || length(faulted) != 1 ||
+        length(get(shape.variants, 2).fields) != 0 {
+        return false
+    }
+    let fault = get(types, get(faulted, 0))
+    fault.kind == TypeKind.Record && length(fault.fields) == 1 && get(fault.fields, 0).ty == 3
+}

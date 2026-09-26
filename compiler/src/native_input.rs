@@ -587,9 +587,14 @@ impl Converter<'_> {
                     return Err("checked task observation must preserve its typed handle".into());
                 }
             }
-            Primitive::TaskWaitNext | Primitive::TaskNextResult => {
+            Primitive::TaskWaitNext
+            | Primitive::TaskNextResult
+            | Primitive::TaskNextTerminalResult
+            | Primitive::TaskNextTerminalFailure => {
                 let expected = if operation == Primitive::TaskWaitNext {
                     Type::Bool
+                } else if operation == Primitive::TaskNextTerminalFailure {
+                    Type::Text
                 } else {
                     Type::Int
                 };
@@ -1327,6 +1332,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_observe" => P::TaskObserve,
         "task_wait_next" => P::TaskWaitNext,
         "task_next_result" => P::TaskNextResult,
+        "task_next_terminal_result" => P::TaskNextTerminalResult,
+        "task_next_terminal_failure" => P::TaskNextTerminalFailure,
         "task_status" => P::TaskStatus,
         "task_failure" => P::TaskFailure,
         "task_cancel_begin" => P::TaskCancelBegin,
@@ -1360,7 +1367,9 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskFileResult
         | P::TaskFileOpenResult
         | P::TaskWaitNext
-        | P::TaskNextResult => 0,
+        | P::TaskNextResult
+        | P::TaskNextTerminalResult
+        | P::TaskNextTerminalFailure => 0,
         P::FloatFromInt
         | P::FloatToInt
         | P::FloatParse

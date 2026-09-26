@@ -205,6 +205,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.restore_locals()?;
                 Ok(output)
             }
+            Primitive::TaskNextTerminalFailure => {
+                let output =
+                    self.runtime_call("task_next_terminal_failure", Some(pointer.into()), values)?;
+                self.restore_locals()?;
+                Ok(output)
+            }
+            Primitive::TaskNextTerminalResult => self.runtime_call(
+                "task_next_terminal_result",
+                Some(self.context.i64_type().into()),
+                values,
+            ),
             Primitive::TaskObserve | Primitive::TaskNextResult => self.runtime_call(
                 if operation == Primitive::TaskObserve {
                     "task_observe"

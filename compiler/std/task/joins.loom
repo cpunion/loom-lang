@@ -55,43 +55,40 @@ pub async fn all[T](tasks List[Task[T]]) List[T] {
     }
 }
 
-// A tuple retains the element types rather than erasing them into a List.
-// Observe both children before suspending so a later-position failure can
-// cancel a slow first child instead of waiting for input order.
-pub async fn all[A, B](tasks (Task[A], Task[B])) (A, B) {
-    let left, right = tasks
-    let first_task = task_observe(left, 0)
-    let second_task = task_observe(right, 1)
-    if task_next().await == 0 {
-        match task_outcome(first_task).await {
-            Outcome.Completed(value) => {
-                assert task_next().await == 1
-                return (value, completed(task_outcome(second_task).await))
+// Selection never erases a typed result. Once every child has completed, a
+// single helper transfers their handles and extracts values in input order.
+async fn tuple_values[Ts...](tasks (Task[Ts]...)) (Ts...) {
+    comptime map task in tasks { completed(task_outcome(task).await) }
+}
+
+fn drain_tuple[Ts...](suppress Bool, tasks (Task[Ts]...)) {
+    comptime for task in tasks { task_drain(task, suppress) }
+}
+
+pub async fn all[Ts...](tasks (Task[Ts]...)) (Ts...) {
+    var count = 0
+    let observed = comptime map task in tasks {
+        let index = count
+        count = count + 1
+        task_observe(task, index)
+    }
+    var remaining = count
+    while remaining > 0 {
+        match task_next_terminal().await {
+            TaskTerminal.Completed => {
+                remaining = remaining - 1
             }
-            Outcome.Faulted(error) => {
-                task_drain(second_task, true)
+            TaskTerminal.Faulted(error) => {
+                drain_tuple(true, observed)
                 fault_text(error.message)
             }
-            Outcome.Cancelled => {
-                task_drain(second_task, false)
+            TaskTerminal.Cancelled => {
+                drain_tuple(false, observed)
                 fault_text("task was cancelled")
             }
         }
     }
-    match task_outcome(second_task).await {
-        Outcome.Completed(value) => {
-            assert task_next().await == 0
-            (completed(task_outcome(first_task).await), value)
-        }
-        Outcome.Faulted(error) => {
-            task_drain(first_task, true)
-            fault_text(error.message)
-        }
-        Outcome.Cancelled => {
-            task_drain(first_task, false)
-            fault_text("task was cancelled")
-        }
-    }
+    tuple_values(observed).await
 }
 
 // The input Tasks are already hot. Awaiting their outcomes in input order

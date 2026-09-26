@@ -8,6 +8,7 @@ use super::*;
 pub(super) struct Observation {
     members: HashMap<u64, i64>,
     ready: BTreeSet<(u64, u64)>,
+    selected_fault: Option<u64>,
 }
 
 pub(super) fn contains(core: &Core, parent: u64, child: u64) -> bool {
@@ -27,6 +28,9 @@ pub(super) fn remove(core: &mut Core, child: u64) {
         && let Some(group) = &mut core.tasks.get_mut(&parent).unwrap().observation
     {
         group.members.remove(&child);
+        if group.selected_fault == Some(child) {
+            group.selected_fault = None;
+        }
         if let Some(order) = order {
             group.ready.remove(&(order, child));
         }
@@ -132,15 +136,79 @@ pub(super) extern "C-unwind" fn loom_rt_task_next_result() -> i64 {
             .pop_first()
             .ok_or("task observation result is not ready")?;
         let index = group.members.remove(&child).expect("registered completion");
+        group.selected_fault = None;
         core.tasks.get_mut(&child).unwrap().waiter = None;
         Ok(index)
     })
 }
 
+/// Select one terminal event without extracting or releasing the child's typed
+/// frame. The selected fault identity is retained only until its diagnostic is
+/// copied (or a later selection replaces it).
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_next_terminal_result() -> i64 {
+    edit(|_, core| {
+        let current = core.current.ok_or("task observation outside a resume")?;
+        let child = {
+            let task = core.tasks.get_mut(&current).unwrap();
+            if !matches!(task.state, State::Running) {
+                return Err("task terminal result is not ready");
+            }
+            let group = task.observation.as_mut().ok_or("no observed tasks")?;
+            let (_, child) = group
+                .ready
+                .pop_first()
+                .ok_or("task terminal result is not ready")?;
+            group.members.remove(&child).expect("registered completion");
+            group.selected_fault = None;
+            child
+        };
+        let status = match core.tasks[&child].state {
+            State::Completed(_) => 0,
+            State::Faulted(_, _) => {
+                core.tasks
+                    .get_mut(&current)
+                    .unwrap()
+                    .observation
+                    .as_mut()
+                    .unwrap()
+                    .selected_fault = Some(child);
+                1
+            }
+            State::Cancelled(_) => 2,
+            _ => unreachable!("registered terminal completion"),
+        };
+        core.tasks.get_mut(&child).unwrap().waiter = None;
+        Ok(status)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_task_next_terminal_failure() -> *mut u8 {
+    let bytes = edit(|_, core| {
+        let current = core.current.ok_or("task observation outside a resume")?;
+        let task = core.tasks.get_mut(&current).unwrap();
+        if !matches!(task.state, State::Running) {
+            return Err("task fault data requires a running observer");
+        }
+        let group = task.observation.as_mut().ok_or("no observed tasks")?;
+        let child = group
+            .selected_fault
+            .take()
+            .ok_or("no selected observed fault")?;
+        let State::Faulted(failure, _) = &core.tasks[&child].state else {
+            return Err("selected observed task is not faulted");
+        };
+        Ok(outcomes::failure_bytes(failure))
+    });
+    // Constructing Text may move frames, so the Core borrow ends first.
+    unsafe { crate::loom_rt_text_new(bytes.as_ptr(), bytes.len()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HEAP, loom_rt_box_new, loom_rt_collect, rooted};
+    use crate::{HEAP, loom_rt_box_new, loom_rt_collect, rooted, text_bytes};
     use std::mem::size_of;
 
     thread_local! {
@@ -152,6 +220,7 @@ mod tests {
         result: i64,
         state: i64,
         failing: u64,
+        successful: u64,
     }
 
     fn event(text: &'static str) {
@@ -190,6 +259,10 @@ mod tests {
 
     unsafe extern "C-unwind" fn unstarted(_: *mut u8) -> i64 {
         event("unexpected start");
+        0
+    }
+
+    unsafe extern "C-unwind" fn successful(_: *mut u8) -> i64 {
         0
     }
 
@@ -242,5 +315,58 @@ mod tests {
         });
         loom_rt_collect();
         assert_eq!(HEAP.with(|heap| heap.borrow().objects.len()), before);
+    }
+
+    unsafe extern "C-unwind" fn terminal_parent(frame: *mut u8) -> i64 {
+        rooted([frame], |slots| unsafe {
+            if (*(*slots).cast::<Frame>()).state == 0 {
+                let successful = task(successful);
+                (*(*slots).cast::<Frame>()).successful = loom_rt_task_observe(successful, 0);
+                let failing = task(failing);
+                (*(*slots).cast::<Frame>()).failing = loom_rt_task_observe(failing, 1);
+                (*(*slots).cast::<Frame>()).state = 1;
+            }
+            if loom_rt_task_wait_next() == 0 {
+                return 1;
+            }
+            loom_rt_collect();
+            assert_eq!(loom_rt_task_next_terminal_result(), 0);
+            let successful = (*(*slots).cast::<Frame>()).successful;
+            assert_eq!(loom_rt_task_await(successful), 1);
+            loom_rt_task_result(successful);
+            loom_rt_task_release(successful);
+            assert_eq!(loom_rt_task_next_terminal_result(), 1);
+            let diagnostic = loom_rt_task_next_terminal_failure();
+            assert!(text_bytes(diagnostic).ends_with(b"observed failure"));
+            let failing = (*(*slots).cast::<Frame>()).failing;
+            outcomes::loom_rt_task_drain(failing, 1);
+            0
+        })
+    }
+
+    unsafe extern "C-unwind" fn construct_terminal() -> u64 {
+        unsafe { task(terminal_parent) }
+    }
+
+    #[test]
+    fn terminal_selection_reports_status_without_consuming_typed_handles() {
+        EVENTS.with(|events| events.borrow_mut().clear());
+        loom_rt_collect();
+        let before = HEAP.with(|heap| heap.borrow().objects.len());
+        unsafe { loom_rt_task_run(construct_terminal) };
+        EVENTS.with(|events| assert!(events.borrow().is_empty()));
+        loom_rt_collect();
+        assert_eq!(HEAP.with(|heap| heap.borrow().objects.len()), before);
+    }
+
+    #[test]
+    fn selected_fault_uses_the_existing_test_diagnostic_format() {
+        assert_eq!(
+            outcomes::failure_bytes(&OwnedFault {
+                message: b"boom".to_vec(),
+                test_name: Some(b"suite".to_vec()),
+            }),
+            b"FAIL suite\nboom"
+        );
     }
 }

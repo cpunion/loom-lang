@@ -111,6 +111,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::DirectoryRead
         | Primitive::PathCanonical => true,
         Primitive::TaskFailure
+        | Primitive::TaskNextTerminalFailure
         | Primitive::TaskCancelBegin
         | Primitive::TaskDrain
         | Primitive::FaultText => true,
@@ -134,6 +135,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TaskObserve
         | Primitive::TaskWaitNext
         | Primitive::TaskNextResult
+        | Primitive::TaskNextTerminalResult
         | Primitive::TaskStatus
         | Primitive::TaskResult
         | Primitive::TaskRelease

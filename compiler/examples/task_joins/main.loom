@@ -56,7 +56,7 @@ fn count() Int {
 }
 
 async fn main() {
-    let number, text = all((item(7), label())).await
+    let number, text, _ = all((item(7), label(), sleep_ms(0))).await
     assert number == 7 && text == "ready"
     let first, second = settled((item(8), label())).await
     match first {
