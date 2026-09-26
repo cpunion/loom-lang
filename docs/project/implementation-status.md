@@ -727,10 +727,12 @@ stable-ID sidecars for root-level, single-package source. It previews
 move-plus-edit and one-sided-addition merges from directories or Git blobs and
 applies an exact reviewed result to a new directory. Import-bearing packages
 require an explicit pinned project context: the review token covers the selected
-production/test closure and apply reloads it. Import changes and general
-cross-package edits do not merge. Merged type checking is not proof that every
-original reference retains its binding. Identity refresh is explicit; it does
-not follow arbitrary edits automatically.
+production/test closure and apply reloads it. Both the exact baseline and
+proposed merge must analyze in that closure, so an incompatible dependency API
+drift cannot be hidden by an adapting package edit. Import changes and general
+cross-package edits do not merge. Type checking is not proof that every original
+reference retains its binding. Identity refresh is explicit; it does not follow
+arbitrary edits automatically.
 
 The `tools/deployment` prototype analyzes schema conflicts and executes one
 bounded offline SQLite migration package with upgrade, rollback and re-upgrade

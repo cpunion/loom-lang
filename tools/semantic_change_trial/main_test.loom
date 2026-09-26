@@ -425,3 +425,48 @@ test fn imported_package_requires_an_exact_pinned_project_context() {
         }
     }
 }
+
+test fn changed_dependency_cannot_be_hidden_by_a_merge_that_adapts_to_it() {
+    // The context keeps the base package bytes but changes sample.math.bump's argument to Bool.
+    let base = snapshot_at("tools/semantic_change_trial/fixtures/project")
+    let files = new[File]()
+    var index = 0
+    while index < length(base.revision.files) {
+        let file = get(base.revision.files, index)
+        push(files, File {
+                path = file.path
+                text = if file.path == "app.loom" {
+                    "import sample.math.bump\n\nfn amount() Int { bump(true) }\nfn entry() Int { amount() }\npub fn main() { assert entry() > 0 }\n"
+                } else {
+                    file.text
+                }
+            })
+        index = index + 1
+    }
+    let adapted = Loaded {
+        revision = Revision {
+            package_name = base.revision.package_name
+            files = files
+            identities = base.revision.identities
+        }
+        sidecar = base.sidecar
+        commit = ""
+        next = base.next
+    }
+    match read_context("tools/semantic_change_trial/fixtures/project_dependency_drift", "compiler/std") {
+        Result.Ok(context) => {
+            match review_context(base, base, adapted, context) {
+                Result.Ok(_) => {
+                    assert false
+                }
+                Result.Err(message) => {
+                    assert starts_with(message, "baseline program failed analysis (production): ")
+                }
+            }
+        }
+        Result.Err(message) => {
+            discard write_error(concat("read_context failed: ", concat(message, "\n")))
+            assert false
+        }
+    }
+}

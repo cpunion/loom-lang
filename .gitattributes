@@ -12,3 +12,4 @@
 compiler/bootstrap/windows-stage0.checked.gz -text
 compiler/examples/wordcount/sample.txt text eol=lf
 tools/semantic_change_trial/fixtures/project/loom.lock text eol=lf
+tools/semantic_change_trial/fixtures/project_dependency_drift/loom.lock text eol=lf

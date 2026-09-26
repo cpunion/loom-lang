@@ -28,10 +28,10 @@ Import-bearing packages require an explicit offline project context. This must
 be the exact base package in a named module with `loom.toml` and a regular
 `loom.lock` (an empty lock is `loom-lock 1` followed by a newline). The tool
 loads the production and test import closures without resolving or fetching
-dependencies, checks the merged package against them, and includes selected
-source bytes, module manifests, lock bytes, resolved import edges, and canonical
-project/standard-library roots in the review token. Apply reloads that context
-and rejects changes before creating an output directory:
+dependencies, checks both the merged and baseline packages against them, and
+includes selected source bytes, module manifests, lock bytes, resolved import
+edges, and canonical project/standard-library roots in the review token. Apply
+reloads that context and rejects changes before creating an output directory:
 
 ```sh
 target/loom run tools/semantic_change_trial -- --context \
@@ -51,7 +51,9 @@ closure. The Git-object mode still rejects imports rather than borrowing a live
 checkout. The context and output paths must be trusted local paths. This does
 not make review and publication race-free against hostile concurrent filesystem
 writers. Merged type/contract analysis is not exhaustive proof that every
-reference or overload retains its original binding.
+reference or overload retains its original binding. A dependency closure that
+invalidates the exact baseline is rejected even if a proposed package edit
+would type-check against that changed dependency.
 
 Each directory contains ordinary root-level `.loom` files and a `.loom-ids`
 sidecar. The sidecar requires exactly one `package NAME` line and exactly one

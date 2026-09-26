@@ -727,9 +727,30 @@ fn checked_context(base Revision, merged Revision, production Project, tests Pro
         }
     }
     match analyze(contextual(tests, directory, merged)?, true) {
-        Result.Ok(_) => Result.Ok(merged),
-        Result.Err(problem) => Result.Err(concat("merged program failed analysis (tests): ", problem.diagnostic.message))
+        Result.Ok(_) => {
+        }
+        Result.Err(problem) => {
+            return Result.Err(concat("merged program failed analysis (tests): ", problem.diagnostic.message))
+        }
     }
+    // A changed dependency may make the baseline invalid while the proposed
+    // merge happens to adapt to it. That is a cross-package change, not a
+    // safe merge against this pinned project basis.
+    match analyze(production, false) {
+        Result.Ok(_) => {
+        }
+        Result.Err(problem) => {
+            return Result.Err(concat("baseline program failed analysis (production): ", problem.diagnostic.message))
+        }
+    }
+    match analyze(tests, true) {
+        Result.Ok(_) => {
+        }
+        Result.Err(problem) => {
+            return Result.Err(concat("baseline program failed analysis (tests): ", problem.diagnostic.message))
+        }
+    }
+    Result.Ok(merged)
 }
 
 // One side may rearrange/remove declarations and files. The other side may
