@@ -9,6 +9,7 @@ import std.fs.entries
 import std.fs.remove_empty_dir
 import std.fs.remove_file
 import std.int.to_text
+import std.io.write_error
 import std.list.get
 import std.list.length
 import std.list.new
@@ -418,7 +419,8 @@ test fn imported_package_requires_an_exact_pinned_project_context() {
                 }
             }
         }
-        Result.Err(_) => {
+        Result.Err(message) => {
+            discard write_error(concat("read_context failed: ", concat(message, "\n")))
             assert false
         }
     }

@@ -9,3 +9,4 @@
 *.toml text eol=lf
 *.yml text eol=lf
 compiler/examples/wordcount/sample.txt text eol=lf
+tools/semantic_change_trial/fixtures/project/loom.lock text eol=lf
