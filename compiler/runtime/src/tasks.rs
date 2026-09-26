@@ -419,7 +419,7 @@ impl Owner {
         // Capture the diagnostic with the existing test/fault context, but do
         // not propagate it through an installed owner or its outer root scope.
         // SAFETY: No activation, cleanup, or heap borrow is live here.
-        let failure = unsafe { catch_fault(|| wait_fault(error)) }.unwrap_err();
+        let failure = unsafe { catch_fault::<()>(|| wait_fault(error)) }.unwrap_err();
         let mut first = Some(failure);
         self.cancel_tree(root, &mut first);
         let mut core = self.core.borrow_mut();
