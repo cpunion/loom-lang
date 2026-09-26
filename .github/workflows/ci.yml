@@ -87,6 +87,16 @@ jobs:
       - name: Relocated toolchain and generic CPU gate
         run: node scripts/stage-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain"
 
+      - name: Package and verify extracted toolchain
+        run: node scripts/package-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain" "$RUNNER_TEMP/loom-toolchain-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: loom-toolchain-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/loom-toolchain-*.tar.gz*
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Export checked compiler for the Windows bootstrap
         run: target/loom emit-checked compiler/loom > target/compiler.checked
 
@@ -139,6 +149,16 @@ jobs:
 
       - name: Relocated toolchain and generic CPU gate
         run: node scripts/stage-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain"
+
+      - name: Package and verify extracted toolchain
+        run: node scripts/package-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain" "$RUNNER_TEMP/loom-toolchain-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: loom-toolchain-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/loom-toolchain-*.tar.gz*
+          if-no-files-found: error
+          retention-days: 7
 
   windows-llvm22:
     name: Windows native compiler (LLVM 22)
@@ -226,3 +246,13 @@ jobs:
 
       - name: Relocated toolchain and generic CPU gate
         run: node scripts/stage-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain"
+
+      - name: Package and verify extracted toolchain
+        run: node scripts/package-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain" "$RUNNER_TEMP/loom-toolchain-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: loom-toolchain-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/loom-toolchain-*.tar.gz*
+          if-no-files-found: error
+          retention-days: 7
