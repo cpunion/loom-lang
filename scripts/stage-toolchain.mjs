@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Stage and exercise a local toolchain; this is not a standalone release packager.
 import { spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,10 +42,24 @@ function run(executable, arguments_, cwd, environment = process.env) {
   if (outcome.status !== 0) throw new Error(`${command} failed:\n${outcome.stdout}${outcome.stderr}`);
   return outcome.stdout;
 }
+async function move(from, to) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (error) {
+      // Windows can briefly retain an image lock after a child has exited.
+      if (process.platform !== "win32" || attempt === 10 ||
+          !["EBUSY", "EPERM", "EACCES"].includes(error.code)) throw error;
+      await delay(100 * (attempt + 1));
+    }
+  }
+}
 
 // Keep the verification outside every checkout ancestor. No sidecar or cwd
 // fallback can substitute the development compiler, source std, or runtime.
 const temporary = mkdtempSync(join(tmpdir(), "loom-toolchain-"));
+let verificationFailed = false;
 try {
   let prefix = join(temporary, "initial");
   const privateTools = join(prefix, "lib/loom");
@@ -62,7 +78,7 @@ try {
     "--native-tool", join(privateTools, `loom-native${suffix}`),
     "--output", join(prefix, `bin/loom${suffix}`)], root, buildEnvironment);
   const moved = join(temporary, "moved 雪 toolchain");
-  renameSync(prefix, moved);
+  await move(prefix, moved);
   prefix = moved;
   const loom = join(prefix, `bin/loom${suffix}`);
   const app = join(temporary, "application");
@@ -85,7 +101,7 @@ try {
   }
   // Check/editor use needs only the frontend and std, not a working LLVM bridge.
   const backend = join(prefix, `lib/loom/loom-native${suffix}`);
-  renameSync(backend, `${backend}.disabled`);
+  await move(backend, `${backend}.disabled`);
   run(loom, ["check"], app, environment);
   const diagnostics = JSON.parse(run(loom, ["editor-check", app, "--tests"], app, environment));
   if (diagnostics.error || diagnostics.diagnostics.length !== 0) throw new Error("relocated editor diagnostics could not load std");
@@ -96,7 +112,7 @@ try {
   if (query.error || !query.hover?.types?.length || !query.definitions?.length) {
     throw new Error("relocated editor queries lost checked types or definitions");
   }
-  renameSync(`${backend}.disabled`, backend);
+  await move(`${backend}.disabled`, backend);
   // The new compiler can itself serve as a source-checking bootstrap seed.
   run(loom, ["check", join(root, "compiler/loom")], app, environment);
   writeSync(1, `Copying the verified toolchain to ${output}\n`);
@@ -109,6 +125,14 @@ try {
   run(join(output, `bin/loom${suffix}`), ["--version"], app, environment);
   console.log(`Relocated fmt/check/build/test/run, editor queries and forced-GC execution passed.\nStaged local toolchain: ${output}`);
   console.log("Invoke bin/loom by path. Native builds still require this host's LLVM libraries and linker/SDK; this is not a release archive.");
+} catch (error) {
+  verificationFailed = true;
+  throw error;
 } finally {
-  rmSync(temporary, { recursive: true, force: true });
+  try {
+    rmSync(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (error) {
+    if (!verificationFailed) throw error;
+    console.error("Could not clean up the temporary toolchain:", error.message);
+  }
 }
