@@ -1,0 +1,168 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.project.SourceOverlay
+import std.loom.project.import_scope
+import std.loom.project.package
+import std.loom.project.name
+import std.option.Option
+
+fn editor_no_auto_import() EditorOutput {
+    EditorOutput {
+        text = "{\"diagnostics\":[],\"autoImport\":null}\n"
+        failed = false
+    }
+}
+
+// Only an explicit source path supplies a package identity. The AST excludes
+// comments and strings; the exact slice excludes whitespace-normalized paths.
+fn editor_import_path(node Node, text Text, offset Int) Text {
+    let kind = node.kind
+    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.Type ||
+    kind == NodeKind.Construct {
+        let end = node.span.start + std.text.length(node.value)
+        if std.text.contains(node.value, ".") && end <= std.text.length(text) &&
+        offset >= node.span.start && offset <= end &&
+        std.text.slice(text, node.span.start, end) == node.value {
+            return node.value
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        let found = editor_import_path(get(node.children, index), text, offset)
+        if found != "" {
+            return found
+        }
+        index = index + 1
+    }
+    ""
+}
+
+fn editor_import_text(options EditorOptions) Option[Text] {
+    var index = 0
+    while index < length(options.overlays) {
+        let overlay = get(options.overlays, index)
+        if overlay.path == options.query_path {
+            return Option.Some(overlay.text)
+        }
+        index = index + 1
+    }
+    match read_text(options.query_path) {
+        Result.Ok(value) => Option.Some(value)
+        Result.Err(_) => Option.None
+    }
+}
+
+fn editor_import_checks(options EditorOptions, overlays List[SourceOverlay]) Bool {
+    match load_overlaid(options.path, options.std_root, options.tests, overlays) {
+        Result.Ok(project) => {
+            match bind(project, options.tests) {
+                Result.Ok(bindings) => {
+                    return match check(bindings) {
+                        Result.Ok(_) => true
+                        Result.Err(_) => false
+                    }
+                }
+                Result.Err(_) => {
+                }
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+    false
+}
+
+fn editor_import_overlays(options EditorOptions, text Text) List[SourceOverlay] {
+    let overlays = std.list.new[SourceOverlay]()
+    var found = false
+    var index = 0
+    while index < length(options.overlays) {
+        let overlay = get(options.overlays, index)
+        if overlay.path == options.query_path {
+            std.list.push(overlays, SourceOverlay {
+                    path = options.query_path
+                    text = text
+                })
+            found = true
+        } else {
+            std.list.push(overlays, overlay)
+        }
+        index = index + 1
+    }
+    if !found {
+        std.list.push(overlays, SourceOverlay {
+                path = options.query_path
+                text = text
+            })
+    }
+    overlays
+}
+
+fn editor_auto_import(options EditorOptions) EditorOutput {
+    let directory = match canonicalize(executable_directory(options.query_path)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return editor_no_auto_import()
+        }
+    }
+    let selected = match canonicalize(options.path) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return editor_no_auto_import()
+        }
+    }
+    if directory != selected || !std.text.ends_with(options.query_path, ".loom") ||
+    (!options.tests && std.text.ends_with(options.query_path, "_test.loom")) {
+        return editor_no_auto_import()
+    }
+    let source = match editor_import_text(options) {
+        Option.Some(value) => value
+        Option.None => {
+            return editor_no_auto_import()
+        }
+    }
+    if options.offset > std.text.length(source) {
+        return editor_no_auto_import()
+    }
+    let tree = match std.loom.parser.parse(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return editor_no_auto_import()
+        }
+    }
+    let path = editor_import_path(tree, source, options.offset)
+    if path == "" {
+        return editor_no_auto_import()
+    }
+    let qualifier = std.loom.project.package(path)
+    let member = std.loom.project.name(path)
+    let scope = match import_scope(options.path, options.std_root, qualifier, options.overlays) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return editor_no_auto_import()
+        }
+    }
+    var matches = 0
+    var index = 0
+    while index < length(scope.declarations) {
+        let declaration = get(scope.declarations, index).node
+        if declaration.value == member && (declaration.kind == NodeKind.Function ||
+            declaration.kind == NodeKind.Record || declaration.kind == NodeKind.Enum ||
+            declaration.kind == NodeKind.Refined || declaration.kind == NodeKind.Concept) {
+            matches = matches + 1
+        }
+        index = index + 1
+    }
+    if matches != 1 || editor_import_checks(options, options.overlays) {
+        return editor_no_auto_import()
+    }
+    let insertion = concat("import ", concat(path, "\n"))
+    if !editor_import_checks(options, editor_import_overlays(options, concat(insertion, source))) {
+        return editor_no_auto_import()
+    }
+    EditorOutput {
+        text = concat("{\"diagnostics\":[],\"autoImport\":{\"path\":", concat(editor_quoted(path),
+                concat(",\"start\":0,\"text\":", concat(editor_quoted(insertion), "}}\n"))))
+        failed = false
+    }
+}

@@ -27,6 +27,7 @@ test('LSP semantic queries preserve all checked types/targets and cancel on sibl
   assert.equal(client.initialized.capabilities.definitionProvider, true);
   assert.equal(client.initialized.capabilities.referencesProvider, true);
   assert.equal(client.initialized.capabilities.renameProvider, true);
+  assert.equal(client.initialized.capabilities.codeActionProvider, true);
   assert.deepEqual(client.initialized.capabilities.completionProvider, { triggerCharacters: ['.'] });
   const target = path.join(folder, 'query_target.loom');
   const text = '// é😀 QUERY';
@@ -48,6 +49,13 @@ test('LSP semantic queries preserve all checked types/targets and cancel on sibl
       [definitions[1].uri]: [{ range: definitions[1].range, newText: 'renamed' }],
     },
   });
+  const actions = await client.rpc.sendRequest('textDocument/codeAction', {
+    textDocument: params.textDocument, range: { start: position, end: { line: 0, character: position.character + 5 } },
+    context: { diagnostics: [] },
+  });
+  assert.deepEqual(actions, [{ title: 'Import std.text.length', kind: 'quickfix', edit: { changes: {
+    [params.textDocument.uri]: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: 'import std.text.length\n' }],
+  } } }]);
   assert.equal(await client.rpc.sendRequest('textDocument/hover', { ...params, position: { line: 0, character: 0 } }), null);
   assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', { ...params, position: { line: 0, character: 0 } }), []);
 

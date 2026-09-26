@@ -2,9 +2,10 @@
 
 A small development extension: highlighting, brackets/comments, unsaved-buffer
 diagnostics, name/member completion, checked type hover, go to definition, find references,
-conservative local rename, and document formatting. The
+conservative local rename, a qualified-path import quick fix, and document
+formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
-Loom. Automatic imports, general rename, and incremental semantic caching are
+Loom. Bare-name import discovery, general rename, and incremental semantic caching are
 not implemented.
 
 ## Try it
@@ -61,7 +62,8 @@ files in a multi-root workspace, use absolute paths or a compiler on PATH; the
 server does not guess a folder for relative settings. With no workspace folder,
 relative paths resolve from the document's directory.
 The configured compiler must support `editor-check`, `editor-query`,
-`editor-complete`, `editor-references`, `editor-rename`, and `fmt --stdin`. Compiler
+`editor-complete`, `editor-references`, `editor-rename`, `editor-auto-import`, and
+`fmt --stdin`. Compiler
 execution requires a trusted, local-filesystem workspace; highlighting also works
 in restricted mode. Remote VS Code workspaces run the extension on the remote host.
 
@@ -176,16 +178,24 @@ uses unsaved overlays and the ordinary offline resolver; missing or changed Git
 snapshots offer no declarations until explicitly resolved. It does not fetch,
 write locks, follow nested-module/directory aliases, or include private/test
 declarations. Malformed target files are skipped; candidates are not checked
-package validity. Automatic imports remain unimplemented.
+package validity.
+
+For an unresolved explicit path such as `std.text.length(...)`, **Quick Fix** can
+insert `import std.text.length`. The compiler uses the path's declared direct
+module and package, requires exactly one public production declaration, and
+checks the revised in-memory package before offering the edit. Private names,
+overloads, ambiguous names, missing offline dependencies, and unrelated package
+errors produce no action. It works with unsaved buffers and never writes files.
+Bare-name automatic import discovery remains unimplemented.
 
 ```sh
 npm test           # Real LSP transport with a small process fixture
-npm run smoke      # Real target/loom: overlays, hover/definition/references, local rename, completion, formatting
+npm run smoke      # Real target/loom: overlays, hover/navigation/references, local rename, completion, import Quick Fix, formatting
 npm run smoke:host # Installed VS Code: actual extension activation and commands
 npm run smoke:checkout # Repository-root settings and real source packages
 ```
 
-The extensionless `test/fixtures/project/editor-check`, `editor-query`, and `fmt` files are small
+The extensionless `test/fixtures/project/editor-*` and `fmt` files are small
 Node process fixtures for `npm test`, not generated compiler artifacts. They are
 excluded from extension packaging; both smoke commands use the real compiler.
 
@@ -210,6 +220,9 @@ The adapter calls:
 loom editor-check PACKAGE --tests [--std STD] [--overlay ORIGINAL SNAPSHOT]...
 loom editor-query PACKAGE --at ORIGINAL UTF8_BYTE_OFFSET --tests [--std STD] [--overlay ORIGINAL SNAPSHOT]...
 loom editor-complete PACKAGE --at ORIGINAL UTF8_BYTE_OFFSET --tests [--std STD] [--overlay ORIGINAL SNAPSHOT]...
+loom editor-references PACKAGE --at ORIGINAL UTF8_BYTE_OFFSET --tests [--std STD] [--overlay ORIGINAL SNAPSHOT]...
+loom editor-rename PACKAGE --at ORIGINAL UTF8_BYTE_OFFSET --to NEW_NAME --tests [--std STD] [--overlay ORIGINAL SNAPSHOT]...
+loom editor-auto-import PACKAGE --at ORIGINAL UTF8_BYTE_OFFSET --tests [--std STD] [--overlay ORIGINAL SNAPSHOT]...
 loom fmt --stdin
 ```
 
@@ -223,6 +236,8 @@ Formatting reads and writes source on stdin/stdout.
 Completion output adds `"completion": null | { "start", "end", "items": [
 { "label", "kind": "variable" | "function" | "type" | "field" | "method" | "keyword" | "namespace", "detail" }, ...] }`.
 Its spans are also UTF-8 bytes; it does not run proofs or produce an executable.
+Auto-import output adds `"autoImport": null | { "path", "start": 0,
+"text": "import ...\\n" }`; the server turns it into a workspace edit.
 
 The client/server use Microsoft's [Language Server SDK](https://github.com/microsoft/vscode-languageserver-node)
 and follow the [VS Code extension guide](https://code.visualstudio.com/api/language-extensions/language-server-extension-guide).

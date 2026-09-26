@@ -99,8 +99,10 @@ Name completion uses package bindings and lexical scopes without type checking;
 member completion infers the receiver through ordinary signature/body-prefix
 checking. Nested tuple/record bindings contribute ordinary names and receiver types.
 It offers fields, tuple indices, admitted concept methods and async
-Task `.await`, not proof of an applicable call or valid body. General rename,
-automatic imports and incremental semantic caching remain open. Completion
+Task `.await`, not proof of an applicable call or valid body. A qualified-path
+Quick Fix offers an import only for one public declaration in an offline-resolved
+direct package when the revised in-memory package checks. Bare-name import
+search, general rename and incremental semantic caching remain open. Completion
 can recover a missing cursor name/value or unmatched EOF delimiters
 without modifying the source or making normal builds accept it. Other semantic
 queries use concrete body instances. If package checking fails, an independently
@@ -291,7 +293,9 @@ CLI-only cursor recovery maps virtual insertion ranges back to the original buff
 `complete_imports(path, std_root, text, offset, overlays)` separately combines the
 lexical import cursor with project discovery, returning ordinary `Completion`
 items. It needs no parsed importer or LLVM backend; resolution failures yield
-empty candidates, not proof of valid imports. Automatic imports remain open.
+empty candidates, not proof of valid imports. The editor's separate auto-import
+command verifies a full explicit path and checks the virtual inserted import;
+it does not search all packages for bare names.
 
 `inspect_at` selects the source token's role, so a receiver and its selected field
 have distinct answers even when lowering shares their spans. `Inspection.types`

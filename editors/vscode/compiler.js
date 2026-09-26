@@ -57,6 +57,10 @@ function symbols(settings, directory, file, offset, overlayArgs, signal, newName
     ['--at', file, String(offset), ...(newName === undefined ? [] : ['--to', newName])], overlayArgs, signal);
 }
 
+function autoImport(settings, directory, file, offset, overlayArgs, signal) {
+  return editorReport(settings, directory, 'editor-auto-import', ['--at', file, String(offset)], overlayArgs, signal);
+}
+
 async function format(settings, directory, text, signal) {
   const result = await run(settings.executable, ['fmt', '--stdin'], directory, signal, text);
   if (result.code !== 0) throw new Error(result.stderr || 'Loom could not format this buffer.');
@@ -72,4 +76,4 @@ function byteOffset(document, position) {
   return Buffer.byteLength(document.getText().slice(0, document.offsetAt(position)), 'utf8');
 }
 
-module.exports = { snapshots, check, query, symbols, format, bytePosition, byteOffset };
+module.exports = { snapshots, check, query, symbols, autoImport, format, bytePosition, byteOffset };

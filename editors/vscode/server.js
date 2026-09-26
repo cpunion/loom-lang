@@ -20,6 +20,7 @@ connection.onInitialize(params => {
   defaults = params.initializationOptions?.settings || {};
   return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, documentFormattingProvider: true,
     hoverProvider: true, definitionProvider: true, referencesProvider: true, renameProvider: true,
+    codeActionProvider: true,
     completionProvider: { triggerCharacters: ['.'] },
     workspace: { workspaceFolders: { supported: true, changeNotifications: true } } } };
 });
@@ -141,7 +142,7 @@ connection.onDidChangeConfiguration(change => { defaults = change.settings?.loom
 
 async function semanticQuery(params, token, kind) {
   const current = documents.get(params.textDocument.uri);
-  if (!current || URI.parse(current.uri).scheme !== 'file') return null;
+  if (!current || URI.parse(current.uri).scheme !== 'file') return kind === 'autoImport' ? [] : null;
   const document = TextDocument.create(current.uri, 'loom', current.version, current.getText());
   const file = URI.parse(document.uri).fsPath;
   const directory = path.dirname(file), ticket = generation, buffers = capturedBuffers();
@@ -151,17 +152,29 @@ async function semanticQuery(params, token, kind) {
   let overlays, value;
   try {
     overlays = await compiler.snapshots(buffers);
+    const offset = compiler.byteOffset(document, params.position || params.range.start);
     const report = kind === 'references' || kind === 'rename'
       ? await compiler.symbols(await settings(document.uri), directory, file,
-        compiler.byteOffset(document, params.position), overlays.args, controller.signal,
+        offset, overlays.args, controller.signal,
         kind === 'rename' ? params.newName : undefined)
-      : await compiler.query(await settings(document.uri), directory, file,
-        compiler.byteOffset(document, params.position), overlays.args, controller.signal, kind === 'completion');
+      : kind === 'autoImport'
+        ? await compiler.autoImport(await settings(document.uri), directory, file, offset, overlays.args, controller.signal)
+        : await compiler.query(await settings(document.uri), directory, file,
+          offset, overlays.args, controller.signal, kind === 'completion');
     if (report.error) {
       if (kind === 'rename') throw new ResponseError(LSPErrorCodes.RequestFailed, report.error);
-      return null;
+      return kind === 'autoImport' ? [] : null;
     }
-    if (kind === 'hover') {
+    if (kind === 'autoImport') {
+      const candidate = report.autoImport;
+      if (!candidate) value = [];
+      else {
+        const position = compiler.bytePosition(document, candidate.start);
+        value = [{ title: `Import ${candidate.path}`, kind: 'quickfix', edit: { changes: {
+          [document.uri]: [{ range: { start: position, end: position }, newText: candidate.text }],
+        } } }];
+      }
+    } else if (kind === 'hover') {
       const hover = report.hover;
       value = hover?.types.length ? { contents: hover.types.map(type => ({ language: 'loom', value: type })),
         range: { start: compiler.bytePosition(document, hover.start), end: compiler.bytePosition(document, hover.end) } } : null;
@@ -199,14 +212,14 @@ async function semanticQuery(params, token, kind) {
       }));
     }
   } catch (error) {
-    if (token.isCancellationRequested || controller.signal.aborted || ticket !== generation) return null;
+    if (token.isCancellationRequested || controller.signal.aborted || ticket !== generation) return kind === 'autoImport' ? [] : null;
     throw new ResponseError(LSPErrorCodes.RequestFailed, error.message);
   } finally {
     cancellation.dispose();
     queries.delete(controller);
     await overlays?.dispose();
   }
-  return token.isCancellationRequested || controller.signal.aborted || ticket !== generation ? null : value;
+  return token.isCancellationRequested || controller.signal.aborted || ticket !== generation ? (kind === 'autoImport' ? [] : null) : value;
 }
 
 function queryRequest(params, token, kind) {
@@ -220,6 +233,7 @@ connection.onDefinition((params, token) => queryRequest(params, token, 'definiti
 connection.onCompletion((params, token) => queryRequest(params, token, 'completion'));
 connection.onReferences((params, token) => queryRequest(params, token, 'references'));
 connection.onRenameRequest((params, token) => queryRequest(params, token, 'rename'));
+connection.onCodeAction((params, token) => queryRequest(params, token, 'autoImport'));
 connection.onDocumentFormatting(async (params, token) => {
   const document = documents.get(params.textDocument.uri);
   if (!document) return [];

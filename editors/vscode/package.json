@@ -1,7 +1,7 @@
 {
   "name": "loom-language",
   "displayName": "Loom",
-  "description": "Loom highlighting, compiler diagnostics, completion, type hover, navigation, local rename, and formatting.",
+  "description": "Loom highlighting, diagnostics, completion, qualified import fixes, hover, navigation, local rename, and formatting.",
   "version": "0.0.1",
   "publisher": "cpunion",
   "license": "MIT",

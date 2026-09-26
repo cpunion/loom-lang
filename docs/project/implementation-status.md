@@ -599,7 +599,9 @@ type and dyn positions filter declarations without claiming valid instantiation.
 Import-statement completion now discovers direct module edges, directory segments
 and public production declarations, including unsaved overlays. It reuses offline
 resolution and real cached-source verification without loading incomplete imports,
-fetching dependencies or writing locks. Automatic imports remain open.
+fetching dependencies or writing locks. A qualified-path Quick Fix can insert an
+import when one public declaration resolves through the direct offline module
+identity and the revised in-memory package checks. Bare-name import search remains open.
 Completion-only source recovery can insert one cursor placeholder and close
 unmatched EOF delimiters. It never modifies source files or supplies executable
 or proof evidence; other syntax errors still reject and normal diagnostics remain.
@@ -673,7 +675,7 @@ same-directory test; it rejects existing directories and invalid module names.
 Development compiler paths resolve std/native from their checkout, allowing
 check/build/test/run from the application's own directory; `run --` forwards
 program arguments. The VS Code development host has a dedicated trial workspace.
-Real host/protocol smoke tests cover the editing loop. Automatic imports, broader syntax-error
+Real host/protocol smoke tests cover the editing loop. Bare-name imports, broader syntax-error
 recovery and typed queries within erroneous functions remain programming-experience
 gaps. Native assertions now carry static
 definition-file/line/Unicode-column diagnostics. Test entries set one current

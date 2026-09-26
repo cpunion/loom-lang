@@ -1,0 +1,14 @@
+// Transport fixture only: the real compiler verifies candidate identity.
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const at = args.indexOf('--at');
+const file = args[at + 1], offset = Number(args[at + 2]);
+const buffers = new Map();
+for (let index = 0; index < args.length; index++) {
+  if (args[index] !== '--overlay') continue;
+  buffers.set(args[++index], fs.readFileSync(args[++index], 'utf8'));
+}
+const text = buffers.get(file);
+const selected = Buffer.from(text).subarray(offset, offset + 5).toString() === 'QUERY';
+process.stdout.write(JSON.stringify({ diagnostics: [], autoImport: selected
+  ? { path: 'std.text.length', start: 0, text: 'import std.text.length\n' } : null }));
