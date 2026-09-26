@@ -53,7 +53,7 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
         let count = new[Int]()
         push(count, 0)
         let expanded = expand_pack_iteration(context.env, context.signature.symbol, node, source.value,
-            arity, false, false, false, 0, count)?
+            arity, false, false, 0, count)?
         return Result.Ok(Step { context = context expression = expr(context, expanded, 0)? })
     }
     if kind == NodeKind.PackError { return Result.Err(error(context, node, node.value)) }

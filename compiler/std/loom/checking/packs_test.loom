@@ -60,7 +60,7 @@ test fn static_iteration_accepts_immutable_tuple_bindings_and_checks_each_field(
     rejects("fn bad() { var pair = (1, true)\ncomptime for value in pair { discard value } }")
     rejects("fn bad() { let items = [1, 2]\ncomptime for value in items { discard value } }")
     rejects("fn bad() { comptime for value in missing { discard value } }")
-    rejects("fn bad() { let pair = (1, true)\ndiscard comptime map value in pair { value } }")
+    discard accepted("fn mapped(pair (Int, Bool)) (Int, Bool) { comptime map value in pair { value } }\nfn main() { let pair = mapped((1, true))\nassert pair.0 == 1 && pair.1 }")
 }
 
 test fn static_tuple_iteration_retains_lexical_closure_and_task_rules() {
@@ -71,7 +71,7 @@ test fn static_tuple_iteration_retains_lexical_closure_and_task_rules() {
 
 test fn tuple_iteration_inside_pack_keeps_nested_pack_map() {
     discard accepted("fn nested[Ts...](values (Ts...)) Int { let rounds = (1, 2)\nvar total = 0\ncomptime for round in rounds { let mapped = comptime map item in values { discard item\nround }\ntotal = total + mapped.0 }\ntotal }\nfn main() { assert nested((true,)) == 3 }")
-    rejects("fn bad[Ts...](values (Ts...)) { let local = ((1,),)\ncomptime for values in local { discard comptime map item in values { item } } }\nfn main() { bad((true,)) }")
+    discard accepted("fn nested_local[Ts...](values (Ts...)) { let local = ((1,),)\ncomptime for values in local { discard comptime map item in values { item } } }\nfn main() { nested_local((true,)) }")
 }
 
 test fn static_pack_iteration_preserves_task_consumption() {
@@ -85,9 +85,41 @@ test fn structural_tuple_pack_maps_lexical_results_from_one_argument() {
     rejects("fn bad[Ts...](values (Ts...)) (Ts...) { comptime map item in other { item } }\nfn main() { discard bad((1,)) }")
     rejects("fn bad[Ts...](values (Ts...)) (Ts...) { comptime map item in values { discard item } }\nfn main() { discard bad((1,)) }")
     rejects("fn bad[Ts...](values (Int, Ts...)) (Ts...) { values }\nfn main() { discard bad((1, true)) }")
-    rejects("fn bad(values (Int,)) (Int,) { comptime map item in values { item } }\nfn main() { discard bad((1,)) }")
+    discard accepted("fn fixed(values (Int,)) (Int,) { comptime map item in values { item } }\nfn main() { assert fixed((1,)).0 == 1 }")
 }
 
 test fn static_map_clones_closure_bodies_per_element() {
     discard accepted("concept Show { fn show(self Self) Text }\nimpl Show for Int { fn show(self Int) Text { \"int\" } }\nimpl Show for Bool { fn show(self Bool) Text { \"bool\" } }\nfn callbacks[Ts... Show](values (Ts...)) (fn() Text, fn() Text) { comptime map item in values { fn() Text { item.show() } } }\nfn main() { let pair = callbacks((4, true))\nassert pair.0() == \"int\" && pair.1() == \"bool\" }")
+}
+
+test fn static_map_accepts_tuple_parameters_locals_and_nested_maps() {
+    discard accepted("fn identity[T](pair (T, Bool)) (T, Bool) { comptime map item in pair { item } }\nfn main() { let pair = identity((4, true))\nassert pair.0 == 4 && pair.1\nlet local = (true, 9)\nlet mapped = comptime map item in local { item }\nassert mapped.0 && mapped.1 == 9\nlet one_source = (1,)\nlet one = comptime map item in one_source { item }\nassert one.0 == 1 }")
+    discard accepted("fn empty[Ts...](values Ts...) (Ts...) { values }\nfn main() { let local = empty()\nlet mapped = comptime map item in local { item }\ndiscard mapped\nlet rows = ((1, 2), (3, 4))\nlet nested = comptime map row in rows { comptime map item in row { item } }\nassert nested.0.0 == 1 && nested.1.1 == 4 }")
+    discard accepted("fn shadow[Ts...](values Ts...) (Bool, Int) { let values = (true, 7)\ncomptime map item in values { item } }\nfn main() { let mapped = shadow(1, 2)\nassert mapped.0 && mapped.1 == 7 }")
+    discard accepted("fn selected[Ts...](values Ts...) { comptime if Int == Bool { discard comptime map item in missing { item } } else { let local = (1,)\ndiscard comptime map item in local { item } } }\nfn main() { selected(true) }")
+}
+
+test fn static_map_keeps_lexical_closures_and_task_transfers() {
+    discard accepted("fn readers() (fn() Int, fn() Int) { let pair = (1, 2)\ncomptime map item in pair { fn() Int { item } } }\nfn main() { let pair = readers()\nassert pair.0() == 1 && pair.1() == 2 }")
+    discard accepted("async fn item[T](value T) T { value }\nasync fn main() { let tasks = (item(1), item(true))\nlet mapped = comptime map task in tasks { task.await }\nassert mapped.0 == 1 && mapped.1 }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { let tasks = (item(),)\nlet mapped = comptime map task in tasks { discard task.await\ntask.await }\ndiscard mapped }")
+    rejects("async fn item() Int { 1 }\nasync fn main() { let tasks = (item(),)\nlet mapped = comptime map task in tasks { task }\ndiscard mapped }")
+}
+
+test fn static_map_rejects_sources_without_an_immutable_tuple_shape() {
+    rejects("fn bad() { let items = [1, 2]\ndiscard comptime map item in items { item } }")
+    rejects("fn bad() { discard comptime map item in missing { item } }")
+    rejects("fn bad() { let pair = (1,)\ndiscard comptime map item in pair { discard item } }")
+    rejects("fn bad() (Bool,) { let pair = (1,)\ncomptime map item in pair { item } }")
+}
+
+test fn static_map_errors_point_to_the_mutable_tuple_source() {
+    let source = "fn bad() { var pair = (1, true)\ndiscard comptime map item in pair { item } }"
+    match checked(source_files(source)) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "comptime map requires an immutable tuple binding"
+            assert slice(source, failed.diagnostic.span.start, failed.diagnostic.span.end) == "pair"
+        }
+        Result.Ok(_) => { assert false }
+    }
 }

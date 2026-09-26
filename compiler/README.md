@@ -631,7 +631,9 @@ must be bound to a typed value first.
 tuple of lexical block results. Each selected body runs once with its own
 element type and normal effects. An empty tuple maps to an empty tuple; for
 nonempty tuples each body must produce a value. `comptime for` remains a
-no-result statement. `comptime map` still requires the function's final value pack.
+no-result statement. Like `comptime for`, `comptime map` accepts an immutable,
+statically shaped tuple parameter or `let` binding, including the final value
+pack of a variadic function. Mutable and non-tuple bindings reject.
 
 Unselected arities have not had their bodies verified. Variadic `ensures`
 declarations currently reject even when uncalled: proving selected arities is

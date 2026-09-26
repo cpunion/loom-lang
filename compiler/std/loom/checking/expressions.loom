@@ -140,7 +140,26 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Match { matched(context, node, expected, enforce)? } else {
     if kind == NodeKind.Try { propagated(context, node, expected)? } else {
     if kind == NodeKind.Comptime { compile_time(context, node, expected, enforce)? } else {
-    if kind == NodeKind.ComptimeMap { return Result.Err(error(context, node, "comptime map requires a top-level variadic value pack")) } else {
+    if kind == NodeKind.ComptimeMap {
+        let source = child(node, 0)
+        let binding = if source.kind == NodeKind.Name { lookup(context, source.value) } else { -1 }
+        if binding < 0 { return Result.Err(error(context, source, "comptime map requires an immutable tuple binding")) }
+        let local = get(context.bindings, binding).local
+        if local < 0 { return Result.Err(error(context, source, "comptime map requires an immutable tuple binding")) }
+        let tuple = get(context.locals, local)
+        if tuple.mutable || get(context.env.types, tuple.ty).kind != TypeKind.Tuple {
+            return Result.Err(error(context, source, "comptime map requires an immutable tuple binding"))
+        }
+        let arity = length(get(context.env.types, tuple.ty).arguments)
+        if arity > 1024 || length(context.locals) > 65536 - arity {
+            return Result.Err(error(context, source, "static tuple iteration budget exceeded"))
+        }
+        let count = new[Int]()
+        push(count, 0)
+        let expanded = expand_pack_iteration(context.env, context.signature.symbol, node, source.value,
+            arity, false, false, 0, count)?
+        return expr_mode(context, expanded, expected, enforce)
+    } else {
     if kind == NodeKind.PackError { return Result.Err(error(context, node, node.value)) } else {
         return Result.Err(error(context, node, "unsupported expression in source checker"))
     } } } } } } } } } } } } } } } } } } } } }

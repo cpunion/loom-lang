@@ -302,8 +302,8 @@ tuple, without source Unit syntax. Unselected arities are not verified;
 variadic postconditions reject until every arity can be proved. A first
 `comptime for` statically visits immutable fixed-shape tuples, including the final
 value pack in selected bodies;
-`comptime map` produces a typed tuple from a structural tuple pack. Richer
-mapped/type-pack iteration, methods/data packs, static value packs and tuple
+`comptime map` produces a typed tuple from the same immutable fixed-shape tuple
+bindings. Richer mapped/type-pack iteration, methods/data packs, static value packs and tuple
 `.await` remain open.
 
 Named function values now support ordinary higher-order functions, structural
