@@ -285,8 +285,9 @@ discard rules; nested names keep lexical scope and var mutability.
 Scalar literal patterns now reuse those decisions and ordinary equality, including
 nested Task payloads and finite Bool coverage. Named record patterns reuse the
 tuple product decisions, with explicit field omission and ordinary resource
-obligations. Guards and heterogeneous tuple task composition remain later work;
-dynamic List joins use the separate source policies above.
+obligations. General guards remain later work. Heterogeneous tuple Task joins
+and tuple `.await` are implemented; dynamic List joins use the separate source
+policies above.
 Named record bindings now also use the direct tuple-destructuring path, sharing
 field validation with matches and retaining initializer order, ordinary mutability,
 Task/resource obligations and compile-time execution. This adds no matcher or

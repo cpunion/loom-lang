@@ -99,3 +99,39 @@ fn growing_pack_specialization_reports_depth_without_crashing() {
     );
     assert!(!diagnostic.contains("assertion failed"), "{diagnostic}");
 }
+
+#[test]
+fn finite_pack_specialization_chain_can_exceed_the_old_native_stack_guard() {
+    let package = tempfile::tempdir().unwrap();
+    let mut source = String::new();
+    for index in 0..48 {
+        source.push_str(&format!(
+            "fn step_{index}[Ts...](values Ts...) {{ step_{}(values..., 1) }}\n",
+            index + 1
+        ));
+    }
+    source.push_str("fn step_48[Ts...](values Ts...) { discard values }\n");
+    source.push_str("fn main() { step_0() }\n");
+    fs::write(package.path().join("main.loom"), source).unwrap();
+    success(&loom(&["check", package.path().to_str().unwrap()]));
+}
+
+#[test]
+fn deferred_pack_callees_are_checked_before_the_package_succeeds() {
+    let package = tempfile::tempdir().unwrap();
+    let mut source = String::new();
+    for index in 0..48 {
+        source.push_str(&format!(
+            "fn step_{index}[Ts...](values Ts...) {{ step_{}(values..., 1) }}\n",
+            index + 1
+        ));
+    }
+    source.push_str("fn step_48[Ts...](values Ts...) { discard missing }\n");
+    source.push_str("fn main() { step_0() }\n");
+    fs::write(package.path().join("main.loom"), source).unwrap();
+    let output = loom(&["check", package.path().to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("unknown local value"), "{diagnostic}");
+    assert!(!diagnostic.contains("type pack specialization depth exceeded"), "{diagnostic}");
+}

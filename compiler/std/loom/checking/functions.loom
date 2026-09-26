@@ -419,8 +419,19 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
     discard task_flow(context, checked_function)?
     Result.Ok(CheckedBody { context = context function = checked_function })
 }
-fn function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
+fn checked_function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
     let checked = function_body(env, id, arguments, constants, emit)?
     let verified = checked_contracts(checked.context, id, checked.function)?
     Result.Ok(close_function(checked.context, verified))
+}
+fn function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
+    if active_pack(env) < 0 { return checked_function(env, id, arguments, constants, emit) }
+    let pending = pending_pack_snapshot(env)
+    match checked_function(env, id, arguments, constants, emit) {
+        Result.Ok(checked) => Result.Ok(checked)
+        Result.Err(failed) => {
+            rollback_new_pending_packs(env, pending)
+            Result.Err(failed)
+        }
+    }
 }

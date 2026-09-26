@@ -8,7 +8,10 @@ record PackInstance {
     source Int
     arity Int
     signature Int
+    // 0 = unvisited, 1 = checking, 2 = proved, 3 = queued, 4 =
+    // checked in the current batch but not yet proved with its callees.
     state Int
+    depth Int
 }
 
 fn pack_parameter(node Node) Int {
@@ -408,8 +411,75 @@ fn pack_signature(env Environment, owner Int, arity Int) Result[Int, Failure] {
             arity = arity
             signature = selected
             state = 0
+            depth = 0
         })
     Result.Ok(selected)
+}
+
+fn pack_state(env Environment, index Int, state Int, depth Int) {
+    let pack = get(env.packs, index)
+    set(env.packs, index, PackInstance {
+            source = pack.source arity = pack.arity signature = pack.signature
+            state = state depth = depth
+        })
+}
+
+fn active_pack(env Environment) Int {
+    var index = 0
+    while index < length(env.packs) {
+        if get(env.packs, index).state == 1 { return index }
+        index = index + 1
+    }
+    -1
+}
+
+fn queued_pack(env Environment) Int {
+    var index = 0
+    while index < length(env.packs) {
+        if get(env.packs, index).state == 3 { return index }
+        index = index + 1
+    }
+    -1
+}
+
+fn finish_pack_batch(env Environment, proved Bool) {
+    var index = 0
+    while index < length(env.packs) {
+        let state = get(env.packs, index).state
+        if state == 1 || state == 3 || state == 4 {
+            pack_state(env, index, if proved { 2 } else { 0 }, 0)
+        }
+        index = index + 1
+    }
+}
+
+// Optional CTFE/proof checks may recover from a failed function traversal.
+// Drop only pack work enqueued by that traversal, retaining earlier siblings.
+fn pending_pack_snapshot(env Environment) List[Int] {
+    let pending = new[Int]()
+    var index = 0
+    while index < length(env.packs) {
+        if get(env.packs, index).state == 3 { push(pending, index) }
+        index = index + 1
+    }
+    pending
+}
+
+fn rollback_new_pending_packs(env Environment, before List[Int]) {
+    if active_pack(env) < 0 { return }
+    var index = 0
+    while index < length(env.packs) {
+        if get(env.packs, index).state == 3 {
+            var retained = false
+            var previous = 0
+            while previous < length(before) {
+                if get(before, previous) == index { retained = true }
+                previous = previous + 1
+            }
+            if !retained { pack_state(env, index, 0, 0) }
+        }
+        index = index + 1
+    }
 }
 
 fn check_pack_arity(env Environment, signature Int) Result[Bool, Failure] {
@@ -421,47 +491,30 @@ fn check_pack_arity(env Environment, signature Int) Result[Bool, Failure] {
     if pack.state != 0 {
         return Result.Ok(true)
     }
-    var active = 0
-    var visiting = 0
-    while visiting < length(env.packs) {
-        if get(env.packs, visiting).state == 1 {
-            active = active + 1
-        }
-        visiting = visiting + 1
-    }
-    // Each nested specialization retains large native checker frames at O0.
-    // This conservative safety budget also rejects deeper finite chains.
-    if active >= 16 {
+    let active = active_pack(env)
+    let depth = if active < 0 { 1 } else { get(env.packs, active).depth + 1 }
+    if depth > 64 {
         return Result.Err(failure(env, pack.source, symbol(env, pack.source).node, "type pack specialization depth exceeded; expansion must be finite"))
     }
-    set(env.packs, index, PackInstance {
-            source = pack.source
-            arity = pack.arity
-            signature = signature
-            state = 1
-        })
-    let current = get(env.signatures, signature)
-    match function(env, signature, abstract_arguments(env, current.parameters), unknown_constants(current), false) {
-        Result.Ok(_) => {
-            set(env.packs, index, PackInstance {
-                    source = pack.source
-                    arity = pack.arity
-                    signature = signature
-                    state = 2
-                })
+    pack_state(env, index, 3, depth)
+    if active >= 0 { return Result.Ok(true) }
+    // Check a breadth-first worklist. A pack body can discover more arities,
+    // but no native checker frames remain live across those bodies.
+    var queued = queued_pack(env)
+    while queued >= 0 {
+        let next = get(env.packs, queued)
+        pack_state(env, queued, 1, next.depth)
+        let current = get(env.signatures, next.signature)
+        match function(env, next.signature, abstract_arguments(env, current.parameters), unknown_constants(current), false) {
+            Result.Ok(_) => { pack_state(env, queued, 4, next.depth) }
+            Result.Err(failed) => {
+                finish_pack_batch(env, false)
+                return Result.Err(failed)
+            }
         }
-        Result.Err(failed) => {
-            // Optional compile-time folding can recover from a failure. It
-            // must not leave a recursive visiting entry marked as checked.
-            set(env.packs, index, PackInstance {
-                    source = pack.source
-                    arity = pack.arity
-                    signature = signature
-                    state = 0
-                })
-            return Result.Err(failed)
-        }
+        queued = queued_pack(env)
     }
+    finish_pack_batch(env, true)
     Result.Ok(true)
 }
 
