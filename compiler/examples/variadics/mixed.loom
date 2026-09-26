@@ -1,0 +1,72 @@
+import std.list.push
+import std.list.length
+
+fn framed[Ts...](values (Int, Ts..., Text)) (Int, Ts..., Text) {
+    comptime map value in values {
+        value
+    }
+}
+
+fn framed_width[Ts...](values (Int, Ts..., Text)) Int {
+    var width = 0
+    comptime for value in values {
+        discard value
+        width = width + 1
+    }
+    width
+}
+
+fn framed_ints[Ts...](values (Int, Ts..., Text)) Int {
+    discard values
+    var count = 0
+    comptime for T in Ts {
+        comptime if T == Int {
+            count = count + 1
+        }
+    }
+    count
+}
+
+fn mixed_source(log List[Int]) (Int, Bool, Text) {
+    push(log, 1)
+    (7, true, "end")
+}
+
+fn exercise_mixed() {
+    let empty = framed((1, "end"))
+    assert empty.0 == 1 && empty.1 == "end"
+    assert framed_width((1, "end")) == 2
+    assert framed_width((1, true, 3, "end")) == 4
+    assert framed_ints((1, "end")) == 0
+    assert framed_ints((1, true, 3, "end")) == 1
+
+    let log List[Int] = []
+    let once = framed(mixed_source(log))
+    assert once.0 == 7 && once.1 && once.2 == "end"
+    assert length(log) == 1
+    let callback fn((Int, Bool, Text)) (Int, Bool, Text) = framed
+    assert callback((2, true, "callback")).1
+    let explicit = framed[Bool]
+    assert explicit((3, false, "explicit")).2 == "explicit"
+
+    let shared = [4]
+    let aliases = framed((1, shared, shared, "shared"))
+    aliases.1[0] = 5
+    assert aliases.2[0] == 5 && shared[0] == 5
+    assert comptime {
+        framed((6, true, "constant")).2
+    } == "constant"
+}
+
+async fn framed_tasks[Ts...](values (Task[Int], Task[Ts]..., Task[Text])) (Int, Ts..., Text) {
+    comptime map task in values {
+        task.await
+    }
+}
+
+async fn exercise_mixed_tasks() {
+    let empty = framed_tasks((item(1), item("end"))).await
+    assert empty.0 == 1 && empty.1 == "end"
+    let mixed = framed_tasks((item(2), item(true), item([3]), item("last"))).await
+    assert mixed.0 == 2 && mixed.1 && mixed.2[0] == 3 && mixed.3 == "last"
+}

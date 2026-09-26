@@ -375,7 +375,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
                     } else {
                         let tuple = tuple_pack_input(context, inputs, length(inputs.nodes) - 1)?
                         inputs = tuple.inputs
-                        arity = tuple.arity
+                        arity = tuple.arity - tuple_pack_fixed(get(parameters, length(parameters) - 1))
                     }
                 }
             }

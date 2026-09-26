@@ -644,12 +644,14 @@ enclosing `while`, or reject if none exists. The
 [pack iteration example](examples/pack_iteration/main.loom) covers mixed types,
 effects and Tasks.
 
-A final structural parameter `values (Pattern[Ts]...)` instead takes one tuple
-argument and one runtime tuple parameter. Its arity comes from the argument's
-statically known tuple type, including a named tuple or function result.
-Currently the tuple type contains only the expanded pattern; fixed tuple
-prefixes are unsupported. A contextual function type can select an arity for
-a reference to this function. Tuple elements that need contextual inference
+A final structural parameter takes one tuple argument and one runtime tuple
+parameter. It may have fixed fields around one expanded pattern, such as
+`values (Int, Pattern[Ts]..., Text)`. The pack arity is the argument's statically
+known tuple width minus the fixed fields, including for named tuples, function
+results and contextual function references. A zero-element pack retains the
+fixed fields. Ordinary checking validates those fields and every expanded
+element; `comptime for/map` visits the entire value tuple, while iteration over
+`Ts` visits only its type pack. Tuple elements that need contextual inference
 must be bound to a typed value first.
 
 `comptime map item in values { expression }` elaborates to an ordered typed
