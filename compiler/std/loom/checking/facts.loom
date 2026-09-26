@@ -104,6 +104,29 @@ fn fact_reference(context Context, value Expr) Int {
     let ty = base_type(context.env, value.ty)
     if ty == 1 || ty == 5 { value.index } else { -1 }
 }
+fn copied_scalar_facts(context Context, value Expr, local Int) Context {
+    if !context.env.has_refinements || get(context.locals, local).mutable { return context }
+    let source = fact_reference(context, value)
+    if source < 0 { return context }
+    // Snapshot only evidence already established on this path. Immutable scalar
+    // copies preserve values, unlike reads through shared containers or var.
+    var next = context.fact_head
+    var head = context.fact_head
+    var steps = 0
+    var count = 0
+    while head >= 0 && steps < 256 && count < 32 {
+        let fact = get(context.facts, head)
+        if fact.local == source {
+            let added = length(context.facts)
+            push(context.facts, Fact { local = local predicate = fact.predicate previous = next })
+            next = added
+            count = count + 1
+        }
+        head = fact.previous
+        steps = steps + 1
+    }
+    fact_context(context, next)
+}
 fn facts_imply(context Context, value Expr, goal Expr) Bool {
     if context.fact_head < 0 { return false }
     let local = fact_reference(context, value)

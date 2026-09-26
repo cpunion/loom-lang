@@ -204,7 +204,8 @@ cases retain `Result` construction. Exact call-free predicates and already true
 `&&` conjuncts also discharge Int/Float refinement boundaries without IEEE
 algebra. Conjuncts may regroup or reorder; `||` branches are not assumed true.
 Construction also uses immutable scalar facts from preconditions, successful
-assertions and lexical branches. The original guard remains while proved
+assertions and lexical branches. Immutable scalar copies retain facts established
+before the copy, including through copy chains. The original guard remains while proved
 constructors lower directly, preserving one input evaluation. Mutable bindings,
 heap reads, cross-local relations, branch joins and general Float reasoning
 remain open; unsupported proofs keep their checks. Refinement-to-refinement

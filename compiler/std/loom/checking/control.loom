@@ -67,7 +67,8 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
         discard resource_binding(context, node, value)?
         let local = length(context.locals)
         let next = bind_local(context, node, node.value, value.ty, kind == NodeKind.Var, boundary)?
-        return Result.Ok(Step { context = next expression = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls) })
+        return Result.Ok(Step { context = copied_scalar_facts(next, value, local)
+            expression = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls) })
     }
     let value = if kind == NodeKind.Assign {
         let found = lookup(context, node.value)
