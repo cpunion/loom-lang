@@ -55,7 +55,8 @@ fn main() {
         }
         return
     }
-    if mode == "editor-check" || mode == "editor-query" || mode == "editor-complete" {
+    if mode == "editor-check" || mode == "editor-query" || mode == "editor-complete" ||
+    mode == "editor-references" || mode == "editor-rename" {
         let output = editor_execute(args)
         match write_text(output.text) {
             Result.Ok(_) => {

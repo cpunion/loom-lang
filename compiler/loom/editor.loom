@@ -17,6 +17,7 @@ record EditorOptions {
     overlays List[SourceOverlay]
     query_path Text
     offset Int
+    new_name Text
 }
 
 record EditorOutput {
@@ -79,7 +80,10 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     var tests = false
     var query_path = ""
     var offset = -1
-    let query = get(args, 1) == "editor-query" || get(args, 1) == "editor-complete"
+    var new_name = ""
+    let mode = get(args, 1)
+    let query = mode == "editor-query" || mode == "editor-complete" ||
+    mode == "editor-references" || mode == "editor-rename"
     let overlays = std.list.new[SourceOverlay]()
     var index = 2
     while index < std.list.length(args) {
@@ -103,44 +107,52 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
             }
             index = index + 2
         } else {
-            if argument == "--tests" {
-                if tests {
-                    return Result.Err("duplicate --tests")
+            if argument == "--to" {
+                if mode != "editor-rename" || new_name != "" || index + 1 >= std.list.length(args) {
+                    return Result.Err("editor-rename requires one --to name")
                 }
-                tests = true
+                new_name = get(args, index + 1)
+                index = index + 1
             } else {
-                if argument == "--std" {
-                    index = index + 1
-                    if index == std.list.length(args) {
-                        return Result.Err("--std needs a path")
+                if argument == "--tests" {
+                    if tests {
+                        return Result.Err("duplicate --tests")
                     }
-                    standard = get(args, index)
+                    tests = true
                 } else {
-                    if argument == "--overlay" {
-                        if index + 2 >= std.list.length(args) {
-                            return Result.Err("--overlay needs an original file path and a UTF-8 snapshot file")
+                    if argument == "--std" {
+                        index = index + 1
+                        if index == std.list.length(args) {
+                            return Result.Err("--std needs a path")
                         }
-                        let original = get(args, index + 1)
-                        let snapshot = get(args, index + 2)
-                        let text = match read_text(snapshot) {
-                            Result.Ok(value) => value
-                            Result.Err(_) => {
-                                return Result.Err(concat(original, ": cannot read UTF-8 overlay snapshot"))
-                            }
-                        }
-                        std.list.push(overlays, SourceOverlay {
-                                path = original
-                                text = text
-                            })
-                        index = index + 2
+                        standard = get(args, index)
                     } else {
-                        if starts_with(argument, "-") {
-                            return Result.Err(concat("unknown editor-check option ", argument))
+                        if argument == "--overlay" {
+                            if index + 2 >= std.list.length(args) {
+                                return Result.Err("--overlay needs an original file path and a UTF-8 snapshot file")
+                            }
+                            let original = get(args, index + 1)
+                            let snapshot = get(args, index + 2)
+                            let text = match read_text(snapshot) {
+                                Result.Ok(value) => value
+                                Result.Err(_) => {
+                                    return Result.Err(concat(original, ": cannot read UTF-8 overlay snapshot"))
+                                }
+                            }
+                            std.list.push(overlays, SourceOverlay {
+                                    path = original
+                                    text = text
+                                })
+                            index = index + 2
+                        } else {
+                            if starts_with(argument, "-") {
+                                return Result.Err(concat("unknown editor-check option ", argument))
+                            }
+                            if path != "" {
+                                return Result.Err("editor-check selects one package directory")
+                            }
+                            path = argument
                         }
-                        if path != "" {
-                            return Result.Err("editor-check selects one package directory")
-                        }
-                        path = argument
                     }
                 }
             }
@@ -149,6 +161,9 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     }
     if query && query_path == "" {
         return Result.Err("editor queries require --at source-path byte-offset")
+    }
+    if mode == "editor-rename" && new_name == "" {
+        return Result.Err("editor-rename requires one --to name")
     }
     if path == "" {
         return Result.Err("editor-check requires an absolute package directory")
@@ -164,6 +179,7 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
             overlays = overlays
             query_path = query_path
             offset = offset
+            new_name = new_name
         })
 }
 
@@ -176,8 +192,11 @@ fn editor_execute(args List[Text]) EditorOutput {
     }
     if get(args, 1) == "editor-complete" {
         match editor_import_completion(options) {
-            Option.Some(value) => { return value }
-            Option.None => {}
+            Option.Some(value) => {
+                return value
+            }
+            Option.None => {
+            }
         }
     }
     var recovery = EditorRecovery {
@@ -224,16 +243,23 @@ fn editor_execute(args List[Text]) EditorOutput {
     if options.query_path != "" {
         let index = match editor_source(project, options.query_path) {
             Result.Ok(value) => value,
-            Result.Err(message) => { return editor_error(message) }
+            Result.Err(message) => {
+                return editor_error(message)
+            }
         }
         if options.offset > std.text.length(get(project.files, index).text) {
             return editor_error("query byte offset is outside the source")
         }
-        return if get(args, 1) == "editor-complete" {
-            editor_completion(bound, index, options.offset, recovery.inserted)
-        } else {
-            editor_query(bound, index, options.offset)
+        if get(args, 1) == "editor-complete" {
+            return editor_completion(bound, index, options.offset, recovery.inserted)
         }
+        if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
+            return match check(bound) {
+                Result.Ok(program) => editor_symbols(bound, program, index, options.offset, options.new_name)
+                Result.Err(failed) => editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
+            }
+        }
+        return editor_query(bound, index, options.offset)
     }
     match check(bound) {
         Result.Ok(_) => {

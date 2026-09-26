@@ -25,6 +25,8 @@ test('LSP semantic queries preserve all checked types/targets and cancel on sibl
   t.after(() => client.close());
   assert.equal(client.initialized.capabilities.hoverProvider, true);
   assert.equal(client.initialized.capabilities.definitionProvider, true);
+  assert.equal(client.initialized.capabilities.referencesProvider, true);
+  assert.equal(client.initialized.capabilities.renameProvider, true);
   assert.deepEqual(client.initialized.capabilities.completionProvider, { triggerCharacters: ['.'] });
   const target = path.join(folder, 'query_target.loom');
   const text = '// é😀 QUERY';
@@ -38,6 +40,14 @@ test('LSP semantic queries preserve all checked types/targets and cancel on sibl
   const definitions = [{ uri: URI.file(target).toString(),
     range: { start: { line: 1, character: 3 }, end: { line: 1, character: 9 } } }, { uri: URI.file(file).toString(), range: hover.range }];
   assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', params), definitions);
+  assert.deepEqual(await client.rpc.sendRequest('textDocument/references', { ...params, context: { includeDeclaration: true } }), definitions);
+  assert.deepEqual(await client.rpc.sendRequest('textDocument/references', { ...params, context: { includeDeclaration: false } }), [definitions[1]]);
+  assert.deepEqual(await client.rpc.sendRequest('textDocument/rename', { ...params, newName: 'renamed' }), {
+    changes: {
+      [definitions[0].uri]: [{ range: definitions[0].range, newText: 'renamed' }],
+      [definitions[1].uri]: [{ range: definitions[1].range, newText: 'renamed' }],
+    },
+  });
   assert.equal(await client.rpc.sendRequest('textDocument/hover', { ...params, position: { line: 0, character: 0 } }), null);
   assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', { ...params, position: { line: 0, character: 0 } }), []);
 

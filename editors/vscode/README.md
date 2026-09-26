@@ -1,10 +1,11 @@
 # Loom for VS Code
 
 A small development extension: highlighting, brackets/comments, unsaved-buffer
-diagnostics, name/member completion, checked type hover, go to definition, and document formatting. The
+diagnostics, name/member completion, checked type hover, go to definition, find references,
+conservative local rename, and document formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
-Loom. References, rename, and incremental semantic caching are not
-implemented.
+Loom. Automatic imports, general rename, and incremental semantic caching are
+not implemented.
 
 ## Try it
 
@@ -59,7 +60,8 @@ base, including standard-library files opened through navigation. For external
 files in a multi-root workspace, use absolute paths or a compiler on PATH; the
 server does not guess a folder for relative settings. With no workspace folder,
 relative paths resolve from the document's directory.
-The configured compiler must support `editor-check`, `editor-query`, `editor-complete`, and `fmt --stdin`. Compiler
+The configured compiler must support `editor-check`, `editor-query`,
+`editor-complete`, `editor-references`, `editor-rename`, and `fmt --stdin`. Compiler
 execution requires a trusted, local-filesystem workspace; highlighting also works
 in restricted mode. Remote VS Code workspaces run the extension on the remote host.
 
@@ -103,7 +105,8 @@ and are removed after completion/cancellation; user source files are never chang
 An edit cancels outstanding checking and semantic queries, including queries in
 other open files. Configuration and watched-file changes also invalidate queries.
 Formatting edits are discarded if the document changes or the request is canceled.
-Hover and definition perform fresh compiler checks with the same snapshots.
+Hover, definition, references, and local rename perform fresh compiler checks
+with the same snapshots.
 Diagnostics can coexist with checked query results: an unrelated non-generic
 function-body error, even in the same file, need not hide an independently checked
 concrete function and its dependencies. Errors in that function or its dependencies
@@ -113,7 +116,20 @@ keeps the original bindings and never guesses from names. After a successful
 whole-package check, all differing types and targets from checked generic instances
 are retained.
 
-This is checked-body navigation, not a complete symbol index. Signatures, type
+This is checked-body navigation, not a complete symbol index. References use
+exact definition spans from checked uses in the loaded import closure, and can
+include the declaration. They omit uninstantiated bodies, unchecked syntax and
+ambiguous targets. A package error suppresses references and rename until the
+whole package checks; hover and definition retain their independent-function
+fallback.
+
+Rename edits checked `let`/`var` bindings in ordinary functions. It refuses
+functions with nested closures or compile-time branches, unresolved occurrences,
+name collisions, and invalid Loom identifiers. Function, parameter, field, and
+type rename are not yet available. The server returns a workspace edit for the
+client to apply; it never writes source files directly.
+
+Signatures, type
 annotations, uninstantiated bodies, and folded code without source identity have
 no result. Some names, such as match-bound locals, have hover but no definition.
 Dynamic calls navigate to concept declarations, not a guessed runtime
@@ -164,7 +180,7 @@ package validity. Automatic imports remain unimplemented.
 
 ```sh
 npm test           # Real LSP transport with a small process fixture
-npm run smoke      # Real target/loom: overlays, hover/definition, completion, formatting
+npm run smoke      # Real target/loom: overlays, hover/definition/references, local rename, completion, formatting
 npm run smoke:host # Installed VS Code: actual extension activation and commands
 npm run smoke:checkout # Repository-root settings and real source packages
 ```

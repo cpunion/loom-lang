@@ -19,7 +19,8 @@ connection.onInitialize(params => {
   folderChanges = !!params.capabilities.workspace?.workspaceFolders;
   defaults = params.initializationOptions?.settings || {};
   return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, documentFormattingProvider: true,
-    hoverProvider: true, definitionProvider: true, completionProvider: { triggerCharacters: ['.'] },
+    hoverProvider: true, definitionProvider: true, referencesProvider: true, renameProvider: true,
+    completionProvider: { triggerCharacters: ['.'] },
     workspace: { workspaceFolders: { supported: true, changeNotifications: true } } } };
 });
 connection.onInitialized(() => {
@@ -150,9 +151,16 @@ async function semanticQuery(params, token, kind) {
   let overlays, value;
   try {
     overlays = await compiler.snapshots(buffers);
-    const report = await compiler.query(await settings(document.uri), directory, file,
-      compiler.byteOffset(document, params.position), overlays.args, controller.signal, kind === 'completion');
-    if (report.error) return null;
+    const report = kind === 'references' || kind === 'rename'
+      ? await compiler.symbols(await settings(document.uri), directory, file,
+        compiler.byteOffset(document, params.position), overlays.args, controller.signal,
+        kind === 'rename' ? params.newName : undefined)
+      : await compiler.query(await settings(document.uri), directory, file,
+        compiler.byteOffset(document, params.position), overlays.args, controller.signal, kind === 'completion');
+    if (report.error) {
+      if (kind === 'rename') throw new ResponseError(LSPErrorCodes.RequestFailed, report.error);
+      return null;
+    }
     if (kind === 'hover') {
       const hover = report.hover;
       value = hover?.types.length ? { contents: hover.types.map(type => ({ language: 'loom', value: type })),
@@ -165,6 +173,25 @@ async function semanticQuery(params, token, kind) {
         label: item.label, kind: kinds[item.kind], detail: item.detail,
         textEdit: { range: { start: compiler.bytePosition(document, result.start), end: compiler.bytePosition(document, result.end) }, newText: item.label },
       })) };
+    } else if (kind === 'references' || kind === 'rename') {
+      const locations = kind === 'references'
+        ? (params.context?.includeDeclaration ? report.references : (report.references || []).filter(item =>
+          !report.declaration || item.path !== report.declaration.path || item.start !== report.declaration.start || item.end !== report.declaration.end))
+        : report.edits;
+      const sources = new Map();
+      const converted = await Promise.all((locations || []).map(async item => {
+        const targetFile = path.resolve(directory, item.path);
+        if (!sources.has(targetFile)) sources.set(targetFile, sourceDocument(targetFile, buffers));
+        const target = await sources.get(targetFile);
+        return { uri: target.uri, range: { start: compiler.bytePosition(target, item.start), end: compiler.bytePosition(target, item.end) } };
+      }));
+      if (kind === 'references') value = converted;
+      else if (!converted.length) value = null;
+      else {
+        const changes = {};
+        for (const item of converted) (changes[item.uri] ||= []).push({ range: item.range, newText: params.newName });
+        value = { changes };
+      }
     } else {
       value = await Promise.all((report.definitions || []).map(async item => {
         const target = await sourceDocument(path.resolve(directory, item.path), buffers);
@@ -191,6 +218,8 @@ function queryRequest(params, token, kind) {
 connection.onHover((params, token) => queryRequest(params, token, 'hover'));
 connection.onDefinition((params, token) => queryRequest(params, token, 'definition'));
 connection.onCompletion((params, token) => queryRequest(params, token, 'completion'));
+connection.onReferences((params, token) => queryRequest(params, token, 'references'));
+connection.onRenameRequest((params, token) => queryRequest(params, token, 'rename'));
 connection.onDocumentFormatting(async (params, token) => {
   const document = documents.get(params.textDocument.uri);
   if (!document) return [];
