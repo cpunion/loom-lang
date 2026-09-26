@@ -247,12 +247,14 @@ arities have not been verified. Variadic postconditions reject until the checker
 can prove every arity, including for uncalled declarations. Empty tuple operands
 retain their evaluation at the source gap, even with no resulting arguments,
 indirect/method calls or suspension. Their effects cannot enter erased comptime
-arguments; those boundaries still require a prior binding. A first body-level
-`comptime for item in values` form unrolls the final value pack for each selected
-arity and checks every selected element with ordinary effects and Task rules.
+arguments; those boundaries still require a prior binding. A body-level
+`comptime for item in values` form unrolls an immutable structural tuple binding,
+including the final value pack for each selected arity, and checks every element
+with ordinary effects and Task rules.
 A final structural `(Pattern[Ts]...)` parameter takes one runtime tuple and
 infers arity from its known type. `comptime map` produces an ordered typed tuple
-of lexical results; `comptime for` remains a no-result statement. Structural
+of lexical results from a final value pack; `comptime for` remains a no-result
+statement. Structural
 tuples currently contain only the expanded pattern, and context-dependent
 tuple elements need a prior typed binding. Multiple packs, methods/data packs,
 static value packs and general pack reflection remain open. See the [variadic example](../../compiler/examples/variadics/main.loom)

@@ -5,4 +5,61 @@ test fn empty_and_heterogeneous_packs_keep_source_order() {
     assert events[3] == "42" && events[4] == "text" && events[5] == "boolean"
     let captured = captured_labels(7, "captured", true)
     assert captured[0] == "7" && captured[1] == "captured" && captured[2] == "boolean"
+    let tuple = tuple_labels((9, true))
+    assert tuple[0] == "9" && tuple[1] == "boolean" && tuple[2] == "local" && tuple[3] == "7"
+}
+
+test fn nested_tuple_iterations_keep_distinct_closure_captures() {
+    let outer = (1, 2)
+    let inner = (10, 20)
+    var total = 0
+    comptime for left in outer {
+        comptime for right in inner {
+            let read = fn() Int {
+                left + right
+            }
+            total = total + read()
+        }
+    }
+    assert total == 66
+}
+
+fn nested_pack_closures[Ts...Label](output List[Text], values Ts...) {
+    comptime for outer in values {
+        let inner = (0,)
+        comptime for item in inner {
+            discard item
+            let closure = fn() Text {
+                outer.label()
+            }
+            push(output, closure())
+        }
+    }
+}
+
+test fn tuple_loop_inside_pack_keeps_outer_closure_identity() {
+    let output List[Text] = []
+    nested_pack_closures(output, 7, true)
+    assert length(output) == 2
+    assert output[0] == "7" && output[1] == "boolean"
+}
+
+fn nested_tuple_closures(output List[Text], values (Int, Bool)) {
+    comptime for outer in values {
+        let inner = (0,)
+        comptime for item in inner {
+            discard item
+            let closure = fn() Text {
+                outer.label()
+            }
+            push(output, closure())
+        }
+    }
+}
+
+test fn nested_tuple_loops_keep_outer_closure_identity() {
+    let output List[Text] = []
+    nested_tuple_closures(output, (7, true))
+    assert length(output) == 2
+    assert output[0] == "7" && output[1] == "boolean"
 }

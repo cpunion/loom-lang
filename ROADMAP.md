@@ -300,7 +300,8 @@ parameters. Abstract element checking, mapped type patterns and contextual
 function references preserve the existing rules. Empty packs infer an empty
 tuple, without source Unit syntax. Unselected arities are not verified;
 variadic postconditions reject until every arity can be proved. A first
-`comptime for` statically visits the final value pack in selected bodies;
+`comptime for` statically visits immutable fixed-shape tuples, including the final
+value pack in selected bodies;
 `comptime map` produces a typed tuple from a structural tuple pack. Richer
 mapped/type-pack iteration, methods/data packs, static value packs and tuple
 `.await` remain open.

@@ -37,7 +37,24 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
         return Result.Ok(Step { context = context expression = expression(ExprKind.Block, 0, node, "", -1, pair(cleanup, exit), false) })
     }
     if kind == NodeKind.ComptimeFor {
-        return Result.Err(error(context, node, "comptime for requires a top-level variadic value pack"))
+        let source = child(node, 0)
+        let binding = lookup(context, source.value)
+        if binding < 0 { return Result.Err(error(context, source, "comptime for requires an immutable tuple binding")) }
+        let local = get(context.bindings, binding).local
+        if local < 0 { return Result.Err(error(context, source, "comptime for requires an immutable tuple binding")) }
+        let value = get(context.locals, local)
+        if value.mutable || get(context.env.types, value.ty).kind != TypeKind.Tuple {
+            return Result.Err(error(context, source, "comptime for requires an immutable tuple binding"))
+        }
+        let arity = length(get(context.env.types, value.ty).arguments)
+        if arity > 1024 || length(context.locals) > 65536 - arity {
+            return Result.Err(error(context, source, "static tuple iteration budget exceeded"))
+        }
+        let count = new[Int]()
+        push(count, 0)
+        let expanded = expand_pack_iteration(context.env, context.signature.symbol, node, source.value,
+            arity, false, false, false, 0, count)?
+        return Result.Ok(Step { context = context expression = expr(context, expanded, 0)? })
     }
     if kind == NodeKind.PackError { return Result.Err(error(context, node, node.value)) }
     if kind == NodeKind.Defer { return registered_cleanup(context, node) }
