@@ -1,0 +1,21 @@
+import std.json.parse
+import std.json.stringify
+import std.result.Result
+
+fn main() {
+    match parse("{\"items\":[1,true,\"loom\"]}") {
+        Result.Ok(value) => {
+            match stringify(value) {
+                Result.Ok(encoded) => {
+                    assert encoded == "{\"items\":[1,true,\"loom\"]}"
+                }
+                Result.Err(_) => {
+                    assert false
+                }
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}

@@ -310,6 +310,12 @@ storage without new syntax or runtime operations. Key equivalence/hash laws and
 stability remain caller obligations; adversarial collision protection, concurrent
 maps and iterator APIs are not implemented.
 
+Source `std.json` parses and writes in-memory JSON without runtime support.
+Numbers retain their exact lexical spelling, strings decode Unicode surrogate
+pairs, objects preserve field order and reject duplicate decoded keys. Nesting
+is capped at 64 levels, including cyclic values supplied to the writer. This is
+not yet a streaming API or automatic typed record mapping.
+
 Static concepts use explicit nominal `impl` declarations, generic bounds and
 ordinary direct-call specialization. Conditional `T implements C` tests select
 only that instance's branch; they do not add a public generic requirement.

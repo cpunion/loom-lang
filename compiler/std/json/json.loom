@@ -1,0 +1,434 @@
+import std.result.Result
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+import std.text.byte
+import std.text.length
+import std.text.slice
+import std.text.from_codepoint
+import std.set.new
+import std.set.insert
+
+// Numbers retain their JSON spelling. No binary64 conversion or precision
+// loss occurs at the parse boundary.
+pub enum Value {
+    Null
+    Boolean(Bool)
+    Number(Text)
+    String(Text)
+    Array(List[Value])
+    Object(List[(Text, Value)])
+}
+
+pub record ParseError {
+    offset Int
+    message Text
+}
+
+pub enum WriteError {
+    InvalidNumber
+    DuplicateKey
+    DepthExceeded
+}
+
+fn error(offset Int, message Text) ParseError {
+    ParseError {
+        offset = offset
+        message = message
+    }
+}
+
+fn digit(value Int) Bool {
+    value >= 48 && value <= 57
+}
+
+fn space(value Int) Bool {
+    value == 32 || value == 9 || value == 10 || value == 13
+}
+
+fn whitespace(input Text, start Int) Int {
+    var index = start
+    while index < std.text.length(input) && space(byte(input, index)) {
+        index = index + 1
+    }
+    index
+}
+
+fn matches(input Text, start Int, expected Text) Bool {
+    if std.text.length(input) - start < std.text.length(expected) {
+        return false
+    }
+    var index = 0
+    while index < std.text.length(expected) {
+        if byte(input, start + index) != byte(expected, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn hex(value Int) Int {
+    if digit(value) {
+        return value - 48
+    }
+    if value >= 65 && value <= 70 {
+        return value - 55
+    }
+    if value >= 97 && value <= 102 {
+        return value - 87
+    }
+    -1
+}
+
+fn hex_four(input Text, start Int) Result[Int, ParseError] {
+    if std.text.length(input) - start < 4 {
+        return Result.Err(error(start, "incomplete Unicode escape"))
+    }
+    var value = 0
+    var index = 0
+    while index < 4 {
+        let part = hex(byte(input, start + index))
+        if part < 0 {
+            return Result.Err(error(start + index, "invalid Unicode escape"))
+        }
+        value = value * 16 + part
+        index = index + 1
+    }
+    Result.Ok(value)
+}
+
+fn append_text(buffer Bytes, value Text) {
+    var index = 0
+    while index < std.text.length(value) {
+        std.bytes.push(buffer, byte(value, index))
+        index = index + 1
+    }
+}
+
+fn string(input Text, start Int) Result[(Text, Int), ParseError] {
+    let output = std.bytes.new()
+    var index = start + 1
+    while index < std.text.length(input) {
+        let current = byte(input, index)
+        if current == 34 {
+            return Result.Ok((to_text(output), index + 1))
+        }
+        if current < 32 {
+            return Result.Err(error(index, "unescaped control character"))
+        }
+        if current != 92 {
+            std.bytes.push(output, current)
+            index = index + 1
+        } else {
+            index = index + 1
+            if index >= std.text.length(input) {
+                return Result.Err(error(index, "incomplete string escape"))
+            }
+            let escaped = byte(input, index)
+            if escaped == 117 {
+                let first = hex_four(input, index + 1)?
+                index = index + 5
+                var scalar = first
+                if first >= 55296 && first <= 56319 {
+                    if !matches(input, index, "\\u") {
+                        return Result.Err(error(index, "missing low surrogate"))
+                    }
+                    let second = hex_four(input, index + 2)?
+                    if second < 56320 || second > 57343 {
+                        return Result.Err(error(index + 2, "invalid low surrogate"))
+                    }
+                    scalar = 65536 + (first - 55296) * 1024 + second - 56320
+                    index = index + 6
+                } else {
+                    if first >= 56320 && first <= 57343 {
+                        return Result.Err(error(index - 4, "unexpected low surrogate"))
+                    }
+                }
+                append_text(output, from_codepoint(scalar))
+            } else {
+                var decoded = -1
+                if escaped == 34 || escaped == 92 || escaped == 47 {
+                    decoded = escaped
+                }
+                if escaped == 98 {
+                    decoded = 8
+                }
+                if escaped == 102 {
+                    decoded = 12
+                }
+                if escaped == 110 {
+                    decoded = 10
+                }
+                if escaped == 114 {
+                    decoded = 13
+                }
+                if escaped == 116 {
+                    decoded = 9
+                }
+                if decoded < 0 {
+                    return Result.Err(error(index, "invalid string escape"))
+                }
+                std.bytes.push(output, decoded)
+                index = index + 1
+            }
+        }
+    }
+    Result.Err(error(index, "unterminated string"))
+}
+
+fn number_end(input Text, start Int) Result[Int, ParseError] {
+    let size = std.text.length(input)
+    var index = start
+    if index < size && byte(input, index) == 45 {
+        index = index + 1
+    }
+    if index >= size {
+        return Result.Err(error(index, "expected number digit"))
+    }
+    if byte(input, index) == 48 {
+        index = index + 1
+        if index < size && digit(byte(input, index)) {
+            return Result.Err(error(index, "leading zero in number"))
+        }
+    } else {
+        if byte(input, index) < 49 || byte(input, index) > 57 {
+            return Result.Err(error(index, "expected number digit"))
+        }
+        while index < size && digit(byte(input, index)) {
+            index = index + 1
+        }
+    }
+    if index < size && byte(input, index) == 46 {
+        index = index + 1
+        if index >= size || !digit(byte(input, index)) {
+            return Result.Err(error(index, "expected fraction digit"))
+        }
+        while index < size && digit(byte(input, index)) {
+            index = index + 1
+        }
+    }
+    if index < size && (byte(input, index) == 101 || byte(input, index) == 69) {
+        index = index + 1
+        if index < size && (byte(input, index) == 43 || byte(input, index) == 45) {
+            index = index + 1
+        }
+        if index >= size || !digit(byte(input, index)) {
+            return Result.Err(error(index, "expected exponent digit"))
+        }
+        while index < size && digit(byte(input, index)) {
+            index = index + 1
+        }
+    }
+    Result.Ok(index)
+}
+
+fn value(input Text, start Int, depth Int) Result[(Value, Int), ParseError] {
+    let index = whitespace(input, start)
+    if index >= std.text.length(input) {
+        return Result.Err(error(index, "expected JSON value"))
+    }
+    let current = byte(input, index)
+    if current == 34 {
+        let parsed = string(input, index)?
+        return Result.Ok((Value.String(parsed.0), parsed.1))
+    }
+    if current == 91 {
+        if depth >= 64 {
+            return Result.Err(error(index, "JSON nesting depth exceeded"))
+        }
+        let items = std.list.new[Value]()
+        var next = whitespace(input, index + 1)
+        if next < std.text.length(input) && byte(input, next) == 93 {
+            return Result.Ok((Value.Array(items), next + 1))
+        }
+        while true {
+            let item = value(input, next, depth + 1)?
+            push(items, item.0)
+            next = whitespace(input, item.1)
+            if next >= std.text.length(input) {
+                return Result.Err(error(next, "unterminated array"))
+            }
+            if byte(input, next) == 93 {
+                return Result.Ok((Value.Array(items), next + 1))
+            }
+            if byte(input, next) != 44 {
+                return Result.Err(error(next, "expected array separator"))
+            }
+            next = next + 1
+        }
+    }
+    if current == 123 {
+        if depth >= 64 {
+            return Result.Err(error(index, "JSON nesting depth exceeded"))
+        }
+        let fields = std.list.new[(Text, Value)]()
+        let seen = std.set.new[Text]()
+        var next = whitespace(input, index + 1)
+        if next < std.text.length(input) && byte(input, next) == 125 {
+            return Result.Ok((Value.Object(fields), next + 1))
+        }
+        while true {
+            if next >= std.text.length(input) || byte(input, next) != 34 {
+                return Result.Err(error(next, "expected object key"))
+            }
+            let key_offset = next
+            let key = string(input, next)?
+            if !std.set.insert(seen, key.0) {
+                return Result.Err(error(key_offset, "duplicate object key"))
+            }
+            next = whitespace(input, key.1)
+            if next >= std.text.length(input) || byte(input, next) != 58 {
+                return Result.Err(error(next, "expected key/value separator"))
+            }
+            let item = value(input, next + 1, depth + 1)?
+            push(fields, (key.0, item.0))
+            next = whitespace(input, item.1)
+            if next >= std.text.length(input) {
+                return Result.Err(error(next, "unterminated object"))
+            }
+            if byte(input, next) == 125 {
+                return Result.Ok((Value.Object(fields), next + 1))
+            }
+            if byte(input, next) != 44 {
+                return Result.Err(error(next, "expected object separator"))
+            }
+            next = whitespace(input, next + 1)
+        }
+    }
+    if matches(input, index, "null") {
+        return Result.Ok((Value.Null, index + 4))
+    }
+    if matches(input, index, "true") {
+        return Result.Ok((Value.Boolean(true), index + 4))
+    }
+    if matches(input, index, "false") {
+        return Result.Ok((Value.Boolean(false), index + 5))
+    }
+    if current == 45 || digit(current) {
+        let end = number_end(input, index)?
+        return Result.Ok((Value.Number(slice(input, index, end)), end))
+    }
+    Result.Err(error(index, "expected JSON value"))
+}
+
+pub fn parse(input Text) Result[Value, ParseError] {
+    let parsed = value(input, 0, 0)?
+    let end = whitespace(input, parsed.1)
+    if end != std.text.length(input) {
+        return Result.Err(error(end, "unexpected trailing input"))
+    }
+    Result.Ok(parsed.0)
+}
+
+fn hex_digit(value Int) Int {
+    if value < 10 {
+        48 + value
+    } else {
+        87 + value
+    }
+}
+
+fn write_string(output Bytes, input Text) {
+    std.bytes.push(output, 34)
+    var index = 0
+    while index < std.text.length(input) {
+        let current = byte(input, index)
+        if current == 34 || current == 92 {
+            std.bytes.push(output, 92)
+            std.bytes.push(output, current)
+        } else {
+            if current < 32 {
+                std.bytes.push(output, 92)
+                std.bytes.push(output, 117)
+                std.bytes.push(output, 48)
+                std.bytes.push(output, 48)
+                std.bytes.push(output, hex_digit(current / 16))
+                std.bytes.push(output, hex_digit(current % 16))
+            } else {
+                std.bytes.push(output, current)
+            }
+        }
+        index = index + 1
+    }
+    std.bytes.push(output, 34)
+}
+
+fn write_value(output Bytes, input Value, depth Int) Result[Bool, WriteError] {
+    match input {
+        Value.Null => {
+            append_text(output, "null")
+        }
+        Value.Boolean(flag) => {
+            append_text(output, if flag {
+                    "true"
+                } else {
+                    "false"
+                })
+        }
+        Value.Number(raw) => {
+            match number_end(raw, 0) {
+                Result.Ok(end) => {
+                    if end != std.text.length(raw) {
+                        return Result.Err(WriteError.InvalidNumber)
+                    }
+                    append_text(output, raw)
+                }
+                Result.Err(_) => {
+                    return Result.Err(WriteError.InvalidNumber)
+                }
+            }
+        }
+        Value.String(text) => {
+            write_string(output, text)
+        }
+        Value.Array(items) => {
+            if depth >= 64 {
+                return Result.Err(WriteError.DepthExceeded)
+            }
+            std.bytes.push(output, 91)
+            var index = 0
+            while index < std.list.length(items) {
+                if index > 0 {
+                    std.bytes.push(output, 44)
+                }
+                discard write_value(output, get(items, index), depth + 1)?
+                index = index + 1
+            }
+            std.bytes.push(output, 93)
+        }
+        Value.Object(fields) => {
+            if depth >= 64 {
+                return Result.Err(WriteError.DepthExceeded)
+            }
+            std.bytes.push(output, 123)
+            let seen = std.set.new[Text]()
+            var index = 0
+            while index < std.list.length(fields) {
+                if index > 0 {
+                    std.bytes.push(output, 44)
+                }
+                let field = get(fields, index)
+                if !std.set.insert(seen, field.0) {
+                    return Result.Err(WriteError.DuplicateKey)
+                }
+                write_string(output, field.0)
+                std.bytes.push(output, 58)
+                discard write_value(output, field.1, depth + 1)?
+                index = index + 1
+            }
+            std.bytes.push(output, 125)
+        }
+    }
+    Result.Ok(true)
+}
+
+pub fn stringify(input Value) Result[Text, WriteError] {
+    let output = std.bytes.new()
+    discard write_value(output, input, 0)?
+    Result.Ok(to_text(output))
+}

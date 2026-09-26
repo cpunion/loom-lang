@@ -1,0 +1,129 @@
+import std.json.Value
+import std.json.WriteError
+import std.json.parse
+import std.json.stringify
+import std.result.Result
+import std.list.new
+import std.list.push
+import std.text.concat
+
+fn decoded(source Text) Value {
+    match parse(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            Value.Null
+        }
+    }
+}
+
+fn rendered(value Value) Text {
+    match stringify(value) {
+        Result.Ok(text) => text
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+fn rejects(source Text) {
+    match parse(source) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+}
+
+test fn json_round_trips_nested_values_and_preserves_number_spelling() {
+    let source = "{\"name\":\"loom\",\"flags\":[true,null,false],\"amount\":-123456789012345678901234567890.001e+42}"
+    assert rendered(decoded(source)) == source
+    assert rendered(decoded(" [ 1, 2, 3 ] ")) == "[1,2,3]"
+    assert rendered(decoded("{}")) == "{}"
+    assert rendered(decoded("[]")) == "[]"
+}
+
+test fn json_decodes_unicode_surrogates_and_escapes_controls() {
+    assert rendered(decoded("\"\\u0041\\uD83D\\uDE00\"")) == "\"A😀\""
+    assert rendered(decoded("\"\\n\\t\\/\\\\\\\"\"")) == "\"\\u000a\\u0009/\\\\\\\"\""
+    assert rendered(Value.String("hé中")) == "\"hé中\""
+    assert rendered(Value.String("\0")) == "\"\\u0000\""
+}
+
+test fn json_rejects_invalid_grammar_and_duplicate_keys() {
+    rejects("")
+    rejects("true false")
+    rejects("[1,]")
+    rejects("{\"a\":1,}")
+    rejects("{\"a\":1,\"a\":2}")
+    rejects("{\"\\u0061\":1,\"a\":2}")
+    rejects("01")
+    rejects("-01")
+    rejects("1.")
+    rejects("1e+")
+    rejects("+1")
+    rejects("\"raw\nline\"")
+    rejects("\"\\x\"")
+    rejects("\"\\uD83D\"")
+    rejects("\"\\uDE00\"")
+    rejects("\"\\uD83D\\u0041\"")
+    rejects("\"\\u12\"")
+    rejects("\"\\uXXXX\"")
+}
+
+test fn json_reports_offsets_and_rejects_invalid_constructed_numbers() {
+    match parse("[0,]") {
+        Result.Err(problem) => {
+            assert problem.offset == 3
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+    match stringify(Value.Number("01")) {
+        Result.Err(WriteError.InvalidNumber) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    let duplicate = new[(Text, Value)]()
+    push(duplicate, ("a", Value.Null))
+    push(duplicate, ("a", Value.Boolean(true)))
+    match stringify(Value.Object(duplicate)) {
+        Result.Err(WriteError.DuplicateKey) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+test fn json_bounds_nesting_and_cyclic_output() {
+    var source = ""
+    var index = 0
+    while index < 65 {
+        source = concat(source, "[")
+        index = index + 1
+    }
+    source = concat(source, "null")
+    index = 0
+    while index < 65 {
+        source = concat(source, "]")
+        index = index + 1
+    }
+    rejects(source)
+
+    let items = new[Value]()
+    let cycle = Value.Array(items)
+    push(items, cycle)
+    match stringify(cycle) {
+        Result.Err(WriteError.DepthExceeded) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+}

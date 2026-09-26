@@ -58,6 +58,7 @@ jobs:
         run: |
           target/loom test compiler/std/loom/checking
           target/loom test compiler/std/list/nonempty
+          target/loom test compiler/std/json
           target/loom test compiler/std/storage
           target/loom test compiler/std/task
           target/loom run compiler/examples/contracts
@@ -134,6 +135,7 @@ jobs:
           cargo clippy --locked --workspace --all-targets -- -D warnings
           bash scripts/bootstrap.sh
           target/loom test compiler/std/storage
+          target/loom test compiler/std/json
           target/loom test tools/semantic_change_trial
           cargo test --locked --workspace
 
@@ -221,6 +223,7 @@ jobs:
           cargo clippy --locked --workspace --all-targets -- -D warnings
           LOOM_NATIVE_TIMINGS=1 LOOM_BOOTSTRAP_INPUT=target/bootstrap-input/compiler.checked bash scripts/bootstrap.sh
           target/loom.exe test compiler/std/storage
+          target/loom.exe test compiler/std/json
           target/loom.exe test tools/semantic_change_trial
           cargo test --locked --workspace --no-fail-fast
 
