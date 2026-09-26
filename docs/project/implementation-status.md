@@ -274,8 +274,10 @@ In a selected variadic body, the same forms may iterate its declared type pack:
 `comptime for T in Ts` and `comptime map T in Ts` bind each `T` to an existing
 abstract element type. This is static expansion, not runtime type values or
 general reflection. A lexical value tuple named `Ts` shadows that source.
-Structural tuples currently contain only the expanded pattern, and context-dependent
-tuple elements need a prior typed binding. Multiple packs, methods/data packs,
+Structural tuple parameters allow fixed fields around one expanded pattern,
+including zero-element packs. Calls and contextual function references subtract
+the fixed fields to infer pack arity; value iteration covers the entire tuple.
+Context-dependent tuple elements need a prior typed binding. Multiple packs, methods/data packs,
 static value packs and general pack reflection remain open. See the [variadic example](../../compiler/examples/variadics/main.loom)
 and [pack iteration example](../../compiler/examples/pack_iteration/main.loom).
 

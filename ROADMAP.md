@@ -316,8 +316,12 @@ value pack in selected bodies;
 bindings. For a selected variadic arity, `comptime for T in Ts` and
 `comptime map T in Ts` also bind each element of the declared type pack as an
 ordinary abstract type parameter; no runtime type-list or type value is added.
-General pack reflection, methods/data packs, static value packs and mixed
-fixed/expanded tuple shapes remain open.
+General pack reflection, methods/data packs, static value packs and inference
+from multiple tuple expansions remain open. Structural tuple
+parameters now allow fixed prefixes and suffixes around one expanded pattern.
+Calls and contextual function references infer the pack width after subtracting
+fixed fields; value iteration still visits the full tuple, including empty-pack
+cases and Task-bearing fields.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time

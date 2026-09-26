@@ -94,6 +94,23 @@ test fn structural_tuple_pack_maps_lexical_results_from_one_argument() {
     discard accepted("fn fixed(values (Int,)) (Int,) { comptime map item in values { item } }\nfn main() { assert fixed((1,)).0 == 1 }")
 }
 
+test fn structural_tuple_packs_infer_only_the_expanded_middle() {
+    discard accepted("fn bookends[R, Ts...](values (R, Ts..., R)) R { values.0 }\nfn main() { assert bookends((7, true, 8)) == 7\nassert bookends[Text]((\"first\", \"last\")) == \"first\" }")
+    discard accepted("fn framed[Ts...](values (Int, Ts..., Text)) (Int, Ts..., Text) { comptime map value in values { value } }\nfn prefix[Ts...](values (Int, Ts...)) (Int, Ts...) { values }\nfn suffix[Ts...](values (Ts..., Text)) (Ts..., Text) { values }\nfn source() (Int, Bool, Text) { (1, true, \"end\") }\nfn main() { let empty = framed((1, \"end\"))\nassert empty.0 == 1 && empty.1 == \"end\"\nassert framed(source()).1\nassert framed[Bool]((1, true, \"end\")).1\nassert prefix((2,)).0 == 2\nassert suffix((\"last\",)).0 == \"last\"\nlet callback fn((Int, Bool, Text)) (Int, Bool, Text) = framed\nassert callback(source()).1\nlet explicit = framed[Bool]\nassert explicit(source()).1\nassert comptime { framed((3, false, \"constant\")).2 } == \"constant\" }")
+    discard accepted("record Box[T] { value T }\nconcept Tagged { fn tag(self Self) Int }\nimpl Tagged for Bool { fn tag(self Bool) Int { 1 } }\nfn boxed[Ts... Tagged](values (Int, Box[Ts]..., Text)) (Int, Box[Ts]..., Text) { values }\nfn main() { assert boxed((1, Box { value = true }, \"end\")).1.value\nassert boxed((1, \"end\")).1 == \"end\" }")
+    rejects("fn bad[Ts...](values (Ts..., Int, Ts...)) {}")
+    rejects("fn framed[Ts...](values (Int, Ts..., Text)) (Int, Ts..., Text) { values }\nfn main() { discard framed((1,)) }")
+    rejects("fn framed[Ts...](values (Int, Ts..., Text)) (Int, Ts..., Text) { values }\nfn main() { discard framed((true, \"end\")) }")
+    rejects("fn framed[Ts...](values (Int, Ts..., Text)) (Int, Ts..., Text) { values }\nfn main() { let callback fn((Int,)) (Int,) = framed\ndiscard callback }")
+    rejects("concept Tagged { fn tag(self Self) Int }\nfn framed[Ts... Tagged](values (Int, Ts..., Text)) (Int, Ts..., Text) { values }\nfn main() { discard framed((1, true, \"end\")) }")
+}
+
+test fn mixed_tuple_iteration_preserves_fixed_task_obligations() {
+    discard accepted("async fn item[T](value T) T { value }\nasync fn gather[Ts...](values (Task[Int], Task[Ts]..., Task[Text])) (Int, Ts..., Text) { comptime map task in values { task.await } }\nasync fn main() { let pair = gather((item(1), item(\"last\"))).await\nassert pair.0 == 1 && pair.1 == \"last\"\nassert gather((item(2), item(true), item(\"end\"))).await.1 }")
+    rejects("async fn item() Int { 1 }\nasync fn bad[Ts...](values (Task[Int], Ts..., Task[Int])) { discard values.0.await }\nasync fn main() { bad((item(), item())).await }")
+    rejects("fn framed[Ts...](values (Int, Ts..., Text)) (Int, Ts..., Text) { values }\nasync fn item() Int { 1 }\nasync fn main() { let task = item()\nlet pair = framed((1, task, task, \"end\"))\ndiscard pair.1.await\ndiscard pair.2.await }")
+}
+
 test fn static_map_clones_closure_bodies_per_element() {
     discard accepted("concept Show { fn show(self Self) Text }\nimpl Show for Int { fn show(self Int) Text { \"int\" } }\nimpl Show for Bool { fn show(self Bool) Text { \"bool\" } }\nfn callbacks[Ts... Show](values (Ts...)) (fn() Text, fn() Text) { comptime map item in values { fn() Text { item.show() } } }\nfn main() { let pair = callbacks((4, true))\nassert pair.0() == \"int\" && pair.1() == \"bool\" }")
 }

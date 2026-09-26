@@ -40,12 +40,25 @@ fn mentions_pack(node Node, name Text) Bool {
     false
 }
 
-// A structural pack takes one tuple at runtime, with one expanded type pattern.
-// Direct packs still take one runtime argument per element.
-fn tuple_pack_parameter(parameter Node) Bool {
+// A structural pack takes one tuple at runtime. One expanded type pattern
+// determines arity after subtracting its fixed prefix and suffix fields.
+fn tuple_pack_expansion(parameter Node) Int {
     let ty = child(parameter, 0)
-    return ty.kind == NodeKind.TupleType && length(ty.children) == 1 &&
-        child(ty, 0).kind == NodeKind.Spread
+    if ty.kind != NodeKind.TupleType { return -1 }
+    var index = 0
+    while index < length(ty.children) {
+        if child(ty, index).kind == NodeKind.Spread { return index }
+        index = index + 1
+    }
+    -1
+}
+
+fn tuple_pack_parameter(parameter Node) Bool {
+    tuple_pack_expansion(parameter) >= 0
+}
+
+fn tuple_pack_fixed(parameter Node) Int {
+    if tuple_pack_parameter(parameter) { length(child(parameter, 0).children) - 1 } else { 0 }
 }
 
 fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
@@ -105,7 +118,7 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         let final = index + 1 == length(parameters)
         if final && !spread && !tuple && child(parameter, 0).kind == NodeKind.TupleType &&
             mentions_pack(child(parameter, 0), pack.value) {
-            return Result.Err(failure(env, owner, parameter, "a structural tuple pack currently contains only one expanded type pattern"))
+            return Result.Err(failure(env, owner, parameter, "a structural tuple parameter needs one direct expansion to infer its pack arity"))
         }
         if (spread || tuple) != final || ((spread || tuple) && has(parameter, NodeKind.Comptime)) {
             return Result.Err(failure(env, owner, parameter, "the final runtime parameter alone expands the type pack"))
@@ -114,8 +127,17 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
             return Result.Err(failure(env, owner, parameter, "the variadic parameter type must use the declared pack"))
         }
         if tuple {
-            if !mentions_pack(child(child(parameter, 0), 0), pack.value) {
+            let shape = child(parameter, 0)
+            let expansion = tuple_pack_expansion(parameter)
+            if !mentions_pack(child(shape, expansion), pack.value) {
                 return Result.Err(failure(env, owner, parameter, "the tuple expansion type must use the declared pack"))
+            }
+            var field = expansion + 1
+            while field < length(shape.children) {
+                if child(shape, field).kind == NodeKind.Spread {
+                    return Result.Err(failure(env, owner, child(shape, field), "a structural tuple parameter has one direct type expansion"))
+                }
+                field = field + 1
             }
         }
         index = index + 1
@@ -401,6 +423,7 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
     let parameters = group(declaration, NodeKind.Parameters)
     let values = get(parameters, length(parameters) - 1)
     let structural = tuple_pack_parameter(values)
+    let value_arity = arity + tuple_pack_fixed(values)
     let expanded_types = new[Node]()
     var index = 0
     while index + 1 < length(types) {
@@ -446,7 +469,7 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
                 let expanded = if has_pack_iteration(typed) {
                     let count = new[Int]()
                     push(count, 0)
-                    expand_pack_iteration(env, owner, typed, values.value, arity, false, false, 0, count)?
+                    expand_pack_iteration(env, owner, typed, values.value, value_arity, false, false, 0, count)?
                 } else { typed }
                 let type_expanded = if has_pack_iteration(expanded) && pack.value != values.value {
                     let count = new[Int]()
@@ -657,7 +680,8 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
                     let position = length(parameters) - 1
                     if length(shape) == length(parameters) + 1 &&
                         get(context.env.types, get(shape, position)).kind == TypeKind.Tuple {
-                        length(get(context.env.types, get(shape, position)).arguments)
+                        length(get(context.env.types, get(shape, position)).arguments) -
+                            tuple_pack_fixed(get(parameters, position))
                     } else { -1 }
                 } else { length(shape) - length(parameters) }
             } else {
