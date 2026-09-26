@@ -8,3 +8,13 @@ test fn variadic_types_retain_pack_bounds_and_type_patterns() {
     discard parsed("async fn collect[Ts...](tasks Task[Ts]...) (Task[Ts]...) { tasks }")
     discard rejected("fn f[Ts....](values Ts...) {}")
 }
+
+test fn static_pack_iteration_retains_binding_target_and_body() {
+    let declaration = child(parsed("fn visit[Ts...](values Ts...) { comptime for item in values { discard item } }"), 0)
+    let loop = child(body(declaration), 0)
+    assert loop.kind == NodeKind.ComptimeFor && loop.value == "item"
+    assert child(loop, 0).kind == NodeKind.Name && child(loop, 0).value == "values"
+    assert child(child(loop, 1), 0).kind == NodeKind.Discard
+    discard rejected("fn visit[Ts...](values Ts...) { comptime for item values {} }")
+    discard rejected("fn visit[Ts...](values Ts...) { comptime for item in values discard item }")
+}

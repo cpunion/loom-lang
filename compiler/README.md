@@ -608,13 +608,23 @@ sizes. GC sharing, compile-time evaluation, cleanup, and one-shot Task transfer
 retain their normal checks. The [variadic example](examples/variadics/main.loom)
 exercises these paths through check/build/test/run.
 
+Within such a function, `comptime for item in values { ... }` visits the final
+value pack in source order. Its body is copied into a lexical block for each
+selected element and then checked with that element's abstract type; body
+effects still run normally. Empty packs execute no iteration. A source binding
+that shadows `values` at the loop site is rejected. This static form has no
+`break` or `continue` target: those statements use an enclosing `while`, or
+reject if none exists. The
+[pack iteration example](examples/pack_iteration/main.loom) covers mixed types,
+effects and Tasks.
+
 Unselected arities have not had their bodies verified. Variadic `ensures`
 declarations currently reject even when uncalled: proving selected arities is
 not a proof for every arity. Preconditions currently use fixed scalar parameters,
 not the tuple pack, and retain ordinary checked/runtime boundaries.
-Pack iteration, multiple packs, variadic methods and
-data declarations, static value packs, and general type-list reflection remain
-open. This implementation does not complete the accepted metaprogramming design.
+Multiple packs, variadic methods and data declarations, static value packs,
+general type-list reflection and richer pack iteration remain open. This
+implementation does not complete the accepted metaprogramming design.
 
 Records also support `let Packet { value = item, .. } = packet` and the same
 form with `var`. Named fields can reorder and nest record/tuple bindings; generic

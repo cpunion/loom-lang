@@ -166,6 +166,98 @@ fn pack_contract(node Node, name Text) Bool {
     false
 }
 
+fn pack_pattern_binds(node Node, name Text) Bool {
+    if node.kind == NodeKind.Name && node.value == name { return true }
+    var index = 0
+    while index < length(node.children) {
+        if pack_pattern_binds(child(node, index), name) { return true }
+        index = index + 1
+    }
+    false
+}
+
+fn pack_local_binds(node Node, name Text) Bool {
+    if node.kind == NodeKind.Let || node.kind == NodeKind.Var || node.kind == NodeKind.Scoped {
+        return node.value == name
+    }
+    if node.kind == NodeKind.Destructure {
+        return pack_pattern_binds(child(node, 0), name)
+    }
+    false
+}
+
+fn has_pack_iteration(node Node) Bool {
+    if node.kind == NodeKind.ComptimeFor { return true }
+    var index = 0
+    while index < length(node.children) {
+        if has_pack_iteration(child(node, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+
+// Repeated bodies are ordinary lexical blocks after the selected arity is
+// known. Tuple projections retain the existing move, effect and cleanup rules.
+fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, arity Int, shadowed Bool, repeated Bool, depth Int, count List[Int]) Result[Node, Failure] {
+    if depth >= 64 || get(count, 0) >= 65536 {
+        // A dead comptime branch must not fail before the selected body is
+        // checked. Keep the budget diagnostic in that branch as source AST.
+        return Result.Ok(pack_node(node, NodeKind.PackError, "static pack iteration expansion budget exceeded", new[Node]()))
+    }
+    let identity = get(count, 0) + 1
+    set(count, 0, identity)
+    if node.kind == NodeKind.ComptimeFor {
+        let source = child(node, 0)
+        if source.kind != NodeKind.Name || source.value != values {
+            return Result.Ok(pack_node(source, NodeKind.PackError, "comptime for must use this function's final value pack", new[Node]()))
+        }
+        if shadowed {
+            return Result.Ok(pack_node(source, NodeKind.PackError, "comptime for value pack is shadowed at this site", new[Node]()))
+        }
+        let iterations = new[Node]()
+        var index = 0
+        while index < arity {
+            let pack = pack_node(source, NodeKind.Name, values, new[Node]())
+            let element = pack_node(source, NodeKind.Select, std.int.to_text(index), source_nodes(pack))
+            let binding = pack_node(node, NodeKind.Let, node.value, source_nodes(element))
+            let body = expand_pack_iteration(env, owner, child(node, 1), values, arity, node.value == values, true, depth + 1, count)?
+            let statements = source_nodes(binding)
+            push(statements, body)
+            push(iterations, pack_node(node, NodeKind.Block, "", statements))
+            index = index + 1
+        }
+        // A static loop is a Unit statement even when it ends its parent block.
+        push(iterations, pack_node(node, NodeKind.Block, "", new[Node]()))
+        return Result.Ok(pack_node(node, NodeKind.Block, "", iterations))
+    }
+    let children = new[Node]()
+    var index = 0
+    var current_shadow = shadowed
+    if node.kind == NodeKind.Function && node.value == "" {
+        let parameters = group(node, NodeKind.Parameters)
+        while index < length(parameters) {
+            current_shadow = current_shadow || get(parameters, index).value == values
+            index = index + 1
+        }
+    }
+    index = 0
+    while index < length(node.children) {
+        let member = child(node, index)
+        let member_shadow = if node.kind == NodeKind.Arm && index == 1 {
+            current_shadow || pack_pattern_binds(child(node, 0), values)
+        } else { current_shadow }
+        push(children, expand_pack_iteration(env, owner, member, values, arity, member_shadow, repeated, depth + 1, count)?)
+        if node.kind == NodeKind.Block && pack_local_binds(member, values) {
+            current_shadow = true
+        }
+        index = index + 1
+    }
+    if repeated && node.kind == NodeKind.Function && node.value == "" {
+        push(children, pack_node(node, NodeKind.ExpansionId, std.int.to_text(identity), new[Node]()))
+    }
+    Result.Ok(pack_node(node, node.kind, node.value, children))
+}
+
 fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure] {
     let declaration = symbol(env, owner).node
     let types = group(declaration, NodeKind.TypeParameters)
@@ -209,7 +301,12 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
             if member.kind == NodeKind.Parameters {
                 push(children, pack_node(member, member.kind, "", expanded_params))
             } else {
-                let expanded = expand_pack_type(env, owner, member, pack.value, arity, -1, false, 0)?
+                let typed = expand_pack_type(env, owner, member, pack.value, arity, -1, false, 0)?
+                let expanded = if has_pack_iteration(typed) {
+                    let count = new[Int]()
+                    push(count, 0)
+                    expand_pack_iteration(env, owner, typed, values.value, arity, false, false, 0, count)?
+                } else { typed }
                 if member.kind == NodeKind.Block {
                     let body = source_nodes(pack_node(values, NodeKind.Let, values.value, source_nodes(tuple)))
                     // The source body retains its own scope, including shadowing
