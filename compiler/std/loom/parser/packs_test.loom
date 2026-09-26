@@ -18,3 +18,17 @@ test fn static_pack_iteration_retains_binding_target_and_body() {
     discard rejected("fn visit[Ts...](values Ts...) { comptime for item values {} }")
     discard rejected("fn visit[Ts...](values Ts...) { comptime for item in values discard item }")
 }
+
+test fn structural_tuple_pack_and_static_map_keep_their_source_shape() {
+    let declaration = child(parsed("fn map[Ts...](values (Ts...)) (Ts...) { comptime map item in values { let copy = item\ncopy } }"), 0)
+    let parameter = child(child(declaration, 1), 0)
+    let shape = child(parameter, 0)
+    assert shape.kind == NodeKind.TupleType && length(shape.children) == 1
+    assert child(shape, 0).kind == NodeKind.Spread
+    let mapping = child(body(declaration), 0)
+    assert mapping.kind == NodeKind.ComptimeMap && mapping.value == "item"
+    assert child(mapping, 0).kind == NodeKind.Name && child(mapping, 0).value == "values"
+    assert child(mapping, 1).kind == NodeKind.Block
+    discard rejected("fn f[Ts...](values (Ts...)) { comptime map item values { item } }")
+    discard rejected("fn f[Ts...](values (Ts...)) { comptime map item in values item }")
+}

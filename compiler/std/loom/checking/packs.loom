@@ -1,4 +1,5 @@
 import std.loom.binding.Symbol
+import std.loom.typed.TypeKind
 
 // Arity selects a normal generic declaration, not concrete element types.
 // These entries share the signature table across private CTFE/proof queues.
@@ -36,6 +37,14 @@ fn mentions_pack(node Node, name Text) Bool {
     false
 }
 
+// A structural pack takes one tuple at runtime, with one expanded type pattern.
+// Direct packs still take one runtime argument per element.
+fn tuple_pack_parameter(parameter Node) Bool {
+    let ty = child(parameter, 0)
+    return ty.kind == NodeKind.TupleType && length(ty.children) == 1 &&
+        child(ty, 0).kind == NodeKind.Spread
+}
+
 fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
     let item = symbol(env, owner)
     let selected = pack_parameter(item.node)
@@ -62,7 +71,7 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         return Result.Err(failure(env, owner, get(types, selected), "declare one type pack, last in the type parameter list"))
     }
     if length(parameters) == 0 {
-        return Result.Err(failure(env, owner, item.node, "a type pack needs a final variadic value parameter"))
+        return Result.Err(failure(env, owner, item.node, "a type pack needs a final value parameter that expands it"))
     }
     var clause = 0
     while clause < length(item.node.children) {
@@ -89,11 +98,22 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
     while index < length(parameters) {
         let parameter = get(parameters, index)
         let spread = child(parameter, 0).kind == NodeKind.Spread
-        if spread != (index + 1 == length(parameters)) || (spread && has(parameter, NodeKind.Comptime)) {
+        let tuple = tuple_pack_parameter(parameter)
+        let final = index + 1 == length(parameters)
+        if final && !spread && !tuple && child(parameter, 0).kind == NodeKind.TupleType &&
+            mentions_pack(child(parameter, 0), pack.value) {
+            return Result.Err(failure(env, owner, parameter, "a structural tuple pack currently contains only one expanded type pattern"))
+        }
+        if (spread || tuple) != final || ((spread || tuple) && has(parameter, NodeKind.Comptime)) {
             return Result.Err(failure(env, owner, parameter, "the final runtime parameter alone expands the type pack"))
         }
         if spread && !mentions_pack(child(parameter, 0), pack.value) {
             return Result.Err(failure(env, owner, parameter, "the variadic parameter type must use the declared pack"))
+        }
+        if tuple {
+            if !mentions_pack(child(child(parameter, 0), 0), pack.value) {
+                return Result.Err(failure(env, owner, parameter, "the tuple expansion type must use the declared pack"))
+            }
         }
         index = index + 1
     }
@@ -187,7 +207,7 @@ fn pack_local_binds(node Node, name Text) Bool {
 }
 
 fn has_pack_iteration(node Node) Bool {
-    if node.kind == NodeKind.ComptimeFor { return true }
+    if node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap { return true }
     var index = 0
     while index < length(node.children) {
         if has_pack_iteration(child(node, index)) { return true }
@@ -206,13 +226,14 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
     }
     let identity = get(count, 0) + 1
     set(count, 0, identity)
-    if node.kind == NodeKind.ComptimeFor {
+    if node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap {
+        let mapping = node.kind == NodeKind.ComptimeMap
         let source = child(node, 0)
         if source.kind != NodeKind.Name || source.value != values {
-            return Result.Ok(pack_node(source, NodeKind.PackError, "comptime for must use this function's final value pack", new[Node]()))
+            return Result.Ok(pack_node(source, NodeKind.PackError, if mapping { "comptime map must use this function's final value pack" } else { "comptime for must use this function's final value pack" }, new[Node]()))
         }
         if shadowed {
-            return Result.Ok(pack_node(source, NodeKind.PackError, "comptime for value pack is shadowed at this site", new[Node]()))
+            return Result.Ok(pack_node(source, NodeKind.PackError, if mapping { "comptime map value pack is shadowed at this site" } else { "comptime for value pack is shadowed at this site" }, new[Node]()))
         }
         let iterations = new[Node]()
         var index = 0
@@ -226,6 +247,7 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
             push(iterations, pack_node(node, NodeKind.Block, "", statements))
             index = index + 1
         }
+        if mapping { return Result.Ok(pack_node(node, NodeKind.Tuple, "", iterations)) }
         // A static loop is a Unit statement even when it ends its parent block.
         push(iterations, pack_node(node, NodeKind.Block, "", new[Node]()))
         return Result.Ok(pack_node(node, NodeKind.Block, "", iterations))
@@ -264,6 +286,7 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
     let pack = get(types, length(types) - 1)
     let parameters = group(declaration, NodeKind.Parameters)
     let values = get(parameters, length(parameters) - 1)
+    let structural = tuple_pack_parameter(values)
     let expanded_types = new[Node]()
     var index = 0
     while index + 1 < length(types) {
@@ -282,13 +305,17 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
         index = index + 1
     }
     let elements = new[Node]()
-    index = 0
-    while index < arity {
-        let name = pack_name(values.value, index)
-        let ty = expand_pack_type(env, owner, child(child(values, 0), 0), pack.value, arity, index, true, 0)?
-        push(expanded_params, pack_node(values, NodeKind.Parameter, name, source_nodes(ty)))
-        push(elements, pack_node(values, NodeKind.Name, name, new[Node]()))
-        index = index + 1
+    if structural {
+        push(expanded_params, expand_pack_type(env, owner, values, pack.value, arity, -1, false, 0)?)
+    } else {
+        index = 0
+        while index < arity {
+            let name = pack_name(values.value, index)
+            let ty = expand_pack_type(env, owner, child(child(values, 0), 0), pack.value, arity, index, true, 0)?
+            push(expanded_params, pack_node(values, NodeKind.Parameter, name, source_nodes(ty)))
+            push(elements, pack_node(values, NodeKind.Name, name, new[Node]()))
+            index = index + 1
+        }
     }
     let tuple = pack_node(values, NodeKind.Tuple, "", elements)
     let children = new[Node]()
@@ -308,7 +335,9 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
                     expand_pack_iteration(env, owner, typed, values.value, arity, false, false, 0, count)?
                 } else { typed }
                 if member.kind == NodeKind.Block {
-                    let body = source_nodes(pack_node(values, NodeKind.Let, values.value, source_nodes(tuple)))
+                    let body = if structural { new[Node]() } else {
+                        source_nodes(pack_node(values, NodeKind.Let, values.value, source_nodes(tuple)))
+                    }
                     // The source body retains its own scope, including shadowing
                     // the immutable parameter name and lexical cleanup boundaries.
                     push(body, expanded)
@@ -449,8 +478,17 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
         } else {
             let owner = -1 - id
             let declaration = symbol(context.env, owner).node
+            let parameters = group(declaration, NodeKind.Parameters)
+            let structural = tuple_pack_parameter(get(parameters, length(parameters) - 1))
             let arity = if desired >= 0 {
-                length(get(context.env.types, desired).arguments) - length(group(declaration, NodeKind.Parameters))
+                let shape = get(context.env.types, desired).arguments
+                if structural {
+                    let position = length(parameters) - 1
+                    if length(shape) == length(parameters) + 1 &&
+                        get(context.env.types, get(shape, position)).kind == TypeKind.Tuple {
+                        length(get(context.env.types, get(shape, position)).arguments)
+                    } else { -1 }
+                } else { length(shape) - length(parameters) }
             } else {
                 if length(types) != 0 {
                     length(types) - pack_parameter(declaration)

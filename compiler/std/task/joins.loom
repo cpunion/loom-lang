@@ -94,18 +94,10 @@ pub async fn all[A, B](tasks (Task[A], Task[B])) (A, B) {
     }
 }
 
-pub async fn settled[A, B](tasks (Task[A], Task[B])) (Outcome[A], Outcome[B]) {
-    let left, right = tasks
-    let first_task = task_observe(left, 0)
-    let second_task = task_observe(right, 1)
-    if task_next().await == 0 {
-        let first = task_outcome(first_task).await
-        assert task_next().await == 1
-        return (first, task_outcome(second_task).await)
-    }
-    let second = task_outcome(second_task).await
-    assert task_next().await == 0
-    (task_outcome(first_task).await, second)
+// The input Tasks are already hot. Awaiting their outcomes in input order
+// retains concurrent execution and never cancels a sibling on a fault.
+pub async fn settled[Ts...](tasks (Task[Ts]...)) (Outcome[Ts]...) {
+    comptime map task in tasks { task_outcome(task).await }
 }
 
 async fn first[T](tasks List[Task[T]], success_only Bool) Outcome[T] {

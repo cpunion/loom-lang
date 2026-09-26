@@ -40,6 +40,8 @@ test async fn list_all_and_settled_preserve_input_order_and_empty_inputs() {
     }
     assert length(all[Int]([]).await) == 0
     assert length(settled[Int]([]).await) == 0
+    assert length(settled[Int]({ [] }).await) == 0
+    assert length(settled[Int](if true { [] } else { [] }).await) == 0
     let ordinary = all([ordinary_error()]).await
     match ordinary[0] {
         Result.Err(error) => {
@@ -69,6 +71,45 @@ test async fn tuple_all_and_settled_keep_distinct_result_types_and_input_order()
     assert completed(later) == 4 && completed(earlier) == "typed result"
     let first, second = all((successful(), delayed(5, 3))).await
     assert first == "typed result" && second == 5
+}
+
+fn no_tasks[Ts...](values Ts...) (Ts...) { values }
+
+fn three_tasks() (Task[Int], Task[Text], Task[Bool]) {
+    (delayed(8, 4), successful(), bool_result())
+}
+
+async fn bool_result() Bool { true }
+
+test async fn tuple_settled_accepts_empty_singleton_and_larger_tuple_values() {
+    let empty = settled(no_tasks()).await
+    discard empty
+
+    let single = settled((delayed(3, 0),)).await
+    assert completed(single.0) == 3
+
+    let named = three_tasks()
+    let results = settled(named).await
+    assert completed(results.0) == 8
+    assert completed(results.1) == "typed result"
+    assert completed(results.2)
+
+    let reference fn((Task[Int], Task[Text])) Task[(Outcome[Int], Outcome[Text])] = settled
+    let referenced = reference((delayed(5, 0), successful())).await
+    assert completed(referenced.0) == 5
+    assert completed(referenced.1) == "typed result"
+
+    let first, second, third = settled((failed(), sleep_ms(0), quick_child())).await
+    match first {
+        Outcome.Faulted(error) => { assert contains(error.message, "assertion failed") }
+        _ => { assert false }
+    }
+    match second {
+        Outcome.Completed(_) => {}
+        _ => { assert false }
+    }
+    let child = completed(third)
+    assert child.await == 7
 }
 
 test async fn tuple_all_cancels_and_drains_after_an_out_of_order_failure() {

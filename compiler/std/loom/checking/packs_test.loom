@@ -66,3 +66,15 @@ test fn static_pack_iteration_preserves_task_consumption() {
     rejects("async fn item() Int { 1 }\nasync fn bad[Ts...](values Task[Ts]...) { comptime for value in values { discard value.await\ndiscard value.await } }\nasync fn main() { bad(item()).await }")
     rejects("async fn item() Int { 1 }\nasync fn bad[Ts...](values Task[Ts]...) { comptime for value in values { discard value } }\nasync fn main() { bad(item()).await }")
 }
+
+test fn structural_tuple_pack_maps_lexical_results_from_one_argument() {
+    discard accepted("fn gather[Ts...](values (Ts...)) (Ts...) { comptime map item in values { let copy = item\ncopy } }\nfn source() (Int, Bool, Text) { (7, true, \"three\") }\nfn empty[Ts...](values Ts...) (Ts...) { values }\nfn main() { let named = (1, false, \"named\")\nlet a = gather(named)\nassert a.0 == 1 && !a.1 && a.2 == \"named\"\nlet b = gather(source())\nassert b.0 == 7 && b.1 && b.2 == \"three\"\nlet c = gather((9,))\nassert c.0 == 9\nlet d = gather(empty())\ndiscard d\nlet f fn((Int, Bool)) (Int, Bool) = gather\nassert f((3, true)).0 == 3 }")
+    rejects("fn bad[Ts...](values (Ts...)) (Ts...) { comptime map item in other { item } }\nfn main() { discard bad((1,)) }")
+    rejects("fn bad[Ts...](values (Ts...)) (Ts...) { comptime map item in values { discard item } }\nfn main() { discard bad((1,)) }")
+    rejects("fn bad[Ts...](values (Int, Ts...)) (Ts...) { values }\nfn main() { discard bad((1, true)) }")
+    rejects("fn bad(values (Int,)) (Int,) { comptime map item in values { item } }\nfn main() { discard bad((1,)) }")
+}
+
+test fn static_map_clones_closure_bodies_per_element() {
+    discard accepted("concept Show { fn show(self Self) Text }\nimpl Show for Int { fn show(self Int) Text { \"int\" } }\nimpl Show for Bool { fn show(self Bool) Text { \"bool\" } }\nfn callbacks[Ts... Show](values (Ts...)) (fn() Text, fn() Text) { comptime map item in values { fn() Text { item.show() } } }\nfn main() { let pair = callbacks((4, true))\nassert pair.0() == \"int\" && pair.1() == \"bool\" }")
+}

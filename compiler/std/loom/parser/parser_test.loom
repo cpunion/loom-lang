@@ -136,7 +136,7 @@ test fn comptime_preserves_branches_and_postfix_syntax() {
     let constant = child(selected, 0)
     assert constant.kind == NodeKind.Comptime && constant.span.start == 9 && constant.span.end == 23
     assert length(body(child(parsed("fn f() { comptime {} assert true }"), 0)).children) == 2
-    assert rejected("fn f() { comptime work() }").message == "expected '{' or 'if' after 'comptime'"
+    assert rejected("fn f() { comptime work() }").message == "expected '{', 'if' or 'map' after 'comptime'"
     assert rejected("fn comptime() {}").message == "expected a name"
     assert rejected("fn f[T]() Int { comptime if T == Int { 1 } else { let = 2 } }").message == "expected a name"
 }
