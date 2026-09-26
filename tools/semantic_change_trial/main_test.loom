@@ -9,6 +9,7 @@ import std.fs.entries
 import std.fs.remove_empty_dir
 import std.fs.remove_file
 import std.int.to_text
+import std.io.write_error
 import std.list.get
 import std.list.length
 import std.list.new
@@ -73,6 +74,37 @@ test fn review_token_binds_exact_source_sidecar_and_resolved_commit() {
         }
         Result.Err(_) => {
             assert false
+        }
+    }
+}
+
+test fn preview_rejects_an_added_name_used_by_the_other_side() {
+    let original = loaded("fn value() Int { 1 }\n", "", "")
+    let added = Loaded {
+        revision = Revision {
+            package_name = "sample"
+            files = [File {
+                    path = "value.loom"
+                    text = "fn value() Int { 1 }\nfn fresh() Int { 9 }\n"
+                }]
+            identities = [get(original.revision.identities, 0), Identity {
+                    id = "fresh-id"
+                    path = "value.loom"
+                    kind = NodeKind.Function
+                    name = "fresh"
+                }]
+        }
+        sidecar = ""
+        commit = ""
+        next = 2
+    }
+    let edited = loaded("fn value() Int { fresh() }\n", "", "")
+    match review(original, added, edited) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert starts_with(message, "new declaration collides with a name token")
         }
     }
 }
@@ -387,7 +419,8 @@ test fn imported_package_requires_an_exact_pinned_project_context() {
                 }
             }
         }
-        Result.Err(_) => {
+        Result.Err(message) => {
+            discard write_error(concat("read_context failed: ", concat(message, "\n")))
             assert false
         }
     }
