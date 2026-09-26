@@ -51,7 +51,9 @@ pub async fn read(stream Stream, buffer Bytes, limit Int) Result[Int, TcpError] 
     }
 }
 
-// Write the entire Bytes value, including partial nonblocking writes.
+// Write the initial Bytes length, including partial nonblocking writes.
+// The shared buffer is not snapshotted: alias mutation while this Task is
+// pending can change the sent bytes or make a later offset invalid.
 pub async fn write_bytes(stream Stream, value Bytes) Result[Int, TcpError] {
     let size = length(value)
     var offset = 0

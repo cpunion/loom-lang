@@ -1715,7 +1715,9 @@ without creating another Task. The synchronous `std.file` API remains unchanged.
 numeric IPv4 or IPv6 address, find an ephemeral bind's `local_port`, then await
 `accept`, `read`, and `write_bytes`. `read` appends to a shared Bytes buffer;
 `Ok(0)` means EOF for a positive limit. `write_bytes` retries partial and
-WouldBlock writes until the current buffer length is sent. `Listener` and
+WouldBlock writes until its initial buffer length is sent. Bytes contents are
+not snapshotted: alias mutation during a pending write can change the data or
+cause a write error. `Listener` and
 `Stream` contain private owner-local token state, never a raw descriptor.
 Copying a wrapper aliases its identity; `close_listener`/`close_stream` revoke
 all copies and reject close while a pending or delivered readiness wait leases
