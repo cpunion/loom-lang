@@ -170,7 +170,7 @@ application with its own std/bridge/runtime layout, and writes a `.sha256` file.
 The archive contains [installation instructions](../distribution/INSTALL.md).
 CI retains a local archive for each host platform as a workflow artifact. This
 is not a self-contained LLVM distribution or an older-OS support guarantee;
-standalone Windows cold bootstrap and formal release publication remain open.
+formal release publication remains open.
 
 ## Windows bootstrap
 
@@ -189,21 +189,18 @@ to make those paths available to Rust's static-library packaging as well.
 Native executables reserve an 8 MiB main stack, with the default commit size,
 so bounded compiler recursion does not inherit MSVC's smaller 1 MiB default.
 
-Windows cannot use the frozen historical Unix seed directly. Use an existing
-compatible Windows compiler via `LOOM_BOOTSTRAP_COMPILER`, or export a trusted
-checked compiler from the same checkout using an already validated macOS Loom:
-
-```sh
-target/loom emit-checked compiler/loom > target/compiler.checked
-```
-
-Transfer that file to the matching Windows checkout, then in Git Bash with the
-Visual Studio environment inherited:
+Windows cannot use the frozen historical Unix seed directly. A fresh checkout
+contains a compressed, source-bound checked stage 0 in
+[`compiler/bootstrap`](bootstrap/windows-stage0.source). Git Bash verifies its
+SHA-256 before decompression, and the current native bridge builds the first
+Windows Loom compiler from it. No existing Windows compiler or cross-platform
+file transfer is required. In Git Bash with the Visual Studio environment
+inherited:
 
 ```sh
 export LLVM_SYS_221_PREFIX='C:/llvm-22'
 export LOOM_CC="$LLVM_SYS_221_PREFIX/bin/clang-cl.exe"
-LOOM_BOOTSTRAP_INPUT=compiler.checked bash scripts/bootstrap.sh
+bash scripts/bootstrap.sh
 target/loom.exe test compiler/examples/scalar
 ```
 
@@ -212,11 +209,24 @@ builds stages 1/2/3 and compares 2/3. The result is `target/loom.exe`; default
 program/test outputs use `.exe`, library objects `.obj`, and the runtime archive
 is `loom_runtime.lib`. Subsequent local edits use `bash scripts/bootstrap.sh --dev`.
 
-`emit-checked` runs normal type/proof checks and writes the private artifact to
-stdout without invoking LLVM. This is not a stable IR ABI, release artifact,
-or committed seed snapshot. Use only trusted input matching the source and
-native tool: CI transfers it between jobs in the same workflow after the macOS
-gate, not from an arbitrary other build. The active frontend remains Loom-only.
+The checked stage 0 is generated from the immutable source commit recorded in
+`compiler/bootstrap/windows-stage0.source`. The generator normalizes only
+source-location prefixes, preserving every encoded byte length. macOS and Linux
+CI independently emit it from that pinned source with the normal Loom type and
+proof checker, then compare every byte with the committed input. To verify or
+intentionally refresh it after a checked-artifact/backend ABI change, run on
+macOS or Linux with a working compiler:
+
+```sh
+node scripts/windows-bootstrap-seed.mjs --check target/loom
+node scripts/windows-bootstrap-seed.mjs --write target/loom
+```
+
+Refresh the pin only when the seed's source must change; ordinary edits to the
+current compiler do not require a new checked input. The private checked format
+is not a stable release ABI. `LOOM_BOOTSTRAP_COMPILER` and
+`LOOM_BOOTSTRAP_INPUT` remain explicit overrides for trusted compatible inputs.
+The active frontend remains Loom-only.
 
 ## Compiler latency
 

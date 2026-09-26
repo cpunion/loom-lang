@@ -65,26 +65,29 @@ bootstrap gate below is met for this subset, not all of N2.
 Stages are generations of a bootstrap run, not language versions or permanent
 compiler tiers:
 
-1. Stage 0 is an existing, validated Loom compiler. Without one, build it from
-   a frozen Rust seed followed by pinned Loom source checkpoints in a bootstrap
-   cache. Each checkpoint implements capabilities before its successor uses them.
+1. Stage 0 is an existing, validated Loom compiler. Without one, macOS/Linux
+   build it from a frozen Rust seed followed by pinned Loom source checkpoints
+   in a bootstrap cache. Windows builds it from a small, source-bound checked
+   input verified against the same pinned source on macOS/Linux CI.
 2. Stage 0 compiles the current Loom compiler source into stage 1.
 3. Stage 1 compiles the same source into stage 2; stage 2 produces stage 3.
 4. Compare stage 2/3 artifacts and selected diagnostics; run compiler, `std`,
    and application tests with the resulting compiler.
 
-The Windows bootstrap path builds its initial native compiler from a trusted
-checked export of the same source checkout, then follows stages 1/2/3 on Windows.
-CI transfers that temporary input from the validated macOS job in the same
-workflow; no checked-IR snapshot or second frontend is maintained. Native MSVC
-linking, Unicode/binary I/O, and Windows package paths pass the full native gate.
+The Windows bootstrap path builds its initial native compiler from the committed
+checked input of a pinned source commit, then follows stages 1/2/3 on Windows.
+The compressed input is checksum-checked locally and reproduced byte-for-byte
+from source on both Unix CI hosts. No preinstalled compiler or second frontend
+is required. Native MSVC linking, Unicode/binary I/O, and Windows package paths
+pass the full native gate.
 
 Local toolchain staging now builds a generic-CPU frontend and relocates it with
 its source std and existing native bridge/runtime. CLI and editor discovery share
 one executable-relative layout, with an out-of-checkout programming trial in the
-three-platform workflow. This is not a release archive: the copied bridge still
-needs host LLVM/linker dependencies. Packaged notices/dependencies, published
-compiler artifacts and standalone Windows cold recovery remain delivery work.
+three-platform workflow. CI also packages and smoke-tests a relocatable local
+archive for each host, with dependency notices and a SHA-256 checksum. The bridge
+still needs host LLVM/linker dependencies. Formal release publication, bundled
+host dependencies, and broader target guarantees remain delivery work.
 
 Keep the compiler and its production library closure on a conservative bootstrap
 subset. Implementing a language feature does not justify using it in the compiler
@@ -102,9 +105,11 @@ recovery without restricting the language. Daily development uses one-stage
 
 Remove the replaced Rust parser, binder, checker, and prover from the active
 tree. The frozen history is a bootstrap input, not an old-language compatibility
-policy or another frontend to extend. Do not add a bulky checked-IR seed
-snapshot. The retained Rust LLVM binding, host linker, GC, and platform runtime
-are separate implementation boundaries, not a permanent basic language version.
+policy or another frontend to extend. Keep the Windows checked stage 0 bound to
+one pinned source commit and refresh it only when its private backend format or
+required seed source changes. The retained Rust LLVM binding, host linker, GC,
+and platform runtime are separate implementation boundaries, not a permanent
+basic language version.
 They may evolve for native code and platform facilities without duplicating
 source-language analysis. Codegen consumes backend-neutral checked programs;
 LLVM is a replaceable implementation, not part of the source language or its

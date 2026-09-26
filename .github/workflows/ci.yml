@@ -88,6 +88,9 @@ jobs:
       - name: Relocated toolchain and generic CPU gate
         run: node scripts/stage-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain"
 
+      - name: Verify pinned Windows stage 0 against source
+        run: node scripts/windows-bootstrap-seed.mjs --check target/loom
+
       - name: Package and verify extracted toolchain
         run: node scripts/package-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain" "$RUNNER_TEMP/loom-toolchain-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"
 
@@ -95,16 +98,6 @@ jobs:
         with:
           name: loom-toolchain-${{ runner.os }}-${{ runner.arch }}
           path: ${{ runner.temp }}/loom-toolchain-*.tar.gz*
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Export checked compiler for the Windows bootstrap
-        run: target/loom emit-checked compiler/loom > target/compiler.checked
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: checked-compiler
-          path: target/compiler.checked
           if-no-files-found: error
           retention-days: 7
 
@@ -152,6 +145,9 @@ jobs:
       - name: Relocated toolchain and generic CPU gate
         run: node scripts/stage-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain"
 
+      - name: Verify pinned Windows stage 0 against source
+        run: node scripts/windows-bootstrap-seed.mjs --check target/loom
+
       - name: Package and verify extracted toolchain
         run: node scripts/package-toolchain.mjs "$RUNNER_TEMP/loom-relocated-toolchain" "$RUNNER_TEMP/loom-toolchain-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz"
 
@@ -164,9 +160,8 @@ jobs:
 
   windows-llvm22:
     name: Windows native compiler (LLVM 22)
-    needs: macos-llvm22
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash
@@ -231,17 +226,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: checked-compiler
-          path: target/bootstrap-input
-
       - name: Native bootstrap and full gate
         run: |
           source scripts/windows-env.sh
           cargo fmt --all -- --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
-          LOOM_NATIVE_TIMINGS=1 LOOM_BOOTSTRAP_INPUT=target/bootstrap-input/compiler.checked bash scripts/bootstrap.sh
+          LOOM_NATIVE_TIMINGS=1 bash scripts/bootstrap.sh
           target/loom.exe test compiler/std/storage
           target/loom.exe test compiler/std/json
           target/loom.exe test tools/semantic_change_trial
