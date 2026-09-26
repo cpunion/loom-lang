@@ -83,7 +83,7 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     var new_name = ""
     let mode = get(args, 1)
     let query = mode == "editor-query" || mode == "editor-complete" ||
-    mode == "editor-references" || mode == "editor-rename"
+    mode == "editor-references" || mode == "editor-rename" || mode == "editor-auto-import"
     let overlays = std.list.new[SourceOverlay]()
     var index = 2
     while index < std.list.length(args) {
@@ -189,6 +189,9 @@ fn editor_execute(args List[Text]) EditorOutput {
         Result.Err(message) => {
             return editor_error(message)
         }
+    }
+    if get(args, 1) == "editor-auto-import" {
+        return editor_auto_import(options)
     }
     if get(args, 1) == "editor-complete" {
         match editor_import_completion(options) {

@@ -6,6 +6,76 @@ const { URI } = require('vscode-uri');
 const { TextDocument } = require('vscode-languageserver-textdocument');
 const { session } = require('./session');
 
+async function autoImportSmoke(executable, stdRoot) {
+  const folder = path.join(__dirname, 'fixtures/import_project');
+  const file = path.join(folder, 'main.loom');
+  const uri = URI.file(file).toString();
+  const saved = await fs.readFile(file, 'utf8');
+  const client = await session({ executable, stdRoot }, folder);
+  const actionsAt = async (text, version, fragment, diagnostics) => {
+    const document = TextDocument.create(uri, 'loom', version, text);
+    const position = document.positionAt(text.indexOf(fragment));
+    return client.rpc.sendRequest('textDocument/codeAction', {
+      textDocument: { uri }, range: { start: position, end: position }, context: { diagnostics },
+    });
+  };
+  try {
+    const source = '// é😀\nfn main() { assert imports.library.chosen() == 7 }\n';
+    await client.open(file, source);
+    const failed = await client.wait(file, 1);
+    assert.ok(failed.diagnostics.length > 0);
+    const actions = await actionsAt(source, 1, 'imports.library.chosen', failed.diagnostics);
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].title, 'Import imports.library.chosen');
+    assert.deepEqual(await client.rpc.sendRequest('textDocument/codeAction', {
+      textDocument: { uri }, range: failed.diagnostics[0].range, context: { diagnostics: failed.diagnostics },
+    }), actions);
+    const document = TextDocument.create(uri, 'loom', 1, source);
+    const accepted = TextDocument.applyEdits(document, actions[0].edit.changes[uri]);
+    assert.match(accepted, /^import imports\.library\.chosen\n\/\/ é😀/);
+    await client.change(file, accepted, 2);
+    assert.deepEqual((await client.wait(file, 2)).diagnostics, []);
+    assert.deepEqual(await actionsAt(accepted, 2, 'imports.library.chosen', []), []);
+
+    const typeSource = 'record Holder { item imports.library.Token }\nfn main() { assert Holder { item = imports.library.Token { value = 7 } }.item.value == 7 }\n';
+    await client.change(file, typeSource, 3);
+    const typeReport = await client.wait(file, 3);
+    assert.ok(typeReport.diagnostics.length > 0);
+    const typeActions = await actionsAt(typeSource, 3, 'imports.library.Token', typeReport.diagnostics);
+    assert.equal(typeActions.length, 1);
+    const typed = TextDocument.applyEdits(TextDocument.create(uri, 'loom', 3, typeSource), typeActions[0].edit.changes[uri]);
+    await client.change(file, typed, 4);
+    assert.deepEqual((await client.wait(file, 4)).diagnostics, []);
+
+    const rejected = [
+      { text: 'fn main() { assert imports.library.hidden() == 9 }\n', fragment: 'imports.library.hidden' },
+      { text: 'fn main() { assert imports.library.duplicate(1) == 1 }\n', fragment: 'imports.library.duplicate' },
+      { text: 'fn main() { assert imports.library.chosen(1) == 7 }\n', fragment: 'imports.library.chosen' },
+    ];
+    for (const [index, item] of rejected.entries()) {
+      const version = index + 5;
+      await client.change(file, item.text, version);
+      const report = await client.wait(file, version);
+      assert.ok(report.diagnostics.length > 0);
+      assert.deepEqual(await actionsAt(item.text, version, item.fragment, report.diagnostics), []);
+    }
+
+    const fresh = path.join(folder, 'library/unsaved.loom');
+    await client.open(fresh, 'pub fn fresh() Int { 11 }\n');
+    const unsaved = 'fn main() { assert imports.library.fresh() == 11 }\n';
+    await client.change(file, unsaved, 8);
+    const report = await client.wait(file, 8);
+    assert.ok(report.diagnostics.length > 0);
+    const offered = await actionsAt(unsaved, 8, 'imports.library.fresh', report.diagnostics);
+    assert.equal(offered.length, 1);
+    const edited = TextDocument.applyEdits(TextDocument.create(uri, 'loom', 8, unsaved), offered[0].edit.changes[uri]);
+    await client.change(file, edited, 9);
+    assert.deepEqual((await client.wait(file, 9)).diagnostics, []);
+    assert.equal(await fs.readFile(file, 'utf8'), saved);
+    await assert.rejects(fs.access(fresh), { code: 'ENOENT' });
+  } finally { await client.close(); }
+}
+
 async function main() {
   const repository = path.resolve(__dirname, '../../..');
   const executable = process.env.LOOM_EDITOR_COMPILER || path.join(repository, 'target', process.platform === 'win32' ? 'loom.exe' : 'loom');
@@ -247,7 +317,8 @@ async function main() {
     await assert.rejects(fs.access(helper), { code: 'ENOENT' });
     await assert.rejects(fs.access(bad), { code: 'ENOENT' });
     await assert.rejects(fs.access(shadow), { code: 'ENOENT' });
-    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local rename, name/member/qualified/import completion and replacement, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
+    await autoImportSmoke(executable, stdRoot);
+    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local rename, name/member/qualified/import completion, verified auto-import actions, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
