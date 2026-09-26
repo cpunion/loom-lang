@@ -47,13 +47,43 @@ async function autoImportSmoke(executable, stdRoot) {
     await client.change(file, typed, 4);
     assert.deepEqual((await client.wait(file, 4)).diagnostics, []);
 
+    const bare = '// header\nimport std.text.length\n\nfn main() { assert chosen() == 7 }\n';
+    await client.change(file, bare, 5);
+    const bareReport = await client.wait(file, 5);
+    assert.ok(bareReport.diagnostics.length > 0);
+    const bareActions = await actionsAt(bare, 5, 'chosen()', bareReport.diagnostics);
+    assert.equal(bareActions.length, 1);
+    assert.equal(bareActions[0].title, 'Import imports.library.chosen');
+    const bareDocument = TextDocument.create(uri, 'loom', 5, bare);
+    assert.deepEqual(bareActions[0].edit.changes[uri][0].range.start, { line: 2, character: 0 });
+    const bareAccepted = TextDocument.applyEdits(bareDocument, bareActions[0].edit.changes[uri]);
+    assert.match(bareAccepted, /^\/\/ header\nimport std\.text\.length\nimport imports\.library\.chosen\n\nfn main/);
+    await client.change(file, bareAccepted, 6);
+    assert.deepEqual((await client.wait(file, 6)).diagnostics, []);
+
+    const bareType = 'record Holder { item ImportOnlyToken }\nfn main() { assert Holder { item = ImportOnlyToken { value = 7 } }.item.value == 7 }\n';
+    await client.change(file, bareType, 7);
+    const bareTypeReport = await client.wait(file, 7);
+    const bareTypeActions = await actionsAt(bareType, 7, 'ImportOnlyToken', bareTypeReport.diagnostics);
+    assert.equal(bareTypeActions.length, 1);
+    assert.equal(bareTypeActions[0].title, 'Import imports.library.ImportOnlyToken');
+    const bareTyped = TextDocument.applyEdits(TextDocument.create(uri, 'loom', 7, bareType), bareTypeActions[0].edit.changes[uri]);
+    await client.change(file, bareTyped, 8);
+    assert.deepEqual((await client.wait(file, 8)).diagnostics, []);
+
     const rejected = [
       { text: 'fn main() { assert imports.library.hidden() == 9 }\n', fragment: 'imports.library.hidden' },
       { text: 'fn main() { assert imports.library.duplicate(1) == 1 }\n', fragment: 'imports.library.duplicate' },
       { text: 'fn main() { assert imports.library.chosen(1) == 7 }\n', fragment: 'imports.library.chosen' },
+      { text: 'fn main() { assert hidden() == 9 }\n', fragment: 'hidden' },
+      { text: 'fn main() { assert duplicate(1) == 1 }\n', fragment: 'duplicate' },
+      { text: 'record Holder { item Token }\nfn main() {}\n', fragment: 'Token' },
+      { text: 'fn main() { assert chosen(1) == 7 }\n', fragment: 'chosen' },
+      { text: 'fn main() { let wrong Int = true\nassert chosen() == 7 }\n', fragment: 'chosen' },
+      { text: 'fn main() { assert chosen() == 7 ', fragment: 'chosen' },
     ];
     for (const [index, item] of rejected.entries()) {
-      const version = index + 5;
+      const version = index + 9;
       await client.change(file, item.text, version);
       const report = await client.wait(file, version);
       assert.ok(report.diagnostics.length > 0);
@@ -62,17 +92,48 @@ async function autoImportSmoke(executable, stdRoot) {
 
     const fresh = path.join(folder, 'library/unsaved.loom');
     await client.open(fresh, 'pub fn fresh() Int { 11 }\n');
-    const unsaved = 'fn main() { assert imports.library.fresh() == 11 }\n';
-    await client.change(file, unsaved, 8);
-    const report = await client.wait(file, 8);
+    const unsaved = 'fn main() { assert fresh() == 11 }\n';
+    await client.change(file, unsaved, 18);
+    const report = await client.wait(file, 18);
     assert.ok(report.diagnostics.length > 0);
-    const offered = await actionsAt(unsaved, 8, 'imports.library.fresh', report.diagnostics);
+    const offered = await actionsAt(unsaved, 18, 'fresh', report.diagnostics);
     assert.equal(offered.length, 1);
-    const edited = TextDocument.applyEdits(TextDocument.create(uri, 'loom', 8, unsaved), offered[0].edit.changes[uri]);
-    await client.change(file, edited, 9);
-    assert.deepEqual((await client.wait(file, 9)).diagnostics, []);
+    assert.equal(offered[0].title, 'Import imports.library.fresh');
+    const edited = TextDocument.applyEdits(TextDocument.create(uri, 'loom', 18, unsaved), offered[0].edit.changes[uri]);
+    await client.change(file, edited, 19);
+    assert.deepEqual((await client.wait(file, 19)).diagnostics, []);
     assert.equal(await fs.readFile(file, 'utf8'), saved);
     await assert.rejects(fs.access(fresh), { code: 'ENOENT' });
+  } finally { await client.close(); }
+}
+
+async function directDependencyAutoImportSmoke(executable, stdRoot) {
+  const folder = path.resolve(__dirname, '../../../compiler/examples/modules/app');
+  const file = path.join(folder, 'main.loom');
+  const uri = URI.file(file).toString();
+  const client = await session({ executable, stdRoot }, folder);
+  const action = async (source, version, name) => {
+    await client.change(file, source, version);
+    const report = await client.wait(file, version);
+    assert.ok(report.diagnostics.length > 0);
+    const position = TextDocument.create(uri, 'loom', version, source).positionAt(source.indexOf(name));
+    return client.rpc.sendRequest('textDocument/codeAction', {
+      textDocument: { uri }, range: { start: position, end: position }, context: { diagnostics: report.diagnostics },
+    });
+  };
+  try {
+    await client.open(file, 'fn main() {}\n');
+    assert.deepEqual(await action('fn main() { discard answer() }\n', 2, 'answer'), []);
+    assert.deepEqual(await action('fn main() { discard value() }\n', 3, 'value'), []);
+    const other = path.resolve(folder, '../other/main.loom');
+    await client.open(other, 'pub fn unique() Int { 5 }\n');
+    const source = 'fn main() { assert unique() == 5 }\n';
+    const offered = await action(source, 4, 'unique');
+    assert.equal(offered.length, 1);
+    assert.equal(offered[0].title, 'Import other.unique');
+    const accepted = TextDocument.applyEdits(TextDocument.create(uri, 'loom', 4, source), offered[0].edit.changes[uri]);
+    await client.change(file, accepted, 5);
+    assert.deepEqual((await client.wait(file, 5)).diagnostics, []);
   } finally { await client.close(); }
 }
 
@@ -372,8 +433,9 @@ async function main() {
     await assert.rejects(fs.access(bad), { code: 'ENOENT' });
     await assert.rejects(fs.access(shadow), { code: 'ENOENT' });
     await autoImportSmoke(executable, stdRoot);
+    await directDependencyAutoImportSmoke(executable, stdRoot);
     await privateRenameSmoke(executable, stdRoot);
-    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local and private cross-file rename, name/member/qualified/import completion, verified auto-import actions, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
+    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local and private cross-file rename, name/member/qualified/import completion, verified qualified and bare-name auto-import actions, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

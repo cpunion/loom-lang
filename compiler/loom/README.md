@@ -294,8 +294,8 @@ CLI-only cursor recovery maps virtual insertion ranges back to the original buff
 lexical import cursor with project discovery, returning ordinary `Completion`
 items. It needs no parsed importer or LLVM backend; resolution failures yield
 empty candidates, not proof of valid imports. The editor's separate auto-import
-command verifies a full explicit path and checks the virtual inserted import;
-it does not search all packages for bare names.
+command verifies a full explicit path or finds one exact bare-name export in
+the selected direct dependency closure, then checks the virtual inserted import.
 
 `inspect_at` selects the source token's role, so a receiver and its selected field
 have distinct answers even when lowering shares their spans. `Inspection.types`

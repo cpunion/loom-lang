@@ -4,6 +4,9 @@ import std.loom.project.SourceOverlay
 import std.loom.project.import_scope
 import std.loom.project.package
 import std.loom.project.name
+import std.loom.project.qualify
+import std.loom.project.join_path
+import std.loom.binding.candidates
 import std.option.Option
 
 fn editor_no_auto_import() EditorOutput {
@@ -13,28 +16,41 @@ fn editor_no_auto_import() EditorOutput {
     }
 }
 
-// Only an explicit source path supplies a package identity. The AST excludes
-// comments and strings; the exact slice excludes whitespace-normalized paths.
-fn editor_import_path(node Node, text Text, offset Int) Text {
+record EditorImportReference {
+    value Text
+    start Int
+    end Int
+}
+
+// The AST excludes comments and strings; the exact slice excludes
+// whitespace-normalized paths and positions beyond the source name.
+fn editor_import_reference(node Node, text Text, offset Int) Option[EditorImportReference] {
     let kind = node.kind
     if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.Type ||
     kind == NodeKind.Construct {
         let end = node.span.start + std.text.length(node.value)
-        if std.text.contains(node.value, ".") && end <= std.text.length(text) &&
+        if end <= std.text.length(text) &&
         offset >= node.span.start && offset <= end &&
         std.text.slice(text, node.span.start, end) == node.value {
-            return node.value
+            return Option.Some(EditorImportReference {
+                    value = node.value
+                    start = node.span.start
+                    end = end
+                })
         }
     }
     var index = 0
     while index < length(node.children) {
-        let found = editor_import_path(get(node.children, index), text, offset)
-        if found != "" {
-            return found
+        match editor_import_reference(get(node.children, index), text, offset) {
+            Option.Some(found) => {
+                return Option.Some(found)
+            }
+            Option.None => {
+            }
         }
         index = index + 1
     }
-    ""
+    Option.None
 }
 
 fn editor_import_text(options EditorOptions) Option[Text] {
@@ -98,6 +114,130 @@ fn editor_import_overlays(options EditorOptions, text Text) List[SourceOverlay] 
     overlays
 }
 
+fn editor_importable(node Node, member Text) Bool {
+    node.value == member && (node.kind == NodeKind.Function ||
+        node.kind == NodeKind.Record || node.kind == NodeKind.Enum ||
+        node.kind == NodeKind.Refined || node.kind == NodeKind.Concept)
+}
+
+// Import discovery exposes only this module, std, and declared direct edges.
+// Visit their nested packages as well, refusing to guess among overloads or
+// among identically named declarations in different packages.
+fn editor_bare_import(options EditorOptions, member Text) Text {
+    let roots = match import_scope(options.path, options.std_root, "", options.overlays) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return ""
+        }
+    }
+    let pending = roots.namespaces
+    var found = ""
+    var matches = 0
+    var index = 0
+    while index < length(pending) {
+        let qualifier = get(pending, index)
+        let scope = match import_scope(options.path, options.std_root, qualifier, options.overlays) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return ""
+            }
+        }
+        var item = 0
+        while item < length(scope.declarations) {
+            if editor_importable(get(scope.declarations, item).node, member) {
+                matches = matches + 1
+                if matches > 1 {
+                    return ""
+                }
+                found = qualify(qualifier, member)
+            }
+            item = item + 1
+        }
+        item = 0
+        while item < length(scope.namespaces) {
+            std.list.push(pending, qualify(qualifier, get(scope.namespaces, item)))
+            item = item + 1
+        }
+        index = index + 1
+    }
+    found
+}
+
+// A bare-name action belongs to the name that actually failed semantic
+// checking, not to another error elsewhere in the package. Existing visible
+// declarations also rule out changing overload resolution by importing more.
+fn editor_missing_name(options EditorOptions, reference EditorImportReference) Bool {
+    let project = match load_overlaid(options.path, options.std_root, options.tests, options.overlays) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let bindings = match bind(project, options.tests) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let file = match editor_source(project, options.query_path) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    if length(candidates(bindings, file, get(project.files, file).test_only, reference.value)) != 0 {
+        return false
+    }
+    match check(bindings) {
+        Result.Ok(_) => false
+        Result.Err(failed) => {
+            let diagnostic = failed.diagnostic
+            let message = diagnostic.message
+            failed.source == file && diagnostic.span.start == reference.start &&
+            diagnostic.span.end >= reference.end &&
+            (message == "unknown local value" || message == "unknown record type" ||
+                message == "unknown enum type" || message == "unknown or inaccessible type" ||
+                message == "no accessible overload matches these arguments")
+        }
+    }
+}
+
+fn editor_import_start(tree Node, source Text) Int {
+    var last_import = -1
+    var first_declaration = -1
+    var index = 0
+    while index < length(tree.children) {
+        let node = get(tree.children, index)
+        if node.kind == NodeKind.Import {
+            last_import = node.span.end
+        } else {
+            if first_declaration < 0 {
+                first_declaration = node.span.start
+            }
+        }
+        index = index + 1
+    }
+    if last_import >= 0 {
+        var start = last_import
+        while start < std.text.length(source) && std.text.byte(source, start) != 10 {
+            start = start + 1
+        }
+        return if start < std.text.length(source) {
+            start + 1
+        } else {
+            start
+        }
+    }
+    if first_declaration >= 0 {
+        var start = first_declaration
+        while start > 0 && std.text.byte(source, start - 1) != 10 {
+            start = start - 1
+        }
+        return start
+    }
+    std.text.length(source)
+}
+
 fn editor_auto_import(options EditorOptions) EditorOutput {
     let directory = match canonicalize(executable_directory(options.query_path)) {
         Result.Ok(value) => value
@@ -130,39 +270,131 @@ fn editor_auto_import(options EditorOptions) EditorOutput {
             return editor_no_auto_import()
         }
     }
-    let path = editor_import_path(tree, source, options.offset)
-    if path == "" {
-        return editor_no_auto_import()
-    }
-    let qualifier = std.loom.project.package(path)
-    let member = std.loom.project.name(path)
-    let scope = match import_scope(options.path, options.std_root, qualifier, options.overlays) {
-        Result.Ok(value) => value
-        Result.Err(_) => {
+    let reference = match editor_import_reference(tree, source, options.offset) {
+        Option.Some(value) => value
+        Option.None => {
             return editor_no_auto_import()
         }
     }
-    var matches = 0
-    var index = 0
-    while index < length(scope.declarations) {
-        let declaration = get(scope.declarations, index).node
-        if declaration.value == member && (declaration.kind == NodeKind.Function ||
-            declaration.kind == NodeKind.Record || declaration.kind == NodeKind.Enum ||
-            declaration.kind == NodeKind.Refined || declaration.kind == NodeKind.Concept) {
-            matches = matches + 1
+    let qualified = std.text.contains(reference.value, ".")
+    let path = if qualified {
+        let qualifier = std.loom.project.package(reference.value)
+        let member = std.loom.project.name(reference.value)
+        let scope = match import_scope(options.path, options.std_root, qualifier, options.overlays) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return editor_no_auto_import()
+            }
         }
-        index = index + 1
+        var matches = 0
+        var index = 0
+        while index < length(scope.declarations) {
+            if editor_importable(get(scope.declarations, index).node, member) {
+                matches = matches + 1
+            }
+            index = index + 1
+        }
+        if matches != 1 {
+            return editor_no_auto_import()
+        }
+        reference.value
+    } else {
+        if !editor_missing_name(options, reference) {
+            return editor_no_auto_import()
+        }
+        editor_bare_import(options, reference.value)
     }
-    if matches != 1 || editor_overlay_checks(options, options.overlays) {
+    if path == "" || editor_overlay_checks(options, options.overlays) {
         return editor_no_auto_import()
     }
-    let insertion = concat("import ", concat(path, "\n"))
-    if !editor_overlay_checks(options, editor_import_overlays(options, concat(insertion, source))) {
+    let start = if qualified {
+        0
+    } else {
+        editor_import_start(tree, source)
+    }
+    let prefix = if start > 0 && std.text.byte(source, start - 1) != 10 {
+        "\n"
+    } else {
+        ""
+    }
+    let insertion = concat(prefix, concat("import ", concat(path, "\n")))
+    let edited = concat(std.text.slice(source, 0, start), concat(insertion, std.text.slice(source, start, std.text.length(source))))
+    if !editor_overlay_checks(options, editor_import_overlays(options, edited)) {
         return editor_no_auto_import()
     }
     EditorOutput {
         text = concat("{\"diagnostics\":[],\"autoImport\":{\"path\":", concat(editor_quoted(path),
-                concat(",\"start\":0,\"text\":", concat(editor_quoted(insertion), "}}\n"))))
+                concat(",\"start\":", concat(to_text(start), concat(",\"text\":", concat(editor_quoted(insertion), "}}\n"))))))
         failed = false
     }
+}
+
+test fn editor_bare_import_follows_direct_edges_and_requires_one_declaration() {
+    let app = match canonicalize("compiler/examples/modules/app") {
+        Result.Ok(value) => value
+        Result.Err(_) => ""
+    }
+    let options = EditorOptions {
+        path = app
+        std_root = "compiler/std"
+        tests = false
+        overlays = std.list.new[SourceOverlay]()
+        query_path = join_path(app, "main.loom")
+        offset = 0
+        new_name = ""
+    }
+    assert editor_bare_import(options, "answer") == ""
+    assert editor_bare_import(options, "value") == ""
+    let fixture = match canonicalize("editors/vscode/test/fixtures/import_project") {
+        Result.Ok(value) => value
+        Result.Err(_) => ""
+    }
+    assert editor_bare_import(EditorOptions {
+            path = fixture
+            std_root = options.std_root
+            tests = false
+            overlays = options.overlays
+            query_path = join_path(fixture, "main.loom")
+            offset = 0
+            new_name = ""
+        }, "chosen") == "imports.library.chosen"
+}
+
+test fn editor_bare_import_uses_the_overlaid_source_and_import_group() {
+    let directory = match canonicalize("editors/vscode/test/fixtures/import_project") {
+        Result.Ok(value) => value
+        Result.Err(_) => ""
+    }
+    let source = "// header\nimport std.text.length\n\nfn main() { assert chosen() == 7 }\n"
+    let overlays = std.list.new[SourceOverlay]()
+    let file = join_path(directory, "main.loom")
+    std.list.push(overlays, SourceOverlay {
+            path = file
+            text = source
+        })
+    let output = editor_auto_import(EditorOptions {
+            path = directory
+            std_root = "compiler/std"
+            tests = false
+            overlays = overlays
+            query_path = file
+            offset = 54
+            new_name = ""
+        })
+    assert !output.failed && std.text.contains(output.text, "\"path\":\"imports.library.chosen\"")
+    assert std.text.contains(output.text, "\"start\":33")
+    assert std.text.contains(output.text, "\"text\":\"import imports.library.chosen\\u000a\"")
+}
+
+test fn editor_import_start_appends_after_comment_only_source() {
+    let source = "// header"
+    let tree = match std.loom.parser.parse(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let start = editor_import_start(tree, source)
+    assert start == std.text.length(source)
 }
