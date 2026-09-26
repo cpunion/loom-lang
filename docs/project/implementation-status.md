@@ -205,9 +205,11 @@ cases retain `Result` construction. Exact call-free predicates and already true
 algebra. Conjuncts may regroup or reorder; `||` branches are not assumed true.
 Construction also uses immutable scalar facts from preconditions, successful
 assertions and lexical branches. Immutable scalar copies retain facts established
-before the copy, including through copy chains. The original guard remains while proved
+before the copy, including through copy chains. Standalone `if` guards retain the
+surviving condition when exactly one branch can continue to the next statement.
+The original guard remains while proved
 constructors lower directly, preserving one input evaluation. Mutable bindings,
-heap reads, cross-local relations, branch joins and general Float reasoning
+heap reads, cross-local relations, two-live-branch joins and general Float reasoning
 remain open; unsupported proofs keep their checks. Refinement-to-refinement
 implication can expand direct acyclic scalar helpers with immutable locals,
 preserving evaluated arguments, unused calculations, guarded preconditions and

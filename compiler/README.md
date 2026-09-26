@@ -1269,14 +1269,21 @@ fn copied(value Int) Positive {
     let copy = value
     Positive(copy)
 }
+fn guarded(value Int) Positive {
+    if value <= 0 { return Positive(1) }
+    Positive(value)
+}
 ```
 
 The original boundary condition remains; these constructors add no second check,
 even before LLVM optimization. Immutable scalar copies inherit facts already
 established at the copy, including through further copies; later assertions do
-not propagate back to earlier copies. Facts use binding identities, not names. This
-slice excludes `var`, heap reads, relationships between different locals, and
-facts inferred after branch joins. Literal Float predicates can be reused, but
+not propagate back to earlier copies. After a standalone `if`, exactly one
+continuing branch can supply its guard, including guards ending in `return`,
+`break` or `continue`. This retains the surviving condition, not assertions made
+inside a branch or deferred cleanup. Facts use binding identities, not names.
+This slice excludes `var`, heap reads, relationships between different locals,
+and facts inferred by joining two live branches. Literal Float predicates can be reused, but
 `!(x > 0.0)` does not prove `x <= 0.0` because of NaN. Unknown cases still return
 `Result`; calls and input expressions are never duplicated to seek a proof.
 

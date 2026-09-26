@@ -98,6 +98,15 @@ fn assuming(context Context, value Expr, truth Bool, depth Int) Context {
     }
     known
 }
+fn fallthrough_facts(context Context, value Expr) Context {
+    if !context.env.has_refinements || value.kind != ExprKind.If || !value.falls { return context }
+    let yes = get(value.children, 1).falls
+    let no = length(value.children) == 2 || get(value.children, 2).falls
+    if yes == no { return context }
+    // Only one branch reaches the next statement. Keep its guard, not facts
+    // established inside either branch or in a deferred cleanup.
+    assuming(context, get(value.children, 0), yes, 0)
+}
 fn fact_reference(context Context, value Expr) Int {
     if value.kind == ExprKind.Coerce { return fact_reference(context, get(value.children, 0)) }
     if value.kind != ExprKind.Local || get(context.locals, value.index).mutable { return -1 }

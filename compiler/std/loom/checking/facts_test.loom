@@ -45,6 +45,28 @@ test fn scalar_copy_facts_do_not_guess_mutability_aliases_or_later_evidence() {
     }
 }
 
+test fn exiting_if_branches_establish_only_the_surviving_guard() {
+    let definitions = "type Positive = Int where self > 0\ntype Bounded = Int where self >= 0 && self <= 100\ntype NotPositive = Float where !(self > 0.0)\n"
+    let program = accepted(concat(definitions,
+        "pub fn early(value Int) Positive { if value <= 0 { return Positive(1) }\nlet copy = value\nPositive(copy) }\npub fn alternate(value Int) Positive { if value > 0 {} else { return Positive(1) }\nPositive(value) }\npub fn bounded(value Int) Bounded { if value < 0 { return Bounded(0) }\nif value > 100 { return Bounded(100) }\nBounded(value) }\npub fn exact(value Float) NotPositive { if value > 0.0 { return NotPositive(0.0) }\nNotPositive(value) }\npub fn breaking(value Int) Positive { while true { if value <= 0 { break }\nreturn Positive(value) }\nPositive(1) }\npub fn continuing(value Int) { var count = 0\nwhile count < 1 { count = count + 1\nif value <= 0 { continue }\ndiscard Positive(value) } }"))
+    var index = 0
+    while index < length(program.functions) {
+        assert dynamic_count(get(program.functions, index).body, ExprKind.If) == (if index == 2 { 2 } else { 1 })
+        index = index + 1
+    }
+}
+
+test fn exit_guards_do_not_invent_join_alias_or_nan_evidence() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\ntype Positive = Int where self > 0\ntype NonPositive = Float where self <= 0.0\nrecord Box { value Int }\n"
+    let program = flow_program(concat(definitions,
+        "pub fn joined(value Int) Result[Positive, ConstraintError] { if value <= 0 {}\nPositive(value) }\npub fn mutable(value Int) Result[Positive, ConstraintError] { var current = value\nif current <= 0 { return Result.Ok(Positive(1)) }\ncurrent = 0\nPositive(current) }\npub fn shared(box Box) Result[Positive, ConstraintError] { if box.value <= 0 { return Result.Ok(Positive(1)) }\nPositive(box.value) }\npub fn either(value Int, other Int) Result[Positive, ConstraintError] { if value <= 0 && other <= 0 { return Result.Ok(Positive(1)) }\nPositive(value) }\npub fn complement(value Float) Result[NonPositive, ConstraintError] { if value > 0.0 { return Result.Ok(NonPositive(0.0)) }\nNonPositive(value) }\npub fn cleanup(value Int) Result[Positive, ConstraintError] { defer { assert value > 0 }\nif value <= 0 {} else { return Result.Ok(Positive(1)) }\nPositive(value) }"))
+    var index = 0
+    while index < length(program.functions) {
+        assert dynamic_count(get(program.functions, index).body, ExprKind.If) == 2
+        index = index + 1
+    }
+}
+
 test fn mutable_shared_and_unrelated_bindings_do_not_supply_flow_facts() {
     let definitions = "import std.result.Result\nimport std.result.ConstraintError\ntype Positive = Int where self > 0\nrecord Box { value Int }\n"
     let program = flow_program(concat(definitions,
