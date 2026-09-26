@@ -1,0 +1,45 @@
+import std.net.tcp.listen
+import std.net.tcp.local_port
+import std.net.tcp.accept
+import std.net.tcp.read
+import std.net.tcp.write_bytes
+import std.net.tcp.close_listener
+import std.net.tcp.close_stream
+import std.net.tcp.TcpError
+import std.result.Result
+import std.bytes.new
+import std.io.write_text
+import std.io.write_error
+import std.int.to_text
+import std.text.concat
+import std.process.exit_code
+
+async fn serve() Result[Int, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let port = local_port(listener)?
+    discard write_text(concat(to_text(port), "\n"))
+    let stream = accept(listener).await?
+    defer {
+        discard close_stream(stream)
+    }
+    let buffer = new()
+    var count = read(stream, buffer, 8192).await?
+    while count > 0 {
+        count = read(stream, buffer, 8192).await?
+    }
+    write_bytes(stream, buffer).await
+}
+
+async fn main() {
+    match serve().await {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            discard write_error("tcp loopback failed\n")
+            exit_code(1)
+        }
+    }
+}

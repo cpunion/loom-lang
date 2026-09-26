@@ -180,6 +180,14 @@ fn external_parking(graph Graph, source Expr, start Int, loop Loop) Value {
             current = argument.state
             index = index + 1
         }
+        if source.text == "socket_wait" {
+            assert source.ty == 0 && length(arguments) == 2
+            let park = state(graph)
+            let after = state(graph)
+            jump(graph, current, park)
+            finish(graph, park, Exit.Park, operation("task_wait_socket", 2, source.span, arguments), edges(after), new[Arm]())
+            return Value { state = after expression = empty(source.span) }
+        }
         let reading = source.text == "async_read"
         let opening = source.text == "async_open"
         let closing = source.text == "async_close"

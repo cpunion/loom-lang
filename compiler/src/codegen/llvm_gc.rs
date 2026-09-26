@@ -108,6 +108,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::ListNew
         | Primitive::ListPush
         | Primitive::Read
+        | Primitive::SocketRead
         | Primitive::DirectoryRead
         | Primitive::PathCanonical => true,
         Primitive::TaskFailure
@@ -122,6 +123,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TaskCleanupPush
         | Primitive::TaskCleanupPop
         | Primitive::TaskWaitTimer
+        | Primitive::TaskWaitSocket
         | Primitive::TaskWaitFileRead
         | Primitive::TaskWaitFileWrite
         | Primitive::TaskWaitFileWriteBytes
@@ -164,6 +166,11 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::Write
         | Primitive::WriteBytes
         | Primitive::Close
+        | Primitive::SocketListen
+        | Primitive::SocketAccept
+        | Primitive::SocketWriteBytes
+        | Primitive::SocketClose
+        | Primitive::SocketLocalPort
         | Primitive::PathKind
         | Primitive::DirectoryCreate
         | Primitive::PathRename
