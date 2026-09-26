@@ -52,6 +52,11 @@ function query(settings, directory, file, offset, overlayArgs, signal, complete 
   return editorReport(settings, directory, complete ? 'editor-complete' : 'editor-query', ['--at', file, String(offset)], overlayArgs, signal);
 }
 
+function symbols(settings, directory, file, offset, overlayArgs, signal, newName) {
+  return editorReport(settings, directory, newName === undefined ? 'editor-references' : 'editor-rename',
+    ['--at', file, String(offset), ...(newName === undefined ? [] : ['--to', newName])], overlayArgs, signal);
+}
+
 async function format(settings, directory, text, signal) {
   const result = await run(settings.executable, ['fmt', '--stdin'], directory, signal, text);
   if (result.code !== 0) throw new Error(result.stderr || 'Loom could not format this buffer.');
@@ -67,4 +72,4 @@ function byteOffset(document, position) {
   return Buffer.byteLength(document.getText().slice(0, document.offsetAt(position)), 'utf8');
 }
 
-module.exports = { snapshots, check, query, format, bytePosition, byteOffset };
+module.exports = { snapshots, check, query, symbols, format, bytePosition, byteOffset };

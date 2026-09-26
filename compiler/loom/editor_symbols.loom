@@ -1,0 +1,374 @@
+import std.loom.analysis.Analysis
+import std.loom.analysis.Location
+import std.loom.analysis.inspect_at
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.lexer.Kind
+import std.loom.lexer.Token
+import std.loom.lexer.lex
+import std.loom.source.Span
+import std.option.Option
+
+fn editor_same_span(left Span, right Span) Bool {
+    left.start == right.start && left.end == right.end
+}
+
+fn editor_same_location(left Location, right Location) Bool {
+    left.file == right.file && editor_same_span(left.span, right.span)
+}
+
+fn editor_contains(locations List[Location], location Location) Bool {
+    var index = 0
+    while index < length(locations) {
+        if editor_same_location(get(locations, index), location) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn editor_push_location(locations List[Location], location Location) {
+    if !editor_contains(locations, location) {
+        push(locations, location)
+    }
+}
+
+fn editor_token(tokens List[Token], offset Int) Option[Token] {
+    var index = 0
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        if token.span.start <= offset && offset < token.span.end {
+            return if token.kind == Kind.Name {
+                Option.Some(token)
+            } else {
+                Option.None
+            }
+        }
+        index = index + 1
+    }
+    Option.None
+}
+
+fn editor_name(tokens List[Token], node Node) Option[Span] {
+    var index = 0
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        if token.span.start >= node.span.end {
+            return Option.None
+        }
+        if token.span.start >= node.span.start && token.kind == Kind.Name && token.value == node.value {
+            return Option.Some(token.span)
+        }
+        index = index + 1
+    }
+    Option.None
+}
+
+fn editor_declaration(node Node, tokens List[Token], target Span) Bool {
+    let kind = node.kind
+    if kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum ||
+    kind == NodeKind.Refined || kind == NodeKind.Concept || kind == NodeKind.Let ||
+    kind == NodeKind.Var || kind == NodeKind.Parameter || kind == NodeKind.Field ||
+    kind == NodeKind.Variant || kind == NodeKind.AssociatedType {
+        match editor_name(tokens, node) {
+            Option.Some(span) => {
+                if editor_same_span(span, target) {
+                    return true
+                }
+            }
+            Option.None => {
+            }
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        if editor_declaration(get(node.children, index), tokens, target) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn editor_selected(analysis Analysis, file Int, offset Int, token Token, tokens List[Token]) Option[Location] {
+    match inspect_at(analysis, file, offset) {
+        Option.Some(found) => {
+            if length(found.definitions) == 1 {
+                return Option.Some(get(found.definitions, 0))
+            }
+            // A checked expression with ambiguous definitions must not fall
+            // through to a spelling-based declaration guess.
+            return Option.None
+        }
+        Option.None => {
+        }
+    }
+    if editor_declaration(get(analysis.bindings.files, file).tree, tokens, token.span) {
+        return Option.Some(Location {
+                file = file
+                span = token.span
+            })
+    }
+    Option.None
+}
+
+fn editor_references(analysis Analysis, target Location, spelling Text) List[Location] {
+    let references = new[Location]()
+    editor_push_location(references, target)
+    var file = 0
+    while file < length(analysis.bindings.files) {
+        let source = get(analysis.bindings.files, file)
+        match lex(source.text) {
+            Result.Ok(tokens) => {
+                var index = 0
+                while index < length(tokens) {
+                    let token = get(tokens, index)
+                    if token.kind == Kind.Name && token.value == spelling {
+                        match inspect_at(analysis, file, token.span.start) {
+                            Option.Some(found) => {
+                                if length(found.definitions) == 1 &&
+                                editor_same_location(get(found.definitions, 0), target) {
+                                    editor_push_location(references, Location {
+                                            file = file
+                                            span = token.span
+                                        })
+                                }
+                            }
+                            Option.None => {
+                            }
+                        }
+                    }
+                    index = index + 1
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+        file = file + 1
+    }
+    references
+}
+
+fn editor_unsafe_body(node Node) Bool {
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.kind == NodeKind.Function || child.kind == NodeKind.Comptime ||
+        child.kind == NodeKind.ComptimeFor || child.kind == NodeKind.ComptimeMap ||
+        editor_unsafe_body(child) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn editor_local(node Node, tokens List[Token], target Span) Bool {
+    if node.kind == NodeKind.Let || node.kind == NodeKind.Var {
+        match editor_name(tokens, node) {
+            Option.Some(span) => {
+                if editor_same_span(span, target) {
+                    return true
+                }
+            }
+            Option.None => {
+            }
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        if editor_local(get(node.children, index), tokens, target) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn editor_local_scope(analysis Analysis, target Location) Option[Span] {
+    let source = get(analysis.bindings.files, target.file)
+    let tokens = match lex(source.text) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    var index = 0
+    while index < length(analysis.bindings.symbols) {
+        let symbol = get(analysis.bindings.symbols, index)
+        if symbol.file == target.file && symbol.owner < 0 && symbol.node.kind == NodeKind.Function &&
+        !editor_unsafe_body(symbol.node) && editor_local(symbol.node, tokens, target.span) {
+            var checked = 0
+            while checked < length(analysis.program.functions) {
+                if get(analysis.program.functions, checked).symbol == index {
+                    return Option.Some(symbol.node.span)
+                }
+                checked = checked + 1
+            }
+        }
+        index = index + 1
+    }
+    Option.None
+}
+
+fn editor_covered(analysis Analysis, target Location, spelling Text, scope Span, references List[Location]) Bool {
+    let text = get(analysis.bindings.files, target.file).text
+    let tokens = match lex(text) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return false
+        }
+    }
+    var index = 0
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        if token.kind == Kind.Name && token.value == spelling &&
+        token.span.start >= scope.start && token.span.end <= scope.end &&
+        !editor_contains(references, Location {
+                file = target.file
+                span = token.span
+            }) {
+            if !editor_declaration(get(analysis.bindings.files, target.file).tree, tokens, token.span) {
+                match inspect_at(analysis, target.file, token.span.start) {
+                    Option.Some(found) => {
+                        if length(found.definitions) != 1 ||
+                        editor_same_location(get(found.definitions, 0), target) {
+                            return false
+                        }
+                    }
+                    Option.None => {
+                        return false
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn editor_valid_new_name(name Text) Bool {
+    if name == "Int" || name == "Float" || name == "Bool" || name == "Text" ||
+    name == "Bytes" || name == "List" || name == "Task" || name == "Unit" ||
+    name == "result" {
+        return false
+    }
+    let tokens = match lex(name) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return false
+        }
+    }
+    if length(tokens) != 2 || get(tokens, 0).kind != Kind.Name || get(tokens, 0).value != name ||
+    get(tokens, 0).span.end != length(name) {
+        return false
+    }
+    match std.loom.parser.parse(concat("fn ", concat(name, "() {}"))) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
+
+fn editor_name_conflict(analysis Analysis, file Int, scope Span, name Text) Bool {
+    let tokens = match lex(get(analysis.bindings.files, file).text) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return true
+        }
+    }
+    var index = 0
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        if token.kind == Kind.Name && token.value == name &&
+        token.span.start >= scope.start && token.span.end <= scope.end {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn editor_location_json(bindings std.loom.binding.Program, location Location) Text {
+    let path = get(bindings.files, location.file).path
+    let prefix = concat("{\"path\":", concat(editor_quoted(path), concat(",\"start\":", to_text(location.span.start))))
+    concat(prefix, concat(",\"end\":", concat(to_text(location.span.end), "}")))
+}
+
+fn editor_locations_json(bindings std.loom.binding.Program, locations List[Location]) Text {
+    var output = "["
+    var index = 0
+    while index < length(locations) {
+        if index > 0 {
+            output = concat(output, ",")
+        }
+        output = concat(output, editor_location_json(bindings, get(locations, index)))
+        index = index + 1
+    }
+    concat(output, "]")
+}
+
+fn editor_no_symbols(rename Bool) EditorOutput {
+    EditorOutput {
+        text = if rename {
+            "{\"diagnostics\":[],\"edits\":[]}\n"
+        } else {
+            "{\"diagnostics\":[],\"declaration\":null,\"references\":[]}\n"
+        }
+        failed = false
+    }
+}
+
+fn editor_symbols(bindings std.loom.binding.Program, program std.loom.typed.Program, file Int, offset Int, new_name Text) EditorOutput {
+    let rename = new_name != ""
+    let analysis = Analysis {
+        bindings = bindings
+        program = program
+    }
+    let tokens = match lex(get(bindings.files, file).text) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return editor_no_symbols(rename)
+        }
+    }
+    let token = match editor_token(tokens, offset) {
+        Option.Some(value) => value,
+        Option.None => {
+            return editor_no_symbols(rename)
+        }
+    }
+    let target = match editor_selected(analysis, file, offset, token, tokens) {
+        Option.Some(value) => value,
+        Option.None => {
+            return editor_no_symbols(rename)
+        }
+    }
+    let references = editor_references(analysis, target, token.value)
+    if rename {
+        let scope = match editor_local_scope(analysis, target) {
+            Option.Some(value) => value,
+            Option.None => {
+                return editor_error("Rename supports checked local let/var bindings in ordinary functions")
+            }
+        }
+        if !editor_covered(analysis, target, token.value, scope, references) {
+            return editor_error("Rename cannot account for every occurrence of this local binding")
+        }
+        if !editor_valid_new_name(new_name) {
+            return editor_error("Rename needs a valid non-reserved Loom identifier")
+        }
+        if new_name != token.value && editor_name_conflict(analysis, target.file, scope, new_name) {
+            return editor_error("Rename would conflict with a name in this function")
+        }
+        return EditorOutput {
+            text = concat("{\"diagnostics\":[],\"edits\":", concat(editor_locations_json(bindings, references), "}\n"))
+            failed = false
+        }
+    }
+    let declaration = editor_location_json(bindings, target)
+    EditorOutput {
+        text = concat("{\"diagnostics\":[],\"declaration\":", concat(declaration,
+                concat(",\"references\":", concat(editor_locations_json(bindings, references), "}\n"))))
+        failed = false
+    }
+}

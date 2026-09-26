@@ -34,6 +34,20 @@ async function main() {
     assert.equal(definitions[0].uri, URI.file(helper).toString());
     const helperDocument = TextDocument.create(definitions[0].uri, 'loom', 1, helperText);
     assert.match(helperDocument.getText(definitions[0].range), /helper/);
+    const sourceDocument = TextDocument.create(params.textDocument.uri, 'loom', 2, source);
+    const helperParams = { ...params, position: sourceDocument.positionAt(source.indexOf('helper()')) };
+    const helperReferences = await client.rpc.sendRequest('textDocument/references', { ...helperParams, context: { includeDeclaration: true } });
+    assert.equal(helperReferences.length, 2);
+    assert.deepEqual(helperReferences[0], definitions[0]);
+    assert.equal(sourceDocument.getText(helperReferences[1].range), 'helper');
+    assert.deepEqual(await client.rpc.sendRequest('textDocument/references', { ...helperParams, context: { includeDeclaration: false } }), [helperReferences[1]]);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...helperParams, newName: 'renamedHelper' }), /checked local/);
+    const localParams = { ...params, position: sourceDocument.positionAt(source.indexOf('value==')) };
+    const localRename = await client.rpc.sendRequest('textDocument/rename', { ...localParams, newName: 'counter' });
+    assert.equal(localRename.changes[params.textDocument.uri].length, 2);
+    const renamed = TextDocument.applyEdits(sourceDocument, localRename.changes[params.textDocument.uri]);
+    assert.match(renamed, /let counter=helper\(\)/);
+    assert.match(renamed, /assert counter==42/);
     const edits = await client.rpc.sendRequest('textDocument/formatting', { textDocument: { uri: URI.file(file).toString() }, options: { tabSize: 4, insertSpaces: true } });
     assert.equal(edits.length, 1);
     assert.match(edits[0].newText, /fn main\(\) \{/);
@@ -190,6 +204,33 @@ async function main() {
       await client.change(file, accepted, version + 1);
       assert.deepEqual((await client.wait(file, version + 1)).diagnostics, []);
     }
+    const shadow = path.join(folder, 'shadow.loom');
+    const shadowText = 'fn shadow() { let 数量 = 3\nassert 数量 == 3\nlet value = 1\nif true { let value = true\nassert value }\nassert value == 1 }\n';
+    await client.open(shadow, shadowText);
+    await client.change(file, 'fn main() { shadow() }\n', 39);
+    assert.deepEqual((await client.wait(file, 39)).diagnostics, []);
+    assert.deepEqual((await client.wait(shadow, 1)).diagnostics, []);
+    const shadowUri = URI.file(shadow).toString();
+    const shadowDocument = TextDocument.create(shadowUri, 'loom', 1, shadowText);
+    const inner = { textDocument: { uri: shadowUri }, position: shadowDocument.positionAt(shadowText.indexOf('value }')) };
+    const outer = { textDocument: { uri: shadowUri }, position: shadowDocument.positionAt(shadowText.indexOf('value ==')) };
+    const innerReferences = await client.rpc.sendRequest('textDocument/references', { ...inner, context: { includeDeclaration: true } });
+    const outerReferences = await client.rpc.sendRequest('textDocument/references', { ...outer, context: { includeDeclaration: true } });
+    assert.equal(innerReferences.length, 2);
+    assert.equal(outerReferences.length, 2);
+    assert.notDeepEqual(innerReferences[0].range, outerReferences[0].range);
+    const innerRename = await client.rpc.sendRequest('textDocument/rename', { ...inner, newName: 'inside' });
+    assert.equal(innerRename.changes[shadowUri].length, 2);
+    const innerRenamed = TextDocument.applyEdits(shadowDocument, innerRename.changes[shadowUri]);
+    assert.match(innerRenamed, /let value = 1\nif true \{ let inside = true\nassert inside \}\nassert value == 1/);
+    const unicode = { textDocument: { uri: shadowUri }, position: shadowDocument.positionAt(shadowText.indexOf('数量 ==')) };
+    const unicodeRename = await client.rpc.sendRequest('textDocument/rename', { ...unicode, newName: '总数' });
+    assert.equal(unicodeRename.changes[shadowUri].length, 2);
+    assert.ok(unicodeRename.changes[shadowUri].every(edit => shadowDocument.getText(edit.range) === '数量'));
+    assert.match(TextDocument.applyEdits(shadowDocument, unicodeRename.changes[shadowUri]), /let 总数 = 3\nassert 总数 == 3/);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...unicode, newName: 'result' }), /valid non-reserved/);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...inner, newName: 'shadow' }), /conflict/);
+    await client.rpc.sendNotification('textDocument/didClose', { textDocument: { uri: shadowUri } });
     // Following a dependency outside this folder retains its folder-scoped,
     // relative toolchain settings for diagnostics, hover and formatting.
     const external = path.join(stdRoot, 'loom/source/source.loom');
@@ -205,7 +246,8 @@ async function main() {
     assert.equal(await fs.readFile(file, 'utf8'), saved);
     await assert.rejects(fs.access(helper), { code: 'ENOENT' });
     await assert.rejects(fs.access(bad), { code: 'ENOENT' });
-    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition, name/member/qualified/import completion and replacement, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
+    await assert.rejects(fs.access(shadow), { code: 'ENOENT' });
+    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local rename, name/member/qualified/import completion and replacement, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
