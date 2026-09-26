@@ -123,6 +123,7 @@ fn block(context Context, node Node, expected Int, enforce Bool) Result[Expr, Fa
         } else {
             let tail = index + 1 == length(node.children)
             let value = expr_mode(current, source, if tail { expected } else { 0 }, !tail || enforce)?
+            current = fallthrough_facts(current, value)
             push(values, value)
             falls = falls && value.falls
             if tail { output = value.ty }

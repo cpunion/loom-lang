@@ -118,6 +118,15 @@ fn required(value Int) Positive requires value > 0 { Positive(value) }
 fn branch(value Int) Positive {
     if value > 0 { Positive(value) } else { Positive(1) }
 }
+fn guarded(value Int) Positive {
+    if value <= 0 { return Positive(1) }
+    let copy = value
+    Positive(copy)
+}
+fn other_guard(value Int) Positive {
+    if value > 0 {} else { return Positive(1) }
+    Positive(value)
+}
 fn source(count List[Int]) Int {
     set(count, 0, get(count, 0) + 1)
     7
@@ -136,6 +145,10 @@ fn main() {
     assert required(5) == 5
     assert branch(8) == 8
     assert branch(0) == 1
+    assert guarded(8) == 8
+    assert guarded(0) == 1
+    assert other_guard(8) == 8
+    assert other_guard(0) == 1
     assert asserted(count) == 7
     assert get(count, 0) == 1
 }
@@ -147,9 +160,10 @@ fn main() {
             .output()
             .unwrap(),
     );
-    // One precondition, one branch condition and one assertion. Constructors,
+    // One precondition, three branch conditions and one assertion. Constructors,
     // including the deferred one, add no comparison before LLVM optimization.
-    assert_eq!(ir.matches("icmp sgt i64").count(), 3);
+    assert_eq!(ir.matches("icmp sgt i64").count(), 4);
+    assert_eq!(ir.matches("icmp sle i64").count(), 1);
 }
 
 #[test]
@@ -171,10 +185,9 @@ fn floating(value Float) Result[NonPositive, ConstraintError] {
     NonPositive(copy)
 }
 fn exact(value Float) NotPositive {
-    if value > 0.0 { NotPositive(0.0) } else {
-        let copy = value
-        NotPositive(copy)
-    }
+    if value > 0.0 { return NotPositive(0.0) }
+    let copy = value
+    NotPositive(copy)
 }
 fn cleanup(count List[Int], value Int) {
     var current = value
