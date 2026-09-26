@@ -46,11 +46,6 @@ if [[ -n "$seed_compiler" && -n "${LOOM_BOOTSTRAP_INPUT:-}" ]]; then
     printf 'Choose LOOM_BOOTSTRAP_COMPILER or LOOM_BOOTSTRAP_INPUT, not both.\n' >&2
     exit 2
 fi
-if [[ "$exe_suffix" == .exe && -z "$seed_compiler" && -z "${LOOM_BOOTSTRAP_INPUT:-}" ]]; then
-    printf 'Windows needs an installed Loom seed or a trusted checked compiler input.\nSet LOOM_BOOTSTRAP_COMPILER or LOOM_BOOTSTRAP_INPUT; see compiler/README.md.\n' >&2
-    exit 1
-fi
-
 printf 'Building the native LLVM bridge and runtime...\n'
 if [[ "$exe_suffix" == .exe ]]; then source "$repo_root/scripts/windows-env.sh"; fi
 cargo build --locked --workspace --target-dir "$target_root"
@@ -59,6 +54,23 @@ export LOOM_RUNTIME_LIBRARY="$target_root/debug/$runtime_name"
 if [[ "$exe_suffix" == .exe ]]; then
     # Environment variables are not subject to Git Bash's argv path conversion.
     LOOM_RUNTIME_LIBRARY="$(cygpath -m "$LOOM_RUNTIME_LIBRARY")"
+fi
+if [[ "$exe_suffix" == .exe && -z "$seed_compiler" && -z "${LOOM_BOOTSTRAP_INPUT:-}" ]]; then
+    # This checked stage 0 is regenerated from the pinned source commit by
+    # scripts/windows-bootstrap-seed.mjs. The checksum detects checkout damage;
+    # Unix CI independently compares its bytes with a fresh source emission.
+    checked_archive="$repo_root/compiler/bootstrap/windows-stage0.checked.gz"
+    (cd "$repo_root/compiler/bootstrap" && sha256sum -c windows-stage0.checked.gz.sha256)
+    mkdir -p "$target_root/bootstrap/windows-stage0"
+    checked_input="$target_root/bootstrap/windows-stage0/compiler.checked"
+    checked_temporary="$(mktemp "$checked_input.XXXXXX")"
+    if ! gzip -dc "$checked_archive" > "$checked_temporary"; then
+        rm -f "$checked_temporary"
+        printf 'Cannot decompress the pinned Windows stage 0 input.\n' >&2
+        exit 1
+    fi
+    mv -f "$checked_temporary" "$checked_input"
+    LOOM_BOOTSTRAP_INPUT="$(cygpath -m "$checked_input")"
 fi
 if [[ -n "${LOOM_BOOTSTRAP_INPUT:-}" ]]; then
     seed_compiler="$target_root/loom-stage0$exe_suffix"

@@ -526,11 +526,12 @@ The Windows x64/MSVC implementation now includes native linking, binary file
 I/O with Unicode paths/arguments, drive/UNC/verbatim package paths, and native
 artifact suffixes. Its [CI job](../../.github/workflows/ci.yml) passes native
 bootstrap and all workspace tests, including compile-time recursion budget
-errors, GC, and redirected I/O. Cold bootstrap consumes a trusted checked
-compiler export from the same workflow's validated macOS checkout, builds a
-native Windows stage 0, then runs the regular stage 1/2/3 gate. This temporary
-transfer is neither a committed IR snapshot nor a second language frontend;
-`emit-checked` still enforces source types and required proofs.
+errors, GC, and redirected I/O. A cold Windows checkout verifies and decompresses
+the committed checked stage 0, builds a native Windows compiler with the current
+bridge, then runs the regular stage 1/2/3 gate. Both Unix CI hosts reproduce
+the checked bytes from an immutable source pin through `emit-checked`, including
+normal source types and required proofs. No cross-platform artifact transfer or
+second language frontend is needed.
 
 The source frontend sends a checked artifact to one retained Rust LLVM/platform
 tool; that tool does not parse or type-check Loom source again. The Rust seed
