@@ -140,3 +140,21 @@ fn source_tcp_check_build_test_run_under_forced_gc() {
         assert!(llvm.contains("loom_rt_socket_write_bytes"));
     }
 }
+
+#[test]
+fn source_cannot_extract_native_token_from_public_wrapper() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("main.loom"),
+        "import std.net.tcp.Listener\nfn token(listener Listener) Int { listener.state.token }\nfn main() {}\n",
+    )
+    .unwrap();
+    let output = common::loom(&["check", directory.path().to_str().unwrap()]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("cannot inspect a private type from another package"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

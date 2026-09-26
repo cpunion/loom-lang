@@ -1720,7 +1720,7 @@ WouldBlock writes until the current buffer length is sent. `Listener` and
 Copying a wrapper aliases its identity; `close_listener`/`close_stream` revoke
 all copies and reject close while a pending or delivered readiness wait leases
 the socket. Use `defer` to close after suspension, and cancel/drain child waits
-before closing a shared socket. The [loopback example](examples/tcp_loopback)
+before closing a shared socket. The [loopback example](examples/tcp_loopback/main.loom)
 exercises O0/O2, forced GC, close, and cancellation.
 
 There is no source `connect` or DNS, peer-address access, half-close, socket
