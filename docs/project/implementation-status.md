@@ -241,8 +241,11 @@ Postfix tuple expansion now feeds ordinary calls, enum payloads, tuples and List
 literals. Literal operands expand before contextual checking; other tuples use
 one saved value and typed projections at their original evaluation position.
 Native/compile-time execution preserves sharing and one-shot Task transfer.
-There is no runtime argument pack or expansion opcode. Expansion of saved tuples
-into comptime positions remains open.
+There is no runtime argument pack or expansion opcode. A saved tuple's later
+field can enter a comptime position when an earlier field retains the one
+runtime evaluation and the static field independently passes compile-time
+evaluation. Static-first, runtime-bound, and captured-function sources remain
+unsupported.
 
 Top-level variadic functions now elaborate a final type/value pack into ordinary
 generic and native parameters for each selected arity. Elementwise type patterns,

@@ -585,9 +585,13 @@ let values = [1, pair..., 4]
 Expansion preserves shared fields and transfers every Task field once. It uses
 ordinary typed arguments/projections, not runtime argument packing. A tuple
 literal expands directly, retaining contextual inference and explicit comptime
-arguments. Other tuple expressions use one saved snapshot and cannot currently
-expand into comptime parameter positions. Lists have runtime-sized contents and
-cannot expand into a fixed call signature. Empty tuple expressions still evaluate
+arguments. Other tuple expressions use one saved snapshot. A later field can
+fill a comptime parameter if an earlier field of that same snapshot remains a
+runtime argument and the static field can be independently evaluated at compile
+time. A static first field, runtime-bound tuple, captured function field, or
+Task-producing source cannot use this path; supply those static arguments
+explicitly. Lists have runtime-sized contents and cannot expand into a fixed
+call signature. Empty tuple expressions still evaluate
 once at their original operand position, including in zero-argument calls and
 across suspension. They need no runtime pack. An empty expansion adjacent to a
 comptime parameter must currently be bound first; specialization cannot erase its

@@ -5,6 +5,8 @@ test fn tuple_expansion_shares_call_inference_and_literal_static_arguments() {
 test fn tuple_expansion_covers_methods_construction_and_compile_time_execution() {
     discard accepted("concept Add { fn add(self Self, a Int, b Int) Int }\nimpl Add for Int { fn add(self Int, a Int, b Int) Int { self + a + b } }\nenum Pair { Both(Int, Text) }\ntype Positive = Int where self > 0\nfn sum(a Int, b Int) Int { a + b }\nfn main() { let args = (2, 3)\nlet value dyn Add = 1\nassert value.add(args...) == 6\nassert Add.add((1, 2, 3)...) == 6\nlet all = (value, 2, 3)\nassert Add.add(all...) == 6\nlet payload = (4, \"ok\")\nmatch Pair.Both(payload...) { Pair.Both(number, text) => { assert number == 4 && text == \"ok\" } }\nlet positive Positive = Positive((1,)...)\nassert positive == 1\nlet joined = (1, args..., 4)\nassert joined.2 == 3\nlet copied = (args...)\nassert copied.0 == 2\nlet items = [1, args..., 4]\nassert items[2] == 3\nassert comptime { let values = (3, 4)\nsum(values...) } == 7 }")
     discard accepted("fn id[T](value T) T { value }\nfn apply(callback fn(Int) Int, value Int) Int { callback(value) }\nfn chosen(comptime number Int, value Int) Int { number + value }\nfn main() { assert apply((id, 3)...) == 3\nassert chosen((2, 3)...) == 5 }")
+    discard accepted("fn values() (Int, Int) { (40, 2) }\nfn add(value Int, comptime extra Int) Int { value + extra }\nfn main() { assert add(values()...) == 42 }")
+    discard accepted("fn twice(value Int) Int { value * 2 }\nfn values() (Int, fn(Int) Int) { (21, twice) }\nfn apply(value Int, comptime action fn(Int) Int) Int { action(value) }\nfn main() { assert apply(values()...) == 42 }")
 }
 
 test fn tuple_expansion_preserves_task_and_static_phase_boundaries() {
@@ -13,6 +15,18 @@ test fn tuple_expansion_preserves_task_and_static_phase_boundaries() {
     rejects("fn sum(a Int, b Int) Int { a + b }\nfn main() { discard sum((1, 2, 3)...) }")
     rejects("fn main() { let mixed = (1, true)\ndiscard [mixed...] }")
     rejects("fn selected(comptime value Int) Int { value }\nfn main() { let values = (1,)\ndiscard selected(values...) }")
+    let static_first = "fn values() (Int, Int) { (2, 40) }\nfn add(comptime extra Int, value Int) Int { extra + value }\nfn main() { discard add(values()...) }"
+    match checked(source_files(static_first)) {
+        Result.Err(failed) => { assert failed.diagnostic.message == "a comptime field cannot erase the saved tuple evaluation; pass its first field as a runtime argument or supply static arguments explicitly" }
+        Result.Ok(_) => { assert false }
+    }
+    rejects("fn values(value Int) (Int, Int) { (value, 2) }\nfn add(value Int, comptime extra Int) Int { value + extra }\nfn main() { let value = 40\ndiscard add(values(value)...) }")
+    let captured = "fn values() (List[Int], fn() Int) { let shared = [1]\n(shared, fn() Int { shared[0] }) }\nfn apply(shared List[Int], comptime read fn() Int) Int { shared[0] = 2\nread() }\nfn main() { discard apply(values()...) }"
+    match checked(source_files(captured)) {
+        Result.Err(failed) => { assert failed.diagnostic.message == "a comptime function field cannot split a saved tuple's captured environment" }
+        Result.Ok(_) => { assert false }
+    }
+    rejects("async fn item() Int { 1 }\nfn values() (Task[Int], Int) { (item(), 2) }\nfn take(task Task[Int], comptime extra Int) Task[Int] { task }\nasync fn main() { discard take(values()...).await }")
     rejects("async fn item() Int { 1 }\nasync fn consume(a Task[Int], b Task[Int]) { discard a.await\ndiscard b.await }\nasync fn main() { let tasks = (item(), item())\nconsume(tasks...).await\nconsume(tasks...).await }")
     rejects("async fn item() Int { 1 }\nasync fn main() { let tasks = (item(), item())\ndiscard (tasks...) }")
 }
