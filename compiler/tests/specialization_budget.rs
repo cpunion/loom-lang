@@ -133,5 +133,8 @@ fn deferred_pack_callees_are_checked_before_the_package_succeeds() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostic.contains("unknown local value"), "{diagnostic}");
-    assert!(!diagnostic.contains("type pack specialization depth exceeded"), "{diagnostic}");
+    assert!(
+        !diagnostic.contains("type pack specialization depth exceeded"),
+        "{diagnostic}"
+    );
 }
