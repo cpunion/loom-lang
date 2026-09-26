@@ -1264,10 +1264,17 @@ fn checked(value Int) Positive requires value > 0 { Positive(value) }
 fn selected(value Int) Positive {
     if value > 0 { Positive(value) } else { Positive(1) }
 }
+fn copied(value Int) Positive {
+    assert value > 0
+    let copy = value
+    Positive(copy)
+}
 ```
 
 The original boundary condition remains; these constructors add no second check,
-even before LLVM optimization. Facts use binding identities, not names. This
+even before LLVM optimization. Immutable scalar copies inherit facts already
+established at the copy, including through further copies; later assertions do
+not propagate back to earlier copies. Facts use binding identities, not names. This
 slice excludes `var`, heap reads, relationships between different locals, and
 facts inferred after branch joins. Literal Float predicates can be reused, but
 `!(x > 0.0)` does not prove `x <= 0.0` because of NaN. Unknown cases still return

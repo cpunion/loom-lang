@@ -125,8 +125,10 @@ fn source(count List[Int]) Int {
 fn asserted(count List[Int]) Positive {
     let value = source(count)
     assert value > 0
-    defer { discard Positive(value) }
-    Positive(value)
+    let copy = value
+    let chained = copy
+    defer { discard Positive(copy) }
+    Positive(chained)
 }
 fn main() {
     let count = new[Int]()
@@ -165,10 +167,14 @@ type NonPositive = Float where self <= 0.0
 type NotPositive = Float where !(self > 0.0)
 fn floating(value Float) Result[NonPositive, ConstraintError] {
     assert !(value > 0.0)
-    NonPositive(value)
+    let copy = value
+    NonPositive(copy)
 }
 fn exact(value Float) NotPositive {
-    if value > 0.0 { NotPositive(0.0) } else { NotPositive(value) }
+    if value > 0.0 { NotPositive(0.0) } else {
+        let copy = value
+        NotPositive(copy)
+    }
 }
 fn cleanup(count List[Int], value Int) {
     var current = value

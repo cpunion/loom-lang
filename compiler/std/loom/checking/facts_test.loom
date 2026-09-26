@@ -23,6 +23,28 @@ test fn immutable_requires_assertions_and_branch_facts_remove_construction_check
     assert get(get(extra.functions, 0).body.children, 2).kind == ExprKind.Coerce
 }
 
+test fn immutable_scalar_copies_preserve_established_facts() {
+    let definitions = "type Positive = Int where self > 0\ntype Bounded = Int where self >= 0 && self <= 100\ntype NotPositive = Float where !(self > 0.0)\n"
+    let program = accepted(concat(definitions,
+        "pub fn chained(value Int) Positive requires value > 0 { let copy = value\nlet next = copy\nPositive(next) }\npub fn bounded(value Int) Bounded { assert value >= 0\nassert value <= 100\nlet copy Int = value\nBounded(copy) }\npub fn branch(value Int) Positive { if value > 0 { let value = value\nPositive(value) } else { Positive(1) } }\npub fn exact(value Float) NotPositive { assert !(value > 0.0)\nlet copy = value\nNotPositive(copy) }"))
+    assert get(get(program.functions, 0).body.children, 2).kind == ExprKind.Coerce
+    assert get(get(program.functions, 1).body.children, 3).kind == ExprKind.Coerce
+    assert dynamic_count(get(program.functions, 2).body, ExprKind.If) == 1
+    assert get(get(program.functions, 3).body.children, 2).kind == ExprKind.Coerce
+}
+
+test fn scalar_copy_facts_do_not_guess_mutability_aliases_or_later_evidence() {
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\ntype Positive = Int where self > 0\ntype NonPositive = Float where self <= 0.0\nrecord Box { value Int }\n"
+    let program = flow_program(concat(definitions,
+        "pub fn mutable_source(value Int) Result[Positive, ConstraintError] { var current = value\nassert current > 0\nlet copy = current\nPositive(copy) }\npub fn mutable_copy(value Int) Result[Positive, ConstraintError] { assert value > 0\nvar copy = value\ncopy = 0\nPositive(copy) }\npub fn shared(box Box) Result[Positive, ConstraintError] { assert box.value > 0\nlet copy = box.value\nPositive(copy) }\npub fn later(value Int) Result[Positive, ConstraintError] { let copy = value\nassert value > 0\nPositive(copy) }\npub fn complement(value Float) Result[NonPositive, ConstraintError] { assert !(value > 0.0)\nlet copy = value\nNonPositive(copy) }"))
+    var index = 0
+    while index < length(program.functions) {
+        let body = get(program.functions, index).body
+        assert get(body.children, length(body.children) - 1).kind == ExprKind.Block
+        index = index + 1
+    }
+}
+
 test fn mutable_shared_and_unrelated_bindings_do_not_supply_flow_facts() {
     let definitions = "import std.result.Result\nimport std.result.ConstraintError\ntype Positive = Int where self > 0\nrecord Box { value Int }\n"
     let program = flow_program(concat(definitions,

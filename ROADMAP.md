@@ -270,7 +270,8 @@ refinement checks. General required Float postconditions still reject; integer
 algebra must not stand in for IEEE floating-point proofs.
 
 Lexical immutable-scalar facts from preconditions, assertions and branch guards
-now also discharge construction checks. Mutable/alias facts, cross-local
+now also discharge construction checks and survive immutable scalar copies.
+Mutable/shared-alias facts, general cross-local
 relations and branch-join inference remain later work. Bounded expansion of
 direct scalar helpers now supports refinement implication while retaining
 evaluation and precondition obligations; general helper control flow remains open.
