@@ -95,7 +95,7 @@ test fn static_map_clones_closure_bodies_per_element() {
 test fn static_map_accepts_tuple_parameters_locals_and_nested_maps() {
     discard accepted("fn identity[T](pair (T, Bool)) (T, Bool) { comptime map item in pair { item } }\nfn main() { let pair = identity((4, true))\nassert pair.0 == 4 && pair.1\nlet local = (true, 9)\nlet mapped = comptime map item in local { item }\nassert mapped.0 && mapped.1 == 9\nlet one_source = (1,)\nlet one = comptime map item in one_source { item }\nassert one.0 == 1 }")
     discard accepted("fn empty[Ts...](values Ts...) (Ts...) { values }\nfn main() { let local = empty()\nlet mapped = comptime map item in local { item }\ndiscard mapped\nlet rows = ((1, 2), (3, 4))\nlet nested = comptime map row in rows { comptime map item in row { item } }\nassert nested.0.0 == 1 && nested.1.1 == 4 }")
-    discard accepted("fn shadow[Ts...](values Ts...) (Bool, Int) { let values = (true, 7)\ncomptime map item in values { item } }\nfn main() { let mapped = shadow(1, 2)\nassert mapped.0 && mapped.1 == 7 }")
+    discard accepted("fn shadow[Ts...](values Ts...) (Bool, Int, Int) { let values = (true, 7, 8)\ncomptime map item in values { item } }\nfn main() { let mapped = shadow(1, 2)\nassert mapped.0 && mapped.1 == 7 && mapped.2 == 8 }")
     discard accepted("fn selected[Ts...](values Ts...) { comptime if Int == Bool { discard comptime map item in missing { item } } else { let local = (1,)\ndiscard comptime map item in local { item } } }\nfn main() { selected(true) }")
 }
 

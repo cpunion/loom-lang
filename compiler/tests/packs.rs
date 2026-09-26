@@ -85,8 +85,8 @@ fn readers() (fn() Int, fn() Int) {
     let values = (5, 6)
     comptime map item in values { fn() Int { item } }
 }
-fn shadow[Ts...](values Ts...) (Bool, Int) {
-    let values = (true, 7)
+fn shadow[Ts...](values Ts...) (Bool, Int, Int) {
+    let values = (true, 7, 8)
     comptime map item in values { item }
 }
 async fn task[T](value T) T { value }
@@ -101,7 +101,7 @@ async fn main() {
     let callbacks = readers()
     assert callbacks.0() == 5 && callbacks.1() == 6
     let selected = shadow(99, false)
-    assert selected.0 && selected.1 == 7
+    assert selected.0 && selected.1 == 7 && selected.2 == 8
     let none = empty()
     let mapped = comptime map item in none { item }
     discard mapped
