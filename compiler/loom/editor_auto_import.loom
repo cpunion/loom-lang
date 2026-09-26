@@ -384,3 +384,16 @@ test fn editor_bare_import_uses_the_overlaid_source_and_import_group() {
     assert std.text.contains(output.text, "\"start\":33")
     assert std.text.contains(output.text, "\"text\":\"import imports.library.chosen\\u000a\"")
 }
+
+test fn editor_import_start_appends_after_comment_only_source() {
+    let source = "// header"
+    let tree = match std.loom.parser.parse(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let start = editor_import_start(tree, source)
+    assert start == std.text.length(source)
+}
