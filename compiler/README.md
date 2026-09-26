@@ -158,9 +158,19 @@ frontend does not change the copied dependencies' CPU or OS requirements.
 Use a staged compiler with `LOOM_BOOTSTRAP_COMPILER=/path/to/bin/loom` when
 bootstrapping another checkout with the same checked-artifact interface.
 
-This is a local staging/relocation gate, not a downloadable release, a
-self-contained LLVM distribution, or an older-OS support guarantee. Release
-packaging, dependency notices, and standalone Windows distribution remain open.
+To create a downloadable local archive from a verified stage, including Cargo
+dependency notices and license texts, run:
+
+```sh
+node scripts/package-toolchain.mjs target/local-toolchain target/loom-toolchain.tar.gz
+```
+
+The script extracts the archive in another directory, checks and builds a real
+application with its own std/bridge/runtime layout, and writes a `.sha256` file.
+The archive contains [installation instructions](../distribution/INSTALL.md).
+CI retains a local archive for each host platform as a workflow artifact. This
+is not a self-contained LLVM distribution or an older-OS support guarantee;
+standalone Windows cold bootstrap and formal release publication remain open.
 
 ## Windows bootstrap
 
@@ -571,7 +581,8 @@ cannot expand into a fixed call signature. Empty tuple expressions still evaluat
 once at their original operand position, including in zero-argument calls and
 across suspension. They need no runtime pack. An empty expansion adjacent to a
 comptime parameter must currently be bound first; specialization cannot erase its
-runtime evaluation. Tuple Task joins remain open.
+runtime evaluation. A tuple of Tasks can be awaited directly; this uses
+`std.task.all`'s input-order policy and preserves heterogeneous result types.
 
 ### Variadic functions
 
