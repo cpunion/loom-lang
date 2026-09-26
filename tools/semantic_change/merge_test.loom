@@ -91,6 +91,100 @@ test fn move_and_independent_edit_merge_without_reformatting() {
     }
 }
 
+fn overload_revision(input Text, caller_path Text, caller Text, destination Text) Revision {
+    let files = new[File]()
+    push(files, File {
+            path = "int.loom"
+            text = "fn pick(value Int) Int { 1 }\n"
+        })
+    push(files, File {
+            path = "bool.loom"
+            text = "fn pick(value Bool) Int { 2 }\n"
+        })
+    push(files, File {
+            path = "source.loom"
+            text = input
+        })
+    push(files, File {
+            path = "caller.loom"
+            text = caller
+        })
+    push(files, File {
+            path = "destination.loom"
+            text = destination
+        })
+    let ids = new[Identity]()
+    push(ids, Identity {
+            id = "int-id"
+            path = "int.loom"
+            kind = NodeKind.Function
+            name = "pick"
+        })
+    push(ids, Identity {
+            id = "bool-id"
+            path = "bool.loom"
+            kind = NodeKind.Function
+            name = "pick"
+        })
+    push(ids, Identity {
+            id = "source-id"
+            path = "source.loom"
+            kind = NodeKind.Function
+            name = "input"
+        })
+    push(ids, Identity {
+            id = "caller-id"
+            path = caller_path
+            kind = NodeKind.Function
+            name = "entry"
+        })
+    Revision {
+        package_name = "sample"
+        files = files
+        identities = ids
+    }
+}
+
+test fn changed_overload_binding_in_moved_caller_needs_resolution() {
+    let caller = "fn entry() Int { pick(input()) }\n"
+    let base = overload_revision("fn input() Int { 1 }\n", "caller.loom", caller, "")
+    let changed = overload_revision("fn input() Bool { true }\n", "caller.loom", caller, "")
+    let moved = overload_revision("fn input() Int { 1 }\n", "destination.loom", "", caller)
+    match merge(base, changed, moved) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "changed its checked definition binding")
+        }
+    }
+    match merge(base, moved, changed) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "changed its checked definition binding")
+        }
+    }
+}
+
+test fn unchanged_overload_binding_survives_move_and_body_edit() {
+    let caller = "fn entry() Int { pick(input()) }\n"
+    let base = overload_revision("fn input() Int { 1 }\n", "caller.loom", caller, "")
+    let changed = overload_revision("fn input() Int { 3 }\n", "caller.loom", caller, "")
+    let moved = overload_revision("fn input() Int { 1 }\n", "destination.loom", "", caller)
+    match merge(base, changed, moved) {
+        Result.Ok(merged) => {
+            assert get(merged.files, 2).text == "fn input() Int { 3 }\n"
+            assert get(merged.files, 4).text == caller
+        }
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+        }
+    }
+}
+
 test fn a_carrier_addition_and_an_independent_body_edit_merge() {
     let base = baseline()
     let moved = revision("app.loom", "",
