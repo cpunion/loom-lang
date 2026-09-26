@@ -393,3 +393,72 @@ test fn decode_checks_mutations_and_passes_a_separate_row_list() {
         _ => false
     }
 }
+
+test fn prepared_codec_keeps_column_order_after_original_changes() {
+    let codec = order_codec()
+    let prepared = match prepare_codec(codec) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let columns = codec.table.columns
+    let first = get(columns, 0)
+    set(columns, 0, get(columns, 2))
+    set(columns, 2, first)
+
+    assert match encode_prepared_row(prepared, sample_order()) {
+        Result.Ok(values) => length(values) == 4 && match get(values, 0) {
+            Value.Int(1) => true,
+            _ => false
+        },
+        _ => false
+    }
+    assert match decode_prepared_row(prepared, sample_row()) {
+        Result.Ok(order) => order.id == 1 && order.amount == 2,
+        _ => false
+    }
+    assert match encode_row(codec, sample_order()) {
+        Result.Err(CodecError.WrongKind(0)) => true,
+        _ => false
+    }
+    assert match decode_row(codec, sample_row()) {
+        Result.Err(CodecError.WrongKind(0)) => true,
+        _ => false
+    }
+}
+
+test fn prepared_codec_rejects_invalid_descriptor_at_creation() {
+    let codec = order_codec()
+    set(codec.table.columns, 1, column("order-id", "total_cents", ValueKind.Int, false))
+    assert match prepare_codec(codec) {
+        Result.Err(CodecError.InvalidSchema) => true,
+        _ => false
+    }
+}
+
+test fn prepared_decode_still_rechecks_mutated_rows() {
+    let codec = order_codec()
+    let changing = RowCodec {
+        table = codec.table
+        encode_value = encode_order
+        decode_value = changing_input_decoder
+    }
+    let prepared = match prepare_codec(changing) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let row = sample_row()
+    assert match decode_prepared_row(prepared, row) {
+        Result.Err(CodecError.WrongKind(0)) => true,
+        _ => false
+    }
+    assert match get(row, 0) {
+        Value.Int(1) => true,
+        _ => false
+    }
+}

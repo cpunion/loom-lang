@@ -8,6 +8,9 @@ import std.storage.RowCodec
 import std.storage.CodecError
 import std.storage.encode_row
 import std.storage.decode_row
+import std.storage.prepare_codec
+import std.storage.encode_prepared_row
+import std.storage.decode_prepared_row
 
 record Note {
     id Int
@@ -84,10 +87,40 @@ fn round_trip() {
     }
 }
 
+fn prepared_round_trip() {
+    let codec = match prepare_codec(note_codec()) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let encoded = match encode_prepared_row(codec, Note {
+            id = 5
+            body = "prepared"
+        }) {
+        Result.Ok(values) => values,
+        Result.Err(_) => {
+            assert false
+            []
+        }
+    }
+    match decode_prepared_row(codec, encoded) {
+        Result.Ok(note) => {
+            assert note.id == 5 && note.body == "prepared"
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
 fn main() {
     round_trip()
+    prepared_round_trip()
 }
 
 test fn imported_storage_codec_round_trip() {
     round_trip()
+    prepared_round_trip()
 }

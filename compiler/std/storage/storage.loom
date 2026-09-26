@@ -52,6 +52,18 @@ pub record RowCodec[T] {
     decode_value fn(List[Value]) Result[T, CodecError]
 }
 
+// Preparation copies the descriptor once. Callbacks may still depend on shared
+// application state, and rows (including Bytes values) remain mutable.
+pub record PreparedRowCodec[T] {
+    state PreparedState[T]
+}
+
+record PreparedState[T] {
+    table Table
+    encode_value fn(T) Result[List[Value], CodecError]
+    decode_value fn(List[Value]) Result[T, CodecError]
+}
+
 fn snapshot(table Table) Table {
     Table {
         id = table.id
@@ -171,5 +183,32 @@ pub fn decode_row[T](codec RowCodec[T], values List[Value]) Result[T, CodecError
     }
     discard validate_values(table, values)?
     discard validate_values(table, input)?
+    decoded
+}
+
+pub fn prepare_codec[T](codec RowCodec[T]) Result[PreparedRowCodec[T], CodecError] {
+    let table = snapshot(codec.table)
+    discard validate_table(table)?
+    Result.Ok(PreparedRowCodec {
+            state = PreparedState {
+                table = table
+                encode_value = codec.encode_value
+                decode_value = codec.decode_value
+            }
+        })
+}
+
+pub fn encode_prepared_row[T](codec PreparedRowCodec[T], value T) Result[List[Value], CodecError] {
+    let values = (codec.state.encode_value)(value)?
+    discard validate_values(codec.state.table, values)?
+    Result.Ok(values)
+}
+
+pub fn decode_prepared_row[T](codec PreparedRowCodec[T], values List[Value]) Result[T, CodecError] {
+    let input = clone(values)
+    discard validate_values(codec.state.table, input)?
+    let decoded = (codec.state.decode_value)(input)
+    discard validate_values(codec.state.table, values)?
+    discard validate_values(codec.state.table, input)?
     decoded
 }
