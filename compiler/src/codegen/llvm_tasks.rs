@@ -144,6 +144,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::TaskAwait
             | Primitive::TaskWaitNext
             | Primitive::TaskWaitTimer
+            | Primitive::TaskWaitSocket
             | Primitive::TaskWaitFileRead
             | Primitive::TaskWaitFileWrite
             | Primitive::TaskWaitFileWriteBytes
@@ -261,6 +262,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let name = match operation {
             Primitive::TaskAwait => "task_await",
             Primitive::TaskWaitNext => "task_wait_next",
+            Primitive::TaskWaitSocket => "task_wait_socket",
             Primitive::TaskWaitFileRead => "task_wait_file_read",
             Primitive::TaskWaitFileWrite => "task_wait_file_write",
             Primitive::TaskWaitFileWriteBytes => "task_wait_file_write_bytes",

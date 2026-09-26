@@ -1,0 +1,54 @@
+import std.net.tcp.listen
+import std.net.tcp.accept
+import std.net.tcp.local_port
+import std.net.tcp.close_listener
+import std.net.tcp.TcpError
+import std.net.tcp.Listener
+import std.result.Result
+import std.task.cancel
+import std.task.Outcome
+import std.time.sleep_ms
+
+async fn blocked(listener Listener) {
+    discard accept(listener).await
+}
+
+test async fn cancellation_releases_wait_lease_before_close() {
+    let listener = match listen("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => { assert false
+            return }
+    }
+    let pending = blocked(listener)
+    sleep_ms(1).await
+    assert match close_listener(listener) {
+        Result.Err(error) => error == TcpError.Close
+        Result.Ok(_) => false
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert match close_listener(listener) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match close_listener(listener) {
+        Result.Err(error) => error == TcpError.Close
+        Result.Ok(_) => false
+    }
+    assert match local_port(listener) {
+        Result.Err(error) => error == TcpError.Port
+        Result.Ok(_) => false
+    }
+}
+
+test async fn names_cannot_block_the_owner_in_address_resolution() {
+    assert match listen("localhost:0").await {
+        Result.Err(error) => error == TcpError.Listen
+        Result.Ok(listener) => {
+            discard close_listener(listener)
+            false
+        }
+    }
+}

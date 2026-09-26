@@ -4,6 +4,8 @@
 
 use super::*;
 use crate::wait::{KIND_READINESS, READABLE, WRITABLE};
+use crate::{buffer_bytes, reserve};
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 
 #[cfg(unix)]
@@ -132,6 +134,18 @@ impl Sockets {
         handles.remove(&token);
         true
     }
+
+    fn local_port(&self, token: i64) -> i64 {
+        let Some(socket) = self.get(token) else {
+            return -1;
+        };
+        let Socket::Listener(listener) = socket.as_ref() else {
+            return -1;
+        };
+        listener
+            .local_addr()
+            .map_or(-1, |address| i64::from(address.port()))
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -150,6 +164,82 @@ pub(super) extern "C-unwind" fn loom_rt_socket_accept(token: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_socket_close(token: i64) -> i64 {
     edit(|owner, _| Ok(if owner.sockets().close(token) { 0 } else { -1 }))
+}
+
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_socket_local_port(token: i64) -> i64 {
+    edit(|owner, _| Ok(owner.sockets().local_port(token)))
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_read(
+    token: i64,
+    bytes: *mut u8,
+    limit: i64,
+) -> i64 {
+    let Ok(limit) = usize::try_from(limit) else {
+        return -1;
+    };
+    if limit == 0 {
+        return 0;
+    }
+    let Some(socket) = edit(|owner, _| Ok(owner.sockets().get(token))) else {
+        return -1;
+    };
+    let Socket::Stream(stream) = socket.as_ref() else {
+        return -1;
+    };
+    // A bounded native scratch buffer avoids keeping a movable Bytes pointer
+    // across I/O. Only a successful read grows the caller's rooted Bytes.
+    let mut scratch = vec![0; limit.min(64 * 1024)];
+    let mut stream = stream;
+    match stream.read(&mut scratch) {
+        Ok(0) => 0,
+        Ok(count) => {
+            // SAFETY: Generated code roots bytes. reserve may collect and
+            // returns the relocated header before we copy initialized data.
+            unsafe {
+                let buffer = reserve(bytes, count, 1);
+                ptr::copy_nonoverlapping(
+                    scratch.as_ptr(),
+                    (*buffer).data.add((*buffer).len),
+                    count,
+                );
+                (*buffer).len += count;
+            }
+            count as i64
+        }
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => -2,
+        Err(_) => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_write_bytes(
+    token: i64,
+    bytes: *const u8,
+    offset: i64,
+) -> i64 {
+    let Ok(offset) = usize::try_from(offset) else {
+        return -1;
+    };
+    // SAFETY: This call does not retain or relocate the rooted Bytes value.
+    let bytes = unsafe { buffer_bytes(bytes) };
+    let Some(bytes) = bytes.get(offset..) else {
+        return -1;
+    };
+    let Some(socket) = edit(|owner, _| Ok(owner.sockets().get(token))) else {
+        return -1;
+    };
+    let Socket::Stream(stream) = socket.as_ref() else {
+        return -1;
+    };
+    let mut stream = stream;
+    match stream.write(bytes) {
+        Ok(count) => count as i64,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => -2,
+        Err(_) => -1,
+    }
 }
 
 #[unsafe(no_mangle)]

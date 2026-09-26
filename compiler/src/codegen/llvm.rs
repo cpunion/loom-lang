@@ -674,6 +674,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskRelease
             | Primitive::TaskRun
             | Primitive::TaskWaitTimer
+            | Primitive::TaskWaitSocket
             | Primitive::TaskWaitFileRead
             | Primitive::TaskWaitFileWrite
             | Primitive::TaskWaitFileWriteBytes
@@ -808,6 +809,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::Write => ("file_write", Some(i64_type.into())),
             Primitive::WriteBytes => ("file_write_bytes", Some(i64_type.into())),
             Primitive::Close => ("file_close", Some(i64_type.into())),
+            Primitive::SocketListen => ("socket_listen", Some(i64_type.into())),
+            Primitive::SocketAccept => ("socket_accept", Some(i64_type.into())),
+            Primitive::SocketRead => ("socket_read", Some(i64_type.into())),
+            Primitive::SocketWriteBytes => ("socket_write_bytes", Some(i64_type.into())),
+            Primitive::SocketClose => ("socket_close", Some(i64_type.into())),
+            Primitive::SocketLocalPort => ("socket_local_port", Some(i64_type.into())),
             Primitive::DirectoryRead => ("directory_read", Some(i64_type.into())),
             Primitive::PathKind => ("path_kind", Some(i64_type.into())),
             Primitive::PathCanonical => ("path_canonical", Some(i64_type.into())),

@@ -1711,8 +1711,22 @@ close still block the owner, and cancellation can wait for a stuck OS call.
 Private async intrinsics must be awaited directly and suspend the current frame,
 without creating another Task. The synchronous `std.file` API remains unchanged.
 
-Socket adapters and general worker operations are not available yet. These are implementation
-limits; the [accepted design](../docs/rfcs/tasks.md) remains the target.
+`std.net.tcp` provides a narrow server-side TCP path: await `listen` to bind a
+numeric IPv4 or IPv6 address, find an ephemeral bind's `local_port`, then await
+`accept`, `read`, and `write_bytes`. `read` appends to a shared Bytes buffer;
+`Ok(0)` means EOF for a positive limit. `write_bytes` retries partial and
+WouldBlock writes until the current buffer length is sent. `Listener` and
+`Stream` contain private owner-local token state, never a raw descriptor.
+Copying a wrapper aliases its identity; `close_listener`/`close_stream` revoke
+all copies and reject close while a pending or delivered readiness wait leases
+the socket. Use `defer` to close after suspension, and cancel/drain child waits
+before closing a shared socket. The [loopback example](examples/tcp_loopback)
+exercises O0/O2, forced GC, close, and cancellation.
+
+There is no source `connect` or DNS, peer-address access, half-close, socket
+options, timeout policy, TLS, or structured OS-error details yet. This is not
+a general network client API. General worker operations also remain open; the
+[accepted design](../docs/rfcs/tasks.md) remains broader.
 
 `std.list.transfer.append(values, value)` returns the same shared List header;
 `take_last(values)` returns `Option[(element, remaining List)]`. This supports

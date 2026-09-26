@@ -662,6 +662,12 @@ impl Converter<'_> {
                     );
                 }
             }
+            Primitive::TaskWaitSocket => {
+                if arguments.iter().any(|argument| argument.ty != Type::Int) || result != Type::Bool
+                {
+                    return Err("checked socket wait requires two Ints and Bool readiness".into());
+                }
+            }
             Primitive::MonotonicNs => {
                 if result != Type::Int {
                     return Err("checked monotonic clock requires an Int result".into());
@@ -973,6 +979,13 @@ impl Converter<'_> {
                     Primitive::BytesGet => Some((&[Type::Bytes, Type::Int], Type::Int)),
                     Primitive::BytesSet => Some((&[Type::Bytes, Type::Int, Type::Int], Type::Unit)),
                     Primitive::WriteBytes => {
+                        Some((&[Type::Int, Type::Bytes, Type::Int], Type::Int))
+                    }
+                    Primitive::SocketListen => Some((&[Type::Text], Type::Int)),
+                    Primitive::SocketAccept
+                    | Primitive::SocketClose
+                    | Primitive::SocketLocalPort => Some((&[Type::Int], Type::Int)),
+                    Primitive::SocketRead | Primitive::SocketWriteBytes => {
                         Some((&[Type::Int, Type::Bytes, Type::Int], Type::Int))
                     }
                     Primitive::DirectoryCreate
@@ -1315,6 +1328,12 @@ fn primitive(value: &str) -> Result<Primitive> {
         "write" => P::Write,
         "write_bytes" => P::WriteBytes,
         "close" => P::Close,
+        "socket_listen" => P::SocketListen,
+        "socket_accept" => P::SocketAccept,
+        "socket_read" => P::SocketRead,
+        "socket_write_bytes" => P::SocketWriteBytes,
+        "socket_close" => P::SocketClose,
+        "socket_local_port" => P::SocketLocalPort,
         "directory_read" => P::DirectoryRead,
         "path_kind" => P::PathKind,
         "path_canonical" => P::PathCanonical,
@@ -1343,6 +1362,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_release" => P::TaskRelease,
         "task_run" => P::TaskRun,
         "task_wait_timer" => P::TaskWaitTimer,
+        "task_wait_socket" => P::TaskWaitSocket,
         "task_wait_file_read" => P::TaskWaitFileRead,
         "task_wait_file_write" => P::TaskWaitFileWrite,
         "task_wait_file_write_bytes" => P::TaskWaitFileWriteBytes,
@@ -1389,6 +1409,10 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::Open
         | P::Create
         | P::Close
+        | P::SocketListen
+        | P::SocketAccept
+        | P::SocketClose
+        | P::SocketLocalPort
         | P::PathKind
         | P::DirectoryCreate
         | P::FileRemove
@@ -1422,6 +1446,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskCleanupPush
         | P::TaskWaitFileRead
         | P::TaskWaitFileOpen
+        | P::TaskWaitSocket
         | P::PathRename => 2,
         P::TextSlice
         | P::BytesSet
@@ -1429,6 +1454,8 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::Read
         | P::Write
         | P::WriteBytes
+        | P::SocketRead
+        | P::SocketWriteBytes
         | P::TaskWaitFileWrite
         | P::TaskWaitFileWriteBytes
         | P::TaskCreate => 3,
