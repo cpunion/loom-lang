@@ -2,10 +2,10 @@
 
 A small development extension: highlighting, brackets/comments, unsaved-buffer
 diagnostics, name/member completion, checked type hover, go to definition, find references,
-conservative local rename, a qualified-path import quick fix, and document
+conservative local/private-function rename, a qualified-path import quick fix, and document
 formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
-Loom. Bare-name import discovery, general rename, and incremental semantic caching are
+Loom. Bare-name import discovery, public/API rename, and incremental semantic caching are
 not implemented.
 
 ## Try it
@@ -107,7 +107,7 @@ and are removed after completion/cancellation; user source files are never chang
 An edit cancels outstanding checking and semantic queries, including queries in
 other open files. Configuration and watched-file changes also invalidate queries.
 Formatting edits are discarded if the document changes or the request is canceled.
-Hover, definition, references, and local rename perform fresh compiler checks
+Hover, definition, references, and rename perform fresh compiler checks
 with the same snapshots.
 Diagnostics can coexist with checked query results: an unrelated non-generic
 function-body error, even in the same file, need not hide an independently checked
@@ -125,10 +125,14 @@ ambiguous targets. A package error suppresses references and rename until the
 whole package checks; hover and definition retain their independent-function
 fallback.
 
-Rename edits checked `let`/`var` bindings in ordinary functions. It refuses
-functions with nested closures or compile-time branches, unresolved occurrences,
-name collisions, and invalid Loom identifiers. Function, parameter, field, and
-type rename are not yet available. The server returns a workspace edit for the
+Rename edits checked `let`/`var` bindings in ordinary functions. It also renames
+one production package-private top-level function across files in the selected package when
+every same-spelled token is an exact checked reference and the virtual edits pass
+a full in-memory package check with test files included. It refuses overloads, public functions/import
+rewrites, unresolved occurrences, name collisions, and invalid identifiers;
+local rename additionally refuses nested closures and compile-time branches.
+Parameter, field, type, and public function rename are not yet available. The server
+returns a workspace edit for the
 client to apply; it never writes source files directly.
 
 Signatures, type
@@ -190,7 +194,7 @@ Bare-name automatic import discovery remains unimplemented.
 
 ```sh
 npm test           # Real LSP transport with a small process fixture
-npm run smoke      # Real target/loom: overlays, hover/navigation/references, local rename, completion, import Quick Fix, formatting
+npm run smoke      # Real target/loom: overlays, navigation/references, local/private rename, completion, import Quick Fix, formatting
 npm run smoke:host # Installed VS Code: actual extension activation and commands
 npm run smoke:checkout # Repository-root settings and real source packages
 ```

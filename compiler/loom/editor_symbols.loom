@@ -6,6 +6,7 @@ import std.loom.ast.NodeKind
 import std.loom.lexer.Kind
 import std.loom.lexer.Token
 import std.loom.lexer.lex
+import std.loom.project.SourceOverlay
 import std.loom.source.Span
 import std.option.Option
 
@@ -289,6 +290,192 @@ fn editor_name_conflict(analysis Analysis, file Int, scope Span, name Text) Bool
     false
 }
 
+// Private declarations cannot be imported by another package. Keep this
+// strictly to one ordinary declaration in the selected package; overloads and
+// public API/import spelling changes need a different rename model.
+fn editor_private_function(analysis Analysis, target Location, spelling Text) Bool {
+    let files = analysis.bindings.files
+    let root = analysis.bindings.root
+    if get(files, target.file).package != root {
+        return false
+    }
+    var matches = 0
+    var selected = false
+    var index = 0
+    while index < length(analysis.bindings.symbols) {
+        let symbol = get(analysis.bindings.symbols, index)
+        if symbol.owner < 0 && symbol.node.kind == NodeKind.Function && symbol.name == spelling &&
+        get(files, symbol.file).package == root {
+            matches = matches + 1
+            if symbol.file == target.file && !symbol.public && !symbol.test_only &&
+            !get(files, symbol.file).test_only {
+                match lex(get(files, symbol.file).text) {
+                    Result.Ok(tokens) => {
+                        match editor_name(tokens, symbol.node) {
+                            Option.Some(span) => {
+                                selected = editor_same_span(span, target.span)
+                            }
+                            Option.None => {
+                            }
+                        }
+                    }
+                    Result.Err(_) => {
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    matches == 1 && selected
+}
+
+// An unaccounted same-spelled token could be an unchecked use (for example in
+// an uninstantiated body). Refuse the edit even if an ordinary check succeeds.
+fn editor_private_covered(analysis Analysis, spelling Text, references List[Location]) Bool {
+    let files = analysis.bindings.files
+    let root = analysis.bindings.root
+    var index = 0
+    while index < length(references) {
+        if get(files, get(references, index).file).package != root {
+            return false
+        }
+        index = index + 1
+    }
+    var file = 0
+    while file < length(files) {
+        let source = get(files, file)
+        if source.package == root {
+            let tokens = match lex(source.text) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return false
+                }
+            }
+            index = 0
+            while index < length(tokens) {
+                let token = get(tokens, index)
+                if token.kind == Kind.Name && token.value == spelling &&
+                !editor_contains(references, Location {
+                        file = file
+                        span = token.span
+                    }) {
+                    return false
+                }
+                index = index + 1
+            }
+        }
+        file = file + 1
+    }
+    true
+}
+
+fn editor_private_conflict(analysis Analysis, name Text) Bool {
+    var index = 0
+    while index < length(analysis.bindings.symbols) {
+        let symbol = get(analysis.bindings.symbols, index)
+        if symbol.owner < 0 && symbol.name == name {
+            return true
+        }
+        index = index + 1
+    }
+    var file = 0
+    while file < length(analysis.bindings.files) {
+        let source = get(analysis.bindings.files, file)
+        if source.package == analysis.bindings.root && editor_name_conflict(analysis, file,
+            Span {
+                start = 0
+                end = length(source.text)
+            }, name) {
+            return true
+        }
+        file = file + 1
+    }
+    false
+}
+
+fn editor_same_source_path(left Text, right Text) Bool {
+    if left == right {
+        return true
+    }
+    let physical = match canonicalize(left) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    match canonicalize(right) {
+        Result.Ok(value) => value == physical
+        Result.Err(_) => false
+    }
+}
+
+fn editor_root_source(bindings std.loom.binding.Program, path Text) Bool {
+    var file = 0
+    while file < length(bindings.files) {
+        let source = get(bindings.files, file)
+        if source.package == bindings.root && editor_same_source_path(source.path, path) {
+            return true
+        }
+        file = file + 1
+    }
+    false
+}
+
+fn editor_replaced_references(text Text, file Int, references List[Location], name Text) Option[Text] {
+    let tokens = match lex(text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    var output = ""
+    var from = 0
+    var index = 0
+    while index < length(tokens) {
+        let token = get(tokens, index)
+        if editor_contains(references, Location {
+                file = file
+                span = token.span
+            }) {
+            output = concat(output, concat(std.text.slice(text, from, token.span.start), name))
+            from = token.span.end
+        }
+        index = index + 1
+    }
+    Option.Some(concat(output, std.text.slice(text, from, length(text))))
+}
+
+fn editor_private_overlays(options EditorOptions, bindings std.loom.binding.Program,
+    references List[Location], name Text) Option[List[SourceOverlay]] {
+    let overlays = new[SourceOverlay]()
+    var index = 0
+    while index < length(options.overlays) {
+        let overlay = get(options.overlays, index)
+        if !editor_root_source(bindings, overlay.path) {
+            push(overlays, overlay)
+        }
+        index = index + 1
+    }
+    var file = 0
+    while file < length(bindings.files) {
+        let source = get(bindings.files, file)
+        if source.package == bindings.root {
+            let revised = match editor_replaced_references(source.text, file, references, name) {
+                Option.Some(value) => value
+                Option.None => {
+                    return Option.None
+                }
+            }
+            push(overlays, SourceOverlay {
+                    path = source.path
+                    text = revised
+                })
+        }
+        file = file + 1
+    }
+    Option.Some(overlays)
+}
+
 fn editor_location_json(bindings std.loom.binding.Program, location Location) Text {
     let path = get(bindings.files, location.file).path
     let prefix = concat("{\"path\":", concat(editor_quoted(path), concat(",\"start\":", to_text(location.span.start))))
@@ -319,7 +506,16 @@ fn editor_no_symbols(rename Bool) EditorOutput {
     }
 }
 
-fn editor_symbols(bindings std.loom.binding.Program, program std.loom.typed.Program, file Int, offset Int, new_name Text) EditorOutput {
+fn editor_rename_output(bindings std.loom.binding.Program, references List[Location]) EditorOutput {
+    EditorOutput {
+        text = concat("{\"diagnostics\":[],\"edits\":", concat(editor_locations_json(bindings, references), "}\n"))
+        failed = false
+    }
+}
+
+fn editor_symbols(options EditorOptions, bindings std.loom.binding.Program, program std.loom.typed.Program,
+    file Int, offset Int) EditorOutput {
+    let new_name = options.new_name
     let rename = new_name != ""
     let analysis = Analysis {
         bindings = bindings
@@ -345,25 +541,44 @@ fn editor_symbols(bindings std.loom.binding.Program, program std.loom.typed.Prog
     }
     let references = editor_references(analysis, target, token.value)
     if rename {
-        let scope = match editor_local_scope(analysis, target) {
-            Option.Some(value) => value,
-            Option.None => {
-                return editor_error("Rename supports checked local let/var bindings in ordinary functions")
-            }
-        }
-        if !editor_covered(analysis, target, token.value, scope, references) {
-            return editor_error("Rename cannot account for every occurrence of this local binding")
-        }
         if !editor_valid_new_name(new_name) {
             return editor_error("Rename needs a valid non-reserved Loom identifier")
         }
-        if new_name != token.value && editor_name_conflict(analysis, target.file, scope, new_name) {
-            return editor_error("Rename would conflict with a name in this function")
+        match editor_local_scope(analysis, target) {
+            Option.Some(scope) => {
+                if !editor_covered(analysis, target, token.value, scope, references) {
+                    return editor_error("Rename cannot account for every occurrence of this local binding")
+                }
+                if new_name != token.value && editor_name_conflict(analysis, target.file, scope, new_name) {
+                    return editor_error("Rename would conflict with a name in this function")
+                }
+                return editor_rename_output(bindings, references)
+            }
+            Option.None => {
+            }
         }
-        return EditorOutput {
-            text = concat("{\"diagnostics\":[],\"edits\":", concat(editor_locations_json(bindings, references), "}\n"))
-            failed = false
+        if !editor_private_function(analysis, target, token.value) {
+            return editor_error("Rename supports checked local let/var bindings or one package-private top-level function")
         }
+        if !options.tests {
+            return editor_error("Private function rename requires --tests to account for test-file uses")
+        }
+        if !editor_private_covered(analysis, token.value, references) {
+            return editor_error("Rename cannot account for every occurrence of this private function")
+        }
+        if new_name != token.value && editor_private_conflict(analysis, new_name) {
+            return editor_error("Rename would conflict with a name in the package or import closure")
+        }
+        let overlays = match editor_private_overlays(options, bindings, references, new_name) {
+            Option.Some(value) => value
+            Option.None => {
+                return editor_error("Rename could not build an in-memory edit for this package")
+            }
+        }
+        if !editor_overlay_checks(options, overlays) {
+            return editor_error("Rename would invalidate the checked package")
+        }
+        return editor_rename_output(bindings, references)
     }
     let declaration = editor_location_json(bindings, target)
     EditorOutput {

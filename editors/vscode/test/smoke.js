@@ -76,6 +76,58 @@ async function autoImportSmoke(executable, stdRoot) {
   } finally { await client.close(); }
 }
 
+async function privateRenameSmoke(executable, stdRoot) {
+  const folder = path.join(__dirname, 'fixtures/rename_project');
+  const file = path.join(folder, 'main.loom');
+  const helper = path.join(folder, 'helper.loom');
+  const helperTest = path.join(folder, 'helper_test.loom');
+  const uri = URI.file(file).toString(), helperUri = URI.file(helper).toString();
+  const testUri = URI.file(helperTest).toString();
+  const savedMain = await fs.readFile(file, 'utf8'), savedHelper = await fs.readFile(helper, 'utf8');
+  const savedTest = await fs.readFile(helperTest, 'utf8');
+  const source = '// é😀\nfn main() { assert helper() == 7 }\n';
+  const client = await session({ executable, stdRoot }, folder);
+  const renameAt = newName => client.rpc.sendRequest('textDocument/rename', {
+    textDocument: { uri }, position: TextDocument.create(uri, 'loom', 1, source).positionAt(source.indexOf('helper()')),
+    newName,
+  });
+  try {
+    await client.open(file, source);
+    await client.open(helper, savedHelper);
+    await client.open(helperTest, savedTest);
+    assert.deepEqual((await client.wait(file, 1)).diagnostics, []);
+    const edit = await renameAt('utility');
+    assert.deepEqual(Object.keys(edit.changes).sort(), [helperUri, testUri, uri].sort());
+    assert.equal(edit.changes[uri].length, 1);
+    assert.equal(edit.changes[helperUri].length, 1);
+    assert.equal(edit.changes[testUri].length, 1);
+    const revisedMain = TextDocument.applyEdits(TextDocument.create(uri, 'loom', 1, source), edit.changes[uri]);
+    const revisedHelper = TextDocument.applyEdits(TextDocument.create(helperUri, 'loom', 1, savedHelper), edit.changes[helperUri]);
+    const revisedTest = TextDocument.applyEdits(TextDocument.create(testUri, 'loom', 1, savedTest), edit.changes[testUri]);
+    assert.match(revisedMain, /assert utility\(\) == 7/);
+    assert.match(revisedHelper, /^fn utility\(\) Int/);
+    assert.match(revisedTest, /assert utility\(\) == 7/);
+    await client.change(helper, revisedHelper, 2);
+    await client.change(file, revisedMain, 2);
+    await client.change(helperTest, revisedTest, 2);
+    assert.deepEqual((await client.wait(file, 2)).diagnostics, []);
+
+    await client.change(helper, 'fn helper() Int { 7 }\nfn decoy() { let helper = 1\n discard helper }\n', 3);
+    await client.change(file, source, 3);
+    await client.change(helperTest, savedTest, 3);
+    assert.deepEqual((await client.wait(file, 3)).diagnostics, []);
+    await assert.rejects(renameAt('utility'), /every occurrence of this private function/);
+
+    await client.change(helper, 'pub fn helper() Int { 7 }\n', 4);
+    await client.change(file, source, 4);
+    assert.deepEqual((await client.wait(file, 4)).diagnostics, []);
+    await assert.rejects(renameAt('utility'), /package-private top-level function/);
+    assert.equal(await fs.readFile(file, 'utf8'), savedMain);
+    assert.equal(await fs.readFile(helper, 'utf8'), savedHelper);
+    assert.equal(await fs.readFile(helperTest, 'utf8'), savedTest);
+  } finally { await client.close(); }
+}
+
 async function main() {
   const repository = path.resolve(__dirname, '../../..');
   const executable = process.env.LOOM_EDITOR_COMPILER || path.join(repository, 'target', process.platform === 'win32' ? 'loom.exe' : 'loom');
@@ -111,7 +163,9 @@ async function main() {
     assert.deepEqual(helperReferences[0], definitions[0]);
     assert.equal(sourceDocument.getText(helperReferences[1].range), 'helper');
     assert.deepEqual(await client.rpc.sendRequest('textDocument/references', { ...helperParams, context: { includeDeclaration: false } }), [helperReferences[1]]);
-    await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...helperParams, newName: 'renamedHelper' }), /checked local/);
+    const helperRename = await client.rpc.sendRequest('textDocument/rename', { ...helperParams, newName: 'renamedHelper' });
+    assert.equal(helperRename.changes[params.textDocument.uri].length, 1);
+    assert.equal(helperRename.changes[URI.file(helper).toString()].length, 1);
     const localParams = { ...params, position: sourceDocument.positionAt(source.indexOf('value==')) };
     const localRename = await client.rpc.sendRequest('textDocument/rename', { ...localParams, newName: 'counter' });
     assert.equal(localRename.changes[params.textDocument.uri].length, 2);
@@ -318,7 +372,8 @@ async function main() {
     await assert.rejects(fs.access(bad), { code: 'ENOENT' });
     await assert.rejects(fs.access(shadow), { code: 'ENOENT' });
     await autoImportSmoke(executable, stdRoot);
-    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local rename, name/member/qualified/import completion, verified auto-import actions, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
+    await privateRenameSmoke(executable, stdRoot);
+    console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local and private cross-file rename, name/member/qualified/import completion, verified auto-import actions, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -91,7 +91,7 @@ user blank line. This changes layout, not grammar; semicolons remain invalid.
 
 The [VS Code development extension](../../editors/vscode/README.md) provides
 highlighting, document formatting, diagnostics, name/member completion, type hovers, definition
-navigation, checked references and conservative local rename
+navigation, checked references, local rename and unique private-function rename
 for unsaved buffers. Its
 language server sends source snapshots to the same Loom package/type/contract
 checker; it does not implement another parser or checker in JavaScript.
@@ -102,7 +102,7 @@ It offers fields, tuple indices, admitted concept methods and async
 Task `.await`, not proof of an applicable call or valid body. A qualified-path
 Quick Fix offers an import only for one public declaration in an offline-resolved
 direct package when the revised in-memory package checks. Bare-name import
-search, general rename and incremental semantic caching remain open. Completion
+search, public/API rename and incremental semantic caching remain open. Completion
 can recover a missing cursor name/value or unmatched EOF delimiters
 without modifying the source or making normal builds accept it. Other semantic
 queries use concrete body instances. If package checking fails, an independently

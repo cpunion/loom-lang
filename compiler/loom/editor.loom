@@ -258,7 +258,7 @@ fn editor_execute(args List[Text]) EditorOutput {
         }
         if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
             return match check(bound) {
-                Result.Ok(program) => editor_symbols(bound, program, index, options.offset, options.new_name)
+                Result.Ok(program) => editor_symbols(options, bound, program, index, options.offset)
                 Result.Err(failed) => editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
             }
         }
