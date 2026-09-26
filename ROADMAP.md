@@ -422,9 +422,10 @@ including type positions and local receiver shadowing. Import-statement completi
 now discovers direct module edges, directory segments and public declarations
 through the same offline resolver, including unsaved overlays. A qualified-path
 Quick Fix verifies one public declaration in a direct offline package against
-the edited in-memory package. Checked local and unique package-private function
-rename cover narrow source cases; bare-name import search, public/API rename and
-incremental semantic reuse remain open. See the [editor trial](editors/vscode/README.md)
+the edited in-memory package; missing bare names are searched only through
+selected direct module edges and require one exact export. Checked local and
+unique package-private function rename cover narrow source cases; public/API
+rename and incremental semantic reuse remain open. See the [editor trial](editors/vscode/README.md)
 and its [import](editors/vscode/test/fixtures/import_project/library/defs.loom)
 and [rename](editors/vscode/test/fixtures/rename_project/helper.loom) fixtures.
 Native failing assertions now report their source location and current test,

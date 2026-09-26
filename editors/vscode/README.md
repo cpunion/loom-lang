@@ -2,11 +2,10 @@
 
 A small development extension: highlighting, brackets/comments, unsaved-buffer
 diagnostics, name/member completion, checked type hover, go to definition, find references,
-conservative local/private-function rename, a qualified-path import quick fix, and document
+conservative local/private-function rename, import quick fixes, and document
 formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
-Loom. Bare-name import discovery, public/API rename, and incremental semantic caching are
-not implemented.
+Loom. Public/API rename and incremental semantic caching are not implemented.
 
 ## Try it
 
@@ -185,12 +184,13 @@ declarations. Malformed target files are skipped; candidates are not checked
 package validity.
 
 For an unresolved explicit path such as `std.text.length(...)`, **Quick Fix** can
-insert `import std.text.length`. The compiler uses the path's declared direct
-module and package, requires exactly one public production declaration, and
-checks the revised in-memory package before offering the edit. Private names,
-overloads, ambiguous names, missing offline dependencies, and unrelated package
-errors produce no action. It works with unsaved buffers and never writes files.
-Bare-name automatic import discovery remains unimplemented.
+insert `import std.text.length`. A missing bare name can also offer an import
+when exactly one public production declaration exports that spelling from the
+selected module, `std`, or a declared direct dependency. The compiler checks the
+revised in-memory package before offering the edit and places bare-name imports
+after existing imports or leading comments. Private names, overloads, ambiguous
+names, missing offline dependencies, and unrelated package errors produce no
+action. It works with unsaved buffers and never writes files.
 
 ```sh
 npm test           # Real LSP transport with a small process fixture
@@ -240,7 +240,7 @@ Formatting reads and writes source on stdin/stdout.
 Completion output adds `"completion": null | { "start", "end", "items": [
 { "label", "kind": "variable" | "function" | "type" | "field" | "method" | "keyword" | "namespace", "detail" }, ...] }`.
 Its spans are also UTF-8 bytes; it does not run proofs or produce an executable.
-Auto-import output adds `"autoImport": null | { "path", "start": 0,
+Auto-import output adds `"autoImport": null | { "path", "start": byteOffset,
 "text": "import ...\\n" }`; the server turns it into a workspace edit.
 
 The client/server use Microsoft's [Language Server SDK](https://github.com/microsoft/vscode-languageserver-node)

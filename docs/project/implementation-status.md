@@ -622,9 +622,9 @@ and public production declarations, including unsaved overlays. It reuses offlin
 resolution and real cached-source verification without loading incomplete imports,
 fetching dependencies or writing locks. A qualified-path Quick Fix can insert an
 import when one public declaration resolves through the direct offline module
-identity and the revised in-memory package checks; see the
+identity and the revised in-memory package checks. Missing bare names receive
+the same fix only for one exact public export in the selected direct closure; see the
 [import fixture](../../editors/vscode/test/fixtures/import_project/library/defs.loom).
-Bare-name import search remains open.
 Completion-only source recovery can insert one cursor placeholder and close
 unmatched EOF delimiters. It never modifies source files or supplies executable
 or proof evidence; other syntax errors still reject and normal diagnostics remain.

@@ -1,5 +1,6 @@
 pub fn chosen() Int { 7 }
 pub record Token { value Int }
+pub record ImportOnlyToken { value Int }
 pub fn duplicate(value Int) Int { value }
 pub fn duplicate(value Bool) Bool { value }
 fn hidden() Int { 9 }
