@@ -53,6 +53,15 @@ fn spread_pure() (List[Int], List[Int]) {
     (pair...)
 }
 
+fn spread_static_values() (Int, Int) {
+    let value = 2
+    (40, value)
+}
+
+fn spread_static_add(value Int, comptime extra Int) Int {
+    value + extra
+}
+
 fn expansions() {
     let events = new[Int]()
     spread_check(mark(events, 1), spread_values(events)..., mark(events, 3))
@@ -74,6 +83,7 @@ fn expansions() {
     assert comptime {
         spread_forward(spread_sum, (4, 5))
     } == 9
+    assert spread_static_add(spread_static_values()...) == 42
     let values = [0, pair..., 4]
     assert length(values) == 4 && get(values, 2) == 3
     let nested = (0, (pair..., 4)..., 5)
