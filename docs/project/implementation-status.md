@@ -264,6 +264,10 @@ A final structural `(Pattern[Ts]...)` parameter takes one runtime tuple and
 infers arity from its known type. `comptime map` produces an ordered typed tuple
 of lexical results from an immutable fixed-shape tuple parameter or local,
 including the final value pack; `comptime for` remains a no-result statement.
+In a selected variadic body, the same forms may iterate its declared type pack:
+`comptime for T in Ts` and `comptime map T in Ts` bind each `T` to an existing
+abstract element type. This is static expansion, not runtime type values or
+general reflection. A lexical value tuple named `Ts` shadows that source.
 Structural tuples currently contain only the expanded pattern, and context-dependent
 tuple elements need a prior typed binding. Multiple packs, methods/data packs,
 static value packs and general pack reflection remain open. See the [variadic example](../../compiler/examples/variadics/main.loom)
