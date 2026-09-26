@@ -7,7 +7,11 @@ import deployment.upgrade_sqlite_migration
 import deployment.downgrade_sqlite_migration
 import deployment.reupgrade_sqlite_migration
 import deployment.inspect_sqlite_migration
+import deployment.inspect_live_sqlite_upgrade
 import deployment.start_sqlite_migration
+import deployment.SqliteLivePhase
+import deployment.SqliteLiveStatus
+import deployment.DeploymentState
 import deployment.sqlite_migration_identity
 import deployment.assume_historical
 import deployment.resume_failed_attempt
@@ -131,6 +135,17 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10),(3,0);")?
     let bundle = migration("orders_first", "upgrade_2", 1, old_receipt, new_receipt)?
     discard started(database, bundle, hotfix_receipt)?
+    let events_before_live = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
+    let live = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
+        SqliteLivePhase.FreshUpgrade)?
+    assert live.attempt_state == DeploymentState.Started &&
+    live.status == SqliteLiveStatus.ChecksPassed && !live.requires_resume
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == events_before_live
+    discard fixture_sql(database, "PRAGMA ignore_check_constraints=ON; UPDATE orders SET amount=-1 WHERE id=1;")?
+    let invalid_rows = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
+        SqliteLivePhase.FreshUpgrade)?
+    assert invalid_rows.status == SqliteLiveStatus.DataOrLineageMismatch
+    discard fixture_sql(database, "UPDATE orders SET amount=0 WHERE id=1;")?
     assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='historical_v1' ORDER BY sequence;")? == "0\n7\n"
     assert match sqlite_migration_identity(changed_receipt_path(bundle, old_receipt)) {
         Result.Err(_) => true,
@@ -202,6 +217,15 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
     }
     discard fixture_sql(database, "INSERT INTO orders VALUES (4,0);")?
     let again = migration("orders_again", "upgrade_3", 2, old_receipt, new_receipt)?
+    let retained = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, again,
+        SqliteLivePhase.RetainedReupgrade)?
+    assert retained.attempt_state == DeploymentState.RollbackComplete &&
+    retained.status == SqliteLiveStatus.ChecksPassed
+    discard fixture_sql(database, "UPDATE loom_archive_zero_amounts SET original_amount=1 WHERE entity_id=3;")?
+    let invalid_archive = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, again,
+        SqliteLivePhase.RetainedReupgrade)?
+    assert invalid_archive.status == SqliteLiveStatus.DataOrLineageMismatch
+    discard fixture_sql(database, "UPDATE loom_archive_zero_amounts SET original_amount=0 WHERE entity_id=3;")?
     assert sqlite_migration_identity(bundle)? != sqlite_migration_identity(again)?
     let inspection = inspect_sqlite_migration("/usr/bin/sqlite3", database, again)?
     assert match inspection.evidence {
@@ -210,6 +234,10 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
     }
     assert length(inspection.missing.forward) == 0 && length(inspection.missing.recovery) == 0
     discard start_sqlite_migration("/usr/bin/sqlite3", database, again)?
+    let retry_source = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, again,
+        SqliteLivePhase.RetainedReupgrade)?
+    assert retry_source.attempt_state == DeploymentState.Started &&
+    retry_source.status == SqliteLiveStatus.ChecksPassed
     discard reupgrade_sqlite_migration("/usr/bin/sqlite3", database, again)?
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.Observed(basis) => basis == again.to_schema.basis,
@@ -246,8 +274,18 @@ fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Te
     }
     assert fixture_sql(database, "SELECT attempt_id,state FROM loom_deploy_events;")? == "dangling|0\n"
     discard fixture_sql(database, "DROP TABLE loom_deploy_events;")?
+    discard fixture_sql(database, "CREATE TABLE orders(id INTEGER PRIMARY KEY, amount INTEGER NOT NULL CHECK(amount >= 0)) STRICT; INSERT INTO orders VALUES (1,0);")?
+    discard assume_historical("/usr/bin/sqlite3", database, "ddl_probe", bundle.from_schema.basis)?
+    let changed_ddl = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
+        SqliteLivePhase.FreshUpgrade)?
+    assert changed_ddl.status == SqliteLiveStatus.LayoutMismatch
+    discard fixture_sql(database, "DROP TABLE orders; DROP TABLE loom_deploy_events;")?
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10); CREATE VIEW notes AS SELECT 1 AS id, 'collision' AS body;")?
     discard started(database, bundle, hotfix_receipt)?
+    let blocked = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
+        SqliteLivePhase.FreshUpgrade)?
+    assert blocked.attempt_state == DeploymentState.Started &&
+    blocked.status == SqliteLiveStatus.LayoutMismatch
     assert match upgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle) {
         Result.Err(_) => true,
         Result.Ok(_) => false
@@ -261,7 +299,15 @@ fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Te
         BasisEvidence.None => true,
         _ => false
     }
+    let failed = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
+        SqliteLivePhase.FreshUpgrade)?
+    assert failed.attempt_state == DeploymentState.Failed &&
+    failed.status == SqliteLiveStatus.LayoutMismatch && failed.requires_resume
     discard fixture_sql(database, "DROP VIEW notes;")?
+    let recovered = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
+        SqliteLivePhase.FreshUpgrade)?
+    assert recovered.attempt_state == DeploymentState.Failed &&
+    recovered.status == SqliteLiveStatus.ChecksPassed && recovered.requires_resume
     discard resume_failed_attempt("/usr/bin/sqlite3", database, bundle.operation.attempt_id)?
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.None => true,
