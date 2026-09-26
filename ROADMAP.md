@@ -181,8 +181,10 @@ one dynamic obligation group. Typed helpers adopt/retain nested children, includ
 recursive enum/List layouts. Loops consume the group through actual break/return
 exits. See the [dynamic list example](compiler/examples/task_lists).
 
-The next async gates are socket readiness adapters and general worker
-operations. Task scheduling is cooperative, not parallel Loom threads.
+The native Task owner has a socket-token readiness lease, including real
+loopback, cancellation, and close tests; source-facing TCP, nonblocking
+connect/read/write policy, and general worker operations remain async gates.
+Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 Private multi-task completion observation now retains terminal order, wakes
 typed Loom frames and detaches selections without consuming their results.
@@ -195,8 +197,8 @@ typed outcomes and indexed slot transfer. Joins retire losing subtrees before
 returning; inferred no-result payloads and returned Tasks keep the same generic
 rules. Arbitrary-arity heterogeneous tuple `all/settled` joins now work without
 per-element helper Tasks. Tuple `.await` uses source `std.task.all` for a
-statically typed tuple of Tasks. Socket adapters and general worker APIs remain
-open. See the [join example](compiler/examples/task_joins).
+statically typed tuple of Tasks. Source socket operations and general worker
+APIs remain open. See the [join example](compiler/examples/task_joins).
 
 Extend the self-hosted path with the remaining accepted capabilities:
 
