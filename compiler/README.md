@@ -1667,7 +1667,8 @@ continuing branches. Whole-value transfer requires every field to remain availab
 ordinary metadata can still be read after Task fields transfer. Bind a temporary
 before extracting one field if other Task fields would be discarded. Async calls
 adopt all parameter Tasks, and completed producers retain all returned subtrees
-until extraction. This is not tuple-await sugar or a join API. See the
+until extraction. This aggregate transfer mechanism is separate from tuple
+`.await` and join APIs. See the
 [aggregate example](examples/task_aggregates).
 
 Enums, including `Option[Task[T]]` and `Result[Task[T], E]`, transfer through
@@ -1689,8 +1690,7 @@ close still block the owner, and cancellation can wait for a stuck OS call.
 Private async intrinsics must be awaited directly and suspend the current frame,
 without creating another Task. The synchronous `std.file` API remains unchanged.
 
-Socket adapters, general worker operations and tuple-await syntax
-are not available yet. These are implementation
+Socket adapters and general worker operations are not available yet. These are implementation
 limits; the [accepted design](../docs/rfcs/tasks.md) remains the target.
 
 `std.list.transfer.append(values, value)` returns the same shared List header;
@@ -1719,7 +1719,8 @@ dynamic counts, no-result payloads and returned Tasks, draining losing subtrees
 before return. Cleanup faults fail an otherwise successful join; existing primary
 faults retain precedence. See the [join example](examples/task_joins).
 Heterogeneous tuple `all/settled` accept arbitrary arity and preserve input
-order without a per-element helper chain. Tuple-await syntax remains next work.
+order without a per-element helper chain. A statically typed tuple of Tasks can
+also use `.await`, which follows source `std.task.all` policy.
 
 ## Next boundary
 
