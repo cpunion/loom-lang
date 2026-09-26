@@ -720,8 +720,10 @@ not follow arbitrary edits automatically.
 
 The `tools/deployment` prototype analyzes schema conflicts and executes one
 bounded offline SQLite migration package with upgrade, rollback and re-upgrade
-actions and append-only events. A plan digest binds the declared action and
-inputs across retry. Build receipts are reverified against artifact bytes, but
+actions and append-only events. It provides read-only live preflights for the
+fixed upgrade and downgrade sources; execution rechecks inside its write
+transaction. A plan digest binds the declared action and inputs across retry.
+Build receipts are reverified against artifact bytes, but
 the operator still supplies the storage mapping; a receipt is neither a
 signature nor proof that application code obeys that mapping. Read-only hotfix
 inspection checks receipts, the starting basis and declared schema equality,

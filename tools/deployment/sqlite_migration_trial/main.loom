@@ -8,6 +8,7 @@ import deployment.downgrade_sqlite_migration
 import deployment.reupgrade_sqlite_migration
 import deployment.inspect_sqlite_migration
 import deployment.inspect_live_sqlite_upgrade
+import deployment.inspect_live_sqlite_downgrade
 import deployment.start_sqlite_migration
 import deployment.SqliteLivePhase
 import deployment.SqliteLiveStatus
@@ -135,6 +136,10 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
     discard fixture_sql(database, "CREATE TABLE \"orders\"(\"id\" INTEGER PRIMARY KEY, \"amount\" INTEGER NOT NULL CHECK(\"amount\">=0)) STRICT; INSERT INTO orders VALUES (1,0),(2,10),(3,0);")?
     let bundle = migration("orders_first", "upgrade_2", 1, old_receipt, new_receipt)?
     discard started(database, bundle, hotfix_receipt)?
+    assert match inspect_live_sqlite_downgrade("/usr/bin/sqlite3", database, bundle) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
     let events_before_live = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
     let live = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, bundle,
         SqliteLivePhase.FreshUpgrade)?
@@ -188,7 +193,26 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
     discard fixture_sql(database, "UPDATE orders SET amount=2 WHERE id=1;")?
     assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|0|1\n"
     discard fixture_sql(database, "INSERT INTO notes VALUES (1,'retained');")?
+    let before_downgrade_inspection = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
+    let downgrade_source = inspect_live_sqlite_downgrade("/usr/bin/sqlite3", database, bundle)?
+    assert downgrade_source.attempt_state == DeploymentState.Complete &&
+    downgrade_source.status == SqliteLiveStatus.ChecksPassed && !downgrade_source.requires_retry
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == before_downgrade_inspection
+    let unrelated = migration("orders_unrelated", "upgrade_2", 1, old_receipt, new_receipt)?
+    assert match inspect_live_sqlite_downgrade("/usr/bin/sqlite3", database, unrelated) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    discard fixture_sql(database, "UPDATE loom_archive_zero_amounts SET original_amount=1 WHERE entity_id=3;")?
+    let damaged_archive = inspect_live_sqlite_downgrade("/usr/bin/sqlite3", database, bundle)?
+    assert damaged_archive.status == SqliteLiveStatus.DataOrLineageMismatch
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == before_downgrade_inspection
+    discard fixture_sql(database, "UPDATE loom_archive_zero_amounts SET original_amount=0 WHERE entity_id=3;")?
     discard downgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle)?
+    assert match inspect_live_sqlite_downgrade("/usr/bin/sqlite3", database, bundle) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.Observed(basis) => basis == bundle.from_schema.basis,
         _ => false
@@ -328,12 +352,20 @@ fn rolls_back_failed_transaction(database Text, old_receipt Text, new_receipt Te
     }
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|1\n2|10\n"
     discard fixture_sql(database, "DROP TRIGGER loom_archive_amount_update; CREATE TRIGGER loom_archive_amount_update AFTER UPDATE OF amount ON orders BEGIN SELECT 1; END;")?
+    let before_downgrade_inspection = fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")?
+    let tampered = inspect_live_sqlite_downgrade("/usr/bin/sqlite3", database, bundle)?
+    assert tampered.attempt_state == DeploymentState.Complete &&
+    tampered.status == SqliteLiveStatus.LayoutMismatch && !tampered.requires_retry
+    assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events;")? == before_downgrade_inspection
     assert match downgrade_sqlite_migration("/usr/bin/sqlite3", database, bundle) {
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
     assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|1\n2|10\n"
     assert fixture_sql(database, "SELECT count(*) FROM loom_deploy_events WHERE attempt_id='upgrade_2' AND state=6;")? == "0\n"
+    let failed_rollback = inspect_live_sqlite_downgrade("/usr/bin/sqlite3", database, bundle)?
+    assert failed_rollback.attempt_state == DeploymentState.RollbackFailed &&
+    failed_rollback.status == SqliteLiveStatus.LayoutMismatch && failed_rollback.requires_retry
     Result.Ok(true)
 }
 
