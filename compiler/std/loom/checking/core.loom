@@ -249,7 +249,7 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
     while index < length(source.symbols) {
         let item = symbol(env, index)
         if validate_pack(env, index)? {
-            push(env.packs, PackInstance { source = index arity = -1 signature = -1 state = -1 })
+            push(env.packs, PackInstance { source = index arity = -1 signature = -1 state = -1 depth = 0 })
         }
         if nominal_data(item.node.kind) {
             discard data_type(env, index, abstract_arguments(env, length(group(item.node, NodeKind.TypeParameters))), 0)?
