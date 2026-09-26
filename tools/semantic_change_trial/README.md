@@ -50,10 +50,17 @@ source files, but does not merge import-graph changes or output the dependency
 closure. The Git-object mode still rejects imports rather than borrowing a live
 checkout. The context and output paths must be trusted local paths. This does
 not make review and publication race-free against hostile concurrent filesystem
-writers. Merged type/contract analysis is not exhaustive proof that every
-reference or overload retains its original binding. A dependency closure that
-invalidates the exact baseline is rejected even if a proposed package edit
-would type-check against that changed dependency.
+writers. For move-plus-edit proposals, retained references in supported function
+declarations are checked against the branch that supplied each unchanged body
+and the proposed merge. Definition locations must normalize to the same stable
+sidecar declaration ID and relative span, or to the same location in the pinned
+dependency closure. Missing or ambiguous checked evidence, unsupported source
+forms, non-builtin source type names, and reference-bearing generic
+declarations require explicit resolution. This preserves checked reference
+bindings only in that subset; it does not prove behavior equivalence or
+arbitrary semantic merges. A dependency closure that invalidates the exact
+baseline is rejected even if a proposed package edit would type-check against
+that changed dependency.
 
 Each directory contains ordinary root-level `.loom` files and a `.loom-ids`
 sidecar. The sidecar requires exactly one `package NAME` line and exactly one
@@ -151,4 +158,5 @@ are reported instead of guessed.
 This is a deliberately narrow proof of the move-plus-edit workflow. It does
 not yet manage Git/jj changes or commits, reconcile import changes or
 multi-package source edits, accept `impl` or other non-identity top-level forms,
-distinguish overloads, or merge edits within a single declaration.
+distinguish same-name overloads within one source file, or merge edits within a
+single declaration.

@@ -100,7 +100,7 @@ Arbitrary-arity heterogeneous tuple `all/settled` joins and two-argument
 homogeneous `any/race` joins are available. Tuple `.await` routes a typed tuple
 of Tasks through the trusted source `std.task.all` policy without a source
 import, including tuple bindings and call results; scalar Task `.await` is
-unchanged. Socket adapters and general worker APIs remain unfinished.
+unchanged. Client socket adapters and general worker APIs remain unfinished.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;
@@ -120,10 +120,15 @@ Task owner now has monotonic socket tokens for numeric-address listeners and
 accepted nonblocking streams. A readiness wait leases the exact socket until
 notification consumption or cancellation; close rejects an active lease. A
 loopback test covers readiness, explicit child cancellation, close, and stale
-token rejection. This remains a private runtime seam: Loom has no source
-`std.net.tcp`, DNS/connect, or socket read/write API yet. Source timer Tasks use
-the notification path. `std.file.tasks` adds byte/text reads and
-writes using lazily created native workers, capped at four threads per owner.
+token rejection. Source `std.net.tcp` now exposes numeric-address server-side
+`listen`, `accept`, `read`, `write_bytes`, and explicit close through owner-local
+tokens; see the [loopback example](../../compiler/examples/tcp_loopback/main.loom).
+Reads append to shared Bytes; writes retry partial and WouldBlock progress, but
+aliases can mutate pending write data. There is no source connect/DNS, peer
+address, half-close, timeout/TLS policy, or structured OS-error detail yet.
+Source timer Tasks use the notification path. `std.file.tasks` adds byte/text
+reads and writes using lazily created native workers, capped at four threads
+per owner.
 Workers own native Files and copied buffers, never managed pointers;
 the owner copies completed reads into GC-rooted Bytes. Source code owns partial-I/O
 loops, UTF-8 checks, errors and explicit close. Queued cancellation drops inputs;
@@ -601,8 +606,9 @@ Unknown receivers, earlier typing errors and unsupported compile-time contexts
 produce no result. Checked references use exact definition spans in the loaded
 closure. Conservative local `let`/`var` and unique package-private function rename
 refuse unchecked occurrences and collisions; the latter includes test files and
-rechecks virtual cross-file edits. Public/API rename and incremental semantic
-caching remain unimplemented.
+rechecks virtual cross-file edits. See the
+[cross-file rename fixture](../../editors/vscode/test/fixtures/rename_project/helper.loom).
+Public/API rename and incremental semantic caching remain unimplemented.
 Qualified paths now enumerate existing package/import spellings, preserving
 overloads and source-instance/test identity. Local receiver bindings take priority;
 type and dyn positions filter declarations without claiming valid instantiation.
@@ -611,7 +617,9 @@ and public production declarations, including unsaved overlays. It reuses offlin
 resolution and real cached-source verification without loading incomplete imports,
 fetching dependencies or writing locks. A qualified-path Quick Fix can insert an
 import when one public declaration resolves through the direct offline module
-identity and the revised in-memory package checks. Bare-name import search remains open.
+identity and the revised in-memory package checks; see the
+[import fixture](../../editors/vscode/test/fixtures/import_project/library/defs.loom).
+Bare-name import search remains open.
 Completion-only source recovery can insert one cursor placeholder and close
 unmatched EOF delimiters. It never modifies source files or supplies executable
 or proof evidence; other syntax errors still reject and normal diagnostics remain.
@@ -740,9 +748,14 @@ require an explicit pinned project context: the review token covers the selected
 production/test closure and apply reloads it. Both the exact baseline and
 proposed merge must analyze in that closure, so an incompatible dependency API
 drift cannot be hidden by an adapting package edit. Import changes and general
-cross-package edits do not merge. Type checking is not proof that every original
-reference retains its binding. Identity refresh is explicit; it does not follow
-arbitrary edits automatically.
+cross-package edits do not merge. For supported move-plus-edit proposals, checked
+reference targets in unchanged contributed declarations are compared using stable
+sidecar identities or pinned dependency locations. A changed overload target is
+rejected; missing or ambiguous evidence and unsupported source forms fail closed.
+See the [move](../../tools/semantic_change_trial/fixtures/left/app.loom) and
+[edit](../../tools/semantic_change_trial/fixtures/right/value.loom) snapshots.
+This does not prove behavior equivalence or a general semantic merge. Identity
+refresh is explicit; it does not follow arbitrary edits automatically.
 
 The `tools/deployment` prototype analyzes schema conflicts and executes one
 bounded offline SQLite migration package with upgrade, rollback and re-upgrade
