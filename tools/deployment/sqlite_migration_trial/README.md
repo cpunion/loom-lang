@@ -11,7 +11,14 @@ loom run tools/deployment/sqlite_migration_trial -- /tmp/loom-success.sqlite /tm
 ```
 
 The trial exercises a fixed offline orders upgrade, downgrade, and re-upgrade,
-plus a failed upgrade that must not record completion.
+plus failed fresh and retained upgrades that must not record completion. After
+rollback, it edits a restored zero amount and a retained note under v1, adds a
+new zero-valued order, then forces a retained re-upgrade failure through a
+damaged archive row. It checks that the failed attempt preserves those rows and
+tables, leaves the effective basis unknown, and needs explicit repair and
+resume. The successful retry preserves the v1 positive edit and note, while
+replacing and archiving only the new zero. These are exact assertions for this
+fixed schema and sample rows, not a proof for arbitrary migrations or writers.
 
 The ordinary [`orders_migration`](../orders_migration/plan.loom) Loom module
 declares a typed `SqliteMigrationPackage`; the trial instantiates it twice with

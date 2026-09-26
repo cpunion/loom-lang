@@ -239,7 +239,11 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
         Result.Err(_) => true,
         Result.Ok(_) => false
     }
-    discard fixture_sql(database, "INSERT INTO orders VALUES (4,0);")?
+    // v1 writers resume after rollback. Their new positive value and note must
+    // survive re-upgrade; only the new zero is eligible for replacement.
+    discard fixture_sql(database, "UPDATE orders SET amount=7 WHERE id=3; INSERT INTO orders VALUES (4,0); UPDATE notes SET body='edited after rollback' WHERE id=1;")?
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|7\n4|0\n"
+    assert fixture_sql(database, "SELECT body FROM notes;")? == "edited after rollback\n"
     let again = migration("orders_again", "upgrade_3", 2, old_receipt, new_receipt)?
     let retained = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, again,
         SqliteLivePhase.RetainedReupgrade)?
@@ -262,14 +266,44 @@ fn succeeds(database Text, old_receipt Text, new_receipt Text,
         SqliteLivePhase.RetainedReupgrade)?
     assert retry_source.attempt_state == DeploymentState.Started &&
     retry_source.status == SqliteLiveStatus.ChecksPassed
+    discard fixture_sql(database, "UPDATE loom_archive_zero_amounts SET original_amount=1 WHERE entity_id=3;")?
+    assert match reupgrade_sqlite_migration("/usr/bin/sqlite3", database, again) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|7\n4|0\n"
+    assert fixture_sql(database, "SELECT body FROM notes;")? == "edited after rollback\n"
+    assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|1|1\n"
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='upgrade_3' ORDER BY sequence;")? == "0\n1\n2\n"
+    assert match current("/usr/bin/sqlite3", database)? {
+        BasisEvidence.None => true,
+        _ => false
+    }
+    let failed_reupgrade = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, again,
+        SqliteLivePhase.RetainedReupgrade)?
+    assert failed_reupgrade.attempt_state == DeploymentState.Failed &&
+    failed_reupgrade.status == SqliteLiveStatus.DataOrLineageMismatch &&
+    failed_reupgrade.requires_resume
+    discard fixture_sql(database, "UPDATE loom_archive_zero_amounts SET original_amount=0 WHERE entity_id=3;")?
+    let repaired_reupgrade = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database, again,
+        SqliteLivePhase.RetainedReupgrade)?
+    assert repaired_reupgrade.attempt_state == DeploymentState.Failed &&
+    repaired_reupgrade.status == SqliteLiveStatus.ChecksPassed &&
+    repaired_reupgrade.requires_resume
+    assert match reupgrade_sqlite_migration("/usr/bin/sqlite3", database, again) {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    discard resume_failed_attempt("/usr/bin/sqlite3", database, again.operation.attempt_id)?
     discard reupgrade_sqlite_migration("/usr/bin/sqlite3", database, again)?
     assert match current("/usr/bin/sqlite3", database)? {
         BasisEvidence.Observed(basis) => basis == again.to_schema.basis,
         _ => false
     }
-    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|2\n4|2\n"
-    assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|0|1\n4|0|1\n"
-    assert fixture_sql(database, "SELECT body FROM notes;")? == "retained\n"
+    assert fixture_sql(database, "SELECT state FROM loom_deploy_events WHERE attempt_id='upgrade_3' ORDER BY sequence;")? == "0\n1\n2\n1\n3\n"
+    assert fixture_sql(database, "SELECT id,amount FROM orders ORDER BY id;")? == "1|2\n2|10\n3|7\n4|2\n"
+    assert fixture_sql(database, "SELECT entity_id,original_amount,restorable FROM loom_archive_zero_amounts ORDER BY entity_id;")? == "1|0|0\n3|0|0\n4|0|1\n"
+    assert fixture_sql(database, "SELECT body FROM notes;")? == "edited after rollback\n"
     assert match fixture_sql(database, "INSERT INTO orders VALUES (5,0);") {
         Result.Err(_) => true,
         Result.Ok(_) => false
