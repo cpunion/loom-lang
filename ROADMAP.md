@@ -417,8 +417,13 @@ ordinary scope/type rules without claiming the incomplete body is verified.
 Qualified spelling completion now follows the same package/import visibility,
 including type positions and local receiver shadowing. Import-statement completion
 now discovers direct module edges, directory segments and public declarations
-through the same offline resolver, including unsaved overlays. Automatic imports, rename, and incremental
-semantic reuse are subsequent tooling work, not completed language features.
+through the same offline resolver, including unsaved overlays. A qualified-path
+Quick Fix verifies one public declaration in a direct offline package against
+the edited in-memory package. Checked local and unique package-private function
+rename cover narrow source cases; bare-name import search, public/API rename and
+incremental semantic reuse remain open. See the [editor trial](editors/vscode/README.md)
+and its [import](editors/vscode/test/fixtures/import_project/library/defs.loom)
+and [rename](editors/vscode/test/fixtures/rename_project/helper.loom) fixtures.
 Native failing assertions now report their source location and current test,
 including helper assertions and standalone test executables. The first fault
 remains authoritative across cleanup; this does not add stack traces or recovery.
