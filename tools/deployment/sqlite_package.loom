@@ -168,6 +168,41 @@ pub fn inspect_live_sqlite_upgrade(tool Text, database Text,
         })
 }
 
+pub record SqliteRollbackInspection {
+    attempt_state DeploymentState
+    status SqliteLiveStatus
+    requires_retry Bool
+}
+
+// Inspect the fixed v2 source before downgrade without changing the ledger or
+// stored rows. A matching unresolved rollback can be inspected, but the result
+// is only a snapshot: downgrade rechecks it inside the write transaction.
+pub fn inspect_live_sqlite_downgrade(tool Text, database Text,
+    value SqliteMigrationPackage) Result[SqliteRollbackInspection, Text] {
+    let identity = validated_package(value)?
+    let previous = match latest(tool, database)? {
+        Option.Some(entry) => entry.attempt,
+        Option.None => {
+            return Result.Err("no deployment basis has been recorded")
+        }
+    }
+    if previous.id != value.operation.attempt_id ||
+    previous.from_basis != value.from_schema.basis ||
+    previous.to_basis != value.to_schema.basis ||
+    previous.plan_digest != identity || previous.policy != FailurePolicy.Stop ||
+    !(previous.state == DeploymentState.Complete ||
+        previous.state == DeploymentState.RollbackStarted ||
+        previous.state == DeploymentState.RollbackFailed) {
+        return Result.Err("SQLite downgrade inspection requires a matching deployed attempt")
+    }
+    let status = inspect_live_downgrade_source(tool, database, value.operation)?
+    Result.Ok(SqliteRollbackInspection {
+            attempt_state = previous.state
+            status = status
+            requires_retry = previous.state != DeploymentState.Complete
+        })
+}
+
 pub fn start_sqlite_migration(tool Text, database Text,
     value SqliteMigrationPackage) Result[Attempt, Text] {
     let identity = validated_package(value)?

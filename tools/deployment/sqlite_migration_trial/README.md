@@ -38,7 +38,15 @@ attempt without changing the ledger. The layout and data/lineage queries are sep
 read-only snapshots; their result may become stale, does not establish that
 application code obeys the declared mapping, and never authorizes execution.
 The executor checks again inside its write transaction.
-This slice has no live downgrade inspection.
+`inspect_live_sqlite_downgrade` is the matching read-only preflight for the
+fixed v2-to-v1 rollback. It requires the same verified package and a matching
+completed, rollback-started, or rollback-failed attempt. It distinguishes exact
+table/trigger layout from row and restoration-lineage mismatches, reports when
+a prior rollback needs retry, and does not append an event. The trial checks a
+clean rollback source, altered archived data, and a tampered trigger before and
+after a failed rollback. Like the upgrade inspection, this is a potentially
+stale advisory snapshot, not authorization to execute; the rollback transaction
+rechecks its source.
 
 An ordinary Loom caller with a declared `SqliteMigrationPackage` can request
 the live check explicitly:
