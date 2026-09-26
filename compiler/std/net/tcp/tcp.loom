@@ -72,7 +72,6 @@ pub async fn connect(address Text) Result[Stream, TcpError] {
         }
     }
     while true {
-        socket_wait(token, 2).await
         let status = socket_connect_status(token)
         if status == 0 {
             transferred = true
@@ -85,6 +84,7 @@ pub async fn connect(address Text) Result[Stream, TcpError] {
         if status != -2 {
             return Result.Err(TcpError.Connect)
         }
+        socket_wait(token, 2).await
     }
 }
 
