@@ -57,9 +57,9 @@ pub async fn listen(address Text) Result[Listener, TcpError] {
         })
 }
 
-// A pending native socket is private to this Task until the writable reactor
-// notification and SO_ERROR/peer check confirm a completed connection. The
-// defer closes it after failure or cancellation, once its wait lease retires.
+// A native socket is private to this Task until SO_ERROR/peer checks confirm a
+// connection. Only pending attempts await writable readiness. The defer closes
+// it after failure or cancellation, once any wait lease retires.
 pub async fn connect(address Text) Result[Stream, TcpError] {
     let token = socket_connect(address)
     if token < 0 {

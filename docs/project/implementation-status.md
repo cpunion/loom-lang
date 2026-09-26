@@ -124,7 +124,8 @@ loopback test covers readiness, explicit child cancellation, close, and stale
 token rejection. Source `std.net.tcp` exposes numeric-address `listen`, `accept`,
 `connect`, `read`, `write_bytes`, and explicit close through owner-local tokens;
 see the [loopback example](../../compiler/examples/tcp_loopback/main.loom).
-Connect completion checks socket error and peer state after writable readiness;
+Connect checks socket error and peer state before parking and after writable
+readiness;
 failure or cancellation closes its private pending token. Reads append to shared
 Bytes; writes retry partial and WouldBlock progress, but aliases can mutate
 pending write data. There is no DNS, peer address, half-close, connect timeout,

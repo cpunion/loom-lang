@@ -1718,8 +1718,8 @@ without creating another Task. The synchronous `std.file` API remains unchanged.
 `std.net.tcp` provides a narrow numeric-address TCP path: await `listen` to bind
 an IPv4 or IPv6 address, find an ephemeral bind's `local_port`, then await
 `accept` or `connect`, `read`, and `write_bytes`. `connect` starts a nonblocking
-socket and waits for writable readiness plus a socket-error/peer check before
-returning a `Stream`; failure or Task cancellation closes the pending socket.
+socket and checks socket-error/peer state immediately, awaiting writable
+readiness only while pending; failure or Task cancellation closes its socket.
 `read` appends to a shared Bytes buffer;
 `Ok(0)` means EOF for a positive limit. `write_bytes` retries partial and
 WouldBlock writes until its initial buffer length is sent. Bytes contents are
