@@ -80,3 +80,22 @@ fn unbounded_static_recursion_still_renders_a_diagnostic() {
     );
     assert!(!diagnostic.contains("assertion failed"), "{diagnostic}");
 }
+
+#[test]
+fn growing_pack_specialization_reports_depth_without_crashing() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(
+        package.path().join("main.loom"),
+        "fn growing[Ts...](values Ts...) { growing(values..., 1) }\nfn main() { growing() }\n",
+    )
+    .unwrap();
+    let output = loom(&["check", package.path().to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("main.loom:1:"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("type pack specialization depth exceeded; expansion must be finite"),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("assertion failed"), "{diagnostic}");
+}

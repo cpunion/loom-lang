@@ -429,7 +429,9 @@ fn check_pack_arity(env Environment, signature Int) Result[Bool, Failure] {
         }
         visiting = visiting + 1
     }
-    if active >= 64 {
+    // Each nested specialization retains large native checker frames at O0.
+    // This conservative safety budget also rejects deeper finite chains.
+    if active >= 16 {
         return Result.Err(failure(env, pack.source, symbol(env, pack.source).node, "type pack specialization depth exceeded; expansion must be finite"))
     }
     set(env.packs, index, PackInstance {
