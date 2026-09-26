@@ -100,7 +100,7 @@ Arbitrary-arity heterogeneous tuple `all/settled` joins and two-argument
 homogeneous `any/race` joins are available. Tuple `.await` routes a typed tuple
 of Tasks through the trusted source `std.task.all` policy without a source
 import, including tuple bindings and call results; scalar Task `.await` is
-unchanged. Client socket adapters and general worker APIs remain unfinished.
+unchanged. DNS, TLS, and general worker APIs remain unfinished.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;
@@ -116,19 +116,21 @@ The private wait ABI now provides one-shot timers, borrowed socket readiness and
 cross-thread completion notifications through `polling`. Generation checks reject
 stale completion; cancellation removes active registrations before handles may
 close. Focused tests exercise actual timers and localhost sockets. The native
-Task owner now has monotonic socket tokens for numeric-address listeners and
-accepted nonblocking streams. A readiness wait leases the exact socket until
-notification consumption or cancellation; close rejects an active lease. A
+Task owner now has monotonic socket tokens for numeric-address listeners,
+accepted streams, and connecting nonblocking streams. A readiness wait leases
+the exact socket until notification consumption or cancellation; close rejects
+an active lease. A
 loopback test covers readiness, explicit child cancellation, close, and stale
-token rejection. Source `std.net.tcp` now exposes numeric-address server-side
-`listen`, `accept`, `read`, `write_bytes`, and explicit close through owner-local
-tokens; see the [loopback example](../../compiler/examples/tcp_loopback/main.loom).
-Reads append to shared Bytes; writes retry partial and WouldBlock progress, but
-aliases can mutate pending write data. There is no source connect/DNS, peer
-address, half-close, timeout/TLS policy, or structured OS-error detail yet.
-Source timer Tasks use the notification path. `std.file.tasks` adds byte/text
-reads and writes using lazily created native workers, capped at four threads
-per owner.
+token rejection. Source `std.net.tcp` exposes numeric-address `listen`, `accept`,
+`connect`, `read`, `write_bytes`, and explicit close through owner-local tokens;
+see the [loopback example](../../compiler/examples/tcp_loopback/main.loom).
+Connect completion checks socket error and peer state after writable readiness;
+failure or cancellation closes its private pending token. Reads append to shared
+Bytes; writes retry partial and WouldBlock progress, but aliases can mutate
+pending write data. There is no DNS, peer address, half-close, connect timeout,
+TLS, or structured OS-error detail yet. Source timer Tasks use the notification
+path. `std.file.tasks` adds byte/text reads and
+writes using lazily created native workers, capped at four threads per owner.
 Workers own native Files and copied buffers, never managed pointers;
 the owner copies completed reads into GC-rooted Bytes. Source code owns partial-I/O
 loops, UTF-8 checks, errors and explicit close. Queued cancellation drops inputs;
