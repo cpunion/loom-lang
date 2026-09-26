@@ -5,6 +5,7 @@ import std.loom.project.import_scope
 import std.loom.project.package
 import std.loom.project.name
 import std.loom.project.qualify
+import std.loom.project.join_path
 import std.loom.binding.candidates
 import std.option.Option
 
@@ -338,7 +339,7 @@ test fn editor_bare_import_follows_direct_edges_and_requires_one_declaration() {
         std_root = "compiler/std"
         tests = false
         overlays = std.list.new[SourceOverlay]()
-        query_path = concat(app, "/main.loom")
+        query_path = join_path(app, "main.loom")
         offset = 0
         new_name = ""
     }
@@ -353,7 +354,7 @@ test fn editor_bare_import_follows_direct_edges_and_requires_one_declaration() {
             std_root = options.std_root
             tests = false
             overlays = options.overlays
-            query_path = concat(fixture, "/main.loom")
+            query_path = join_path(fixture, "main.loom")
             offset = 0
             new_name = ""
         }, "chosen") == "imports.library.chosen"
@@ -366,7 +367,7 @@ test fn editor_bare_import_uses_the_overlaid_source_and_import_group() {
     }
     let source = "// header\nimport std.text.length\n\nfn main() { assert chosen() == 7 }\n"
     let overlays = std.list.new[SourceOverlay]()
-    let file = concat(directory, "/main.loom")
+    let file = join_path(directory, "main.loom")
     std.list.push(overlays, SourceOverlay {
             path = file
             text = source
