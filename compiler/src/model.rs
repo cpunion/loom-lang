@@ -113,6 +113,8 @@ pub enum Primitive {
     TaskObserve,
     TaskWaitNext,
     TaskNextResult,
+    TaskNextTerminalResult,
+    TaskNextTerminalFailure,
     TaskStatus,
     TaskFailure,
     TaskCancelBegin,

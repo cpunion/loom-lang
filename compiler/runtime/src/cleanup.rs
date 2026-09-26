@@ -310,7 +310,7 @@ mod tests {
 
     unsafe fn before_drain_order(data: *mut u8) {
         unsafe { (*data.cast::<Vec<u8>>()).push(1) };
-        let secondary = unsafe { catch_fault(|| fault(b"hook cleanup fault")) }.unwrap_err();
+        let secondary = unsafe { catch_fault::<()>(|| fault(b"hook cleanup fault")) }.unwrap_err();
         assert_eq!(secondary.message, b"hook cleanup fault");
     }
 
@@ -328,7 +328,7 @@ mod tests {
         let mut order = Vec::<u8>::new();
         let data = ptr::addr_of_mut!(order).cast();
         let failure = unsafe {
-            catch_fault_before_drain(
+            catch_fault_before_drain::<()>(
                 || {
                     let mut outer = MaybeUninit::uninit();
                     let mut inner = MaybeUninit::uninit();

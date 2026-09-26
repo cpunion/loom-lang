@@ -112,6 +112,46 @@ test async fn tuple_settled_accepts_empty_singleton_and_larger_tuple_values() {
     assert child.await == 7
 }
 
+test async fn tuple_all_accepts_empty_singleton_and_heterogeneous_groups() {
+    discard all(no_tasks()).await
+
+    let single = all((successful(),)).await
+    assert single.0 == "typed result"
+
+    let number, text, flag = all(three_tasks()).await
+    assert number == 8 && text == "typed result" && flag
+
+    let values = all((sleep_ms(0), nested(), delayed(9, 1), bool_result())).await
+    assert values.2 == 9 && values.3
+    assert values.1.await == "typed result"
+}
+
+test async fn tuple_all_observes_later_fault_and_drains_every_sibling() {
+    let first = ["begin"]
+    let last = ["begin"]
+    match outcome(all((pending_number(first), fail_after(2), pending_number(last)))).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => { assert false }
+    }
+    assert first[1] == "started" && first[2] == "cleaned"
+    assert last[1] == "started" && last[2] == "cleaned"
+}
+
+test async fn tuple_all_preserves_primary_fault_over_loser_cleanup_fault() {
+    let cleanup = ["begin"]
+    let pending = ["begin"]
+    match outcome(all((cleanup_failure(cleanup), primary_failure(), pending_number(pending)))).await {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "primary join failure")
+        }
+        _ => { assert false }
+    }
+    assert cleanup[1] == "remaining cleanup"
+    assert pending[1] == "started" && pending[2] == "cleaned"
+}
+
 test async fn tuple_all_cancels_and_drains_after_an_out_of_order_failure() {
     let events = ["begin"]
     match outcome(all((pending_number(events), failed()))).await {

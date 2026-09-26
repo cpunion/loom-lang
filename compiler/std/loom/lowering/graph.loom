@@ -150,12 +150,17 @@ fn parking(graph Graph, source Expr, start Int, loop Loop) Value {
     if source.text == "task_outcome" {
         return outcome_waiting(graph, source, start, loop)
     }
-    if source.text == "task_next" {
+    if source.text == "task_next" || source.text == "task_next_terminal" {
         let park = state(graph)
         let after = state(graph)
         jump(graph, start, park)
         finish(graph, park, Exit.Park, operation("task_wait_next", 2, source.span, new[Expr]()), edges(after), new[Arm]())
-        Value { state = after expression = operation("task_next_result", 1, source.span, new[Expr]()) }
+        if source.text == "task_next" {
+            return Value { state = after expression = operation("task_next_result", 1, source.span, new[Expr]()) }
+        }
+        let selected = temporary(graph, 1)
+        save(graph, after, selected, operation("task_next_terminal_result", 1, source.span, new[Expr]()))
+        Value { state = after expression = terminal_value(graph.types, source.ty, source.span, local(graph, selected)) }
     } else {
         external_parking(graph, source, start, loop)
     }

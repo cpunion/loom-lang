@@ -1686,7 +1686,7 @@ close still block the owner, and cancellation can wait for a stuck OS call.
 Private async intrinsics must be awaited directly and suspend the current frame,
 without creating another Task. The synchronous `std.file` API remains unchanged.
 
-Socket adapters, general worker operations and tuple joins
+Socket adapters, general worker operations and tuple-await syntax
 are not available yet. These are implementation
 limits; the [accepted design](../docs/rfcs/tasks.md) remains the target.
 
@@ -1715,7 +1715,8 @@ now use one-time completion registration and indexed transfer. They support
 dynamic counts, no-result payloads and returned Tasks, draining losing subtrees
 before return. Cleanup faults fail an otherwise successful join; existing primary
 faults retain precedence. See the [join example](examples/task_joins).
-Heterogeneous tuple joins/await remain next work.
+Heterogeneous tuple `all/settled` accept arbitrary arity and preserve input
+order without a per-element helper chain. Tuple-await syntax remains next work.
 
 ## Next boundary
 

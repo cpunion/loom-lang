@@ -3,3 +3,13 @@
 intrinsic fn task_observe[T](task Task[T], index Int) Task[T]
 
 async intrinsic fn task_next() Int
+
+// Selection reports only the terminal state. The original typed handle still
+// owns result extraction or subtree drain after the notification is detached.
+enum TaskTerminal {
+    Completed
+    Faulted(TaskFault)
+    Cancelled
+}
+
+async intrinsic fn task_next_terminal() TaskTerminal

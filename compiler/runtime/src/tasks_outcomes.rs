@@ -55,18 +55,22 @@ pub(super) extern "C-unwind" fn loom_rt_task_failure(child: u64) -> *mut u8 {
         let State::Faulted(failure, _) = &awaited(core, child)?.state else {
             return Err("task fault data requires a faulted child");
         };
-        let mut bytes = Vec::new();
-        if let Some(name) = &failure.test_name {
-            bytes.extend_from_slice(b"FAIL ");
-            bytes.extend_from_slice(name);
-            bytes.push(b'\n');
-        }
-        bytes.extend_from_slice(&failure.message);
-        Ok(bytes)
+        Ok(failure_bytes(failure))
     });
     // No Core borrow or managed interior pointer crosses collection. The
     // caller roots/reloads its frame and any earlier expression snapshots.
     unsafe { crate::loom_rt_text_new(bytes.as_ptr(), bytes.len()) }
+}
+
+pub(super) fn failure_bytes(failure: &OwnedFault) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if let Some(name) = &failure.test_name {
+        bytes.extend_from_slice(b"FAIL ");
+        bytes.extend_from_slice(name);
+        bytes.push(b'\n');
+    }
+    bytes.extend_from_slice(&failure.message);
+    bytes
 }
 
 #[unsafe(no_mangle)]
