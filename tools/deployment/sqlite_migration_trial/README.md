@@ -28,6 +28,30 @@ digest; it stores no row values. This is not general deployment correctness.
 The executor accepts only the exact `STRICT` table definitions and catalog
 checked in `sqlite_migration.loom`; application writers must be stopped.
 
+`inspect_sqlite_migration` remains an offline ledger and catalog check. The
+explicit `inspect_live_sqlite_upgrade` call additionally reads the current
+SQLite layout and stored rows for either `FreshUpgrade` or
+`RetainedReupgrade`. It returns only `ChecksPassed`, `LayoutMismatch`, or
+`DataOrLineageMismatch`, the recorded attempt state, and whether a failed attempt
+needs an explicit resume. It can inspect a matching `Started` or `Failed`
+attempt without changing the ledger. The layout and data/lineage queries are separate
+read-only snapshots; their result may become stale, does not establish that
+application code obeys the declared mapping, and never authorizes execution.
+The executor checks again inside its write transaction.
+This slice has no live downgrade inspection.
+
+An ordinary Loom caller with a declared `SqliteMigrationPackage` can request
+the live check explicitly:
+
+```loom
+let inspection = inspect_live_sqlite_upgrade("/usr/bin/sqlite3", database,
+    bundle, SqliteLivePhase.FreshUpgrade)?
+assert inspection.status == SqliteLiveStatus.ChecksPassed
+```
+
+The runnable [`main.loom`](main.loom) imports these public `deployment` API
+names and exercises the fresh and retained paths.
+
 The fixture imports v1 as **assumed**. Both bases include verified receipts
 from real Loom builds; the package API rehashes both artifacts before each
 transition. An observed event means this narrow SQL transaction completed.

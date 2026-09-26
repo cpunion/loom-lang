@@ -2,6 +2,7 @@ import std.bytes.new
 import std.hash.sha256.hex
 import std.list.get
 import std.list.length
+import std.option.Option
 import std.result.Result
 
 // An ordinary Loom value describes the only SQLite migration action currently
@@ -33,17 +34,23 @@ fn exact_reupgrade(steps List[Handling], plan SqlitePositiveAmountUpgrade) Bool 
         let step = get(steps, index)
         if step.kind == ConflictKind.ChangedPredicate && step.table == plan.orders &&
         step.column == plan.amount && step.action == "refresh_archive_and_replace_zero_amounts" {
-            if amount { return false }
+            if amount {
+                return false
+            }
             amount = true
         } else {
             if step.kind == ConflictKind.AddedTable && step.table == plan.notes &&
             step.column == "" && step.action == "reuse_retained_notes_table" {
-                if notes { return false }
+                if notes {
+                    return false
+                }
                 notes = true
             } else {
                 if step.kind == ConflictKind.ChangedBasis && step.table == "" &&
                 step.column == "" && step.action == "candidate_bound_to_build_receipt" {
-                    if basis { return false }
+                    if basis {
+                        return false
+                    }
                     basis = true
                 } else {
                     return false
@@ -112,6 +119,53 @@ pub fn inspect_sqlite_migration(tool Text, database Text,
     value SqliteMigrationPackage) Result[PlanInspection, Text] {
     discard validated_package(value)?
     dry_run(tool, database, value.from_schema, value.to_schema, value.catalog)
+}
+
+// Explicit read-only inspection of the fixed SQLite source, including stored
+// rows. It also works after this attempt reached Started or Failed. The result
+// describes a snapshot, never authorizes execution or changes the ledger;
+// execution rechecks the source atomically before recording completion.
+pub fn inspect_live_sqlite_upgrade(tool Text, database Text,
+    value SqliteMigrationPackage, phase SqliteLivePhase) Result[SqliteLiveInspection, Text] {
+    let identity = validated_package(value)?
+    let previous = match latest(tool, database)? {
+        Option.Some(entry) => entry.attempt,
+        Option.None => {
+            return Result.Err("no deployment basis has been recorded")
+        }
+    }
+    if previous.state == DeploymentState.Started || previous.state == DeploymentState.Failed {
+        if previous.id != value.operation.attempt_id ||
+        previous.from_basis != value.from_schema.basis ||
+        previous.to_basis != value.to_schema.basis ||
+        previous.plan_digest != identity || previous.policy != FailurePolicy.Stop {
+            return Result.Err("unresolved deployment does not match this SQLite package")
+        }
+    } else {
+        match effective(previous) {
+            BasisEvidence.Observed(basis) => {
+                if basis != value.from_schema.basis {
+                    return Result.Err("starting basis differs from observed deployment")
+                }
+            }
+            BasisEvidence.Assumed(basis) => {
+                if basis != value.from_schema.basis {
+                    return Result.Err("starting basis differs from assumed deployment")
+                }
+            }
+            BasisEvidence.None => {
+                return Result.Err("previous deployment outcome is unresolved")
+            }
+        }
+    }
+    let retained = phase == SqliteLivePhase.RetainedReupgrade
+    let status = inspect_live_upgrade_source(tool, database, value.operation, retained)?
+    Result.Ok(SqliteLiveInspection {
+            phase = phase
+            attempt_state = previous.state
+            status = status
+            requires_resume = previous.state == DeploymentState.Failed
+        })
 }
 
 pub fn start_sqlite_migration(tool Text, database Text,
