@@ -63,3 +63,63 @@ test fn nested_tuple_loops_keep_outer_closure_identity() {
     assert length(output) == 2
     assert output[0] == "7" && output[1] == "boolean"
 }
+
+fn count_int_types[Ts...](values Ts...) Int {
+    var total = 0
+    comptime for T in Ts {
+        comptime if T == Int {
+            total = total + 1
+        }
+    }
+    total
+}
+
+fn type_callbacks[Ts...](values Ts...) {
+    let callbacks = comptime map T in Ts {
+        let T = 10
+        fn(value T) Int {
+            discard value
+            T
+        }
+    }
+    assert callbacks.0(values.0) == 10
+    assert callbacks.1(values.1) == 10
+}
+
+fn crossed_type_and_value_packs[Ts...](values Ts...) Int {
+    var total = 0
+    comptime for T in Ts {
+        comptime for value in values {
+            discard value
+            let reader = fn() Int {
+                comptime if T == Int {
+                    1
+                } else {
+                    0
+                }
+            }
+            total = total + reader()
+        }
+    }
+    total
+}
+
+fn nested_type_binding[Ts...](values Ts...) Int {
+    var total = 0
+    comptime for T in Ts {
+        comptime for T in Ts {
+            comptime if T == Int {
+                total = total + 1
+            }
+        }
+    }
+    total
+}
+
+test fn selected_type_pack_iteration_uses_only_static_structure() {
+    assert count_int_types() == 0
+    assert count_int_types(1, true, 2, "text") == 2
+    type_callbacks(7, true)
+    assert crossed_type_and_value_packs(7, true) == 2
+    assert nested_type_binding(7, true) == 2
+}

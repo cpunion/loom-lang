@@ -55,6 +55,12 @@ test fn static_pack_iteration_checks_each_selected_element_and_lexical_scope() {
     rejects("fn selected[Ts...](values Ts...) { comptime if Int == Int { comptime for value in other { discard value } } else { comptime for value in values { discard value } } }\nfn main() { selected(1) }")
 }
 
+test fn selected_type_pack_iteration_reuses_abstract_type_parameters() {
+    discard accepted("fn ints[Ts...](values Ts...) Int { var total = 0\ncomptime for T in Ts { comptime if T == Int { total = total + 1 } }\ntotal }\nfn main() { assert ints() == 0 && ints(1, true, 2, \"text\") == 2 }")
+    discard accepted("fn callbacks[Ts...](values Ts...) { let actions = comptime map T in Ts { fn(value T) T { value } }\ndiscard actions.0(values.0)\ndiscard actions.1(values.1) }\nfn main() { callbacks(1, true) }")
+    discard accepted("fn local[Ts...](values Ts...) Int { let Ts = (1, 2)\nvar total = 0\ncomptime for item in Ts { total = total + item }\ntotal }\nfn main() { assert local(true) == 3 }")
+}
+
 test fn static_iteration_accepts_immutable_tuple_bindings_and_checks_each_field() {
     discard accepted("fn label(value Int) Int { 1 }\nfn label(value Bool) Int { 2 }\nfn pack[Ts...](values Ts...) (Ts...) { values }\nfn labels(pair (Int, Bool)) Int { var output = 0\ncomptime for value in pair { output = output * 10 + label(value) }\nlet local = (true, 1)\ncomptime for value in local { output = output * 10 + label(value) }\nlet empty = pack()\ncomptime for value in empty { output = 99 }\noutput }\nfn main() { assert labels((7, true)) == 1221 }")
     rejects("fn bad() { var pair = (1, true)\ncomptime for value in pair { discard value } }")

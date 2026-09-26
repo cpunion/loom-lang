@@ -313,8 +313,11 @@ variadic postconditions reject until every arity can be proved. A first
 `comptime for` statically visits immutable fixed-shape tuples, including the final
 value pack in selected bodies;
 `comptime map` produces a typed tuple from the same immutable fixed-shape tuple
-bindings. Richer mapped/type-pack iteration, methods/data packs, static value
-packs and mixed fixed/expanded tuple shapes remain open.
+bindings. For a selected variadic arity, `comptime for T in Ts` and
+`comptime map T in Ts` also bind each element of the declared type pack as an
+ordinary abstract type parameter; no runtime type-list or type value is added.
+General pack reflection, methods/data packs, static value packs and mixed
+fixed/expanded tuple shapes remain open.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time
