@@ -54,12 +54,17 @@ fn lexical_owner(env Environment, owner Int) Int {
         lexical_owner(env, item.owner)
     } else { owner }
 }
+fn closure_expansion(node Node) Text {
+    let marker = part(node, NodeKind.ExpansionId)
+    if marker < 0 { "" } else { child(node, marker).value }
+}
 fn closure_symbol(context Context, node Node) Int {
     var index = 0
     while index < length(context.env.source.symbols) {
         let item = symbol(context.env, index)
         if item.owner == context.signature.symbol && item.node.kind == NodeKind.Function && item.node.value == "" &&
-            item.node.span.start == node.span.start && item.node.span.end == node.span.end { return index }
+            item.node.span.start == node.span.start && item.node.span.end == node.span.end &&
+            closure_expansion(item.node) == closure_expansion(node) { return index }
         index = index + 1
     }
     let parent = symbol(context.env, context.signature.symbol)

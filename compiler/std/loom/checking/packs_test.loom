@@ -1,5 +1,27 @@
+import std.result.Result
+import std.text.slice
+
 test fn variadic_calls_infer_arbitrary_arity_and_contextual_function_values() {
     discard accepted("fn pack[Ts...](values Ts...) (Ts...) { values }\nfn forward[R, Ts...](callback fn(Ts...) R, values Ts...) R { callback(values...) }\nfn combine(a Int, b Text) Text { b }\nfn main() { let pair = pack(1, \"two\")\nassert pair.0 == 1 && pair.1 == \"two\"\nlet empty = pack()\ndiscard pack(empty...)\nlet many = pack(1, true, \"three\", 4, 5, 6, 7)\nassert many.6 == 7\nassert forward(combine, 1, \"ok\") == \"ok\"\nlet callback fn(Int, Text) (Int, Text) = pack\nassert callback(2, \"yes\").0 == 2\nlet singleton = pack[Int]\nassert singleton(3).0 == 3\nassert comptime { pack(4, true).0 } == 4 }")
+}
+
+test fn static_iteration_errors_point_to_the_selected_pack_name() {
+    let source = "fn bad[Ts...](values Ts...) { let values = (99, 100)\ncomptime for value in values { discard value } }\nfn main() { bad(1, 2) }"
+    match checked(source_files(source)) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "comptime for value pack is shadowed at this site"
+            assert slice(source, failed.diagnostic.span.start, failed.diagnostic.span.end) == "values"
+        }
+        Result.Ok(_) => { assert false }
+    }
+    let other = "fn bad[Ts...](values Ts...) { comptime for value in other { discard value } }\nfn main() { bad(1) }"
+    match checked(source_files(other)) {
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "comptime for must use this function's final value pack"
+            assert slice(other, failed.diagnostic.span.start, failed.diagnostic.span.end) == "other"
+        }
+        Result.Ok(_) => { assert false }
+    }
 }
 
 test fn variadic_arity_checks_keep_declared_bounds_and_required_proofs() {
@@ -23,4 +45,24 @@ test fn variadic_packs_transfer_tasks_through_ordinary_typed_parameters() {
     rejects("fn pack[Ts...](values Ts...) (Ts...) { values }\nasync fn item() Int { 1 }\nasync fn main() { let task = item()\nlet pair = pack(task, task)\ndiscard pair.0.await\ndiscard pair.1.await }")
     discard accepted("fn pack[Ts...](values Ts...) (Ts...) { values }\nfn f() {}\nfn main() { f(pack()...) }")
     rejects("fn pack[Ts...](values Ts...) (Ts...) { values }\nfn f(comptime value Int) Int { value }\nfn main() { discard f(pack()..., 1) }")
+}
+
+test fn static_pack_iteration_checks_each_selected_element_and_lexical_scope() {
+    discard accepted("concept Tag { fn tag(self Self) Int }\nimpl Tag for Int { fn tag(self Int) Int { self } }\nimpl Tag for Bool { fn tag(self Bool) Int { if self { 1 } else { 0 } } }\nfn total[Ts... Tag](values Ts...) Int { var sum = 0\ncomptime for value in values { sum = sum + value.tag()\nlet value = 99\ndiscard value }\nsum }\nfn main() { assert total() == 0\nassert total(40, true, 1) == 42 }")
+    rejects("fn bad[Ts...](values Ts...) { comptime for value in other { discard value } }\nfn main() { bad(1) }")
+    rejects("fn bad[Ts...](values Ts...) { let values = (99, 100)\ncomptime for value in values { discard value } }\nfn main() { bad(1, 2) }")
+    rejects("fn bad(values (Int, Int)) { comptime for value in values { discard value } }\nfn main() { bad((1, 2)) }")
+    discard accepted("fn stop[Ts...](values Ts...) Int { var count = 0\nwhile true { comptime for value in values { discard value\ncount = count + 1\nbreak }\ncount = count + 100\nbreak }\ncount }\nfn main() { assert stop(1, 2) == 1\nassert stop() == 100 }")
+    discard accepted("fn skipped[Ts...](values Ts...) Int { var count = 0\nvar reached = 0\nwhile count < 2 { comptime for value in values { discard value\ncount = count + 1\ncontinue }\nreached = reached + 1\ncount = 2 }\nreached }\nfn main() { assert skipped(1) == 0\nassert skipped() == 1 }")
+    rejects("fn bad[Ts...](values Ts...) { comptime for value in values { continue } }\nfn main() { bad(1) }")
+    discard accepted("fn ok[Ts...](values Ts...) { comptime for value in values { var count = 0\nwhile count < 1 { count = count + 1\ncontinue }\ndiscard value } }\nfn main() { ok(1, true) }")
+    discard accepted("fn selected[Ts...](values Ts...) { comptime if Int == Bool { comptime for value in other { break } } else { comptime for value in values { discard value } } }\nfn main() { selected(1, true) }")
+    discard accepted("fn selected[Ts...](values Ts...) { comptime if Int == Bool { let values = (99, 100)\ncomptime for value in values { discard value } } else { comptime for value in values { discard value } } }\nfn main() { selected(1, true) }")
+    rejects("fn selected[Ts...](values Ts...) { comptime if Int == Int { comptime for value in other { discard value } } else { comptime for value in values { discard value } } }\nfn main() { selected(1) }")
+}
+
+test fn static_pack_iteration_preserves_task_consumption() {
+    discard accepted("async fn item[T](value T) T { value }\nasync fn drain[Ts...](values Task[Ts]...) { comptime for value in values { discard value.await } }\nasync fn main() { drain(item(1), item(true)).await\ndrain().await }")
+    rejects("async fn item() Int { 1 }\nasync fn bad[Ts...](values Task[Ts]...) { comptime for value in values { discard value.await\ndiscard value.await } }\nasync fn main() { bad(item()).await }")
+    rejects("async fn item() Int { 1 }\nasync fn bad[Ts...](values Task[Ts]...) { comptime for value in values { discard value } }\nasync fn main() { bad(item()).await }")
 }

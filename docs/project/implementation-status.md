@@ -245,9 +245,12 @@ arities have not been verified. Variadic postconditions reject until the checker
 can prove every arity, including for uncalled declarations. Empty tuple operands
 retain their evaluation at the source gap, even with no resulting arguments,
 indirect/method calls or suspension. Their effects cannot enter erased comptime
-arguments; those boundaries still require a prior binding. Pack iteration,
-multiple packs, methods/data packs and static value packs remain open. See the
-[variadic example](../../compiler/examples/variadics/main.loom).
+arguments; those boundaries still require a prior binding. A first body-level
+`comptime for item in values` form unrolls the final value pack for each selected
+arity and checks every selected element with ordinary effects and Task rules.
+Multiple packs, methods/data packs, static value packs and richer pack iteration
+remain open. See the [variadic example](../../compiler/examples/variadics/main.loom)
+and [pack iteration example](../../compiler/examples/pack_iteration/main.loom).
 
 Named function values have structural signatures, contextual overload/generic
 selection, and native calls through an entry/environment pair. Parameters, returned
@@ -598,7 +601,7 @@ Runtime captures, external effects, faults, and exhausted
 budgets reject. Scalar constraint folding shares this evaluator; required
 postconditions still use the prover, with no evaluation-as-proof fallback.
 
-Stable schemas, lossless editing, pack iteration, typed macros, broader compile-time
+Stable schemas, lossless editing, richer pack iteration, typed macros, broader compile-time
 reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 

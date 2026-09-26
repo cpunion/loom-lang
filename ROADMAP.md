@@ -299,8 +299,10 @@ arity, then elaborate one final type/value pack into ordinary generic/native
 parameters. Abstract element checking, mapped type patterns and contextual
 function references preserve the existing rules. Empty packs infer an empty
 tuple, without source Unit syntax. Unselected arities are not verified;
-variadic postconditions reject until every arity can be proved. Pack iteration,
-methods/data packs, static value packs and heterogeneous Task joins remain open.
+variadic postconditions reject until every arity can be proved. A first
+`comptime for` form statically visits the final value pack in selected bodies;
+richer mapped/type-pack iteration, methods/data packs, static value packs and
+heterogeneous Task joins remain open.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time
@@ -420,7 +422,7 @@ resolved by guessing later operands.
 Shared-container
 results preserve internal aliases and cycles while constructing a fresh graph
 on each runtime evaluation. Successful pure results can be reused within one
-check; persistent/incremental reuse, pack iteration, typed macros, and broader
+check; persistent/incremental reuse, richer pack iteration, typed macros, and broader
 reflection remain incomplete.
 `Int` type predicates can call pure helpers through the same bounded evaluator;
 known constants remove checks, while unknown results retain the runtime

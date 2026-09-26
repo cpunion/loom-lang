@@ -1,0 +1,8 @@
+test fn empty_and_heterogeneous_packs_keep_source_order() {
+    let events = labels()
+    assert length(events) == 6
+    assert events[0] == "arg-1" && events[1] == "arg-2" && events[2] == "arg-3"
+    assert events[3] == "42" && events[4] == "text" && events[5] == "boolean"
+    let captured = captured_labels(7, "captured", true)
+    assert captured[0] == "7" && captured[1] == "captured" && captured[2] == "boolean"
+}

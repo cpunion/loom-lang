@@ -1,0 +1,94 @@
+import std.int.to_text
+import std.list.length
+import std.list.push
+
+concept Label {
+    fn label(self Self) Text
+}
+
+impl Label for Int {
+    fn label(self Int) Text {
+        to_text(self)
+    }
+}
+
+impl Label for Text {
+    fn label(self Text) Text {
+        self
+    }
+}
+
+impl Label for Bool {
+    fn label(self Bool) Text {
+        "boolean"
+    }
+}
+
+fn marked[T](events List[Text], label Text, value T) T {
+    push(events, label)
+    value
+}
+
+fn labels() List[Text] {
+    let events List[Text] = []
+    append_labels(events, marked(events, "arg-1", 42), marked(events, "arg-2", "text"), marked(events, "arg-3", true))
+    append_labels(events)
+    events
+}
+
+fn append_labels[Ts...Label](events List[Text], values Ts...) {
+    comptime for value in values {
+        push(events, value.label())
+        let value = "inner"
+        discard value
+    }
+}
+
+fn captured_labels[Ts...Label](values Ts...) List[Text] {
+    let events List[Text] = []
+    comptime for value in values {
+        let read = fn() Text {
+            value.label()
+        }
+        push(events, read())
+    }
+    events
+}
+
+fn stop_after_first[Ts...](values Ts...) Int {
+    var count = 0
+    while true {
+        comptime for value in values {
+            discard value
+            count = count + 1
+            break
+        }
+        count = count + 100
+        break
+    }
+    count
+}
+
+async fn item[T](value T) T {
+    value
+}
+
+async fn drain[Ts...](values Task[Ts]...) {
+    comptime for value in values {
+        discard value.await
+    }
+}
+
+async fn main() {
+    let events = labels()
+    assert length(events) == 6
+    assert events[0] == "arg-1" && events[1] == "arg-2" && events[2] == "arg-3"
+    assert events[3] == "42" && events[4] == "text" && events[5] == "boolean"
+    let captured = captured_labels(7, "captured", true)
+    assert captured[0] == "7" && captured[1] == "captured" && captured[2] == "boolean"
+    assert length(captured_labels()) == 0
+    assert stop_after_first(1, true) == 1
+    assert stop_after_first() == 100
+    drain(item(1), item("done")).await
+    drain().await
+}
