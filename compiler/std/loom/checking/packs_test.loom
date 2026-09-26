@@ -5,22 +5,16 @@ test fn variadic_calls_infer_arbitrary_arity_and_contextual_function_values() {
     discard accepted("fn pack[Ts...](values Ts...) (Ts...) { values }\nfn forward[R, Ts...](callback fn(Ts...) R, values Ts...) R { callback(values...) }\nfn combine(a Int, b Text) Text { b }\nfn main() { let pair = pack(1, \"two\")\nassert pair.0 == 1 && pair.1 == \"two\"\nlet empty = pack()\ndiscard pack(empty...)\nlet many = pack(1, true, \"three\", 4, 5, 6, 7)\nassert many.6 == 7\nassert forward(combine, 1, \"ok\") == \"ok\"\nlet callback fn(Int, Text) (Int, Text) = pack\nassert callback(2, \"yes\").0 == 2\nlet singleton = pack[Int]\nassert singleton(3).0 == 3\nassert comptime { pack(4, true).0 } == 4 }")
 }
 
-test fn static_iteration_errors_point_to_the_selected_pack_name() {
-    let source = "fn bad[Ts...](values Ts...) { let values = (99, 100)\ncomptime for value in values { discard value } }\nfn main() { bad(1, 2) }"
+test fn static_iteration_errors_point_to_an_unbound_tuple_name() {
+    let source = "fn bad[Ts...](values Ts...) { comptime for value in missing { discard value } }\nfn main() { bad(1, 2) }"
     match checked(source_files(source)) {
         Result.Err(failed) => {
-            assert failed.diagnostic.message == "comptime for value pack is shadowed at this site"
-            assert slice(source, failed.diagnostic.span.start, failed.diagnostic.span.end) == "values"
+            assert failed.diagnostic.message == "comptime for requires an immutable tuple binding"
+            assert slice(source, failed.diagnostic.span.start, failed.diagnostic.span.end) == "missing"
         }
-        Result.Ok(_) => { assert false }
-    }
-    let other = "fn bad[Ts...](values Ts...) { comptime for value in other { discard value } }\nfn main() { bad(1) }"
-    match checked(source_files(other)) {
-        Result.Err(failed) => {
-            assert failed.diagnostic.message == "comptime for must use this function's final value pack"
-            assert slice(other, failed.diagnostic.span.start, failed.diagnostic.span.end) == "other"
+        Result.Ok(_) => {
+            assert false
         }
-        Result.Ok(_) => { assert false }
     }
 }
 
@@ -50,8 +44,8 @@ test fn variadic_packs_transfer_tasks_through_ordinary_typed_parameters() {
 test fn static_pack_iteration_checks_each_selected_element_and_lexical_scope() {
     discard accepted("concept Tag { fn tag(self Self) Int }\nimpl Tag for Int { fn tag(self Int) Int { self } }\nimpl Tag for Bool { fn tag(self Bool) Int { if self { 1 } else { 0 } } }\nfn total[Ts... Tag](values Ts...) Int { var sum = 0\ncomptime for value in values { sum = sum + value.tag()\nlet value = 99\ndiscard value }\nsum }\nfn main() { assert total() == 0\nassert total(40, true, 1) == 42 }")
     rejects("fn bad[Ts...](values Ts...) { comptime for value in other { discard value } }\nfn main() { bad(1) }")
-    rejects("fn bad[Ts...](values Ts...) { let values = (99, 100)\ncomptime for value in values { discard value } }\nfn main() { bad(1, 2) }")
-    rejects("fn bad(values (Int, Int)) { comptime for value in values { discard value } }\nfn main() { bad((1, 2)) }")
+    discard accepted("fn shadow[Ts...](values Ts...) Int { let values = (40, 2)\nvar sum = 0\ncomptime for value in values { sum = sum + value }\nsum }\nfn main() { assert shadow(true) == 42 }")
+    discard accepted("fn sum(values (Int, Int)) Int { var total = 0\ncomptime for value in values { total = total + value }\ntotal }\nfn main() { assert sum((40, 2)) == 42 }")
     discard accepted("fn stop[Ts...](values Ts...) Int { var count = 0\nwhile true { comptime for value in values { discard value\ncount = count + 1\nbreak }\ncount = count + 100\nbreak }\ncount }\nfn main() { assert stop(1, 2) == 1\nassert stop() == 100 }")
     discard accepted("fn skipped[Ts...](values Ts...) Int { var count = 0\nvar reached = 0\nwhile count < 2 { comptime for value in values { discard value\ncount = count + 1\ncontinue }\nreached = reached + 1\ncount = 2 }\nreached }\nfn main() { assert skipped(1) == 0\nassert skipped() == 1 }")
     rejects("fn bad[Ts...](values Ts...) { comptime for value in values { continue } }\nfn main() { bad(1) }")
@@ -59,6 +53,20 @@ test fn static_pack_iteration_checks_each_selected_element_and_lexical_scope() {
     discard accepted("fn selected[Ts...](values Ts...) { comptime if Int == Bool { comptime for value in other { break } } else { comptime for value in values { discard value } } }\nfn main() { selected(1, true) }")
     discard accepted("fn selected[Ts...](values Ts...) { comptime if Int == Bool { let values = (99, 100)\ncomptime for value in values { discard value } } else { comptime for value in values { discard value } } }\nfn main() { selected(1, true) }")
     rejects("fn selected[Ts...](values Ts...) { comptime if Int == Int { comptime for value in other { discard value } } else { comptime for value in values { discard value } } }\nfn main() { selected(1) }")
+}
+
+test fn static_iteration_accepts_immutable_tuple_bindings_and_checks_each_field() {
+    discard accepted("fn label(value Int) Int { 1 }\nfn label(value Bool) Int { 2 }\nfn pack[Ts...](values Ts...) (Ts...) { values }\nfn labels(pair (Int, Bool)) Int { var output = 0\ncomptime for value in pair { output = output * 10 + label(value) }\nlet local = (true, 1)\ncomptime for value in local { output = output * 10 + label(value) }\nlet empty = pack()\ncomptime for value in empty { output = 99 }\noutput }\nfn main() { assert labels((7, true)) == 1221 }")
+    rejects("fn bad() { var pair = (1, true)\ncomptime for value in pair { discard value } }")
+    rejects("fn bad() { let items = [1, 2]\ncomptime for value in items { discard value } }")
+    rejects("fn bad() { comptime for value in missing { discard value } }")
+    rejects("fn bad() { let pair = (1, true)\ndiscard comptime map value in pair { value } }")
+}
+
+test fn static_tuple_iteration_retains_lexical_closure_and_task_rules() {
+    discard accepted("fn captures() { let pair = (1, 2)\ncomptime for value in pair { let read = fn() Int { value }\nassert read() == value } }\nasync fn item[T](value T) T { value }\nasync fn main() { captures()\nlet pair = (item(1), item(true))\ncomptime for task in pair { discard task.await } }")
+    rejects("async fn item() Int { 1 }\nasync fn bad() { let pair = (item(),)\ncomptime for task in pair { discard task.await\ndiscard task.await } }")
+    rejects("async fn item() Int { 1 }\nasync fn bad() { let pair = (item(),)\ncomptime for task in pair { discard task } }")
 }
 
 test fn static_pack_iteration_preserves_task_consumption() {

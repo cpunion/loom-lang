@@ -218,7 +218,7 @@ fn has_pack_iteration(node Node) Bool {
 
 // Repeated bodies are ordinary lexical blocks after the selected arity is
 // known. Tuple projections retain the existing move, effect and cleanup rules.
-fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, arity Int, shadowed Bool, repeated Bool, depth Int, count List[Int]) Result[Node, Failure] {
+fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, arity Int, shadowed Bool, repeated Bool, pack_mode Bool, depth Int, count List[Int]) Result[Node, Failure] {
     if depth >= 64 || get(count, 0) >= 65536 {
         // A dead comptime branch must not fail before the selected body is
         // checked. Keep the budget diagnostic in that branch as source AST.
@@ -229,11 +229,22 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
     if node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap {
         let mapping = node.kind == NodeKind.ComptimeMap
         let source = child(node, 0)
+        if mapping && !pack_mode { return Result.Ok(node) }
         if source.kind != NodeKind.Name || source.value != values {
-            return Result.Ok(pack_node(source, NodeKind.PackError, if mapping { "comptime map must use this function's final value pack" } else { "comptime for must use this function's final value pack" }, new[Node]()))
+            if mapping {
+                return Result.Ok(pack_node(source, NodeKind.PackError, "comptime map must use this function's final value pack", new[Node]()))
+            }
+            // A different name may denote an ordinary tuple binding. Its
+            // type and mutability are known only when the body is checked.
+            return Result.Ok(node)
         }
         if shadowed {
-            return Result.Ok(pack_node(source, NodeKind.PackError, if mapping { "comptime map value pack is shadowed at this site" } else { "comptime for value pack is shadowed at this site" }, new[Node]()))
+            if mapping {
+                return Result.Ok(pack_node(source, NodeKind.PackError, "comptime map value pack is shadowed at this site", new[Node]()))
+            }
+            // The visible binding, rather than the original pack, determines
+            // whether this is a valid tuple iteration.
+            return Result.Ok(node)
         }
         let iterations = new[Node]()
         var index = 0
@@ -241,7 +252,7 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
             let pack = pack_node(source, NodeKind.Name, values, new[Node]())
             let element = pack_node(source, NodeKind.Select, std.int.to_text(index), source_nodes(pack))
             let binding = pack_node(node, NodeKind.Let, node.value, source_nodes(element))
-            let body = expand_pack_iteration(env, owner, child(node, 1), values, arity, node.value == values, true, depth + 1, count)?
+            let body = expand_pack_iteration(env, owner, child(node, 1), values, arity, node.value == values, true, pack_mode, depth + 1, count)?
             let statements = source_nodes(binding)
             push(statements, body)
             push(iterations, pack_node(node, NodeKind.Block, "", statements))
@@ -265,17 +276,22 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
     index = 0
     while index < length(node.children) {
         let member = child(node, index)
-        let member_shadow = if node.kind == NodeKind.Arm && index == 1 {
-            current_shadow || pack_pattern_binds(child(node, 0), values)
-        } else { current_shadow }
-        push(children, expand_pack_iteration(env, owner, member, values, arity, member_shadow, repeated, depth + 1, count)?)
-        if node.kind == NodeKind.Block && pack_local_binds(member, values) {
-            current_shadow = true
+        if !(repeated && node.kind == NodeKind.Function && node.value == "" && member.kind == NodeKind.ExpansionId) {
+            let member_shadow = if node.kind == NodeKind.Arm && index == 1 {
+                current_shadow || pack_pattern_binds(child(node, 0), values)
+            } else { current_shadow }
+            push(children, expand_pack_iteration(env, owner, member, values, arity, member_shadow, repeated, pack_mode, depth + 1, count)?)
+            if node.kind == NodeKind.Block && pack_local_binds(member, values) {
+                current_shadow = true
+            }
         }
         index = index + 1
     }
     if repeated && node.kind == NodeKind.Function && node.value == "" {
-        push(children, pack_node(node, NodeKind.ExpansionId, std.int.to_text(identity), new[Node]()))
+        let previous = part(node, NodeKind.ExpansionId)
+        let suffix = std.int.to_text(identity)
+        let marker = if previous < 0 { suffix } else { concat(child(node, previous).value, concat(".", suffix)) }
+        push(children, pack_node(node, NodeKind.ExpansionId, marker, new[Node]()))
     }
     Result.Ok(pack_node(node, node.kind, node.value, children))
 }
@@ -332,7 +348,7 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
                 let expanded = if has_pack_iteration(typed) {
                     let count = new[Int]()
                     push(count, 0)
-                    expand_pack_iteration(env, owner, typed, values.value, arity, false, false, 0, count)?
+                    expand_pack_iteration(env, owner, typed, values.value, arity, false, false, true, 0, count)?
                 } else { typed }
                 if member.kind == NodeKind.Block {
                     let body = if structural { new[Node]() } else {

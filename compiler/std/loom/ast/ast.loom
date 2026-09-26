@@ -48,7 +48,8 @@ pub enum NodeKind {
 // Spread has one value/type child. TypePack names a variadic type parameter;
 // its children are the same explicit concept bounds as an ordinary parameter.
 // ComptimeFor is a statement with the element binding in value and children
-// [pack Name, Block]. Selected variadic arities elaborate it before checking.
+// [tuple Name, Block]. Selected variadic packs elaborate before checking;
+// ordinary immutable tuple bindings elaborate during body checking.
 // ComptimeMap has the same children, but is an expression yielding a tuple of
 // the lexical block results for the selected arity.
 // ExpansionId privately distinguishes copied anonymous functions with the

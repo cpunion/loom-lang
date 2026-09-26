@@ -55,6 +55,18 @@ fn captured_labels[Ts...Label](values Ts...) List[Text] {
     events
 }
 
+fn tuple_labels(values (Int, Bool)) List[Text] {
+    let events List[Text] = []
+    comptime for value in values {
+        push(events, value.label())
+    }
+    let extra = ("local", 7)
+    comptime for value in extra {
+        push(events, value.label())
+    }
+    events
+}
+
 fn stop_after_first[Ts...](values Ts...) Int {
     var count = 0
     while true {
@@ -86,9 +98,15 @@ async fn main() {
     assert events[3] == "42" && events[4] == "text" && events[5] == "boolean"
     let captured = captured_labels(7, "captured", true)
     assert captured[0] == "7" && captured[1] == "captured" && captured[2] == "boolean"
+    let tuple = tuple_labels((9, true))
+    assert tuple[0] == "9" && tuple[1] == "boolean" && tuple[2] == "local" && tuple[3] == "7"
     assert length(captured_labels()) == 0
     assert stop_after_first(1, true) == 1
     assert stop_after_first() == 100
     drain(item(1), item("done")).await
     drain().await
+    let tasks = (item(2), item(true))
+    comptime for task in tasks {
+        discard task.await
+    }
 }
