@@ -176,8 +176,8 @@ one dynamic obligation group. Typed helpers adopt/retain nested children, includ
 recursive enum/List layouts. Loops consume the group through actual break/return
 exits. See the [dynamic list example](compiler/examples/task_lists).
 
-The next async gates are socket readiness adapters, general worker
-operations and tuple-await syntax. Task scheduling is cooperative, not parallel Loom threads.
+The next async gates are socket readiness adapters and general worker
+operations. Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 Private multi-task completion observation now retains terminal order, wakes
 typed Loom frames and detaches selections without consuming their results.
@@ -189,8 +189,9 @@ List `all/settled/any/race` policies now run in Loom over one-time registration,
 typed outcomes and indexed slot transfer. Joins retire losing subtrees before
 returning; inferred no-result payloads and returned Tasks keep the same generic
 rules. Arbitrary-arity heterogeneous tuple `all/settled` joins now work without
-per-element helper Tasks; tuple `.await` remains open, alongside socket adapters
-and general worker APIs. See the [join example](compiler/examples/task_joins).
+per-element helper Tasks. Tuple `.await` uses source `std.task.all` for a
+statically typed tuple of Tasks. Socket adapters and general worker APIs remain
+open. See the [join example](compiler/examples/task_joins).
 
 Extend the self-hosted path with the remaining accepted capabilities:
 
@@ -302,9 +303,9 @@ tuple, without source Unit syntax. Unselected arities are not verified;
 variadic postconditions reject until every arity can be proved. A first
 `comptime for` statically visits immutable fixed-shape tuples, including the final
 value pack in selected bodies;
-`comptime map` produces a typed tuple from a structural tuple pack. Richer
-mapped/type-pack iteration, methods/data packs, static value packs and tuple
-`.await` remain open.
+`comptime map` produces a typed tuple from the same immutable fixed-shape tuple
+bindings. Richer mapped/type-pack iteration, methods/data packs, static value
+packs and mixed fixed/expanded tuple shapes remain open.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time

@@ -253,9 +253,9 @@ including the final value pack for each selected arity, and checks every element
 with ordinary effects and Task rules.
 A final structural `(Pattern[Ts]...)` parameter takes one runtime tuple and
 infers arity from its known type. `comptime map` produces an ordered typed tuple
-of lexical results from a final value pack; `comptime for` remains a no-result
-statement. Structural
-tuples currently contain only the expanded pattern, and context-dependent
+of lexical results from an immutable fixed-shape tuple parameter or local,
+including the final value pack; `comptime for` remains a no-result statement.
+Structural tuples currently contain only the expanded pattern, and context-dependent
 tuple elements need a prior typed binding. Multiple packs, methods/data packs,
 static value packs and general pack reflection remain open. See the [variadic example](../../compiler/examples/variadics/main.loom)
 and [pack iteration example](../../compiler/examples/pack_iteration/main.loom).
