@@ -97,8 +97,10 @@ Tasks, without admitting ordinary void bindings or source Unit syntax. Source
 ordinary native get/set and the same compile-time semantics.
 See the [join example](../../compiler/examples/task_joins).
 Arbitrary-arity heterogeneous tuple `all/settled` joins and two-argument
-homogeneous `any/race` joins are available. Tuple-await syntax, socket adapters,
-and general worker APIs remain unfinished.
+homogeneous `any/race` joins are available. Tuple `.await` routes a typed tuple
+of Tasks through the trusted source `std.task.all` policy without a source
+import, including tuple bindings and call results; scalar Task `.await` is
+unchanged. Socket adapters and general worker APIs remain unfinished.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;

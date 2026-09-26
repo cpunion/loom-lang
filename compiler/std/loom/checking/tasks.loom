@@ -56,6 +56,28 @@ fn task_creation_message(context Context, node Node) Text {
         })
 }
 
+fn tuple_await_signature(context Context, node Node, arity Int) Result[Int, Failure] {
+    var owner = -1
+    var index = 0
+    while index < length(context.env.packs) {
+        let pack = get(context.env.packs, index)
+        if pack.arity == -1 {
+            let item = symbol(context.env, pack.source)
+            let file = get(context.env.source.files, item.file)
+            let parameters = group(item.node, NodeKind.Parameters)
+            if item.name == "all" && item.owner < 0 && item.public && !item.test_only &&
+                file.trusted_std && package_label(context.env.source.modules, context.env.source.packages, file.package) == "std.task" &&
+                has(item.node, NodeKind.Async) && length(parameters) == 1 && tuple_pack_parameter(get(parameters, 0)) {
+                if owner >= 0 { return Result.Err(error(context, node, "ambiguous trusted std.task tuple all")) }
+                owner = pack.source
+            }
+        }
+        index = index + 1
+    }
+    if owner < 0 { return Result.Err(error(context, node, "tuple await requires trusted std.task.all")) }
+    pack_signature(context.env, owner, arity)
+}
+
 fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {
     if !async_signature(context.env, context.signature) {
         return Result.Err(error(context, node, "await requires an async function"))
@@ -66,15 +88,76 @@ fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {
     } else {
         -1
     }
-    let value = expr(context, child(node, 0), hint)?
+    let operand = child(node, 0)
+    var operand_hint = hint
+    // Probe both contextual shapes when the result is a tuple. A call may
+    // infer its type arguments only from one of these hints; neither probe
+    // evaluates the operand or contributes runtime IR.
+    if expected >= 0 {
+        let expected_shape = get(context.env.types, expected)
+        if expected_shape.kind == TypeKind.Tuple {
+            let members = new[Int]()
+            var index = 0
+            while index < length(expected_shape.arguments) {
+                push(members, intern(context.env, TypeKind.Task, -1, ints(get(expected_shape.arguments, index))))
+                index = index + 1
+            }
+            let tuple_hint = tuple_type(context.env, context.signature.symbol, operand, members)?
+            var scalar = false
+            var tuple = false
+            match static_probe(context, operand, hint) {
+                Result.Ok(checked) => { scalar = checked.ty == hint }
+                Result.Err(_) => {}
+            }
+            match static_probe(context, operand, tuple_hint) {
+                Result.Ok(checked) => { tuple = checked.ty == tuple_hint }
+                Result.Err(_) => {}
+            }
+            if scalar && tuple {
+                return Result.Err(error(context, operand, "ambiguous await operand: both a Task and a tuple of Tasks match"))
+            }
+            if tuple {
+                operand_hint = tuple_hint
+            } else if !scalar {
+                match static_probe(context, operand, -1) {
+                    Result.Ok(checked) => {
+                        if get(context.env.types, checked.ty).kind == TypeKind.Tuple { operand_hint = -1 }
+                    }
+                    Result.Err(_) => {}
+                }
+            }
+        } else {
+            match static_probe(context, operand, -1) {
+                Result.Ok(checked) => {
+                    if get(context.env.types, checked.ty).kind == TypeKind.Tuple { operand_hint = -1 }
+                }
+                Result.Err(_) => {}
+            }
+        }
+    }
+    let value = expr(context, operand, operand_hint)?
     let shape = get(context.env.types, value.ty)
-    if shape.kind != TypeKind.Task {
+    let task = if shape.kind == TypeKind.Tuple {
+        var index = 0
+        while index < length(shape.arguments) {
+            if !direct_task(context.env, get(shape.arguments, index)) {
+                return Result.Err(error(context, operand, "tuple await requires Task values"))
+            }
+            index = index + 1
+        }
+        let selected = tuple_await_signature(context, node, length(shape.arguments))?
+        invoke(context, node, ints(selected), new[Node](), plain_inputs(source_nodes(operand)), expressions(value), hint)?
+    } else {
+        value
+    }
+    let task_shape = get(context.env.types, task.ty)
+    if task_shape.kind != TypeKind.Task {
         return Result.Err(error(context, node, "await requires a Task value"))
     }
-    if value.kind == ExprKind.Suspend {
-        return Result.Ok(expression(ExprKind.Suspend, get(shape.arguments, 0), node, value.text, -1, value.children, value.falls))
+    if task.kind == ExprKind.Suspend {
+        return Result.Ok(expression(ExprKind.Suspend, get(task_shape.arguments, 0), node, task.text, -1, task.children, task.falls))
     }
-    Result.Ok(expression(ExprKind.Await, get(shape.arguments, 0), node, "", -1, expressions(value), value.falls))
+    Result.Ok(expression(ExprKind.Await, get(task_shape.arguments, 0), node, "", -1, expressions(task), task.falls))
 }
 
 fn contains_task(env Environment, ty Int, seen List[Int]) Bool {

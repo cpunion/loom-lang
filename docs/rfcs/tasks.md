@@ -63,7 +63,8 @@ Join policy belongs to Loom `std`, over narrow task primitives:
 common value type. Lists support dynamically sized homogeneous task sets and
 transfer the whole set's obligations. Empty `all`/`settled` lists produce empty
 results; `any`/`race` require a nonempty input. `(a(), b()).await` is tuple-all
-sugar. Concrete library spellings are not compiler dispatch tables.
+sugar, implemented through the trusted source `std.task.all` tuple overload;
+ordinary names and shadowing do not select its policy.
 
 ## Implementation boundary
 
@@ -186,9 +187,13 @@ types and observes every child before suspending. It cancels and drains the
 remaining children after the first fault. `std.task.settled` accepts a tuple of
 any statically known arity, including zero and one, and returns the ordered
 heterogeneous `Outcome` tuple. Its Tasks are already hot; it awaits every
-outcome in input order without early cancellation. Tuple `(a(), b()).await`
-sugar remains unfinished, as do socket adapters and general worker operations;
-these are not removed requirements.
+outcome in input order without early cancellation. Tuple `.await` accepts a
+tuple value from a literal, binding, or call, evaluates it once, and uses the
+same `all` fault/cancellation policy without requiring a source import. It
+supports empty tuples produced by a type-pack call and singleton `(task,)`;
+source `()` remains invalid. Scalar Task `.await` is unchanged. Tuple elements
+must all be Tasks; arbitrary Awaitable values are not supported. Socket adapters
+and general worker operations remain unfinished requirements.
 Two-argument homogeneous `any`/`race` calls delegate to their List policies,
 including loser cancellation and cleanup.
 Synchronous I/O still blocks the owner thread.
