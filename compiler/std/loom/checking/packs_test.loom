@@ -69,6 +69,11 @@ test fn static_tuple_iteration_retains_lexical_closure_and_task_rules() {
     rejects("async fn item() Int { 1 }\nasync fn bad() { let pair = (item(),)\ncomptime for task in pair { discard task } }")
 }
 
+test fn tuple_iteration_inside_pack_keeps_nested_pack_map() {
+    discard accepted("fn nested[Ts...](values (Ts...)) Int { let rounds = (1, 2)\nvar total = 0\ncomptime for round in rounds { let mapped = comptime map item in values { discard item\nround }\ntotal = total + mapped.0 }\ntotal }\nfn main() { assert nested((true,)) == 3 }")
+    rejects("fn bad[Ts...](values (Ts...)) { let local = ((1,),)\ncomptime for values in local { discard comptime map item in values { item } } }\nfn main() { bad((true,)) }")
+}
+
 test fn static_pack_iteration_preserves_task_consumption() {
     discard accepted("async fn item[T](value T) T { value }\nasync fn drain[Ts...](values Task[Ts]...) { comptime for value in values { discard value.await } }\nasync fn main() { drain(item(1), item(true)).await\ndrain().await }")
     rejects("async fn item() Int { 1 }\nasync fn bad[Ts...](values Task[Ts]...) { comptime for value in values { discard value.await\ndiscard value.await } }\nasync fn main() { bad(item()).await }")
