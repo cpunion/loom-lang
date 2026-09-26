@@ -69,12 +69,15 @@ fn file_wait(prepare: impl FnOnce() -> Operation) -> i32 {
     // Completion has no borrowed native handle. Job owns its inputs/results;
     // the owner drains it before running source cleanup.
     let ready = unsafe {
-        wait_source(WaitSource {
-            kind: KIND_COMPLETION,
-            interests: 0,
-            handle: 0,
-            deadline_ns: 0,
-        })
+        wait_source(
+            WaitSource {
+                kind: KIND_COMPLETION,
+                interests: 0,
+                handle: 0,
+                deadline_ns: 0,
+            },
+            None,
+        )
     };
     if started {
         return i32::from(ready.is_some());
@@ -84,6 +87,7 @@ fn file_wait(prepare: impl FnOnce() -> Operation) -> i32 {
         let task = core.tasks.get_mut(&id).unwrap();
         let wait = task
             .external
+            .as_ref()
             .ok_or("file operation needs completion registration")?;
         let workers = match owner.workers() {
             Ok(workers) => workers,

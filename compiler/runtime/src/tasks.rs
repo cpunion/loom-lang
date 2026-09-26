@@ -25,6 +25,9 @@ type CleanupCallback = unsafe extern "C-unwind" fn(*mut u8);
 #[path = "tasks_file_io.rs"]
 mod file_io;
 
+#[path = "tasks_socket.rs"]
+mod socket;
+
 #[path = "tasks_observation.rs"]
 mod observation;
 use observation::Observation;
@@ -60,11 +63,13 @@ impl State {
     }
 }
 
-#[derive(Clone, Copy)]
 struct ExternalWait {
     source: WaitSource,
     registration: Registration,
     ready: Option<ReadyNotification>,
+    // A readiness registration borrows its exact OS handle. The task keeps
+    // that handle alive until the reactor retires or cancels the registration.
+    _socket: Option<Arc<socket::Socket>>,
 }
 
 struct Task {
@@ -100,6 +105,8 @@ struct Owner {
     roots: *const FrameRoots,
     core: RefCell<Core>,
     reactor: OnceCell<Arc<Reactor>>,
+    // Drop the reactor before the table's final socket handles.
+    sockets: OnceCell<socket::Sockets>,
     workers: OnceCell<file_io::Files>,
 }
 
@@ -130,6 +137,10 @@ impl Owner {
             }
         }
         Ok(self.workers.get().unwrap())
+    }
+
+    fn sockets(&self) -> &socket::Sockets {
+        self.sockets.get_or_init(socket::Sockets::default)
     }
 
     fn cancel_operation(&self, id: u64) {
@@ -280,7 +291,11 @@ impl Owner {
             (1, State::Waiting(_)) if task.external.is_none() && task.returned == 0 => Ok(()),
             (1, State::Observing) if task.external.is_none() && task.returned == 0 => Ok(()),
             (1, State::ExternalWaiting)
-                if task.returned == 0 && task.external.is_some_and(|wait| wait.ready.is_none()) =>
+                if task.returned == 0
+                    && task
+                        .external
+                        .as_ref()
+                        .is_some_and(|wait| wait.ready.is_none()) =>
             {
                 Ok(())
             }
@@ -462,16 +477,19 @@ fn wait_fault(error: io::Error) -> ! {
     fault(&format!("task wait failed: {error}"));
 }
 
-// Readiness adapters must retain the native handle until completion/cancel;
-// this internal operation does not acquire ownership of any source resource.
-unsafe fn wait_source(source: WaitSource) -> Option<ReadyNotification> {
+// Readiness adapters supply an owned lease until completion/cancel; the
+// reactor itself only borrows the native handle, never a moving Loom pointer.
+unsafe fn wait_source(
+    source: WaitSource,
+    socket: Option<Arc<socket::Socket>>,
+) -> Option<ReadyNotification> {
     let outcome = edit(|owner, core| {
         let id = core.current.ok_or("task wait outside a resume")?;
         let task = core.tasks.get_mut(&id).unwrap();
         if !matches!(task.state, State::Running | State::ExternalWaiting) {
             return Err("task already awaits a child");
         }
-        if let Some(wait) = task.external {
+        if let Some(wait) = task.external.as_ref() {
             let previous = wait.source;
             if (
                 previous.kind,
@@ -486,11 +504,12 @@ unsafe fn wait_source(source: WaitSource) -> Option<ReadyNotification> {
             ) {
                 return Err("task already has another external wait");
             }
-            if wait.ready.is_some() {
+            let ready = wait.ready;
+            if ready.is_some() {
                 task.external = None;
                 task.state = State::Running;
             }
-            return Ok(Ok(wait.ready));
+            return Ok(Ok(ready));
         }
         let registration = owner.reactor().and_then(|reactor| {
             // SAFETY: The adapter retains a readiness handle through drain.
@@ -502,6 +521,7 @@ unsafe fn wait_source(source: WaitSource) -> Option<ReadyNotification> {
                     source,
                     registration,
                     ready: None,
+                    _socket: socket,
                 });
                 task.state = State::ExternalWaiting;
                 core.pending += 1;
@@ -522,12 +542,15 @@ pub(super) extern "C-unwind" fn loom_rt_task_wait_timer(deadline_ns: i64) -> i32
     }
     // SAFETY: A timer borrows no native resource.
     let ready = unsafe {
-        wait_source(WaitSource {
-            kind: KIND_TIMER,
-            interests: 0,
-            handle: 0,
-            deadline_ns: deadline_ns as u64,
-        })
+        wait_source(
+            WaitSource {
+                kind: KIND_TIMER,
+                interests: 0,
+                handle: 0,
+                deadline_ns: deadline_ns as u64,
+            },
+            None,
+        )
     };
     i32::from(ready.is_some())
 }
@@ -816,6 +839,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor
             roots: ptr::from_ref(roots),
             core: RefCell::new(Core::default()),
             reactor: OnceCell::new(),
+            sockets: OnceCell::new(),
             workers: OnceCell::new(),
         };
         OWNER.set(ptr::from_ref(&owner));
@@ -858,6 +882,10 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor
 #[cfg(test)]
 #[path = "tasks_wait_tests.rs"]
 mod wait_tests;
+
+#[cfg(test)]
+#[path = "tasks_socket_tests.rs"]
+mod socket_tests;
 
 #[cfg(test)]
 #[path = "tasks_transfer_tests.rs"]

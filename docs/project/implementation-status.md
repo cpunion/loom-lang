@@ -115,8 +115,14 @@ or marker-erasing dyn conversion. Cleanup cannot suspend or use Tasks. See the
 The private wait ABI now provides one-shot timers, borrowed socket readiness and
 cross-thread completion notifications through `polling`. Generation checks reject
 stale completion; cancellation removes active registrations before handles may
-close. Focused tests exercise actual timers and localhost sockets. Source timer
-Tasks now use this notification path. `std.file.tasks` adds byte/text reads and
+close. Focused tests exercise actual timers and localhost sockets. The native
+Task owner now has monotonic socket tokens for numeric-address listeners and
+accepted nonblocking streams. A readiness wait leases the exact socket until
+notification consumption or cancellation; close rejects an active lease. A
+loopback test covers readiness, explicit child cancellation, close, and stale
+token rejection. This remains a private runtime seam: Loom has no source
+`std.net.tcp`, DNS/connect, or socket read/write API yet. Source timer Tasks use
+the notification path. `std.file.tasks` adds byte/text reads and
 writes using lazily created native workers, capped at four threads per owner.
 Workers own native Files and copied buffers, never managed pointers;
 the owner copies completed reads into GC-rooted Bytes. Source code owns partial-I/O

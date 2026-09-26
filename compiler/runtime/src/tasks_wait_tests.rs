@@ -133,6 +133,7 @@ fn registration() -> Registration {
         let core = owner.core.borrow();
         core.tasks[&core.current.unwrap()]
             .external
+            .as_ref()
             .unwrap()
             .registration
     })
@@ -176,7 +177,7 @@ unsafe extern "C-unwind" fn stale(_: *mut u8) -> i64 {
             let core = owner.core.borrow();
             let task = &core.tasks[&core.current.unwrap()];
             assert!(matches!(task.state, State::ExternalWaiting));
-            assert!(task.external.unwrap().ready.is_none());
+            assert!(task.external.as_ref().unwrap().ready.is_none());
             assert_eq!(core.pending, 1);
             assert!(core.ready.is_empty());
         }
