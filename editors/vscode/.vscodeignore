@@ -1,4 +1,7 @@
 .vscode/**
+.gitignore
 try-loom.code-workspace
+wordcount.code-workspace
+try.js
 test/**
 package-lock.json
