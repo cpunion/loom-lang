@@ -10,7 +10,7 @@ pub enum NodeKind {
     TypeParameters Parameters Parameter Type TypeArguments Arguments ReturnType
     Field Variant Requires Ensures Block Let Var Assign Return Assert Discard While
     Integer Text Bool Name Call Old Construct Unary Binary Select Try
-    Match Arm Pattern Bindings Wildcard If Comptime ComptimeFor
+    Match Arm Pattern Bindings Wildcard If Comptime ComptimeFor ComptimeMap
     TupleType Tuple Destructure Float
     Concept Impl Implements MethodCall DynType AssociatedType FunctionType Invoke
     Defer Bounds Break Continue List Apply Index IndexAssign Scoped Async Await
@@ -49,6 +49,8 @@ pub enum NodeKind {
 // its children are the same explicit concept bounds as an ordinary parameter.
 // ComptimeFor is a statement with the element binding in value and children
 // [pack Name, Block]. Selected variadic arities elaborate it before checking.
+// ComptimeMap has the same children, but is an expression yielding a tuple of
+// the lexical block results for the selected arity.
 // ExpansionId privately distinguishes copied anonymous functions with the
 // same source span; it is never produced by the source parser.
 // PackError defers an invalid static iteration diagnostic until a selected

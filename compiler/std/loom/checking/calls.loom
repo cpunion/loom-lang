@@ -263,9 +263,37 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     Result.Ok(empty_inputs(context, inputs, node,
         expression(ExprKind.Variant, constructed_type(context, declaration, arguments, node)?, node, "", selected, values, all_fall(values))))
 }
+record TuplePackInput { inputs CallInputs arity Int }
+
+fn tuple_pack_input(context Context, inputs CallInputs, position Int) Result[TuplePackInput, Failure] {
+    let node = get(inputs.nodes, position)
+    let value = match saved_input(inputs, position) {
+        Option.Some(saved) => saved,
+        Option.None => expr(context, node, -1)?
+    }
+    let shape = get(context.env.types, value.ty)
+    let ready = match inputs.ready {
+        Option.Some(values) => values,
+        Option.None => {
+            let values = new[Option[Expr]]()
+            var index = 0
+            while index < length(inputs.nodes) {
+                push(values, Option.None)
+                index = index + 1
+            }
+            values
+        }
+    }
+    set(ready, position, Option.Some(value))
+    Result.Ok(TuplePackInput {
+        inputs = CallInputs { nodes = inputs.nodes ready = Option.Some(ready) effects = inputs.effects }
+        arity = if shape.kind == TypeKind.Tuple { length(shape.arguments) } else { -1 }
+    })
+}
+
 fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let types = child(node, 0).children
-    let inputs = call_inputs(context, child(node, 1).children)?
+    var inputs = call_inputs(context, child(node, 1).children)?
     let first = slice(node.value, 0, first_dot(node.value))
     if lookup(context, first) >= 0 {
         if package(node.value) == "" {
@@ -321,7 +349,36 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         let declaration = symbol(context.env, owner).node
         let pack = pack_parameter(declaration)
         if declaration.kind == NodeKind.Function && pack >= 0 {
-            let arity = length(inputs.nodes) - length(group(declaration, NodeKind.Parameters)) + 1
+            let parameters = group(declaration, NodeKind.Parameters)
+            var arity = length(inputs.nodes) - length(parameters) + 1
+            if tuple_pack_parameter(get(parameters, length(parameters) - 1)) {
+                arity = -1
+                if length(inputs.nodes) == length(parameters) {
+                    if length(types) != 0 {
+                        if length(options) == 0 {
+                            arity = length(types) - pack
+                        } else {
+                            // A fixed overload may supply a needed contextual
+                            // hint, such as List[T] for an empty list inside a
+                            // block. Probe privately before adding a tuple
+                            // contender that would remove that single hint.
+                            let source = get(inputs.nodes, length(inputs.nodes) - 1)
+                            match static_probe(context, source, -1) {
+                                Result.Ok(value) => {
+                                    if get(context.env.types, value.ty).kind == TypeKind.Tuple {
+                                        arity = length(types) - pack
+                                    }
+                                }
+                                Result.Err(_) => {}
+                            }
+                        }
+                    } else {
+                        let tuple = tuple_pack_input(context, inputs, length(inputs.nodes) - 1)?
+                        inputs = tuple.inputs
+                        arity = tuple.arity
+                    }
+                }
+            }
             if arity >= 0 && (length(types) == 0 || length(types) == pack + arity) {
                 push(options, pack_signature(context.env, owner, arity)?)
             }

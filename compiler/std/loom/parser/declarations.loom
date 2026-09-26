@@ -226,7 +226,7 @@ fn block(cursor Cursor) Result[Step, Diagnostic] {
         push(statements, parsed.node)
         rest = parsed.rest
         let kind = parsed.node.kind
-        let braced = kind == NodeKind.While || kind == NodeKind.If || kind == NodeKind.Match || kind == NodeKind.Block || kind == NodeKind.Comptime || kind == NodeKind.ComptimeFor || kind == NodeKind.Defer
+        let braced = kind == NodeKind.While || kind == NodeKind.If || kind == NodeKind.Match || kind == NodeKind.Block || kind == NodeKind.Comptime || kind == NodeKind.ComptimeFor || kind == NodeKind.ComptimeMap || kind == NodeKind.Defer
         if !braced && !at(rest, Kind.Newline) && !at(rest, Kind.RBrace) {
             return Result.Err(error(rest, "expected a newline or '}' after the statement"))
         }

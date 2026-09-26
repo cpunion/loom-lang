@@ -618,6 +618,20 @@ reject if none exists. The
 [pack iteration example](examples/pack_iteration/main.loom) covers mixed types,
 effects and Tasks.
 
+A final structural parameter `values (Pattern[Ts]...)` instead takes one tuple
+argument and one runtime tuple parameter. Its arity comes from the argument's
+statically known tuple type, including a named tuple or function result.
+Currently the tuple type contains only the expanded pattern; fixed tuple
+prefixes are unsupported. A contextual function type can select an arity for
+a reference to this function. Tuple elements that need contextual inference
+must be bound to a typed value first.
+
+`comptime map item in values { expression }` elaborates to an ordered typed
+tuple of lexical block results. Each selected body runs once with its own
+element type and normal effects. An empty tuple maps to an empty tuple; for
+nonempty tuples each body must produce a value. `comptime for` remains a
+no-result statement. Both forms require the function's final value pack.
+
 Unselected arities have not had their bodies verified. Variadic `ensures`
 declarations currently reject even when uncalled: proving selected arities is
 not a proof for every arity. Preconditions currently use fixed scalar parameters,

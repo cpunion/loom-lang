@@ -188,9 +188,11 @@ Already-terminal children keep their result; cleanup faults become owned data.
 List `all/settled/any/race` policies now run in Loom over one-time registration,
 typed outcomes and indexed slot transfer. Joins retire losing subtrees before
 returning; inferred no-result payloads and returned Tasks keep the same generic
-rules. Two-task heterogeneous tuple `all/settled` joins now work; arbitrary
-tuple packs and tuple `.await` remain open, alongside socket adapters and
-general worker APIs. See the [dynamic join example](compiler/examples/task_joins).
+rules. Two-task heterogeneous tuple `all` joins work. Structural tuple packs
+and `comptime map` now support heterogeneous `settled` at any statically known
+arity; arbitrary tuple `all` and tuple `.await` remain open, alongside socket
+adapters and general worker APIs. See the
+[dynamic join example](compiler/examples/task_joins).
 
 Extend the self-hosted path with the remaining accepted capabilities:
 
@@ -301,8 +303,9 @@ function references preserve the existing rules. Empty packs infer an empty
 tuple, without source Unit syntax. Unselected arities are not verified;
 variadic postconditions reject until every arity can be proved. A first
 `comptime for` form statically visits the final value pack in selected bodies;
-richer mapped/type-pack iteration, methods/data packs, static value packs and
-heterogeneous Task joins remain open.
+`comptime map` produces a typed tuple from a structural tuple pack. Richer
+mapped/type-pack iteration, methods/data packs, static value packs and
+arbitrary heterogeneous `all` remain open.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time

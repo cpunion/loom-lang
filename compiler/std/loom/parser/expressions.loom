@@ -149,8 +149,17 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
 }
 fn comptime_expr(cursor Cursor) Result[Step, Diagnostic] {
     let rest = newlines(next(cursor))
+    if word(rest, "map") {
+        let binding = name(next(rest))?
+        if !word(binding.rest, "in") {
+            return Result.Err(error(binding.rest, "expected 'in' after the static map binding"))
+        }
+        let values = name(next(binding.rest))?
+        let body = block(values.rest)?
+        return Result.Ok(done(cursor, body.rest, NodeKind.ComptimeMap, binding.node.value, two(values.node, body.node)))
+    }
     if !word(rest, "if") && !at(rest, Kind.LBrace) {
-        return Result.Err(error(rest, "expected '{' or 'if' after 'comptime'"))
+        return Result.Err(error(rest, "expected '{', 'if' or 'map' after 'comptime'"))
     }
     let value = if word(rest, "if") { if_expr(rest)? } else { block(rest)? }
     Result.Ok(done(cursor, value.rest, NodeKind.Comptime, "", one(value.node)))
