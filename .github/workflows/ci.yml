@@ -67,6 +67,7 @@ jobs:
           target/loom run compiler/examples/dyn_adapter
           target/loom test compiler/examples/cleanup
           target/loom test tools/semantic_change
+          target/loom test tools/semantic_change_trial
           target/loom test tools/deployment
           migration_dir="$(mktemp -d "$RUNNER_TEMP/loom-migration.XXXXXX")"
           target/loom build tools/deployment/fixture_v1 --output "$migration_dir/v1" --receipt "$migration_dir/v1.receipt"
@@ -133,6 +134,7 @@ jobs:
           cargo clippy --locked --workspace --all-targets -- -D warnings
           bash scripts/bootstrap.sh
           target/loom test compiler/std/storage
+          target/loom test tools/semantic_change_trial
           cargo test --locked --workspace
 
       - name: Relocated toolchain and generic CPU gate
@@ -219,6 +221,7 @@ jobs:
           cargo clippy --locked --workspace --all-targets -- -D warnings
           LOOM_NATIVE_TIMINGS=1 LOOM_BOOTSTRAP_INPUT=target/bootstrap-input/compiler.checked bash scripts/bootstrap.sh
           target/loom.exe test compiler/std/storage
+          target/loom.exe test tools/semantic_change_trial
           cargo test --locked --workspace --no-fail-fast
 
       - name: Relocated toolchain and generic CPU gate

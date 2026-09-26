@@ -134,10 +134,15 @@ The merge library accepts one side changing file/declaration layout while the
 other edits declaration bodies. It preserves the layout side's surrounding
 source text and the chosen declaration body verbatim, then parses and checks
 the merged package. One side may also add uniquely named declarations with
-fresh stable IDs while the other edits existing bodies. Additions on both sides,
+fresh stable IDs while the other edits existing bodies. For a one-sided
+addition, it scans the other side's retained declarations for the new name as
+an identifier token, including in types, contracts, and `comptime` code.
+Comments and string contents do not count. This conservative collision check
+can reject harmless local names or field names; it is not a proof of unchanged
+binding. Additions on both sides,
 additions mixed with deletions, cross-side deletion plus body edits,
-cross-side signature or contract changes plus body edits, names that could
-rebind existing calls, concurrent layout changes, conflicting edits, changes
+cross-side signature or contract changes plus body edits, retained identifier
+collisions, concurrent layout changes, conflicting edits, changes
 to the non-layout side's surrounding text, and unsupported declaration forms
 are reported instead of guessed.
 

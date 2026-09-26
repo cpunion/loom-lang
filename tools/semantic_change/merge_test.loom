@@ -4,6 +4,7 @@ import std.list.get
 import std.list.new
 import std.list.push
 import std.result.Result
+import std.text.concat
 import std.text.contains
 
 fn identities(amount_path Text) List[Identity] {
@@ -118,6 +119,71 @@ test fn a_carrier_addition_and_an_independent_body_edit_merge() {
         Result.Ok(merged) => {
             assert get(merged.files, 1).text ==
             "// destination note\nfn amount() Int { 2 }\nfn entry() Int { amount() }\nfn extra() Int { 9 }\n"
+        }
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+        }
+    }
+}
+
+fn added_declaration(name Text, kind NodeKind, declaration Text) Revision {
+    let changed = revision("value.loom", concat("fn amount() Int { 1 }\n", declaration),
+        "fn entry() Int { amount() }\n")
+    push(changed.identities, Identity {
+            id = "new-id"
+            path = "value.loom"
+            kind = kind
+            name = name
+        })
+    changed
+}
+
+fn expect_retained_name_conflict(added Revision, other Revision) {
+    match merge(baseline(), added, other) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "name token retained on the other side")
+        }
+    }
+    match merge(baseline(), other, added) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "name token retained on the other side")
+        }
+    }
+}
+
+test fn one_sided_addition_with_retained_call_type_contract_or_comptime_name_needs_review() {
+    let added_function = added_declaration("fresh", NodeKind.Function,
+        "fn fresh() Int { 9 }\n")
+    expect_retained_name_conflict(added_function, revision("value.loom",
+            "fn amount() Int { 1 }\n", "fn entry() Int { fresh() }\n"))
+    expect_retained_name_conflict(added_function, revision("value.loom",
+            "fn amount() Int { 1 }\n",
+            "fn entry(value Int) Int requires fresh() > 0 { value }\n"))
+    expect_retained_name_conflict(added_function, revision("value.loom",
+            "fn amount() Int { 1 }\n",
+            "fn entry() Int { comptime { fresh() } }\n"))
+    let added_record = added_declaration("Fresh", NodeKind.Record,
+        "record Fresh { value Int }\n")
+    expect_retained_name_conflict(added_record, revision("value.loom",
+            "fn amount() Int { 1 }\n", "fn entry(value Fresh) Int { 1 }\n"))
+}
+
+test fn added_name_in_comment_or_string_does_not_block_independent_edit() {
+    let added = added_declaration("fresh", NodeKind.Function,
+        "fn fresh() Int { 9 }\n")
+    let other = revision("value.loom", "fn amount() Int { 1 }\n",
+        "fn entry() Int {\n    // fresh() is only an example\n    let note = \"fresh\"\n    amount() + 1\n}\n")
+    match merge(baseline(), added, other) {
+        Result.Ok(merged) => {
+            assert contains(get(merged.files, 0).text, "fn fresh() Int { 9 }")
+            assert contains(get(merged.files, 1).text, "amount() + 1")
         }
         Result.Err(message) => {
             discard write_error(message)

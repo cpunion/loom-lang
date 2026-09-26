@@ -1,6 +1,8 @@
 import std.loom.analysis.analyze
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
+import std.loom.lexer.Kind
+import std.loom.lexer.lex
 import std.loom.parser.parse
 import std.loom.project.ModuleInstance
 import std.loom.project.Package
@@ -306,6 +308,33 @@ fn reuses_name(base Indexed, added Entry) Bool {
     false
 }
 
+// A new package declaration can change candidate lookup anywhere the other
+// side kept an identifier, including types, contracts, and comptime code.
+// Lexing excludes comments and string contents without predicting which AST
+// kinds a future parser may use for references. This is a conservative guard,
+// not a proof that a collision actually changes the binding.
+fn retained_name_token(entries List[Entry], name Text) Result[Bool, Text] {
+    var index = 0
+    while index < length(entries) {
+        let tokens = match lex(get(entries, index).body) {
+            Result.Ok(value) => value
+            Result.Err(problem) => {
+                return Result.Err(concat("cannot lex retained declaration: ", problem.message))
+            }
+        }
+        var token_index = 0
+        while token_index < length(tokens) {
+            let token = get(tokens, token_index)
+            if token.kind == Kind.Name && token.value == name {
+                return Result.Ok(true)
+            }
+            token_index = token_index + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(false)
+}
+
 fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text] {
     var left_deleted = false
     var right_deleted = false
@@ -381,6 +410,9 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
             if reuses_name(base, added) {
                 return Result.Err("new declaration reuses an existing name; binding changes need explicit review")
             }
+            if retained_name_token(right.entries, added.name)? {
+                return Result.Err("new declaration collides with a name token retained on the other side; binding review required")
+            }
         }
         index = index + 1
     }
@@ -392,6 +424,9 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
             right_added = true
             if reuses_name(base, added) {
                 return Result.Err("new declaration reuses an existing name; binding changes need explicit review")
+            }
+            if retained_name_token(left.entries, added.name)? {
+                return Result.Err("new declaration collides with a name token retained on the other side; binding review required")
             }
         }
         index = index + 1
