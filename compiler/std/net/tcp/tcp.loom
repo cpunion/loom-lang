@@ -4,49 +4,92 @@ import std.bytes.length
 // Tokens are owner-local identities, never operating-system descriptors.
 // Copying a wrapper copies its identity, not the native socket: after close,
 // every copy becomes stale. Close fails while a task has a readiness lease.
-record State { token Int }
-pub record Listener { state State }
-pub record Stream { state State }
+record State {
+    token Int
+}
 
-pub enum TcpError { Listen Port Accept Read Write Close }
+pub record Listener {
+    state State
+}
+
+pub record Stream {
+    state State
+}
+
+pub enum TcpError {
+    Listen
+    Port
+    Accept
+    Read
+    Write
+    Close
+}
 
 intrinsic fn socket_listen(address Text) Int
+
 intrinsic fn socket_local_port(token Int) Int
+
 intrinsic fn socket_accept(token Int) Int
+
 intrinsic fn socket_read(token Int, buffer Bytes, limit Int) Int
+
 intrinsic fn socket_write_bytes(token Int, value Bytes, offset Int) Int
+
 intrinsic fn socket_close(token Int) Int
+
 async intrinsic fn socket_wait(token Int, interest Int)
 
 // Only numeric IPv4/IPv6 socket addresses are supported; no DNS or connect.
 pub async fn listen(address Text) Result[Listener, TcpError] {
     let token = socket_listen(address)
-    if token < 0 { return Result.Err(TcpError.Listen) }
-    Result.Ok(Listener { state = State { token = token } })
+    if token < 0 {
+        return Result.Err(TcpError.Listen)
+    }
+    Result.Ok(Listener {
+            state = State {
+                token = token
+            }
+        })
 }
 
 pub fn local_port(listener Listener) Result[Int, TcpError] {
     let port = socket_local_port(listener.state.token)
-    if port < 0 { return Result.Err(TcpError.Port) }
+    if port < 0 {
+        return Result.Err(TcpError.Port)
+    }
     Result.Ok(port)
 }
 
 pub async fn accept(listener Listener) Result[Stream, TcpError] {
     while true {
         let token = socket_accept(listener.state.token)
-        if token >= 0 { return Result.Ok(Stream { state = State { token = token } }) }
-        if token != -2 { return Result.Err(TcpError.Accept) }
+        if token >= 0 {
+            return Result.Ok(Stream {
+                    state = State {
+                        token = token
+                    }
+                })
+        }
+        if token != -2 {
+            return Result.Err(TcpError.Accept)
+        }
         socket_wait(listener.state.token, 1).await
     }
 }
 
 // Append up to a positive limit. Ok(0) is EOF; readiness races retry safely.
 pub async fn read(stream Stream, buffer Bytes, limit Int) Result[Int, TcpError] {
-    if limit <= 0 { return Result.Err(TcpError.Read) }
+    if limit <= 0 {
+        return Result.Err(TcpError.Read)
+    }
     while true {
         let count = socket_read(stream.state.token, buffer, limit)
-        if count >= 0 { return Result.Ok(count) }
-        if count != -2 { return Result.Err(TcpError.Read) }
+        if count >= 0 {
+            return Result.Ok(count)
+        }
+        if count != -2 {
+            return Result.Err(TcpError.Read)
+        }
         socket_wait(stream.state.token, 1).await
     }
 }
@@ -62,7 +105,9 @@ pub async fn write_bytes(stream Stream, value Bytes) Result[Int, TcpError] {
         if count == -2 {
             socket_wait(stream.state.token, 2).await
         } else {
-            if count <= 0 { return Result.Err(TcpError.Write) }
+            if count <= 0 {
+                return Result.Err(TcpError.Write)
+            }
             offset = offset + count
         }
     }
@@ -70,11 +115,15 @@ pub async fn write_bytes(stream Stream, value Bytes) Result[Int, TcpError] {
 }
 
 pub fn close_listener(listener Listener) Result[Int, TcpError] {
-    if socket_close(listener.state.token) < 0 { return Result.Err(TcpError.Close) }
+    if socket_close(listener.state.token) < 0 {
+        return Result.Err(TcpError.Close)
+    }
     Result.Ok(0)
 }
 
 pub fn close_stream(stream Stream) Result[Int, TcpError] {
-    if socket_close(stream.state.token) < 0 { return Result.Err(TcpError.Close) }
+    if socket_close(stream.state.token) < 0 {
+        return Result.Err(TcpError.Close)
+    }
     Result.Ok(0)
 }

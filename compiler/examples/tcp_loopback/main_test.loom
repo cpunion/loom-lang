@@ -16,8 +16,10 @@ async fn blocked(listener Listener) {
 test async fn cancellation_releases_wait_lease_before_close() {
     let listener = match listen("127.0.0.1:0").await {
         Result.Ok(value) => value
-        Result.Err(_) => { assert false
-            return }
+        Result.Err(_) => {
+            assert false
+            return
+        }
     }
     let pending = blocked(listener)
     sleep_ms(1).await

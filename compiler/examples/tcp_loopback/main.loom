@@ -16,11 +16,15 @@ import std.process.exit_code
 
 async fn serve() Result[Int, TcpError] {
     let listener = listen("127.0.0.1:0").await?
-    defer { discard close_listener(listener) }
+    defer {
+        discard close_listener(listener)
+    }
     let port = local_port(listener)?
     discard write_text(concat(to_text(port), "\n"))
     let stream = accept(listener).await?
-    defer { discard close_stream(stream) }
+    defer {
+        discard close_stream(stream)
+    }
     let buffer = new()
     var count = read(stream, buffer, 8192).await?
     while count > 0 {
@@ -31,7 +35,8 @@ async fn serve() Result[Int, TcpError] {
 
 async fn main() {
     match serve().await {
-        Result.Ok(_) => {}
+        Result.Ok(_) => {
+        }
         Result.Err(_) => {
             discard write_error("tcp loopback failed\n")
             exit_code(1)
