@@ -1,10 +1,11 @@
 //! Owner-local socket tokens. The reactor only borrows native handles; an
-//! external task wait keeps an Arc lease until readiness or cancellation has
+//! external task wait keeps an owner-local Rc lease until readiness or cancellation has
 //! retired its registration. Tokens are never raw descriptors or reused.
 
 use super::*;
 use crate::wait::{KIND_READINESS, READABLE, WRITABLE};
 use crate::{buffer_bytes, reserve};
+use socket2::{Domain, Protocol, SockAddr, Socket as NativeSocket, Type};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 
@@ -27,7 +28,10 @@ fn raw_handle(socket: &impl AsRawSocket) -> u64 {
 
 pub(super) enum Socket {
     Listener(TcpListener),
-    Stream(TcpStream),
+    Stream {
+        stream: TcpStream,
+        connecting: Cell<bool>,
+    },
 }
 
 impl Socket {
@@ -36,14 +40,14 @@ impl Socket {
         {
             match self {
                 Self::Listener(socket) => socket.as_raw_fd() as u64,
-                Self::Stream(socket) => socket.as_raw_fd() as u64,
+                Self::Stream { stream, .. } => stream.as_raw_fd() as u64,
             }
         }
         #[cfg(windows)]
         {
             match self {
                 Self::Listener(socket) => raw_handle(socket),
-                Self::Stream(socket) => raw_handle(socket),
+                Self::Stream { stream, .. } => raw_handle(stream),
             }
         }
     }
@@ -54,6 +58,11 @@ impl Socket {
             return None;
         }
         if matches!(self, Self::Listener(_)) && interests != READABLE {
+            return None;
+        }
+        if matches!(self, Self::Stream { connecting, .. } if connecting.get())
+            && interests != WRITABLE
+        {
             return None;
         }
         Some(WaitSource {
@@ -67,7 +76,7 @@ impl Socket {
 
 #[derive(Default)]
 pub(super) struct Sockets {
-    handles: RefCell<HashMap<i64, Arc<Socket>>>,
+    handles: RefCell<HashMap<i64, Rc<Socket>>>,
     next: Cell<i64>,
 }
 
@@ -78,18 +87,17 @@ impl Sockets {
             .get()
             .checked_add(1)
             .unwrap_or_else(|| fatal("socket identities exhausted"));
-        self.handles.borrow_mut().insert(token, Arc::new(socket));
+        self.handles.borrow_mut().insert(token, Rc::new(socket));
         self.next.set(token);
         token
     }
 
-    pub(super) fn get(&self, token: i64) -> Option<Arc<Socket>> {
+    pub(super) fn get(&self, token: i64) -> Option<Rc<Socket>> {
         self.handles.borrow().get(&token).cloned()
     }
 
     fn listen(&self, address: &str) -> i64 {
-        // Keep the owner thread out of name resolution; a future source API
-        // can put DNS/connect work on the existing bounded worker path.
+        // Keep the owner thread out of name resolution.
         let Ok(address) = address.parse::<SocketAddr>() else {
             return -1;
         };
@@ -114,10 +122,65 @@ impl Sockets {
                 if stream.set_nonblocking(true).is_err() {
                     return -1;
                 }
-                self.insert(Socket::Stream(stream))
+                self.insert(Socket::Stream {
+                    stream,
+                    connecting: Cell::new(false),
+                })
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => -2,
             Err(_) => -1,
+        }
+    }
+
+    fn connect(&self, address: &str) -> i64 {
+        // Numeric addresses only: creating and initiating a nonblocking socket
+        // cannot resolve a name or wait for a remote handshake on this owner.
+        let Ok(address) = address.parse::<SocketAddr>() else {
+            return -1;
+        };
+        let Ok(socket) = NativeSocket::new(
+            Domain::for_address(address),
+            Type::STREAM,
+            Some(Protocol::TCP),
+        ) else {
+            return -1;
+        };
+        if socket.set_nonblocking(true).is_err() {
+            return -1;
+        }
+        let connecting = match socket.connect(&SockAddr::from(address)) {
+            Ok(()) => false,
+            // Rust maps WSAEWOULDBLOCK to WouldBlock on Windows.
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => true,
+            #[cfg(unix)]
+            Err(error) if error.raw_os_error() == Some(libc::EINPROGRESS) => true,
+            Err(_) => return -1,
+        };
+        self.insert(Socket::Stream {
+            stream: socket.into(),
+            connecting: Cell::new(connecting),
+        })
+    }
+
+    fn connect_status(&self, token: i64) -> i64 {
+        let Some(socket) = self.get(token) else {
+            return -1;
+        };
+        let Socket::Stream { stream, connecting } = socket.as_ref() else {
+            return -1;
+        };
+        if !connecting.get() {
+            return 0;
+        }
+        match stream.take_error() {
+            Ok(Some(_)) | Err(_) => -1,
+            Ok(None) => match stream.peer_addr() {
+                Ok(_) => {
+                    connecting.set(false);
+                    0
+                }
+                Err(_) => -2,
+            },
         }
     }
 
@@ -128,7 +191,7 @@ impl Sockets {
         };
         // Reject a close while an active or delivered wait still leases the
         // exact handle. Cancellation/ready consumption drops that lease first.
-        if Arc::strong_count(socket) != 1 {
+        if Rc::strong_count(socket) != 1 {
             return false;
         }
         handles.remove(&token);
@@ -162,6 +225,18 @@ pub(super) extern "C-unwind" fn loom_rt_socket_accept(token: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_socket_connect(address: *const u8) -> i64 {
+    // SAFETY: Generated code supplies a rooted, valid UTF-8 Text for this call.
+    let address = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(address)) };
+    edit(|owner, _| Ok(owner.sockets().connect(address)))
+}
+
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_socket_connect_status(token: i64) -> i64 {
+    edit(|owner, _| Ok(owner.sockets().connect_status(token)))
+}
+
+#[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_socket_close(token: i64) -> i64 {
     edit(|owner, _| Ok(if owner.sockets().close(token) { 0 } else { -1 }))
 }
@@ -186,9 +261,12 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_read(
     let Some(socket) = edit(|owner, _| Ok(owner.sockets().get(token))) else {
         return -1;
     };
-    let Socket::Stream(stream) = socket.as_ref() else {
+    let Socket::Stream { stream, connecting } = socket.as_ref() else {
         return -1;
     };
+    if connecting.get() {
+        return -1;
+    }
     // A bounded native scratch buffer avoids keeping a movable Bytes pointer
     // across I/O. Only a successful read grows the caller's rooted Bytes.
     let mut scratch = vec![0; limit.min(64 * 1024)];
@@ -231,9 +309,12 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_write_bytes(
     let Some(socket) = edit(|owner, _| Ok(owner.sockets().get(token))) else {
         return -1;
     };
-    let Socket::Stream(stream) = socket.as_ref() else {
+    let Socket::Stream { stream, connecting } = socket.as_ref() else {
         return -1;
     };
+    if connecting.get() {
+        return -1;
+    }
     let mut stream = stream;
     match stream.write(bytes) {
         Ok(count) => count as i64,

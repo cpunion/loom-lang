@@ -167,6 +167,8 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::WriteBytes
         | Primitive::Close
         | Primitive::SocketListen
+        | Primitive::SocketConnect
+        | Primitive::SocketConnectStatus
         | Primitive::SocketAccept
         | Primitive::SocketWriteBytes
         | Primitive::SocketClose

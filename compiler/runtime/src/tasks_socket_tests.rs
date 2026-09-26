@@ -72,7 +72,7 @@ unsafe extern "C-unwind" fn ready(frame: *mut u8) -> i64 {
         assert!(accepted > token);
         with_owner(|owner| {
             let socket = owner.sockets().get(accepted).unwrap();
-            assert!(matches!(socket.as_ref(), Socket::Stream(_)));
+            assert!(matches!(socket.as_ref(), Socket::Stream { .. }));
         });
         assert_eq!(loom_rt_socket_close(accepted), 0);
         assert_eq!(loom_rt_socket_close(token), 0);

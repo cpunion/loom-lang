@@ -97,6 +97,8 @@ pub enum Primitive {
     WriteBytes,
     Close,
     SocketListen,
+    SocketConnect,
+    SocketConnectStatus,
     SocketAccept,
     SocketRead,
     SocketWriteBytes,

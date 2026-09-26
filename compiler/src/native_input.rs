@@ -981,8 +981,11 @@ impl Converter<'_> {
                     Primitive::WriteBytes => {
                         Some((&[Type::Int, Type::Bytes, Type::Int], Type::Int))
                     }
-                    Primitive::SocketListen => Some((&[Type::Text], Type::Int)),
+                    Primitive::SocketListen | Primitive::SocketConnect => {
+                        Some((&[Type::Text], Type::Int))
+                    }
                     Primitive::SocketAccept
+                    | Primitive::SocketConnectStatus
                     | Primitive::SocketClose
                     | Primitive::SocketLocalPort => Some((&[Type::Int], Type::Int)),
                     Primitive::SocketRead | Primitive::SocketWriteBytes => {
@@ -1329,6 +1332,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "write_bytes" => P::WriteBytes,
         "close" => P::Close,
         "socket_listen" => P::SocketListen,
+        "socket_connect" => P::SocketConnect,
+        "socket_connect_status" => P::SocketConnectStatus,
         "socket_accept" => P::SocketAccept,
         "socket_read" => P::SocketRead,
         "socket_write_bytes" => P::SocketWriteBytes,
@@ -1410,6 +1415,8 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::Create
         | P::Close
         | P::SocketListen
+        | P::SocketConnect
+        | P::SocketConnectStatus
         | P::SocketAccept
         | P::SocketClose
         | P::SocketLocalPort

@@ -15,6 +15,7 @@ use super::wait::{
 use super::{fatal, fault};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::{io, ptr, time::Duration};
 
@@ -69,7 +70,7 @@ struct ExternalWait {
     ready: Option<ReadyNotification>,
     // A readiness registration borrows its exact OS handle. The task keeps
     // that handle alive until the reactor retires or cancels the registration.
-    _socket: Option<Arc<socket::Socket>>,
+    _socket: Option<Rc<socket::Socket>>,
 }
 
 struct Task {
@@ -481,7 +482,7 @@ fn wait_fault(error: io::Error) -> ! {
 // reactor itself only borrows the native handle, never a moving Loom pointer.
 unsafe fn wait_source(
     source: WaitSource,
-    socket: Option<Arc<socket::Socket>>,
+    socket: Option<Rc<socket::Socket>>,
 ) -> Option<ReadyNotification> {
     let outcome = edit(|owner, core| {
         let id = core.current.ok_or("task wait outside a resume")?;
