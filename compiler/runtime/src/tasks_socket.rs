@@ -11,6 +11,18 @@ use std::os::fd::AsRawFd;
 #[cfg(windows)]
 use std::os::windows::io::AsRawSocket;
 
+#[cfg(windows)]
+fn raw_handle(socket: &impl AsRawSocket) -> u64 {
+    #[cfg(target_pointer_width = "64")]
+    {
+        socket.as_raw_socket()
+    }
+    #[cfg(target_pointer_width = "32")]
+    {
+        socket.as_raw_socket() as u64
+    }
+}
+
 pub(super) enum Socket {
     Listener(TcpListener),
     Stream(TcpStream),
@@ -28,8 +40,8 @@ impl Socket {
         #[cfg(windows)]
         {
             match self {
-                Self::Listener(socket) => socket.as_raw_socket() as u64,
-                Self::Stream(socket) => socket.as_raw_socket() as u64,
+                Self::Listener(socket) => raw_handle(socket),
+                Self::Stream(socket) => raw_handle(socket),
             }
         }
     }
