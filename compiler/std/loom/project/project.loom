@@ -247,6 +247,16 @@ fn production(tree Node, tests Bool) Node {
     }
 }
 
+fn contains_await(node Node) Bool {
+    if node.kind == NodeKind.Await { return true }
+    var index = 0
+    while index < length(node.children) {
+        if contains_await(get(node.children, index)) { return true }
+        index = index + 1
+    }
+    false
+}
+
 fn visit_import(loader Loader, source Int, spelling Text, depth Int, comptime fetch Bool) Result[Bool, Text] {
     let loaded = match imported_package(loader, source, spelling, fetch) {
         Result.Ok(target) => visit(loader, target.0, target.1, false, depth, fetch)
@@ -355,6 +365,12 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
                     test_imports
                 } else {
                     imports
+                }
+                // Tuple await uses the trusted source implementation of
+                // std.task.all. This loads its package without making any
+                // names visible to ordinary source lookup.
+                if package != "std.task" && contains_await(tree) {
+                    include(selected_imports, "std.task")
                 }
                 var item = 0
                 while item < length(tree.children) {
