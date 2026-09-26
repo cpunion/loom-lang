@@ -1,16 +1,145 @@
 import std.net.tcp.listen
 import std.net.tcp.accept
+import std.net.tcp.connect
+import std.net.tcp.read
+import std.net.tcp.write_bytes
 import std.net.tcp.local_port
 import std.net.tcp.close_listener
+import std.net.tcp.close_stream
 import std.net.tcp.TcpError
 import std.net.tcp.Listener
+import std.net.tcp.Stream
 import std.result.Result
+import std.bytes.new
+import std.bytes.push
+import std.bytes.get
+import std.bytes.length
+import std.int.to_text
+import std.text.concat
 import std.task.cancel
 import std.task.Outcome
 import std.time.sleep_ms
 
 async fn blocked(listener Listener) {
     discard accept(listener).await
+}
+
+async fn blocked_read(stream Stream) {
+    discard read(stream, new(), 1).await
+}
+
+async fn echo_once(listener Listener) Result[Int, TcpError] {
+    let stream = accept(listener).await?
+    defer {
+        discard close_stream(stream)
+    }
+    let incoming = new()
+    while length(incoming) < 8193 {
+        if read(stream, incoming, 211).await? == 0 {
+            return Result.Err(TcpError.Read)
+        }
+    }
+    write_bytes(stream, incoming).await
+}
+
+test async fn numeric_client_connect_roundtrips_with_server_task() {
+    let listener = match listen("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard close_listener(listener)
+    }
+    let port = match local_port(listener) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let address = concat("127.0.0.1:", to_text(port))
+    let client = match connect(address).await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard close_stream(client)
+    }
+    let server = echo_once(listener)
+    let outgoing = new()
+    var index = 0
+    while index < 8193 {
+        push(outgoing, index % 256)
+        index = index + 1
+    }
+    assert match write_bytes(client, outgoing).await {
+        Result.Ok(count) => count == 8193
+        Result.Err(_) => false
+    }
+    let incoming = new()
+    while length(incoming) < 8193 {
+        assert match read(client, incoming, 197).await {
+            Result.Ok(count) => count > 0
+            Result.Err(_) => false
+        }
+    }
+    assert match server.await {
+        Result.Ok(count) => count == 8193
+        Result.Err(_) => false
+    }
+    assert length(incoming) == length(outgoing)
+    index = 0
+    while index < length(outgoing) {
+        assert get(incoming, index) == get(outgoing, index)
+        index = index + 1
+    }
+}
+
+test async fn cancelled_client_read_releases_lease_before_close() {
+    let listener = match listen("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard close_listener(listener)
+    }
+    let port = match local_port(listener) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let client = match connect(concat("127.0.0.1:", to_text(port))).await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let pending = blocked_read(client)
+    sleep_ms(1).await
+    assert match close_stream(client) {
+        Result.Err(error) => error == TcpError.Close
+        Result.Ok(_) => false
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert match close_stream(client) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
 }
 
 test async fn cancellation_releases_wait_lease_before_close() {
@@ -50,6 +179,24 @@ test async fn names_cannot_block_the_owner_in_address_resolution() {
         Result.Err(error) => error == TcpError.Listen
         Result.Ok(listener) => {
             discard close_listener(listener)
+            false
+        }
+    }
+    assert match connect("localhost:80").await {
+        Result.Err(error) => error == TcpError.Connect
+        Result.Ok(stream) => {
+            discard close_stream(stream)
+            false
+        }
+    }
+}
+
+test async fn refused_numeric_connect_reports_error() {
+    // Port zero is not a listening peer; no DNS or external network is used.
+    assert match connect("127.0.0.1:0").await {
+        Result.Err(error) => error == TcpError.Connect
+        Result.Ok(stream) => {
+            discard close_stream(stream)
             false
         }
     }

@@ -183,8 +183,8 @@ exits. See the [dynamic list example](compiler/examples/task_lists).
 
 The native Task owner has a socket-token readiness lease, including real
 loopback, cancellation, and close tests. Source `std.net.tcp` now adds a
-numeric-address server-side listen/accept/read/write path with opaque token
-wrappers; connect, DNS, and general worker operations remain async gates.
+numeric-address listen/accept/connect/read/write path with opaque token
+wrappers; DNS, TLS, and general worker operations remain async gates.
 Task scheduling is cooperative, not parallel Loom threads.
 The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
 Private multi-task completion observation now retains terminal order, wakes

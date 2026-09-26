@@ -18,6 +18,7 @@ pub record Stream {
 
 pub enum TcpError {
     Listen
+    Connect
     Port
     Accept
     Read
@@ -26,6 +27,10 @@ pub enum TcpError {
 }
 
 intrinsic fn socket_listen(address Text) Int
+
+intrinsic fn socket_connect(address Text) Int
+
+intrinsic fn socket_connect_status(token Int) Int
 
 intrinsic fn socket_local_port(token Int) Int
 
@@ -39,7 +44,7 @@ intrinsic fn socket_close(token Int) Int
 
 async intrinsic fn socket_wait(token Int, interest Int)
 
-// Only numeric IPv4/IPv6 socket addresses are supported; no DNS or connect.
+// Only numeric IPv4/IPv6 socket addresses are supported; no DNS.
 pub async fn listen(address Text) Result[Listener, TcpError] {
     let token = socket_listen(address)
     if token < 0 {
@@ -50,6 +55,37 @@ pub async fn listen(address Text) Result[Listener, TcpError] {
                 token = token
             }
         })
+}
+
+// A native socket is private to this Task until SO_ERROR/peer checks confirm a
+// connection. Only pending attempts await writable readiness. The defer closes
+// it after failure or cancellation, once any wait lease retires.
+pub async fn connect(address Text) Result[Stream, TcpError] {
+    let token = socket_connect(address)
+    if token < 0 {
+        return Result.Err(TcpError.Connect)
+    }
+    var transferred = false
+    defer {
+        if !transferred {
+            discard socket_close(token)
+        }
+    }
+    while true {
+        let status = socket_connect_status(token)
+        if status == 0 {
+            transferred = true
+            return Result.Ok(Stream {
+                    state = State {
+                        token = token
+                    }
+                })
+        }
+        if status != -2 {
+            return Result.Err(TcpError.Connect)
+        }
+        socket_wait(token, 2).await
+    }
 }
 
 pub fn local_port(listener Listener) Result[Int, TcpError] {

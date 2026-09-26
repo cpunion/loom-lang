@@ -119,8 +119,8 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "clock_monotonic_ns" { return runtime(0, new[Int](), 1) }
     if name == "timer_until_ns" { return runtime(0, ints(1), 0) }
     if name == "socket_wait" { return runtime(0, two_types(1, 1), 0) }
-    if name == "socket_listen" { return runtime(0, ints(3), 1) }
-    if name == "socket_accept" || name == "socket_close" || name == "socket_local_port" { return runtime(0, ints(1), 1) }
+    if name == "socket_listen" || name == "socket_connect" { return runtime(0, ints(3), 1) }
+    if name == "socket_accept" || name == "socket_connect_status" || name == "socket_close" || name == "socket_local_port" { return runtime(0, ints(1), 1) }
     if name == "socket_read" || name == "socket_write_bytes" { return runtime(0, three_types(1, 4, 1), 1) }
     if name == "task_next" { return runtime(0, new[Int](), 1) }
     if name == "async_read" || name == "async_write_bytes" { return runtime(0, three_types(1, 4, 1), 1) }
