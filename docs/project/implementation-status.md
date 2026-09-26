@@ -590,9 +590,10 @@ It shares parameter/match binding and preceding-statement checking, including
 determined compile-time branches, but supplies no body/callee proof evidence.
 Unknown receivers, earlier typing errors and unsupported compile-time contexts
 produce no result. Checked references use exact definition spans in the loaded
-closure. Conservative local `let`/`var` rename refuses unchecked occurrences,
-nested closures, compile-time branches and collisions. General rename and
-incremental semantic caching remain unimplemented.
+closure. Conservative local `let`/`var` and unique package-private function rename
+refuse unchecked occurrences and collisions; the latter includes test files and
+rechecks virtual cross-file edits. Public/API rename and incremental semantic
+caching remain unimplemented.
 Qualified paths now enumerate existing package/import spellings, preserving
 overloads and source-instance/test identity. Local receiver bindings take priority;
 type and dyn positions filter declarations without claiming valid instantiation.

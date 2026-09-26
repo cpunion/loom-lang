@@ -52,7 +52,7 @@ fn editor_import_text(options EditorOptions) Option[Text] {
     }
 }
 
-fn editor_import_checks(options EditorOptions, overlays List[SourceOverlay]) Bool {
+fn editor_overlay_checks(options EditorOptions, overlays List[SourceOverlay]) Bool {
     match load_overlaid(options.path, options.std_root, options.tests, overlays) {
         Result.Ok(project) => {
             match bind(project, options.tests) {
@@ -153,11 +153,11 @@ fn editor_auto_import(options EditorOptions) EditorOutput {
         }
         index = index + 1
     }
-    if matches != 1 || editor_import_checks(options, options.overlays) {
+    if matches != 1 || editor_overlay_checks(options, options.overlays) {
         return editor_no_auto_import()
     }
     let insertion = concat("import ", concat(path, "\n"))
-    if !editor_import_checks(options, editor_import_overlays(options, concat(insertion, source))) {
+    if !editor_overlay_checks(options, editor_import_overlays(options, concat(insertion, source))) {
         return editor_no_auto_import()
     }
     EditorOutput {
