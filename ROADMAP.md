@@ -340,7 +340,9 @@ See the [static closure example](compiler/examples/comptime_closures/README.md).
 
 Compile-time parameters now specialize named calls with Int/Bool/Text values or
 known source-function identities and leave runtime arguments and any captured
-environments in the native ABI. Static callbacks use determined targets; generic forwarding and pure selectors
+environments in the native ABI. Generic and associated static parameter types
+now specialize to these supported shapes; declaration validation still sees
+abstract types, not incidental caller capabilities. Static callbacks use determined targets; generic forwarding and pure selectors
 preserve target preconditions and reject compile-time effects. Selected branches
 retain explicit generic requirements and mandatory abstract proofs. Concept and
 implementation methods use the same static parameters; dynamic slots include

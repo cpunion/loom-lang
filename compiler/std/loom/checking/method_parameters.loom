@@ -58,8 +58,8 @@ fn source_signature(env Environment, owner Int, arguments List[Int], obligations
             (symbol(env, item.owner).node.kind == NodeKind.Concept || symbol(env, item.owner).node.kind == NodeKind.Impl) {
             return Result.Err(failure(env, owner, declaration, "the method receiver cannot be comptime"))
         }
-        if constant && ty != 1 && ty != 2 && ty != 3 && get(env.types, ty).kind != TypeKind.Function {
-            return Result.Err(failure(env, owner, declaration, "comptime parameters require Int, Bool, Text or a function type"))
+        if constant && !static_parameter_type(env, ty) {
+            return Result.Err(failure(env, owner, declaration, "comptime parameters require Int, Bool, Text or a function type after specialization"))
         }
         push(params, ty)
         if constant { push(compile_time, parameter) }

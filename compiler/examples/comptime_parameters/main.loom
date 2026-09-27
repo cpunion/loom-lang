@@ -107,6 +107,7 @@ fn append(values List[Text]) List[Text] {
 }
 
 fn exercise() {
+    generic_constants()
     assert repeat(39, increment, 3) == 42
     assert repeat(9223372036854775807, increment, 0) == 9223372036854775807
     assert forwarded(3, double, 4) == 48

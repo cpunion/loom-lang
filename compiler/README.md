@@ -1373,7 +1373,25 @@ fn repeat[T](value T, comptime action fn(T) T, comptime count Int) T {
 fn main() { assert repeat(39, increment, 3) == 42 }
 ```
 
-This slice accepts exact `Int`, `Bool`, `Text`, and function static parameter types.
+This slice accepts `Int`, `Bool`, `Text`, and function static parameter types,
+including inferred type parameters and associated types that specialize to one
+of these shapes:
+
+```loom
+fn constant[T](comptime value T) T { value }
+fn main() {
+    assert constant(42) == 42
+    assert constant("text") == "text"
+}
+```
+
+The same forms work on concrete and dynamic methods. Abstract declaration
+checking keeps `T` abstract even when a caller supplied a known scalar;
+requirements must still be declared or selected with `comptime if T implements C`.
+Unsupported concrete parameter shapes (including Float and aggregates) reject
+at specialization, not during native emission. See the
+[generic static example](examples/comptime_parameters/generic.loom).
+
 Literals, pure computed expressions and forwarded static parameters specialize
 the declaration; static values participate in instance and computation keys.
 Ordinary parameters and captured callback environments remain in the native ABI,

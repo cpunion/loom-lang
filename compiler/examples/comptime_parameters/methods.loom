@@ -2,6 +2,10 @@ import std.text.concat
 import std.int.to_text
 
 concept Processor {
+    fn constant[T](self Self, comptime value T) T {
+        value
+    }
+
     fn label(self Self, comptime prefix Text, value Int, comptime verbose Bool) Text {
         comptime if verbose {
             concat(prefix, to_text(value))
@@ -22,12 +26,27 @@ concept Processor {
 impl Processor for Bool {
 }
 
+concept StaticSource {
+    type Item
+    fn saved(self Self, comptime value Self.Item) Self.Item {
+        value
+    }
+}
+
+impl StaticSource for Bool {
+    type Item = Int
+}
+
 fn process[P Processor](processor P, value Int, comptime count Int) Int {
     processor.repeat(value, increment, count)
 }
 
 fn exercise_methods() {
     let concrete = true
+    assert concrete.constant(42) == 42
+    assert concrete.saved(43) == 43
+    let source dyn StaticSource[Item = Int] = concrete
+    assert source.saved(44) == 44
     assert concrete.label("value=", 7, true) == "value=7"
     assert process(concrete, 39, 3) == 42
     assert comptime {
@@ -38,6 +57,7 @@ fn exercise_methods() {
     // Only the selected method instances enter this build's witness table.
     // Static values and callbacks do not become runtime arguments.
     let processor dyn Processor = concrete
+    assert processor.constant("static") == "static" && !processor.constant(false)
     assert processor.label("value=", 8, true) == "value=8"
     assert processor.label("quiet", 9, false) == "quiet"
     assert processor.repeat(39, increment, 3) == 42

@@ -33,7 +33,11 @@ fn signature_in(env Environment, id Int, arguments List[Int], node Node, owner I
     let params = new[Int]()
     var index = 0
     while index < length(original.params) {
-        push(params, substitute(env, owner, get(original.params, index), arguments, node)?)
+        let ty = substitute(env, owner, get(original.params, index), arguments, node)?
+        if is_static(original, index) && !static_parameter_type(env, ty) {
+            return Result.Err(failure(env, owner, node, "comptime parameters require Int, Bool, Text or a function type after specialization"))
+        }
+        push(params, ty)
         index = index + 1
     }
     let obligations = new[Requirement]()

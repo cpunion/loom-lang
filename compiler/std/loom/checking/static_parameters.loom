@@ -13,6 +13,11 @@ import std.list.clone
 import std.result.Result
 
 fn has_static(signature Signature) Bool { length(signature.compile_time) != 0 }
+fn static_parameter_type(env Environment, ty Int) Bool {
+    let kind = get(env.types, ty).kind
+    ty == 1 || ty == 2 || ty == 3 || kind == TypeKind.Function ||
+        kind == TypeKind.Parameter || kind == TypeKind.Associated
+}
 fn is_static(signature Signature, position Int) Bool {
     var index = 0
     while index < length(signature.compile_time) {
@@ -68,11 +73,10 @@ fn static_type(context Context, index Int) Int {
 fn static_expression(context Context, node Node, index Int) Result[Expr, Failure] {
     let value = get(context.constants, index)
     let declared = static_type(context, index)
-    if !value.known { return Result.Ok(expression(ExprKind.Deferred, declared, node, "", -1, new[Expr](), true)) }
+    // Abstract validation cannot learn a generic parameter's incidental type
+    // from one known argument, even when its scalar value can be evaluated.
+    if !value.known || !concrete(context.env, declared) { return Result.Ok(expression(ExprKind.Deferred, declared, node, "", -1, new[Expr](), true)) }
     if get(context.env.types, value.ty).kind == TypeKind.Function {
-        // Abstract declaration checking sees only its written callback shape,
-        // not incidental concrete capabilities supplied by one caller.
-        if !concrete(context.env, declared) { return Result.Ok(expression(ExprKind.Deferred, declared, node, "", -1, new[Expr](), true)) }
         let reference = reify_function(context, node, value.ty, value.number, value.arguments)?
         if value.capture >= 0 {
             let local = static_environment_local(context, index)
@@ -94,7 +98,8 @@ fn unknown_static(context Context, node Node) Bool {
         let index = lookup(context, slice(node.value, 0, first_dot(node.value)))
         if index >= 0 {
             let binding = get(context.bindings, index)
-            if binding.constant >= 0 && !get(context.constants, binding.constant).known { return true }
+            if binding.constant >= 0 && (!get(context.constants, binding.constant).known ||
+                !concrete(context.env, static_type(context, binding.constant))) { return true }
         }
     }
     var index = 0
@@ -150,7 +155,10 @@ fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] 
     expr(validation, node, expected)
 }
 fn static_argument(context Context, node Node, checked Expr, expected Int) Result[StaticValue, Failure] {
-    if contains_deferred(checked) || (get(context.env.types, expected).kind == TypeKind.Function && !concrete(context.env, expected)) ||
+    if !static_parameter_type(context.env, expected) {
+        return Result.Err(error(context, node, "comptime parameters require Int, Bool, Text or a function type after specialization"))
+    }
+    if contains_deferred(checked) || !concrete(context.env, expected) ||
         (abstract_context(context) && depends_on_type(context, node)) {
         // Later runtime arguments may have appended block locals since the
         // overload probe. Check isolation against this fresh staging boundary.
