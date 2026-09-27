@@ -111,7 +111,9 @@ fn capture_binding(context Context, name Text) Int {
         if found < 0 { return -1 }
         let binding = get(outer.bindings, found)
         constant = binding.constant
-        if constant >= 0 {
+        if constant < -1 {
+            ty = get(context.env.static_aliases, -2 - constant).ty
+        } else if constant >= 0 {
             ty = static_type(outer, constant)
             if binding.local >= 0 { storage = get(outer.locals, binding.local).ty }
         } else {

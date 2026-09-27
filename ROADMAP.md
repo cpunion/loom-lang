@@ -321,7 +321,12 @@ value pack in selected bodies;
 bindings. For a selected variadic arity, `comptime for T in Ts` and
 `comptime map T in Ts` also bind each element of the declared type pack as an
 ordinary abstract type parameter; no runtime type-list or type value is added.
-General pack reflection, methods/data packs, static value packs and inference
+Static `comptime values Ts...` packs preserve per-element scalar/function
+identities through projections, expansion, iteration and closure capture.
+They reuse ordinary specialization; scalar elements have no runtime argument
+slots, and captured callbacks forward live environments. Aggregate static
+elements and static structural tuple parameters remain unsupported.
+General pack reflection, methods/data packs and inference
 from multiple tuple expansions remain open. Structural tuple
 parameters now allow fixed prefixes and suffixes around one expanded pattern.
 Calls and contextual function references infer the pack width after subtracting
@@ -351,8 +356,8 @@ retain explicit generic requirements and mandatory abstract proofs. Concept and
 implementation methods use the same static parameters; dynamic slots include
 static values in their identity and erase them from the runtime signature.
 Selected bodies retain abstract checking without emitting unused callers. Function
-references to partially specialized static declarations and static value packs
-remain open. Captured function parameters use the typed environments above.
+references to partially specialized static declarations remain open. Captured
+function parameters use the typed environments above.
 
 Pure dynamic construction, calls and returned values now share the compile-time
 evaluator, with exact associated/generic/static witness slots. Purity follows the

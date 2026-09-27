@@ -35,6 +35,7 @@ record Requirement { ty Int capability Int }
 // an index into a transient emission/evaluation queue.
 // capture is a current-check computation index, or -1 for an uncaptured value.
 record StaticValue { ty Int known Bool number Int text Text arguments List[Int] capture Int }
+record StaticAlias { node Node ty Int }
 // compile_time contains ordered source parameter positions, empty for ordinary functions.
 record Signature { symbol Int parameters Int params List[Int] compile_time List[Int] result Int requirements List[Requirement] }
 record Instance { signature Int arguments List[Int] constants List[StaticValue] }
@@ -46,6 +47,7 @@ record TypeState {
 }
 
 record Environment {
+    static_aliases List[StaticAlias]
     packs List[PackInstance]
     closures List[ClosurePlan]
     source std.loom.binding.Program
@@ -71,6 +73,7 @@ record Environment {
     witnesses List[Witness]
     uses List[SlotUse]
 }
+// constant: -1 = runtime, >= 0 = static parameter, <= -2 = static alias.
 record Binding { name Text local Int constant Int previous Int }
 record Cleanup { body Expr previous Int }
 record Fact { local Int predicate Expr previous Int }
@@ -237,7 +240,7 @@ fn bind_name(context Context, node Node, value Text, local Int, constant Int, bo
 // Global declarations keep one meaning in production checks and editor queries.
 // Every invocation owns fresh mutable checking tables; failures are discarded.
 fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
-    let env = Environment { packs = new[PackInstance]() closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
+    let env = Environment { static_aliases = new[StaticAlias]() packs = new[PackInstance]() closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
         has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         associations = new[Association]() association_depth = 0

@@ -656,7 +656,7 @@ runtime evaluation. A tuple of Tasks can be awaited directly; this uses
 ### Variadic functions
 
 An ordinary top-level function can declare one final type pack and one final
-runtime parameter that expands it. Type patterns expand elementwise; the named
+value parameter that expands it. Type patterns expand elementwise; the named
 value pack is an immutable tuple. Ordinary parameters may precede both packs.
 
 ```loom
@@ -682,7 +682,7 @@ bounds, before concrete instantiation. Zero-element packs produce an inferred
 empty tuple, not a no-result expression; source `()` and `Unit` remain unavailable.
 
 The compiler elaborates each selected arity into ordinary type parameters and
-native parameters, with a local tuple binding for the body. There is no runtime
+native parameters, with a local tuple binding for runtime packs. There is no runtime
 argument array, new LLVM operation, or hard-coded list of supported overload
 sizes. GC sharing, compile-time evaluation, cleanup, and one-shot Task transfer
 retain their normal checks. The [variadic example](examples/variadics/main.loom)
@@ -717,11 +717,31 @@ no-result statement. Like `comptime for`, `comptime map` accepts an immutable,
 statically shaped tuple parameter or `let` binding, including the final value
 pack of a variadic function. Mutable and non-tuple bindings reject.
 
+A final `comptime values Ts...` parameter instead specializes each element:
+
+```loom
+fn constants[Ts...](comptime values Ts...) (Ts...) { values }
+fn forward_constants[Ts...](comptime values Ts...) (Ts...) {
+    constants(values...)
+}
+```
+
+Elements use the ordinary static-parameter rules: Int, Bool, Text or function
+identities, including pure construction and captured callbacks. The pack and
+its `comptime for/map` iteration bindings preserve each element's static identity;
+projections and forwarding need no runtime tuple snapshot. A runtime read of the
+whole pack produces an ordinary tuple. Captured callbacks forward their current
+environment, including through returned closures. Ordinary `let` copies remain
+runtime bindings. Empty packs work without a special case at the call site.
+This form does not admit aggregate static elements or a static structural
+`comptime values (Ts...)` parameter. See the
+[static pack example](examples/variadics/static.loom).
+
 Unselected arities have not had their bodies verified. Variadic `ensures`
 declarations currently reject even when uncalled: proving selected arities is
 not a proof for every arity. Preconditions currently use fixed scalar parameters,
 not the tuple pack, and retain ordinary checked/runtime boundaries.
-Multiple packs, variadic methods and data declarations, static value packs,
+Multiple packs, variadic methods and data declarations,
 general type-list reflection and richer pack iteration remain open. This
 implementation does not complete the accepted metaprogramming design.
 
@@ -1486,8 +1506,8 @@ ordinary and static callbacks, shared results and runtime argument order. Concep
 and implementation methods support the same parameter forms, including dynamic
 calls; intrinsics do not. Taking a reference to a declaration with static
 parameters still rejects until explicit partial
-specialization can supply a complete function identity. Static value packs and general
-type-valued computation remain later work.
+specialization can supply a complete function identity. Static value packs use
+the [variadic form](#variadic-functions); general type-valued computation remains later work.
 
 ## Compile-time execution
 

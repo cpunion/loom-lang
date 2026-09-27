@@ -1,0 +1,28 @@
+test fn static_value_packs_preserve_each_parameter_and_static_iteration() {
+    discard accepted("fn pack[Ts...](comptime values Ts...) (Ts...) { values }\nfn relay[Ts...](comptime values Ts...) (Ts...) { pack(values...) }\nfn constant[T](comptime value T) T { value }\nfn mapped[Ts...](comptime values Ts...) (Ts...) { comptime map item in values { constant(item) } }\nfn main() { assert relay(1, true, \"text\").1\ndiscard relay()\nassert mapped(1, false).0 == 1 }")
+    discard accepted("fn id[T](value T) T { value }\nfn names[item, Ts...](value item, comptime values Ts...) item { comptime for item in values { let callback = id[item]\ndiscard callback\nlet item = value\ndiscard item }\nvalue }\nfn main() { assert names(1, true) == 1 }")
+    discard accepted("fn select(comptime value Bool) Int { comptime if value { 1 } else { 0 } }\nfn saved[Ts...](comptime values Ts...) fn() (Ts...) { fn() (Ts...) { values } }\nfn main() { let read = saved(1, true)\nassert read().1 }")
+}
+
+test fn static_value_packs_reject_runtime_inputs_and_undeclared_capabilities() {
+    rejects("fn pack[Ts...](comptime values Ts...) (Ts...) { values }\nfn main() { let value = 1\ndiscard pack(value) }")
+    rejects("fn pack[Ts...](comptime values Ts...) (Ts...) { values }\nfn main() { discard pack(1.0) }")
+    rejects("fn pack[Ts...](comptime values Ts...) (Ts...) { values }\nfn main() { discard pack([1]) }")
+    rejects("fn pack[Ts...](comptime values (Ts...)) (Ts...) { values }")
+    rejects("fn bad[Ts...](comptime values Ts...) Int { values.0 + 1 }\nfn main() { discard bad(1) }")
+    rejects("fn take(comptime value Int) Int { value }\nfn bad[Ts...](comptime values Ts...) { let values = (1,)\ncomptime for item in values { discard take(item) } }\nfn main() { bad(true) }")
+    rejects("fn bad[Ts...](comptime values Ts...) { comptime for item in values { item = item } }\nfn main() { bad(1) }")
+}
+
+test fn static_value_packs_do_not_emit_unused_callbacks_or_runtime_slots() {
+    let program = accepted("fn unused() Int { 99 }\nfn ignored[Ts...](comptime values Ts...) Int { 42 }\nfn main() { assert ignored(unused, true, 7) == 42 }")
+    assert length(program.functions) == 2
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        assert function.symbol != 0
+        assert length(function.params) == 0 && length(function.locals) == 0
+        assert dynamic_count(function.body, ExprKind.IndirectCall) == 0
+        index = index + 1
+    }
+}

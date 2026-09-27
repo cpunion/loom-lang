@@ -280,8 +280,14 @@ general reflection. A lexical value tuple named `Ts` shadows that source.
 Structural tuple parameters allow fixed fields around one expanded pattern,
 including zero-element packs. Calls and contextual function references subtract
 the fixed fields to infer pack arity; value iteration covers the entire tuple.
-Context-dependent tuple elements need a prior typed binding. Multiple packs, methods/data packs,
-static value packs and general pack reflection remain open. See the [variadic example](../../compiler/examples/variadics/main.loom)
+Context-dependent tuple elements need a prior typed binding.
+Final `comptime values Ts...` packs now specialize each scalar/function element.
+Projections, expansion, static iteration and closure capture retain static
+identity; captured callbacks forward current shared environments. Compiler-only
+aliases introduce no runtime pack or scalar parameter slots. Ordinary tuple
+copies remain runtime values; aggregate static elements and static structural
+tuple parameters are not supported. See the [static pack example](../../compiler/examples/variadics/static.loom).
+Multiple packs, methods/data packs and general pack reflection remain open. See the [variadic example](../../compiler/examples/variadics/main.loom)
 and [pack iteration example](../../compiler/examples/pack_iteration/main.loom).
 
 Named function values have structural signatures, contextual overload/generic
@@ -667,7 +673,7 @@ abstract type arguments and declared requirements, not incidental concrete
 conformances. Unknown runtime inputs and unproved abstract postconditions reject.
 The [static-parameter example](../../compiler/examples/comptime_parameters/main.loom)
 also exercises callbacks returned by specialized selectors. References
-to static-parameter declarations and static value packs remain unsupported.
+to static-parameter declarations remain unsupported.
 Captured parameters now pass only a typed managed environment. Construction
 materializes once, forwarding shares current state, and returned closures retain
 it. Captured contents do not create extra native specializations of the same

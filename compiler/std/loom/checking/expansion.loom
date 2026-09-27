@@ -177,7 +177,10 @@ fn expand_input(context Context, source Node, nodes List[Node], ready List[Optio
     if depth >= 64 {
         return Result.Err(error(context, source, "tuple expansion nesting limit exceeded"))
     }
-    let operand = child(source, 0)
+    let operand = match static_alias_source(context, child(source, 0)) {
+        Option.Some(value) => value
+        Option.None => child(source, 0)
+    }
     if operand.kind == NodeKind.Tuple {
         // A literal already supplies ordered operands. Flatten it before hints
         // and static-argument selection, without manufacturing an aggregate.

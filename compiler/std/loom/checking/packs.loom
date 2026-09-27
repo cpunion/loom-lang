@@ -120,8 +120,11 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
             mentions_pack(child(parameter, 0), pack.value) {
             return Result.Err(failure(env, owner, parameter, "a structural tuple parameter needs one direct expansion to infer its pack arity"))
         }
-        if (spread || tuple) != final || ((spread || tuple) && has(parameter, NodeKind.Comptime)) {
-            return Result.Err(failure(env, owner, parameter, "the final runtime parameter alone expands the type pack"))
+        if (spread || tuple) != final {
+            return Result.Err(failure(env, owner, parameter, "the final parameter alone expands the type pack"))
+        }
+        if tuple && has(parameter, NodeKind.Comptime) {
+            return Result.Err(failure(env, owner, parameter, "a comptime value pack uses Ts..., not a structural tuple parameter"))
         }
         if spread && !mentions_pack(child(parameter, 0), pack.value) {
             return Result.Err(failure(env, owner, parameter, "the variadic parameter type must use the declared pack"))
@@ -243,7 +246,7 @@ fn has_pack_iteration(node Node) Bool {
 
 // Repeated bodies are ordinary lexical blocks after the selected arity is
 // known. Tuple projections retain the existing move, effect and cleanup rules.
-fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, arity Int, shadowed Bool, repeated Bool, depth Int, count List[Int]) Result[Node, Failure] {
+fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, arity Int, static_values Bool, shadowed Bool, repeated Bool, depth Int, count List[Int]) Result[Node, Failure] {
     if depth >= 64 || get(count, 0) >= 65536 {
         // A dead comptime branch must not fail before the selected body is
         // checked. Keep the budget diagnostic in that branch as source AST.
@@ -262,8 +265,8 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
             while index < arity {
                 let pack = pack_node(source, NodeKind.Name, values, new[Node]())
                 let element = pack_node(source, NodeKind.Select, std.int.to_text(index), source_nodes(pack))
-                let binding = pack_node(node, NodeKind.Let, node.value, source_nodes(element))
-                let body = expand_pack_iteration(env, owner, child(node, 1), values, arity, node.value == values, true, depth + 1, count)?
+                let binding = pack_binding(node, node.value, element, static_values)
+                let body = expand_pack_iteration(env, owner, child(node, 1), values, arity, static_values, node.value == values, true, depth + 1, count)?
                 let statements = source_nodes(binding)
                 push(statements, body)
                 push(iterations, pack_node(node, NodeKind.Block, "", statements))
@@ -296,7 +299,7 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
             } else if (node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap) && index == 1 {
                 current_shadow || node.value == values
             } else { current_shadow }
-            push(children, expand_pack_iteration(env, owner, member, values, arity, member_shadow, repeated, depth + 1, count)?)
+            push(children, expand_pack_iteration(env, owner, member, values, arity, static_values, member_shadow, repeated, depth + 1, count)?)
             if node.kind == NodeKind.Block && pack_local_binds(member, values) {
                 current_shadow = true
             }
@@ -423,6 +426,7 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
     let parameters = group(declaration, NodeKind.Parameters)
     let values = get(parameters, length(parameters) - 1)
     let structural = tuple_pack_parameter(values)
+    let static_values = has(values, NodeKind.Comptime)
     let value_arity = arity + tuple_pack_fixed(values)
     let expanded_types = new[Node]()
     var index = 0
@@ -449,7 +453,9 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
         while index < arity {
             let name = pack_name(values.value, index)
             let ty = expand_pack_type(env, owner, child(child(values, 0), 0), pack.value, arity, index, true, 0)?
-            push(expanded_params, pack_node(values, NodeKind.Parameter, name, source_nodes(ty)))
+            let parts = source_nodes(ty)
+            if static_values { push(parts, pack_node(values, NodeKind.Comptime, "", new[Node]())) }
+            push(expanded_params, pack_node(values, NodeKind.Parameter, name, parts))
             push(elements, pack_node(values, NodeKind.Name, name, new[Node]()))
             index = index + 1
         }
@@ -469,7 +475,7 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
                 let expanded = if has_pack_iteration(typed) {
                     let count = new[Int]()
                     push(count, 0)
-                    expand_pack_iteration(env, owner, typed, values.value, value_arity, false, false, 0, count)?
+                    expand_pack_iteration(env, owner, typed, values.value, value_arity, static_values, false, false, 0, count)?
                 } else { typed }
                 let type_expanded = if has_pack_iteration(expanded) && pack.value != values.value {
                     let count = new[Int]()
@@ -478,7 +484,7 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
                 } else { expanded }
                 if member.kind == NodeKind.Block {
                     let body = if structural { new[Node]() } else {
-                        source_nodes(pack_node(values, NodeKind.Let, values.value, source_nodes(tuple)))
+                        source_nodes(pack_binding(values, values.value, tuple, static_values))
                     }
                     // The source body retains its own scope, including shadowing
                     // the immutable parameter name and lexical cleanup boundaries.
