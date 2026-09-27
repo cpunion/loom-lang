@@ -385,6 +385,20 @@ or automatic eviction is promised. `LOOM_NATIVE_TIMINGS` reports
 Hashing has a fixed cost, so this remains opt-in. Measure a project with
 `node scripts/benchmark-compiler.mjs --compare-frontend --check-only`; the harness
 records the initial miss separately and alternates warm cached/uncached samples.
+On Apple M4 Max/macOS 25.2, three alternating pairs measured:
+
+| Check | Uncached | Warm frontend cache |
+| --- | ---: | ---: |
+| Scalar example | 9.93 ms | 22.14 ms |
+| Data example | 5.07 ms | 19.11 ms |
+| Compiler | 1,288.52 ms | 152.04 ms |
+
+The compiler's peak RSS medians were 639.09/140.67 MiB; its initial miss took
+1,328.82 ms. This is whole-closure `check` latency, not native codegen or program
+runtime performance. Tiny packages regress because hashing exceeds saved work.
+[Raw samples and source/compiler hashes](../benchmarks/compiler/results/2026-09-27-macos-arm64-frontend-cache.json)
+retain the measurement basis; these are local observations, not platform targets.
+
 Bootstrap generation comparisons and editor queries do not enable this cache.
 Tracked external compile-time inputs and finer-grained persistent summaries
 remain future work; ordinary compile-time execution cannot read arbitrary I/O.

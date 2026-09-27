@@ -1,0 +1,283 @@
+{
+  "schema": 1,
+  "revision": "98018e4edf7c4c5d71f2b68dc3926139f0614f92",
+  "dirty": false,
+  "compiler": "/Users/lijie/source/cpunion/loom-lang/target/loom",
+  "compilerVersion": "loom source compiler (development)",
+  "compilerSha256": "2b00617abb359907c0e58fb917684639165a590df284e80adac3b42ea7e69fcb",
+  "harnessSha256": "a63bc67184f3d910aaf7cd8f90ae871f0e4ecade9aa15fa818e5d019ec61eb97",
+  "sourceSha256": "18153c4788101080cb086b6d9738fc60d74251ec40631f45151e0926354dbef9",
+  "sourceFiles": 435,
+  "extended": false,
+  "compareCache": false,
+  "compareFrontend": true,
+  "checkOnly": true,
+  "generatedSizes": [],
+  "host": {
+    "os": "darwin",
+    "release": "25.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "method": "fresh processes; one uncached warmup and one initial frontend miss per case; paired samples alternate uncached/cache order; loading, parsing and dependency validation always run; no native object reuse",
+  "wall": "elapsed around /usr/bin/time launch, including process launch and output; startup runs --version without loading a package",
+  "rss": "maximum RSS reported by macOS time, not a sum of simultaneous process memory",
+  "cpu": "user and system CPU time reported by macOS time, converted from seconds to milliseconds; short runs are limited by time's reporting precision",
+  "cases": [
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "variant": "uncached",
+      "flags": [],
+      "samplePositions": [
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 9.925042,
+        "peakRssBytes": 7503872,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 8.991166,
+          "peakRssBytes": 7536640,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.925042,
+          "peakRssBytes": 7503872,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 22.029333,
+          "peakRssBytes": 7372800,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "variant": "warm-frontend-cache",
+      "flags": [
+        "--frontend-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-4aVUX9/cache-0"
+      ],
+      "samplePositions": [
+        1,
+        0,
+        1
+      ],
+      "firstMiss": {
+        "wallMs": 24.786709,
+        "peakRssBytes": 14516224,
+        "userCpuMs": 10,
+        "systemCpuMs": 0
+      },
+      "median": {
+        "wallMs": 22.139208,
+        "peakRssBytes": 11059200,
+        "userCpuMs": 10,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 22.139208,
+          "peakRssBytes": 11059200,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 22.129292,
+          "peakRssBytes": 11223040,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 37.2265,
+          "peakRssBytes": 11059200,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "variant": "uncached",
+      "flags": [],
+      "samplePositions": [
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 5.074625,
+        "peakRssBytes": 4423680,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 5.074625,
+          "peakRssBytes": 4423680,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.116083,
+          "peakRssBytes": 4423680,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 4.600042,
+          "peakRssBytes": 4440064,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "variant": "warm-frontend-cache",
+      "flags": [
+        "--frontend-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-4aVUX9/cache-2"
+      ],
+      "samplePositions": [
+        1,
+        0,
+        1
+      ],
+      "firstMiss": {
+        "wallMs": 20.576125,
+        "peakRssBytes": 10027008,
+        "userCpuMs": 10,
+        "systemCpuMs": 0
+      },
+      "median": {
+        "wallMs": 19.107125,
+        "peakRssBytes": 8503296,
+        "userCpuMs": 10,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 18.948834,
+          "peakRssBytes": 8503296,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 19.553917,
+          "peakRssBytes": 8601600,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 19.107125,
+          "peakRssBytes": 8503296,
+          "userCpuMs": 10,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "variant": "uncached",
+      "flags": [],
+      "samplePositions": [
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 1288.516,
+        "peakRssBytes": 670138368,
+        "userCpuMs": 1180,
+        "systemCpuMs": 60
+      },
+      "samples": [
+        {
+          "wallMs": 1296.287709,
+          "peakRssBytes": 620855296,
+          "userCpuMs": 1210,
+          "systemCpuMs": 40
+        },
+        {
+          "wallMs": 1288.516,
+          "peakRssBytes": 712916992,
+          "userCpuMs": 1180,
+          "systemCpuMs": 60
+        },
+        {
+          "wallMs": 1268.589,
+          "peakRssBytes": 670138368,
+          "userCpuMs": 1180,
+          "systemCpuMs": 60
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "variant": "warm-frontend-cache",
+      "flags": [
+        "--frontend-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-4aVUX9/cache-4"
+      ],
+      "samplePositions": [
+        1,
+        0,
+        1
+      ],
+      "firstMiss": {
+        "wallMs": 1328.819375,
+        "peakRssBytes": 702070784,
+        "userCpuMs": 1180,
+        "systemCpuMs": 50
+      },
+      "median": {
+        "wallMs": 152.042541,
+        "peakRssBytes": 147505152,
+        "userCpuMs": 130,
+        "systemCpuMs": 10
+      },
+      "samples": [
+        {
+          "wallMs": 151.159959,
+          "peakRssBytes": 147505152,
+          "userCpuMs": 130,
+          "systemCpuMs": 10
+        },
+        {
+          "wallMs": 152.042541,
+          "peakRssBytes": 145424384,
+          "userCpuMs": 130,
+          "systemCpuMs": 10
+        },
+        {
+          "wallMs": 155.839333,
+          "peakRssBytes": 167706624,
+          "userCpuMs": 130,
+          "systemCpuMs": 10
+        }
+      ]
+    }
+  ]
+}
