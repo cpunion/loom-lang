@@ -39,7 +39,9 @@ pub fn read_input(request InputRequest) Result[InputFile, Text] {
             return Result.Err("cannot resolve build input module")
         }
     }
-    let resolved = match canonicalize(input_path(request)) {
+    // The module resolver handles separators and dot segments on Windows
+    // verbatim paths, canonicalizing symlink steps before containment checks.
+    let resolved = match dependency_directory(parent(request.source), path) {
         Result.Ok(value) => value
         Result.Err(_) => {
             return Result.Err(concat("cannot resolve build input: ", path))

@@ -5,18 +5,21 @@ use common::{loom, success};
 
 #[test]
 fn snapshots_survive_runtime_deletion_but_recheck_contents_and_protect_outputs() {
+    success(&loom(&["test", "compiler/examples/build_inputs"]));
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");
     let resources = package.join("resources");
     fs::create_dir_all(&resources).unwrap();
+    let assets = package.join("assets");
+    fs::create_dir(&assets).unwrap();
     fs::write(package.join("loom.toml"), "[module]\nname = \"app\"\n").unwrap();
     fs::write(package.join("main.loom"), "import app.resources.banner\nimport std.io.write_text\nfn main() { discard write_text(banner()) }\ntest fn snapshot() { assert banner() == \"first 雪\\n\" }").unwrap();
     fs::write(
         resources.join("input.loom"),
-        "import std.build.input_file\npub fn banner() Text { input_file(\"message.txt\") }",
+        "import std.build.input_file\npub fn banner() Text { input_file(\"../assets/message.txt\") }",
     )
     .unwrap();
-    let input = resources.join("message.txt");
+    let input = assets.join("message.txt");
     fs::write(&input, "first 雪\n").unwrap();
     let cache = directory.path().join("cache");
     let artifact = common::executable(directory.path(), "compiled");
@@ -110,7 +113,10 @@ fn build_inputs_stay_inside_the_declaring_module() {
     .unwrap();
     let output = loom(&["check", package.to_str().unwrap()]);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("escapes its module"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("escapes its module"),
+        "{output:?}"
+    );
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(
