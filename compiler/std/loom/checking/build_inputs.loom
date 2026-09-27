@@ -45,7 +45,7 @@ fn input_call(context Context, node Node, value StaticValue) Result[Expr, Failur
         source = source.path
         path = value.text
     }
-    let inputs = context.env.inputs
+    let inputs = get(context.env.inputs, 0)
     var index = 0
     while index < length(inputs.files) {
         let saved = get(inputs.files, index)

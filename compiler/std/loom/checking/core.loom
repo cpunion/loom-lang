@@ -47,7 +47,9 @@ record TypeState {
 }
 
 record Environment {
-    inputs BuildInputs
+    // Rare build-input metadata stays behind one shared cell rather than
+    // widening every hot checking-context copy with a reader and two lists.
+    inputs List[BuildInputs]
     static_aliases List[StaticAlias]
     packs List[PackInstance]
     closures List[ClosurePlan]
@@ -244,7 +246,9 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
     prepare_with_inputs(source, build_inputs(no_input_reader))
 }
 fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Result[Environment, Failure] {
-    let env = Environment { inputs = inputs static_aliases = new[StaticAlias]() packs = new[PackInstance]() closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
+    let input_state = new[BuildInputs]()
+    push(input_state, inputs)
+    let env = Environment { inputs = input_state static_aliases = new[StaticAlias]() packs = new[PackInstance]() closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
         has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         associations = new[Association]() association_depth = 0
