@@ -300,8 +300,8 @@ target/loom build compiler/examples/data --object-cache target/native-cache
 LOOM_NATIVE_TIMINGS=1 target/loom run compiler/examples/data --object-cache target/native-cache
 ```
 
-Every invocation still loads and checks source, including contracts and selected
-dependency snapshots. Only the single object for the complete checked closure
+With this option alone, every invocation still loads and checks source, including
+contracts and selected dependency snapshots. Only the single object for the complete checked closure
 is reused. Its key covers exact checked bytes, native-tool and loaded LLVM image
 contents, effective target/CPU/features/layout, optimization and test mode.
 It does not use an LLVM version string or file metadata as a content identity.
@@ -322,7 +322,7 @@ the toolchain must remain trusted and stable during a build. Normal exits clean
 owned staging; crashes can leave staging directories. Cache format changes may
 discard reuse; no compatibility promise or automatic eviction is provided.
 Full toolchain hashing and bundle verification have costs, so caching is opt-in,
-not a promise that tiny programs build faster. Incremental frontend/proof reuse
+not a promise that tiny programs build faster. Fine-grained frontend/proof reuse
 and separate per-package objects remain future work. Bootstrap generation checks
 do not enable this cache.
 
@@ -347,6 +347,61 @@ cost of toolchain identity exceeded saved codegen. These are compilation timings
 not runtime kernel speedups or a portable performance guarantee.
 [Raw samples and source/tool hashes](../benchmarks/compiler/results/2026-09-08-macos-arm64-object-cache.json)
 retain the exact measurement basis.
+
+### Frontend cache
+
+`check`, `build`, `test`, `run`, and `emit-checked` accept
+`--frontend-cache <trusted local directory>`. It is independent of
+`--object-cache`; native commands can use both. For example:
+
+```sh
+LOOM_NATIVE_TIMINGS=1 target/loom check compiler/loom --frontend-cache target/frontend-cache
+target/loom build compiler/examples/data --frontend-cache target/frontend-cache --object-cache target/native-cache
+```
+
+Every invocation reloads and parses the selected package closure and validates
+its manifests, imports and locked dependency snapshots. A key covers the invoked
+compiler executable's actual bytes, source paths/contents/membership, module
+instances, import edges, standard-library trust and command mode. Production
+build/run/emit-checked share an artifact; checking and isolated tests have separate
+entries. Manifest edits that leave this validated semantic input unchanged need
+not invalidate reuse. Source moves, changed dependencies, and new selected files
+do invalidate it. Omitted dependency/test files do not become build inputs.
+
+A hit skips binding, type/effect/contract checking, compile-time evaluation and
+lowering for that exact closure. It is not a serialized mutable checker session
+or per-definition incremental engine. Build receipts use the freshly loaded
+project and actual artifact; requested IR, linking and test execution still run.
+Only successful checks are published. Each `checked-v1` entry contains metadata
+and checked bytes under one SHA-256 checksum; damage causes a fresh check.
+
+Use only a trusted local directory (with an existing parent), invoke the compiler
+by its real executable path, and keep the toolchain/filesystem stable during a
+build. An unidentifiable executable disables reuse; a checksum is not an
+attestation against a malicious cache writer. No old cache-format compatibility
+or automatic eviction is promised. `LOOM_NATIVE_TIMINGS` reports
+`loom cache: frontend hit`, `miss`, or `unavailable`.
+
+Hashing has a fixed cost, so this remains opt-in. Measure a project with
+`node scripts/benchmark-compiler.mjs --compare-frontend --check-only`; the harness
+records the initial miss separately and alternates warm cached/uncached samples.
+On Apple M4 Max/macOS 25.2, three alternating pairs measured:
+
+| Check | Uncached | Warm frontend cache |
+| --- | ---: | ---: |
+| Scalar example | 9.93 ms | 22.14 ms |
+| Data example | 5.07 ms | 19.11 ms |
+| Compiler | 1,288.52 ms | 152.04 ms |
+
+The compiler's peak RSS medians were 639.09/140.67 MiB; its initial miss took
+1,328.82 ms. This is whole-closure `check` latency, not native codegen or program
+runtime performance. Tiny packages regress because hashing exceeds saved work.
+[Raw samples and source/compiler hashes](../benchmarks/compiler/results/2026-09-27-macos-arm64-frontend-cache.json)
+retain the measurement basis; these are local observations, not platform targets.
+
+Bootstrap generation comparisons and editor queries do not enable this cache.
+Tracked external compile-time inputs and finer-grained persistent summaries
+remain future work; ordinary compile-time execution cannot read arbitrary I/O.
 
 ### Earlier uncached measurements
 
@@ -1854,9 +1909,10 @@ written, not what language features the resulting compiler can offer users.
 Mutable record fields, broader proofs,
 nested resource transfers, complete Task/I/O composition, complete compile-time programming,
 version normalization, authenticated Git sources, graph-wide fork policies,
-persistent frontend/proof reuse, deployment and semantic-change tools remain
+fine-grained persistent frontend/proof reuse, deployment and semantic-change tools remain
 outside this slice. Exact HTTPS Git/fork resolution, verified source locks and
-trusted-local object reuse are implemented. No complete language or `std` claim is made.
+trusted-local object and checked-closure reuse are implemented. No complete
+language or `std` claim is made.
 
 Unsupported syntax and manifest features reject explicitly. In particular,
 unsupported dependency sources and target declarations are not silently ignored. The accepted

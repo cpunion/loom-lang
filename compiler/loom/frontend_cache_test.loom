@@ -1,0 +1,58 @@
+test fn frontend_bundles_bind_metadata_and_artifact_bytes() {
+    let project = match load("compiler/examples/scalar", "compiler/std", false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let selected = match options(driver_arguments("check")) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let key = frontend_key(selected, project, "compiler-one")
+    assert key != frontend_key(selected, project, "compiler-two")
+    let source = get(project.files, 0)
+    std.list.set(project.files, 0, SourceFile {
+            package = source.package
+            path = source.path
+            text = source.text
+            tree = source.tree
+            test_only = source.test_only
+            trusted_std = !source.trusted_std
+        })
+    assert key != frontend_key(selected, project, "compiler-one")
+    let prefix = frontend_prefix(key)
+    let checked = Prepared {
+        input = "loom-checked-1\nartifact\n"
+        entry = 2
+        tests = 3
+        project = project
+    }
+    let bundle = frontend_bundle(prefix, checked)
+    match frontend_decode(bundle, prefix, project, false) {
+        Option.Some(value) => {
+            assert value.entry == 2 && value.tests == 3 && value.input == checked.input
+        }
+        Option.None => {
+            assert false
+        }
+    }
+    assert match frontend_decode(bundle, prefix, project, true) {
+        Option.None => true,
+        _ => false
+    }
+    assert match frontend_decode(bundle, frontend_prefix("other"), project, false) {
+        Option.None => true,
+        _ => false
+    }
+    // The checksum covers metadata as well as the complete artifact payload.
+    std.bytes.set(bundle, length(prefix), 48)
+    assert match frontend_decode(bundle, prefix, project, false) {
+        Option.None => true,
+        _ => false
+    }
+}

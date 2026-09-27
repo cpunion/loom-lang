@@ -37,12 +37,15 @@ record Options {
     tests Bool
     git_tool Text
     object_cache Text
+    frontend_cache Text
     receipt Text
     program_args List[Text]
 }
 
 record Prepared {
-    program std.loom.typed.Program
+    input Text
+    entry Int
+    tests Int
     project Project
 }
 
@@ -58,6 +61,7 @@ fn options(args List[Text]) Result[Options, Text] {
     var tests = false
     var git_tool = "git"
     var object_cache = ""
+    var frontend_cache = ""
     var receipt = ""
     let program_args = new[Text]()
     var forwarding = false
@@ -85,7 +89,7 @@ fn options(args List[Text]) Result[Options, Text] {
                         }
                         no_run = true
                     } else {
-                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--object-cache" || arg == "--receipt" {
+                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--object-cache" || arg == "--frontend-cache" || arg == "--receipt" {
                             index = index + 1
                             if index == length(args) {
                                 return Result.Err(concat(arg, " needs a value"))
@@ -108,6 +112,18 @@ fn options(args List[Text]) Result[Options, Text] {
                                     return Result.Err("--object-cache requires build, test or run")
                                 }
                                 object_cache = value
+                            }
+                            if arg == "--frontend-cache" {
+                                if frontend_cache != "" {
+                                    return Result.Err("duplicate --frontend-cache")
+                                }
+                                if value == "" {
+                                    return Result.Err("--frontend-cache needs a nonempty path")
+                                }
+                                if command == "resolve" {
+                                    return Result.Err("--frontend-cache requires check, build, test, run or emit-checked")
+                                }
+                                frontend_cache = value
                             }
                             if arg == "--receipt" {
                                 if receipt != "" {
@@ -191,6 +207,7 @@ fn options(args List[Text]) Result[Options, Text] {
             tests = tests
             git_tool = git_tool
             object_cache = object_cache
+            frontend_cache = frontend_cache
             receipt = receipt
             program_args = program_args
         })
@@ -203,6 +220,13 @@ fn diagnostic(files List[SourceFile], failure Failure) Text {
 
 fn prepared(options Options) Result[Prepared, Text] {
     let loaded = load(options.path, options.std_root, options.command == "test")?
+    if options.frontend_cache != "" {
+        return frontend_cached(options, loaded)
+    }
+    prepare_loaded(options, loaded)
+}
+
+fn prepare_loaded(options Options, loaded Project) Result[Prepared, Text] {
     let bound = match bind(loaded, options.command == "test") {
         Result.Ok(value) => value
         Result.Err(failure) => {
@@ -211,7 +235,13 @@ fn prepared(options Options) Result[Prepared, Text] {
     }
     match check(bound) {
         Result.Ok(value) => Result.Ok(Prepared {
-                program = value
+                input = if options.command == "check" {
+                    ""
+                } else {
+                    encode(lower(value))
+                }
+                entry = value.entry
+                tests = length(value.tests)
                 project = loaded
             })
         Result.Err(failure) => Result.Err(diagnostic(loaded.files, failure))
@@ -262,17 +292,16 @@ fn execute(args List[Text]) Result[Text, Text] {
         return Result.Ok("resolved package dependencies\n")
     }
     let prepared = prepared(selected)?
-    let program = prepared.program
     if selected.command == "check" {
         return Result.Ok("checked package\n")
     }
     if selected.command == "emit-checked" {
-        return Result.Ok(encode(lower(program)))
+        return Result.Ok(prepared.input)
     }
-    if selected.command == "run" && program.entry < 0 {
+    if selected.command == "run" && prepared.entry < 0 {
         return Result.Err("run requires fn main() in the selected package")
     }
-    if selected.command == "test" && length(program.tests) == 0 {
+    if selected.command == "test" && prepared.tests == 0 {
         return Result.Ok("0 tests\n")
     }
     let windows = is_windows_path(selected.path)
@@ -283,7 +312,7 @@ fn execute(args List[Text]) Result[Text, Text] {
             "tests"
         }
     } else {
-        if program.entry < 0 {
+        if prepared.entry < 0 {
             if windows {
                 "package.obj"
             } else {
@@ -305,7 +334,7 @@ fn execute(args List[Text]) Result[Text, Text] {
     if selected.receipt != "" {
         discard receipt_preflight(selected.receipt, output, prepared.project)?
     }
-    let input = encode(lower(program))
+    let input = prepared.input
     let before = if selected.receipt != "" {
         match cache_identity(selected) {
             Option.Some(value) => value
@@ -316,7 +345,7 @@ fn execute(args List[Text]) Result[Text, Text] {
     } else {
         ""
     }
-    discard compile(selected, input, selected.command != "test" && program.entry < 0, output)?
+    discard compile(selected, input, selected.command != "test" && prepared.entry < 0, output)?
     if selected.command == "build" {
         if selected.receipt != "" {
             let after = match cache_identity(selected) {
@@ -333,7 +362,7 @@ fn execute(args List[Text]) Result[Text, Text] {
         return Result.Ok(concat("built ", concat(output, "\n")))
     }
     if selected.no_run {
-        return Result.Ok(concat("compiled ", concat(to_text(length(program.tests)), concat(" tests to ", concat(output, "\n")))))
+        return Result.Ok(concat("compiled ", concat(to_text(prepared.tests), concat(" tests to ", concat(output, "\n")))))
     }
     let arguments = new[Text]()
     push(arguments, output)
@@ -351,7 +380,7 @@ fn execute(args List[Text]) Result[Text, Text] {
         return Result.Err("native program failed")
     }
     if selected.command == "test" {
-        return Result.Ok(concat(to_text(length(program.tests)), " tests passed\n"))
+        return Result.Ok(concat(to_text(prepared.tests), " tests passed\n"))
     }
     Result.Ok("")
 }
