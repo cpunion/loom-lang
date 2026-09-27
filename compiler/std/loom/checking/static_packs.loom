@@ -83,3 +83,27 @@ fn iteration_type(context Context, binding Binding) Int {
     let local = get(context.locals, binding.local)
     if local.mutable { -1 } else { local.ty }
 }
+
+// Repeated source AST can read different elements of the same specialization.
+// Immutable alias IDs identify that lexical basis, including captured aliases;
+// scalar/function identities still come from the existing constants key.
+fn static_alias_basis(context Context) List[Int] {
+    let aliases = new[Int]()
+    if length(context.env.static_aliases) == 0 { return aliases }
+    var head = context.head
+    while head >= 0 {
+        let binding = get(context.bindings, head)
+        if binding.constant < -1 { push(aliases, binding.constant) }
+        head = binding.previous
+    }
+    if length(context.lexical) != 0 {
+        let captures = get(context.lexical, 0).captures
+        var index = 0
+        while index < length(captures) {
+            let capture = get(captures, index)
+            if capture.constant < -1 { push(aliases, capture.constant) }
+            index = index + 1
+        }
+    }
+    aliases
+}

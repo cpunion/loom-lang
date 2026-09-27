@@ -6,6 +6,14 @@ fn relay_static[Ts...](comptime values Ts...) (Ts...) {
     static_pack(values...)
 }
 
+fn computed_static[Ts...](comptime values Ts...) (Ts...) {
+    comptime map item in values {
+        comptime {
+            item
+        }
+    }
+}
+
 fn static_label[T](comptime value T) Text {
     comptime if T == Bool {
         comptime if value {
@@ -57,6 +65,16 @@ fn static_each[Ts...](log List[Text], comptime values Ts...) {
     }
 }
 
+fn static_yes_count[Ts...](comptime values Ts...) Int {
+    var count = 0
+    comptime for item in values {
+        comptime if static_label(item) == "yes" {
+            count = count + 1
+        }
+    }
+    count
+}
+
 fn static_shadow[Ts...](comptime values Ts...) Int {
     let values = (20, 22)
     var total = 0
@@ -67,6 +85,9 @@ fn static_shadow[Ts...](comptime values Ts...) Int {
 }
 
 fn exercise_static() {
+    let computed = computed_static(1, 2, 3)
+    assert computed.0 == 1 && computed.1 == 2 && computed.2 == 3
+    assert static_yes_count(true, false, true) == 2
     let mixed = relay_static(7, true, "three")
     assert mixed.0 == 7 && mixed.1 && mixed.2 == "three"
     discard relay_static()

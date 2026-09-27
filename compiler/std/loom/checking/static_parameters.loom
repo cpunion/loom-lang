@@ -193,7 +193,8 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
                 text = "" arguments = instance.arguments capture = -1 })
         }
     }
-    let value = computed(context, node, node, expected)?
+    let computation = computed_index(context, node, node, expected)?
+    let value = get(context.env.computations, computation).value
     let captured = value.text == "closure" && get(context.env.types, value.ty).kind == TypeKind.Function
     let arguments = new[Int]()
     if get(context.env.types, expected).kind == TypeKind.Function {
@@ -204,7 +205,7 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
     }
     Result.Ok(StaticValue { ty = expected known = true number = if expected == 3 { 0 } else { value.number }
         text = if expected == 3 { value.text } else { "" } arguments = arguments
-        capture = if captured { computation(context, node, expected, value.ty) } else { -1 } })
+        capture = if captured { computation } else { -1 } })
 }
 
 // A selected static tuple is checked with abstract types and only the public
