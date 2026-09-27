@@ -12,7 +12,7 @@ fn frontend_number(output Bytes, value Int) {
 }
 
 fn frontend_key(options Options, project Project, identity Text) Text {
-    let output = cache_bytes("loom-frontend-key 1\n")
+    let output = cache_bytes("loom-frontend-key 2\n")
     frontend_field(output, identity)
     // check does not lower. build/run/emit-checked share a production artifact;
     // test uses its own root, isolated imports and executable entry points.
@@ -91,12 +91,24 @@ fn frontend_identity() Option[Text] {
 }
 
 fn frontend_prefix(key Text) Text {
-    concat("loom-frontend-cache 1\n", concat(key, "\n"))
+    concat("loom-frontend-cache 2\n", concat(key, "\n"))
 }
 
 fn frontend_bundle(prefix Text, value Prepared) Bytes {
     let output = cache_bytes(prefix)
-    cache_append(output, concat(to_text(value.entry), concat("\n", concat(to_text(value.tests), "\n"))))
+    frontend_number(output, value.entry)
+    frontend_number(output, value.tests)
+    frontend_number(output, length(value.inputs))
+    var index = 0
+    while index < length(value.inputs) {
+        let input = get(value.inputs, index)
+        frontend_field(output, input.request.root)
+        frontend_field(output, input.request.source)
+        frontend_field(output, input.request.path)
+        frontend_field(output, input.file.path)
+        frontend_field(output, hex(cache_bytes(input.file.text)))
+        index = index + 1
+    }
     cache_append(output, value.input)
     cache_seal(output)
 }
@@ -114,34 +126,64 @@ fn frontend_decode(bytes Bytes, prefix Text, project Project, checking Bool) Opt
             return Option.None
         }
     }
-    var first = length(prefix)
-    while first < length(text) && byte(text, first) != 10 {
-        first = first + 1
+    match frontend_payload(text, length(prefix), project, checking) {
+        Result.Ok(value) => Option.Some(value)
+        Result.Err(_) => Option.None
     }
-    var second = first + 1
-    while second < length(text) && byte(text, second) != 10 {
-        second = second + 1
+}
+
+record FrontendReader { text Text cursor List[Int] }
+fn frontend_read(reader FrontendReader) Result[Text, Text] {
+    let start = get(reader.cursor, 0)
+    var end = start
+    while end < length(reader.text) && byte(reader.text, end) != 10 { end = end + 1 }
+    let size = match std.int.parse(slice(reader.text, start, end)) {
+        Result.Ok(value) => value
+        Result.Err(_) => { return Result.Err("invalid cache field size") }
     }
-    if second >= length(text) {
-        return Option.None
+    if size < 0 || end >= length(reader.text) || size > length(reader.text) - end - 1 {
+        return Result.Err("truncated cache field")
     }
-    let entry = match std.int.parse(slice(text, length(prefix), first)) {
-        Result.Ok(value) => value,
-        Result.Err(_) => {
-            return Option.None
-        }
+    std.list.set(reader.cursor, 0, end + 1 + size)
+    Result.Ok(slice(reader.text, end + 1, end + 1 + size))
+}
+fn frontend_read_number(reader FrontendReader) Result[Int, Text] {
+    match std.int.parse(frontend_read(reader)?) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(_) => Result.Err("invalid cache number")
     }
-    let tests = match std.int.parse(slice(text, first + 1, second)) {
-        Result.Ok(value) => value,
-        Result.Err(_) => {
-            return Option.None
-        }
+}
+fn frontend_payload(text Text, start Int, project Project, checking Bool) Result[Prepared, Text] {
+    let cursor = new[Int]()
+    push(cursor, start)
+    let reader = FrontendReader { text = text cursor = cursor }
+    let entry = frontend_read_number(reader)?
+    let tests = frontend_read_number(reader)?
+    let count = frontend_read_number(reader)?
+    if count < 0 || count > length(text) { return Result.Err("invalid cache input count") }
+    let inputs = new[BuildInput]()
+    var index = 0
+    while index < count {
+        let request = std.loom.project.InputRequest { root = frontend_read(reader)?
+            source = frontend_read(reader)? path = frontend_read(reader)? }
+        let path = frontend_read(reader)?
+        let digest = frontend_read(reader)?
+        var source = 0
+        while source < length(project.files) && get(project.files, source).path != request.source { source = source + 1 }
+        if source == length(project.files) { return Result.Err("cached input source changed") }
+        let owner = get(project.packages, get(project.files, source).package).instance
+        if get(project.modules, owner).source != request.root { return Result.Err("cached input module changed") }
+        let file = read_input(request)?
+        if file.path != path || hex(cache_bytes(file.text)) != digest { return Result.Err("cached input changed") }
+        push(inputs, BuildInput { request = request file = file })
+        index = index + 1
     }
-    let input = slice(text, second + 1, length(text))
+    let input = slice(text, get(cursor, 0), length(text))
     if entry < -1 || tests < 0 || (checking && input != "") || (!checking && !std.text.starts_with(input, "loom-checked-1\n")) {
-        return Option.None
+        return Result.Err("invalid cached artifact")
     }
-    Option.Some(Prepared {
+    Result.Ok(Prepared {
+            inputs = inputs
             input = input
             entry = entry
             tests = tests
@@ -160,7 +202,7 @@ fn frontend_cached(options Options, project Project) Result[Prepared, Text] {
     let key = frontend_key(options, project, identity)
     let prefix = frontend_prefix(key)
     discard cache_directory(options.frontend_cache)?
-    let root = join_path(options.frontend_cache, "checked-v1")
+    let root = join_path(options.frontend_cache, "checked-v2")
     discard cache_directory(root)?
     let path = join_path(root, concat(key, ".lchecked"))
     if match entry_kind(path) {

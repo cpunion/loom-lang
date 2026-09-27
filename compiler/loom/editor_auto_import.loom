@@ -73,7 +73,7 @@ fn editor_overlay_checks(options EditorOptions, overlays List[SourceOverlay]) Bo
         Result.Ok(project) => {
             match bind(project, options.tests) {
                 Result.Ok(bindings) => {
-                    return match check(bindings) {
+                    return match check_with_inputs(bindings, build_inputs(read_input)) {
                         Result.Ok(_) => true
                         Result.Err(_) => false
                     }
@@ -188,7 +188,7 @@ fn editor_missing_name(options EditorOptions, reference EditorImportReference) B
     if length(candidates(bindings, file, get(project.files, file).test_only, reference.value)) != 0 {
         return false
     }
-    match check(bindings) {
+    match check_with_inputs(bindings, build_inputs(read_input)) {
         Result.Ok(_) => false
         Result.Err(failed) => {
             let diagnostic = failed.diagnostic

@@ -1,7 +1,6 @@
 import std.loom.project.SourceOverlay
 import std.loom.project.load_overlaid
 import std.loom.binding.bind
-import std.loom.checking.check
 import std.loom.source.Diagnostic
 import std.loom.source.Span
 import std.bytes.new
@@ -9,6 +8,8 @@ import std.bytes.push
 import std.bytes.to_text
 import std.text.starts_with
 import std.int.parse
+import std.loom.checking.BuildInputs
+import std.loom.project.input_path
 
 record EditorOptions {
     path Text
@@ -23,6 +24,24 @@ record EditorOptions {
 record EditorOutput {
     text Text
     failed Bool
+}
+
+fn editor_input_report(inputs BuildInputs, report EditorOutput) EditorOutput {
+    var paths = "["
+    var index = 0
+    while index < length(inputs.requests) {
+        if index > 0 { paths = concat(paths, ",") }
+        paths = concat(paths, editor_quoted(input_path(get(inputs.requests, index))))
+        index = index + 1
+    }
+    var file = 0
+    while file < length(inputs.files) {
+        if index > 0 || file > 0 { paths = concat(paths, ",") }
+        paths = concat(paths, editor_quoted(get(inputs.files, file).file.path))
+        file = file + 1
+    }
+    EditorOutput { text = concat("{\"buildInputs\":", concat(paths,
+        concat("],", slice(report.text, 1, std.text.length(report.text))))) failed = report.failed }
 }
 
 // This fixed editor protocol belongs to the compiler driver, not the runtime
@@ -257,24 +276,26 @@ fn editor_execute(args List[Text]) EditorOutput {
             return editor_completion(bound, index, options.offset, recovery.inserted)
         }
         if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
-            return match check(bound) {
-                Result.Ok(program) => editor_symbols(options, bound, program, index, options.offset)
+            let inputs = build_inputs(read_input)
+            return match check_with_inputs(bound, inputs) {
+                Result.Ok(program) => editor_symbols(options, bound, program, index, options.offset, inputs.files)
                 Result.Err(failed) => editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
             }
         }
         return editor_query(bound, index, options.offset)
     }
-    match check(bound) {
+    let inputs = build_inputs(read_input)
+    match check_with_inputs(bound, inputs) {
         Result.Ok(_) => {
         }
         Result.Err(failed) => {
-            return editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
+            return editor_input_report(inputs, editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic))
         }
     }
-    EditorOutput {
+    editor_input_report(inputs, EditorOutput {
         text = "{\"diagnostics\":[]}\n"
         failed = false
-    }
+    })
 }
 
 test fn editor_protocol_quotes_control_bytes_without_reencoding_unicode() {

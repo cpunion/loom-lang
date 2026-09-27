@@ -758,8 +758,16 @@ source membership/content/trust, module/import identity and test/check mode.
 Checksummed metadata and artifacts publish together; damaged entries recheck.
 Hits skip type/proof/effect analysis and lowering, not actual test execution,
 IR emission or final linking. This is opt-in trusted-local reuse, not typed
-incremental editor state or reusable per-definition summaries. External tracked
-build inputs and finer-grained persistent reuse remain open.
+incremental editor state or reusable per-definition summaries.
+`std.build.input_file(comptime path Text) Text` now embeds tracked UTF-8 snapshots
+relative to the declaring package, confined to its module. Reads happen during
+checking and lower to ordinary Text constants, with no new runtime/backend ABI.
+Frontend hits revalidate actual resolution/content; v2 build receipts bind
+requests and digests. CLI/editor explicitly supply a filesystem reader; public
+checking/analysis defaults remain filesystem-free and can consume detached
+in-memory snapshots. See [the example](../../compiler/examples/build_inputs/main.loom).
+Explicit environment/build options, target metadata and finer-grained persistent
+reuse remain open.
 The [native basic benchmark](../../benchmarks/basic/README.md#managed-memory-lowering-repair)
 also records the managed-memory lowering repair, including same-session baseline
 comparisons for native kernels and whole compiler checks. Those measurements

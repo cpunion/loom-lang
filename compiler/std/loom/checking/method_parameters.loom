@@ -51,7 +51,7 @@ fn source_signature(env Environment, owner Int, arguments List[Int], obligations
         let declaration = get(declarations, parameter)
         let ty = resolve_bound(env, owner, child(declaration, 0), arguments, obligations, 0)?
         let constant = has(declaration, NodeKind.Comptime)
-        if constant && has(item.node, NodeKind.Intrinsic) {
+        if constant && has(item.node, NodeKind.Intrinsic) && !input_intrinsic(env, owner) {
             return Result.Err(failure(env, owner, declaration, "intrinsic parameters cannot be comptime"))
         }
         if constant && item.owner >= 0 && parameter == 0 &&

@@ -1,0 +1,63 @@
+fn input_program(text Text, inputs BuildInputs) Result[std.loom.typed.Program, Failure] {
+    let files = source_files(concat("import std.build.input_file\n", text))
+    push(files, source_file("std.build", "pub intrinsic fn input_file(comptime path Text) Text", true))
+    check_with_inputs(bind(fixture_project(files), false)?, inputs)
+}
+
+fn memory_input(request InputRequest) Result[InputFile, Text] {
+    assert request.root == "memory:app" && request.source == "app"
+    if request.path != "banner.txt" {
+        return Result.Err("unknown input")
+    }
+    Result.Ok(InputFile {
+            path = "memory:banner"
+            text = "hello"
+        })
+}
+
+test fn build_inputs_are_snapshots_erased_before_codegen() {
+    let inputs = build_inputs(memory_input)
+    let source = "fn read(comptime path Text) Text { input_file(path) }\nfn main() { assert read(\"banner.txt\") == \"hello\"\nassert comptime { input_file(\"banner.txt\") } == \"hello\"\ncomptime if false { discard input_file(\"missing\") } }"
+    let program = match input_program(source, inputs) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            assert false
+            return
+        }
+    }
+    assert length(inputs.files) == 1
+    var index = 0
+    while index < length(program.functions) {
+        assert get(program.functions, index).body.kind != ExprKind.Intrinsic
+        index = index + 1
+    }
+    // Rechecking from a caller-supplied immutable snapshot needs no reader.
+    discard match input_program(source, BuildInputs {
+            requests = new[InputRequest]()
+            files = inputs.files
+            read = no_input_reader
+        }) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+}
+
+test fn build_input_reads_need_static_paths_and_explicit_authority() {
+    assert match input_program("fn main() { discard input_file(\"banner.txt\") }", build_inputs(no_input_reader)) {
+        Result.Err(failed) => failed.diagnostic.message == "build input requires an explicit snapshot or reader: banner.txt"
+        _ => false
+    }
+    assert match input_program("fn read(path Text) Text { input_file(path) }", build_inputs(memory_input)) {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert match input_program("fn main() { discard input_file(\"missing\") }", build_inputs(memory_input)) {
+        Result.Err(failed) => failed.diagnostic.message == "unknown input"
+        _ => false
+    }
+    rejects("pub intrinsic fn input_file(comptime path Text) Text")
+}

@@ -372,8 +372,11 @@ A hit skips binding, type/effect/contract checking, compile-time evaluation and
 lowering for that exact closure. It is not a serialized mutable checker session
 or per-definition incremental engine. Build receipts use the freshly loaded
 project and actual artifact; requested IR, linking and test execution still run.
-Only successful checks are published. Each `checked-v1` entry contains metadata
+Only successful checks are published. Each `checked-v2` entry contains metadata
 and checked bytes under one SHA-256 checksum; damage causes a fresh check.
+Recorded `std.build.input_file` requests are resolved and their actual content
+digests checked on every hit. Missing, changed or redirected inputs force a
+fresh check. The receipt binds the snapshots used by that check or cache hit.
 
 Use only a trusted local directory (with an existing parent), invoke the compiler
 by its real executable path, and keep the toolchain/filesystem stable during a
@@ -1543,12 +1546,42 @@ exercises these distinctions.
 
 Explicit blocks cannot read or write surrounding runtime locals, or return from
 the enclosing function, including through `?`; called functions may return
-normally. I/O and other external inputs are disallowed. Calls and loops are
+normally. Arbitrary I/O and ambient external inputs are disallowed. The explicit
+build-input API below embeds tracked snapshots before evaluation. Calls and loops are
 bounded by work, depth, and allocation limits; faults or exhausted limits are
 diagnostics, never a fallback to runtime execution.
 Result expansion is bounded too. Successful pure computations may be reused
 within one check after type/capture validation, but each use still reconstructs
 fresh runtime containers. This is not a persistent or incremental build cache.
+
+### Tracked build inputs
+
+```loom
+import std.build.input_file
+
+fn banner() Text {
+    input_file("assets/banner.txt")
+}
+```
+
+`input_file(comptime path Text) Text` embeds a UTF-8 file as a constant. Paths
+resolve relative to the package containing the call, including calls in imported
+helpers, and must stay within that package's module after symlink resolution.
+No working-directory lookup or runtime file read is generated. A missing,
+non-file or invalid UTF-8 input is a checking error. Use explicit runtime file
+APIs when the program must read current contents instead.
+
+Dependencies are discovered automatically during checking; repeated requests use
+one snapshot. Ordinary checked bodies can request inputs even when not runtime
+reachable; unselected `comptime if` branches do not. A `comptime` path parameter
+can defer a helper's request until specialization. The frontend cache rechecks
+resolution and bytes, and build receipts record request identity and content
+digests, never file contents. Output/IR/receipt paths cannot replace a selected
+input. Embedded data is visible in the executable: do not use this for secrets.
+
+See [the runnable example](examples/build_inputs/main.loom). This first slice is
+text files only; explicit environment/build options and target metadata remain
+future work. Network access and commands are not compile-time operations.
 
 Every branch must parse, but unselected `comptime if` branches impose no type or
 call requirements. Type guards compare unshadowed types with `==` or `!=`,

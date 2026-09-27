@@ -5,6 +5,36 @@ const path = require('node:path');
 const { URI } = require('vscode-uri');
 const { TextDocument } = require('vscode-languageserver-textdocument');
 const { session } = require('./session');
+const os = require('node:os');
+
+async function buildInputSmoke(executable, stdRoot) {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'loom-input-watch-'));
+  const folder = await fs.realpath(temporary);
+  const file = path.join(folder, 'main.loom'), input = path.join(folder, 'value[1].txt');
+  const client = await session({ executable, stdRoot }, folder);
+  try {
+    await fs.writeFile(path.join(folder, 'loom.toml'), '[module]\nname = "inputs"\n');
+    const source = 'import std.build.input_file\nfn main() { comptime if input_file("value[1].txt") == "ready" {} else { let wrong Int = true } }\n';
+    await client.open(file, source);
+    assert.match((await client.wait(file, 1)).diagnostics[0].message, /cannot resolve build input/);
+    const watches = [...client.registrations.values()].flatMap(value => value.registerOptions.watchers);
+    assert.deepEqual(watches, [{ globPattern: { baseUri: URI.file(folder).toString(), pattern: 'value[[]1[]].txt' } }]);
+    for (const text of ['ready', 'bad', null]) {
+      if (text === null) await fs.unlink(input); else await fs.writeFile(input, text);
+      const after = client.diagnostics.length;
+      await client.rpc.sendNotification('workspace/didChangeWatchedFiles', { changes: [{ uri: URI.file(input).toString(), type: text === null ? 3 : 2 }] });
+      const report = await client.wait(file, 1, after);
+      assert.equal(report.diagnostics.length === 0, text === 'ready');
+    }
+    const after = client.diagnostics.length;
+    await client.rpc.sendNotification('textDocument/didClose', { textDocument: { uri: URI.file(file).toString() } });
+    await client.wait(file, undefined, after);
+    assert.equal(client.registrations.size, 0);
+  } finally {
+    await client.close();
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
 
 async function autoImportSmoke(executable, stdRoot) {
   const folder = path.join(__dirname, 'fixtures/import_project');
@@ -435,6 +465,7 @@ async function main() {
     await autoImportSmoke(executable, stdRoot);
     await directDependencyAutoImportSmoke(executable, stdRoot);
     await privateRenameSmoke(executable, stdRoot);
+    await buildInputSmoke(executable, stdRoot);
     console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local and private cross-file rename, name/member/qualified/import completion, verified qualified and bare-name auto-import actions, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }
 }

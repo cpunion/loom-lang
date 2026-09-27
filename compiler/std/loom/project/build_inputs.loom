@@ -1,0 +1,69 @@
+import std.fs.entry_kind
+
+// Requests are relative to the source package and confined to its module.
+// Keeping resolution separate lets tools supply immutable in-memory inputs.
+pub record InputRequest {
+    root Text
+    source Text
+    path Text
+}
+
+pub record InputFile {
+    path Text
+    text Text
+}
+
+pub record BuildInput {
+    request InputRequest
+    file InputFile
+}
+
+pub fn same_request(left InputRequest, right InputRequest) Bool {
+    left.root == right.root && left.source == right.source && left.path == right.path
+}
+
+pub fn input_path(request InputRequest) Text {
+    join_path(parent(request.source), request.path)
+}
+
+// Explicit filesystem authority. Pure checking does not call this implicitly.
+pub fn read_input(request InputRequest) Result[InputFile, Text] {
+    let path = request.path
+    if path == "" || starts_with(path, "/") || starts_with(path, "\\") ||
+    (length(path) > 1 && byte(path, 1) == 58) {
+        return Result.Err("build input needs a module-relative file path")
+    }
+    let root = match canonicalize(request.root) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("cannot resolve build input module")
+        }
+    }
+    // The module resolver handles separators and dot segments on Windows
+    // verbatim paths, canonicalizing symlink steps before containment checks.
+    let resolved = match dependency_directory(parent(request.source), path) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(concat("cannot resolve build input: ", path))
+        }
+    }
+    if !inside(resolved, root) {
+        return Result.Err("build input escapes its module")
+    }
+    if match entry_kind(resolved) {
+        Result.Ok(kind) => kind != FileKind.File
+        Result.Err(_) => true
+    } {
+        return Result.Err("build input must be a regular file")
+    }
+    let text = match std.file.read_text(resolved) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(concat("cannot read UTF-8 build input: ", path))
+        }
+    }
+    Result.Ok(InputFile {
+            path = resolved
+            text = text
+        })
+}

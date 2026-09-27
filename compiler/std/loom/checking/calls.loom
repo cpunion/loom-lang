@@ -554,6 +554,10 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
         }
         index = index + 1
     }
+    if input_intrinsic(context.env, signature.symbol) {
+        discard validate_intrinsic(context.env, instance.signature)?
+        return input_call(context, node, get(constants, 0))
+    }
     if prototype(context.env, signature.symbol) {
         if length(constants) != 0 && known_constants(constants) {
             let receiver = get(instance.arguments, 0)

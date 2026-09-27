@@ -1,0 +1,19 @@
+import std.build.input_file
+import std.io.write_text
+
+fn banner(comptime path Text) Text {
+    input_file(path)
+}
+
+fn main() {
+    discard write_text(banner("banner.txt"))
+}
+
+test fn embedded_snapshot() {
+    assert comptime {
+        input_file("banner.txt")
+    } == "Hello from a build input!\n"
+    comptime if false {
+        discard input_file("not-selected.txt")
+    }
+}

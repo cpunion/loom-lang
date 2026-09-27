@@ -15,6 +15,8 @@ test fn async_declarations_and_postfix_await_preserve_source_structure() {
     let timer = child(parsed("async intrinsic fn timer_until_ns(deadline Int)\n"), 0)
     assert has(timer, NodeKind.Async) && has(timer, NodeKind.Intrinsic)
     assert !has(timer, NodeKind.Block) && !has(timer, NodeKind.ReturnType)
-    assert rejected("pub async intrinsic fn timer_until_ns(deadline Int)\n").message ==
-        "intrinsic declarations must be private and cannot be tests"
+    // Visibility/authority is checked by binding, not by syntax parsing.
+    assert has(child(parsed("pub intrinsic fn input_file(comptime path Text) Text\n"), 0), NodeKind.Public)
+    assert rejected("test intrinsic fn timer_until_ns(deadline Int)\n").message ==
+        "intrinsic declarations cannot be tests"
 }

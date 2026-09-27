@@ -1,5 +1,5 @@
 'use strict';
-const { createConnection, TextDocuments, TextDocumentSyncKind, DiagnosticSeverity, CompletionItemKind, ResponseError, LSPErrorCodes } = require('vscode-languageserver/node');
+const { createConnection, TextDocuments, TextDocumentSyncKind, DiagnosticSeverity, CompletionItemKind, ResponseError, LSPErrorCodes, DidChangeWatchedFilesNotification } = require('vscode-languageserver/node');
 const { TextDocument } = require('vscode-languageserver-textdocument');
 const { URI } = require('vscode-uri');
 const fs = require('node:fs/promises');
@@ -12,11 +12,14 @@ let folders = [], configuration = false, folderChanges = false, defaults = {}, g
 const published = new Set();
 const pending = new Set();
 const queries = new Set();
+let inputWatching = false, inputWatcher, inputWatchKey = '';
 
 connection.onInitialize(params => {
   folders = params.workspaceFolders?.map(folder => URI.parse(folder.uri).fsPath) || (params.rootUri ? [URI.parse(params.rootUri).fsPath] : []);
   configuration = !!params.capabilities.workspace?.configuration;
   folderChanges = !!params.capabilities.workspace?.workspaceFolders;
+  inputWatching = !!params.capabilities.workspace?.didChangeWatchedFiles?.dynamicRegistration &&
+    !!params.capabilities.workspace?.didChangeWatchedFiles?.relativePatternSupport;
   defaults = params.initializationOptions?.settings || {};
   return { capabilities: { textDocumentSync: TextDocumentSyncKind.Incremental, documentFormattingProvider: true,
     hoverProvider: true, definitionProvider: true, referencesProvider: true, renameProvider: true,
@@ -78,12 +81,28 @@ async function sourceDocument(file, buffers) {
   return TextDocument.create(URI.file(file).toString(), 'loom', saved?.version ?? 0, text);
 }
 
+async function watchInputs(files, ticket) {
+  if (!inputWatching) return;
+  const paths = [...files].sort(), key = JSON.stringify(paths);
+  if (key === inputWatchKey) return;
+  const next = paths.length ? await connection.client.register(DidChangeWatchedFilesNotification.type, {
+    watchers: paths.map(file => ({ globPattern: { baseUri: URI.file(path.dirname(file)).toString(),
+      pattern: path.basename(file).replace(/[*?\[\]{}]/g, character => `[${character}]`) } })),
+  }) : undefined;
+  if (ticket !== generation) { await next?.dispose(); return; }
+  const previous = inputWatcher;
+  inputWatcher = next;
+  inputWatchKey = key;
+  await previous?.dispose();
+}
+
 async function validate(ticket) {
   const controller = new AbortController();
   checking = controller;
   const buffers = capturedBuffers();
   const roots = new Map(buffers.map(buffer => [path.dirname(buffer.path), buffer.uri]));
   const reports = new Map();
+  const inputs = new Set();
   let overlays;
   try {
     if (buffers.length) overlays = await compiler.snapshots(buffers);
@@ -97,6 +116,7 @@ async function validate(ticket) {
         // diagnostics or stop their checks. Report the failure at its buffer.
         report = { diagnostics: [], error: error.message };
       }
+      for (const file of report.buildInputs || []) inputs.add(path.resolve(directory, file));
       for (const item of report.diagnostics) {
         const file = path.resolve(directory, item.path);
         const target = URI.file(file).toString();
@@ -115,6 +135,8 @@ async function validate(ticket) {
         reports.set(uri, values);
       }
     }
+    if (ticket !== generation) return;
+    await watchInputs(inputs, ticket);
     if (ticket !== generation) return;
     lastError = undefined;
     for (const uri of new Set([...published, ...reports.keys(), ...buffers.map(buffer => buffer.uri)])) {
@@ -255,6 +277,7 @@ connection.onShutdown(async () => {
   checking?.abort();
   for (const controller of queries) controller.abort();
   await Promise.allSettled(pending);
+  await inputWatcher?.dispose();
 });
 documents.listen(connection);
 connection.listen();

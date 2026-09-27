@@ -213,7 +213,7 @@ required. Structured reflection respects visibility. An inference/expansion
 cycle needs an explicit phase boundary or annotation, not guessed types.
 Exact helper and macro spellings remain implementation work.
 
-Controlled build-input reads (provisionally `build.input_file`) record
+Controlled build-input reads (`std.build.input_file`) record
 content dependencies. Build options and target metadata are fixed inputs;
 environment values must be explicit inputs. Network access and external
 commands belong to build steps producing fixed artifact inputs. Users need

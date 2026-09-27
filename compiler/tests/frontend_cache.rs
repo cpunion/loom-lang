@@ -193,7 +193,7 @@ fn frontend_rechecks_damaged_bundles_and_never_publishes_failed_checks() {
         &cached("emit-checked", directory.path(), &cache, &[]),
         false,
     );
-    let entries: Vec<_> = fs::read_dir(cache.join("checked-v1"))
+    let entries: Vec<_> = fs::read_dir(cache.join("checked-v2"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect();
@@ -222,7 +222,7 @@ fn frontend_rechecks_damaged_bundles_and_never_publishes_failed_checks() {
                 .success()
         );
     }
-    assert_eq!(fs::read_dir(cache.join("checked-v1")).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(cache.join("checked-v2")).unwrap().count(), 1);
     for extra in [
         vec!["--frontend-cache", ""],
         vec!["--frontend-cache", "other"],
