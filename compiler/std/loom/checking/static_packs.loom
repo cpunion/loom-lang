@@ -2,6 +2,7 @@
 // runtime locals. Recipes refer only to hygienic static parameter names, so
 // later source bindings cannot change what an alias denotes.
 fn static_alias_source(context Context, node Node) Option[Node] {
+    if length(context.env.static_aliases) == 0 { return Option.None }
     if node.kind == NodeKind.Name {
         let found = lookup(context, node.value)
         if found >= 0 {

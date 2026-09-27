@@ -14,6 +14,10 @@ fn computed_static[Ts...](comptime values Ts...) (Ts...) {
     }
 }
 
+async fn static_async[Ts...](comptime values Ts...) (Ts...) {
+    relay_static(values...)
+}
+
 fn static_label[T](comptime value T) Text {
     comptime if T == Bool {
         comptime if value {
