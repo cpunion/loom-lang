@@ -1,0 +1,133 @@
+fn static_pack[Ts...](comptime values Ts...) (Ts...) {
+    values
+}
+
+fn relay_static[Ts...](comptime values Ts...) (Ts...) {
+    static_pack(values...)
+}
+
+fn computed_static[Ts...](comptime values Ts...) (Ts...) {
+    comptime map item in values {
+        comptime {
+            item
+        }
+    }
+}
+
+async fn static_async[Ts...](comptime values Ts...) (Ts...) {
+    relay_static(values...)
+}
+
+fn static_label[T](comptime value T) Text {
+    comptime if T == Bool {
+        comptime if value {
+            "yes"
+        } else {
+            "no"
+        }
+    } else {
+        comptime if T == Text {
+            value
+        } else {
+            "number"
+        }
+    }
+}
+
+fn static_readers[Ts...](comptime values Ts...) (fn() Text, fn() Text) {
+    comptime map item in values {
+        fn() Text {
+            static_label(item)
+        }
+    }
+}
+
+fn static_deferred[Ts...](comptime values Ts...) fn() (Ts...) {
+    fn() (Ts...) {
+        relay_static(values...)
+    }
+}
+
+fn call_static[R](comptime callback fn() R) R {
+    callback()
+}
+
+fn static_results[Rs...](comptime callbacks fn() Rs...) (Rs...) {
+    comptime map callback in callbacks {
+        call_static(callback)
+    }
+}
+
+fn static_twice[Rs...](comptime callbacks fn() Rs...) (Rs...) {
+    discard static_results(callbacks...)
+    static_results(callbacks...)
+}
+
+fn static_each[Ts...](log List[Text], comptime values Ts...) {
+    comptime for item in values {
+        push(log, static_label(item))
+    }
+}
+
+fn static_yes_count[Ts...](comptime values Ts...) Int {
+    var count = 0
+    comptime for item in values {
+        comptime if static_label(item) == "yes" {
+            count = count + 1
+        }
+    }
+    count
+}
+
+fn static_shadow[Ts...](comptime values Ts...) Int {
+    let values = (20, 22)
+    var total = 0
+    comptime for item in values {
+        total = total + item
+    }
+    total
+}
+
+fn exercise_static() {
+    let computed = computed_static(1, 2, 3)
+    assert computed.0 == 1 && computed.1 == 2 && computed.2 == 3
+    assert static_yes_count(true, false, true) == 2
+    let mixed = relay_static(7, true, "three")
+    assert mixed.0 == 7 && mixed.1 && mixed.2 == "three"
+    discard relay_static()
+    assert comptime {
+        relay_static(false, "computed").1
+    } == "computed"
+    assert static_shadow(true) == 42
+    let readers = static_readers(true, "saved")
+    assert readers.0() == "yes" && readers.1() == "saved"
+    let deferred = static_deferred(42, "later")
+    assert deferred().0 == 42 && deferred().1 == "later"
+    let retained = static_deferred({
+            let items = [1]
+            fn() Int {
+                push(items, 2)
+                length(items)
+            }
+        })
+    assert retained().0() == 2 && retained().0() == 3
+    let log List[Text] = []
+    static_each(log, false, "label", 42)
+    static_each(log)
+    assert length(log) == 3
+    assert log[0] == "no" && log[1] == "label" && log[2] == "number"
+    let counts = static_twice({
+            let items = [1]
+            fn() Int {
+                push(items, 2)
+                length(items)
+            }
+        }, {
+            let items = [true]
+            fn() Bool {
+                push(items, false)
+                length(items) == 3
+            }
+        })
+    assert counts.0 == 3 && counts.1
+}

@@ -98,6 +98,7 @@ fn unknown_static(context Context, node Node) Bool {
         let index = lookup(context, slice(node.value, 0, first_dot(node.value)))
         if index >= 0 {
             let binding = get(context.bindings, index)
+            if binding.constant < -1 && unknown_static(context, get(context.env.static_aliases, -2 - binding.constant).node) { return true }
             if binding.constant >= 0 && (!get(context.constants, binding.constant).known ||
                 !concrete(context.env, static_type(context, binding.constant))) { return true }
         }
@@ -192,7 +193,8 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
                 text = "" arguments = instance.arguments capture = -1 })
         }
     }
-    let value = computed(context, node, node, expected)?
+    let computation = computed_index(context, node, node, expected)?
+    let value = get(context.env.computations, computation).value
     let captured = value.text == "closure" && get(context.env.types, value.ty).kind == TypeKind.Function
     let arguments = new[Int]()
     if get(context.env.types, expected).kind == TypeKind.Function {
@@ -203,7 +205,7 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
     }
     Result.Ok(StaticValue { ty = expected known = true number = if expected == 3 { 0 } else { value.number }
         text = if expected == 3 { value.text } else { "" } arguments = arguments
-        capture = if captured { computation(context, node, expected, value.ty) } else { -1 } })
+        capture = if captured { computation } else { -1 } })
 }
 
 // A selected static tuple is checked with abstract types and only the public
@@ -228,7 +230,7 @@ fn validate_static(env Environment, id Int, constants List[StaticValue], node No
     if length(env.validations) >= 1024 { return Result.Err(failure(env, original.symbol, node, "comptime specialization budget exceeded; expansion must be finite")) }
     let selected = length(env.validations)
     push(env.validations, Validation { signature = id constants = constants })
-    let validation = Environment { packs = env.packs closures = env.closures source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
+    let validation = Environment { static_aliases = env.static_aliases packs = env.packs closures = env.closures source = env.source types = env.types type_states = env.type_states expand_data = env.expand_data has_refinements = env.has_refinements expanding_helpers = env.expanding_helpers
         signatures = env.signatures pending = env.pending stage_depth = env.stage_depth + 1 computations = env.computations
         validations = env.validations concepts = env.concepts implementations = env.implementations interfaces = env.interfaces
         associations = env.associations association_depth = env.association_depth

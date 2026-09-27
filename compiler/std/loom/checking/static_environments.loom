@@ -15,6 +15,10 @@ fn static_environment_type(env Environment, value StaticValue) Int {
 }
 
 fn static_source_binding(context Context, node Node) Int {
+    match static_alias_source(context, node) {
+        Option.Some(source) => { return static_source_binding(context, source) }
+        Option.None => {}
+    }
     if node.kind != NodeKind.Name { return -1 }
     let binding = lookup(context, node.value)
     if binding >= 0 && get(context.bindings, binding).constant >= 0 { return binding }

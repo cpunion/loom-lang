@@ -1,0 +1,110 @@
+// Pack aliases are checking recipes, not aggregate constant identities or
+// runtime locals. Recipes refer only to hygienic static parameter names, so
+// later source bindings cannot change what an alias denotes.
+fn static_alias_source(context Context, node Node) Option[Node] {
+    if length(context.env.static_aliases) == 0 { return Option.None }
+    if node.kind == NodeKind.Name {
+        let found = lookup(context, node.value)
+        if found >= 0 {
+            let binding = get(context.bindings, found)
+            if binding.constant < -1 {
+                return Option.Some(get(context.env.static_aliases, -2 - binding.constant).node)
+            }
+        }
+    }
+    if node.kind == NodeKind.Select {
+        match static_alias_source(context, child(node, 0)) {
+            Option.Some(tuple) => {
+                if tuple.kind == NodeKind.Tuple {
+                    match std.int.parse(node.value) {
+                        Result.Ok(index) => {
+                            if index >= 0 && index < length(tuple.children) { return Option.Some(child(tuple, index)) }
+                        }
+                        Result.Err(_) => {}
+                    }
+                }
+            }
+            Option.None => {}
+        }
+    }
+    Option.None
+}
+
+// Only elaboration creates a Let with a Comptime marker. Source let bindings
+// remain ordinary runtime values, including copies of a static parameter.
+fn static_alias_type(context Context, node Node) Result[Int, Failure] {
+    if node.kind == NodeKind.Name {
+        let found = lookup(context, node.value)
+        if found >= 0 {
+            let binding = get(context.bindings, found)
+            if binding.constant < -1 { return Result.Ok(get(context.env.static_aliases, -2 - binding.constant).ty) }
+            if binding.constant >= 0 { return Result.Ok(static_type(context, binding.constant)) }
+        }
+    }
+    if node.kind == NodeKind.Tuple {
+        let elements = new[Int]()
+        var index = 0
+        while index < length(node.children) {
+            push(elements, static_alias_type(context, child(node, index))?)
+            index = index + 1
+        }
+        return tuple_type(context.env, context.signature.symbol, node, elements)
+    }
+    if node.kind == NodeKind.Select {
+        let ty = static_alias_type(context, child(node, 0))?
+        let projection = tuple_member(context, node, atom(ExprKind.Deferred, ty, node, -1), node.value)?
+        return Result.Ok(projection.ty)
+    }
+    Result.Err(error(context, node, "invalid static pack binding"))
+}
+
+fn bind_static_pack(context Context, node Node, boundary Int) Result[Step, Failure] {
+    let source = child(node, 0)
+    // Read only the type: an unused callback must not be captured or scheduled.
+    let ty = static_alias_type(context, source)?
+    let recipe = match static_alias_source(context, source) {
+        Option.Some(value) => value
+        Option.None => source
+    }
+    let alias = length(context.env.static_aliases)
+    let next = bind_name(context, node, node.value, -1, -2 - alias, boundary)?
+    push(context.env.static_aliases, StaticAlias { node = recipe ty = ty })
+    Result.Ok(Step { context = next expression = expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true) })
+}
+
+fn pack_binding(node Node, name Text, value Node, static_values Bool) Node {
+    let children = source_nodes(value)
+    if static_values { push(children, pack_node(node, NodeKind.Comptime, "", new[Node]())) }
+    pack_node(node, NodeKind.Let, name, children)
+}
+
+fn iteration_type(context Context, binding Binding) Int {
+    if binding.constant < -1 { return get(context.env.static_aliases, -2 - binding.constant).ty }
+    if binding.local < 0 { return -1 }
+    let local = get(context.locals, binding.local)
+    if local.mutable { -1 } else { local.ty }
+}
+
+// Repeated source AST can read different elements of the same specialization.
+// Immutable alias IDs identify that lexical basis, including captured aliases;
+// scalar/function identities still come from the existing constants key.
+fn static_alias_basis(context Context) List[Int] {
+    let aliases = new[Int]()
+    if length(context.env.static_aliases) == 0 { return aliases }
+    var head = context.head
+    while head >= 0 {
+        let binding = get(context.bindings, head)
+        if binding.constant < -1 { push(aliases, binding.constant) }
+        head = binding.previous
+    }
+    if length(context.lexical) != 0 {
+        let captures = get(context.lexical, 0).captures
+        var index = 0
+        while index < length(captures) {
+            let capture = get(captures, index)
+            if capture.constant < -1 { push(aliases, capture.constant) }
+            index = index + 1
+        }
+    }
+    aliases
+}
