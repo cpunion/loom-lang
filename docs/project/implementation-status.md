@@ -729,17 +729,27 @@ operand order, alias growth, moving-GC snapshots, bounds/range faults and cleanu
 Normal compiler iteration can use a [single development rebuild](../../compiler/README.md#build-and-try-it);
 CI retains full bootstrap generation checks. The initial
 [latency harness](../../compiler/README.md#compiler-latency) measures fresh-process
-check/build runs with warm OS caches and backend phase timings. It does not
-implement incremental frontend reuse or establish a performance target as achieved.
+check/build runs with warm OS caches and backend phase timings, including optional
+cache comparisons. Measurements do not establish a performance target as achieved.
 Native commands now offer an opt-in trusted-local object cache. The Loom driver
 keys exact checked bytes and the backend's content/configuration identity,
 verifies object/link metadata as one checksummed bundle, and always relinks
-executables. Source/type/proof checks still run; IR requests bypass caching.
+executables. With the object-cache option alone, source/type/proof checks still
+run; IR requests bypass object caching.
 The Rust bridge shares target configuration between identity and actual emission,
 hashes the native executable and loaded LLVM implementation, and otherwise owns
 only object emission and host linking. Runtime/linker changes do not reuse final
 executables. This is not an authenticated binary cache or a frontend incremental
 engine; unsupported implementation identity falls back to uncached compilation.
+An independent [frontend cache](../../compiler/README.md#frontend-cache) now
+persists successful whole-closure checks/lowered inputs. Every use reloads and
+parses source and verifies dependency snapshots; keys include compiler bytes,
+source membership/content/trust, module/import identity and test/check mode.
+Checksummed metadata and artifacts publish together; damaged entries recheck.
+Hits skip type/proof/effect analysis and lowering, not actual test execution,
+IR emission or final linking. This is opt-in trusted-local reuse, not typed
+incremental editor state or reusable per-definition summaries. External tracked
+build inputs and finer-grained persistent reuse remain open.
 The [native basic benchmark](../../benchmarks/basic/README.md#managed-memory-lowering-repair)
 also records the managed-memory lowering repair, including same-session baseline
 comparisons for native kernels and whole compiler checks. Those measurements

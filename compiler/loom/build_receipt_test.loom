@@ -64,7 +64,7 @@ test fn build_receipt_binds_the_native_artifact_checked_input_and_loaded_sources
             return
         }
     }
-    let checked = encode(lower(snapshot.program))
+    let checked = snapshot.input
     let native = match cache_identity(selected) {
         Option.Some(value) => value
         Option.None => {

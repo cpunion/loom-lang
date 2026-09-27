@@ -53,7 +53,10 @@ a lowercase package identifier; an existing directory is never overwritten.
 `--object-cache` enables [trusted-local object reuse](../README.md#native-object-cache)
 for native commands. The Loom driver owns cache policy; the Rust bridge only
 identifies its implementation, emits objects and links/publishes requested files.
-Source checking always runs and executables always relink.
+Without `--frontend-cache`, source checking always runs; executables always relink.
+`--frontend-cache` enables [checked-closure reuse](../README.md#frontend-cache)
+after loading and parsing the selected sources. It also works for `check` and
+`emit-checked`, independently of the object cache.
 The private `emit-checked` command performs normal source/type/proof checks but
 writes the checked artifact to stdout without invoking a native tool. It serves
 bootstrap transfer, not a stable interchange or cache format.

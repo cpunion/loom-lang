@@ -103,25 +103,26 @@ fn cache_bundle(prefix Text, object CachedObject) Bytes {
         std.bytes.push(output, std.bytes.get(object.bytes, index))
         index = index + 1
     }
+    cache_seal(output)
+}
+fn cache_seal(output Bytes) Bytes {
     let checksum = digest(output)
-    index = 0
+    var index = 0
     while index < length(checksum) {
         std.bytes.push(output, std.bytes.get(checksum, index))
         index = index + 1
     }
     output
 }
-fn cache_decode(value Bytes, prefix Text) Option[CachedObject] {
+fn cache_unseal(value Bytes, prefix Text) Option[Bytes] {
     let offset = length(prefix)
     let end = length(value) - 32
-    if end <= offset + 2 { return Option.None }
+    if end < offset { return Option.None }
     var index = 0
     while index < offset {
         if std.bytes.get(value, index) != byte(prefix, index) { return Option.None }
         index = index + 1
     }
-    let runtime = std.bytes.get(value, offset)
-    if (runtime != 48 && runtime != 49) || std.bytes.get(value, offset + 1) != 10 { return Option.None }
     let body = cache_copy(value, 0, end)
     let checksum = digest(body)
     index = 0
@@ -129,7 +130,15 @@ fn cache_decode(value Bytes, prefix Text) Option[CachedObject] {
         if std.bytes.get(checksum, index) != std.bytes.get(value, end + index) { return Option.None }
         index = index + 1
     }
-    Option.Some(CachedObject { bytes = cache_copy(body, offset + 2, end) uses_runtime = runtime == 49 })
+    Option.Some(body)
+}
+fn cache_decode(value Bytes, prefix Text) Option[CachedObject] {
+    let body = match cache_unseal(value, prefix) { Option.Some(value) => value, Option.None => { return Option.None } }
+    let offset = length(prefix)
+    if length(body) <= offset + 2 { return Option.None }
+    let runtime = std.bytes.get(body, offset)
+    if (runtime != 48 && runtime != 49) || std.bytes.get(body, offset + 1) != 10 { return Option.None }
+    Option.Some(CachedObject { bytes = cache_copy(body, offset + 2, length(body)) uses_runtime = runtime == 49 })
 }
 fn cache_read(path Text, prefix Text) Option[CachedObject] {
     if !match entry_kind(path) { Result.Ok(value) => value == FileKind.File, _ => false } { return Option.None }
@@ -142,7 +151,7 @@ fn cache_directory(path Text) Result[Bool, Text] {
             if error == FsError.AlreadyExists && match entry_kind(path) { Result.Ok(value) => value == FileKind.Directory, _ => false } {
                 return Result.Ok(true)
             }
-            Result.Err("object cache requires a writable directory with an existing parent")
+            Result.Err("compiler cache requires a writable directory with an existing parent")
         }
     }
 }
@@ -152,11 +161,11 @@ fn cache_staging(root Text) Result[Text, Text] {
         let path = join_path(root, concat("stage-", to_text(index)))
         match create_dir(path) {
             Result.Ok(_) => { return Result.Ok(path) }
-            Result.Err(error) => { if error != FsError.AlreadyExists { return Result.Err("cannot create object cache staging directory") } }
+            Result.Err(error) => { if error != FsError.AlreadyExists { return Result.Err("cannot create compiler cache staging directory") } }
         }
         index = index + 1
     }
-    Result.Err("object cache staging directories are exhausted")
+    Result.Err("compiler cache staging directories are exhausted")
 }
 fn cache_cleanup(stage Text) {
     discard remove_file(join_path(stage, "object"))
@@ -177,7 +186,7 @@ fn cache_emission(output Output, identity Text, library Bool) Result[Bool, Text]
     Result.Ok(runtime == "1")
 }
 
-// The frontend always runs. Only exact checked bytes and a content-identified
+// Only exact checked bytes and a content-identified
 // backend can reuse an object; executables are always linked with current tools.
 fn compile_cached(options Options, input Text, library Bool, output Text) Result[Bool, Text] {
     let identity = match cache_identity(options) {

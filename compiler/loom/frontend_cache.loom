@@ -1,0 +1,206 @@
+// Whole selected-closure reuse after loading: no persistent source IDs, AST
+// decoder or second semantic model. Loading still validates manifests, locked
+// snapshots, file membership and syntax before any cached proof is accepted.
+fn frontend_field(output Bytes, value Text) {
+    cache_append(output, to_text(length(value)))
+    cache_append(output, "\n")
+    cache_append(output, value)
+}
+
+fn frontend_number(output Bytes, value Int) {
+    frontend_field(output, to_text(value))
+}
+
+fn frontend_key(options Options, project Project, identity Text) Text {
+    let output = cache_bytes("loom-frontend-key 1\n")
+    frontend_field(output, identity)
+    // check does not lower. build/run/emit-checked share a production artifact;
+    // test uses its own root, isolated imports and executable entry points.
+    frontend_field(output, if options.command == "check" {
+            "check"
+        } else {
+            if options.command == "test" {
+                "test"
+            } else {
+                "native"
+            }
+        })
+    frontend_number(output, project.root)
+    frontend_number(output, length(project.modules))
+    var index = 0
+    while index < length(project.modules) {
+        let module = get(project.modules, index)
+        frontend_field(output, module.name)
+        frontend_field(output, module.source)
+        index = index + 1
+    }
+    frontend_number(output, length(project.packages))
+    index = 0
+    while index < length(project.packages) {
+        let package = get(project.packages, index)
+        frontend_number(output, package.instance)
+        frontend_field(output, package.relative)
+        frontend_number(output, length(package.imports))
+        var edge = 0
+        while edge < length(package.imports) {
+            let imported = get(package.imports, edge)
+            frontend_field(output, imported.spelling)
+            frontend_number(output, imported.target)
+            edge = edge + 1
+        }
+        index = index + 1
+    }
+    frontend_number(output, length(project.files))
+    index = 0
+    while index < length(project.files) {
+        let source = get(project.files, index)
+        frontend_number(output, source.package)
+        frontend_field(output, source.path)
+        frontend_field(output, source.text)
+        frontend_number(output, if source.test_only {
+                1
+            } else {
+                0
+            })
+        frontend_number(output, if source.trusted_std {
+                1
+            } else {
+                0
+            })
+        index = index + 1
+    }
+    hex(output)
+}
+
+fn frontend_identity() Option[Text] {
+    let invoked = get(std.process.arguments(), 0)
+    // Do not guess a PATH resolution or trust a version/mtime sidecar.
+    if !contains(invoked, "/") && !is_windows_path(invoked) {
+        return Option.None
+    }
+    let executable = match canonicalize(invoked) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    match read_bytes(executable) {
+        Result.Ok(bytes) => Option.Some(hex(bytes)),
+        Result.Err(_) => Option.None
+    }
+}
+
+fn frontend_prefix(key Text) Text {
+    concat("loom-frontend-cache 1\n", concat(key, "\n"))
+}
+
+fn frontend_bundle(prefix Text, value Prepared) Bytes {
+    let output = cache_bytes(prefix)
+    cache_append(output, concat(to_text(value.entry), concat("\n", concat(to_text(value.tests), "\n"))))
+    cache_append(output, value.input)
+    cache_seal(output)
+}
+
+fn frontend_decode(bytes Bytes, prefix Text, project Project, checking Bool) Option[Prepared] {
+    let body = match cache_unseal(bytes, prefix) {
+        Option.Some(value) => value,
+        Option.None => {
+            return Option.None
+        }
+    }
+    let text = match decode_utf8(body) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    var first = length(prefix)
+    while first < length(text) && byte(text, first) != 10 {
+        first = first + 1
+    }
+    var second = first + 1
+    while second < length(text) && byte(text, second) != 10 {
+        second = second + 1
+    }
+    if second >= length(text) {
+        return Option.None
+    }
+    let entry = match std.int.parse(slice(text, length(prefix), first)) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    let tests = match std.int.parse(slice(text, first + 1, second)) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Option.None
+        }
+    }
+    let input = slice(text, second + 1, length(text))
+    if entry < -1 || tests < 0 || (checking && input != "") || (!checking && !std.text.starts_with(input, "loom-checked-1\n")) {
+        return Option.None
+    }
+    Option.Some(Prepared {
+            input = input
+            entry = entry
+            tests = tests
+            project = project
+        })
+}
+
+fn frontend_cached(options Options, project Project) Result[Prepared, Text] {
+    let identity = match frontend_identity() {
+        Option.Some(value) => value
+        Option.None => {
+            cache_trace("frontend unavailable")
+            return prepare_loaded(options, project)
+        }
+    }
+    let key = frontend_key(options, project, identity)
+    let prefix = frontend_prefix(key)
+    discard cache_directory(options.frontend_cache)?
+    let root = join_path(options.frontend_cache, "checked-v1")
+    discard cache_directory(root)?
+    let path = join_path(root, concat(key, ".lchecked"))
+    if match entry_kind(path) {
+        Result.Ok(value) => value == FileKind.File,
+        _ => false
+    } {
+        match read_bytes(path) {
+            Result.Ok(bytes) => {
+                match frontend_decode(bytes, prefix, project, options.command == "check") {
+                    Option.Some(value) => {
+                        cache_trace("frontend hit")
+                        return Result.Ok(value)
+                    }
+                    Option.None => {
+                    }
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    cache_trace("frontend miss")
+    let checked = prepare_loaded(options, project)?
+    // Publish only successful checks. Readers see one complete, content-checked
+    // bundle; concurrent producers own separate staging directories.
+    let stage = cache_staging(root)?
+    defer {
+        cache_cleanup(stage)
+    }
+    let bundle = join_path(stage, "bundle")
+    if match write_bytes(bundle, frontend_bundle(prefix, checked)) {
+        Result.Ok(_) => true,
+        _ => false
+    } {
+        if match entry_kind(path) {
+            Result.Ok(value) => value == FileKind.File,
+            Result.Err(error) => error == FsError.NotFound
+        } {
+            discard rename(bundle, path)
+        }
+    }
+    Result.Ok(checked)
+}

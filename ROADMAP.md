@@ -233,9 +233,12 @@ traversal, with explicit resolution, locked source edges and actual snapshot
 content/membership verification. Local path inputs remain editable. Version
 ranges/normalization, graph-wide fork policies and authenticated transport remain
 open. Native commands now have opt-in, trusted-local whole-closure object reuse
-keyed by checked inputs and actual backend/toolchain content. Source checks and
-final links still run; persistent frontend/proof reuse and per-package objects
-remain open.
+keyed by checked inputs and actual backend/toolchain content. An independent
+trusted-local frontend cache now reuses successful whole-closure checks and
+lowered inputs, bound to compiler bytes and the complete loaded semantic basis.
+Source discovery/parsing, dependency verification and final linking still run.
+Tracked external build inputs, fine-grained persistent proof/effect reuse and
+per-package objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic
 method calls into the existing direct-call path. Conditional conformance queries,
