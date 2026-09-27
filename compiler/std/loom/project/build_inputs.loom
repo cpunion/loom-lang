@@ -22,6 +22,10 @@ pub fn same_request(left InputRequest, right InputRequest) Bool {
     left.root == right.root && left.source == right.source && left.path == right.path
 }
 
+pub fn input_path(request InputRequest) Text {
+    join_path(parent(request.source), request.path)
+}
+
 // Explicit filesystem authority. Pure checking does not call this implicitly.
 pub fn read_input(request InputRequest) Result[InputFile, Text] {
     let path = request.path
@@ -35,7 +39,7 @@ pub fn read_input(request InputRequest) Result[InputFile, Text] {
             return Result.Err("cannot resolve build input module")
         }
     }
-    let resolved = match canonicalize(join_path(parent(request.source), path)) {
+    let resolved = match canonicalize(input_path(request)) {
         Result.Ok(value) => value
         Result.Err(_) => {
             return Result.Err(concat("cannot resolve build input: ", path))

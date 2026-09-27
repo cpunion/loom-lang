@@ -81,13 +81,14 @@ pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
 }
 pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Result[Analysis, Failure] {
     let bindings = bind(snapshot(project), tests)?
-    let files = new[BuildInput]()
+    let detached = build_inputs(inputs.read)
+    let files = detached.files
     var index = 0
     while index < length(inputs.files) {
         push(files, get(inputs.files, index))
         index = index + 1
     }
-    let program = check_with_inputs(bindings, BuildInputs { files = files read = inputs.read })?
+    let program = check_with_inputs(bindings, detached)?
     Result.Ok(Analysis { bindings = bindings program = program inputs = files })
 }
 

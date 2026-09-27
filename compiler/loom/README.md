@@ -274,7 +274,10 @@ needs a fresh input context (or deliberately frozen snapshots); reusing one does
 not refresh disk contents. `Analysis.inputs` records the detached snapshots.
 For input-bearing analyses, `is_current` returns false: use
 `is_current_with_inputs` with freshly read snapshots. Neither freshness API reads
-the filesystem. Build receipts use a version-2 protocol with input digests.
+the filesystem. `BuildInputs.requests` also retains failed read requests, allowing
+editor clients to watch missing files. VS Code dynamically watches actual request
+and resolved paths, including file creation/deletion, without a workspace-wide
+resource glob. Build receipts use a version-2 protocol with input digests.
 
 The [semantic example](../examples/semantic/main.loom) creates an in-memory
 project, queries inferred local types and selected overload/generic call targets,

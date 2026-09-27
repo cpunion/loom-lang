@@ -7,12 +7,15 @@ import std.loom.project.same_request
 // reader; discovered dependencies append to files. Treat them as read-only.
 pub record BuildInputs {
     files List[BuildInput]
+    // Includes failed reads, so editors can observe a missing input's creation.
+    requests List[InputRequest]
     read fn(InputRequest) Result[InputFile, Text]
 }
 
 pub fn build_inputs(reader fn(InputRequest) Result[InputFile, Text]) BuildInputs {
     BuildInputs {
         files = new[BuildInput]()
+        requests = new[InputRequest]()
         read = reader
     }
 }
@@ -51,6 +54,7 @@ fn input_call(context Context, node Node, value StaticValue) Result[Expr, Failur
         }
         index = index + 1
     }
+    push(inputs.requests, request)
     let file = match inputs.read(request) {
         Result.Ok(file) => file
         Result.Err(message) => {
