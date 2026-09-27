@@ -92,6 +92,8 @@ fn static_arguments_reject_captures_effects_and_undeclared_generic_requirements(
         format!("{declaration}fn main() {{ discard f(1, 1 / 0) }}"),
         format!("{declaration}fn main() {{ let callback = f\ndiscard callback }}"),
         "fn unsupported(comptime value Float) Float { value }\nfn main() {}".into(),
+        "fn generic[T](comptime value T) T { value }\nfn main() { discard generic(1.0) }".into(),
+        "fn generic[T](comptime value T, comptime selected Bool) Int { comptime if selected { value + 1 } else { 0 } }\nfn main() { discard generic(1, true) }".into(),
         "fn f(value Int) Int { value }\nfn f(comptime value Int) Int { value }\nfn main() {}"
             .into(),
         "fn unproved(comptime count Int) Int ensures result == 1 { 0 }\nfn main() {}".into(),

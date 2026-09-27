@@ -657,7 +657,11 @@ reflection, and contract reasoning remain in the
 
 `comptime` parameters specialize named calls using canonical Int/Bool/Text or
 source-function identities; scalar values and function identities disappear
-before the native ABI. Known functions use determined targets; generic references, pure selectors and forwarding preserve
+before the native ABI. Inferred generic and associated parameter types now
+specialize to those same supported shapes, including concrete/dynamic methods;
+unsupported concrete shapes reject before evaluation/emission. Generic scalar
+values remain abstract during declaration checking, just like callbacks.
+Known functions use determined targets; generic references, pure selectors and forwarding preserve
 type checks and target preconditions. Static-value branches are checked with
 abstract type arguments and declared requirements, not incidental concrete
 conformances. Unknown runtime inputs and unproved abstract postconditions reject.

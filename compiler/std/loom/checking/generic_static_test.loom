@@ -1,0 +1,23 @@
+test fn generic_static_values_defer_incidental_types_and_specialize_scalar_values() {
+    let program = accepted("fn constant[T](comptime value T) T { value }\nfn forward[T](comptime value T) T { comptime { constant(value) } }\nfn main() { assert constant(42) == 42 && constant(true)\nassert constant(\"first\") == \"first\" && constant(\"second\") == \"second\"\nassert forward(7) == 7\nassert comptime { forward(8) } == 8 }")
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        assert length(function.params) == 0
+        assert dynamic_count(function.body, ExprKind.Deferred) == 0
+        index = index + 1
+    }
+    discard accepted("concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\nfn selected[T](comptime value T) Int { comptime if T implements C { value.value() } else { 0 } }\nfn main() { assert selected(3) == 3 && selected(true) == 0 }")
+    discard accepted("concept C { type Item\nfn constant(self Self, comptime value Self.Item) Self.Item { value } }\nimpl C for Bool { type Item = Int }\nfn main() { assert true.constant(42) == 42 }")
+}
+
+test fn generic_static_values_retain_declaration_requirements_and_isolation() {
+    let declaration = "concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\n"
+    rejects(concat(declaration, "fn hidden[T](comptime value T, comptime enabled Bool) Int { comptime if enabled { value.value() } else { 0 } }\nfn main() { discard hidden(3, true) }"))
+    rejects("fn hidden[T](comptime value T, comptime enabled Bool) Int { comptime if enabled { value + 1 } else { 0 } }\nfn main() { discard hidden(3, true) }")
+    rejects("fn constant[T](comptime value T) T { value }\nfn main() { let value = 2\ndiscard constant(value) }")
+    rejects("fn constant[T](comptime value T) T { value }\nfn main() { discard constant(1.0) }")
+    rejects("record R { value Int }\nfn constant[T](comptime value T) T { value }\nfn main() { discard constant(R { value = 1 }) }")
+    rejects("fn constant[T](comptime value T) T { value }\nfn main() { discard constant((1, true)) }")
+    rejects("fn constant[T](comptime value T) T { value }\nfn unproved[T](comptime value T) Int ensures result == 1 { comptime { discard constant(value)\n0 } }\nfn main() { discard unproved(2) }")
+}

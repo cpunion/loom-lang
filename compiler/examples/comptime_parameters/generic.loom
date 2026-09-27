@@ -1,0 +1,48 @@
+// The type is inferred, while the value is fixed before runtime emission.
+fn constant[T](comptime value T) T {
+    value
+}
+
+fn forward_constant[T](comptime value T) T {
+    comptime {
+        constant(value)
+    }
+}
+
+fn constant_display[T Display](comptime value T) Text {
+    value.display()
+}
+
+fn constant_label[T](comptime value T) Text {
+    comptime if T == Text {
+        value
+    } else {
+        comptime if T == Int {
+            to_text(value)
+        } else {
+            "other"
+        }
+    }
+}
+
+fn generic_constants() {
+    assert constant(42) == 42 && constant(true)
+    assert constant("first") == "first" && constant("second") == "second"
+    assert forward_constant(-9223372036854775808) == -9223372036854775808
+    assert comptime {
+        forward_constant("computed")
+    } == "computed"
+    assert constant_display(42) == "42" && constant_display(true) == "true"
+    assert constant_label(7) == "7" && constant_label("text") == "text"
+    let action = constant(increment)
+    assert action(4) == 5
+    let captured = constant({
+            let values = new[Int]()
+            push(values, 5)
+            fn() Int {
+                push(values, 1)
+                length(values)
+            }
+        })
+    assert captured() == 2 && captured() == 3
+}
