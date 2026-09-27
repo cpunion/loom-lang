@@ -11,7 +11,12 @@ import std.loom.project.qualify
 import std.loom.binding.Program
 import std.loom.binding.Failure
 import std.loom.binding.bind
-import std.loom.checking.check
+import std.loom.checking.check_with_inputs
+import std.loom.checking.BuildInputs
+import std.loom.checking.build_inputs
+import std.loom.checking.no_input_reader
+import std.loom.project.BuildInput
+import std.loom.project.same_request
 import std.loom.checking.type_name
 import std.loom.typed.Program
 import std.loom.typed.Expr
@@ -27,7 +32,7 @@ import std.result.Result
 
 // Results own a detached project/AST snapshot. Treat all result lists as read-only;
 // IDs belong to this analysis, not to later analyses or persistent declarations.
-pub record Analysis { bindings std.loom.binding.Program program std.loom.typed.Program }
+pub record Analysis { bindings std.loom.binding.Program program std.loom.typed.Program inputs List[BuildInput] }
 pub record Expression { function Int expression Expr }
 
 fn copy_node(node Node) Node {
@@ -72,14 +77,36 @@ fn snapshot(project Project) Project {
 
 // Uses the compiler's binding, typing and proof checks, without a CLI or backend.
 pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
+    analyze_with_inputs(project, tests, build_inputs(no_input_reader))
+}
+pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Result[Analysis, Failure] {
     let bindings = bind(snapshot(project), tests)?
-    Result.Ok(Analysis { bindings = bindings program = check(bindings)? })
+    let files = new[BuildInput]()
+    var index = 0
+    while index < length(inputs.files) {
+        push(files, get(inputs.files, index))
+        index = index + 1
+    }
+    let program = check_with_inputs(bindings, BuildInputs { files = files read = inputs.read })?
+    Result.Ok(Analysis { bindings = bindings program = program inputs = files })
 }
 
 // This checks the supplied project, not the filesystem. Reload first to detect
 // disk edits. Module origins and resolved edges are part of the basis, as are
 // in-memory AST edits even when the source text is unchanged.
 pub fn is_current(analysis Analysis, project Project, tests Bool) Bool {
+    is_current_with_inputs(analysis, project, tests, new[BuildInput]())
+}
+pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, inputs List[BuildInput]) Bool {
+    if length(analysis.inputs) != length(inputs) { return false }
+    var input = 0
+    while input < length(inputs) {
+        let left = get(analysis.inputs, input)
+        let right = get(inputs, input)
+        if !same_request(left.request, right.request) || left.file.path != right.file.path ||
+            left.file.text != right.file.text { return false }
+        input = input + 1
+    }
     let saved = analysis.bindings
     if saved.root != project.root || saved.tests != tests ||
         length(saved.modules) != length(project.modules) ||

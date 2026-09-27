@@ -1,7 +1,6 @@
 import std.loom.project.SourceOverlay
 import std.loom.project.load_overlaid
 import std.loom.binding.bind
-import std.loom.checking.check
 import std.loom.source.Diagnostic
 import std.loom.source.Span
 import std.bytes.new
@@ -257,14 +256,15 @@ fn editor_execute(args List[Text]) EditorOutput {
             return editor_completion(bound, index, options.offset, recovery.inserted)
         }
         if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
-            return match check(bound) {
-                Result.Ok(program) => editor_symbols(options, bound, program, index, options.offset)
+            let inputs = build_inputs(read_input)
+            return match check_with_inputs(bound, inputs) {
+                Result.Ok(program) => editor_symbols(options, bound, program, index, options.offset, inputs.files)
                 Result.Err(failed) => editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
             }
         }
         return editor_query(bound, index, options.offset)
     }
-    match check(bound) {
+    match check_with_inputs(bound, build_inputs(read_input)) {
         Result.Ok(_) => {
         }
         Result.Err(failed) => {

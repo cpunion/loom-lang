@@ -1,0 +1,66 @@
+import std.loom.project.InputRequest
+import std.loom.project.InputFile
+
+test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() {
+    let project = input("import std.build.input_file\nfn main() { discard input_file(\"message.txt\") }")
+    push(project.modules, ModuleInstance {
+            name = "std"
+            source = "/std"
+        })
+    push(project.packages, Package {
+            instance = 1
+            relative = "build"
+            imports = new[PackageImport]()
+        })
+    push(get(project.packages, 0).imports, PackageImport {
+            spelling = "std.build"
+            target = 1
+        })
+    let declaration = "pub intrinsic fn input_file(comptime path Text) Text"
+    let tree = match parse(declaration) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    push(project.files, SourceFile {
+            package = 1
+            path = "/std/build/build.loom"
+            text = declaration
+            tree = tree
+            test_only = false
+            trusted_std = true
+        })
+    let inputs = build_inputs(no_input_reader)
+    let request = InputRequest {
+        root = "/app"
+        source = "main.loom"
+        path = "message.txt"
+    }
+    push(inputs.files, BuildInput {
+            request = request
+            file = InputFile {
+                path = "/app/message.txt"
+                text = "first"
+            }
+        })
+    let analysis = match analyze_with_inputs(project, false, inputs) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert !is_current(analysis, project, false)
+    assert is_current_with_inputs(analysis, project, false, inputs.files)
+    set(inputs.files, 0, BuildInput {
+            request = request
+            file = InputFile {
+                path = "/app/message.txt"
+                text = "other"
+            }
+        })
+    assert get(analysis.inputs, 0).file.text == "first"
+    assert !is_current_with_inputs(analysis, project, false, inputs.files)
+}

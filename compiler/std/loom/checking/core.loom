@@ -47,6 +47,7 @@ record TypeState {
 }
 
 record Environment {
+    inputs BuildInputs
     static_aliases List[StaticAlias]
     packs List[PackInstance]
     closures List[ClosurePlan]
@@ -240,7 +241,10 @@ fn bind_name(context Context, node Node, value Text, local Int, constant Int, bo
 // Global declarations keep one meaning in production checks and editor queries.
 // Every invocation owns fresh mutable checking tables; failures are discarded.
 fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
-    let env = Environment { static_aliases = new[StaticAlias]() packs = new[PackInstance]() closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
+    prepare_with_inputs(source, build_inputs(no_input_reader))
+}
+fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Result[Environment, Failure] {
+    let env = Environment { inputs = inputs static_aliases = new[StaticAlias]() packs = new[PackInstance]() closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
         has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()
         associations = new[Association]() association_depth = 0
@@ -280,7 +284,10 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
 }
 
 pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
-    let env = prepare(source)?
+    check_with_inputs(source, build_inputs(no_input_reader))
+}
+pub fn check_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Result[std.loom.typed.Program, Failure] {
+    let env = prepare_with_inputs(source, inputs)?
     let resource_roots = new[Int]()
     var index = 0
     while index < length(env.signatures) {

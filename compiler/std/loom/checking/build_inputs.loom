@@ -1,0 +1,73 @@
+import std.loom.project.InputRequest
+import std.loom.project.InputFile
+import std.loom.project.BuildInput
+import std.loom.project.same_request
+
+// One context per check. The caller can supply snapshots and/or an explicit
+// reader; discovered dependencies append to files. Treat them as read-only.
+pub record BuildInputs {
+    files List[BuildInput]
+    read fn(InputRequest) Result[InputFile, Text]
+}
+
+pub fn build_inputs(reader fn(InputRequest) Result[InputFile, Text]) BuildInputs {
+    BuildInputs {
+        files = new[BuildInput]()
+        read = reader
+    }
+}
+
+pub fn no_input_reader(request InputRequest) Result[InputFile, Text] {
+    Result.Err(concat("build input requires an explicit snapshot or reader: ", request.path))
+}
+
+fn input_intrinsic(env Environment, owner Int) Bool {
+    let item = symbol(env, owner)
+    if item.name != "input_file" || !has(item.node, NodeKind.Intrinsic) {
+        return false
+    }
+    let file = get(env.source.files, item.file)
+    file.trusted_std &&
+    package_label(env.source.modules, env.source.packages, file.package) == "std.build"
+}
+
+fn input_call(context Context, node Node, value StaticValue) Result[Expr, Failure] {
+    if !value.known {
+        return Result.Ok(expression(ExprKind.Deferred, 3, node, "", -1, new[Expr](), true))
+    }
+    let source = get(context.env.source.files, symbol(context.env, context.signature.symbol).file)
+    let package = get(context.env.source.packages, source.package)
+    let request = InputRequest {
+        root = get(context.env.source.modules, package.instance).source
+        source = source.path
+        path = value.text
+    }
+    let inputs = context.env.inputs
+    var index = 0
+    while index < length(inputs.files) {
+        let saved = get(inputs.files, index)
+        if same_request(saved.request, request) {
+            return Result.Ok(expression(ExprKind.Text, 3, node, saved.file.text, -1, new[Expr](), true))
+        }
+        index = index + 1
+    }
+    let file = match inputs.read(request) {
+        Result.Ok(file) => file
+        Result.Err(message) => {
+            return Result.Err(error(context, node, message))
+        }
+    }
+    index = 0
+    while index < length(inputs.files) {
+        let saved = get(inputs.files, index).file
+        if saved.path == file.path && saved.text != file.text {
+            return Result.Err(error(context, node, "build input changed during checking"))
+        }
+        index = index + 1
+    }
+    push(inputs.files, BuildInput {
+            request = request
+            file = file
+        })
+    Result.Ok(expression(ExprKind.Text, 3, node, file.text, -1, new[Expr](), true))
+}

@@ -1,0 +1,3 @@
+// Embedded UTF-8 data, resolved relative to the declaring package. The compiler
+// records the snapshot; this call has no runtime filesystem operation.
+pub intrinsic fn input_file(comptime path Text) Text

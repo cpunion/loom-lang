@@ -157,8 +157,8 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool, proto
         rest = next(rest)
     }
     if public && is_test { return Result.Err(error(rest, "test functions cannot be public")) }
-    if is_intrinsic && (public || is_test) {
-        return Result.Err(error(rest, "intrinsic declarations must be private and cannot be tests"))
+    if is_intrinsic && is_test {
+        return Result.Err(error(rest, "intrinsic declarations cannot be tests"))
     }
     if !word(rest, "fn") {
         return Result.Err(error(rest, "expected a function, record, enum, type, concept, impl, or import declaration"))

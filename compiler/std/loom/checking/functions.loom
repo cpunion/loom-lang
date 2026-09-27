@@ -193,7 +193,12 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
 fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
     let current = get(env.signatures, id)
     let item = symbol(env, current.symbol)
-    let expected = if item.name == "task_next_terminal" {
+    let expected = if input_intrinsic(env, current.symbol) {
+        if !same(current.compile_time, ints(0)) {
+            return Result.Err(failure(env, current.symbol, item.node, "input_file requires a comptime path"))
+        }
+        runtime(0, ints(3), 3)
+    } else if item.name == "task_next_terminal" {
         if get(env.type_states, current.result).phase == 0 {
             discard expand_type(env, current.result, 0)?
         }
@@ -402,6 +407,8 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
     var context = scope.context
     let body = if runtime_name == "" {
         block(context, child(item.node, part(item.node, NodeKind.Block)), current.result, true)?
+    } else if input_intrinsic(env, current.symbol) {
+        expression(ExprKind.Deferred, current.result, item.node, "", -1, new[Expr](), true)
     } else {
         let values = new[Expr]()
         var index = 0

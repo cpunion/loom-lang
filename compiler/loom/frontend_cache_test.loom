@@ -27,6 +27,7 @@ test fn frontend_bundles_bind_metadata_and_artifact_bytes() {
     assert key != frontend_key(selected, project, "compiler-one")
     let prefix = frontend_prefix(key)
     let checked = Prepared {
+        inputs = new[BuildInput]()
         input = "loom-checked-1\nartifact\n"
         entry = 2
         tests = 3

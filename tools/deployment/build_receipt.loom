@@ -90,7 +90,7 @@ fn count(line Text, label Text) Result[Int, Text] {
             return Result.Err("invalid build receipt count")
         }
     }
-    if parsed < 1 || parsed > 100000 || to_text(parsed) != raw {
+    if parsed < 0 || parsed > 100000 || to_text(parsed) != raw {
         return Result.Err("invalid build receipt count")
     }
     Result.Ok(parsed)
@@ -126,7 +126,20 @@ fn source_line(line Text, modules Int) Result[Bool, Text] {
     Result.Ok(true)
 }
 
-// The receipt must be exactly the compiler's v1 line protocol. It is checked
+fn input_line(line Text) Result[Bool, Text] {
+    let fields = split(line, " ")
+    if std.list.length(fields) != 6 || get(fields, 0) != "input" || !digest_text(get(fields, 5)) {
+        return Result.Err("invalid build receipt input")
+    }
+    var index = 1
+    while index < 5 {
+        if decoded_hex(get(fields, index))? == "" { return Result.Err("invalid build receipt input") }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+// The receipt must be exactly the compiler's v2 line protocol. It is checked
 // against the artifact currently at its canonical path; source files need not
 // still exist because deployment may use an immutable earlier build.
 pub fn read_build_receipt(path Text) Result[BuildReceipt, Text] {
@@ -146,7 +159,7 @@ pub fn read_build_receipt(path Text) Result[BuildReceipt, Text] {
         }
     }
     let lines = split(raw, "\n")
-    if std.list.length(lines) < 11 || get(lines, 0) != "loom-build-receipt 1" {
+    if std.list.length(lines) < 12 || get(lines, 0) != "loom-build-receipt 2" {
         return Result.Err("invalid build receipt version")
     }
     let checked = value(get(lines, 1), "checked-sha256")?
@@ -157,6 +170,7 @@ pub fn read_build_receipt(path Text) Result[BuildReceipt, Text] {
         return Result.Err("invalid build receipt identity")
     }
     let modules = count(get(lines, 5), "module-count")?
+    if modules == 0 { return Result.Err("empty build receipt modules") }
     var position = 6
     var index = 0
     while index < modules {
@@ -171,6 +185,7 @@ pub fn read_build_receipt(path Text) Result[BuildReceipt, Text] {
         return Result.Err("truncated build receipt")
     }
     let sources = count(get(lines, position), "source-count")?
+    if sources == 0 { return Result.Err("empty build receipt sources") }
     position = position + 1
     index = 0
     while index < sources {
@@ -178,6 +193,16 @@ pub fn read_build_receipt(path Text) Result[BuildReceipt, Text] {
             return Result.Err("truncated build receipt")
         }
         discard source_line(get(lines, position), modules)?
+        position = position + 1
+        index = index + 1
+    }
+    if position >= std.list.length(lines) { return Result.Err("truncated build receipt") }
+    let inputs = count(get(lines, position), "input-count")?
+    position = position + 1
+    index = 0
+    while index < inputs {
+        if position >= std.list.length(lines) { return Result.Err("truncated build receipt") }
+        discard input_line(get(lines, position))?
         position = position + 1
         index = index + 1
     }

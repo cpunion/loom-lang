@@ -256,6 +256,7 @@ without the CLI, LLVM backend, or filesystem loading:
 | Function | Result |
 | --- | --- |
 | `analyze(project, tests)` | `Result[Analysis, Failure]`, with bindings and a checked program |
+| `analyze_with_inputs(project, tests, inputs)` | Analysis with explicit `checking.BuildInputs`; owns detached dependency snapshots |
 | `type_name(analysis, ty)` | Display name for a type in that analysis |
 | `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
@@ -263,6 +264,17 @@ without the CLI, LLVM backend, or filesystem loading:
 | `complete_names(bindings, file, offset)` | `Option[Completion]`: visible names and declaration signatures, using binding only |
 | `complete_at(bindings, file, offset)` | Names, qualified paths or receiver-type member hints, with a UTF-8 replacement span |
 | `is_current(analysis, project, tests)` | Whether the supplied project still matches the snapshot |
+| `is_current_with_inputs(analysis, project, tests, inputs)` | Also compares supplied build-input snapshots |
+
+`check` and `analyze` do not implicitly read build files. Supply
+`checking.build_inputs(project.read_input)` to `check_with_inputs` or
+`analyze_with_inputs` to opt into bounded filesystem reads, or provide snapshots
+with `checking.no_input_reader`. The CLI/editor explicitly opt in. Each check
+needs a fresh input context (or deliberately frozen snapshots); reusing one does
+not refresh disk contents. `Analysis.inputs` records the detached snapshots.
+For input-bearing analyses, `is_current` returns false: use
+`is_current_with_inputs` with freshly read snapshots. Neither freshness API reads
+the filesystem. Build receipts use a version-2 protocol with input digests.
 
 The [semantic example](../examples/semantic/main.loom) creates an in-memory
 project, queries inferred local types and selected overload/generic call targets,

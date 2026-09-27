@@ -76,8 +76,8 @@ fn receipt_path(path Text) Result[Text, Text] {
     Result.Ok(join_path(parent, leaf))
 }
 
-fn receipt_text(artifact Text, artifact_hash Text, checked_hash Text, backend Text, project Project) Text {
-    var output = "loom-build-receipt 1\n"
+fn receipt_text(artifact Text, artifact_hash Text, checked_hash Text, backend Text, project Project, inputs List[BuildInput]) Text {
+    var output = "loom-build-receipt 2\n"
     output = concat(output, concat("checked-sha256 ", concat(checked_hash, "\n")))
     output = concat(output, concat("artifact-sha256 ", concat(artifact_hash, "\n")))
     output = concat(output, concat("backend-identity ", concat(backend, "\n")))
@@ -95,6 +95,17 @@ fn receipt_text(artifact Text, artifact_hash Text, checked_hash Text, backend Te
         let source = get(project.files, index)
         let owner = get(project.packages, source.package).instance
         output = concat(output, concat("source ", concat(to_text(owner), concat(" ", concat(receipt_hex(source.path), concat(" ", concat(hex(cache_bytes(source.text)), "\n")))))))
+        index = index + 1
+    }
+    output = concat(output, concat("input-count ", concat(to_text(length(inputs)), "\n")))
+    index = 0
+    while index < length(inputs) {
+        let input = get(inputs, index)
+        output = concat(output, concat("input ", concat(receipt_hex(input.request.root), " ")))
+        output = concat(output, concat(receipt_hex(input.request.source), " "))
+        output = concat(output, concat(receipt_hex(input.request.path), " "))
+        output = concat(output, concat(receipt_hex(input.file.path), " "))
+        output = concat(output, concat(hex(cache_bytes(input.file.text)), "\n"))
         index = index + 1
     }
     concat(output, "end\n")
@@ -142,7 +153,24 @@ fn receipt_source_path(path Text, project Project) Bool {
     false
 }
 
-fn receipt_preflight(path Text, output Text, project Project) Result[Bool, Text] {
+fn input_preflight(path Text, inputs List[BuildInput]) Result[Bool, Text] {
+    if path == "" || length(inputs) == 0 { return Result.Ok(true) }
+    let resolved = match canonicalize(path) {
+        Result.Ok(value) => value
+        Result.Err(_) => { return Result.Ok(true) }
+    }
+    var index = 0
+    while index < length(inputs) {
+        if get(inputs, index).file.path == resolved {
+            return Result.Err("output cannot replace a build input")
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn receipt_preflight(path Text, output Text, project Project, inputs List[BuildInput]) Result[Bool, Text] {
+    discard input_preflight(path, inputs)?
     let destination = receipt_path(path)?
     let artifact = match receipt_path(output) {
         Result.Ok(value) => value
@@ -163,7 +191,7 @@ fn receipt_preflight(path Text, output Text, project Project) Result[Bool, Text]
 // Publication replaces only the named receipt, after the build and artifact
 // read succeed. Failed writes leave an earlier receipt intact. The rename is
 // same-directory atomic replacement, not a crash-durability guarantee.
-fn publish_build_receipt(path Text, output Text, checked Text, backend Text, project Project) Result[Bool, Text] {
+fn publish_build_receipt(path Text, output Text, checked Text, backend Text, project Project, inputs List[BuildInput]) Result[Bool, Text] {
     let artifact = match entry_kind(output) {
         Result.Ok(kind) => {
             if kind != FileKind.File {
@@ -180,7 +208,7 @@ fn publish_build_receipt(path Text, output Text, checked Text, backend Text, pro
             return Result.Err("cannot inspect built artifact")
         }
     }
-    discard receipt_preflight(path, output, project)?
+    discard receipt_preflight(path, output, project, inputs)?
     let destination = receipt_path(path)?
     let bytes = match read_bytes(output) {
         Result.Ok(value) => value
@@ -188,7 +216,7 @@ fn publish_build_receipt(path Text, output Text, checked Text, backend Text, pro
             return Result.Err("cannot read built artifact for receipt")
         }
     }
-    let content = receipt_text(artifact, hex(bytes), hex(cache_bytes(checked)), backend, project)
+    let content = receipt_text(artifact, hex(bytes), hex(cache_bytes(checked)), backend, project, inputs)
     let stage = receipt_stage(destination)?
     let temporary = join_path(stage, "receipt")
     defer {

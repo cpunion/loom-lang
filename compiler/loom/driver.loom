@@ -7,7 +7,11 @@ import std.loom.binding.bind
 import std.loom.binding.Failure
 import std.loom.project.SourceFile
 import std.loom.project.Project
-import std.loom.checking.check
+import std.loom.checking.check_with_inputs
+import std.loom.checking.build_inputs
+import std.loom.project.read_input
+import std.loom.project.BuildInput
+import std.loom.project.InputRequest
 import std.loom.lowering.lower
 import frontend.artifact.encode
 import std.loom.typed.Program
@@ -43,6 +47,7 @@ record Options {
 }
 
 record Prepared {
+    inputs List[BuildInput]
     input Text
     entry Int
     tests Int
@@ -233,8 +238,10 @@ fn prepare_loaded(options Options, loaded Project) Result[Prepared, Text] {
             return Result.Err(diagnostic(loaded.files, failure))
         }
     }
-    match check(bound) {
+    let inputs = build_inputs(read_input)
+    match check_with_inputs(bound, inputs) {
         Result.Ok(value) => Result.Ok(Prepared {
+                inputs = inputs.files
                 input = if options.command == "check" {
                     ""
                 } else {
@@ -331,8 +338,10 @@ fn execute(args List[Text]) Result[Text, Text] {
     } else {
         join_path(join_path(selected.path, "target"), filename)
     }
+    discard input_preflight(output, prepared.inputs)?
+    discard input_preflight(selected.ir, prepared.inputs)?
     if selected.receipt != "" {
-        discard receipt_preflight(selected.receipt, output, prepared.project)?
+        discard receipt_preflight(selected.receipt, output, prepared.project, prepared.inputs)?
     }
     let input = prepared.input
     let before = if selected.receipt != "" {
@@ -357,7 +366,7 @@ fn execute(args List[Text]) Result[Text, Text] {
             if before != after {
                 return Result.Err("native backend changed during build; receipt not published")
             }
-            discard publish_build_receipt(selected.receipt, output, input, before, prepared.project)?
+            discard publish_build_receipt(selected.receipt, output, input, before, prepared.project, prepared.inputs)?
         }
         return Result.Ok(concat("built ", concat(output, "\n")))
     }

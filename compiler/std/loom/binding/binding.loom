@@ -296,8 +296,10 @@ pub fn bind(project Project, tests Bool) Result[Program, Failure] {
                             other = other + 1
                         }
                     }
-                    if has(node, NodeKind.Intrinsic) && (!source.trusted_std || test_only || has(node, NodeKind.Public)) {
-                        return Result.Err(failure(file, node, "intrinsics are private declarations of the trusted standard library"))
+                    let build_input = node.value == "input_file" &&
+                        std.loom.project.package_label(project.modules, project.packages, source.package) == "std.build"
+                    if has(node, NodeKind.Intrinsic) && (!source.trusted_std || test_only || (has(node, NodeKind.Public) && !build_input)) {
+                        return Result.Err(failure(file, node, "intrinsics require trusted standard-library source; only std.build.input_file can be public"))
                     }
                     let owner = length(symbols)
                     push(symbols, Symbol { file = file node = node name = node.value
