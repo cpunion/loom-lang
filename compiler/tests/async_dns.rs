@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, process::Command};
 mod common;
 use common::success;
 
@@ -18,10 +18,12 @@ fn source_dns_and_hostname_connect_use_completion_under_moving_gc() {
                     .output()
                     .unwrap(),
             );
-            success(&common::run_tasks(&common::executable(
-                &common::root().join(tests).join("target"),
-                "tests",
-            )));
+            let test_executable =
+                common::executable(&common::root().join(tests).join("target"), "tests");
+            success(&common::run_task_command(
+                Command::new(&test_executable).env_remove("LOOM_GC_STRESS"),
+            ));
+            success(&common::run_tasks(&test_executable));
         }
         success(
             &common::command(&[

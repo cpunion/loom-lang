@@ -124,17 +124,20 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
     source_files(&compiler.join("examples"), &mut sources);
     sources.sort();
     for mode in ["lex", "parse"] {
-        let output = Command::new(&artifact)
-            .arg(mode)
-            .args(&sources)
-            .output()
-            .unwrap();
-        success(&output);
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout).lines().count(),
-            sources.len()
-        );
-        assert!(output.stderr.is_empty());
+        // Keep the growing corpus below Windows' command-line length limit.
+        for batch in sources.chunks(64) {
+            let output = Command::new(&artifact)
+                .arg(mode)
+                .args(batch)
+                .output()
+                .unwrap();
+            success(&output);
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).lines().count(),
+                batch.len()
+            );
+            assert!(output.stderr.is_empty());
+        }
     }
 
     // scripts/bootstrap.sh already builds and compares stage 2/3 once.

@@ -3,7 +3,7 @@
 //! retired its registration. Tokens are never raw descriptors or reused.
 
 use super::*;
-use crate::wait::{KIND_READINESS, READABLE, WRITABLE};
+use crate::wait::{ERROR, KIND_READINESS, READABLE, WRITABLE};
 use crate::{buffer_bytes, reserve};
 use socket2::{Domain, Protocol, SockAddr, Socket as NativeSocket, Type};
 use std::io::{Read, Write};
@@ -26,15 +26,37 @@ fn raw_handle(socket: &impl AsRawSocket) -> u64 {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Connection {
+    Pending,
+    Notified,
+    Connected,
+    Failed,
+}
+
 pub(super) enum Socket {
     Listener(TcpListener),
     Stream {
         stream: TcpStream,
-        connecting: Cell<bool>,
+        connection: Cell<Connection>,
     },
 }
 
 impl Socket {
+    pub(super) fn ready(&self, events: u32) {
+        if let Self::Stream { connection, .. } = self {
+            // IOCP can report CONNECT_FAIL independently of a later SO_ERROR
+            // read. Keep this terminal outcome instead of rearming forever.
+            if connection.get() == Connection::Pending {
+                if events & ERROR != 0 {
+                    connection.set(Connection::Failed);
+                } else if events & WRITABLE != 0 {
+                    connection.set(Connection::Notified);
+                }
+            }
+        }
+    }
+
     fn handle(&self) -> u64 {
         #[cfg(unix)]
         {
@@ -60,7 +82,7 @@ impl Socket {
         if matches!(self, Self::Listener(_)) && interests != READABLE {
             return None;
         }
-        if matches!(self, Self::Stream { connecting, .. } if connecting.get())
+        if matches!(self, Self::Stream { connection, .. } if connection.get() != Connection::Connected)
             && interests != WRITABLE
         {
             return None;
@@ -124,7 +146,7 @@ impl Sockets {
                 }
                 self.insert(Socket::Stream {
                     stream,
-                    connecting: Cell::new(false),
+                    connection: Cell::new(Connection::Connected),
                 })
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => -2,
@@ -148,17 +170,17 @@ impl Sockets {
         if socket.set_nonblocking(true).is_err() {
             return -1;
         }
-        let connecting = match socket.connect(&SockAddr::from(address)) {
-            Ok(()) => false,
+        let connection = match socket.connect(&SockAddr::from(address)) {
+            Ok(()) => Connection::Connected,
             // Rust maps WSAEWOULDBLOCK to WouldBlock on Windows.
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => true,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Connection::Pending,
             #[cfg(unix)]
-            Err(error) if error.raw_os_error() == Some(libc::EINPROGRESS) => true,
+            Err(error) if error.raw_os_error() == Some(libc::EINPROGRESS) => Connection::Pending,
             Err(_) => return -1,
         };
         self.insert(Socket::Stream {
             stream: socket.into(),
-            connecting: Cell::new(connecting),
+            connection: Cell::new(connection),
         })
     }
 
@@ -166,20 +188,29 @@ impl Sockets {
         let Some(socket) = self.get(token) else {
             return -1;
         };
-        let Socket::Stream { stream, connecting } = socket.as_ref() else {
+        let Socket::Stream { stream, connection } = socket.as_ref() else {
             return -1;
         };
-        if !connecting.get() {
-            return 0;
+        match connection.get() {
+            Connection::Connected => return 0,
+            Connection::Failed => return -1,
+            Connection::Pending => return -2,
+            Connection::Notified => {}
         }
         match stream.take_error() {
-            Ok(Some(_)) | Err(_) => -1,
+            Ok(Some(_)) | Err(_) => {
+                connection.set(Connection::Failed);
+                -1
+            }
             Ok(None) => match stream.peer_addr() {
                 Ok(_) => {
-                    connecting.set(false);
+                    connection.set(Connection::Connected);
                     0
                 }
-                Err(_) => -2,
+                Err(_) => {
+                    connection.set(Connection::Failed);
+                    -1
+                }
             },
         }
     }
@@ -261,10 +292,10 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_read(
     let Some(socket) = edit(|owner, _| Ok(owner.sockets().get(token))) else {
         return -1;
     };
-    let Socket::Stream { stream, connecting } = socket.as_ref() else {
+    let Socket::Stream { stream, connection } = socket.as_ref() else {
         return -1;
     };
-    if connecting.get() {
+    if connection.get() != Connection::Connected {
         return -1;
     }
     // A bounded native scratch buffer avoids keeping a movable Bytes pointer
@@ -309,10 +340,10 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_write_bytes(
     let Some(socket) = edit(|owner, _| Ok(owner.sockets().get(token))) else {
         return -1;
     };
-    let Socket::Stream { stream, connecting } = socket.as_ref() else {
+    let Socket::Stream { stream, connection } = socket.as_ref() else {
         return -1;
     };
-    if connecting.get() {
+    if connection.get() != Connection::Connected {
         return -1;
     }
     let mut stream = stream;
@@ -333,4 +364,40 @@ pub(super) extern "C-unwind" fn loom_rt_task_wait_socket(token: i64, interests: 
     // SAFETY: The external wait owns `lease` until the reactor retires or
     // cancels the registration; no moving Loom pointer enters the poller.
     i32::from(unsafe { wait_source(source, Some(lease)) }.is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refused_connect_notifications_remain_terminal_after_error_reads() {
+        for address in ["127.0.0.1:0", "[::1]:0"] {
+            let listener = TcpListener::bind(address).unwrap();
+            let address = listener.local_addr().unwrap();
+            drop(listener);
+            let sockets = Sockets::default();
+            let token = sockets.connect(&address.to_string());
+            if token < 0 {
+                continue; // Some platforms report refusal immediately.
+            }
+            let socket = sockets.get(token).unwrap();
+            let reactor = Reactor::new().unwrap();
+            let registration = unsafe {
+                reactor
+                    .register(socket.source(i64::from(WRITABLE)).unwrap(), 1)
+                    .unwrap()
+            };
+            reactor.wait(Some(Duration::from_secs(5))).unwrap();
+            let ready = reactor
+                .pop_ready()
+                .expect("refused connection did not complete");
+            assert_eq!(ready.registration, registration);
+            socket.ready(ready.events);
+            assert_eq!(sockets.connect_status(token), -1);
+            assert_eq!(sockets.connect_status(token), -1);
+            drop(socket);
+            assert!(sockets.close(token));
+        }
+    }
 }

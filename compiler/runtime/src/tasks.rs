@@ -70,7 +70,7 @@ struct ExternalWait {
     ready: Option<ReadyNotification>,
     // A readiness registration borrows its exact OS handle. The task keeps
     // that handle alive until the reactor retires or cancels the registration.
-    _socket: Option<Rc<socket::Socket>>,
+    socket: Option<Rc<socket::Socket>>,
 }
 
 struct Task {
@@ -198,6 +198,9 @@ impl Owner {
                 || wait.ready.is_some()
             {
                 continue;
+            }
+            if let Some(socket) = &wait.socket {
+                socket.ready(notification.events);
             }
             wait.ready = Some(notification);
             task.state = State::Queued;
@@ -522,7 +525,7 @@ unsafe fn wait_source(
                     source,
                     registration,
                     ready: None,
-                    _socket: socket,
+                    socket,
                 });
                 task.state = State::ExternalWaiting;
                 core.pending += 1;

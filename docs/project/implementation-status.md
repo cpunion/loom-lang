@@ -123,8 +123,10 @@ an active lease. A loopback test covers readiness, explicit child cancellation,
 close, and stale token rejection. Source `std.net.tcp` exposes numeric-address
 `listen`, `accept`, `connect`, `read`, `write_bytes`, and explicit close through
 owner-local tokens; see the [loopback example](../../compiler/examples/tcp_loopback/main.loom).
-Connect checks socket error and peer state before parking and after writable
-readiness. Failure or cancellation closes its private pending token. Reads append
+Connect accepts immediate success, otherwise waits for writable/error readiness
+before checking socket error and peer state. Error notifications remain terminal,
+even when a later OS error read returns no detail. Failure or cancellation closes
+its private pending token. Reads append
 to shared Bytes; writes retry partial and WouldBlock progress, but aliases can mutate
 pending write data. `std.net.dns.resolve(host, port)` now returns numeric addresses
 in OS order through the shared bounded I/O pool. Source `connect(host, port)`
