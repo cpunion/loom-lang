@@ -1,6 +1,18 @@
+import std.encoding.hex.decode
+
+fn input_bytes_fixture(text Text) Bytes {
+    match std.encoding.hex.decode(text) {
+        Result.Ok(bytes) => bytes
+        Result.Err(_) => {
+            assert false
+            std.bytes.new()
+        }
+    }
+}
+
 fn input_program(text Text, inputs BuildInputs) Result[std.loom.typed.Program, Failure] {
-    let files = source_files(concat("import std.build.input_file\n", text))
-    push(files, source_file("std.build", "pub intrinsic fn input_file(comptime path Text) Text", true))
+    let files = source_files(concat("import std.build.input_file\nimport std.build.input_bytes\n", text))
+    push(files, source_file("std.build", "pub intrinsic fn input_file(comptime path Text) Text\npub intrinsic fn input_bytes(comptime path Text) Bytes", true))
     check_with_inputs(bind(fixture_project(files), false)?, inputs)
 }
 
@@ -11,7 +23,7 @@ fn memory_input(request InputRequest) Result[InputFile, Text] {
     }
     Result.Ok(InputFile {
             path = "memory:banner"
-            text = "hello"
+            bytes = input_bytes_fixture("68656c6c6f")
         })
 }
 
@@ -64,4 +76,50 @@ test fn build_input_reads_need_static_paths_and_explicit_authority() {
         _ => false
     }
     rejects("pub intrinsic fn input_file(comptime path Text) Text")
+}
+
+test fn binary_build_inputs_reuse_the_snapshot_without_text_decoding() {
+    let inputs = build_inputs(memory_input)
+    discard match input_program("""
+        fn raw(comptime path Text) Bytes {
+            input_bytes(path)
+        }
+        fn main() {
+            discard raw("banner.txt")
+            assert input_file("banner.txt") == "hello"
+            discard comptime { input_bytes("banner.txt") }
+        }
+        """, inputs) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            assert false
+            return
+        }
+    }
+    assert length(inputs.files) == 1
+    let saved = get(inputs.files, 0)
+    set(inputs.files, 0, BuildInput {
+            request = saved.request
+            file = InputFile {
+                path = saved.file.path
+                bytes = input_bytes_fixture("00ff80")
+            }
+        })
+    assert match input_program("""
+        fn main() {
+            discard input_bytes("banner.txt")
+        }
+        """, inputs) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match input_program("""
+        fn main() {
+            discard input_file("banner.txt")
+        }
+        """, inputs) {
+        Result.Err(failed) => failed.diagnostic.message == "build input is not valid UTF-8; use input_bytes for binary data"
+        Result.Ok(_) => false
+    }
 }

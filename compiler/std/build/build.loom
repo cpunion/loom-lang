@@ -1,6 +1,8 @@
 // Embedded UTF-8 data, resolved relative to the declaring package. The compiler
 // records the snapshot; this call has no runtime filesystem operation.
 pub intrinsic fn input_file(comptime path Text) Text
+// Each evaluation copies embedded raw bytes into a fresh mutable buffer.
+pub intrinsic fn input_bytes(comptime path Text) Bytes
 
 import std.option.Option
 

@@ -1019,6 +1019,28 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 global.set_linkage(Linkage::Private);
                 global.as_pointer_value().into()
             }
+            checked::ExprKind::Bytes(bytes) => {
+                let constant = self.context.const_string(bytes, false);
+                let global = self
+                    .module
+                    .add_global(constant.get_type(), None, "bytes.literal");
+                global.set_initializer(&constant);
+                global.set_constant(true);
+                global.set_linkage(Linkage::Private);
+                let pointer = self.context.ptr_type(AddressSpace::default());
+                let value = self
+                    .runtime_call(
+                        "bytes_from_static",
+                        Some(pointer.into()),
+                        &[
+                            global.as_pointer_value().into(),
+                            self.size_type.const_int(bytes.len() as u64, false).into(),
+                        ],
+                    )?
+                    .ok_or("missing byte literal allocation")?;
+                self.restore_locals()?;
+                value
+            }
             checked::ExprKind::Primitive(operation, args) => {
                 return self.primitive(expr.ty, *operation, args);
             }

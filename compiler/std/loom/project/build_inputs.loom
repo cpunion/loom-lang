@@ -1,4 +1,5 @@
 import std.fs.entry_kind
+import std.bytes.clone
 
 // Requests are relative to the source package and confined to its module.
 // Keeping resolution separate lets tools supply immutable in-memory inputs.
@@ -10,12 +11,33 @@ pub record InputRequest {
 
 pub record InputFile {
     path Text
-    text Text
+    bytes Bytes
 }
 
 pub record BuildInput {
     request InputRequest
     file InputFile
+}
+
+pub fn input_snapshot(file InputFile) InputFile {
+    InputFile {
+        path = file.path
+        bytes = std.bytes.clone(file.bytes)
+    }
+}
+
+pub fn same_input(left InputFile, right InputFile) Bool {
+    if left.path != right.path || std.bytes.length(left.bytes) != std.bytes.length(right.bytes) {
+        return false
+    }
+    var index = 0
+    while index < std.bytes.length(left.bytes) {
+        if std.bytes.get(left.bytes, index) != std.bytes.get(right.bytes, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
 }
 
 pub fn same_request(left InputRequest, right InputRequest) Bool {
@@ -56,14 +78,14 @@ pub fn read_input(request InputRequest) Result[InputFile, Text] {
     } {
         return Result.Err("build input must be a regular file")
     }
-    let text = match std.file.read_text(resolved) {
+    let bytes = match std.file.read_bytes(resolved) {
         Result.Ok(value) => value
         Result.Err(_) => {
-            return Result.Err(concat("cannot read UTF-8 build input: ", path))
+            return Result.Err(concat("cannot read build input: ", path))
         }
     }
     Result.Ok(InputFile {
             path = resolved
-            text = text
+            bytes = bytes
         })
 }

@@ -15,6 +15,16 @@ pub fn new() Bytes { bytes_new() }
 
 pub fn length(value Bytes) Int { bytes_len(value) }
 
+pub fn clone(value Bytes) Bytes {
+    let output = new()
+    var index = 0
+    while index < length(value) {
+        push(output, get(value, index))
+        index = index + 1
+    }
+    output
+}
+
 // Indices count raw bytes, not characters. Invalid indices fault.
 pub fn get(value Bytes, index Int) Int { bytes_get(value, index) }
 

@@ -27,7 +27,8 @@ import std.loom.project.BuildOption
 // concrete executable projections must already have normalized to their type.
 // Function: symbol, span(start,end), params, result, locals, preconditions, body.
 // Expr: tag,type,span,text,index,falls,children,arms. Arm: variant,bindings,whole,
-// body; absent bindings/variants use -1. Tags 0..32 follow expression_tag below.
+// body; absent bindings/variants use -1. Tags 0..33 follow expression_tag below.
+// Bytes.text contains canonical lowercase hex, not a runtime decode operation.
 // Task stores its logical result type; Frame uses managed record fields.
 // FrameNew uses indexed Field initializers; FrameStore has [frame,value].
 // FunctionRef.index is the concrete function ID. Named references have no
@@ -169,6 +170,7 @@ fn expression_tag(kind ExprKind) Int {
         ExprKind.Cleanup => 30
         ExprKind.FrameNew => 31,
         ExprKind.FrameStore => 32
+        ExprKind.Bytes => 33
         // A deferred generic branch is check-only and must be instantiated.
         ExprKind.Deferred => {
             assert false

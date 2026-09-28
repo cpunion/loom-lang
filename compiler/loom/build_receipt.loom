@@ -105,7 +105,7 @@ fn receipt_text(artifact Text, artifact_hash Text, checked_hash Text, backend Te
         output = concat(output, concat(receipt_hex(input.request.source), " "))
         output = concat(output, concat(receipt_hex(input.request.path), " "))
         output = concat(output, concat(receipt_hex(input.file.path), " "))
-        output = concat(output, concat(hex(cache_bytes(input.file.text)), "\n"))
+        output = concat(output, concat(hex(input.file.bytes), "\n"))
         index = index + 1
     }
     output = concat(output, concat("option-count ", concat(to_text(length(options)), "\n")))

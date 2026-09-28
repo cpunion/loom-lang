@@ -785,6 +785,13 @@ Frontend hits revalidate actual resolution/content; build receipts bind
 requests and digests. CLI/editor explicitly supply a filesystem reader; public
 checking/analysis defaults remain filesystem-free and can consume detached
 in-memory snapshots. See [the example](../../compiler/examples/build_inputs/main.loom).
+`std.build.input_bytes` now shares that raw-byte tracking path and returns fresh
+mutable Bytes. Invalid UTF-8 still rejects at text requests, not binary reads.
+Binary inputs and compile-time-produced buffers use compact checked literals,
+static LLVM data and one private bulk-copy allocation boundary, retaining aliases
+within computed graphs. Native O0/O2 and forced-GC tests cover isolation, suspension,
+compact IR, same-size cache invalidation and receipts; editor watches include
+binary changes. Source `std.encoding.hex` supplies encoding/strict decoding.
 Explicit `--build-option name=value` inputs now share this checking basis.
 `std.build.option` distinguishes missing from empty values and has an ordinary
 source fallback overload. Queries become constants before emission; no environment

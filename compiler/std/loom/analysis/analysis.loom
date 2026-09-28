@@ -19,6 +19,8 @@ import std.loom.project.BuildInput
 import std.loom.project.BuildOption
 import std.loom.project.same_build_options
 import std.loom.project.same_request
+import std.loom.project.same_input
+import std.loom.project.input_snapshot
 import std.loom.checking.type_name
 import std.loom.typed.Program
 import std.loom.typed.Expr
@@ -106,7 +108,11 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
     }
     var index = 0
     while index < length(inputs.files) {
-        push(files, get(inputs.files, index))
+        let input = get(inputs.files, index)
+        push(files, BuildInput {
+                request = input.request
+                file = std.loom.project.input_snapshot(input.file)
+            })
         index = index + 1
     }
     let program = check_with_inputs(bindings, detached)?
@@ -142,8 +148,7 @@ pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, in
     while input < length(inputs) {
         let left = get(analysis.inputs, input)
         let right = get(inputs, input)
-        if !same_request(left.request, right.request) || left.file.path != right.file.path ||
-            left.file.text != right.file.text { return false }
+        if !same_request(left.request, right.request) || !std.loom.project.same_input(left.file, right.file) { return false }
         input = input + 1
     }
     let saved = analysis.bindings

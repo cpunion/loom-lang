@@ -8,6 +8,9 @@ import std.list.set
 import std.list.length
 import std.text.length
 import std.result.Result
+import std.encoding.hex.decode
+import std.bytes.length
+import std.bytes.get
 
 fn sequence(state State, expressions List[Expr], frame Frame, depth Int) Result[Step, Failure] {
     var value = step(unit())
@@ -184,6 +187,23 @@ fn matched(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     Result.Err(failure(expr, "compile-time match has no matching arm"))
 }
 fn atomic(state State, expr Expr, frame Frame) Result[Step, Failure] {
+    if expr.kind == ExprKind.Bytes {
+        discard spend(state, expr, 0, length(expr.text))?
+        discard spend(state, expr, 1, length(expr.text) / 2)?
+        let bytes = match decode(expr.text) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(failure(expr, "invalid checked byte literal"))
+            }
+        }
+        let value = fresh(state, expr.ty)
+        var index = 0
+        while index < std.bytes.length(bytes) {
+            push(value.items, number(std.bytes.get(bytes, index)))
+            index = index + 1
+        }
+        return Result.Ok(step(value))
+    }
     if expr.kind == ExprKind.Float {
         discard spend(state, expr, 0, length(expr.text))?
         return Result.Ok(step(decimal(expr, expr.text)?))
@@ -290,7 +310,7 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
         set(target.items, expr.index, get(values.value.items, 1))
         return Result.Ok(step(unit()))
     }
-    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text || expr.kind == ExprKind.Local {
+    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text || expr.kind == ExprKind.Bytes || expr.kind == ExprKind.Local {
         return atomic(state, expr, frame)
     }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary { return operation(state, expr, frame, depth) }

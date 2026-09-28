@@ -26,6 +26,24 @@ async function buildInputSmoke(executable, stdRoot) {
       const report = await client.wait(file, 1, after);
       assert.equal(report.diagnostics.length === 0, text === 'ready');
     }
+    await client.change(file, `import std.build.input_bytes
+import std.encoding.hex.encode
+
+fn main() {
+    comptime if encode(input_bytes("value[1].txt")) == "00ff" {
+    } else {
+        let wrong Int = true
+    }
+}
+`, 2);
+    assert.match((await client.wait(file, 2)).diagnostics[0].message, /cannot resolve build input/);
+    for (const bytes of [Buffer.from([0, 255]), Buffer.from([0, 254]), null]) {
+      if (bytes === null) await fs.unlink(input); else await fs.writeFile(input, bytes);
+      const after = client.diagnostics.length;
+      await client.rpc.sendNotification('workspace/didChangeWatchedFiles', { changes: [{ uri: URI.file(input).toString(), type: bytes === null ? 3 : 2 }] });
+      const report = await client.wait(file, 2, after);
+      assert.equal(report.diagnostics.length === 0, bytes !== null && bytes[1] === 255);
+    }
     const after = client.diagnostics.length;
     await client.rpc.sendNotification('textDocument/didClose', { textDocument: { uri: URI.file(file).toString() } });
     await client.wait(file, undefined, after);

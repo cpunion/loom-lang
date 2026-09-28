@@ -237,10 +237,12 @@ keyed by checked inputs and actual backend/toolchain content. An independent
 trusted-local frontend cache now reuses successful whole-closure checks and
 lowered inputs, bound to compiler bytes and the complete loaded semantic basis.
 Source discovery/parsing, dependency verification and final linking still run.
-Tracked file snapshots and explicit build options now bind checking, editor
+Tracked text/binary file snapshots and explicit build options now bind checking, editor
 queries, frontend-cache reuse and build receipts. Observed target properties now
 come from the actual backend, with lazy reads, cached-input revalidation and
-emission-time checks against the saved checked artifact. Fine-grained persistent
+emission-time checks against the saved checked artifact. Embedded Bytes and
+computed byte buffers now use compact static blobs, with fresh mutable copies
+and preserved aliases inside computed graphs. Fine-grained persistent
 proof/effect reuse and per-package objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic

@@ -910,6 +910,25 @@ impl Converter<'_> {
                 _ => return Err("invalid checked Bool literal".into()),
             }),
             2 => E::Text(node.text.clone()),
+            33 => {
+                if ty != Type::Bytes || !node.children.is_empty() || !node.falls {
+                    return Err("checked byte literal requires a childless Bytes value".into());
+                }
+                let digits = node.text.as_bytes();
+                let nibble = |digit| match digit {
+                    b'0'..=b'9' => Ok(digit - b'0'),
+                    b'a'..=b'f' => Ok(digit - b'a' + 10),
+                    _ => Err("invalid checked byte literal"),
+                };
+                if !digits.len().is_multiple_of(2) {
+                    return Err("invalid checked byte literal".into());
+                }
+                let bytes = digits
+                    .chunks_exact(2)
+                    .map(|pair| Ok((nibble(pair[0])? << 4) | nibble(pair[1])?))
+                    .collect::<Result<Vec<u8>>>()?;
+                E::Bytes(bytes)
+            }
             3 => E::Local(self.local(node.index)?),
             4 => {
                 let operation = match node.text.as_str() {
@@ -1578,6 +1597,30 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn byte_literals_validate_their_storage_type_and_encoding() {
+        let stream = |ty, text, children: &[String]| {
+            let value = node(33, ty, text, -1, children);
+            let body = node(11, 0, "", -1, &[node(16, 0, "", -1, &[value])]);
+            format!("loom-checked-1\n2\n0\n-1\n4\n-1\n1\n0\n0\n0\n0\n0\n0\n0\n{body}-1\n0\n1\n0\n")
+        };
+        for text in ["", "000aff80"] {
+            let program = decode(&stream(1, text, &[])).unwrap();
+            let c::StmtKind::Discard(value) = &program.functions[0].body.statements[0].kind else {
+                panic!("expected discard")
+            };
+            let c::ExprKind::Bytes(bytes) = &value.kind else {
+                panic!("expected byte literal")
+            };
+            assert_eq!(bytes.len(), text.len() / 2);
+        }
+        for text in ["0", "ffgg", "FF", "雪"] {
+            assert!(decode(&stream(1, text, &[])).is_err());
+        }
+        assert!(decode(&stream(0, "00", &[])).is_err());
+        assert!(decode(&stream(1, "00", &[node(0, 0, "0", -1, &[])])).is_err());
     }
 
     #[test]
