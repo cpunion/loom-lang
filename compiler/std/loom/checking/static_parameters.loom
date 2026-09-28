@@ -19,7 +19,7 @@ fn static_parameter_type(env Environment, ty Int) Bool {
     kind == TypeKind.Parameter || kind == TypeKind.Associated {
         return true
     }
-    static_stored_type(env, ty, new[Int](), 0)
+    static_storage_budget(env, ty, 0, 100000) >= 0
 }
 fn is_static(signature Signature, position Int) Bool {
     var index = 0
@@ -33,7 +33,7 @@ fn unknown_constants(signature Signature) List[StaticValue] {
     let values = new[StaticValue]()
     var index = 0
     while index < length(signature.compile_time) {
-        push(values, StaticValue { ty = get(signature.params, get(signature.compile_time, index)) known = false number = 0 text = "" arguments = new[Int]() capture = -1 snapshot = -1 })
+        push(values, StaticValue { ty = get(signature.params, get(signature.compile_time, index)) known = false number = 0 text = "" arguments = new[Int]() storage = -1 })
         index = index + 1
     }
     values
@@ -47,7 +47,7 @@ fn same_constants(left List[StaticValue], right List[StaticValue]) Bool {
         // Captured state travels as a runtime environment. Its contents do not
         // specialize code; the source target and argument recipe fix the layout.
         if a.ty != b.ty || a.known != b.known || a.number != b.number || a.text != b.text ||
-            (a.capture >= 0) != (b.capture >= 0) || !same(a.arguments, b.arguments) { return false }
+            (a.storage >= 0) != (b.storage >= 0) || !same(a.arguments, b.arguments) { return false }
         index = index + 1
     }
     true
@@ -79,12 +79,12 @@ fn static_expression(context Context, node Node, index Int) Result[Expr, Failure
     // Abstract validation cannot learn a generic parameter's incidental type
     // from one known argument, even when its value can be evaluated.
     if !value.known || !concrete(context.env, declared) { return Result.Ok(expression(ExprKind.Deferred, declared, node, "", -1, new[Expr](), true)) }
-    if value.snapshot >= 0 {
-        return materialize(context, node, get(context.env.computations, value.snapshot).value)
+    if value.storage < -1 {
+        return materialize(context, node, get(context.env.computations, -2 - value.storage).value)
     }
     if get(context.env.types, value.ty).kind == TypeKind.Function {
         let reference = reify_function(context, node, value.ty, value.number, value.arguments)?
-        if value.capture >= 0 {
+        if value.storage >= 0 {
             let local = static_environment_local(context, index)
             if local < 0 { return Result.Err(error(context, node, "the captured comptime parameter has no runtime environment")) }
             return Result.Ok(expression(ExprKind.FunctionRef, reference.ty, node, "", reference.index,
@@ -185,7 +185,7 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
             cleanups = stage.cleanups cleanup_head = stage.cleanup_head loop_boundary = stage.loop_boundary
             facts = stage.facts fact_head = stage.fact_head emit = false }
         discard isolated(context, node, expr(validation, node, expected)?, length(context.locals))?
-        return Result.Ok(StaticValue { ty = expected known = false number = 0 text = "" arguments = new[Int]() capture = -1 snapshot = -1 })
+        return Result.Ok(StaticValue { ty = expected known = false number = 0 text = "" arguments = new[Int]() storage = -1 })
     }
     // Static identity forwards separately from the live, possibly changed
     // environment. It must not be recomputed from the original snapshot.
@@ -204,10 +204,10 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
             let instance = get(stage.env.pending, reference.index)
             if instance.signature < 0 {
                 let closure = get(stage.env.closures, -1 - instance.signature)
-                return Result.Ok(StaticValue { ty = expected known = true number = closure.signature.symbol text = "" arguments = ints(closure.environment) capture = -1 snapshot = -1 })
+                return Result.Ok(StaticValue { ty = expected known = true number = closure.signature.symbol text = "" arguments = ints(closure.environment) storage = -1 })
             }
             return Result.Ok(StaticValue { ty = expected known = true number = get(stage.env.signatures, instance.signature).symbol
-                text = "" arguments = instance.arguments capture = -1 snapshot = -1 })
+                text = "" arguments = instance.arguments storage = -1 })
         }
     }
     let computation = computed_index(context, node, node, expected)?
@@ -220,8 +220,7 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
                 number = 0
                 text = static_value_key(context, node, value)?
                 arguments = new[Int]()
-                capture = -1
-                snapshot = computation
+                storage = -2 - computation
             })
     }
     let captured = value.text == "closure" && get(context.env.types, value.ty).kind == TypeKind.Function
@@ -246,8 +245,7 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
                 ""
             }
             arguments = arguments
-            capture = if captured { computation } else { -1 }
-            snapshot = -1
+            storage = if captured { computation } else { -1 }
         })
 }
 

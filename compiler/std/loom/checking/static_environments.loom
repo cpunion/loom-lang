@@ -9,8 +9,8 @@ import std.result.Result
 // Capture snapshots reuse the current checking basis's computation table.
 // Native calls pass only an environment, not a runtime-selected entry pointer.
 fn static_environment_type(env Environment, value StaticValue) Int {
-    if value.capture < 0 { return -1 }
-    let snapshot = get(env.computations, value.capture).value
+    if value.storage < 0 { return -1 }
+    let snapshot = get(env.computations, value.storage).value
     get(snapshot.items, length(snapshot.items) - 1).ty
 }
 
@@ -43,7 +43,7 @@ fn static_environment_argument(context Context, node Node, value StaticValue) Re
     }
     // Materialize the full graph once at this source argument, retaining cycles
     // and aliases. Its final expression is the environment passed to the callee.
-    let snapshot = get(context.env.computations, value.capture).value
+    let snapshot = get(context.env.computations, value.storage).value
     let rebuilt = materialize(context, node, snapshot)?
     let body = std.list.clone(rebuilt.children)
     let reference = get(body, length(body) - 1)

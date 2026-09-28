@@ -526,14 +526,14 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
                     // Re-evaluating a captured function would materialize a
                     // second environment, losing aliases with runtime fields
                     // of the saved tuple.
-                    if value.capture >= 0 {
+                    if value.storage >= 0 {
                         return Result.Err(error(context, input, "a comptime function field cannot split a saved tuple's captured environment"))
                     }
                 }
                 Option.None => {}
             }
             push(constants, value)
-            if value.capture >= 0 { push(runtime_values, static_environment_argument(context, input, value)?) }
+            if value.storage >= 0 { push(runtime_values, static_environment_argument(context, input, value)?) }
         } else {
             let value = if length(probes) != 0 && get(probes, index) { input_value(context, inputs, index, target, false)? } else {
                 typed(context, input, get(values, index), target)?

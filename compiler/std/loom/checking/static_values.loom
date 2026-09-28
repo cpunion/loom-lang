@@ -2,33 +2,34 @@ import std.text.join
 
 // Stored values cannot carry mutable identity. Functions keep their separate
 // top-level target/environment protocol; they are not aggregate static fields.
-fn static_stored_type(env Environment, ty Int, checked List[Int], depth Int) Bool {
+// Return the remaining traversal budget, or -1 for an unsupported shape. This
+// predicate must stay allocation-free, like the scalar type fast path.
+fn static_storage_budget(env Environment, ty Int, depth Int, budget Int) Int {
+    if depth >= 64 || budget <= 0 {
+        return -1
+    }
     if ty == 1 || ty == 2 || ty == 3 || ty == 5 {
-        return true
+        return budget - 1
     }
     let shape = get(env.types, ty)
     if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
-        return true
+        return budget - 1
     }
     if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple &&
     shape.kind != TypeKind.Enum && shape.kind != TypeKind.Refined {
-        return false
+        return -1
     }
     // Header discovery may not yet have expanded nominal fields. Signature
     // substitution checks the completed shape before a body can be emitted.
     if get(env.type_states, ty).phase != 2 {
-        return true
+        return budget - 1
     }
-    if resource_seen(checked, ty) {
-        return true
-    }
-    if depth >= 64 {
-        return false
-    }
+    var remaining = budget - 1
     var index = 0
     while index < length(shape.fields) {
-        if !static_stored_type(env, get(shape.fields, index).ty, checked, depth + 1) {
-            return false
+        remaining = static_storage_budget(env, get(shape.fields, index).ty, depth + 1, remaining)
+        if remaining < 0 {
+            return -1
         }
         index = index + 1
     }
@@ -37,15 +38,15 @@ fn static_stored_type(env Environment, ty Int, checked List[Int], depth Int) Boo
         let fields = get(shape.variants, index).fields
         var field = 0
         while field < length(fields) {
-            if !static_stored_type(env, get(fields, field), checked, depth + 1) {
-                return false
+            remaining = static_storage_budget(env, get(fields, field), depth + 1, remaining)
+            if remaining < 0 {
+                return -1
             }
             field = field + 1
         }
         index = index + 1
     }
-    push(checked, ty)
-    true
+    remaining
 }
 
 fn static_key_part(context Context, node Node, parts List[Text], budget List[Int], text Text) Result[Bool, Failure] {
