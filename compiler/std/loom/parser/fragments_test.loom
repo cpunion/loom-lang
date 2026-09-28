@@ -1,0 +1,87 @@
+import std.text.slice
+
+fn fragment_node(value Result[Node, Diagnostic]) Node {
+    match value {
+        Result.Ok(node) => node
+        Result.Err(_) => {
+            assert false
+            parsed("")
+        }
+    }
+}
+
+fn fragment_error(value Result[Node, Diagnostic]) Diagnostic {
+    match value {
+        Result.Err(failed) => failed
+        Result.Ok(_) => {
+            assert false
+            rejected("fn")
+        }
+    }
+}
+
+test fn fragments_keep_original_byte_spans_and_the_ordinary_grammar() {
+    let source = """
+        // 雪😀
+          value + 2 * 3 // end
+
+        """
+    let sum = fragment_node(parse_expression(source))
+    assert sum.kind == NodeKind.Binary && sum.value == "+"
+    assert child(sum, 1).kind == NodeKind.Binary && child(sum, 1).value == "*"
+    assert slice(source, sum.span.start, sum.span.end) == "value + 2 * 3"
+    assert sum.span.start == 13
+    let function = fragment_node(parse_type("fn((Int, Bool), dyn Display) Task[Text]"))
+    assert function.kind == NodeKind.FunctionType
+    assert child(child(function, 0), 0).kind == NodeKind.TupleType
+    assert child(child(function, 0), 1).kind == NodeKind.DynType
+    assert child(child(function, 1), 0).value == "Task"
+    let declaration = fragment_node(parse_declaration("""
+        pub record Pair {
+            first Int; second Text
+        }
+        """))
+    assert declaration.kind == NodeKind.Record && declaration.value == "Pair"
+    assert child(declaration, 2).kind == NodeKind.Field && child(declaration, 3).value == "second"
+    assert fragment_node(parse_declaration("import std.reflect.describe")).kind == NodeKind.Import
+    let returned = fragment_node(parse_statement("return"))
+    assert returned.kind == NodeKind.Return && length(returned.children) == 0
+    assert fragment_node(parse_statement("let (a, b) = pair")).kind == NodeKind.Destructure
+    assert fragment_node(parse_expression("fetch().await?")).kind == NodeKind.Try
+    assert fragment_node(parse_expression("1 +\n2")).value == "+"
+}
+
+test fn match_and_binding_fragments_keep_their_contextual_meanings() {
+    assert fragment_node(parse_pattern("Empty")).kind == NodeKind.Pattern
+    assert fragment_node(parse_binding_pattern("item")).kind == NodeKind.Name
+    let pattern = fragment_node(parse_pattern("Result.Ok((value, Point { x = x, .. }))"))
+    assert pattern.kind == NodeKind.Pattern && pattern.value == "Result.Ok"
+    let tuple = child(child(pattern, 0), 0)
+    assert tuple.kind == NodeKind.Tuple && child(tuple, 0).kind == NodeKind.Name
+    assert child(tuple, 1).kind == NodeKind.RecordPattern
+    assert fragment_node(parse_binding_pattern("Point { x = renamed, .. }")).kind == NodeKind.RecordPattern
+    discard fragment_error(parse_binding_pattern("Choice.Some(value)"))
+    discard fragment_error(parse_binding_pattern("42"))
+    discard fragment_error(parse_pattern("value if true"))
+}
+
+test fn fragments_reject_suffixes_and_preserve_eof_diagnostics() {
+    let extra = fragment_error(parse_expression("1\n2"))
+    assert extra.message == "expected end of expression" && extra.span.start == 2 && extra.span.end == 3
+    assert fragment_error(parse_type("Int Bool")).message == "expected end of type"
+    assert fragment_error(parse_statement("let x = 1\nlet y = 2")).message == "expected end of statement"
+    assert fragment_error(parse_declaration("fn a() {}\nfn b() {}")).message == "expected end of declaration"
+    assert fragment_error(parse_pattern("A => 1")).message == "expected end of match pattern"
+    assert fragment_error(parse_binding_pattern("a, b")).message == "expected end of binding pattern"
+    discard fragment_error(parse_expression("1;"))
+    discard fragment_error(parse_expression(""))
+    discard fragment_error(parse_type(""))
+    discard fragment_error(parse_pattern(""))
+    discard fragment_error(parse_binding_pattern(""))
+    discard fragment_error(parse_statement(""))
+    discard fragment_error(parse_declaration(""))
+    let unfinished = fragment_error(parse_expression("1 +"))
+    assert unfinished.span.start == 3 && unfinished.span.end == 3
+    discard fragment_error(parse_declaration("fn f() {"))
+    discard fragment_error(parse_declaration("record Bad { x Int y Int }"))
+}

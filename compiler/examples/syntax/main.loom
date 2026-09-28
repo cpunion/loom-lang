@@ -37,6 +37,7 @@ fn describe(source Text) Result[Text, Diagnostic] {
 }
 
 fn main() {
+    exercise_fragments()
     let source = "pub record Point { x Int }\nfn answer() Int { 42 }\n"
     match describe(source) {
         Result.Ok(summary) => {
