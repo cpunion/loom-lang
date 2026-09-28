@@ -65,16 +65,26 @@ that changed dependency.
 Each directory contains ordinary root-level `.loom` files and a `.loom-ids`
 sidecar. The sidecar requires exactly one `package NAME` line and exactly one
 `next N` positive allocator line, followed by one
-`id STABLE_ID KIND DECLARATION_NAME FILE.loom` line per declaration. `KIND` is
+`id STABLE_ID KIND DECLARATION_NAME FILE.loom KEY` line per declaration. `KIND` is
 `fn`, `record`, `enum`, `type`, or `concept`. IDs must be explicitly carried
 between revisions; names and source offsets are not durable identities.
 
+`KEY` distinguishes same-name overloads in the same file. It hashes framed
+parameter-type ASTs, compile-time parameter markers and generic declarations,
+excluding comments, whitespace, parameter names, result types, contracts and
+bodies. Nullary nongeneric functions and non-functions use `-`. This is a
+conservative source locator, not semantic type equivalence or stable identity;
+alias/type-parameter spelling changes can require an explicit mapping. The
+parser normalizes grouping and optional trailing commas; declaration order never selects an
+overload. Missing or stale keys reject, without a name-only fallback. This
+prototype format replaces the earlier five-field identity lines.
+
 You do not need to write the sidecar yourself. `init PACKAGE DIR` creates it
 for a package of root-level `.loom` files. `refresh DIR` keeps IDs for exact
-path/kind/name matches, allocates IDs for unambiguous new declarations and
+path/kind/name/key matches, allocates IDs for unambiguous new declarations and
 reports removed IDs. When an old declaration disappears while a new one
 appears, refresh refuses to guess whether it moved or was replaced. Use
-`refresh DIR --move ID NEW_FILE NEW_NAME` to preserve the ID, or
+`refresh DIR --move ID NEW_FILE NEW_NAME KEY` to preserve the ID, or
 `refresh DIR --delete ID` to declare a replacement, even when the replacement
 uses the same file, kind, and name. Each sidecar update is
 published by rename from a private stage; refresh leaves the prior sidecar
@@ -84,6 +94,8 @@ identity metadata for parseable source; they do not prove a successful build.
 `--move` can record a rename, but this prototype's merge preview still rejects
 any declaration-name change relative to its base revision.
 Keep `.loom-ids-stage-*` recovery directories out of source commits.
+`scan DIR` lists current kind/name/file/key locators without writing metadata;
+use its exact key to resolve a move or parameter-type change.
 
 For example, this creates all three sidecars from ordinary source snapshots,
 then merges a move on one side with a body edit on the other:
@@ -99,7 +111,7 @@ cp tools/semantic_change_trial/fixtures/left/*.loom "$loom_trial_dir/left/"
 cp tools/semantic_change_trial/fixtures/right/*.loom "$loom_trial_dir/right/"
 loom_amount_id="$(awk '$1 == "id" && $4 == "amount" { print $2 }' "$loom_trial_dir/base/.loom-ids")"
 target/loom run tools/semantic_change_trial -- refresh "$loom_trial_dir/left" \
-  --move "$loom_amount_id" app.loom amount
+  --move "$loom_amount_id" app.loom amount -
 target/loom run tools/semantic_change_trial -- refresh "$loom_trial_dir/right"
 target/loom run tools/semantic_change_trial -- \
   "$loom_trial_dir/base" "$loom_trial_dir/left" "$loom_trial_dir/right" \
@@ -158,5 +170,19 @@ are reported instead of guessed.
 This is a deliberately narrow proof of the move-plus-edit workflow. It does
 not yet manage Git/jj changes or commits, reconcile import changes or
 multi-package source edits, accept `impl` or other non-identity top-level forms,
-distinguish same-name overloads within one source file, or merge edits within a
-single declaration.
+or merge edits within a single declaration. Adding a new overload can change
+lookup, so cross-side addition of an existing name still requires review.
+
+The [overload snapshots](fixtures/overloads/base/app.loom) move only the `Int`
+version of `amount` while the other branch edits its body. The `Bool` version
+keeps its own identity and both calls retain their checked targets:
+
+```sh
+target/loom run tools/semantic_change_trial -- \
+  tools/semantic_change_trial/fixtures/overloads/base \
+  tools/semantic_change_trial/fixtures/overloads/left \
+  tools/semantic_change_trial/fixtures/overloads/right
+```
+
+Apply the printed token to a new directory using the same three inputs, then
+`target/loom run OUTPUT_DIR`. Its assertions check the combined result, `43`.

@@ -524,10 +524,12 @@ arithmetic rewriting. Immutable local-flow facts and bounded direct scalar-helpe
 expansion extend this optional proof as described above; mutable/alias facts,
 helper loops and recursive proof dependencies remain open.
 
-Typed metaprogramming later reuses this infrastructure. A narrow stable-ID
-move-plus-edit merge preview can read Git commits, preserve source trivia and
-recheck the result; public analysis does not yet automate identities, apply
-merges, or provide general semantic version-control tooling.
+Typed metaprogramming later reuses this infrastructure. The separate source
+change tool maintains explicit stable-ID sidecars, reads directory or Git
+snapshots, and applies an exact reviewed merge to a new directory. Same-file
+overloads use parameter-type locators, not declaration positions; move-plus-edit
+proposals preserve source trivia and recheck reference targets. This does not
+automatically track arbitrary edits or provide general semantic version control.
 
 ## N3 — Deliver semantic change and deployment workflows
 

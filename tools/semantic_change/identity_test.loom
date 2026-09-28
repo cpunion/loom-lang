@@ -1,0 +1,105 @@
+import std.loom.parser.parse_declaration
+import std.list.get
+import std.result.Result
+
+fn key(source Text) Text {
+    match parse_declaration(source) {
+        Result.Ok(node) => {
+            match declaration_key(node) {
+                Result.Ok(value) => {
+                    return value
+                }
+                Result.Err(_) => {
+                    assert false
+                }
+            }
+        }
+        Result.Err(problem) => {
+            discard std.io.write_error(problem.message)
+            assert false
+        }
+    }
+    ""
+}
+
+test fn overload_keys_ignore_trivia_names_returns_contracts_and_bodies() {
+    let before = key("""
+fn choose(input List[Int], flag Bool) Int {
+    1
+}
+""")
+    assert before == key("""
+pub fn renamed(
+    values List[(Int),], // Same element type.
+    enabled Bool
+) Bool
+    requires enabled
+{
+    enabled
+}
+""")
+    assert before != key("""
+fn choose(input List[Bool], flag Bool) Int {
+    1
+}
+""")
+    assert key("fn zero() {}") == "-"
+    assert key("record Pair { value Int }") == "-"
+    assert key("fn one(value Int) {}") != key("fn one(comptime value Int) {}")
+    assert key("fn generic[T](value T) {}") != key("fn generic[T](value List[T]) {}")
+    assert key("fn generic[T](value T) {}") == key("fn generic[T,](value (T),) {}")
+    assert key("fn pair(a Int, b Bool) {}") != key("fn pair(a Bool, b Int) {}")
+    assert key("fn one(value (Int,)) {}") != key("fn one(value Int) {}")
+    assert key("fn one(value fn(Int) Int) {}") != key("fn one(value fn(Int) Bool) {}")
+}
+
+test fn stale_overload_keys_do_not_fall_back_to_name_or_position() {
+    let before = overload_revision("fn input() Int { 1 }", "caller.loom",
+        "fn entry() Int { pick(input()) }", "")
+    let first = get(before.identities, 0)
+    std.list.set(before.identities, 0, Identity {
+            id = first.id
+            path = first.path
+            kind = first.kind
+            name = first.name
+            key = get(before.identities, 1).key
+        })
+    match merge(before, before, before) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert std.text.contains(message, "missing or ambiguous stable identity")
+        }
+    }
+}
+
+test fn selected_signature_supplies_the_merged_locator() {
+    let before = revision("value.loom", """
+fn amount(value Int) Int {
+    value
+}
+
+""", "fn entry() Int { 0 }")
+    let after = revision("value.loom", """
+fn amount(value Bool) Int {
+    1
+}
+
+""", "fn entry() Int { 0 }")
+    match merge(before, before, after) {
+        Result.Ok(merged) => {
+            assert get(merged.identities, 0).key == get(after.identities, 0).key
+            match indexed(merged) {
+                Result.Ok(_) => {
+                }
+                Result.Err(_) => {
+                    assert false
+                }
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}

@@ -88,8 +88,12 @@ elif [[ -z "$seed_compiler" ]]; then
         fi
         printf 'Recovering the frozen compiler from %s...\n' "$seed_pin"
         mkdir -p "$seed_source"
-        git archive "$seed_pin" Cargo.toml Cargo.lock compiler rustfmt.toml |
-            tar -xf - -C "$seed_source"
+        # Separate archive creation from extraction: an early pipe consumer
+        # exit can otherwise fail git with SIGPIPE under pipefail.
+        git archive --format=tar --output="$bootstrap_cache/source.tar" \
+            "$seed_pin" Cargo.toml Cargo.lock compiler rustfmt.toml
+        tar -xf "$bootstrap_cache/source.tar" -C "$seed_source"
+        rm -f "$bootstrap_cache/source.tar"
         cargo build --locked --workspace --manifest-path "$seed_source/Cargo.toml" \
             --target-dir "$bootstrap_cache/target"
         # The historical Rust compiler builds only the historical Loom seed,
@@ -117,8 +121,10 @@ elif [[ -z "$seed_compiler" ]]; then
             fi
             printf 'Building source bootstrap checkpoint %s...\n' "$checkpoint"
             mkdir -p "$checkpoint_source"
-            git archive "$checkpoint" compiler/loom compiler/std |
-                tar -xf - -C "$checkpoint_source"
+            git archive --format=tar --output="$checkpoint_cache/source.tar" \
+                "$checkpoint" compiler/loom compiler/std
+            tar -xf "$checkpoint_cache/source.tar" -C "$checkpoint_source"
+            rm -f "$checkpoint_cache/source.tar"
             "$seed_compiler" build "$checkpoint_source/compiler/loom" \
                 --std "$checkpoint_source/compiler/std" \
                 --native-tool "$target_root/debug/loom-native$exe_suffix" \

@@ -1,0 +1,4 @@
+// Integer operations live here now.
+fn amount(value Int) Int {
+    value + 1
+}

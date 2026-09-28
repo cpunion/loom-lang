@@ -1,0 +1,11 @@
+fn amount(value Int) Int {
+    value + 1
+}
+
+fn amount(value Bool) Int {
+    if value { 40 } else { 0 }
+}
+
+pub fn main() {
+    assert amount(1) + amount(true) > 40
+}

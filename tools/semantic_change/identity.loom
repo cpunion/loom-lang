@@ -1,0 +1,93 @@
+import std.bytes.new
+import std.bytes.length
+import std.bytes.push
+import std.hash.sha256.hex
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.ast.has
+import std.list.get
+import std.list.length
+import std.result.Result
+import std.text.byte
+import std.text.length
+import std.int.to_text
+
+fn key_frame(output Bytes, text Text) {
+    let size = to_text(std.text.length(text))
+    var index = 0
+    while index < std.text.length(size) {
+        std.bytes.push(output, byte(size, index))
+        index = index + 1
+    }
+    std.bytes.push(output, 58)
+    index = 0
+    while index < std.text.length(text) {
+        std.bytes.push(output, byte(text, index))
+        index = index + 1
+    }
+}
+
+fn key_type(output Bytes, node Node) Result[Bool, Text] {
+    let tag = match node.kind {
+        NodeKind.Type => "type"
+        NodeKind.DynType => "dyn"
+        NodeKind.TupleType => "tuple"
+        NodeKind.FunctionType => "function"
+        NodeKind.Parameters => "parameters"
+        NodeKind.ReturnType => "return"
+        NodeKind.TypeParameters => "generics"
+        NodeKind.Name => "name"
+        NodeKind.TypePack => "pack"
+        NodeKind.Spread => "spread"
+        NodeKind.AssociatedType => "associated"
+        _ => {
+            return Result.Err("unsupported type syntax in declaration locator")
+        }
+    }
+    key_frame(output, tag)
+    key_frame(output, node.value)
+    key_frame(output, to_text(length(node.children)))
+    var index = 0
+    while index < length(node.children) {
+        discard key_type(output, get(node.children, index))?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+// A revision-local locator, NOT declaration identity or semantic equivalence.
+// Ignore name, parameter names, return type, contracts, body, and trivia.
+// Type spelling remains conservative: no alias or generic-name guessing.
+// Nullary nongeneric functions and non-functions use the compact key "-".
+pub fn declaration_key(node Node) Result[Text, Text] {
+    let output = std.bytes.new()
+    if node.kind == NodeKind.Function {
+        var index = 0
+        while index < length(node.children) {
+            let group = get(node.children, index)
+            if group.kind == NodeKind.TypeParameters && length(group.children) > 0 {
+                key_frame(output, "types")
+                discard key_type(output, group)?
+            }
+            if group.kind == NodeKind.Parameters {
+                var parameter_index = 0
+                while parameter_index < length(group.children) {
+                    let parameter = get(group.children, parameter_index)
+                    key_frame(output, if has(parameter, NodeKind.Comptime) {
+                            "comptime"
+                        } else {
+                            "parameter"
+                        })
+                    discard key_type(output, get(parameter.children, 0))?
+                    parameter_index = parameter_index + 1
+                }
+            }
+            index = index + 1
+        }
+    }
+    Result.Ok(if std.bytes.length(output) == 0 {
+            "-"
+        } else {
+            hex(output)
+        })
+}

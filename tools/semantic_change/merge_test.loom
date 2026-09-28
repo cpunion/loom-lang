@@ -1,25 +1,57 @@
 import std.loom.ast.NodeKind
+import std.loom.parser.parse
 import std.io.write_error
 import std.list.get
+import std.list.length
 import std.list.new
 import std.list.push
+import std.list.set
 import std.result.Result
 import std.text.concat
 import std.text.contains
 
-fn identities(amount_path Text) List[Identity] {
+fn key_in(source Text, name Text) Text {
+    match parse(source) {
+        Result.Ok(tree) => {
+            var index = 0
+            while index < length(tree.children) {
+                let node = get(tree.children, index)
+                if node.value == name {
+                    match declaration_key(node) {
+                        Result.Ok(key) => {
+                            return key
+                        }
+                        Result.Err(_) => {
+                            assert false
+                        }
+                    }
+                }
+                index = index + 1
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    assert false
+    ""
+}
+
+fn identities(amount_path Text, source Text, app Text) List[Identity] {
     let bindings = new[Identity]()
     push(bindings, Identity {
             id = "amount-id"
             path = amount_path
             kind = NodeKind.Function
             name = "amount"
+            key = key_in(if amount_path == "app.loom" { app } else { source }, "amount")
         })
     push(bindings, Identity {
             id = "entry-id"
             path = "app.loom"
             kind = NodeKind.Function
             name = "entry"
+            key = key_in(app, "entry")
         })
     bindings
 }
@@ -37,7 +69,7 @@ fn revision(amount_path Text, source Text, app Text) Revision {
     Revision {
         package_name = "sample"
         files = files
-        identities = identities(amount_path)
+        identities = identities(amount_path, source, app)
     }
 }
 
@@ -94,12 +126,16 @@ test fn move_and_independent_edit_merge_without_reformatting() {
 fn overload_revision(input Text, caller_path Text, caller Text, destination Text) Revision {
     let files = new[File]()
     push(files, File {
-            path = "int.loom"
-            text = "fn pick(value Int) Int { 1 }\n"
-        })
-    push(files, File {
-            path = "bool.loom"
-            text = "fn pick(value Bool) Int { 2 }\n"
+            path = "overloads.loom"
+            text = """
+fn pick(value Int) Int {
+    1
+}
+fn pick(value Bool) Int {
+    2
+}
+
+"""
         })
     push(files, File {
             path = "source.loom"
@@ -116,27 +152,31 @@ fn overload_revision(input Text, caller_path Text, caller Text, destination Text
     let ids = new[Identity]()
     push(ids, Identity {
             id = "int-id"
-            path = "int.loom"
+            path = "overloads.loom"
             kind = NodeKind.Function
             name = "pick"
+            key = key("fn pick(value Int) Int { 1 }")
         })
     push(ids, Identity {
             id = "bool-id"
-            path = "bool.loom"
+            path = "overloads.loom"
             kind = NodeKind.Function
             name = "pick"
+            key = key("fn pick(value Bool) Int { 2 }")
         })
     push(ids, Identity {
             id = "source-id"
             path = "source.loom"
             kind = NodeKind.Function
             name = "input"
+            key = "-"
         })
     push(ids, Identity {
             id = "caller-id"
             path = caller_path
             kind = NodeKind.Function
             name = "entry"
+            key = "-"
         })
     Revision {
         package_name = "sample"
@@ -175,8 +215,8 @@ test fn unchanged_overload_binding_survives_move_and_body_edit() {
     let moved = overload_revision("fn input() Int { 1 }\n", "destination.loom", "", caller)
     match merge(base, changed, moved) {
         Result.Ok(merged) => {
-            assert get(merged.files, 2).text == "fn input() Int { 3 }\n"
-            assert get(merged.files, 4).text == caller
+            assert get(merged.files, 1).text == "fn input() Int { 3 }\n"
+            assert get(merged.files, 3).text == caller
         }
         Result.Err(message) => {
             discard write_error(message)
@@ -194,6 +234,7 @@ test fn a_carrier_addition_and_an_independent_body_edit_merge() {
             path = "app.loom"
             kind = NodeKind.Function
             name = "extra"
+            key = "-"
         })
     let edited = revision("value.loom", "fn amount() Int { 2 }\n",
         "fn entry() Int { amount() }\n")
@@ -229,6 +270,7 @@ fn added_declaration(name Text, kind NodeKind, declaration Text) Revision {
             path = "value.loom"
             kind = kind
             name = name
+            key = "-"
         })
     changed
 }
@@ -295,6 +337,7 @@ test fn dual_additions_and_binding_sensitive_names_need_resolution() {
             path = "value.loom"
             kind = NodeKind.Function
             name = "extra"
+            key = "-"
         })
     let right = revision("value.loom", "fn amount() Int { 1 }\n",
         "fn entry() Int { amount() }\nfn another() Int { 4 }\n")
@@ -303,6 +346,7 @@ test fn dual_additions_and_binding_sensitive_names_need_resolution() {
             path = "app.loom"
             kind = NodeKind.Function
             name = "another"
+            key = "-"
         })
     match merge(base, left, right) {
         Result.Ok(_) => {
@@ -323,6 +367,7 @@ test fn dual_additions_and_binding_sensitive_names_need_resolution() {
             path = "overload.loom"
             kind = NodeKind.Function
             name = "amount"
+            key = key_in(get(reused.files, 2).text, "amount")
         })
     match merge(base, reused, base) {
         Result.Ok(_) => {
@@ -351,6 +396,7 @@ test fn deletion_conflicts_with_edit_or_move() {
             path = "app.loom"
             kind = NodeKind.Function
             name = "entry"
+            key = "-"
         })
     let removed = Revision {
         package_name = "sample"
@@ -388,6 +434,7 @@ test fn deleting_a_local_candidate_while_other_side_edits_a_call_is_not_a_safe_m
             path = "app.loom"
             kind = NodeKind.Function
             name = "entry"
+            key = "-"
         })
     let removed = Revision {
         package_name = "sample"
@@ -443,6 +490,7 @@ test fn signature_change_and_other_side_addition_need_resolution() {
             path = "app.loom"
             kind = NodeKind.Function
             name = "extra"
+            key = "-"
         })
     match merge(base, changed, added) {
         Result.Ok(_) => {
@@ -472,7 +520,7 @@ test fn ambiguous_identity_and_conflicting_body_edits_fail_closed() {
             assert false
         }
         Result.Err(message) => {
-            assert contains(message, "ambiguous declaration")
+            assert contains(message, "missing or ambiguous stable identity")
         }
     }
     let one = revision("value.loom", "fn amount() Int { 2 }\n",
@@ -555,12 +603,14 @@ test fn test_only_helpers_cannot_satisfy_production_calls() {
             path = "app.loom"
             kind = NodeKind.Function
             name = "entry"
+            key = "-"
         })
     push(ids, Identity {
             id = "helper-id"
             path = "app_test.loom"
             kind = NodeKind.Function
             name = "helper"
+            key = "-"
         })
     let base = Revision {
         package_name = "sample"
@@ -629,6 +679,7 @@ fn boundary_revision(path Text, production Text, testing Text) Revision {
             path = path
             kind = NodeKind.Function
             name = "amount"
+            key = "-"
         })
     Revision {
         package_name = "sample"
@@ -661,6 +712,7 @@ test fn source_paths_cannot_escape_the_package_directory() {
             path = "../value.loom"
             kind = NodeKind.Function
             name = "value"
+            key = "-"
         }]
     let revision = Revision {
         package_name = "sample"

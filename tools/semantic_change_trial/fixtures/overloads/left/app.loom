@@ -1,0 +1,8 @@
+// The Bool overload remains beside the entry point.
+fn amount(value Bool) Int {
+    if value { 40 } else { 0 }
+}
+
+pub fn main() {
+    assert amount(1) + amount(true) > 40
+}

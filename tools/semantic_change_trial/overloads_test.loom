@@ -1,0 +1,117 @@
+import std.text.contains
+
+fn successful(outcome Result[Text, Text]) Text {
+    match outcome {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            discard write_error(message)
+            assert false
+            ""
+        }
+    }
+}
+
+fn copy_sources(source Text, destination Text) Result[Bool, Text] {
+    discard create_dir(destination)
+    let files = read_files(source)?
+    var index = 0
+    while index < length(files) {
+        let file = get(files, index)
+        discard write_text(path(destination, file.path), file.text)
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn remove_trial(directory Text) {
+    match entries(directory) {
+        Result.Ok(names) => {
+            var index = 0
+            while index < length(names) {
+                let name = get(names, index)
+                if starts_with(name, ".loom-ids-stage-") {
+                    discard remove_file(path(path(directory, name), "previous"))
+                    discard remove_empty_dir(path(directory, name))
+                } else {
+                    discard remove_file(path(directory, name))
+                }
+                index = index + 1
+            }
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    discard remove_empty_dir(directory)
+}
+
+fn overload_lifecycle(staging Text) Result[Text, Text] {
+    let fixtures = "tools/semantic_change_trial/fixtures/overloads"
+    let base = path(staging, "base")
+    let left = path(staging, "left")
+    let right = path(staging, "right")
+    let output = path(staging, "output")
+    discard create_dir(staging)
+    discard copy_sources(path(fixtures, "base"), base)?
+    discard copy_sources(path(fixtures, "left"), left)?
+    discard copy_sources(path(fixtures, "right"), right)?
+    discard initialize("sample", base)?
+    let original = read(base)?
+    let int_id = get(original.revision.identities, 0)
+    let bool_id = get(original.revision.identities, 1)
+    assert int_id.key != bool_id.key
+    discard write_text(path(left, ".loom-ids"), original.sidecar)
+    discard write_text(path(right, ".loom-ids"), original.sidecar)
+    match refresh(left, []) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "possible move")
+        }
+    }
+    let wrong = Resolution {
+        id = int_id.id
+        path = "numbers.loom"
+        name = "amount"
+        key = bool_id.key
+        deletion = false
+    }
+    match refresh(left, [wrong]) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "one unmatched declaration")
+        }
+    }
+    assert text_at(path(left, ".loom-ids")) == original.sidecar
+    assert contains(scan(left)?, concat("numbers.loom ", int_id.key))
+    // Exercise the same option parser as the command-line entry point.
+    discard refresh(left, resolutions(["--move", int_id.id, "numbers.loom", "amount", int_id.key], 0)?)?
+    discard refresh(right, [])?
+    let changed_left = read(left)?
+    let changed_right = read(right)?
+    assert changed_left.next == original.next && changed_right.next == original.next
+    let relocated = get(changed_left.revision.identities, identity_at(changed_left.revision.identities, int_id.id))
+    assert relocated.path == "numbers.loom" && relocated.key == int_id.key
+    assert get(changed_left.revision.identities,
+        identity_at(changed_left.revision.identities, bool_id.id)).path == "app.loom"
+    let plan = review(original, changed_left, changed_right)?
+    discard apply_directories(plan.token, output, base, left, right)?
+    assert contains(text_at(path(output, "numbers.loom")), "value + 2")
+    assert contains(text_at(path(output, "app.loom")), "== 43")
+    let published = read(output)?
+    assert sidecar(review(published, published, published)?.merged, published.next) == published.sidecar
+    remove_trial(output)
+    remove_trial(left)
+    remove_trial(right)
+    remove_trial(base)
+    discard remove_empty_dir(staging)
+    Result.Ok("overload lifecycle completed")
+}
+
+test fn same_file_overload_moves_edits_and_apply_preserve_identity() {
+    let staging = concat("tools/semantic_change_trial/target/overloads-", to_text(monotonic_ns()))
+    assert successful(overload_lifecycle(staging)) == "overload lifecycle completed"
+}
