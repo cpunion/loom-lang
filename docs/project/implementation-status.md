@@ -926,7 +926,14 @@ rejected; missing or ambiguous evidence and unsupported source forms fail closed
 See the [move](../../tools/semantic_change_trial/fixtures/left/app.loom) and
 [edit](../../tools/semantic_change_trial/fixtures/right/value.loom) snapshots.
 This does not prove behavior equivalence or a general semantic merge. Identity
-refresh is explicit; it does not follow arbitrary edits automatically.
+refresh is explicit; it does not follow arbitrary edits automatically. Same-file
+overloads now have parameter-type locators separate from stable IDs; body edits,
+formatting and declaration movement do not select the wrong overload. `scan`
+lists exact locators for explicit mappings. A stale locator rejects rather than
+falling back to declaration order or name. The
+[overload snapshots](../../tools/semantic_change_trial/fixtures/overloads/base/app.loom)
+exercise moving one overload while independently editing it; overload additions
+and unresolved binding changes still require review.
 
 The `tools/deployment` prototype analyzes schema conflicts and executes one
 bounded offline SQLite migration package with upgrade, rollback and re-upgrade

@@ -138,7 +138,7 @@ fn header(metadata Text, sidecar Text) Result[Header, Text] {
                     }
                     seen_next = true
                 } else {
-                    if length(words) != 5 || get(words, 0) != "id" {
+                    if length(words) != 6 || get(words, 0) != "id" {
                         return Result.Err(concat("invalid identity line in ", sidecar))
                     }
                     let id = get(words, 1)
@@ -153,6 +153,7 @@ fn header(metadata Text, sidecar Text) Result[Header, Text] {
                             path = file
                             kind = kind(get(words, 2))?
                             name = name
+                            key = get(words, 5)
                         })
                 }
             }
@@ -379,7 +380,8 @@ fn sidecar(revision Revision, next Int) Text {
         let identity = get(revision.identities, index)
         output = concat(output, concat("id ", concat(identity.id,
                     concat(" ", concat(kind_name(identity.kind), concat(" ",
-                                concat(identity.name, concat(" ", concat(identity.path, "\n")))))))))
+                                concat(identity.name, concat(" ", concat(identity.path,
+                                            concat(" ", concat(identity.key, "\n")))))))))))
         index = index + 1
     }
     output
@@ -769,18 +771,20 @@ fn apply_git(expected Text, destination Text, executable Text, repository Text, 
 fn main() {
     let args = arguments()
     let initializing = length(args) == 4 && get(args, 1) == "init"
+    let scanning = length(args) == 3 && get(args, 1) == "scan"
     let refreshing = length(args) >= 3 && get(args, 1) == "refresh"
     let directories_preview = length(args) == 4 && get(args, 1) != "--apply" && get(args, 1) != "--git" &&
-    get(args, 1) != "init" && get(args, 1) != "refresh"
+    get(args, 1) != "init" && get(args, 1) != "refresh" && get(args, 1) != "scan"
     let git_preview = length(args) == 8 && get(args, 1) == "--git"
     let context_preview = length(args) == 7 && get(args, 1) == "--context"
     let directories_apply = length(args) == 7 && get(args, 1) == "--apply"
     let context_apply = length(args) == 10 && get(args, 1) == "--apply" && get(args, 4) == "--context"
     let git_apply = length(args) == 11 && get(args, 1) == "--apply" && get(args, 4) == "--git"
-    if !initializing && !refreshing && !directories_preview && !git_preview && !context_preview &&
+    if !initializing && !scanning && !refreshing && !directories_preview && !git_preview && !context_preview &&
     !directories_apply && !context_apply && !git_apply {
         discard write_error("usage: semantic_change_trial init PACKAGE_NAME DIR\n")
-        discard write_error("   or: semantic_change_trial refresh DIR [--move ID NEW_FILE NEW_NAME | --delete ID]...\n")
+        discard write_error("   or: semantic_change_trial scan DIR\n")
+        discard write_error("   or: semantic_change_trial refresh DIR [--move ID NEW_FILE NEW_NAME KEY | --delete ID]...\n")
         discard write_error("usage: semantic_change_trial BASE_DIR LEFT_DIR RIGHT_DIR\n")
         discard write_error("   or: semantic_change_trial --git GIT_EXE REPO PACKAGE_DIR BASE_REV LEFT_REV RIGHT_REV\n")
         discard write_error("   or: semantic_change_trial --context PACKAGE_DIR STD_ROOT BASE_DIR LEFT_DIR RIGHT_DIR\n")
@@ -790,7 +794,9 @@ fn main() {
         exit_code(2)
         return
     }
-    let outcome = if initializing {
+    let outcome = if scanning {
+        scan(get(args, 2))
+    } else if initializing {
         initialize(get(args, 2), get(args, 3))
     } else {
         if refreshing {

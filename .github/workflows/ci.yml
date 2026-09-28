@@ -138,6 +138,7 @@ jobs:
           bash scripts/bootstrap.sh
           target/loom test compiler/std/storage
           target/loom test compiler/std/json
+          target/loom test tools/semantic_change
           target/loom test tools/semantic_change_trial
           cargo test --locked --workspace
 
@@ -233,6 +234,7 @@ jobs:
           LOOM_NATIVE_TIMINGS=1 bash scripts/bootstrap.sh
           target/loom.exe test compiler/std/storage
           target/loom.exe test compiler/std/json
+          target/loom.exe test tools/semantic_change
           target/loom.exe test tools/semantic_change_trial
           cargo test --locked --workspace --no-fail-fast
 

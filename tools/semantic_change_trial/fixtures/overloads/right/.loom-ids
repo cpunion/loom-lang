@@ -1,0 +1,5 @@
+package sample
+next 4
+id int-id fn amount app.loom 5ef16c32841ed93d8098b2ec3b04923d7772aacbcd2674f5c24c74d4eb93d85a
+id bool-id fn amount app.loom b1c5960b3e84d977764069c50e6ff365d800f14a1a0135b3d0a12051f118922c
+id main-id fn main app.loom -

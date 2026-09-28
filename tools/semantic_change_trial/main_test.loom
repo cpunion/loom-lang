@@ -32,6 +32,7 @@ fn loaded(text Text, sidecar Text, commit Text) Loaded {
                     path = "value.loom"
                     kind = NodeKind.Function
                     name = "value"
+                    key = "-"
                 }]
         }
         sidecar = sidecar
@@ -51,7 +52,7 @@ fn reviewed(value Loaded) Text {
 }
 
 test fn review_token_binds_exact_source_sidecar_and_resolved_commit() {
-    let raw = "package sample\nnext 1\nid value-id fn value value.loom\n"
+    let raw = "package sample\nnext 1\nid value-id fn value value.loom -\n"
     let source = "fn value() Int { 1 }\n"
     let baseline = reviewed(loaded(source, raw, ""))
     assert baseline == reviewed(loaded(source, raw, ""))
@@ -92,6 +93,7 @@ test fn preview_rejects_an_added_name_used_by_the_other_side() {
                     path = "value.loom"
                     kind = NodeKind.Function
                     name = "fresh"
+                    key = "-"
                 }]
         }
         sidecar = ""
@@ -117,11 +119,12 @@ fn rejects_identity_header(metadata Text) Bool {
 }
 
 test fn identity_sidecar_requires_one_valid_allocator_line() {
-    assert rejects_identity_header("package sample\nid value-id fn value value.loom\n")
+    assert rejects_identity_header("package sample\nnext 2\nid value-id fn value value.loom\n")
+    assert rejects_identity_header("package sample\nid value-id fn value value.loom -\n")
     assert rejects_identity_header("package sample\nnext 2\nnext 3\n")
     assert rejects_identity_header("package sample\nnext 0\n")
     assert rejects_identity_header("package sample\nnext nope\n")
-    assert !rejects_identity_header("package sample\nnext 2\nid value-id fn value value.loom\n")
+    assert !rejects_identity_header("package sample\nnext 2\nid value-id fn value value.loom -\n")
 }
 
 fn path_rejected(path Text) Bool {
@@ -160,22 +163,25 @@ test fn output_path_rejects_traversal_and_noncanonical_components() {
     assert path_rejected("folder/")
 }
 
-test fn identity_allocator_changes_with_sequence_and_ambiguous_names_fail() {
+test fn identity_allocator_changes_with_sequence_and_overloads_have_distinct_keys() {
     let declaration = Identity {
         id = ""
         path = "value.loom"
         kind = NodeKind.Function
         name = "value"
+        key = "-"
     }
     assert fresh_id("sample", declaration, 1) != fresh_id("sample", declaration, 2)
     match declarations([File {
                 path = "value.loom"
                 text = "fn value() Int { 1 }\nfn value(input Int) Int { input }\n"
             }]) {
-        Result.Ok(_) => {
-            assert false
+        Result.Ok(found) => {
+            assert length(found) == 2
+            assert get(found, 0).key != get(found, 1).key
         }
         Result.Err(_) => {
+            assert false
         }
     }
     match initialize("bad/name", "unused") {
@@ -183,6 +189,24 @@ test fn identity_allocator_changes_with_sequence_and_ambiguous_names_fail() {
             assert false
         }
         Result.Err(_) => {
+        }
+    }
+    match declarations([File {
+                path = "value.loom"
+                text = """
+fn value(input Int) Int {
+    input
+}
+fn value(renamed Int) Int {
+    renamed + 1
+}
+"""
+            }]) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert std.text.contains(message, "indistinguishable declaration")
         }
     }
     match initialize("std", "unused") {
@@ -255,6 +279,7 @@ test fn initialized_package_applies_once_to_a_new_tree() {
                 id = original_id
                 path = ""
                 name = ""
+                key = ""
                 deletion = true
             }]) {
         Result.Ok(_) => {
@@ -299,7 +324,7 @@ test fn initialized_package_applies_once_to_a_new_tree() {
 }
 
 test fn reviewed_one_sided_addition_publishes_new_identity() {
-    let raw = "package sample\nnext 1\nid value-id fn value value.loom\n"
+    let raw = "package sample\nnext 1\nid value-id fn value value.loom -\n"
     let base = loaded("fn value() Int { 1 }\n", raw, "")
     let changed = loaded("fn value() Int { 2 }\n", raw, "")
     let added_revision = Revision {
@@ -313,11 +338,13 @@ test fn reviewed_one_sided_addition_publishes_new_identity() {
                 path = "value.loom"
                 kind = NodeKind.Function
                 name = "value"
+                key = "-"
             }, Identity {
                 id = "extra-id"
                 path = "value.loom"
                 kind = NodeKind.Function
                 name = "extra"
+                key = "-"
             }]
     }
     let added = Loaded {

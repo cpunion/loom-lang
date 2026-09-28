@@ -43,6 +43,7 @@ pub record Identity {
     path Text
     kind NodeKind
     name Text
+    key Text
 }
 
 pub record Revision {
@@ -56,6 +57,7 @@ record Entry {
     path Text
     kind NodeKind
     name Text
+    key Text
     start Int
     end Int
     body Text
@@ -116,12 +118,12 @@ fn entry_index(entries List[Entry], id Text) Int {
     -1
 }
 
-fn identity_index(identities List[Identity], path Text, kind NodeKind, name Text) Int {
+fn identity_index(identities List[Identity], path Text, kind NodeKind, name Text, key Text) Int {
     var found = -1
     var index = 0
     while index < length(identities) {
         let value = get(identities, index)
-        if value.path == path && value.kind == kind && value.name == name {
+        if value.path == path && value.kind == kind && value.name == name && value.key == key {
             if found >= 0 {
                 return -2
             }
@@ -155,7 +157,7 @@ fn indexed(revision Revision) Result[Indexed, Text] {
     while index < length(revision.identities) {
         let identity = get(revision.identities, index)
         if !sidecar_word(identity.id) || !source_leaf(identity.path) || !sidecar_word(identity.name) ||
-        !supported(identity.kind) {
+        !sidecar_word(identity.key) || !supported(identity.kind) {
             return Result.Err("invalid or unsupported declaration identity")
         }
         var previous = 0
@@ -197,7 +199,8 @@ fn indexed(revision Revision) Result[Indexed, Text] {
             if !supported(node.kind) {
                 return Result.Err(concat("unsupported top-level declaration in ", file.path))
             }
-            let binding = identity_index(revision.identities, file.path, node.kind, node.value)
+            let binding = identity_index(revision.identities, file.path, node.kind, node.value,
+                declaration_key(node)?)
             if binding < 0 {
                 return Result.Err(concat("missing or ambiguous stable identity in ", file.path))
             }
@@ -210,6 +213,7 @@ fn indexed(revision Revision) Result[Indexed, Text] {
                     path = file.path
                     kind = node.kind
                     name = node.value
+                    key = get(revision.identities, binding).key
                     start = node.span.start
                     end = node.span.end
                     body = slice(file.text, node.span.start, node.span.end)
@@ -742,25 +746,25 @@ fn validate_changes(base Indexed, left Indexed, right Indexed) Result[Bool, Text
     Result.Ok(true)
 }
 
-fn chosen_body(base Indexed, left Indexed, right Indexed, id Text) Text {
+fn chosen_entry(base Indexed, left Indexed, right Indexed, id Text) Entry {
     let edited_left = entry_index(left.entries, id)
     let edited_right = entry_index(right.entries, id)
     let base_index = entry_index(base.entries, id)
     if base_index < 0 {
         return if edited_left >= 0 {
-            get(left.entries, edited_left).body
+            get(left.entries, edited_left)
         } else {
-            get(right.entries, edited_right).body
+            get(right.entries, edited_right)
         }
     }
     let original = get(base.entries, base_index)
     if edited_left >= 0 && get(left.entries, edited_left).body != original.body {
-        return get(left.entries, edited_left).body
+        return get(left.entries, edited_left)
     }
     if edited_right >= 0 && get(right.entries, edited_right).body != original.body {
-        return get(right.entries, edited_right).body
+        return get(right.entries, edited_right)
     }
-    original.body
+    original
 }
 
 fn project_of(revision Revision) Result[Project, Text] {
@@ -1140,6 +1144,7 @@ fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text]
         return Result.Err("non-layout side changed text outside declaration bodies")
     }
     let files = new[File]()
+    let identities = new[Identity]()
     var index = 0
     while index < length(carrier.revision.files) {
         let file = get(carrier.revision.files, index)
@@ -1153,7 +1158,7 @@ fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text]
             }
             let entry = get(carrier.entries, entry_position)
             output = concat(output, slice(file.text, offset, entry.start))
-            output = concat(output, chosen_body(original, edited_left, edited_right, entry.id))
+            output = concat(output, chosen_entry(original, edited_left, edited_right, entry.id).body)
             offset = entry.end
             ordinal = ordinal + 1
         }
@@ -1164,10 +1169,23 @@ fn proposed(base Revision, left Revision, right Revision) Result[Revision, Text]
             })
         index = index + 1
     }
+    index = 0
+    while index < length(carrier.revision.identities) {
+        let identity = get(carrier.revision.identities, index)
+        let selected = chosen_entry(original, edited_left, edited_right, identity.id)
+        push(identities, Identity {
+                id = identity.id
+                path = identity.path
+                kind = identity.kind
+                name = identity.name
+                key = selected.key
+            })
+        index = index + 1
+    }
     Result.Ok(Revision {
             package_name = carrier.revision.package_name
             files = files
-            identities = carrier.revision.identities
+            identities = identities
         })
 }
 

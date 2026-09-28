@@ -1,6 +1,7 @@
 import semantic_change.File
 import semantic_change.Identity
 import semantic_change.Revision
+import semantic_change.declaration_key
 import std.loom.ast.NodeKind
 import std.loom.manifest.segment
 import std.loom.parser.parse
@@ -28,6 +29,7 @@ record Resolution {
     id Text
     path Text
     name Text
+    key Text
     deletion Bool
 }
 
@@ -70,10 +72,13 @@ fn declarations(files List[File]) Result[List[Identity], Text] {
             if !lifecycle_kind(node.kind) || !lifecycle_word(node.value) {
                 return Result.Err(concat("unsupported or unnamed top-level declaration in ", file.path))
             }
+            let key = declaration_key(node)?
             var previous = 0
             while previous < length(found) {
-                if get(found, previous).name == node.value {
-                    return Result.Err(concat("overloaded or same-name declarations need explicit identity support: ", node.value))
+                let prior = get(found, previous)
+                if prior.name == node.value &&
+                (prior.kind != NodeKind.Function || node.kind != NodeKind.Function || prior.key == key) {
+                    return Result.Err(concat("duplicate or indistinguishable declaration: ", node.value))
                 }
                 previous = previous + 1
             }
@@ -82,6 +87,7 @@ fn declarations(files List[File]) Result[List[Identity], Text] {
                     path = file.path
                     kind = node.kind
                     name = node.value
+                    key = key
                 })
             index = index + 1
         }
@@ -91,7 +97,7 @@ fn declarations(files List[File]) Result[List[Identity], Text] {
 }
 
 fn same_declaration(left Identity, right Identity) Bool {
-    left.path == right.path && left.kind == right.kind && left.name == right.name
+    left.path == right.path && left.kind == right.kind && left.name == right.name && left.key == right.key
 }
 
 fn identity_at(identities List[Identity], id Text) Int {
@@ -105,11 +111,11 @@ fn identity_at(identities List[Identity], id Text) Int {
     -1
 }
 
-fn candidate_at(candidates List[Identity], path Text, kind NodeKind, name Text) Int {
+fn candidate_at(candidates List[Identity], path Text, kind NodeKind, name Text, key Text) Int {
     var index = 0
     while index < length(candidates) {
         let value = get(candidates, index)
-        if value.path == path && value.kind == kind && value.name == name {
+        if value.path == path && value.kind == kind && value.name == name && value.key == key {
             return index
         }
         index = index + 1
@@ -124,6 +130,7 @@ fn fresh_id(package_name Text, candidate Identity, sequence Int) Text {
     frame(bytes, candidate.path)
     frame(bytes, kind_name(candidate.kind))
     frame(bytes, candidate.name)
+    frame(bytes, candidate.key)
     frame(bytes, to_text(sequence))
     concat("d-", hex(bytes))
 }
@@ -226,6 +233,7 @@ fn initialize(package_name Text, directory Text) Result[Text, Text] {
                 path = candidate.path
                 kind = candidate.kind
                 name = candidate.name
+                key = candidate.key
             })
         changes = concat(changes, concat("added ", concat(id,
                     concat(" ", concat(candidate.path, concat(" ", concat(candidate.name, "\n")))))))
@@ -249,9 +257,9 @@ fn resolutions(args List[Text], start Int) Result[List[Resolution], Text] {
         if (!deletion && option != "--move") || index + if deletion {
             1
         } else {
-            3
+            4
         } >= length(args) {
-            return Result.Err("refresh options are --move ID NEW_FILE NEW_NAME or --delete ID")
+            return Result.Err("refresh options are --move ID NEW_FILE NEW_NAME KEY or --delete ID; scan DIR lists keys")
         }
         let id = get(args, index + 1)
         var previous = 0
@@ -273,12 +281,17 @@ fn resolutions(args List[Text], start Int) Result[List[Resolution], Text] {
                 } else {
                     get(args, index + 3)
                 }
+                key = if deletion {
+                    ""
+                } else {
+                    get(args, index + 4)
+                }
                 deletion = deletion
             })
         index = index + if deletion {
             2
         } else {
-            4
+            5
         }
     }
     Result.Ok(output)
@@ -294,12 +307,13 @@ fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
     while index < length(previous) {
         push(old_used, false)
         let prior = get(previous, index)
-        if !lifecycle_word(prior.id) || !lifecycle_leaf(prior.path) || !lifecycle_word(prior.name) {
+        if !lifecycle_word(prior.id) || !lifecycle_leaf(prior.path) || !lifecycle_word(prior.name) ||
+        !lifecycle_word(prior.key) {
             return Result.Err("existing sidecar has an invalid declaration identity")
         }
         var earlier = 0
         while earlier < index {
-            if prior.id == get(previous, earlier).id || prior.name == get(previous, earlier).name ||
+            if prior.id == get(previous, earlier).id ||
             same_declaration(prior, get(previous, earlier)) {
                 return Result.Err("existing sidecar has ambiguous or duplicate identities")
             }
@@ -348,7 +362,7 @@ fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
         }
         if !option.deletion {
             let old_identity = get(previous, prior_index)
-            let candidate = candidate_at(candidates, option.path, old_identity.kind, option.name)
+            let candidate = candidate_at(candidates, option.path, old_identity.kind, option.name, option.key)
             if candidate < 0 || get(selected, candidate) != "" {
                 return Result.Err("--move target must be one unmatched declaration of the same kind")
             }
@@ -379,7 +393,7 @@ fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
         index = index + 1
     }
     if remaining_old > 0 && remaining_new > 0 {
-        return Result.Err("possible move or rename: use --move ID NEW_FILE NEW_NAME, or --delete ID before assigning new identities")
+        return Result.Err("possible move, rename or signature edit: use --move ID NEW_FILE NEW_NAME KEY, or --delete ID before assigning new identities; scan DIR lists keys")
     }
     let identities = new[Identity]()
     var next = loaded.next
@@ -405,6 +419,7 @@ fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
                 path = candidate.path
                 kind = candidate.kind
                 name = candidate.name
+                key = candidate.key
             })
         index = index + 1
     }
@@ -423,4 +438,17 @@ fn refresh(directory Text, options List[Resolution]) Result[Text, Text] {
 
 fn refresh_command(args List[Text]) Result[Text, Text] {
     refresh(get(args, 2), resolutions(args, 3)?)
+}
+
+fn scan(directory Text) Result[Text, Text] {
+    let candidates = declarations(read_files(directory)?)?
+    var output = ""
+    var index = 0
+    while index < length(candidates) {
+        let candidate = get(candidates, index)
+        output = concat(output, concat(kind_name(candidate.kind), concat(" ", concat(candidate.name,
+                    concat(" ", concat(candidate.path, concat(" ", concat(candidate.key, "\n"))))))))
+        index = index + 1
+    }
+    Result.Ok(output)
 }
