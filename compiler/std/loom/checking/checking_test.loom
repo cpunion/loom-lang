@@ -45,7 +45,7 @@ test fn type_mismatches_name_types_and_only_unused_values_suggest_discard() {
 }
 
 test fn recursive_data_and_checked_control_flow() {
-    let program = accepted("enum Tree[T] { Leaf(T) Branch(List[Tree[T]]) }\nrecord Pair[A, B] { first A second B }\nfn first[A, B](pair Pair[A, B]) A { pair.first }\nfn inspect(tree Tree[Int]) Int { match tree { Tree.Leaf(value) => value\nTree.Branch(_) => 0 } }\nfn main() { var count = 0\nwhile count < 3 { count = count + 1 }\nlet pair = Pair { second = true first = count }\nassert first(pair) == 3\nassert inspect(Tree.Leaf(7)) == 7 }")
+    let program = accepted("enum Tree[T] { Leaf(T) Branch(List[Tree[T]]) }\nrecord Pair[A, B] { first A; second B }\nfn first[A, B](pair Pair[A, B]) A { pair.first }\nfn inspect(tree Tree[Int]) Int { match tree { Tree.Leaf(value) => value\nTree.Branch(_) => 0 } }\nfn main() { var count = 0\nwhile count < 3 { count = count + 1 }\nlet pair = Pair { second = true first = count }\nassert first(pair) == 3\nassert inspect(Tree.Leaf(7)) == 7 }")
     assert length(program.functions) == 3
     let main = get(program.functions, program.entry)
     assert main.body.kind == ExprKind.Block
@@ -58,7 +58,7 @@ test fn recursive_data_and_checked_control_flow() {
     rejects("record A { next B } enum B { End More(A) }")
     rejects("record Grow[T] { children List[Grow[List[T]]] }")
     rejects("enum Choice { A B } fn f(x Choice) Int { match x { Choice.A => 1 } }")
-    rejects("record Pair { x Int y Int } fn main() { discard Pair { x = 1 } }")
+    rejects("record Pair { x Int; y Int } fn main() { discard Pair { x = 1 } }")
     rejects("fn main() { let number = 1\nnumber = 2 }")
     rejects("fn main() { if true { let number = 1 }\ndiscard number }")
     rejects("fn main() { 42 }")

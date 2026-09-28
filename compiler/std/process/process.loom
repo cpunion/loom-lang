@@ -18,7 +18,11 @@ intrinsic fn exit(code Int)
 
 pub enum SpawnError { EmptyArguments Failed Terminated InvalidOptions }
 pub enum ExitStatus { Exited(Int) Terminated }
-pub record Output { status ExitStatus stdout Bytes stderr Bytes }
+pub record Output {
+    status ExitStatus
+    stdout Bytes
+    stderr Bytes
+}
 pub enum EnvChange { Set(Text, Text) Remove(Text) }
 pub record Options {
     directory Option[Text]

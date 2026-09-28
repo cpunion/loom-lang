@@ -39,6 +39,12 @@ and inspect generated code, rather than adding indirection by default.
 
 ## Code and documentation
 
+Use expanded function and record definitions, with one field or statement per
+line. Record fields require a newline or `;` separator; prefer newlines in source
+and examples. `loom fmt` expands inline definitions and removes field semicolons.
+Compact source strings are useful in focused syntax tests, not as a production
+code style.
+
 Keep one checked semantic model and add layers only for demonstrated consumers.
 Put public algorithms and policy in Loom source; keep compiler/runtime
 primitives narrow. Unsafe runtime boundaries must explain the relevant pointer

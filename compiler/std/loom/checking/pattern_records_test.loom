@@ -1,5 +1,5 @@
 test fn record_patterns_use_nominal_fields_and_inferred_type_arguments() {
-    let header = "record Pair[T] { first Int second T }\n"
+    let header = "record Pair[T] { first Int; second T }\n"
     discard accepted(concat(header, "pub fn pick[T](v Pair[T]) T { match v { Pair { second = item, first = _ } => item } }"))
     discard accepted(concat(header, "pub fn pick(v Pair[Bool]) Int { match v { Pair { second = true, .. } => 1\nPair { second = false, .. } => 0 } }"))
     rejects(concat(header, "pub fn pick(v Pair[Bool]) Int { match v { Pair { second = true, .. } => 1 } }"))
@@ -7,7 +7,7 @@ test fn record_patterns_use_nominal_fields_and_inferred_type_arguments() {
     rejects(concat(header, "pub fn pick(v Pair[Bool]) Int { match v { Pair { first = a, first = b, .. } => a } }"))
     rejects(concat(header, "pub fn pick(v Pair[Bool]) Int { match v { Pair { absent = a, .. } => a } }"))
     rejects(concat(header, "pub fn pick(v Pair[Bool]) Int { match v { Pair { first = item, second = item } => item } }"))
-    rejects(concat(header, "record Other { first Int second Bool }\npub fn pick(v Pair[Bool]) Int { match v { Other { .. } => 0 } }"))
+    rejects(concat(header, "record Other { first Int; second Bool }\npub fn pick(v Pair[Bool]) Int { match v { Other { .. } => 0 } }"))
     rejects(concat(header, "pub fn pick(v Int) Int { match v { Pair { .. } => 0 } }"))
     let files = source_files("import helper.make\nfn main() { match make() { helper.Hidden { .. } => {} } }")
     push(files, source_file("helper", "record Hidden { value Int }\npub fn make() Hidden { Hidden { value = 1 } }", false))
@@ -18,7 +18,7 @@ test fn record_patterns_use_nominal_fields_and_inferred_type_arguments() {
 }
 
 test fn product_patterns_share_nested_coverage_and_first_match_selection() {
-    let header = "record Item { flag Bool value (Bool, Int) }\nenum Maybe { Some(Item) None }\n"
+    let header = "record Item { flag Bool; value (Bool, Int) }\nenum Maybe { Some(Item) None }\n"
     discard accepted(concat(header, "pub fn pick(v Maybe) Int { match v { Maybe.Some(Item { value = (true, n), flag = true }) => n\nMaybe.Some(Item { flag = false, .. }) => 1\nMaybe.Some(rest) => rest.value.1\nMaybe.None => 0 } }"))
     rejects(concat(header, "pub fn pick(v Item) Int { match v { Item { flag = true, .. } => 1\nItem { value = (true, _), flag = true } => 2\n_ => 0 } }"))
     discard accepted("record Empty {}\npub fn pick(v Empty) Int { match v { Empty {} => 1 } }")
@@ -26,7 +26,7 @@ test fn product_patterns_share_nested_coverage_and_first_match_selection() {
 }
 
 test fn omitted_record_fields_cannot_erase_task_or_resource_obligations() {
-    let header = "record Pending { ready Bool task Task[Int] }\n"
+    let header = "record Pending { ready Bool; task Task[Int] }\n"
     discard accepted(concat(header, "async fn pick(v Pending) Int { match v { Pending { ready = true, task = task } => task.await\nrest => rest.task.await } }"))
     rejects(concat(header, "async fn pick(v Pending) { match v { Pending { ready = true, .. } => {}\nrest => { discard rest.task.await } } }"))
     rejects(concat(header, "async fn pick(v Pending) { match v { Pending { ready = _, task = _ } => {} } }"))

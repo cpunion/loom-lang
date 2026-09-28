@@ -4,8 +4,16 @@ import std.file.read_bytes
 import std.hash.sha256.hex
 import std.list.sorted
 
-record TreeFile { path Text object Text }
-record SnapshotEntry { path Text folded Text directory Bool digest Text }
+record TreeFile {
+    path Text
+    object Text
+}
+record SnapshotEntry {
+    path Text
+    folded Text
+    directory Bool
+    digest Text
+}
 
 fn snapshot_bytes(value Bytes, start Int, end Int) Bytes {
     let buffer = std.bytes.new()

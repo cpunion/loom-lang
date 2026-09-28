@@ -64,6 +64,7 @@ test fn punctuation_and_longest_operators() {
     symbol_is("[", Kind.LBracket)
     symbol_is("]", Kind.RBracket)
     symbol_is(",", Kind.Comma)
+    symbol_is(";", Kind.Semicolon)
     symbol_is(".", Kind.Dot)
     symbol_is("?", Kind.Question)
     symbol_is("=", Kind.Assign)
@@ -150,7 +151,6 @@ test fn decoded_strings() {
 }
 
 test fn lexical_failures() {
-    error_is("a;", "statements use newlines, not semicolons", 1, 2)
     error_is("a:", "write a type after its name without a colon", 1, 2)
     error_is("😀", "unsupported character", 0, 4)
     error_is("١", "unsupported character", 0, 2)

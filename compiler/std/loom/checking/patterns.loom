@@ -1,8 +1,17 @@
 // Checked source patterns lower to ordinary Match/If/Field/Let expressions.
 // variant -3 is a literal, -2 is a tuple/record, -1 is a wildcard or binding; nonnegative IDs are enum
 // variants. Binding locals are allocated once before checking each arm body.
-record CheckedPattern { source Node ty Int variant Int local Int children List[CheckedPattern] }
-record PatternScope { context Context pattern CheckedPattern }
+record CheckedPattern {
+    source Node
+    ty Int
+    variant Int
+    local Int
+    children List[CheckedPattern]
+}
+record PatternScope {
+    context Context
+    pattern CheckedPattern
+}
 
 // Flat matches, nested decisions and editor scopes share nominal lookup and
 // visibility. The flat path need not allocate a recursive pattern tree.

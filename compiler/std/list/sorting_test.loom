@@ -29,7 +29,11 @@ test fn sorting_empty_singleton_and_reverse_leave_input_unchanged() {
     }
 }
 
-record SortingEntry { key Int order Int shared List[Int] }
+record SortingEntry {
+    key Int
+    order Int
+    shared List[Int]
+}
 
 fn allocating_less(left SortingEntry, right SortingEntry) Bool {
     let description = concat(to_text(left.order), to_text(right.order))
@@ -73,7 +77,11 @@ test fn stable_sorting_and_allocating_comparisons_agree_at_compile_time() {
     assert get(original, 1).order == 1
 }
 
-record SortingSnapshot { key Int source List[SortingSnapshot] comparisons List[Int] }
+record SortingSnapshot {
+    key Int
+    source List[SortingSnapshot]
+    comparisons List[Int]
+}
 
 fn snapshot_less(left SortingSnapshot, right SortingSnapshot) Bool {
     if length(left.comparisons) == 0 {

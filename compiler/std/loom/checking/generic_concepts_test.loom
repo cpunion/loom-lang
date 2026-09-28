@@ -21,7 +21,7 @@ test fn generic_conformances_infer_nested_targets_and_specialize_defaults() {
 }
 
 test fn generic_associated_bindings_normalize_with_the_implementation_arguments() {
-    let definitions = "concept Source { type Item\nfn first(self Self) Self.Item\nfn copied(self Self) Self.Item { self.first() } }\nimpl Source for Bool { type Item = Text\nfn first(self Bool) Text { \"ok\" } }\nrecord Box[T] { value T }\nimpl[T Source] Source for Box[T] { type Item = T.Item\nfn first(self Box[T]) T.Item { self.value.first() } }\nrecord Cache[S Source] { source S value S.Item }\nfn cache[S Source](source S) Cache[S] { Cache { source = source value = source.copied() } }\n"
+    let definitions = "concept Source { type Item\nfn first(self Self) Self.Item\nfn copied(self Self) Self.Item { self.first() } }\nimpl Source for Bool { type Item = Text\nfn first(self Bool) Text { \"ok\" } }\nrecord Box[T] { value T }\nimpl[T Source] Source for Box[T] { type Item = T.Item\nfn first(self Box[T]) T.Item { self.value.first() } }\nrecord Cache[S Source] { source S; value S.Item }\nfn cache[S Source](source S) Cache[S] { Cache { source = source value = source.copied() } }\n"
     discard accepted(concat(definitions, "fn main() { let value = cache(Box { value = Box { value = true } })\nassert value.value == \"ok\"\nassert comptime { cache(Box { value = true }).value } == \"ok\" }"))
     rejects(concat(definitions, "fn hidden[T](value Cache[Box[T]]) {}"))
     rejects(concat(definitions, "fn main() { discard cache(Box { value = 1 }) }"))
@@ -30,7 +30,7 @@ test fn generic_associated_bindings_normalize_with_the_implementation_arguments(
 }
 
 test fn generic_conformance_overlap_uses_two_sided_unification_not_bound_ranking() {
-    let definitions = "concept C {}\nconcept D {}\nconcept E {}\nrecord Pair[A, B] { first A second B }\n"
+    let definitions = "concept C {}\nconcept D {}\nconcept E {}\nrecord Pair[A, B] { first A; second B }\n"
     rejects(concat(definitions, "impl[T] C for Pair[T, Int] {}\nimpl[U] C for Pair[Bool, U] {}"))
     rejects(concat(definitions, "impl[T D] C for Pair[T, T] {}\nimpl[U E] C for Pair[U, U] {}"))
     rejects(concat(definitions, "impl[T] C for Pair[T, T] {}\nimpl C for Pair[Int, Int] {}"))

@@ -17,9 +17,25 @@ import std.file.write_text
 import std.file.read_bytes
 import std.int.to_text
 
-record LockedSource { owner Text name Text git Text rev Text tree Text }
-record Snapshot { base Text git Text rev Text tree Text }
-record Resolution { root Text tool Text locks List[LockedSource] snapshots List[Snapshot] }
+record LockedSource {
+    owner Text
+    name Text
+    git Text
+    rev Text
+    tree Text
+}
+record Snapshot {
+    base Text
+    git Text
+    rev Text
+    tree Text
+}
+record Resolution {
+    root Text
+    tool Text
+    locks List[LockedSource]
+    snapshots List[Snapshot]
+}
 
 fn append_text(output Bytes, value Text) {
     var index = 0

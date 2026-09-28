@@ -28,7 +28,7 @@ fn child(tree Node, index Int) Node { get(tree.children, index) }
 fn body(tree Node) Node { child(tree, length(tree.children) - 1) }
 
 test fn declarations_and_contracts() {
-    let tree = parsed("import app.math.add\npub record Pair[A, B] { first A second B }\nenum Outcome[T] { Empty Value(T) Partial(T, Int) }\npub type Positive = Int where self > 0\npub fn twice(value Int) Int\nrequires value >= 0\nensures result == value + value\n{ add(value, value) }\ntest fn example() { assert twice(2) == 4 }\nintrinsic fn copy[T](value T) T\n")
+    let tree = parsed("import app.math.add\npub record Pair[A, B] { first A; second B }\nenum Outcome[T] { Empty Value(T) Partial(T, Int) }\npub type Positive = Int where self > 0\npub fn twice(value Int) Int\nrequires value >= 0\nensures result == value + value\n{ add(value, value) }\ntest fn example() { assert twice(2) == 4 }\nintrinsic fn copy[T](value T) T\n")
     assert tree.kind == NodeKind.File
     assert length(tree.children) == 7
     assert child(tree, 0).value == "app.math.add"

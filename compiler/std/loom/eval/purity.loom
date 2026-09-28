@@ -8,7 +8,11 @@ import std.list.length
 import std.result.Result
 import std.text.concat
 
-record Effects { state State references List[Expr] calls List[Expr] }
+record Effects {
+    state State
+    references List[Expr]
+    calls List[Expr]
+}
 
 // Naming a callback does not execute it. Indirect calls add obligations for
 // every reachable reference of their checked shape, including later discoveries.

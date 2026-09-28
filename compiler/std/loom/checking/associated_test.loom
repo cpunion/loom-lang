@@ -1,5 +1,5 @@
 fn associated_definitions() Text {
-    "concept Source { type Item\nfn first(self Self) Self.Item }\nconcept Rank { type Item\nfn rank(self Self) Self.Item }\nimpl Source for Int { type Item = Int\nfn first(self Int) Self.Item { self } }\nimpl Source for Bool { type Item = Text\nfn first(self Bool) Text { \"bool\" } }\nimpl Rank for Bool { type Item = Int\nfn rank(self Bool) Int { 7 } }\nrecord Cache[S Source] { value S.Item source S }\nenum Cached[S Source] { Ready(Cache[S]) Empty }\nfn cached[S Source](source S) Cache[S] { Cache { value = source.first() source = source } }\nfn pair[S Source](first S.Item, source S) (S.Item, S.Item) { (first, source.first()) }\n"
+    "concept Source { type Item\nfn first(self Self) Self.Item }\nconcept Rank { type Item\nfn rank(self Self) Self.Item }\nimpl Source for Int { type Item = Int\nfn first(self Int) Self.Item { self } }\nimpl Source for Bool { type Item = Text\nfn first(self Bool) Text { \"bool\" } }\nimpl Rank for Bool { type Item = Int\nfn rank(self Bool) Int { 7 } }\nrecord Cache[S Source] { value S.Item; source S }\nenum Cached[S Source] { Ready(Cache[S]) Empty }\nfn cached[S Source](source S) Cache[S] { Cache { value = source.first() source = source } }\nfn pair[S Source](first S.Item, source S) (S.Item, S.Item) { (first, source.first()) }\n"
 }
 
 test fn associated_values_normalize_through_calls_data_and_compile_time_execution() {
@@ -48,7 +48,7 @@ test fn associated_bindings_and_projection_ambiguity_are_checked_before_emission
 }
 
 test fn associated_data_test_evidence_does_not_leak_into_production() {
-    let declarations = "concept C { type Item\nfn value(self Self) Self.Item }\nrecord Item {}\nrecord Box[T C] { value T result T.Item }\nfn box[T C](value T) Box[T] { Box { result = value.value() value = value } }\n"
+    let declarations = "concept C { type Item\nfn value(self Self) Self.Item }\nrecord Item {}\nrecord Box[T C] { value T; result T.Item }\nfn box[T C](value T) Box[T] { Box { result = value.value() value = value } }\n"
     let files = source_files(declarations)
     let testing = source_file("app", "impl C for Item { type Item = Int\nfn value(self Item) Int { 7 } }\ntest fn check_bound() { let value = box(Item {})\nassert value.result == 7 }", false)
     push(files, TestFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })

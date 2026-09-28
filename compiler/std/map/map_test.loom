@@ -1,7 +1,9 @@
 import std.text.concat
 import std.int.to_text
 
-record Collision { id Int }
+record Collision {
+    id Int
+}
 impl Equal for Collision {
     fn equals(self Collision, other Collision) Bool { self.id == other.id }
 }

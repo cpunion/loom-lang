@@ -14,8 +14,21 @@ import std.list.push
 import std.list.length
 import std.result.Result
 
-record Cell { local Int ty Int }
-record Capture { name Text ty Int mutable Bool is_scoped Bool constant Int cell Int field Int local Int binding Int }
+record Cell {
+    local Int
+    ty Int
+}
+record Capture {
+    name Text
+    ty Int
+    mutable Bool
+    is_scoped Bool
+    constant Int
+    cell Int
+    field Int
+    local Int
+    binding Int
+}
 record Lexical {
     cells List[Cell]
     outer List[Context]

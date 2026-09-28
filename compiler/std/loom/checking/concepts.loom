@@ -7,8 +7,20 @@ import std.list.push
 import std.list.length
 import std.result.Result
 
-record Concept { symbol Int methods List[Int] associated List[Int] bounds List[List[Int]] }
-record Implementation { symbol Int capability Int ty Int methods List[Int] associated List[Int] state Int }
+record Concept {
+    symbol Int
+    methods List[Int]
+    associated List[Int]
+    bounds List[List[Int]]
+}
+record Implementation {
+    symbol Int
+    capability Int
+    ty Int
+    methods List[Int]
+    associated List[Int]
+    state Int
+}
 
 fn type_parameters(env Environment, owner Int) List[Node] {
     let lexical = lexical_owner(env, owner)

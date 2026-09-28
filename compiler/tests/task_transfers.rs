@@ -43,7 +43,7 @@ import std.text.concat
 import std.time.sleep_ms
 import std.io.write_text
 
-record Packet { text Text values List[Int] }
+record Packet { text Text; values List[Int] }
 
 async fn number(value Int) Int { value }
 fn forward[T](task Task[T]) Task[T] { task }

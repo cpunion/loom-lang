@@ -1,5 +1,16 @@
-record PatternRow { patterns List[CheckedPattern] bindings List[Expr] body Expr arm Int }
-record PatternPlan { context Context source Node output Int used List[Bool] budget List[Int] }
+record PatternRow {
+    patterns List[CheckedPattern]
+    bindings List[Expr]
+    body Expr
+    arm Int
+}
+record PatternPlan {
+    context Context
+    source Node
+    output Int
+    used List[Bool]
+    budget List[Int]
+}
 
 fn pattern_step(plan PatternPlan, depth Int) Result[Bool, Failure] {
     if depth >= 64 || get(plan.budget, 0) == 0 { return Result.Err(error(plan.context, plan.source, "pattern decision budget exhausted")) }

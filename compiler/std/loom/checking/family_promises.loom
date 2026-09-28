@@ -1,6 +1,11 @@
 // Applications are normalization recipes, not conformance permission. Every
 // use proves its receiver and input requirements in the consuming scope.
-record FamilyApplication { member Int receiver Int arguments List[Int] result Int }
+record FamilyApplication {
+    member Int
+    receiver Int
+    arguments List[Int]
+    result Int
+}
 
 fn register_family_application(env Environment, member Int, receiver Int, arguments List[Int], output Int) {
     if length(arguments) == 0 || length(member_bounds(env, member)) == 0 { return }

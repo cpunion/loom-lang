@@ -12,7 +12,11 @@ import std.result.Result
 
 // Query-local IDs describe a checked function closure, not a compilable package.
 // Call/FunctionRef indices retain the complete closure's function ordering.
-pub record CheckedQuery { types List[Type] interfaces List[Interface] functions List[Function] }
+pub record CheckedQuery {
+    types List[Type]
+    interfaces List[Interface]
+    functions List[Function]
+}
 
 fn query_templates(env Environment) Result[Bool, Failure] {
     var index = 0

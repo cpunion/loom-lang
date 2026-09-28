@@ -1,7 +1,15 @@
 import std.loom.typed.contains_tasks
 
-record TaskVisitor { list Int owner Int function Int }
-record TaskVisits { program Program cache List[Int] helpers List[TaskVisitor] }
+record TaskVisitor {
+    list Int
+    owner Int
+    function Int
+}
+record TaskVisits {
+    program Program
+    cache List[Int]
+    helpers List[TaskVisitor]
+}
 
 // Cache completed reachability queries, including recursive List edges. Do not
 // cache intermediate negative results from a cycle in progress.

@@ -6,7 +6,16 @@ import std.list.length
 
 // Successful pure results within one check() basis only. Values stay internal;
 // materialization creates a new runtime graph on every source evaluation.
-record Computation { owner Int arguments List[Int] constants List[StaticValue] aliases List[Int] node Node expected Int ty Int value Value }
+record Computation {
+    owner Int
+    arguments List[Int]
+    constants List[StaticValue]
+    aliases List[Int]
+    node Node
+    expected Int
+    ty Int
+    value Value
+}
 
 fn computation(context Context, aliases List[Int], node Node, expected Int, ty Int) Int {
     var index = 0

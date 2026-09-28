@@ -461,6 +461,10 @@ timings; local variables remain conservatively rooted for the function.
 - Immutable records and tagged enums, nested exhaustive `match`, generic type and
   function parameters with inference or explicit arguments. Generic bodies are
   checked without hidden requirements; reachable instances use concrete layouts.
+  Record field declarations require newlines or `;` separators, for example
+  `record Point { x Int; y Int }`. `loom fmt` writes one field per line;
+  bare spaces and commas cannot separate declarations. Semicolons do not
+  terminate statements or separate constructor fields.
   Payload-free enums support equality within the same nominal type.
   Recursive data through `List` has a finite native layout; direct or mutual
   inline layout cycles reject.
@@ -1012,7 +1016,7 @@ impl Source for Int {
     type Item = Int
     fn item(self Int) Int { self }
 }
-record Cache[S Source] { source S value S.Item }
+record Cache[S Source] { source S; value S.Item }
 fn cached[S Source](source S) Cache[S] {
     Cache { value = source.item() source = source }
 }

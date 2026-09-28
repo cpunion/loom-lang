@@ -40,7 +40,7 @@ async function run() {
     await replace('fn main() { let 值 Int = true\ndiscard 值 }\n');
     const errors = await diagnostics(document.uri, values => values.some(value => value.source === 'loom'));
     assert.equal(errors[0].severity, vscode.DiagnosticSeverity.Error);
-    const source = 'record Receipt {amount Int quantity Int}\nfn amount() Int { 42 }\nfn main(){discard "é😀"\nlet value=amount()\nassert value==42}\n';
+    const source = 'record Receipt {amount Int; quantity Int}\nfn amount() Int { 42 }\nfn main(){discard "é😀"\nlet value=amount()\nassert value==42}\n';
     await replace(source);
     await diagnostics(document.uri, values => values.length === 0);
     const hovers = await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, document.positionAt(source.indexOf('value==')));

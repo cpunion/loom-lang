@@ -30,17 +30,48 @@ import std.list.length
 import std.result.Result
 import std.text.concat
 
-record Requirement { ty Int capability Int }
+record Requirement {
+    ty Int
+    capability Int
+}
 // Function constants use a source symbol plus concrete type arguments, never
 // an index into a transient emission/evaluation queue.
 // capture is a current-check computation index, or -1 for an uncaptured value.
-record StaticValue { ty Int known Bool number Int text Text arguments List[Int] capture Int }
-record StaticAlias { node Node ty Int }
+record StaticValue {
+    ty Int
+    known Bool
+    number Int
+    text Text
+    arguments List[Int]
+    capture Int
+}
+record StaticAlias {
+    node Node
+    ty Int
+}
 // compile_time contains ordered source parameter positions, empty for ordinary functions.
-record Signature { symbol Int parameters Int params List[Int] compile_time List[Int] result Int requirements List[Requirement] }
-record Instance { signature Int arguments List[Int] constants List[StaticValue] }
-record Validation { signature Int constants List[StaticValue] }
-record Association { receiver Int member Int arguments List[Int] }
+record Signature {
+    symbol Int
+    parameters Int
+    params List[Int]
+    compile_time List[Int]
+    result Int
+    requirements List[Requirement]
+}
+record Instance {
+    signature Int
+    arguments List[Int]
+    constants List[StaticValue]
+}
+record Validation {
+    signature Int
+    constants List[StaticValue]
+}
+record Association {
+    receiver Int
+    member Int
+    arguments List[Int]
+}
 record TypeState {
     phase Int
     task_width Int
@@ -77,9 +108,21 @@ record Environment {
     uses List[SlotUse]
 }
 // constant: -1 = runtime, >= 0 = static parameter, <= -2 = static alias.
-record Binding { name Text local Int constant Int previous Int }
-record Cleanup { body Expr previous Int }
-record Fact { local Int predicate Expr previous Int }
+record Binding {
+    name Text
+    local Int
+    constant Int
+    previous Int
+}
+record Cleanup {
+    body Expr
+    previous Int
+}
+record Fact {
+    local Int
+    predicate Expr
+    previous Int
+}
 record Context {
     lexical List[Lexical]
     env Environment
@@ -97,7 +140,10 @@ record Context {
     fact_head Int
     emit Bool
 }
-record Step { context Context expression Expr }
+record Step {
+    context Context
+    expression Expr
+}
 
 fn child(node Node, index Int) Node { get(node.children, index) }
 fn part(node Node, kind NodeKind) Int {

@@ -83,7 +83,8 @@ diagnostic, then restore the integer. Hover over an expression for its checked
 type or use **Go to Definition** on a resolved name. Use **Format Document** or format-on-save
 to keep fields, constructors, and statements readable as you edit.
 Canonical formatting puts each record field on its own line. Loom currently
-uses newlines, not semicolons; the formatter expands compact field declarations.
+uses newlines for statements. Record fields require newlines or `;` separators;
+the formatter expands compact declarations to one field per line.
 
 For a second exercise, open [loops/main.loom](../../compiler/examples/loops/main.loom).
 Run `target/loom test compiler/examples/loops` and `target/loom run compiler/examples/loops`

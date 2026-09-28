@@ -240,6 +240,10 @@ source-ordered field bindings and explicit `..` omission. Typed field projection
 and fallback reconstruction preserve shared data and Task obligations without new
 runtime or checked-artifact operations. Guards remain open. Compiler production
 sources retain flat patterns.
+Record field declarations require newlines or `;`, not adjacency or commas.
+Formatting expands declarations to one field per line and removes semicolons;
+statement and constructor syntax are unchanged. Current compiler/std sources
+use newlines, so this restriction needs no additional bootstrap checkpoint.
 Record `let`/`var` patterns now share that field validation and the existing tuple
 binding projections. Initializers evaluate once before any new name enters scope;
 mutable names rebind locally without changing record fields. Nested bindings,

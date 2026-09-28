@@ -24,13 +24,33 @@ import std.result.Result
 // environments/cells have allocation IDs and shared fields, like containers.
 // A dyn value keeps its concrete type ID in number and its receiver in items[0],
 // never a witness index tied to one staging or runtime function queue.
-pub record Value { ty Int number Int floating Float text Text items List[Value] }
-pub record Failure { span Span message Text }
+pub record Value {
+    ty Int
+    number Int
+    floating Float
+    text Text
+    items List[Value]
+}
+pub record Failure {
+    span Span
+    message Text
+}
 enum Control { Normal Return Break Continue }
-record Step { value Value control Control }
-record Frame { locals List[Value] calls Int }
+record Step {
+    value Value
+    control Control
+}
+record Frame {
+    locals List[Value]
+    calls Int
+}
 // Shared work/allocation counters and next container ID cover all calls.
-record State { program Program budget List[Int] partial Bool task_types List[Int] }
+record State {
+    program Program
+    budget List[Int]
+    partial Bool
+    task_types List[Int]
+}
 
 pub fn unknown() Value { Value { ty = -1 number = 0 floating = 0.0 text = "" items = new[Value]() } }
 pub fn number(value Int) Value { Value { ty = 1 number = value floating = 0.0 text = "" items = new[Value]() } }

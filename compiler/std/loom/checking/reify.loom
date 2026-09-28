@@ -16,7 +16,10 @@ import std.int.to_text
 import std.float.to_text
 import std.result.Result
 
-record ReifyObject { value Value local Int }
+record ReifyObject {
+    value Value
+    local Int
+}
 record Reification {
     context Context
     node Node

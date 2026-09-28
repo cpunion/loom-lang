@@ -68,6 +68,11 @@ A matching tail expression returns its value; a final `return` is unnecessary.
 A no-result function needs neither an explicit tail nor a final `return`.
 This does not silently discard a value-producing expression in that function.
 
+Record field declarations are separated by newlines, or by `;` when written
+on one line. Whitespace alone is not a separator. Formatting expands function
+and record bodies and puts each field on its own line; field semicolons are
+not general statement terminators.
+
 Overloads may differ by parameter type or arity. A call must have a determined
 selection; unresolved ambiguity requires explicit selection by the programmer.
 Overloading does not replace generics or variadic parameters.

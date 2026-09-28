@@ -9,11 +9,19 @@ import std.list.set
 
 // Equal keys must have equal hashes. Both operations must be pure, and keys
 // must retain their equality and hash while stored. Iteration order is unspecified.
-pub record Map[K Equal + Hash, V] { state State[K, V] }
+pub record Map[K Equal + Hash, V] {
+    state State[K, V]
+}
 
 // The private nominal wrapper keeps the mutable cell inaccessible to callers.
-record State[K, V] { cells List[Table[K, V]] }
-record Table[K, V] { slots List[Slot[K, V]] count Int used Int }
+record State[K, V] {
+    cells List[Table[K, V]]
+}
+record Table[K, V] {
+    slots List[Slot[K, V]]
+    count Int
+    used Int
+}
 enum Slot[K, V] { Empty Deleted Occupied(Int, K, V) }
 
 fn empty_table[K, V](capacity Int) Table[K, V] {

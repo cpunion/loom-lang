@@ -14,7 +14,10 @@ import std.list.set
 import std.list.length
 import std.result.Result
 
-record CallArguments { state State values List[Value] }
+record CallArguments {
+    state State
+    values List[Value]
+}
 
 fn empty_proof_program() Program {
     Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() test_names = new[Text]()

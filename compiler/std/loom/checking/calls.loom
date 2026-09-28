@@ -263,7 +263,10 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     Result.Ok(empty_inputs(context, inputs, node,
         expression(ExprKind.Variant, constructed_type(context, declaration, arguments, node)?, node, "", selected, values, all_fall(values))))
 }
-record TuplePackInput { inputs CallInputs arity Int }
+record TuplePackInput {
+    inputs CallInputs
+    arity Int
+}
 
 fn tuple_pack_input(context Context, inputs CallInputs, position Int) Result[TuplePackInput, Failure] {
     let node = get(inputs.nodes, position)
@@ -421,7 +424,12 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
     let value = invoke_selected(context, node, choose_overload(context, node, matches)?, inputs, values, probes)?
     Result.Ok(empty_inputs(context, inputs, node, value))
 }
-record OverloadSet { candidates List[Instance] widening List[Bool] exact Bool missing_requirement Bool }
+record OverloadSet {
+    candidates List[Instance]
+    widening List[Bool]
+    exact Bool
+    missing_requirement Bool
+}
 fn matching_overloads(context Context, node Node, options List[Int], types List[Node], values List[Expr], expected Int) Result[OverloadSet, Failure] {
     let matches = new[Instance]()
     let widening = new[Bool]()

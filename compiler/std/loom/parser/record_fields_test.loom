@@ -1,0 +1,19 @@
+test fn record_fields_require_newlines_or_semicolons() {
+    let tree = parsed("pub record Pair[T] { first T; second fn(Int) T; }\nrecord Rows { first List[(Int, Text)]\nsecond Bool\n}\nrecord Empty {}")
+    let pair = child(tree, 0)
+    assert pair.kind == NodeKind.Record
+    assert child(pair, 2).value == "first"
+    assert child(pair, 3).value == "second"
+    assert child(child(pair, 3), 0).kind == NodeKind.FunctionType
+    discard parsed("record Callbacks { first fn(); second fn() Int }")
+    discard parsed("record Pair { first Int; // first\r\nsecond Text;\r\n}")
+    let missing = rejected("record Pair { first Int second Text }")
+    assert missing.message == "expected a newline or ';' between record fields"
+    assert missing.span.start == 24 && missing.span.end == 30
+    assert rejected("record Pair { first Int, second Text }").message == missing.message
+    discard rejected("record Pair { first Int;; second Text }")
+    discard rejected("record Pair { ;first Int }")
+    discard rejected("fn f() { discard 1; discard 2 }")
+    discard rejected("fn f(a Int; b Int) {}")
+    discard rejected("fn f() { discard [1; 2] }")
+}

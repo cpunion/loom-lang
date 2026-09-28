@@ -1,6 +1,9 @@
 // A conformance is a source template plus its inferred type arguments. It is
 // not a new runtime value, nor permission cached on an interned type.
-record Conformance { implementation Int arguments List[Int] }
+record Conformance {
+    implementation Int
+    arguments List[Int]
+}
 
 fn target_parameters(env Environment, ty Int, seen List[Bool]) Bool {
     let shape = get(env.types, ty)

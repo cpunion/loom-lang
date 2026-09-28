@@ -58,5 +58,5 @@ test fn dynamic_returned_interfaces_expand_only_along_finite_used_chains() {
     let program = accepted("concept C { type Item\nfn next(self Self) dyn C[Item = List[Self.Item]] }\nrecord Chain[T] { following dyn C[Item = List[T]] }\nimpl[T] C for Chain[T] { type Item = T\nfn next(self Chain[T]) dyn C[Item = List[T]] { self.following } }\npub fn twice(value dyn C[Item = Int]) dyn C[Item = List[List[Int]]] { value.next().next() }")
     assert length(program.functions) == 1 && length(program.witnesses) == 0
     assert length(program.interfaces) < 16
-    discard accepted("concept C { type Item }\nrecord Tree { children List[Tree] value dyn C[Item = Int] }\npub fn identity(value Tree) Tree { value }")
+    discard accepted("concept C { type Item }\nrecord Tree { children List[Tree]; value dyn C[Item = Int] }\npub fn identity(value Tree) Tree { value }")
 }

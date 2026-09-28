@@ -14,14 +14,25 @@ fn import_decl(cursor Cursor) Result[Step, Diagnostic] {
     }
     Result.Ok(done(cursor, imported.rest, NodeKind.Import, imported.node.value, new[Node]()))
 }
+
 fn declaration(cursor Cursor) Result[Step, Diagnostic] {
     let public = word(cursor, "pub")
-    let rest = if public { next(cursor) } else { cursor }
+    let rest = if public {
+        next(cursor)
+    } else {
+        cursor
+    }
     let flags = new[Node]()
-    if public { push(flags, done(cursor, rest, NodeKind.Public, "", new[Node]()).node) }
-    if word(rest, "concept") { return concept_decl(cursor, rest, flags) }
+    if public {
+        push(flags, done(cursor, rest, NodeKind.Public, "", new[Node]()).node)
+    }
+    if word(rest, "concept") {
+        return concept_decl(cursor, rest, flags)
+    }
     if word(rest, "impl") {
-        if public { return Result.Err(error(cursor, "impl blocks cannot be public")) }
+        if public {
+            return Result.Err(error(cursor, "impl blocks cannot be public"))
+        }
         return impl_decl(rest)
     }
     if word(rest, "record") || word(rest, "enum") || word(rest, "type") {
@@ -29,51 +40,74 @@ fn declaration(cursor Cursor) Result[Step, Diagnostic] {
     }
     function(cursor, rest, flags, public, false)
 }
+
 fn concept_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, Diagnostic] {
     let named = name(next(cursor))?
-    if at(named.rest, Kind.LBracket) { return Result.Err(error(named.rest, "concepts do not take type parameters")) }
+    if at(named.rest, Kind.LBracket) {
+        return Result.Err(error(named.rest, "concepts do not take type parameters"))
+    }
     var rest = newlines(expect(newlines(named.rest), Kind.LBrace, "'{' after the concept name")?)
     while !at(rest, Kind.RBrace) {
         if !word(rest, "fn") && !word(rest, "async") && !word(rest, "type") {
             return Result.Err(error(rest, "expected a concept method, associated type, or '}'"))
         }
-        let method = if word(rest, "type") { associated_type(rest, false)? }
-            else { function(rest, rest, new[Node](), false, true)? }
+        let method = if word(rest, "type") {
+            associated_type(rest, false)?
+        }
+        else {
+            function(rest, rest, new[Node](), false, true)?
+        }
         push(children, method.node)
         rest = newlines(method.rest)
     }
     Result.Ok(done(start, next(rest), NodeKind.Concept, named.node.value, children))
 }
+
 fn impl_decl(cursor Cursor) Result[Step, Diagnostic] {
     let parameters = type_parameters(next(cursor))?
     let concept_type = type_ref(parameters.rest)?
     let separator = newlines(concept_type.rest)
-    if !word(separator, "for") { return Result.Err(error(separator, "expected 'for' after the implemented concept")) }
+    if !word(separator, "for") {
+        return Result.Err(error(separator, "expected 'for' after the implemented concept"))
+    }
     let target = type_ref(newlines(next(separator)))?
     let children = two(concept_type.node, target.node)
     push(children, parameters.node)
     var rest = newlines(expect(newlines(target.rest), Kind.LBrace, "'{' after the implementation target")?)
     while !at(rest, Kind.RBrace) {
         let public = word(rest, "pub")
-        let begin = if public { next(rest) } else { rest }
+        let begin = if public {
+            next(rest)
+        } else {
+            rest
+        }
         let flags = new[Node]()
-        if public { push(flags, done(rest, begin, NodeKind.Public, "", new[Node]()).node) }
+        if public {
+            push(flags, done(rest, begin, NodeKind.Public, "", new[Node]()).node)
+        }
         if public && word(begin, "type") {
             return Result.Err(error(rest, "associated types inherit their owner's visibility"))
         }
-        let method = if word(begin, "type") { associated_type(begin, true)? }
-            else { function(rest, begin, flags, public, false)? }
+        let method = if word(begin, "type") {
+            associated_type(begin, true)?
+        }
+        else {
+            function(rest, begin, flags, public, false)?
+        }
         push(children, method.node)
         rest = newlines(method.rest)
     }
     Result.Ok(done(cursor, next(rest), NodeKind.Impl, "", children))
 }
+
 fn associated_type(cursor Cursor, implementation Bool) Result[Step, Diagnostic] {
     let named = name(next(cursor))?
     let parameters = type_parameters(named.rest)?
     var rest = parameters.rest
     let children = new[Node]()
-    if length(parameters.node.children) != 0 { push(children, parameters.node) }
+    if length(parameters.node.children) != 0 {
+        push(children, parameters.node)
+    }
     if !implementation && at(rest, Kind.Name) && !reserved(token(rest).value) {
         let start = rest
         let bounds = new[Node]()
@@ -83,7 +117,9 @@ fn associated_type(cursor Cursor, implementation Bool) Result[Step, Diagnostic] 
             push(bounds, bound.node)
             rest = bound.rest
             more = at(rest, Kind.Plus)
-            if more { rest = newlines(next(rest)) }
+            if more {
+                rest = newlines(next(rest))
+            }
         }
         push(children, done(start, rest, NodeKind.Bounds, "", bounds).node)
     }
@@ -97,6 +133,7 @@ fn associated_type(cursor Cursor, implementation Bool) Result[Step, Diagnostic] 
     }
     Result.Ok(done(cursor, rest, NodeKind.AssociatedType, named.node.value, children))
 }
+
 fn data_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, Diagnostic] {
     let named = name(next(cursor))?
     let parameters = type_parameters(named.rest)?
@@ -134,11 +171,28 @@ fn data_decl(start Cursor, cursor Cursor, children List[Node]) Result[Step, Diag
         }
         push(children, parsed.node)
         rest = parsed.rest
-        if at(rest, Kind.Comma) { rest = next(rest) }
+        if is_record {
+            if at(rest, Kind.Semicolon) {
+                rest = next(rest)
+            } else {
+                if !at(rest, Kind.Newline) && !at(rest, Kind.RBrace) {
+                    return Result.Err(error(rest, "expected a newline or ';' between record fields"))
+                }
+            }
+        } else {
+            if at(rest, Kind.Comma) {
+                rest = next(rest)
+            }
+        }
         rest = newlines(rest)
     }
-    Result.Ok(done(start, next(rest), if is_record { NodeKind.Record } else { NodeKind.Enum }, named.node.value, children))
+    Result.Ok(done(start, next(rest), if is_record {
+                NodeKind.Record
+            } else {
+                NodeKind.Enum
+            }, named.node.value, children))
 }
+
 fn function(start Cursor, cursor Cursor, children List[Node], public Bool, prototype Bool) Result[Step, Diagnostic] {
     var rest = cursor
     let is_test = word(rest, "test")
@@ -156,7 +210,9 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool, proto
         push(children, done(rest, next(rest), NodeKind.Intrinsic, "", new[Node]()).node)
         rest = next(rest)
     }
-    if public && is_test { return Result.Err(error(rest, "test functions cannot be public")) }
+    if public && is_test {
+        return Result.Err(error(rest, "test functions cannot be public"))
+    }
     if is_intrinsic && is_test {
         return Result.Err(error(rest, "intrinsic declarations cannot be tests"))
     }
@@ -173,10 +229,14 @@ fn function(start Cursor, cursor Cursor, children List[Node], public Bool, proto
 
 fn function_contents(start Cursor, cursor Cursor, children List[Node], name Text, is_intrinsic Bool, prototype Bool) Result[Step, Diagnostic] {
     var rest = cursor
-    if !is_intrinsic && !prototype { rest = newlines(rest) }
+    if !is_intrinsic && !prototype {
+        rest = newlines(rest)
+    }
     if at(rest, Kind.LParen) || (at(rest, Kind.Name) && !word(rest, "requires") && !word(rest, "ensures")) {
         let ty = type_ref(rest)?
-        if ty.node.value == "Unit" { return Result.Err(error(rest, "omit the Unit return annotation")) }
+        if ty.node.value == "Unit" {
+            return Result.Err(error(rest, "omit the Unit return annotation"))
+        }
         push(children, done(rest, ty.rest, NodeKind.ReturnType, "", one(ty.node)).node)
         rest = ty.rest
     }
@@ -184,7 +244,11 @@ fn function_contents(start Cursor, cursor Cursor, children List[Node], name Text
         while word(newlines(rest), "requires") || word(newlines(rest), "ensures") {
             let clause = newlines(rest)
             let condition = expr(next(clause), 0, false, false)?
-            let kind = if word(clause, "requires") { NodeKind.Requires } else { NodeKind.Ensures }
+            let kind = if word(clause, "requires") {
+                NodeKind.Requires
+            } else {
+                NodeKind.Ensures
+            }
             push(children, done(clause, condition.rest, kind, "", one(condition.node)).node)
             rest = condition.rest
         }
@@ -207,7 +271,11 @@ fn function_contents(start Cursor, cursor Cursor, children List[Node], name Text
     rest = newlines(rest)
     while word(rest, "requires") || word(rest, "ensures") {
         let condition = expr(next(rest), 0, false, false)?
-        let kind = if word(rest, "requires") { NodeKind.Requires } else { NodeKind.Ensures }
+        let kind = if word(rest, "requires") {
+            NodeKind.Requires
+        } else {
+            NodeKind.Ensures
+        }
         push(children, done(rest, condition.rest, kind, "", one(condition.node)).node)
         rest = newlines(condition.rest)
     }
@@ -221,7 +289,9 @@ fn block(cursor Cursor) Result[Step, Diagnostic] {
     var rest = newlines(expect(start, Kind.LBrace, "'{'")?)
     let statements = new[Node]()
     while !at(rest, Kind.RBrace) {
-        if at(rest, Kind.Eof) { return Result.Err(error(rest, "expected '}' to close the block")) }
+        if at(rest, Kind.Eof) {
+            return Result.Err(error(rest, "expected '}' to close the block"))
+        }
         let parsed = statement(rest)?
         push(statements, parsed.node)
         rest = parsed.rest
@@ -234,10 +304,15 @@ fn block(cursor Cursor) Result[Step, Diagnostic] {
     }
     Result.Ok(done(start, next(rest), NodeKind.Block, "", statements))
 }
+
 fn statement(cursor Cursor) Result[Step, Diagnostic] {
     var rest = cursor
     if word(rest, "break") || word(rest, "continue") {
-        let kind = if word(rest, "break") { NodeKind.Break } else { NodeKind.Continue }
+        let kind = if word(rest, "break") {
+            NodeKind.Break
+        } else {
+            NodeKind.Continue
+        }
         return Result.Ok(done(cursor, next(rest), kind, "", new[Node]()))
     }
     if word(rest, "defer") {
@@ -254,11 +329,23 @@ fn statement(cursor Cursor) Result[Step, Diagnostic] {
         return Result.Ok(done(cursor, body.rest, NodeKind.ComptimeFor, binding.node.value, two(values.node, body.node)))
     }
     if word(rest, "let") || word(rest, "var") || word(rest, "scoped") {
-        let kind = if word(rest, "scoped") { NodeKind.Scoped } else { if word(rest, "let") { NodeKind.Let } else { NodeKind.Var } }
+        let kind = if word(rest, "scoped") {
+            NodeKind.Scoped
+        } else {
+            if word(rest, "let") {
+                NodeKind.Let
+            } else {
+                NodeKind.Var
+            }
+        }
         if kind == NodeKind.Scoped && at(next(rest), Kind.LParen) {
             return Result.Err(error(next(rest), "scoped requires one named binding"))
         }
-        let named = if kind == NodeKind.Scoped { name(next(rest))? } else { pattern_at(next(rest), 0, true, true)? }
+        let named = if kind == NodeKind.Scoped {
+            name(next(rest))?
+        } else {
+            pattern_at(next(rest), 0, true, true)?
+        }
         rest = named.rest
         if kind == NodeKind.Scoped && (named.node.value == "_" || at(rest, Kind.Comma)) {
             return Result.Err(error(next(cursor), "scoped requires one named binding"))
@@ -269,7 +356,11 @@ fn statement(cursor Cursor) Result[Step, Diagnostic] {
             return Result.Ok(done(cursor, value.rest, NodeKind.Destructure, token(cursor).value, two(named.node, value.node)))
         }
         if at(rest, Kind.Comma) || named.node.kind == NodeKind.Tuple {
-            let names = if at(rest, Kind.Comma) { one(named.node) } else { named.node.children }
+            let names = if at(rest, Kind.Comma) {
+                one(named.node)
+            } else {
+                named.node.children
+            }
             while at(rest, Kind.Comma) {
                 rest = newlines(next(rest))
                 let binding = pattern_at(rest, 0, true, true)?
@@ -296,8 +387,14 @@ fn statement(cursor Cursor) Result[Step, Diagnostic] {
         return Result.Ok(done(cursor, value.rest, kind, named.node.value, children))
     }
     if word(rest, "return") || word(rest, "assert") || word(rest, "discard") {
-        let kind = if word(rest, "return") { NodeKind.Return } else {
-            if word(rest, "assert") { NodeKind.Assert } else { NodeKind.Discard }
+        let kind = if word(rest, "return") {
+            NodeKind.Return
+        } else {
+            if word(rest, "assert") {
+                NodeKind.Assert
+            } else {
+                NodeKind.Discard
+            }
         }
         rest = next(rest)
         let empty = at(rest, Kind.Newline) || at(rest, Kind.RBrace) || at(rest, Kind.Eof)
