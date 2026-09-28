@@ -96,7 +96,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
     match operation {
         Primitive::FloatFormat
         | Primitive::TaskRun
-        | Primitive::TaskFileReadResult
+        | Primitive::TaskBytesResult
         | Primitive::TextConcat
         | Primitive::TextSlice
         | Primitive::ArgText
@@ -126,6 +126,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TaskWaitTimer
         | Primitive::TaskWaitSocket
         | Primitive::TaskWaitFileRead
+        | Primitive::TaskWaitResolve
         | Primitive::TaskWaitFileWrite
         | Primitive::TaskWaitFileWriteBytes
         | Primitive::TaskFileResult

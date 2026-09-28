@@ -614,6 +614,14 @@ impl Converter<'_> {
                     return Err("checked task observation result type mismatch".into());
                 }
             }
+            Primitive::TaskWaitResolve => {
+                if arguments[0].ty != Type::Text
+                    || arguments[1].ty != Type::Int
+                    || result != Type::Bool
+                {
+                    return Err("checked resolve wait signature mismatch".into());
+                }
+            }
             Primitive::TaskWaitFileOpen => {
                 if arguments[0].ty != Type::Text
                     || arguments[1].ty != Type::Bool
@@ -662,9 +670,9 @@ impl Converter<'_> {
                     return Err("checked file result requires Int".into());
                 }
             }
-            Primitive::TaskFileReadResult => {
+            Primitive::TaskBytesResult => {
                 if arguments[0].ty != Type::Bytes || result != Type::Int {
-                    return Err("checked file read result requires Bytes and returns Int".into());
+                    return Err("checked worker bytes result requires Bytes and returns Int".into());
                 }
             }
             Primitive::TaskWaitTimer => {
@@ -1403,7 +1411,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_wait_file_write" => P::TaskWaitFileWrite,
         "task_wait_file_write_bytes" => P::TaskWaitFileWriteBytes,
         "task_file_result" => P::TaskFileResult,
-        "task_file_read_result" => P::TaskFileReadResult,
+        "task_bytes_result" => P::TaskBytesResult,
+        "task_wait_resolve" => P::TaskWaitResolve,
         "task_wait_file_open" => P::TaskWaitFileOpen,
         "task_wait_file_close" => P::TaskWaitFileClose,
         "task_file_open_result" => P::TaskFileOpenResult,
@@ -1466,7 +1475,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskCancelBegin
         | P::FaultText
         | P::TaskRun => 1,
-        P::TaskWaitTimer | P::TaskFileReadResult | P::TaskWaitFileClose | P::FileAbort => 1,
+        P::TaskWaitTimer | P::TaskBytesResult | P::TaskWaitFileClose | P::FileAbort => 1,
         P::TextByte
         | P::TextConcat
         | P::TextEqual
@@ -1483,6 +1492,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskDrain
         | P::TaskCleanupPush
         | P::TaskWaitFileRead
+        | P::TaskWaitResolve
         | P::TaskWaitFileOpen
         | P::TaskWaitSocket
         | P::PathRename => 2,

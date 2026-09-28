@@ -138,6 +138,7 @@ fn source_tcp_check_build_test_run_under_forced_gc() {
         assert!(llvm.contains("loom_rt_task_wait_socket"));
         assert!(llvm.contains("loom_rt_socket_read"));
         assert!(llvm.contains("loom_rt_socket_write_bytes"));
+        assert!(!llvm.contains("loom_rt_task_wait_resolve"));
     }
 }
 

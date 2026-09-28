@@ -1,0 +1,20 @@
+test async fn hostname_connect_uses_local_resolution_and_real_sockets() {
+    assert match exchange().await {
+        Result.Ok(value) => value == 42
+        Result.Err(_) => false
+    }
+    assert match connect("", 80).await {
+        Result.Err(error) => error == TcpError.Resolve
+        Result.Ok(stream) => {
+            discard close_stream(stream)
+            false
+        }
+    }
+    assert match connect("127.0.0.1", 0).await {
+        Result.Err(error) => error == TcpError.Connect
+        Result.Ok(stream) => {
+            discard close_stream(stream)
+            false
+        }
+    }
+}

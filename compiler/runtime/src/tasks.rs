@@ -23,8 +23,8 @@ type Resume = unsafe extern "C-unwind" fn(*mut u8) -> i64;
 type Constructor = unsafe extern "C-unwind" fn() -> u64;
 type CleanupCallback = unsafe extern "C-unwind" fn(*mut u8);
 
-#[path = "tasks_file_io.rs"]
-mod file_io;
+#[path = "tasks_workers.rs"]
+mod workers;
 
 #[path = "tasks_socket.rs"]
 mod socket;
@@ -108,7 +108,7 @@ struct Owner {
     reactor: OnceCell<Arc<Reactor>>,
     // Drop the reactor before the table's final socket handles.
     sockets: OnceCell<socket::Sockets>,
-    workers: OnceCell<file_io::Files>,
+    workers: OnceCell<workers::Workers>,
 }
 
 thread_local! {
@@ -128,13 +128,13 @@ impl Owner {
         Ok(self.reactor.get().unwrap())
     }
 
-    fn workers(&self) -> io::Result<&file_io::Files> {
+    fn workers(&self) -> io::Result<&workers::Workers> {
         if self.workers.get().is_none() {
             let count = std::thread::available_parallelism()
                 .map_or(1, usize::from)
                 .min(4);
-            if self.workers.set(file_io::Files::new(count)?).is_err() {
-                fatal("file workers initialized twice");
+            if self.workers.set(workers::Workers::new(count)?).is_err() {
+                fatal("I/O workers initialized twice");
             }
         }
         Ok(self.workers.get().unwrap())

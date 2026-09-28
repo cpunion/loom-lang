@@ -693,7 +693,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskWaitFileWrite
             | Primitive::TaskWaitFileWriteBytes
             | Primitive::TaskFileResult
-            | Primitive::TaskFileReadResult
+            | Primitive::TaskBytesResult
+            | Primitive::TaskWaitResolve
             | Primitive::TaskWaitFileOpen
             | Primitive::TaskWaitFileClose
             | Primitive::TaskFileOpenResult

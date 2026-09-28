@@ -2217,10 +2217,19 @@ the socket. Use `defer` to close after suspension, and cancel/drain child waits
 before closing a shared socket. The [loopback example](examples/tcp_loopback/main.loom)
 exercises O0/O2, forced GC, close, and cancellation.
 
-There is no DNS/name resolution, peer-address access, half-close, socket
-options, connect timeout policy, TLS, or structured OS-error details yet. Only
-numeric `host:port` or `[IPv6]:port` addresses are accepted; this is not a
-general network client API. General worker operations also remain open; the
+`std.net.dns.resolve(host, port).await` returns numeric socket addresses in OS
+resolver order, including hosts-file entries, as `Result[List[Text], ResolveError]`.
+`std.net.tcp.connect(host, port).await` tries those addresses sequentially and
+closes failed attempts. Resolution failures return `TcpError.Resolve`; exhausting
+the addresses returns `TcpError.Connect`. The single-argument `connect` and
+`listen` still take only numeric `host:port` or `[IPv6]:port` addresses.
+DNS shares the bounded file I/O worker pool and completion queue. Native workers
+never retain managed pointers; cancellation drains any running OS lookup before
+cleanup. See the [hostname example](examples/hostname_connect).
+
+There is no DNS cache, parallel address racing, peer-address access, half-close,
+socket options, connect timeout policy, TLS, or structured OS-error details yet.
+General worker operations also remain open; the
 [accepted design](../docs/rfcs/tasks.md) remains broader.
 
 `std.list.transfer.append(values, value)` returns the same shared List header;

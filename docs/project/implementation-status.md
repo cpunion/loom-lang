@@ -100,7 +100,7 @@ Arbitrary-arity heterogeneous tuple `all/settled` joins and two-argument
 homogeneous `any/race` joins are available. Tuple `.await` routes a typed tuple
 of Tasks through the trusted source `std.task.all` policy without a source
 import, including tuple bindings and call results; scalar Task `.await` is
-unchanged. DNS, TLS, and general worker APIs remain unfinished.
+unchanged. TLS and general worker APIs remain unfinished.
 
 Lexical `defer` and `scoped` cleanup now survive suspension. Loom rewrites captured
 locals into authoritative frame fields, including writes before an await or fault;
@@ -126,7 +126,13 @@ owner-local tokens; see the [loopback example](../../compiler/examples/tcp_loopb
 Connect checks socket error and peer state before parking and after writable
 readiness. Failure or cancellation closes its private pending token. Reads append
 to shared Bytes; writes retry partial and WouldBlock progress, but aliases can mutate
-pending write data. There is no DNS, peer address, half-close, connect timeout,
+pending write data. `std.net.dns.resolve(host, port)` now returns numeric addresses
+in OS order through the shared bounded I/O pool. Source `connect(host, port)`
+tries them sequentially, closing failed attempts; see the
+[hostname example](../../compiler/examples/hostname_connect). DNS inputs and results
+are native-owned until the owner copies results into rooted Bytes; Loom handles
+the result List and errors. Running OS resolution must finish before cancellation
+can drain. There is no DNS cache, parallel address racing, peer address, half-close, connect timeout,
 TLS, or structured OS-error detail yet. Source timer Tasks use the notification
 path. `std.file.tasks` adds byte/text reads and writes using lazily created
 native workers, capped at four threads per owner.

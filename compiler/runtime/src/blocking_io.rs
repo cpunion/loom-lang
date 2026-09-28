@@ -1,4 +1,4 @@
-//! Bounded native file workers. Jobs own only File/Vec values, never GC pointers.
+//! Bounded native I/O workers. Jobs own native values, never GC pointers.
 //! Queued cancellation drops inputs immediately; running cancellation drains the
 //! OS call before resource cleanup. Completion only publishes a wait identity.
 
@@ -6,6 +6,7 @@ use super::wait::{COMPLETION, Reactor, Registration};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::net::ToSocketAddrs;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -14,6 +15,7 @@ pub(super) enum Operation {
     Close(File),
     Read(File, usize),
     Write(File, Vec<u8>),
+    Resolve(String, u16),
     Failed,
     #[cfg(test)]
     Test(Box<dyn FnOnce() -> Outcome + Send>),
@@ -56,6 +58,22 @@ impl Operation {
                 }
             }
             Self::Write(mut file, input) => file.write(&input).map_or(-1, |count| count as i64),
+            Self::Resolve(host, port) => match (host.as_str(), port).to_socket_addrs() {
+                Ok(addresses) => {
+                    let mut count = 0;
+                    for address in addresses {
+                        // Canonical numeric socket addresses cannot contain a
+                        // newline. Preserve OS order; source owns List policy.
+                        if count > 0 {
+                            bytes.push(b'\n');
+                        }
+                        bytes.extend_from_slice(address.to_string().as_bytes());
+                        count += 1;
+                    }
+                    count
+                }
+                Err(_) => -1,
+            },
             Self::Failed => -1,
             #[cfg(test)]
             Self::Test(run) => return run(),
@@ -120,7 +138,7 @@ impl Job {
             operation
         };
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation.run()))
-            .unwrap_or_else(|_| super::fatal("panic in native file worker"));
+            .unwrap_or_else(|_| super::fatal("panic in native I/O worker"));
         *self.state.lock().unwrap() = State::Complete(outcome);
         self.finished.notify_all();
         // A cancelled registration simply discards this identity. A failed OS
@@ -130,7 +148,7 @@ impl Job {
             .notify_completion(self.registration, COMPLETION, 0)
             .is_err()
         {
-            super::fatal("failed to notify file completion");
+            super::fatal("failed to notify I/O completion");
         }
     }
 
@@ -138,7 +156,7 @@ impl Job {
         let mut state = self.state.lock().unwrap();
         match std::mem::replace(&mut *state, State::Taken) {
             State::Complete(outcome) => outcome,
-            _ => super::fatal("file result is not complete"),
+            _ => super::fatal("I/O result is not complete"),
         }
     }
 
@@ -178,26 +196,25 @@ impl Pool {
         };
         for _ in 0..count {
             let shared = pool.shared.clone();
-            pool.threads
-                .push(
-                    thread::Builder::new()
-                        .name("loom-file-io".into())
-                        .spawn(move || {
-                            loop {
-                                let job = {
-                                    let mut queue = shared.queue.lock().unwrap();
-                                    while queue.jobs.is_empty() && !queue.closed {
-                                        queue = shared.ready.wait(queue).unwrap();
-                                    }
-                                    if queue.closed {
-                                        return;
-                                    }
-                                    queue.jobs.pop_front().unwrap()
-                                };
-                                job.run();
-                            }
-                        })?,
-                );
+            pool.threads.push(
+                thread::Builder::new()
+                    .name("loom-io".into())
+                    .spawn(move || {
+                        loop {
+                            let job = {
+                                let mut queue = shared.queue.lock().unwrap();
+                                while queue.jobs.is_empty() && !queue.closed {
+                                    queue = shared.ready.wait(queue).unwrap();
+                                }
+                                if queue.closed {
+                                    return;
+                                }
+                                queue.jobs.pop_front().unwrap()
+                            };
+                            job.run();
+                        }
+                    })?,
+            );
         }
         Ok(pool)
     }
@@ -237,7 +254,7 @@ impl Drop for Pool {
         self.shared.ready.notify_all();
         for worker in self.threads.drain(..) {
             if worker.join().is_err() {
-                super::fatal("panic joining native file worker");
+                super::fatal("panic joining native I/O worker");
             }
         }
     }

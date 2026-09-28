@@ -189,9 +189,13 @@ fn external_parking(graph Graph, source Expr, start Int, loop Loop) Value {
             return Value { state = after expression = empty(source.span) }
         }
         let reading = source.text == "async_read"
+        let resolving = source.text == "async_resolve"
+        let bytes_result = reading || resolving
         let opening = source.text == "async_open"
         let closing = source.text == "async_close"
-        let wait_name = if reading {
+        let wait_name = if resolving {
+            "task_wait_resolve"
+        } else if reading {
             "task_wait_file_read"
         } else {
             if opening {
@@ -217,18 +221,18 @@ fn external_parking(graph Graph, source Expr, start Int, loop Loop) Value {
                 3
             }
         }
-        assert reading || opening || closing || source.text == "async_write" || source.text == "async_write_bytes"
+        assert bytes_result || opening || closing || source.text == "async_write" || source.text == "async_write_bytes"
         let park = state(graph)
         let after = state(graph)
         jump(graph, current, park)
-        let inputs = if reading {
+        let inputs = if bytes_result {
             pair(get(arguments, 0), get(arguments, 2))
         } else {
             arguments
         }
         finish(graph, park, Exit.Park, operation(wait_name, 2, source.span, inputs), edges(after), new[Arm]())
-        let output = operation(if reading {
-                "task_file_read_result"
+        let output = operation(if bytes_result {
+                "task_bytes_result"
             } else {
                 if opening {
                     "task_file_open_result"
@@ -236,7 +240,7 @@ fn external_parking(graph Graph, source Expr, start Int, loop Loop) Value {
                     "task_file_result"
                 }
             }, 1, source.span,
-            if reading {
+            if bytes_result {
                 one(get(arguments, 1))
             } else {
                 new[Expr]()

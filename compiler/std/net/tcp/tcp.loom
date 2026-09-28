@@ -1,5 +1,8 @@
 import std.result.Result
 import std.bytes.length
+import std.net.dns.resolve
+import std.list.length
+import std.list.get
 
 // Tokens are owner-local identities, never operating-system descriptors.
 // Copying a wrapper copies its identity, not the native socket: after close,
@@ -18,6 +21,7 @@ pub record Stream {
 
 pub enum TcpError {
     Listen
+    Resolve
     Connect
     Port
     Accept
@@ -44,7 +48,7 @@ intrinsic fn socket_close(token Int) Int
 
 async intrinsic fn socket_wait(token Int, interest Int)
 
-// Only numeric IPv4/IPv6 socket addresses are supported; no DNS.
+// Listening takes a numeric IPv4/IPv6 socket address.
 pub async fn listen(address Text) Result[Listener, TcpError] {
     let token = socket_listen(address)
     if token < 0 {
@@ -86,6 +90,29 @@ pub async fn connect(address Text) Result[Stream, TcpError] {
         }
         socket_wait(token, 2).await
     }
+}
+
+// Resolve a host, then try each address in OS order. Failed attempts close
+// before the next one starts. No implicit timeout or parallel address racing.
+pub async fn connect(host Text, port Int) Result[Stream, TcpError] {
+    let addresses = match std.net.dns.resolve(host, port).await {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            return Result.Err(TcpError.Resolve)
+        }
+    }
+    var index = 0
+    while index < std.list.length(addresses) {
+        match connect(std.list.get(addresses, index)).await {
+            Result.Ok(stream) => {
+                return Result.Ok(stream)
+            }
+            Result.Err(_) => {
+            }
+        }
+        index = index + 1
+    }
+    Result.Err(TcpError.Connect)
 }
 
 pub fn local_port(listener Listener) Result[Int, TcpError] {
