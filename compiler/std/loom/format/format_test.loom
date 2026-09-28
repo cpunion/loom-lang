@@ -39,6 +39,20 @@ fn round_trip(text Text) Text {
     output
 }
 
+test fn record_update_bases_format_as_a_final_field() {
+    assert round_trip("""
+        fn f(value Pair) Pair{Pair{first=1,..value}}
+        """) == """
+        fn f(value Pair) Pair {
+            Pair {
+                first = 1,
+                ..value
+            }
+        }
+
+        """
+}
+
 test fn record_semicolons_format_as_newlines_without_losing_comments() {
     assert round_trip("record Pair { first Int; second fn() Int; }") ==
     """

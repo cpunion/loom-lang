@@ -608,6 +608,46 @@ validates it through a constrained `Count`, and sums the integers from one to
 that count. `+0010` prints `55`; malformed or out-of-bound input reports an error
 and exits unsuccessfully. Its colocated tests also exercise both boundaries.
 
+A record initializer can use one final `..base` to fill fields not explicitly
+initialized:
+
+```loom
+record Range {
+    low Int
+    high Int
+}
+
+let original = Range { low = 1, high = 2 }
+let updated = Range {
+    low = 10
+    high = 20
+    ..original
+}
+```
+
+This constructs a new value; it does not mutate `original`. Explicit fields
+evaluate once in source order, then the base evaluates once, even if every
+field was replaced. The base must independently resolve to the same nominal
+record declaration. Generic arguments can change if all retained fields fit
+their new types; undetermined phantom arguments come from the base. Unknown
+or duplicate explicit fields reject. Managed fields keep their normal sharing;
+this is not a deep copy.
+
+A refined record may supply base fields, but the new record does not inherit
+its constraint. Use the existing checked boundary, such as
+`OrderedRange(Range { low = low, high = high, ..original })`, to establish the
+new invariant. Failed validation leaves the original value intact; other effects
+of the field/base expressions are not rolled back. Required function contracts
+still need proof. Constructing a new valid value supports multi-field changes
+without exposing an invalid intermediate value.
+
+Task-bearing bases transfer as whole values: all Task fields must still be
+available, and replacing a live Task field cannot silently discard it. MustScope
+record updates reject; use their explicit resource factories. NoSuspend operands
+cannot cross a later await. Updates work at compile time and lower to ordinary
+typed construction/projections without a new runtime operation. See the
+[record update example](examples/record_updates/main.loom).
+
 The [tuples example](examples/tuples/main.loom) covers heterogeneous results,
 exactly-once evaluation, and shared fields:
 

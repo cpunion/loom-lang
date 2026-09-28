@@ -1,0 +1,184 @@
+import std.list.push
+import std.list.length
+import std.result.Result
+import std.result.ConstraintError
+import std.text.concat
+
+record Pair {
+    first Int
+    second Int
+}
+
+record State[A, B] {
+    label Text
+    count A
+    items B
+}
+
+record Stamp[T] {
+    id Int
+}
+
+type Ordered = Pair where self.first <= self.second
+
+fn rename[A, B](value State[A, B], label Text) State[A, B] {
+    State {
+        label = label
+        ..value
+    }
+}
+
+fn changed(value Pair, first Int) Pair
+ensures result.first == first
+ensures result.second == old(value.second)
+{
+    Pair {
+        first = first
+        ..value
+    }
+}
+
+fn event(log List[Int], number Int) Int {
+    push(log, number)
+    number
+}
+
+fn original(log List[Int]) Pair {
+    discard event(log, 3)
+    Pair {
+        first = 10
+        second = 20
+    }
+}
+
+fn replace(value Ordered, first Int, second Int) Result[Ordered, ConstraintError] {
+    Ordered(Pair {
+            first = first
+            second = second
+            ..value
+        })
+}
+
+fn exercise() {
+    let shared = [1]
+    let source = State {
+        label = concat("old", " label")
+        count = 7
+        items = shared
+    }
+    let renamed = rename(source, concat("new", " label"))
+    let transformed = State {
+        count = true
+        ..renamed
+    }
+    push(transformed.items, 2)
+    assert source.label == "old label" && renamed.label == "new label"
+    assert transformed.count && source.items[1] == 2 && shared[1] == 2
+    let stamp = Stamp[Int] {
+        id = 1
+    }
+    let copied = Stamp {
+        ..stamp
+    }
+    assert copied.id == 1
+
+    let log List[Int] = []
+    let pair = Pair {
+        second = event(log, 1)
+        first = event(log, 2)
+        ..original(log)
+    }
+    assert pair.first == 2 && pair.second == 1
+    assert length(log) == 3 && log[0] == 1 && log[1] == 2 && log[2] == 3
+    var current = pair
+    let reader = fn() Int {
+        current.first
+    }
+    current = Pair {
+        first = 8
+        ..current
+    }
+    assert reader() == 8 && pair.first == 2
+    let after_effect = Pair {
+        first = {
+            current = Pair {
+                first = 9,
+                second = 10
+            }
+            11
+        }
+        ..current
+    }
+    assert after_effect.first == 11 && after_effect.second == 10
+    assert changed(pair, 5).second == 1
+    let constant = comptime {
+        let before = Pair {
+            first = 1,
+            second = 2
+        }
+        Pair {
+            first = 3,
+            ..before
+        }
+    }
+    assert constant.first == 3 && constant.second == 2
+
+    let ordered = Ordered(Pair {
+            first = 1,
+            second = 2
+        })
+    match replace(ordered, 10, 20) {
+        Result.Ok(value) => {
+            assert value.first == 10 && value.second == 20
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    match replace(ordered, 20, 10) {
+        Result.Err(ConstraintError.Rejected) => {
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+    assert ordered.first == 1 && ordered.second == 2
+}
+
+record Pending {
+    first Task[Int]
+    second Task[Text]
+    label Text
+}
+
+async fn item[T](value T) T {
+    value
+}
+
+async fn exercise_tasks() {
+    let before = Pending {
+        first = item(42)
+        second = item(concat("task", " result"))
+        label = "before"
+    }
+    let after = Pending {
+        label = item(concat("af", "ter")).await
+        ..before
+    }
+    assert after.label == "after"
+    assert after.first.await == 42
+    assert after.second.await == "task result"
+}
+
+async fn main() {
+    exercise()
+    exercise_tasks().await
+}
+
+test fn record_updates_preserve_values_order_sharing_and_constraints() {
+    exercise()
+}
+
+test async fn record_updates_transfer_tasks() {
+    exercise_tasks().await
+}

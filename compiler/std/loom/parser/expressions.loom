@@ -305,6 +305,19 @@ fn named_expr(cursor Cursor, records Bool) Result[Step, Diagnostic] {
         rest = newlines(next(rest))
         let children = one(types.node)
         while !at(rest, Kind.RBrace) {
+            if at(rest, Kind.Dot) {
+                let second = next(rest)
+                if !at(second, Kind.Dot) || token(rest).span.end != token(second).span.start {
+                    return Result.Err(error(rest, "expected '..' before a record base"))
+                }
+                let base = expr(next(second), 0, false, true)?
+                push(children, done(rest, base.rest, NodeKind.Spread, "", one(base.node)).node)
+                rest = newlines(base.rest)
+                if at(rest, Kind.Comma) {
+                    rest = newlines(next(rest))
+                }
+                return Result.Ok(done(cursor, expect(rest, Kind.RBrace, "'}' after the final record base")?, NodeKind.Construct, named.node.value, children))
+            }
             let field = name(rest)?
             let value = expr(expect(field.rest, Kind.Assign, "'=' after the field name")?, 0, false, true)?
             push(children, done(rest, value.rest, NodeKind.Field, field.node.value, one(value.node)).node)

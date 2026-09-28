@@ -1,0 +1,113 @@
+test fn record_updates_check_retained_fields_and_required_proofs() {
+    discard accepted("""
+        record Pair[A, B] {
+            first A
+            second B
+        }
+        fn copy[A, B](value Pair[A, B]) Pair[A, B] {
+            Pair { ..value }
+        }
+        fn change(value Pair[Int, Bool], first Text) Pair[Text, Bool] {
+            Pair { first = first, ..value }
+        }
+        fn proved(value Pair[Int, Bool], first Int) Pair[Int, Bool]
+        ensures result.first == first
+        ensures result.second == value.second
+        {
+            Pair { first = first, ..value }
+        }
+        """)
+    let prefix = """
+        record Pair[T] {
+            first T
+            second T
+        }
+
+        """
+    let invalid = new[Text]()
+    push(invalid, """
+        fn bad(value Pair[Int]) {
+            discard Pair { first = true, ..value }
+        }
+        """)
+    push(invalid, """
+        fn bad(value Pair[Int]) {
+            discard Pair { first = 1, first = 2, ..value }
+        }
+        """)
+    push(invalid, """
+        fn bad(value Pair[Int]) {
+            discard Pair { unknown = 1, ..value }
+        }
+        """)
+    push(invalid, """
+        fn bad() {
+            discard Pair { first = 1, second = 2, ..true }
+        }
+        """)
+    push(invalid, """
+        record Other {
+            first Int
+            second Int
+        }
+        fn bad(value Other) {
+            discard Pair { ..value }
+        }
+        """)
+    push(invalid, """
+        fn bad(value Pair[Int]) Pair[Int]
+        ensures result.first == value.first
+        {
+            Pair { first = 0, ..value }
+        }
+        """)
+    var index = 0
+    while index < length(invalid) {
+        rejects(concat(prefix, get(invalid, index)))
+        index = index + 1
+    }
+}
+
+test fn record_updates_cannot_drop_tasks_copy_resources_or_hide_suspension() {
+    rejects("""
+        record Work {
+            task Task[Int]
+        }
+        async fn item() Int {
+            1
+        }
+        async fn bad(value Work) {
+            let updated = Work { task = item(), ..value }
+            discard updated.task.await
+        }
+        """)
+    rejects("""
+        record Work {
+            task Task[Int]
+            label Int
+        }
+        async fn bad(value Work) {
+            let updated = Work { label = 1, ..value }
+            discard updated.task.await
+            discard value.task.await
+        }
+        """)
+    resource_reject(concat(resource_header(), """
+        fn bad() {
+            scoped value = Handle { ..make([0]) }
+        }
+        """))
+    suspension_reject(concat(suspension_header(), """
+        record Pair {
+            first Token
+            second Int
+        }
+        async fn bad() {
+            discard Pair {
+                first = token()
+                ..{ discard tick().await
+                    Pair { first = token(), second = 1 } }
+            }
+        }
+        """), "a NoSuspend operand is still pending; finish its operation before awaiting")
+}

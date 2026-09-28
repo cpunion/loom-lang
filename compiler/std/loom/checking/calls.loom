@@ -183,8 +183,10 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
         index = index + 1
     }
     let fields = new[Expr]()
+    let update = child(node, length(node.children) - 1).kind == NodeKind.Spread
+    let end = length(node.children) - if update { 1 } else { 0 }
     index = 1
-    while index < length(node.children) {
+    while index < end {
         let member = child(node, index)
         var field = -1
         var search = 0
@@ -200,6 +202,9 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
         discard infer(context.env, pattern, value.ty, arguments)
         push(fields, expression(ExprKind.Field, value.ty, member, "", field, expressions(value), value.falls))
         index = index + 1
+    }
+    if update {
+        return updated_record(context, node, declaration, shape, arguments, seen, fields)
     }
     if length(fields) != length(shape.fields) { return Result.Err(error(context, node, "initialize every record field")) }
     if !complete(arguments) { return Result.Err(error(context, node, "cannot infer record type arguments")) }

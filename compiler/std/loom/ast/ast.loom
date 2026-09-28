@@ -48,6 +48,9 @@ pub enum NodeKind {
 // children, with an optional final RestPattern for explicitly omitted fields.
 // Spread has one value/type child. TypePack names a variadic type parameter;
 // its children are the same explicit concept bounds as an ordinary parameter.
+// A Construct starts with TypeArguments, then ordered Fields and optionally
+// one final Spread for '..base'. It supplies fields not explicitly initialized;
+// the base expression evaluates once, after the explicit field expressions.
 // ComptimeFor is a statement with the element binding in value and children
 // [source Name, Block, optional IterationKey(name)]. The optional key precedes
 // the element in source: a record field name or a zero-based tuple/pack index.

@@ -78,6 +78,11 @@ fn main() {
         Disabled { other = true }
     }
     assert box.value == 7
+    let updated = Enabled {
+        value = box.value + 1
+        ..box
+    }
+    assert updated.value == 8
 }
 `;
   try {

@@ -1,0 +1,79 @@
+// An update is whole-value construction, not mutation of its base. One typed
+// tuple retains eager operands until construction, including Task/NoSuspend
+// obligations; no special flow rules or runtime representation are needed.
+fn updated_record(context Context, node Node, declaration Int, shape Type, arguments List[Int], seen List[Bool], fields List[Expr]) Result[Expr, Failure] {
+    let source = child(node, length(node.children) - 1)
+    let value = expr(context, child(source, 0), -1)?
+    let base = base_type(context.env, value.ty)
+    let previous = get(context.env.types, base)
+    if previous.kind != TypeKind.Record || previous.symbol != declaration {
+        return Result.Err(error(context, source, "record update base must have the same nominal record type"))
+    }
+    let snapshot = typed(context, source, value, base)?
+    if must_scope(context, value.ty)? {
+        return Result.Err(error(context, source, "record updates cannot copy a MustScope resource"))
+    }
+    var index = 0
+    while index < length(shape.fields) {
+        if !get(seen, index) {
+            discard infer(context.env, get(shape.fields, index).ty, get(previous.fields, index).ty, arguments)
+        }
+        index = index + 1
+    }
+    // Phantom parameters come from the base. Replaced fields may determine
+    // different arguments when every retained field permits the new types.
+    index = 0
+    while index < length(arguments) {
+        if get(arguments, index) < 0 {
+            set(arguments, index, get(previous.arguments, index))
+        }
+        index = index + 1
+    }
+    let ty = constructed_type(context, declaration, arguments, node)?
+    if must_scope(context, ty)? {
+        return Result.Err(error(context, node, "record updates cannot construct a MustScope resource"))
+    }
+    let elements = new[Int]()
+    let operands = new[Expr]()
+    index = 0
+    while index < length(fields) {
+        let field = get(fields, index)
+        let location = child(node, index + 1)
+        let target = substitute(context.env, declaration, get(shape.fields, field.index).ty, arguments, location)?
+        let checked = typed(context, location, get(field.children, 0), target)?
+        push(elements, target)
+        push(operands, expression(ExprKind.Field, target, location, "", index, expressions(checked), checked.falls))
+        index = index + 1
+    }
+    push(elements, base)
+    push(operands, expression(ExprKind.Field, base, source, "", index, expressions(snapshot), snapshot.falls))
+    let tuple = tuple_type(context.env, context.signature.symbol, node, elements)?
+    let saved = length(context.locals)
+    push(context.locals, Local { name = "" ty = tuple mutable = false is_scoped = false })
+    let reference = atom(ExprKind.Local, tuple, node, saved)
+    let retained = expression(ExprKind.Field, base, source, "", length(fields), expressions(reference), true)
+    let assembled = new[Expr]()
+    index = 0
+    while index < length(fields) {
+        let field = get(fields, index)
+        let location = child(node, index + 1)
+        let target = get(elements, index)
+        let input = expression(ExprKind.Field, target, location, "", index, expressions(reference), true)
+        push(assembled, expression(ExprKind.Field, target, location, "", field.index, expressions(input), true))
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.fields) {
+        if !get(seen, index) {
+            let target = substitute(context.env, declaration, get(shape.fields, index).ty, arguments, source)?
+            let input = expression(ExprKind.Field, get(previous.fields, index).ty, source, "", index, expressions(retained), true)
+            let checked = typed(context, source, input, target)?
+            push(assembled, expression(ExprKind.Field, target, source, "", index, expressions(checked), checked.falls))
+        }
+        index = index + 1
+    }
+    let inputs = expression(ExprKind.Record, tuple, node, "", -1, operands, all_fall(operands))
+    let bind = expression(ExprKind.Let, 0, node, "", saved, expressions(inputs), inputs.falls)
+    let output = expression(ExprKind.Record, ty, node, "", -1, assembled, all_fall(assembled))
+    Result.Ok(expression(ExprKind.Block, ty, node, "", -1, pair(bind, output), inputs.falls && output.falls))
+}
