@@ -293,7 +293,27 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
 }
 fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Result[Environment, Failure] {
     let input_state = new[BuildInputs]()
-    push(input_state, inputs)
+    let options = match build_option_snapshot(inputs.options) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            return Result.Err(Failure {
+                    source = 0
+                    diagnostic = Diagnostic {
+                        span = Span {
+                            start = 0
+                            end = 0
+                        }
+                        message = message
+                    }
+                })
+        }
+    }
+    push(input_state, BuildInputs {
+            options = options
+            files = inputs.files
+            requests = inputs.requests
+            read = inputs.read
+        })
     let env = Environment { inputs = input_state static_aliases = new[StaticAlias]() packs = new[PackInstance]() closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
         has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()

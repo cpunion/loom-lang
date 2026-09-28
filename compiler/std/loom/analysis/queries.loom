@@ -559,7 +559,11 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
 // closure. Global declaration or template errors still prevent a result.
 // Failure returns no facts, never a partially checked executable Program.
 pub fn inspect_independent(bindings std.loom.binding.Program, file Int, offset Int) Option[Inspection] {
-    match check_query(bindings, file, offset) {
+    inspect_independent(bindings, file, offset, build_inputs(no_input_reader))
+}
+
+pub fn inspect_independent(bindings std.loom.binding.Program, file Int, offset Int, inputs BuildInputs) Option[Inspection] {
+    match check_query(bindings, file, offset, inputs) {
         Result.Ok(data) => inspect_view(SemanticView {
                 bindings = bindings
                 data = data

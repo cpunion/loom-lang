@@ -237,8 +237,9 @@ keyed by checked inputs and actual backend/toolchain content. An independent
 trusted-local frontend cache now reuses successful whole-closure checks and
 lowered inputs, bound to compiler bytes and the complete loaded semantic basis.
 Source discovery/parsing, dependency verification and final linking still run.
-Tracked external build inputs, fine-grained persistent proof/effect reuse and
-per-package objects remain open.
+Tracked file snapshots and explicit build options now bind checking, editor
+queries, frontend-cache reuse and build receipts. Target metadata, fine-grained
+persistent proof/effect reuse and per-package objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic
 method calls into the existing direct-call path. Conditional conformance queries,
@@ -298,7 +299,9 @@ discard rules; nested names keep lexical scope and var mutability.
 Scalar literal patterns now reuse those decisions and ordinary equality, including
 nested Task payloads and finite Bool coverage. Named record patterns reuse the
 tuple product decisions, with explicit field omission and ordinary resource
-obligations. General guards remain later work. Heterogeneous tuple Task joins
+obligations. Boolean guards now preserve source order and false-path effects,
+with bindings and conditional Task transfer; they do not establish coverage.
+Guarded MustScope matches still reject. Heterogeneous tuple Task joins
 and tuple `.await` are implemented; dynamic List joins use the separate source
 policies above.
 Named record bindings now also use the direct tuple-destructuring path, sharing

@@ -774,12 +774,19 @@ incremental editor state or reusable per-definition summaries.
 `std.build.input_file(comptime path Text) Text` now embeds tracked UTF-8 snapshots
 relative to the declaring package, confined to its module. Reads happen during
 checking and lower to ordinary Text constants, with no new runtime/backend ABI.
-Frontend hits revalidate actual resolution/content; v2 build receipts bind
+Frontend hits revalidate actual resolution/content; build receipts bind
 requests and digests. CLI/editor explicitly supply a filesystem reader; public
 checking/analysis defaults remain filesystem-free and can consume detached
 in-memory snapshots. See [the example](../../compiler/examples/build_inputs/main.loom).
-Explicit environment/build options, target metadata and finer-grained persistent
-reuse remain open.
+Explicit `--build-option name=value` inputs now share this checking basis.
+`std.build.option` distinguishes missing from empty values and has an ordinary
+source fallback overload. Queries become constants before emission; no environment
+lookup or runtime operation is added. Options are application-wide, detached and
+canonicalized; duplicates reject. CLI and VS Code `loom.buildOptions` feed the same
+checks, member completion, hover, rename and import validation. Frontend-cache
+keys and public analysis freshness include the full option map. V3 receipts bind
+option names and value digests; values can still enter generated artifacts and
+must not contain secrets. Target metadata and finer-grained persistent reuse remain open.
 The [native basic benchmark](../../benchmarks/basic/README.md#managed-memory-lowering-repair)
 also records the managed-memory lowering repair, including same-session baseline
 comparisons for native kernels and whole compiler checks. Those measurements

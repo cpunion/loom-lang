@@ -19,6 +19,7 @@ record EditorOptions {
     query_path Text
     offset Int
     new_name Text
+    build_options List[BuildOption]
 }
 
 record EditorOutput {
@@ -100,6 +101,7 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     var query_path = ""
     var offset = -1
     var new_name = ""
+    let build_options = std.list.new[BuildOption]()
     let mode = get(args, 1)
     let query = mode == "editor-query" || mode == "editor-complete" ||
     mode == "editor-references" || mode == "editor-rename" || mode == "editor-auto-import"
@@ -107,7 +109,13 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     var index = 2
     while index < std.list.length(args) {
         let argument = get(args, index)
-        if argument == "--at" {
+        if argument == "--build-option" {
+            index = index + 1
+            if index == std.list.length(args) {
+                return Result.Err("--build-option needs a value")
+            }
+            std.list.push(build_options, build_option_argument(get(args, index))?)
+        } else if argument == "--at" {
             if !query || query_path != "" || index + 2 >= std.list.length(args) {
                 return Result.Err("editor queries require one --at source-path byte-offset")
             }
@@ -199,6 +207,7 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
             query_path = query_path
             offset = offset
             new_name = new_name
+            build_options = build_option_snapshot(build_options)?
         })
 }
 
@@ -273,18 +282,18 @@ fn editor_execute(args List[Text]) EditorOutput {
             return editor_error("query byte offset is outside the source")
         }
         if get(args, 1) == "editor-complete" {
-            return editor_completion(bound, index, options.offset, recovery.inserted)
+            return editor_completion(bound, index, options.offset, recovery.inserted, build_inputs(read_input, options.build_options))
         }
         if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
-            let inputs = build_inputs(read_input)
+            let inputs = build_inputs(read_input, options.build_options)
             return match check_with_inputs(bound, inputs) {
                 Result.Ok(program) => editor_symbols(options, bound, program, index, options.offset, inputs.files)
                 Result.Err(failed) => editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
             }
         }
-        return editor_query(bound, index, options.offset)
+        return editor_query(bound, index, options.offset, build_inputs(read_input, options.build_options))
     }
-    let inputs = build_inputs(read_input)
+    let inputs = build_inputs(read_input, options.build_options)
     match check_with_inputs(bound, inputs) {
         Result.Ok(_) => {
         }

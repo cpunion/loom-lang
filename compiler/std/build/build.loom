@@ -1,3 +1,25 @@
 // Embedded UTF-8 data, resolved relative to the declaring package. The compiler
 // records the snapshot; this call has no runtime filesystem operation.
 pub intrinsic fn input_file(comptime path Text) Text
+
+import std.option.Option
+
+intrinsic fn option_present(comptime name Text) Bool
+intrinsic fn option_text(comptime name Text) Text
+
+// Missing and explicitly empty values are distinct. The compiler receives
+// these inputs explicitly; this API never reads the process environment.
+pub fn option(comptime name Text) Option[Text] {
+    comptime if option_present(name) {
+        Option.Some(option_text(name))
+    } else {
+        Option.None()
+    }
+}
+
+pub fn option(comptime name Text, fallback Text) Text {
+    match option(name) {
+        Option.Some(value) => value
+        Option.None => fallback
+    }
+}

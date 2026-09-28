@@ -1597,6 +1597,38 @@ Result expansion is bounded too. Successful pure computations may be reused
 within one check after type/capture validation, but each use still reconstructs
 fresh runtime containers. This is not a persistent or incremental build cache.
 
+### Explicit build options
+
+```loom
+import std.build.option
+
+fn channel() Text {
+    option("app.channel", "development")
+}
+```
+
+Run `loom build --build-option app.channel=preview`. Repeat the flag for other
+names; duplicates reject instead of using argument order as precedence. Names
+start with an ASCII letter or `_`, followed by letters, digits, `_`, `-` or `.`.
+Values are Text, may be empty, and may contain `=`. Options apply to the complete
+selected application/dependency closure; qualified names avoid accidental collisions.
+
+`option(comptime name Text) Option[Text]` distinguishes absence from an empty
+value. `option(comptime name Text, fallback Text) Text` supplies a default through
+ordinary source code; like other function arguments, the fallback is eager.
+Options work in `comptime if`, pure compile-time evaluation and ordinary calls.
+The compiler substitutes constants; there is no runtime environment lookup.
+Environment-derived values must be passed explicitly by the calling shell/build
+step. Values can enter artifacts and are **not a secret channel**.
+
+`check`, `build`, `test`, `run`, and `emit-checked` accept the same options.
+Frontend-cache keys include the canonical option map. V3 build receipts include
+names and value digests. Public checking/analysis can supply `BuildInputs.options`
+without filesystem access; analysis snapshots and freshness checks include it.
+Editor requests use workspace `loom.buildOptions`. Target metadata is separate
+unfinished work, not inferred from option names. See the
+[runnable example](examples/build_options/main.loom).
+
 ### Tracked build inputs
 
 ```loom
@@ -1623,7 +1655,7 @@ digests, never file contents. Output/IR/receipt paths cannot replace a selected
 input. Embedded data is visible in the executable: do not use this for secrets.
 
 See [the runnable example](examples/build_inputs/main.loom). This first slice is
-text files only; explicit environment/build options and target metadata remain
+text files only; target metadata and binary build inputs remain
 future work. Network access and commands are not compile-time operations.
 
 Every branch must parse, but unselected `comptime if` branches impose no type or

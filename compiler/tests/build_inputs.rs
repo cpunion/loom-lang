@@ -66,7 +66,7 @@ fn snapshots_survive_runtime_deletion_but_recheck_contents_and_protect_outputs()
         assert_eq!(run.stdout, "first 雪\n".as_bytes());
     }
     let original_receipt = fs::read_to_string(&receipt).unwrap();
-    assert!(original_receipt.starts_with("loom-build-receipt 2\n"));
+    assert!(original_receipt.starts_with("loom-build-receipt 3\n"));
     assert!(original_receipt.contains("\ninput-count 1\ninput "));
     // Output/IR/receipt preflights also run on frontend cache hits.
     for flag in ["--output", "--emit-ir", "--receipt"] {

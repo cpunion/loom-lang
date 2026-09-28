@@ -64,7 +64,7 @@ fn completion_receiver(node Node, tokens List[Token], dot Span) Option[Node] {
     Option.None
 }
 
-fn complete_members(bindings std.loom.binding.Program, file Int, offset Int) Option[Completion] {
+fn complete_members(bindings std.loom.binding.Program, file Int, offset Int, inputs BuildInputs) Option[Completion] {
     if file < 0 || file >= length(bindings.files) {
         return Option.None
     }
@@ -100,7 +100,7 @@ fn complete_members(bindings std.loom.binding.Program, file Int, offset Int) Opt
     if receiver.kind == NodeKind.Type || receiver.kind == NodeKind.DynType {
         return qualified_completion(bindings, file, offset, span, receiver)
     }
-    let candidates = match member_candidates(bindings, file, span.start, receiver, slice(source.text, span.start, offset)) {
+    let candidates = match member_candidates(bindings, file, span.start, receiver, slice(source.text, span.start, offset), inputs) {
         Result.Ok(value) => match value {
             MemberQuery.Members(items) => items
             MemberQuery.Qualified => {
@@ -147,8 +147,12 @@ fn complete_members(bindings std.loom.binding.Program, file Int, offset Int) Opt
 // and preceding statements through the ordinary checker. Neither is proof of a
 // valid call/body. Never guess members from a matching declaration spelling.
 pub fn complete_at(bindings std.loom.binding.Program, file Int, offset Int) Option[Completion] {
+    complete_at(bindings, file, offset, build_inputs(no_input_reader))
+}
+
+pub fn complete_at(bindings std.loom.binding.Program, file Int, offset Int, inputs BuildInputs) Option[Completion] {
     match complete_names(bindings, file, offset) {
         Option.Some(value) => Option.Some(value)
-        Option.None => complete_members(bindings, file, offset)
+        Option.None => complete_members(bindings, file, offset, inputs)
     }
 }

@@ -16,6 +16,8 @@ import std.loom.checking.BuildInputs
 import std.loom.checking.build_inputs
 import std.loom.checking.no_input_reader
 import std.loom.project.BuildInput
+import std.loom.project.BuildOption
+import std.loom.project.same_build_options
 import std.loom.project.same_request
 import std.loom.checking.type_name
 import std.loom.typed.Program
@@ -36,6 +38,7 @@ pub record Analysis {
     bindings std.loom.binding.Program
     program std.loom.typed.Program
     inputs List[BuildInput]
+    options List[BuildOption]
 }
 pub record Expression {
     function Int
@@ -89,6 +92,11 @@ pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
 pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Result[Analysis, Failure] {
     let bindings = bind(snapshot(project), tests)?
     let detached = build_inputs(inputs.read)
+    var option = 0
+    while option < length(inputs.options) {
+        push(detached.options, get(inputs.options, option))
+        option = option + 1
+    }
     let files = detached.files
     var index = 0
     while index < length(inputs.files) {
@@ -96,7 +104,12 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
         index = index + 1
     }
     let program = check_with_inputs(bindings, detached)?
-    Result.Ok(Analysis { bindings = bindings program = program inputs = files })
+    Result.Ok(Analysis {
+            bindings = bindings
+            program = program
+            inputs = files
+            options = detached.options
+        })
 }
 
 // This checks the supplied project, not the filesystem. Reload first to detect
@@ -106,6 +119,13 @@ pub fn is_current(analysis Analysis, project Project, tests Bool) Bool {
     is_current_with_inputs(analysis, project, tests, new[BuildInput]())
 }
 pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, inputs List[BuildInput]) Bool {
+    is_current_with_inputs(analysis, project, tests, inputs, new[BuildOption]())
+}
+
+pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, inputs List[BuildInput], options List[BuildOption]) Bool {
+    if !same_build_options(analysis.options, options) {
+        return false
+    }
     if length(analysis.inputs) != length(inputs) { return false }
     var input = 0
     while input < length(inputs) {

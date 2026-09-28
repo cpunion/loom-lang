@@ -33,6 +33,10 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
             trusted_std = true
         })
     let inputs = build_inputs(no_input_reader)
+    push(inputs.options, BuildOption {
+            name = "app.mode"
+            value = "first"
+        })
     let request = InputRequest {
         root = "/app"
         source = "main.loom"
@@ -53,7 +57,15 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
         }
     }
     assert !is_current(analysis, project, false)
-    assert is_current_with_inputs(analysis, project, false, inputs.files)
+    assert !is_current_with_inputs(analysis, project, false, inputs.files)
+    assert is_current_with_inputs(analysis, project, false, inputs.files, inputs.options)
+    set(inputs.options, 0, BuildOption {
+            name = "app.mode"
+            value = "other"
+        })
+    assert get(analysis.options, 0).value == "first"
+    assert !is_current_with_inputs(analysis, project, false, inputs.files, inputs.options)
+    set(inputs.options, 0, get(analysis.options, 0))
     set(inputs.files, 0, BuildInput {
             request = request
             file = InputFile {
@@ -62,5 +74,5 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
             }
         })
     assert get(analysis.inputs, 0).file.text == "first"
-    assert !is_current_with_inputs(analysis, project, false, inputs.files)
+    assert !is_current_with_inputs(analysis, project, false, inputs.files, inputs.options)
 }

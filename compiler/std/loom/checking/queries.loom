@@ -39,7 +39,11 @@ fn query_templates(env Environment) Result[Bool, Failure] {
 // Generic/comptime source owners have no concrete query instance and return an
 // empty function list; no arbitrary type or static arguments are invented.
 pub fn check_query(source std.loom.binding.Program, file Int, offset Int) Result[CheckedQuery, Failure] {
-    let env = prepare(source)?
+    check_query(source, file, offset, build_inputs(no_input_reader))
+}
+
+pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs BuildInputs) Result[CheckedQuery, Failure] {
+    let env = prepare_with_inputs(source, inputs)?
     discard query_templates(env)?
     var selected = -1
     var index = 0

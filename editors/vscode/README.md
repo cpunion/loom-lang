@@ -60,6 +60,11 @@ base, including standard-library files opened through navigation. For external
 files in a multi-root workspace, use absolute paths or a compiler on PATH; the
 server does not guess a folder for relative settings. With no workspace folder,
 relative paths resolve from the document's directory.
+Set `loom.buildOptions` to a string-valued object such as
+`{ "app.channel": "preview" }`, matching CLI `--build-option app.channel=preview`.
+Diagnostics and semantic queries share these explicit inputs; changing the
+configuration cancels stale queries and rechecks open packages. Values may be
+compiled into artifacts, so this setting must not contain secrets.
 The configured compiler must support `editor-check`, `editor-query`,
 `editor-complete`, `editor-references`, `editor-rename`, `editor-auto-import`, and
 `fmt --stdin`. Compiler

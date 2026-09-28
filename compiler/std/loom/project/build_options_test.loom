@@ -1,0 +1,31 @@
+test fn build_options_are_detached_sorted_and_unambiguous() {
+    let source = [BuildOption {
+            name = "z"
+            value = ""
+        }, BuildOption {
+            name = "app.mode"
+            value = "雪=value"
+        }]
+    let saved = match build_option_snapshot(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert std.list.get(saved, 0).name == "app.mode"
+    assert same_build_options(saved, source)
+    std.list.set(source, 0, BuildOption {
+            name = "z"
+            value = "other"
+        })
+    assert std.list.get(saved, 1).value == ""
+    assert !same_build_options(saved, source)
+    std.list.push(source, std.list.get(source, 0))
+    assert match build_option_snapshot(source) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert !valid_build_option("") && !valid_build_option("7bad") && !valid_build_option("bad=name")
+    assert valid_build_option("app.feature-2")
+}

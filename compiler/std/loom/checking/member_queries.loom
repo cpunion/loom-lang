@@ -203,7 +203,11 @@ fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCand
 // incomplete body nor its callees are claimed verified. Only candidate strings
 // leave the query. Unknown receiver types and earlier typing errors reject.
 pub fn member_candidates(source std.loom.binding.Program, file Int, offset Int, receiver Node, prefix Text) Result[MemberQuery, Failure] {
-    let env = prepare(source)?
+    member_candidates(source, file, offset, receiver, prefix, build_inputs(no_input_reader))
+}
+
+pub fn member_candidates(source std.loom.binding.Program, file Int, offset Int, receiver Node, prefix Text, inputs BuildInputs) Result[MemberQuery, Failure] {
+    let env = prepare_with_inputs(source, inputs)?
     var index = 0
     while index < length(env.signatures) {
         let current = get(env.signatures, index)
