@@ -8,7 +8,7 @@ import std.list.push
 import std.text.concat
 
 fn decoded(source Text) Value {
-    match parse(source) {
+    match std.json.parse(source) {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false
@@ -28,7 +28,7 @@ fn rendered(value Value) Text {
 }
 
 fn rejects(source Text) {
-    match parse(source) {
+    match std.json.parse(source) {
         Result.Ok(_) => {
             assert false
         }
@@ -74,7 +74,7 @@ test fn json_rejects_invalid_grammar_and_duplicate_keys() {
 }
 
 test fn json_reports_offsets_and_rejects_invalid_constructed_numbers() {
-    match parse("[0,]") {
+    match std.json.parse("[0,]") {
         Result.Err(problem) => {
             assert problem.offset == 3
         }

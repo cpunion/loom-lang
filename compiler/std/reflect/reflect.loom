@@ -47,3 +47,8 @@ pub record Schema {
 // Resolved at the call site. Inaccessible nominal types become opaque leaves.
 // Recursive types reuse graph indices; no values or methods are inspected.
 pub intrinsic fn describe[T]() Schema
+
+// Reassemble a visible record from a tuple in field declaration order.
+// T may be inferred from the expected result; Fields is inferred from the tuple.
+// Refinements still require their normal checked construction boundary.
+pub intrinsic fn from_fields[T, Fields](fields Fields) T

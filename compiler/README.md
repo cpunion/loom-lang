@@ -748,6 +748,44 @@ parameters even when the corresponding value is runtime data. See the
 [`std.json.encode`](std/json/README.md) uses this to encode records without a
 runtime reflection table; JSON policy stays in the library.
 
+When the source name denotes a record or tuple **type**, `comptime for/map`
+instead binds each field's type; no sample value is needed. The optional key is
+still the record field name or tuple index. Value bindings take precedence over
+type names. An unknown generic shape must be selected with `comptime if` before
+iteration. The source is a single name, such as a generic `T` or a non-generic
+record name; it is not an arbitrary type expression.
+
+`std.reflect.from_fields` assembles a visible record from a tuple in field
+declaration order. An expected result type determines the record type:
+
+```loom
+import std.reflect.from_fields
+
+record Flags {
+    ready Bool
+    visible Bool
+}
+
+fn enabled() Flags {
+    let fields = comptime map Field in Flags {
+        let value Field = true
+        value
+    }
+    from_fields(fields)
+}
+```
+
+Field count and types are checked normally, including safe weakening. The tuple
+is evaluated once, aliases keep sharing, and Task transfer remains one-shot.
+Refined record targets, foreign private records and MustScope resources reject;
+the helper does not bypass construction constraints or cleanup. It must be
+called directly, not captured as a callback. Both this helper and type iteration
+lower to ordinary typed operations with no runtime schema dispatch. See
+[type generation](examples/reflection/generation.loom) and source
+[`std.json.decode`](std/json/README.md). General hygienic macros, direct
+construction/patterns through a loop-bound type, and first-class type values
+remain outside this facility.
+
 A structural parameter takes one tuple argument and one runtime tuple
 parameter. It may have fixed fields around one expanded pattern, such as
 `values (Int, Pattern[Ts]..., Text)`. The pack arity is the argument's statically
@@ -1860,8 +1898,10 @@ Descriptors have fresh mutable Lists on each runtime evaluation; ordinary
 copies share those Lists. `comptime` can consume or return them, and a fully
 compile-time query leaves no descriptor allocation in native code. There is no
 runtime registry or new reflection ABI. Call `describe` directly; a normal
-source wrapper can serve as a function value. This is structural metadata, not
-first-class type values or typed code generation. See the
+source wrapper can serve as a function value. Descriptors are structural metadata,
+not first-class type values. Static type iteration and `from_fields` supply a
+separate, checked path for structured code generation without interpreting
+descriptor indices as types. See the
 [reflection example](examples/reflection/main.loom).
 
 ## Lexical cleanup

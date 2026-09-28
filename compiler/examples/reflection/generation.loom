@@ -1,0 +1,119 @@
+import std.reflect.from_fields
+import std.list.push
+
+record Generated[A, B] {
+    first A
+    second B
+}
+
+record Empty {
+}
+
+concept AssociatedSeed {
+    type Item[T]
+}
+
+impl AssociatedSeed for Int {
+    type Item[T] = (Text, T)
+}
+
+fn associated_seed[T]() {
+    comptime if describe[T]().types[0].kind == Kind.Record {
+        comptime for Field in T {
+            comptime if Field implements AssociatedSeed {
+                let value Field.Item[Field] = seed[Field.Item[Field]]()
+                assert value.0 == "generated" && value.1 == 42
+            }
+        }
+    }
+}
+
+fn seed[T]() T {
+    comptime if T == Int {
+        42
+    } else {
+        comptime if T == Bool {
+            true
+        } else {
+            comptime if T == Text {
+                "generated"
+            } else {
+                comptime if describe[T]().types[0].kind == Kind.Tuple {
+                    comptime map Field in T {
+                        seed[Field]()
+                    }
+                } else {
+                    comptime if describe[T]().types[0].kind == Kind.Record {
+                        let fields = comptime map Field in T {
+                            seed[Field]()
+                        }
+                        let assembled T = from_fields(fields)
+                        assembled
+                    } else {
+                        missing_seed()
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn generation() {
+    discard seed[Empty]()
+    associated_seed[Generated[Int, Bool]]()
+    let first = seed[Generated[Int, Bool]]()
+    assert first.first == 42 && first.second
+    let second = seed[Generated[Text, (Bool, Int)]]()
+    assert second.first == "generated" && second.second.0 && second.second.1 == 42
+    let first_readers = type_readers[Generated[Int, Bool]]()
+    let second_readers = type_readers[Generated[Bool, Int]]()
+    assert first_readers[0]() == 1 && first_readers[1]() == 2
+    assert second_readers[0]() == 2 && second_readers[1]() == 1
+    let shared = [1]
+    let aliases Generated[List[Int], List[Int]] = from_fields((shared, shared))
+    push(aliases.first, 2)
+    assert aliases.second[1] == 2 && shared[1] == 2
+    let events List[Int] = []
+    let snapshot Generated[Int, Bool] = from_fields(generated_inputs(events))
+    assert snapshot.first == 42 && snapshot.second && length(events) == 1
+    let constant = comptime {
+        seed[Generated[Int, Bool]]()
+    }
+    assert constant.first == 42 && constant.second
+}
+
+fn generated_inputs(events List[Int]) (Int, Bool) {
+    push(events, 1)
+    (42, true)
+}
+
+async fn generated_item[T](value T) T {
+    value
+}
+
+async fn generated_tasks() {
+    let pending Generated[Task[Int], Task[Bool]] = from_fields((generated_item(42), generated_item(true)))
+    assert pending.first.await == 42
+    assert pending.second.await
+}
+
+fn type_readers[T]() List[fn() Int] {
+    let readers List[fn() Int] = []
+    comptime if describe[T]().types[0].kind == Kind.Record {
+        comptime for name, Field in T {
+            discard name
+            std.list.push(readers, fn() Int {
+                    comptime if Field == Int {
+                        1
+                    } else {
+                        2
+                    }
+                })
+        }
+    }
+    readers
+}
+
+test fn type_iteration_constructs_native_records() {
+    generation()
+}

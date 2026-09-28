@@ -116,7 +116,9 @@ fn exercise() {
     assert disclosed().types[0].fields[0].name == "password"
 }
 
-fn main() {
+async fn main() {
+    generation()
+    generated_tasks().await
     exercise()
 }
 

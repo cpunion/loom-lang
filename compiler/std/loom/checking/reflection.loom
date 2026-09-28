@@ -15,8 +15,42 @@ record ReflectionModel {
 fn reflection_intrinsic(env Environment, owner Int) Bool {
     let item = symbol(env, owner)
     let file = get(env.source.files, item.file)
-    item.name == "describe" && has(item.node, NodeKind.Intrinsic) && file.trusted_std &&
+    (item.name == "describe" || item.name == "from_fields") && has(item.node, NodeKind.Intrinsic) && file.trusted_std &&
     package_label(env.source.modules, env.source.packages, file.package) == "std.reflect"
+}
+
+fn reflected_record(context Context, node Node, ty Int, value Expr) Result[Expr, Failure] {
+    let shape = get(context.env.types, ty)
+    let fields = get(context.env.types, value.ty)
+    if shape.kind != TypeKind.Record || fields.kind != TypeKind.Tuple {
+        return Result.Err(error(context, node, "from_fields requires a record result and a tuple of field values"))
+    }
+    let declaration = symbol(context.env, shape.symbol)
+    let here = symbol(context.env, context.signature.symbol)
+    if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
+        return Result.Err(error(context, node, "cannot construct a private type from another package"))
+    }
+    if length(shape.fields) != length(fields.arguments) {
+        return Result.Err(error(context, node, "from_fields must supply every record field in declaration order"))
+    }
+    if must_scope(context, ty)? {
+        return Result.Err(error(context, node, "from_fields cannot create a MustScope resource"))
+    }
+    let local = length(context.locals)
+    push(context.locals, Local { name = "" ty = value.ty mutable = false is_scoped = false })
+    let body = expressions(expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls))
+    let members = new[Expr]()
+    var index = 0
+    while index < length(shape.fields) {
+        let target = get(shape.fields, index).ty
+        let source = expression(ExprKind.Field, get(fields.arguments, index), node, "", index,
+            expressions(atom(ExprKind.Local, value.ty, node, local)), true)
+        let checked = typed(context, node, source, target)?
+        push(members, expression(ExprKind.Field, target, node, "", index, expressions(checked), checked.falls))
+        index = index + 1
+    }
+    push(body, expression(ExprKind.Record, ty, node, "", -1, members, all_fall(members)))
+    Result.Ok(expression(ExprKind.Block, ty, node, "", -1, body, all_fall(body)))
 }
 
 fn reflection_nominal(env Environment, ty Int, name Text, kind TypeKind, count Int) Bool {

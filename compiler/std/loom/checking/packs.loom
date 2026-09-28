@@ -375,11 +375,11 @@ fn bind_type_iteration(node Node, binding Text, selected Text, shadowed Bool, ty
     if depth >= 64 {
         return pack_node(node, NodeKind.PackError, "static type iteration expansion budget exceeded", new[Node]())
     }
-    if node.kind == NodeKind.Name && node.value == binding && !shadowed && !type_shadowed {
-        return pack_node(node, node.kind, selected, node.children)
-    }
-    if node.kind == NodeKind.Type && node.value == binding && !type_shadowed {
-        return pack_node(node, node.kind, selected, node.children)
+    let refers = node.value == binding || (first_dot(node.value) == length(binding) && std.text.starts_with(node.value, binding))
+    var value = node.value
+    if refers && !type_shadowed && ((node.kind == NodeKind.Name && !shadowed) ||
+        node.kind == NodeKind.Type || node.kind == NodeKind.Construct || node.kind == NodeKind.RecordPattern) {
+        value = concat(selected, slice(node.value, length(binding), length(node.value)))
     }
     let children = new[Node]()
     var index = 0
@@ -416,7 +416,15 @@ fn bind_type_iteration(node Node, binding Text, selected Text, shadowed Bool, ty
         }
         index = index + 1
     }
-    pack_node(node, node.kind, node.value, children)
+    if node.kind == NodeKind.Function && node.value == "" && std.text.starts_with(selected, "$type#") {
+        // A generated closure body embeds type references. Do not reuse its
+        // source symbol for another type at the same source span/ordinal.
+        let marker = part(node, NodeKind.ExpansionId)
+        let identity = concat(if marker < 0 { "" } else { child(node, marker).value }, selected)
+        let value = pack_node(node, NodeKind.ExpansionId, identity, new[Node]())
+        if marker < 0 { push(children, value) } else { set(children, marker, value) }
+    }
+    pack_node(node, node.kind, value, children)
 }
 
 // The type pack is compile-time structure, never a runtime type-list object.

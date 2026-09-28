@@ -1,4 +1,6 @@
 import std.json.encode
+import std.json.decode
+import std.json.DecodeError
 import std.json.parse
 import std.json.Value
 import std.json.WriteError
@@ -11,6 +13,12 @@ pub record Order {
 }
 
 pub type Money = Float where self >= 0.0
+
+pub record InputOrder {
+    id Int
+    items List[Text]
+    total Float
+}
 
 record Secret {
     password Text
@@ -39,11 +47,40 @@ fn example() {
             assert false
         }
     }
+    let decoded = match decode[InputOrder](text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            InputOrder {
+                id = 0,
+                items = [],
+                total = 0.0
+            }
+        }
+    }
+    assert decoded.id == order.id && decoded.items[1] == "cake" && decoded.total == 12.5
+    // JSON does not bypass constrained construction; validate at that boundary.
+    match decode[Order](text) {
+        Result.Err(DecodeError.UnsupportedType) => {
+        }
+        _ => {
+            assert false
+        }
+    }
     // A foreign library cannot expose a private application's record fields.
     match encode(Secret {
             password = "hidden"
         }) {
         Result.Err(WriteError.UnsupportedType) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    match decode[Secret]("""
+        {"password":"hidden"}
+        """) {
+        Result.Err(DecodeError.UnsupportedType) => {
         }
         _ => {
             assert false

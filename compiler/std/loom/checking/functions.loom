@@ -206,8 +206,16 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
         }
         runtime(0, ints(3), if item.name == "option_present" { 2 } else { if item.name == "input_bytes" { 4 } else { 3 } })
     } else if reflection_intrinsic(env, current.symbol) {
-        discard reflection_model(env, current.symbol, current.result, item.node)?
-        runtime(1, new[Int](), current.result)
+        if item.name == "from_fields" {
+            if length(current.compile_time) != 0 {
+                return Result.Err(failure(env, current.symbol, item.node, "from_fields requires one runtime tuple argument"))
+            }
+            let parameters = abstract_arguments(env, 2)
+            runtime(2, ints(get(parameters, 1)), get(parameters, 0))
+        } else {
+            discard reflection_model(env, current.symbol, current.result, item.node)?
+            runtime(1, new[Int](), current.result)
+        }
     } else if item.name == "task_next_terminal" {
         if get(env.type_states, current.result).phase == 0 {
             discard expand_type(env, current.result, 0)?

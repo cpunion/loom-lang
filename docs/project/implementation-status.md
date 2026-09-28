@@ -378,8 +378,13 @@ not yet a streaming API. `encode[T]` now specializes source code for primitive
 values, Lists, tuples, visible records and supported refinements, reusing the
 writer's escaping and limits without constructing an intermediate `Value` tree.
 Foreign private types remain opaque; unsupported kinds report `UnsupportedType`.
-The [typed encoding example](../../compiler/examples/json_encoding/main.loom)
-runs at O0/O2 under forced GC. Typed decoding and custom wire mappings remain open.
+`decode[T]` parses a `Value` tree, then generates typed construction for primitives,
+Lists, tuples and visible records, including recursive trees. It enforces exact
+field sets and Int spellings/ranges; it does not round Int through Float.
+Refinements remain explicit checked boundaries: decode a wire representation
+before constructing a constrained type. The
+[typed JSON example](../../compiler/examples/json_encoding/main.loom)
+runs at O0/O2 under forced GC. Streaming and custom wire mappings remain open.
 
 Static concepts use explicit nominal `impl` declarations, generic bounds and
 ordinary direct-call specialization. Conditional `T implements C` tests select
@@ -707,7 +712,15 @@ exercise fresh/shared descriptor Lists under forced GC; compile-time-only
 selection emits no runtime allocation. See the
 [reflection example](../../compiler/examples/reflection/main.loom).
 Descriptor IDs are local to one graph, not persistent declaration identities
-or first-class source types. Typed generation and predicate reflection remain open.
+or first-class source types. `comptime for/map` can traverse the field types of
+a named record/tuple type, including associated type references. Source
+`std.reflect.from_fields` reconstructs visible records from checked field tuples,
+lowering to ordinary projections and construction. Input evaluation, sharing,
+Task transfer, visibility and resource checks retain their normal rules; refined
+targets cannot bypass constraint checks. The
+[generation example](../../compiler/examples/reflection/generation.loom) exercises
+native and compile-time generation and separately specialized closures. General
+typed macros, first-class type values and predicate reflection remain open.
 
 Public `std.loom.parser` now parses standalone expressions, types, match/binding
 patterns, statements and declarations through the existing grammar. Fragments

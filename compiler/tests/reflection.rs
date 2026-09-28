@@ -64,6 +64,12 @@ fn reflection_is_typed_source_data_without_runtime_discovery() {
         r#"
 import std.reflect.describe
 import std.reflect.Kind
+import std.reflect.from_fields
+
+record Pair {
+    count Int
+    enabled Bool
+}
 
 fn integer[T]() Int {
     comptime if describe[T]().types[0].kind == Kind.Int {
@@ -75,6 +81,15 @@ fn integer[T]() Int {
 
 fn main() {
     assert integer[Int]() == 1 && integer[Bool]() == 0
+    let fields = comptime map Field in Pair {
+        comptime if Field == Int {
+            42
+        } else {
+            true
+        }
+    }
+    let pair Pair = from_fields(fields)
+    assert pair.count == 42 && pair.enabled
 }
 "#,
     )

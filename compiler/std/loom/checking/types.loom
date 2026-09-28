@@ -143,6 +143,18 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
     if node.kind != NodeKind.Type && node.kind != NodeKind.Name {
         return Result.Err(failure(env, owner, node, "expected a type argument, not a value expression"))
     }
+    // Session-local references produced by typed iteration. The source lexer
+    // cannot spell this namespace; staging shares this append-only type table.
+    if std.text.starts_with(node.value, "$type#") && first_dot(node.value) == length(node.value) {
+        let index = match std.int.parse(slice(node.value, 6, length(node.value))) {
+            Result.Ok(value) => value
+            Result.Err(_) => { return Result.Err(failure(env, owner, node, "invalid generated type reference")) }
+        }
+        if index < 0 || index >= length(env.types) || length(node.children) != 0 {
+            return Result.Err(failure(env, owner, node, "invalid generated type reference"))
+        }
+        return Result.Ok(index)
+    }
     var builtin = -1
     if node.value == "Self" { builtin = self_type(env, owner, arguments, depth)? }
     if node.value == "Int" { builtin = 1 }

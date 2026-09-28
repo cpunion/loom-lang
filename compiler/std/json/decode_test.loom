@@ -1,0 +1,100 @@
+fn decoded_as[T](source Text) T {
+    match decode[T](source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            decoded_as[T](source)
+        }
+    }
+}
+
+test fn typed_json_decodes_exact_nested_shapes_without_sample_values() {
+    let entry = decoded_as[Entry]("""
+        {"active":true,"name":"loom","values":[1,2]}
+        """)
+    assert entry.name == "loom" && entry.active && entry.values[1] == 2
+    let tuple = decoded_as[(Bool, Text, (Int, Float))]("""
+        [false,"hé中",[42,1.25]]
+        """)
+    assert !tuple.0 && tuple.1 == "hé中" && tuple.2.0 == 42 && tuple.2.1 == 1.25
+    let tree = decoded_as[Tree]("""
+        {"name":"root","children":[{"name":"leaf","children":[]}]}
+        """)
+    assert tree.children[0].name == "leaf"
+    assert decoded_as[Int]("9223372036854775807") == 9223372036854775807
+    assert decoded_as[Int]("-9223372036854775808") == -9223372036854775808
+    assert rendered(decoded_as[Value]("null")) == "null"
+}
+
+test fn typed_json_rejects_wrong_fields_numbers_and_implicit_constraints() {
+    match decode[Entry]("""
+        {"name":"loom","values":[],"unknown":true}
+        """) {
+        Result.Err(DecodeError.MissingField(name)) => {
+            assert name == "active"
+        }
+        _ => {
+            assert false
+        }
+    }
+    match decode[Entry]("""
+        {"name":"loom","values":[],"active":true,"extra":1}
+        """) {
+        Result.Err(DecodeError.FieldCount) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    match decode[(Int, Bool)]("[1]") {
+        Result.Err(DecodeError.FieldCount) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    match decode[Bool]("1") {
+        Result.Err(DecodeError.TypeMismatch) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    match decode[Int]("9223372036854775808") {
+        Result.Err(DecodeError.InvalidNumber) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    match decode[Int]("1.5") {
+        Result.Err(DecodeError.InvalidNumber) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    match decode[Float]("1e999") {
+        Result.Err(DecodeError.InvalidNumber) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    match decode[Positive]("0") {
+        Result.Err(DecodeError.UnsupportedType) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    match decode[Entry]("""
+        {"name":"first","name":"second","active":true,"values":[]}
+        """) {
+        Result.Err(DecodeError.Syntax(_)) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+}

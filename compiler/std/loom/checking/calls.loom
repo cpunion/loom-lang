@@ -548,6 +548,9 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
     }
     if reflection_intrinsic(context.env, signature.symbol) {
         discard validate_intrinsic(context.env, instance.signature)?
+        if symbol(context.env, signature.symbol).name == "from_fields" {
+            return reflected_record(context, node, get(instance.arguments, 0), get(runtime_values, 0))
+        }
         return reflection_call(context, node, get(instance.arguments, 0), signature.result)
     }
     if prototype(context.env, signature.symbol) {
