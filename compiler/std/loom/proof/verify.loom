@@ -105,7 +105,7 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
         return record_parameter_value(proof, get(shape.fields, 0).ty, depth + 1)
     }
-    if shape.kind != TypeKind.Record {
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
         return Value.Empty
     }
     let fields = new[Value]()
@@ -146,8 +146,8 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
         get(proof.program.types, get(shape.fields, 0).ty).kind == TypeKind.Record {
         return Result.Ok(record_parameter_value(proof, get(shape.fields, 0).ty, 0))
     }
-    if shape.kind != TypeKind.Record {
-        return Result.Err("required proof currently needs scalar parameters or scalar-field records")
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+        return Result.Err("required proof currently needs scalar parameters or inline aggregates")
     }
     Result.Ok(record_parameter_value(proof, ty, 0))
 }
@@ -338,6 +338,25 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     }
     if expr.kind == ExprKind.Record {
         return record_outcomes(proof, expr, state, depth - 1)
+    }
+    if expr.kind == ExprKind.Field {
+        let receivers = execute(proof, get(expr.children, 0), state, depth - 1)?
+        let output = new[Outcome]()
+        var index = 0
+        while index < length(receivers) {
+            let receiver = get(receivers, index)
+            match receiver.value {
+                Value.Record(fields) => {
+                    if expr.index < 0 || expr.index >= length(fields) {
+                        return Result.Err("invalid proof record field")
+                    }
+                    discard add_outcome(output, Outcome { state = receiver.state value = get(fields, expr.index) })?
+                }
+                _ => { return Result.Err("field proof requires an inline aggregate") }
+            }
+            index = index + 1
+        }
+        return Result.Ok(output)
     }
     if expr.kind == ExprKind.DynBox {
         let values = execute(proof, get(expr.children, 0), state, depth - 1)?

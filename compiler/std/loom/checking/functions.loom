@@ -279,7 +279,15 @@ fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
         }
         return Result.Ok(true)
     }
-    if node.kind == NodeKind.Unary || node.kind == NodeKind.Binary {
+    if node.kind == NodeKind.Construct {
+        var index = 1
+        while index < length(node.children) {
+            discard scalar_contract(context, child(child(node, index), 0))?
+            index = index + 1
+        }
+        return Result.Ok(true)
+    }
+    if node.kind == NodeKind.Unary || node.kind == NodeKind.Binary || node.kind == NodeKind.Select || node.kind == NodeKind.Tuple {
         var index = 0
         while index < length(node.children) {
             discard scalar_contract(context, child(node, index))?
@@ -314,7 +322,8 @@ fn old_inline_path(context Context, value Expr) Bool {
     }
     if value.kind == ExprKind.Field {
         let receiver = get(value.children, 0)
-        return get(context.env.types, receiver.ty).kind == TypeKind.Record && old_inline_path(context, receiver)
+        let kind = get(context.env.types, receiver.ty).kind
+        return (kind == TypeKind.Record || kind == TypeKind.Tuple) && old_inline_path(context, receiver)
     }
     false
 }

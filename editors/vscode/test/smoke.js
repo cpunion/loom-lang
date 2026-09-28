@@ -71,6 +71,18 @@ record Disabled {
     other Bool
 }
 
+fn copy(value Enabled) Enabled
+ensures result.value == value.value
+{
+    value
+}
+
+fn forward(value Enabled) Enabled
+ensures result.value == value.value
+{
+    copy(copy(value))
+}
+
 fn main() {
     let box = comptime if option("app.mode", "off") == "on" && target("pointer_width") == "64" {
         Enabled { value = 7 }
@@ -82,7 +94,7 @@ fn main() {
         value = box.value + 1
         ..box
     }
-    assert updated.value == 8
+    assert forward(updated).value == 8
 }
 `;
   try {

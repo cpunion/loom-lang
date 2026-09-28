@@ -469,26 +469,32 @@ with constrained construction, command-line input, and ordinary source tests.
 Their supported operation/call closure is validated even for unused constrained
 declarations. Known true/false predicates remove the check or reject; unknown
 inputs or unsuccessful optional evaluation retain normal runtime construction
-and fault behavior. Function contracts now reuse direct acyclic scalar helpers
+and fault behavior. Function contracts now reuse direct acyclic helpers over scalars and inline records/tuples
 with immutable locals, `if/else`, and tail expressions or early body returns. A private checked closure
 preserves helper preconditions, eager/unused arithmetic and short-circuit guards;
 successful entry checks provide facts, while exit checks must be proved. Helpers
 used only by postconditions stay out of native reachability. The
 [contract example](../../compiler/examples/contracts/README.md) exercises this
 through the CLI and compile-time execution. Generic declarations still require
-abstract proofs. Direct scalar calls in a body requiring proof compose verified
+abstract proofs. Direct scalar and inline aggregate calls in a body requiring proof compose verified
 callee postconditions, or expand a finite pure body without a summary. Synchronous
 dyn calls use only the exact concept method's declared scalar contract.
 Argument snapshots preserve eager evaluation; proof-only temporaries do not
 change emitted calls or locals. Conditional scalar results reuse existing typed
 branches for body proofs and bounded Boolean normalization for contracts. Reversed
 linear relations and excluded integer interval endpoints retain branch facts.
+Nested aggregate summaries retain exact proved field equalities and independent
+unknowns for other fields or calls. Shared siblings remain opaque; no field
+content or alias stability is inferred from their presence. Record updates and
+tuple projections reuse the same proof path, including eager evaluation of unused
+initializer fields. See the
+[aggregate contract example](../../compiler/examples/aggregate_contracts/main.loom).
 Recursive proof dependencies, helper loops/mutation, returns inside helper operands,
 indirect calls and dyn calls without a usable contract remain unsupported; required proofs never
 fall back to runtime checks or sampled evaluation.
-Required contracts also follow scalar fields through nested inline records and
+Required contracts also follow scalar fields through nested inline records/tuples and
 Int-backed refinements. In `ensures`, `old(expr)` currently denotes an immutable
-parameter scalar or inline record scalar path; shared-data snapshots, index and
+parameter scalar or inline record/tuple scalar path; shared-data snapshots, index and
 call expressions reject rather than treating a mutable alias as entry state.
 Record-backed refinements now admit only immutable inline scalar/record leaves.
 Unknown construction checks once; copies and base-record widening do not recheck.
