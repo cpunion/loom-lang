@@ -1,0 +1,104 @@
+import std.text.concat
+
+fn static_name(comptime name Text) Text {
+    name
+}
+
+fn static_index(comptime index Int) Int {
+    index
+}
+
+fn indexed[Ts...](values Ts...) List[Int] {
+    let indices List[Int] = []
+    comptime for index, value in values {
+        discard value
+        push(indices, static_index(index))
+    }
+    indices
+}
+
+fn type_indices[Ts...](values (Ts...)) List[Int] {
+    let indices List[Int] = []
+    comptime for index, T in Ts {
+        comptime if T == Int {
+            push(indices, static_index(index))
+        }
+    }
+    indices
+}
+
+fn named_readers(comptime fields Fields[Int, Bool]) (fn() Text, fn() Text) {
+    comptime map name, field in fields {
+        fn() Text {
+            std.text.concat(static_name(name), field_label(field))
+        }
+    }
+}
+
+fn type_readers[Ts...](values (Ts...)) (fn(Ts) Int...) {
+    comptime map index, T in Ts {
+        fn(value T) Int {
+            discard value
+            static_index(index)
+        }
+    }
+}
+
+fn static_indices[Ts...](comptime values Ts...) List[Int] {
+    let indices List[Int] = []
+    comptime for values, value in values {
+        push(indices, static_index(values))
+        discard value
+    }
+    indices
+}
+
+fn keyed_iteration() {
+    let fields = Fields {
+        second = true
+        first = 42
+    }
+    let labels List[Text] = []
+    comptime for name, field in fields {
+        push(labels, std.text.concat(static_name(name), field_label(field)))
+    }
+    assert labels[0] == "first42" && labels[1] == "secondboolean"
+    let mapped = comptime map fields, field in fields {
+        (static_name(fields), field)
+    }
+    assert mapped.0.0 == "first" && mapped.0.1 == 42
+    assert mapped.1.0 == "second" && mapped.1.1
+    let indices = indexed(7, "text", true)
+    assert length(indices) == 3 && indices[0] == 0 && indices[2] == 2
+    assert length(indexed()) == 0
+    let types = type_indices((true, 7, "text", 9))
+    assert length(types) == 2 && types[0] == 1 && types[1] == 3
+    let callbacks_by_type = type_readers((1, true))
+    assert callbacks_by_type.0(7) == 0 && callbacks_by_type.1(false) == 1
+    let static_keys = static_indices(true, "text")
+    assert static_keys[0] == 0 && static_keys[1] == 1
+    let readers = named_readers(Fields {
+            first = 8
+            second = false
+        })
+    assert readers.0() == "first8" && readers.1() == "secondboolean"
+    let tuple = (10, 20)
+    let callbacks = comptime map tuple, value in tuple {
+        fn() Int {
+            static_index(tuple) + value
+        }
+    }
+    assert callbacks.0() == 10 && callbacks.1() == 21
+    let rows = ((10, 20), (30, 40))
+    let nested = comptime map row_index, row in rows {
+        comptime map column, value in row {
+            value + static_index(row_index) * 10 + static_index(column)
+        }
+    }
+    assert nested.0.0 == 10 && nested.0.1 == 21
+    assert nested.1.0 == 40 && nested.1.1 == 51
+}
+
+test fn iteration_keys_are_static_and_hygienic() {
+    keyed_iteration()
+}

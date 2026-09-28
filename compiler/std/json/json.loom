@@ -33,6 +33,7 @@ pub enum WriteError {
     InvalidNumber
     DuplicateKey
     DepthExceeded
+    UnsupportedType
 }
 
 fn error(offset Int, message Text) ParseError {

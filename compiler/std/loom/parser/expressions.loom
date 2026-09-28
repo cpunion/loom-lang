@@ -254,16 +254,33 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
     Result.Err(error(cursor, "expected an expression"))
 }
 
+fn static_iteration(start Cursor, cursor Cursor, kind NodeKind) Result[Step, Diagnostic] {
+    let first = name(cursor)?
+    var binding = first
+    let children = new[Node]()
+    if at(first.rest, Kind.Comma) {
+        binding = name(next(first.rest))?
+        if first.node.value == binding.node.value {
+            return Result.Err(error(cursor, "static iteration bindings must have distinct names"))
+        }
+    }
+    if !word(binding.rest, "in") {
+        return Result.Err(error(binding.rest, "expected 'in' after the static iteration binding"))
+    }
+    let values = name(next(binding.rest))?
+    let body = block(values.rest)?
+    push(children, values.node)
+    push(children, body.node)
+    if at(first.rest, Kind.Comma) {
+        push(children, done(cursor, first.rest, NodeKind.IterationKey, first.node.value, new[Node]()).node)
+    }
+    Result.Ok(done(start, body.rest, kind, binding.node.value, children))
+}
+
 fn comptime_expr(cursor Cursor) Result[Step, Diagnostic] {
     let rest = newlines(next(cursor))
     if word(rest, "map") {
-        let binding = name(next(rest))?
-        if !word(binding.rest, "in") {
-            return Result.Err(error(binding.rest, "expected 'in' after the static map binding"))
-        }
-        let values = name(next(binding.rest))?
-        let body = block(values.rest)?
-        return Result.Ok(done(cursor, body.rest, NodeKind.ComptimeMap, binding.node.value, two(values.node, body.node)))
+        return static_iteration(cursor, next(rest), NodeKind.ComptimeMap)
     }
     if !word(rest, "if") && !at(rest, Kind.LBrace) {
         return Result.Err(error(rest, "expected '{', 'if' or 'map' after 'comptime'"))

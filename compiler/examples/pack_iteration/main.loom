@@ -92,6 +92,7 @@ async fn drain[Ts...](values Task[Ts]...) {
 }
 
 async fn main() {
+    keyed_iteration()
     record_iteration()
     record_tasks().await
     let events = labels()

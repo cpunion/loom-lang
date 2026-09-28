@@ -34,6 +34,8 @@ fn static_alias_source(context Context, node Node) Option[Node] {
 // Only elaboration creates a Let with a Comptime marker. Source let bindings
 // remain ordinary runtime values, including copies of a static parameter.
 fn static_alias_type(context Context, node Node) Result[Int, Failure] {
+    if node.kind == NodeKind.Integer { return Result.Ok(1) }
+    if node.kind == NodeKind.Text { return Result.Ok(3) }
     if node.kind == NodeKind.Name {
         let found = lookup(context, node.value)
         if found >= 0 {

@@ -129,7 +129,8 @@ test fn record_iteration_cannot_discard_or_duplicate_tasks() {
     rejects(concat(declarations, """
         async fn main() {
             let pending = Pending { work = item() }
-            comptime for task in pending {
+            comptime for name, task in pending {
+                discard name
                 discard task
             }
         }
@@ -137,12 +138,50 @@ test fn record_iteration_cannot_discard_or_duplicate_tasks() {
     rejects(concat(declarations, """
         async fn main() {
             let pending = Pending { work = item() }
-            discard comptime map task in pending {
+            discard comptime map name, task in pending {
+                discard name
                 discard task.await
                 task.await
             }
         }
         """))
+}
+
+test fn static_keys_are_lexical_values_not_type_or_aggregate_bindings() {
+    rejects("""
+        fn bad[Ts...](values Ts...) {
+            comptime for Ts, value in values {
+                discard value
+                comptime for T in Ts {
+                    discard T
+                }
+            }
+        }
+        fn main() {
+            bad(1)
+        }
+        """)
+    rejects("""
+        fn bad[Ts...](values (Ts...)) {
+            comptime for Ts, T in Ts {
+                comptime for inner in Ts {
+                    discard inner
+                }
+            }
+        }
+        fn main() {
+            bad((true,))
+        }
+        """)
+    rejects("""
+        fn bad() {
+            let values = (1,)
+            comptime for index, value in values {
+                discard value
+            }
+            discard index
+        }
+        """)
 }
 
 test fn record_iteration_reads_refined_records_and_keeps_scoped_resources() {

@@ -1,0 +1,60 @@
+import std.json.encode
+import std.json.parse
+import std.json.Value
+import std.json.WriteError
+import std.result.Result
+
+pub record Order {
+    id Int
+    items List[Text]
+    total Money
+}
+
+pub type Money = Float where self >= 0.0
+
+record Secret {
+    password Text
+}
+
+fn example() {
+    let order = Order {
+        total = Money(12.5)
+        items = ["tea", "cake"]
+        id = 42
+    }
+    let text = match encode(order) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+    assert text == """
+        {"id":42,"items":["tea","cake"],"total":12.5}
+        """
+    match parse(text) {
+        Result.Ok(Value.Object(_)) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    // A foreign library cannot expose a private application's record fields.
+    match encode(Secret {
+            password = "hidden"
+        }) {
+        Result.Err(WriteError.UnsupportedType) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+fn main() {
+    example()
+}
+
+test fn encode_public_record_without_runtime_reflection() {
+    example()
+}

@@ -32,3 +32,34 @@ test fn structural_tuple_pack_and_static_map_keep_their_source_shape() {
     discard rejected("fn f[Ts...](values (Ts...)) { comptime map item values { item } }")
     discard rejected("fn f[Ts...](values (Ts...)) { comptime map item in values item }")
 }
+
+test fn static_iteration_retains_optional_key_and_rejects_duplicate_bindings() {
+    let declaration = child(parsed("""
+        fn visit[Ts...](values Ts...) {
+            comptime for index, item in values {
+                discard (index, item)
+            }
+            discard comptime map index, T in Ts {
+                index
+            }
+        }
+        """), 0)
+    let loop = child(body(declaration), 0)
+    assert loop.value == "item" && child(loop, 0).value == "values"
+    assert child(loop, 2).kind == NodeKind.IterationKey && child(loop, 2).value == "index"
+    let mapping = child(child(body(declaration), 1), 0)
+    assert mapping.kind == NodeKind.ComptimeMap && mapping.value == "T"
+    assert child(mapping, 2).value == "index"
+    discard rejected("""
+        fn bad() {
+            let empty = (1,)
+            comptime for item, item in empty {}
+        }
+        """)
+    discard rejected("""
+        fn bad() {
+            let empty = (1,)
+            discard comptime map a, b, c in empty {}
+        }
+        """)
+}

@@ -1,0 +1,84 @@
+pub record Entry {
+    name Text
+    values List[Int]
+    active Bool
+}
+
+pub record Tree {
+    name Text
+    children List[Tree]
+}
+
+type Positive = Int where self > 0
+
+type Price = Float where self >= 0.0
+
+record Count {
+    count Int
+}
+
+type Nonempty = Count where self.count > 0
+
+fn encoded[T](value T) Text {
+    match encode(value) {
+        Result.Ok(text) => text
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+fn tuple[Ts...](values Ts...) (Ts...) {
+    values
+}
+
+fn encoding_fails[T](value T, expected WriteError) {
+    match encode(value) {
+        Result.Err(problem) => {
+            assert problem == expected
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
+}
+
+test fn typed_json_encodes_records_lists_tuples_and_refinements() {
+    assert encoded(Entry {
+            active = true
+            values = [1, 2]
+            name = "loom"
+        }) == """
+        {"name":"loom","values":[1,2],"active":true}
+        """
+    assert encoded(("hé中", false, 42, 1.25, Value.Null)) == """
+        ["hé中",false,42,1.25,null]
+        """
+    assert encoded(Positive(42)) == "42"
+    assert encoded(Price(1.25)) == "1.25"
+    assert encoded(Nonempty(Count {
+                count = 2
+            })) == """
+        {"count":2}
+        """
+    assert encoded(tuple()) == "[]"
+    assert encoded(std.list.new[Int]()) == "[]"
+    assert encoded("\n\0\"\\") == rendered(Value.String("\n\0\"\\"))
+}
+
+test fn typed_json_rejects_nonfinite_unsupported_and_cyclic_values() {
+    encoding_fails(0.0 / 0.0, WriteError.InvalidNumber)
+    encoding_fails(1.0 / 0.0, WriteError.InvalidNumber)
+    encoding_fails(WriteError.InvalidNumber, WriteError.UnsupportedType)
+    let children = std.list.new[Tree]()
+    let root = Tree {
+        name = "root"
+        children = children
+    }
+    assert encoded(root) == """
+        {"name":"root","children":[]}
+        """
+    push(children, root)
+    encoding_fails(root, WriteError.DepthExceeded)
+}
