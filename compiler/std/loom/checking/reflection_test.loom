@@ -1,0 +1,107 @@
+import std.build.input_file
+
+fn reflected(text Text) Result[std.loom.typed.Program, Failure] {
+    let files = source_files(concat("""
+        import std.reflect.describe
+        import std.reflect.Schema
+        import std.reflect.Kind
+
+        """, text))
+    push(files, source_file("std.reflect", input_file("../../reflect/reflect.loom"), true))
+    checked(files)
+}
+
+test fn reflection_selects_only_determined_instances_without_assuming_proofs() {
+    assert match reflected("""
+        fn select[T]() Int {
+            comptime if describe[T]().types[0].kind == Kind.Int {
+                1
+            } else {
+                missing()
+            }
+        }
+        fn main() {
+            assert select[Int]() == 1
+        }
+        """) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    assert match reflected("""
+        fn incorrect[T]() Int ensures result == 1 {
+            comptime if describe[T]().types[0].kind == Kind.Int {
+                1
+            } else {
+                0
+            }
+        }
+        fn main() {
+            assert incorrect[Int]() == 1
+        }
+        """) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn reflection_requires_direct_trusted_calls_and_a_valid_descriptor_model() {
+    assert match reflected("""
+        fn main() {
+            let callback = describe[Int]
+            discard callback()
+        }
+        """) {
+        Result.Err(failed) => failed.diagnostic.message == "type reflection must be called directly; use a source wrapper for a function value"
+        Result.Ok(_) => false
+    }
+    rejects("""
+        pub intrinsic fn describe[T]() Text
+        """)
+    let files = source_files("""
+        import std.reflect.describe
+        fn main() {
+            discard describe[Int]()
+        }
+        """)
+    push(files, source_file("std.reflect", """
+        pub record Schema {
+            root Int
+        }
+        pub intrinsic fn describe[T]() Schema
+        """, true))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "reflection requires the std.reflect Schema descriptor model"
+        Result.Ok(_) => false
+    }
+}
+
+test fn compile_time_enum_values_are_not_confused_with_type_operands() {
+    discard accepted("""
+        enum Mode[T] {
+            On
+            Off
+        }
+        enum Flag {
+            On
+            Off
+        }
+        fn selected[T]() Bool {
+            comptime if Flag.On == Flag.On && Flag.On != Flag.Off && Mode.On[T]() == Mode.On[T]() {
+                true
+            } else {
+                missing()
+            }
+        }
+        fn main() {
+            assert selected[Int]()
+            comptime if Int != Bool {
+                assert true
+            } else {
+                missing()
+            }
+        }
+        """)
+}

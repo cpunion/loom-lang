@@ -470,6 +470,12 @@ results preserve internal aliases and cycles while constructing a fresh graph
 on each runtime evaluation. Successful pure results can be reused within one
 check; persistent/incremental reuse, richer pack iteration, typed macros, and broader
 reflection remain incomplete.
+Source `std.reflect.describe[T]()` now supplies structural type metadata as a
+finite graph of ordinary records/enums/Lists. It handles inferred and recursive
+types, respects lexical visibility and reflects only the declared dynamic
+interface. Compile-time-only queries erase; runtime descriptors are fresh
+source data, without a type registry or newly live methods. Typed generation,
+first-class type values and predicate reflection are not implemented by this slice.
 `Int` type predicates can call pure helpers through the same bounded evaluator;
 known constants remove checks, while unknown results retain the runtime
 construction boundary. Execution never substitutes for a required proof:

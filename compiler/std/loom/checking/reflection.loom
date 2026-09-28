@@ -1,0 +1,339 @@
+// Reflection produces ordinary typed constants. Neither compiler type IDs nor
+// source symbols cross into the descriptor, and no methods become live roots.
+record ReflectionModel {
+    schema Int
+    types Int
+    item Int
+    kind Int
+    indices Int
+    fields Int
+    field Int
+    variants Int
+    variant Int
+}
+
+fn reflection_intrinsic(env Environment, owner Int) Bool {
+    let item = symbol(env, owner)
+    let file = get(env.source.files, item.file)
+    item.name == "describe" && has(item.node, NodeKind.Intrinsic) && file.trusted_std &&
+    package_label(env.source.modules, env.source.packages, file.package) == "std.reflect"
+}
+
+fn reflection_nominal(env Environment, ty Int, name Text, kind TypeKind, count Int) Bool {
+    let shape = get(env.types, ty)
+    if shape.kind != kind || length(shape.arguments) != 0 {
+        return false
+    }
+    if get(env.type_states, ty).phase == 0 {
+        // Signature substitution normally expands these declarations already.
+        return false
+    }
+    let item = symbol(env, shape.symbol)
+    let file = get(env.source.files, item.file)
+    file.trusted_std && item.public && item.name == name &&
+    package_label(env.source.modules, env.source.packages, file.package) == "std.reflect" &&
+    (if kind == TypeKind.Enum {
+            length(shape.variants)
+        } else {
+            length(shape.fields)
+        }) == count
+}
+
+fn reflection_field(env Environment, ty Int, position Int, name Text, expected Int) Bool {
+    let field = get(get(env.types, ty).fields, position)
+    field.name == name && field.ty == expected
+}
+
+fn reflection_element(env Environment, ty Int) Int {
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.List {
+        get(shape.arguments, 0)
+    } else {
+        -1
+    }
+}
+
+fn reflection_kind_name(index Int) Text {
+    if index == 0 {
+        return "Opaque"
+    }
+    if index == 1 {
+        return "NoResult"
+    }
+    if index == 2 {
+        return "Int"
+    }
+    if index == 3 {
+        return "Bool"
+    }
+    if index == 4 {
+        return "Float"
+    }
+    if index == 5 {
+        return "Text"
+    }
+    if index == 6 {
+        return "Bytes"
+    }
+    if index == 7 {
+        return "List"
+    }
+    if index == 8 {
+        return "Tuple"
+    }
+    if index == 9 {
+        return "Record"
+    }
+    if index == 10 {
+        return "Enum"
+    }
+    if index == 11 {
+        return "Refined"
+    }
+    if index == 12 {
+        return "Function"
+    }
+    if index == 13 {
+        return "Task"
+    }
+    "Dynamic"
+}
+
+fn reflection_model(env Environment, owner Int, schema Int, node Node) Result[ReflectionModel, Failure] {
+    let failed = failure(env, owner, node, "reflection requires the std.reflect Schema descriptor model")
+    if !reflection_nominal(env, schema, "Schema", TypeKind.Record, 2) ||
+    !reflection_field(env, schema, 0, "root", 1) {
+        return Result.Err(failed)
+    }
+    let types = get(get(env.types, schema).fields, 1)
+    let item = reflection_element(env, types.ty)
+    if types.name != "types" || item < 0 || !reflection_nominal(env, item, "Type", TypeKind.Record, 5) {
+        return Result.Err(failed)
+    }
+    let fields = get(env.types, item).fields
+    let kind = get(fields, 0).ty
+    let indices = intern(env, TypeKind.List, -1, ints(1))
+    let field_list = get(fields, 3).ty
+    let variant_list = get(fields, 4).ty
+    let field = reflection_element(env, field_list)
+    let variant = reflection_element(env, variant_list)
+    if field < 0 || variant < 0 ||
+    !reflection_nominal(env, kind, "Kind", TypeKind.Enum, 15) ||
+    !reflection_nominal(env, field, "Field", TypeKind.Record, 2) ||
+    !reflection_nominal(env, variant, "Variant", TypeKind.Record, 2) {
+        return Result.Err(failed)
+    }
+    if !reflection_field(env, item, 0, "kind", kind) ||
+    !reflection_field(env, item, 1, "name", 3) ||
+    !reflection_field(env, item, 2, "arguments", indices) ||
+    !reflection_field(env, item, 3, "fields", field_list) ||
+    !reflection_field(env, item, 4, "variants", variant_list) ||
+    !reflection_field(env, field, 0, "name", 3) ||
+    !reflection_field(env, field, 1, "ty", 1) ||
+    !reflection_field(env, variant, 0, "name", 3) ||
+    !reflection_field(env, variant, 1, "fields", indices) {
+        return Result.Err(failed)
+    }
+    var index = 0
+    while index < 15 {
+        let value = get(get(env.types, kind).variants, index)
+        if value.name != reflection_kind_name(index) || length(value.fields) != 0 {
+            return Result.Err(failed)
+        }
+        index = index + 1
+    }
+    Result.Ok(ReflectionModel {
+            schema = schema
+            types = types.ty
+            item = item
+            kind = kind
+            indices = indices
+            fields = field_list
+            field = field
+            variants = variant_list
+            variant = variant
+        })
+}
+
+fn reflection_kind(kind TypeKind) Int {
+    if kind == TypeKind.Unit {
+        return 1
+    }
+    if kind == TypeKind.Int {
+        return 2
+    }
+    if kind == TypeKind.Bool {
+        return 3
+    }
+    if kind == TypeKind.Float {
+        return 4
+    }
+    if kind == TypeKind.Text {
+        return 5
+    }
+    if kind == TypeKind.Bytes {
+        return 6
+    }
+    if kind == TypeKind.List {
+        return 7
+    }
+    if kind == TypeKind.Tuple {
+        return 8
+    }
+    if kind == TypeKind.Record {
+        return 9
+    }
+    if kind == TypeKind.Enum {
+        return 10
+    }
+    if kind == TypeKind.Refined {
+        return 11
+    }
+    if kind == TypeKind.Function {
+        return 12
+    }
+    if kind == TypeKind.Task {
+        return 13
+    }
+    if kind == TypeKind.Dyn {
+        return 14
+    }
+    0
+}
+
+fn reflection_visible(context Context, owner Int) Bool {
+    let item = symbol(context.env, owner)
+    let here = symbol(context.env, context.signature.symbol)
+    item.public || get(context.env.source.files, item.file).package == get(context.env.source.files, here.file).package
+}
+
+fn reflection_add(types List[Int], positions List[Int], ty Int) Int {
+    while length(positions) <= ty {
+        push(positions, -1)
+    }
+    if get(positions, ty) < 0 {
+        set(positions, ty, length(types))
+        push(types, ty)
+    }
+    get(positions, ty)
+}
+
+fn reflection_int(node Node, value Int) Expr {
+    expression(ExprKind.Integer, 1, node, to_text(value), -1, new[Expr](), true)
+}
+
+fn reflection_text(node Node, value Text) Expr {
+    expression(ExprKind.Text, 3, node, value, -1, new[Expr](), true)
+}
+
+fn reflection_record(node Node, ty Int, values List[Expr]) Expr {
+    let fields = new[Expr]()
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        push(fields, expression(ExprKind.Field, value.ty, node, "", index, expressions(value), true))
+        index = index + 1
+    }
+    expression(ExprKind.Record, ty, node, "", -1, fields, true)
+}
+
+fn reflection_edges(node Node, list Int, values List[Int], types List[Int], positions List[Int]) Expr {
+    let edges = new[Expr]()
+    var index = 0
+    while index < length(values) {
+        push(edges, reflection_int(node, reflection_add(types, positions, get(values, index))))
+        index = index + 1
+    }
+    expression(ExprKind.List, list, node, "", -1, edges, true)
+}
+
+fn reflection_member(node Node, model ReflectionModel, name Text, ty Int, types List[Int], positions List[Int]) Expr {
+    let values = expressions(reflection_text(node, name))
+    push(values, reflection_int(node, reflection_add(types, positions, ty)))
+    reflection_record(node, model.field, values)
+}
+
+fn reflection_type(context Context, node Node, model ReflectionModel, ty Int, types List[Int], positions List[Int]) Expr {
+    let env = context.env
+    let shape = get(env.types, ty)
+    var kind = reflection_kind(shape.kind)
+    var name = reflection_kind_name(kind)
+    let fields = new[Expr]()
+    let variants = new[Expr]()
+    var arguments = shape.arguments
+    let nominal = shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined
+    let declaration = if shape.kind == TypeKind.Dyn {
+        get(env.interfaces, shape.symbol).symbol
+    } else {
+        shape.symbol
+    }
+    if (nominal || shape.kind == TypeKind.Dyn) && !reflection_visible(context, declaration) {
+        kind = 0
+    }
+    if kind == 0 {
+        name = ""
+        arguments = new[Int]()
+    } else {
+        if nominal || shape.kind == TypeKind.Dyn {
+            let item = symbol(env, declaration)
+            name = std.loom.project.qualify(package_label(env.source.modules, env.source.packages,
+                    get(env.source.files, item.file).package), item.name)
+        }
+        var index = 0
+        if shape.kind == TypeKind.Record {
+            while index < length(shape.fields) {
+                let field = get(shape.fields, index)
+                push(fields, reflection_member(node, model, field.name, field.ty, types, positions))
+                index = index + 1
+            }
+        }
+        if shape.kind == TypeKind.Refined {
+            arguments = ints(base_type(env, ty))
+        }
+        if shape.kind == TypeKind.Dyn {
+            arguments = new[Int]()
+            var binding = 0
+            while index < length(env.source.symbols) {
+                let member = symbol(env, index)
+                if member.owner == declaration && member.node.kind == NodeKind.AssociatedType {
+                    push(fields, reflection_member(node, model, member.name, get(shape.arguments, binding), types, positions))
+                    binding = binding + 1
+                }
+                index = index + 1
+            }
+        }
+        index = 0
+        while index < length(shape.variants) {
+            let variant = get(shape.variants, index)
+            let values = expressions(reflection_text(node, variant.name))
+            push(values, reflection_edges(node, model.indices, variant.fields, types, positions))
+            push(variants, reflection_record(node, model.variant, values))
+            index = index + 1
+        }
+    }
+    let values = expressions(expression(ExprKind.Variant, model.kind, node, "", kind, new[Expr](), true))
+    push(values, reflection_text(node, name))
+    push(values, reflection_edges(node, model.indices, arguments, types, positions))
+    push(values, expression(ExprKind.List, model.fields, node, "", -1, fields, true))
+    push(values, expression(ExprKind.List, model.variants, node, "", -1, variants, true))
+    reflection_record(node, model.item, values)
+}
+
+fn reflection_call(context Context, node Node, ty Int, output Int) Result[Expr, Failure] {
+    if !concrete(context.env, ty) {
+        return deferred(context, node, output)
+    }
+    let model = reflection_model(context.env, context.signature.symbol, output, node)?
+    let types = new[Int]()
+    let positions = new[Int]()
+    discard reflection_add(types, positions, ty)
+    let values = new[Expr]()
+    var index = 0
+    while index < length(types) {
+        push(values, reflection_type(context, node, model, get(types, index), types, positions))
+        index = index + 1
+    }
+    let fields = expressions(reflection_int(node, 0))
+    push(fields, expression(ExprKind.List, model.types, node, "", -1, values, true))
+    Result.Ok(reflection_record(node, model.schema, fields))
+}

@@ -1755,12 +1755,54 @@ type and purity checks.
 The Loom-written evaluator consumes the same checked model as native lowering;
 constraint folding and pure-predicate validation use this engine too.
 Evaluation is not proof: helper calls in function contracts undergo symbolic
-expansion, and declared postconditions still require the prover. Pack iteration, typed
-macros, and broader compile-time reflection remain later work.
+expansion, and declared postconditions still require the prover. Richer pack iteration
+and typed macros remain later work.
 Float compile-time operations and numeric codecs use the same IEEE behavior as
 native code, including NaN, infinity, signed zero and subnormals. Float/refined
 results may appear inside shared aggregates. Required Float proofs remain
 unsupported and reject; successful evaluation is not an algebraic proof.
+
+### Type reflection
+
+`std.reflect.describe[T]()` resolves the declared type at its lexical call site
+into ordinary source `Schema` data. Generic helpers can query an inferred `T`:
+
+```loom
+import std.reflect.describe
+import std.reflect.Kind
+
+fn is_integer[T](value T) Bool {
+    discard value
+    comptime if describe[T]().types[0].kind == Kind.Int {
+        true
+    } else {
+        false
+    }
+}
+```
+
+`Schema.root` is zero; `types` is a finite graph. Field, variant-payload and
+argument indices refer only to that graph, including recursive and repeated
+types. Nominal `name` labels omit source paths and are not identities.
+`Type.arguments` contains generic arguments or tuple elements; functions use
+parameter types followed by the result, Lists/Tasks their element/result, and
+refinements their base type. `NoResult` describes an omitted function result;
+it does not introduce a source `Unit` type. Records expose ordered `fields`,
+enums ordered `variants`, and `Dynamic` named associated bindings in `fields`.
+
+Private types outside the call's package become `Opaque` leaves with empty
+names and no exposed structure. A generic library helper retains its own
+lexical visibility, not its caller's. Dynamic reflection describes the declared
+interface, never the erased concrete receiver. Methods, predicates and values
+are not enumerated, and descriptors do not establish compatibility proofs.
+
+Descriptors have fresh mutable Lists on each runtime evaluation; ordinary
+copies share those Lists. `comptime` can consume or return them, and a fully
+compile-time query leaves no descriptor allocation in native code. There is no
+runtime registry or new reflection ABI. Call `describe` directly; a normal
+source wrapper can serve as a function value. This is structural metadata, not
+first-class type values or typed code generation. See the
+[reflection example](examples/reflection/main.loom).
 
 ## Lexical cleanup
 

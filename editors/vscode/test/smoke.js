@@ -541,6 +541,31 @@ async function main() {
       textDocument: { uri: params.textDocument.uri }, options: { tabSize: 4, insertSpaces: true },
     });
     assert.equal(TextDocument.applyEdits(TextDocument.create(params.textDocument.uri, 'loom', 40, multiline), literalEdits), multiline);
+    const reflection = `import std.reflect.describe
+import std.reflect.Kind
+
+record Sample {
+    count Int
+}
+
+fn main() {
+    let info = comptime if describe[Sample]().types[0].kind == Kind.Record {
+        describe[Sample]()
+    } else {
+        missing()
+    }
+    assert info.root == 0
+}
+`;
+    await client.change(file, reflection, 41);
+    assert.deepEqual((await client.wait(file, 41)).diagnostics, []);
+    const reflectedHover = await client.rpc.sendRequest('textDocument/hover', at(file, reflection, 'info.root'));
+    assert.ok(reflectedHover.contents.some(item => item.value === 'std.reflect.Schema'));
+    const reflectionDocument = TextDocument.create(params.textDocument.uri, 'loom', 41, reflection);
+    const reflectedMembers = await client.rpc.sendRequest('textDocument/completion', {
+      ...params, position: reflectionDocument.positionAt(reflection.indexOf('info.root') + 'info.ro'.length),
+    });
+    assert.deepEqual(reflectedMembers.items.map(item => item.label), ['root']);
     // Following a dependency outside this folder retains its folder-scoped,
     // relative toolchain settings for diagnostics, hover and formatting.
     const external = path.join(stdRoot, 'loom/source/source.loom');

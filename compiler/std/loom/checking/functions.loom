@@ -205,6 +205,9 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
             return Result.Err(failure(env, current.symbol, item.node, "build inputs require one comptime Text parameter"))
         }
         runtime(0, ints(3), if item.name == "option_present" { 2 } else { if item.name == "input_bytes" { 4 } else { 3 } })
+    } else if reflection_intrinsic(env, current.symbol) {
+        discard reflection_model(env, current.symbol, current.result, item.node)?
+        runtime(1, new[Int](), current.result)
     } else if item.name == "task_next_terminal" {
         if get(env.type_states, current.result).phase == 0 {
             discard expand_type(env, current.result, 0)?
@@ -418,7 +421,7 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
     var context = scope.context
     let body = if runtime_name == "" {
         block(context, child(item.node, part(item.node, NodeKind.Block)), current.result, true)?
-    } else if build_intrinsic(env, current.symbol) {
+    } else if build_intrinsic(env, current.symbol) || reflection_intrinsic(env, current.symbol) {
         expression(ExprKind.Deferred, current.result, item.node, "", -1, new[Expr](), true)
     } else {
         let values = new[Expr]()
