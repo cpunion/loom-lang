@@ -787,11 +787,50 @@ the same case, including `0.0` and `-0.0`; Float NaN reaches the fallback. Text
 patterns compare decoded UTF-8 contents. Records use named patterns such as
 `Packet { value = item, ready = true }`. Fields may reorder; separate them with
 commas or newlines. Omission requires explicit `..` and cannot discard live Tasks
-or scoped resources. Generic record arguments follow the matched type. Guards
-remain unsupported.
+or scoped resources. Generic record arguments follow the matched type.
+
+Use `pattern if condition => body` for a Boolean guard. Pattern bindings are
+visible in the guard and body. Only a matching pattern evaluates its guard;
+false continues to the next arm, retaining effects already performed. Guards
+never count toward exhaustiveness, including constant `true`; provide unguarded
+coverage. The body can use proven immutable scalar facts from its guard.
+Candidate Tasks stay available on a false guard; consuming them before a retry
+or transferring them twice is rejected. Guards may await unrelated Tasks and
+use ordinary block cleanup. Guarded matches containing MustScope resources
+currently reject because adoption cannot be delayed until after a guard.
+
 Expansion has a bounded decision budget; normal flat matches
 retain their direct path. No runtime pattern engine or checked-artifact change is
 needed, and compiler production sources do not adopt the new syntax.
+
+## Multiline Text
+
+Triple-quoted literals are raw `Text`, useful for source fixtures and expected
+output without escaped newlines or quotes:
+
+```loom
+let expected = """
+    record Point {
+        x Int
+        y Int
+    }
+    """
+```
+
+The opening quotes must be followed immediately by a newline. The closing
+quotes start a line after optional spaces or tabs; that exact indentation prefix
+is removed from each nonblank content line. A missing prefix is an error.
+Whitespace-only lines become empty lines. Opening and closing boundary newlines
+are excluded; leave an empty content line before the closing delimiter to retain
+a final newline. LF, CRLF and CR line endings normalize to LF.
+
+Backslashes, quotes and interpolation-like text are literal content. To include
+a line beginning with triple quotes, use four or more quotes for both delimiters;
+only a line starting with an equally sized quote run closes the literal.
+Ordinary `"..."` literals retain their escape syntax. Both forms use the same
+Text type, compile-time evaluation, matching and native representation.
+`loom fmt` preserves multiline literal spelling and contents. See the executable
+[multiline example](examples/patterns/multiline.loom).
 
 ## List construction
 

@@ -5,6 +5,14 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add raw multiline Text with triple quotes, closing-indent removal and longer
+  delimiters for embedded quotes. Preserve contents through formatting and use
+  readable multiline assertion fixtures. No new runtime type or bootstrap stage.
+
+- Add Boolean match guards with pattern bindings, source-order effects, scalar
+  refinement facts and conditional Task transfer. Guards do not provide coverage;
+  guarded MustScope matches reject. Reuse ordinary typed branches and async frames.
+
 - Require newlines or `;` between record field declarations, rejecting fields
   separated only by spaces or commas. `loom fmt` emits one field per line and
   removes field semicolons while preserving comments. Statement syntax is

@@ -1,0 +1,83 @@
+import std.list.length
+import std.list.push
+import std.time.sleep_ms
+
+fn record_guard(trace List[Int], mark Int, accepted Bool) Bool {
+    push(trace, mark)
+    accepted
+}
+
+fn guard_input(trace List[Int], values List[Int]) (Int, List[Int]) {
+    push(trace, 1)
+    (5, values)
+}
+
+fn guarded_value(value (Int, List[Int]), trace List[Int]) Int {
+    match value {
+        (0, _) if record_guard(trace, 99, true) => -1
+        (n, values) if record_guard(trace, 2, n > 0) && {
+            push(values, n)
+            false
+        } => -2
+        (n, values) if record_guard(trace, 3, length(values) == 2) => n + values[1]
+        rest => rest.0
+    }
+}
+
+fn guarded_cleanup(value Int, trace List[Int]) Int {
+    match value {
+        n if {
+            defer {
+                push(trace, 2)
+            }
+            push(trace, 1)
+            if n < 0 {
+                return -1
+            }
+            n > 0
+        } => {
+            push(trace, 3)
+            n
+        }
+        _ => {
+            push(trace, 4)
+            0
+        }
+    }
+}
+
+fn guard_values() {
+    let trace List[Int] = []
+    let values = [1]
+    assert guarded_value(guard_input(trace, values), trace) == 10
+    assert length(trace) == 3 && trace[0] == 1 && trace[1] == 2 && trace[2] == 3
+    assert length(values) == 2 && values[1] == 5
+    let accepted List[Int] = []
+    assert guarded_cleanup(7, accepted) == 7
+    assert accepted[0] == 1 && accepted[1] == 2 && accepted[2] == 3
+    let rejected List[Int] = []
+    assert guarded_cleanup(0, rejected) == 0
+    assert rejected[0] == 1 && rejected[1] == 2 && rejected[2] == 4
+    let returned List[Int] = []
+    assert guarded_cleanup(-1, returned) == -1
+    assert length(returned) == 2 && returned[0] == 1 && returned[1] == 2
+}
+
+async fn delayed_guard(number Int) Bool {
+    sleep_ms(1).await
+    number > 0
+}
+
+async fn guarded_task(value (Task[Int], Int)) Int {
+    match value {
+        (task, n) if delayed_guard(n).await => task.await + n
+        whole if whole.1 == 0 => whole.0.await
+        (task, _) => task.await - 1
+    }
+}
+
+async fn guard_tasks() {
+    assert guarded_task((delayed(7), 2)).await == 9
+    assert guarded_task((delayed(7), 0)).await == 7
+    assert guarded_task((delayed(7), -1)).await == 6
+}
