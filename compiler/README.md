@@ -1619,6 +1619,9 @@ summary does not inherit stronger facts from its implementation. Shared fields
 can pass through an aggregate but their contents remain opaque; this is not a
 shared-state invariant or alias-mutation proof. Predicate helpers still evaluate
 every argument and initializer, including an unused field that could overflow.
+`old(value.count)` and `old(value.0)` can denote immutable scalar paths through
+entry record/tuple parameters; shared-data snapshots and arbitrary entry
+expressions remain unsupported.
 See the [aggregate contract example](examples/aggregate_contracts/main.loom).
 
 The current proof fragment supports scalar linear arithmetic, comparisons,

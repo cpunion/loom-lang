@@ -518,8 +518,8 @@ Explicit Int refinement conversion now reuses that fragment to eliminate a
 destination check only when both truth and definedness follow from the source
 predicate. Exact call-free conjunction reuse also handles Float without
 arithmetic rewriting. Immutable local-flow facts and bounded direct scalar-helper
-expansion extend this optional proof as described above; mutable/alias facts and
-general helper control flow remain open.
+expansion extend this optional proof as described above; mutable/alias facts,
+helper loops and recursive proof dependencies remain open.
 
 Typed metaprogramming later reuses this infrastructure. A narrow stable-ID
 move-plus-edit merge preview can read Git commits, preserve source trivia and
