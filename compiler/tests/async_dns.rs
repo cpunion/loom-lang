@@ -11,8 +11,9 @@ fn source_dns_and_hostname_connect_use_completion_under_moving_gc() {
     success(&common::loom(&["check", package]));
     for level in ["0", "2"] {
         for tests in ["compiler/std/net/dns", package] {
+            eprintln!("O{level}: {tests}");
             success(
-                &common::command(&["test", tests])
+                &common::command(&["test", tests, "--no-run"])
                     .env("LOOM_OPT_LEVEL", level)
                     .output()
                     .unwrap(),
@@ -43,5 +44,7 @@ fn source_dns_and_hostname_connect_use_completion_under_moving_gc() {
         assert!(llvm.contains("loom_rt_task_wait_resolve"));
         assert!(llvm.contains("loom_rt_task_bytes_result"));
     }
-    success(&common::command(&["run", package]).output().unwrap());
+    success(&common::run_task_command(&mut common::command(&[
+        "run", package,
+    ])));
 }

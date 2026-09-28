@@ -51,8 +51,11 @@ pub fn success(output: &Output) {
 
 // Bound task-drain regressions while stressing only the emitted program.
 pub fn run_tasks(executable: &Path) -> Output {
-    let mut child = Command::new(executable)
-        .env("LOOM_GC_STRESS", "1")
+    run_task_command(Command::new(executable).env("LOOM_GC_STRESS", "1"))
+}
+
+pub fn run_task_command(command: &mut Command) -> Output {
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -61,7 +64,10 @@ pub fn run_tasks(executable: &Path) -> Output {
     while child.try_wait().unwrap().is_none() {
         if Instant::now() >= limit {
             child.kill().unwrap();
-            panic!("tasks failed to drain: {:?}", child.wait_with_output());
+            panic!(
+                "tasks failed to drain: {command:?}: {:?}",
+                child.wait_with_output()
+            );
         }
         thread::sleep(Duration::from_millis(5));
     }
