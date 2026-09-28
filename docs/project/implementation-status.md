@@ -512,6 +512,11 @@ added. Source `std.bytes.decode_utf8` now exposes that strict validation as
 `Result[Text, Utf8Error]`; successful Text is isolated from later Bytes mutation.
 `std.file.read_text` reuses it and maps errors, without a second private decoding
 path. These file writes truncate their destination, not atomically publish it.
+Source `std.io` also exposes binary stdin/stdout/stderr without new runtime APIs.
+Reads buffer to EOF; writes handle partial counts without closing standard streams.
+Native O0/O2 and forced-GC tests cover empty/multichunk inputs, all byte values,
+continued stream access, and strict text decoding. See the
+[binary filter](../../compiler/examples/binary_streams/main.loom).
 
 Source `std.fs` now exposes exclusive directory creation, native rename/replacement,
 nonrecursive removal and no-follow entry classification. Native rename never

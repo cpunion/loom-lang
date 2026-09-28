@@ -2,6 +2,7 @@ import std.result.Result
 import std.text.length
 import std.bytes.new
 import std.bytes.decode_utf8
+import std.bytes.length
 
 pub enum WriteError {
     Failed
@@ -14,10 +15,12 @@ pub enum ReadError {
 
 intrinsic fn write(handle Int, value Text, offset Int) Int
 
+intrinsic fn write_bytes(handle Int, value Bytes, offset Int) Int
+
 intrinsic fn read(handle Int, buffer Bytes, limit Int) Int
 
-// Read standard input to EOF without closing the process-owned stream.
-pub fn read_text() Result[Text, ReadError] {
+// Read standard input to EOF without decoding or closing the process-owned stream.
+pub fn read_bytes() Result[Bytes, ReadError] {
     let buffer = new()
     var count = read(0, buffer, 8192)
     while count > 0 {
@@ -26,7 +29,11 @@ pub fn read_text() Result[Text, ReadError] {
     if count < 0 {
         return Result.Err(ReadError.Failed)
     }
-    match decode_utf8(buffer) {
+    Result.Ok(buffer)
+}
+
+pub fn read_text() Result[Text, ReadError] {
+    match decode_utf8(read_bytes()?) {
         Result.Ok(text) => Result.Ok(text)
         Result.Err(_) => Result.Err(ReadError.Utf8)
     }
@@ -39,6 +46,29 @@ pub fn write_text(value Text) Result[Int, WriteError] {
 
 pub fn write_error(value Text) Result[Int, WriteError] {
     write_all(2, value)
+}
+
+// Writes report the byte count. They loop over partial writes but never close
+// process-owned stdout/stderr; callers may continue using either stream.
+pub fn write_bytes(value Bytes) Result[Int, WriteError] {
+    write_all(1, value)
+}
+
+pub fn write_error(value Bytes) Result[Int, WriteError] {
+    write_all(2, value)
+}
+
+fn write_all(handle Int, value Bytes) Result[Int, WriteError] {
+    let size = length(value)
+    var offset = 0
+    while offset < size {
+        let count = write_bytes(handle, value, offset)
+        if count <= 0 {
+            return Result.Err(WriteError.Failed)
+        }
+        offset = offset + count
+    }
+    Result.Ok(offset)
 }
 
 fn write_all(handle Int, value Text) Result[Int, WriteError] {
