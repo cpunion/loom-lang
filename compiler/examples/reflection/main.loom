@@ -1,0 +1,125 @@
+import std.reflect.describe
+import std.reflect.Kind
+import std.reflect.Schema
+import std.list.length
+import reflection.hidden.secret
+import reflection.hidden.envelope
+import reflection.hidden.describe_here
+import reflection.hidden.disclosed
+
+enum Tree[T] {
+    Leaf(T)
+    Branch(List[Tree[T]])
+}
+
+record Point {
+    x Int
+    y Int
+}
+
+type Positive = Int where self > 0
+
+concept Source {
+    type Item
+    fn read(self Self) Self.Item
+}
+
+concept Label {
+    fn label(self Self) Text
+}
+
+impl Label for Point {
+    fn label(self Point) Text {
+        "reflection_method_should_stay_dead"
+    }
+}
+
+fn describe_value[T](value T) Schema {
+    discard value
+    describe[T]()
+}
+
+fn is_integer[T](value T) Bool {
+    discard value
+    comptime if describe[T]().types[0].kind == Kind.Int {
+        true
+    } else {
+        false
+    }
+}
+
+fn check_tree(schema Schema) {
+    let tree = schema.types[schema.root]
+    assert tree.kind == Kind.Enum && tree.name == "reflection.Tree"
+    assert length(tree.arguments) == 1
+    assert schema.types[tree.arguments[0]].kind == Kind.Int
+    assert length(tree.variants) == 2
+    assert tree.variants[0].name == "Leaf"
+    assert tree.variants[0].fields[0] == tree.arguments[0]
+    let children = schema.types[tree.variants[1].fields[0]]
+    assert children.kind == Kind.List && children.arguments[0] == schema.root
+    assert length(schema.types) == 3
+}
+
+fn exercise() {
+    let point = describe_value(Point {
+            x = 1,
+            y = 2
+        })
+    let fields = point.types[point.root].fields
+    assert length(fields) == 2 && fields[0].name == "x" && fields[1].name == "y"
+    assert fields[0].ty == fields[1].ty
+    assert point.types[fields[0].ty].kind == Kind.Int
+    assert is_integer(1) && !is_integer(true)
+
+    check_tree(describe[Tree[Int]]())
+    check_tree(comptime {
+            describe[Tree[Int]]()
+        })
+    let first = describe[Tree[Int]]()
+    let second = describe[Tree[Int]]()
+    let alias = first
+    first.types[0] = describe[Int]().types[0]
+    assert alias.types[0].kind == Kind.Int
+    check_tree(second)
+
+    let tuple = describe[(Float, Bytes, Task[Text])]()
+    let elements = tuple.types[0].arguments
+    assert tuple.types[0].kind == Kind.Tuple
+    assert tuple.types[elements[0]].kind == Kind.Float
+    assert tuple.types[elements[1]].kind == Kind.Bytes
+    let task = tuple.types[elements[2]]
+    assert task.kind == Kind.Task && tuple.types[task.arguments[0]].kind == Kind.Text
+    let function = describe[fn(Int)]()
+    let parameters = function.types[0].arguments
+    assert function.types[0].kind == Kind.Function
+    assert function.types[parameters[1]].kind == Kind.NoResult
+
+    let refined = describe[Positive]()
+    assert refined.types[0].kind == Kind.Refined
+    assert refined.types[refined.types[0].arguments[0]].kind == Kind.Int
+    let dynamic = describe[dyn Source[Item = Int]]()
+    let binding = dynamic.types[0].fields[0]
+    assert dynamic.types[0].kind == Kind.Dynamic && binding.name == "Item"
+    assert dynamic.types[binding.ty].kind == Kind.Int
+
+    let private = describe_value(secret())
+    assert private.types[0].kind == Kind.Opaque && private.types[0].name == ""
+    assert length(private.types) == 1 && length(private.types[0].fields) == 0
+    let public = describe_value(envelope())
+    assert public.types[0].kind == Kind.Record && public.types[0].fields[0].name == "secret"
+    assert public.types[public.types[0].fields[0].ty].kind == Kind.Opaque
+    assert describe_here(Point {
+            x = 3,
+            y = 4
+        }).types[0].kind == Kind.Opaque
+    assert disclosed().types[0].fields[0].name == "password"
+}
+
+fn main() {
+    exercise()
+}
+
+test fn typed_reflection_preserves_structure_and_visibility() {
+    exercise()
+}

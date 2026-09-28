@@ -1,0 +1,32 @@
+import std.reflect.describe
+import std.reflect.Schema
+
+record Secret {
+    password Text
+}
+
+pub record Envelope {
+    secret Secret
+}
+
+pub fn secret() Secret {
+    Secret {
+        password = "not reflected"
+    }
+}
+
+pub fn envelope() Envelope {
+    Envelope {
+        secret = secret()
+    }
+}
+
+// Visibility follows the lexical call site, not the type argument's caller.
+pub fn describe_here[T](value T) Schema {
+    discard value
+    describe[T]()
+}
+
+pub fn disclosed() Schema {
+    describe[Secret]()
+}

@@ -1,0 +1,49 @@
+// A descriptor is source data, not a runtime type handle. Indices identify
+// types only within one Schema; display names are not type identities.
+pub enum Kind {
+    Opaque
+    NoResult
+    Int
+    Bool
+    Float
+    Text
+    Bytes
+    List
+    Tuple
+    Record
+    Enum
+    Refined
+    Function
+    Task
+    Dynamic
+}
+
+pub record Field {
+    name Text
+    ty Int
+}
+
+pub record Variant {
+    name Text
+    fields List[Int]
+}
+
+pub record Type {
+    kind Kind
+    name Text
+    // Generic arguments, tuple elements, or function parameters then result.
+    // List/Task have one argument; Refined has its base type.
+    arguments List[Int]
+    // Record fields or named dynamic associated bindings, in declaration order.
+    fields List[Field]
+    variants List[Variant]
+}
+
+pub record Schema {
+    root Int
+    types List[Type]
+}
+
+// Resolved at the call site. Inaccessible nominal types become opaque leaves.
+// Recursive types reuse graph indices; no values or methods are inspected.
+pub intrinsic fn describe[T]() Schema

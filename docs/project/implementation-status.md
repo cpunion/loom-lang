@@ -681,6 +681,18 @@ Runtime captures, external effects, faults, and exhausted
 budgets reject. Scalar constraint folding shares this evaluator; required
 postconditions still use the prover, with no evaluation-as-proof fallback.
 
+Source `std.reflect.describe[T]()` now exposes a finite, visibility-filtered
+type graph, including recursive fields/variants, generic arguments, function
+signatures and dynamic associated bindings. Inferred generic types and
+compile-time selection use the same checker; unknown types defer without
+supplying proof evidence. Descriptors lower to ordinary source aggregates,
+not a runtime registry, and do not retain unused methods. Native O0/O2 tests
+exercise fresh/shared descriptor Lists under forced GC; compile-time-only
+selection emits no runtime allocation. See the
+[reflection example](../../compiler/examples/reflection/main.loom).
+Descriptor IDs are local to one graph, not persistent declaration identities
+or first-class source types. Typed generation and predicate reflection remain open.
+
 Stable schemas, lossless editing, richer pack iteration, typed macros, broader compile-time
 reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).

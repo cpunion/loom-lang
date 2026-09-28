@@ -312,8 +312,10 @@ pub fn bind(project Project, tests Bool) Result[Program, Failure] {
                     }
                     let build_input = (node.value == "input_file" || node.value == "input_bytes" || node.value == "target") &&
                         std.loom.project.package_label(project.modules, project.packages, source.package) == "std.build"
-                    if has(node, NodeKind.Intrinsic) && (!source.trusted_std || test_only || (has(node, NodeKind.Public) && !build_input)) {
-                        return Result.Err(failure(file, node, "intrinsics require trusted standard-library source; only std.build input_file, input_bytes and target can be public"))
+                    let reflection = node.value == "describe" &&
+                        std.loom.project.package_label(project.modules, project.packages, source.package) == "std.reflect"
+                    if has(node, NodeKind.Intrinsic) && (!source.trusted_std || test_only || (has(node, NodeKind.Public) && !build_input && !reflection)) {
+                        return Result.Err(failure(file, node, "intrinsics require trusted standard-library source; only build inputs and type reflection can be public"))
                     }
                     let owner = length(symbols)
                     push(symbols, Symbol { file = file node = node name = node.value
