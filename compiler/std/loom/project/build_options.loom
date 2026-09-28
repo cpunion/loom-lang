@@ -1,0 +1,91 @@
+// Explicit, application-wide build inputs. Names can be qualified by the caller
+// (for example app.channel); values are not secret storage.
+pub record BuildOption {
+    name Text
+    value Text
+}
+
+pub fn valid_build_option(name Text) Bool {
+    if std.text.length(name) == 0 {
+        return false
+    }
+    var index = 0
+    while index < std.text.length(name) {
+        let char = std.text.byte(name, index)
+        let letter = (char >= 65 && char <= 90) || (char >= 97 && char <= 122) || char == 95
+        if !letter && !(index > 0 && ((char >= 48 && char <= 57) || char == 45 || char == 46)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn build_option_before(left Text, right Text) Bool {
+    var index = 0
+    while index < std.text.length(left) && index < std.text.length(right) {
+        let a = std.text.byte(left, index)
+        let b = std.text.byte(right, index)
+        if a != b {
+            return a < b
+        }
+        index = index + 1
+    }
+    std.text.length(left) < std.text.length(right)
+}
+
+// Detach and sort so argument order and later caller mutations cannot change
+// the checking basis. Duplicate names are errors, including equal values.
+pub fn build_option_snapshot(options List[BuildOption]) Result[List[BuildOption], Text] {
+    let saved = std.list.new[BuildOption]()
+    var index = 0
+    while index < std.list.length(options) {
+        let item = std.list.get(options, index)
+        if !valid_build_option(item.name) {
+            return Result.Err("build option names require a letter or underscore, followed by letters, digits, '_', '-' or '.'")
+        }
+        var position = 0
+        while position < std.list.length(saved) && build_option_before(std.list.get(saved, position).name, item.name) {
+            position = position + 1
+        }
+        if position < std.list.length(saved) && std.list.get(saved, position).name == item.name {
+            return Result.Err("duplicate build option name")
+        }
+        std.list.push(saved, item)
+        var move = std.list.length(saved) - 1
+        while move > position {
+            std.list.set(saved, move, std.list.get(saved, move - 1))
+            move = move - 1
+        }
+        std.list.set(saved, position, item)
+        index = index + 1
+    }
+    Result.Ok(saved)
+}
+
+pub fn same_build_options(left List[BuildOption], right List[BuildOption]) Bool {
+    let a = match build_option_snapshot(left) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let b = match build_option_snapshot(right) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    if std.list.length(a) != std.list.length(b) {
+        return false
+    }
+    var index = 0
+    while index < std.list.length(a) {
+        if std.list.get(a, index).name != std.list.get(b, index).name ||
+        std.list.get(a, index).value != std.list.get(b, index).value {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}

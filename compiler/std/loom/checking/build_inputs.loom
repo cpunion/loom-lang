@@ -2,10 +2,15 @@ import std.loom.project.InputRequest
 import std.loom.project.InputFile
 import std.loom.project.BuildInput
 import std.loom.project.same_request
+import std.loom.project.BuildOption
+import std.loom.project.build_option_snapshot
+import std.loom.project.valid_build_option
+import std.loom.source.Span
 
 // One context per check. The caller can supply snapshots and/or an explicit
 // reader; discovered dependencies append to files. Treat them as read-only.
 pub record BuildInputs {
+    options List[BuildOption]
     files List[BuildInput]
     // Includes failed reads, so editors can observe a missing input's creation.
     requests List[InputRequest]
@@ -13,7 +18,12 @@ pub record BuildInputs {
 }
 
 pub fn build_inputs(reader fn(InputRequest) Result[InputFile, Text]) BuildInputs {
+    build_inputs(reader, new[BuildOption]())
+}
+
+pub fn build_inputs(reader fn(InputRequest) Result[InputFile, Text], options List[BuildOption]) BuildInputs {
     BuildInputs {
+        options = options
         files = new[BuildInput]()
         requests = new[InputRequest]()
         read = reader
@@ -24,14 +34,50 @@ pub fn no_input_reader(request InputRequest) Result[InputFile, Text] {
     Result.Err(concat("build input requires an explicit snapshot or reader: ", request.path))
 }
 
-fn input_intrinsic(env Environment, owner Int) Bool {
+fn build_intrinsic(env Environment, owner Int) Bool {
     let item = symbol(env, owner)
-    if item.name != "input_file" || !has(item.node, NodeKind.Intrinsic) {
+    if (item.name != "input_file" && item.name != "option_present" && item.name != "option_text") ||
+    !has(item.node, NodeKind.Intrinsic) {
         return false
     }
     let file = get(env.source.files, item.file)
     file.trusted_std &&
     package_label(env.source.modules, env.source.packages, file.package) == "std.build"
+}
+
+fn build_call(context Context, node Node, owner Int, value StaticValue) Result[Expr, Failure] {
+    let name = symbol(context.env, owner).name
+    if name == "input_file" {
+        return input_call(context, node, value)
+    }
+    let ty = if name == "option_present" {
+        2
+    } else {
+        3
+    }
+    if !value.known {
+        return Result.Ok(expression(ExprKind.Deferred, ty, node, "", -1, new[Expr](), true))
+    }
+    if !valid_build_option(value.text) {
+        return Result.Err(error(context, node, "invalid build option name"))
+    }
+    let options = get(context.env.inputs, 0).options
+    var index = 0
+    while index < length(options) && get(options, index).name != value.text {
+        index = index + 1
+    }
+    let present = index < length(options)
+    if ty == 2 {
+        return Result.Ok(expression(ExprKind.Bool, 2, node, if present {
+                    "true"
+                } else {
+                    "false"
+                }, -1, new[Expr](), true))
+    }
+    if !present {
+        return Result.Err(error(context, node, "build option has no supplied value"))
+    }
+    Result.Ok(expression(ExprKind.Text, 3, node, get(options, index).value, -1, new[Expr](), true))
 }
 
 fn input_call(context Context, node Node, value StaticValue) Result[Expr, Failure] {

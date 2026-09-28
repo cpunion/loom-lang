@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add explicit build options to CLI, source `std.build.option`, and editor
+  queries. Bind the detached option map to frontend reuse, analysis freshness
+  and v3 build receipts, without ambient environment reads or runtime operations.
+
 - Add raw multiline Text with triple quotes, closing-indent removal and longer
   delimiters for embedded quotes. Preserve contents through formatting and use
   readable multiline assertion fixtures. No new runtime type or bootstrap stage.

@@ -43,6 +43,7 @@ record Options {
     object_cache Text
     frontend_cache Text
     receipt Text
+    build_options List[BuildOption]
     program_args List[Text]
 }
 
@@ -68,6 +69,7 @@ fn options(args List[Text]) Result[Options, Text] {
     var object_cache = ""
     var frontend_cache = ""
     var receipt = ""
+    let build_options = new[BuildOption]()
     let program_args = new[Text]()
     var forwarding = false
     var index = 2
@@ -94,12 +96,18 @@ fn options(args List[Text]) Result[Options, Text] {
                         }
                         no_run = true
                     } else {
-                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--object-cache" || arg == "--frontend-cache" || arg == "--receipt" {
+                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--object-cache" || arg == "--frontend-cache" || arg == "--receipt" || arg == "--build-option" {
                             index = index + 1
                             if index == length(args) {
                                 return Result.Err(concat(arg, " needs a value"))
                             }
                             let value = get(args, index)
+                            if arg == "--build-option" {
+                                if command == "resolve" {
+                                    return Result.Err("--build-option requires a compilation command")
+                                }
+                                push(build_options, build_option_argument(value)?)
+                            }
                             if arg == "--std" {
                                 standard = value
                             }
@@ -214,6 +222,7 @@ fn options(args List[Text]) Result[Options, Text] {
             object_cache = object_cache
             frontend_cache = frontend_cache
             receipt = receipt
+            build_options = build_option_snapshot(build_options)?
             program_args = program_args
         })
 }
@@ -238,7 +247,7 @@ fn prepare_loaded(options Options, loaded Project) Result[Prepared, Text] {
             return Result.Err(diagnostic(loaded.files, failure))
         }
     }
-    let inputs = build_inputs(read_input)
+    let inputs = build_inputs(read_input, options.build_options)
     match check_with_inputs(bound, inputs) {
         Result.Ok(value) => Result.Ok(Prepared {
                 inputs = inputs.files
@@ -366,7 +375,7 @@ fn execute(args List[Text]) Result[Text, Text] {
             if before != after {
                 return Result.Err("native backend changed during build; receipt not published")
             }
-            discard publish_build_receipt(selected.receipt, output, input, before, prepared.project, prepared.inputs)?
+            discard publish_build_receipt(selected.receipt, output, input, before, prepared.project, prepared.inputs, selected.build_options)?
         }
         return Result.Ok(concat("built ", concat(output, "\n")))
     }

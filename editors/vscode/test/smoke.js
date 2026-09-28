@@ -36,6 +36,57 @@ async function buildInputSmoke(executable, stdRoot) {
   }
 }
 
+async function buildOptionSmoke(executable, stdRoot) {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'loom-options-'));
+  const folder = await fs.realpath(temporary);
+  const file = path.join(folder, 'main.loom');
+  const settings = { executable, stdRoot, buildOptions: { 'app.mode': 'on' } };
+  const client = await session(settings, folder);
+  const source = `import std.build.option
+
+record Enabled {
+    value Int
+}
+
+record Disabled {
+    other Bool
+}
+
+fn main() {
+    let box = comptime if option("app.mode", "off") == "on" {
+        Enabled { value = 7 }
+    } else {
+        Disabled { other = true }
+    }
+    assert box.value == 7
+}
+`;
+  try {
+    await client.open(file, source);
+    assert.deepEqual((await client.wait(file, 1)).diagnostics, []);
+    const document = TextDocument.create(URI.file(file).toString(), 'loom', 1, source);
+    const hover = await client.rpc.sendRequest('textDocument/hover', {
+      textDocument: { uri: document.uri }, position: document.positionAt(source.indexOf('box.value')),
+    });
+    assert.ok(hover.contents.some(item => item.value === 'Enabled' || item.value.endsWith('.Enabled')), JSON.stringify(hover));
+    const completion = await client.rpc.sendRequest('textDocument/completion', {
+      textDocument: { uri: document.uri }, position: document.positionAt(source.indexOf('box.value') + 6),
+    });
+    assert.deepEqual(completion.items.map(item => item.label), ['value']);
+    for (const mode of ['off', 'on']) {
+      const after = client.diagnostics.length;
+      await client.rpc.sendNotification('workspace/didChangeConfiguration', {
+        settings: { loom: { ...settings, buildOptions: { 'app.mode': mode } } },
+      });
+      assert.equal((await client.wait(file, 1, after)).diagnostics.length === 0, mode === 'on');
+    }
+    await assert.rejects(fs.access(file), { code: 'ENOENT' });
+  } finally {
+    await client.close();
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
+
 async function autoImportSmoke(executable, stdRoot) {
   const folder = path.join(__dirname, 'fixtures/import_project');
   const file = path.join(folder, 'main.loom');
@@ -482,6 +533,7 @@ async function main() {
     await directDependencyAutoImportSmoke(executable, stdRoot);
     await privateRenameSmoke(executable, stdRoot);
     await buildInputSmoke(executable, stdRoot);
+    await buildOptionSmoke(executable, stdRoot);
     console.log('Real compiler LSP smoke passed: unsaved diagnostics, overlays, checked hover/definition/references, local and private cross-file rename, name/member/qualified/import completion, verified qualified and bare-name auto-import actions, dependency rejection and repair, loops, indexing, external-file toolchain settings, formatting, no source writes.');
   } finally { await client.close(); }
 }

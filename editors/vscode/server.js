@@ -50,7 +50,7 @@ async function settings(uri) {
     throw new Error('A file outside a multi-root workspace needs absolute Loom toolchain paths (or an executable on PATH); add its directory as a workspace folder to use relative settings.');
   }
   if (relativeExecutable) executable = path.resolve(folder, executable);
-  return { executable, stdRoot: relativeStd ? path.resolve(folder, raw.stdRoot) : raw?.stdRoot || '' };
+  return { executable, stdRoot: relativeStd ? path.resolve(folder, raw.stdRoot) : raw?.stdRoot || '', buildOptions: raw?.buildOptions || {} };
 }
 
 function schedule() {

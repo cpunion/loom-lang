@@ -1,0 +1,35 @@
+import std.build.option
+import std.io.write_text
+import std.option.Option
+
+fn channel() Text {
+    option("app.channel", "development")
+}
+
+fn banner() Text {
+    comptime if option("app.style", "short") == "long" {
+        "Welcome to Loom"
+    } else {
+        "Loom"
+    }
+}
+
+fn main() {
+    discard write_text(banner())
+    discard write_text(" / ")
+    discard write_text(channel())
+    discard write_text("\n")
+}
+
+test fn fixed_options_are_available_at_compile_time() {
+    assert comptime {
+        banner()
+    } == banner()
+    assert comptime {
+        channel()
+    } == channel()
+    assert match option("app.channel") {
+        Option.Some(value) => channel() == value
+        Option.None => channel() == "development"
+    }
+}

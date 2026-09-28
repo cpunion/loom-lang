@@ -14,6 +14,14 @@ fn frontend_number(output Bytes, value Int) {
 fn frontend_key(options Options, project Project, identity Text) Text {
     let output = cache_bytes("loom-frontend-key 2\n")
     frontend_field(output, identity)
+    frontend_number(output, length(options.build_options))
+    var option = 0
+    while option < length(options.build_options) {
+        let value = get(options.build_options, option)
+        frontend_field(output, value.name)
+        frontend_field(output, value.value)
+        option = option + 1
+    }
     // check does not lower. build/run/emit-checked share a production artifact;
     // test uses its own root, isolated imports and executable entry points.
     frontend_field(output, if options.command == "check" {

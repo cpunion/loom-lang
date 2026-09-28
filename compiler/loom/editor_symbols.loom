@@ -521,6 +521,7 @@ fn editor_symbols(options EditorOptions, bindings std.loom.binding.Program, prog
         bindings = bindings
         program = program
         inputs = inputs
+        options = options.build_options
     }
     let tokens = match lex(get(bindings.files, file).text) {
         Result.Ok(value) => value,

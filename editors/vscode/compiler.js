@@ -33,6 +33,12 @@ async function snapshots(documents) {
 
 async function editorReport(settings, directory, mode, extraArgs, overlayArgs, signal) {
   const args = [mode, directory, '--tests', ...extraArgs, ...overlayArgs];
+  const options = settings.buildOptions || {};
+  if (typeof options !== 'object' || Array.isArray(options)) throw new Error('loom.buildOptions must map names to string values.');
+  for (const name of Object.keys(options).sort()) {
+    if (typeof options[name] !== 'string') throw new Error('loom.buildOptions values must be strings.');
+    args.push('--build-option', `${name}=${options[name]}`);
+  }
   if (settings.stdRoot) args.push('--std', settings.stdRoot);
   const result = await run(settings.executable, args, directory, signal);
   const failure = detail => new Error(`${mode} failed using ${settings.executable}: ${detail}\nSet loom.executable to the current Loom compiler, not an older same-named tool.`);

@@ -139,7 +139,7 @@ fn input_line(line Text) Result[Bool, Text] {
     Result.Ok(true)
 }
 
-// The receipt must be exactly the compiler's v2 line protocol. It is checked
+// The receipt must be exactly the compiler's v3 line protocol. It is checked
 // against the artifact currently at its canonical path; source files need not
 // still exist because deployment may use an immutable earlier build.
 pub fn read_build_receipt(path Text) Result[BuildReceipt, Text] {
@@ -159,7 +159,7 @@ pub fn read_build_receipt(path Text) Result[BuildReceipt, Text] {
         }
     }
     let lines = split(raw, "\n")
-    if std.list.length(lines) < 12 || get(lines, 0) != "loom-build-receipt 2" {
+    if std.list.length(lines) < 13 || get(lines, 0) != "loom-build-receipt 3" {
         return Result.Err("invalid build receipt version")
     }
     let checked = value(get(lines, 1), "checked-sha256")?
@@ -203,6 +203,28 @@ pub fn read_build_receipt(path Text) Result[BuildReceipt, Text] {
     while index < inputs {
         if position >= std.list.length(lines) { return Result.Err("truncated build receipt") }
         discard input_line(get(lines, position))?
+        position = position + 1
+        index = index + 1
+    }
+    if position >= std.list.length(lines) { return Result.Err("truncated build receipt") }
+    let options = count(get(lines, position), "option-count")?
+    position = position + 1
+    let names = std.list.new[Text]()
+    index = 0
+    while index < options {
+        if position >= std.list.length(lines) { return Result.Err("truncated build receipt") }
+        let fields = split(get(lines, position), " ")
+        if std.list.length(fields) != 3 || get(fields, 0) != "option" || !digest_text(get(fields, 2)) {
+            return Result.Err("invalid build receipt option")
+        }
+        let name = decoded_hex(get(fields, 1))?
+        if name == "" { return Result.Err("invalid build receipt option") }
+        var earlier = 0
+        while earlier < std.list.length(names) {
+            if get(names, earlier) == name { return Result.Err("duplicate build receipt option") }
+            earlier = earlier + 1
+        }
+        std.list.push(names, name)
         position = position + 1
         index = index + 1
     }

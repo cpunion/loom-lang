@@ -65,8 +65,8 @@ fn editor_no_completion() EditorOutput {
     }
 }
 
-fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int, inserted Bool) EditorOutput {
-    let completion = match complete_at(bindings, file, offset) {
+fn editor_completion(bindings std.loom.binding.Program, file Int, offset Int, inserted Bool, inputs BuildInputs) EditorOutput {
+    let completion = match complete_at(bindings, file, offset, inputs) {
         Option.Some(value) => value
         Option.None => {
             return editor_no_completion()

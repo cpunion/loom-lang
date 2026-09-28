@@ -1,0 +1,62 @@
+fn option_program(text Text, options List[BuildOption]) Result[std.loom.typed.Program, Failure] {
+    let files = source_files(concat("import std.build.present\nimport std.build.value\n", text))
+    push(files, source_file("std.build", """
+        intrinsic fn option_present(comptime name Text) Bool
+        intrinsic fn option_text(comptime name Text) Text
+
+        pub fn present(comptime name Text) Bool {
+            option_present(name)
+        }
+
+        pub fn value(comptime name Text) Text {
+            option_text(name)
+        }
+        """, true))
+    check_with_inputs(bind(fixture_project(files), false)?, build_inputs(no_input_reader, options))
+}
+
+test fn options_select_branches_without_ambient_io_or_hidden_requirements() {
+    let options = [BuildOption {
+            name = "feature"
+            value = "yes"
+        }]
+    assert match option_program("""
+        fn selected() Int ensures result == 7 {
+            comptime if present("feature") && value("feature") == "yes" {
+                7
+            } else {
+                missing()
+            }
+        }
+        fn main() {
+            assert comptime { selected() } == 7
+        }
+        """, options) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match option_program("""
+        fn needs_static(name Text) Text {
+            value(name)
+        }
+        """, options) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match option_program("""
+        pub fn unbounded[T](item T) Int {
+            comptime if present("feature") {
+                item + 1
+            } else {
+                0
+            }
+        }
+        """, options) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match option_program("fn main() { discard value(\"absent\") }", options) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

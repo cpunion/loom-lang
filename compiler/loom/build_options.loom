@@ -1,0 +1,16 @@
+import std.loom.project.BuildOption
+import std.loom.project.build_option_snapshot
+
+fn build_option_argument(value Text) Result[BuildOption, Text] {
+    var equal = 0
+    while equal < std.text.length(value) && std.text.byte(value, equal) != 61 {
+        equal = equal + 1
+    }
+    if equal == std.text.length(value) {
+        return Result.Err("--build-option requires name=value")
+    }
+    Result.Ok(BuildOption {
+            name = std.text.slice(value, 0, equal)
+            value = std.text.slice(value, equal + 1, std.text.length(value))
+        })
+}
