@@ -362,8 +362,8 @@ Callback construction may retain effectful or async targets; actual compile-time
 calls still validate the reachable target closure and prohibit real I/O or Tasks.
 See the [static closure example](compiler/examples/comptime_closures/README.md).
 
-Compile-time parameters now specialize named calls with Int/Bool/Float/Text values or
-known source-function identities and leave runtime arguments and any captured
+Compile-time parameters specialize named calls with scalar and immutable
+aggregate/refinement values or known source-function identities, leaving runtime arguments and captured
 environments in the native ABI. Generic and associated static parameter types
 now specialize to these supported shapes; declaration validation still sees
 abstract types, not incidental caller capabilities. Static callbacks use determined targets; generic forwarding and pure selectors
