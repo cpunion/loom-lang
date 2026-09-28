@@ -278,8 +278,8 @@ fn has_pack_iteration(node Node) Bool {
 }
 
 // Repeated bodies are ordinary lexical blocks after the selected arity is
-// known. Tuple projections retain the existing move, effect and cleanup rules.
-fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, arity Int, static_values Bool, shadowed Bool, repeated Bool, depth Int, count List[Int]) Result[Node, Failure] {
+// known. Projections retain the existing move, effect and cleanup rules.
+fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, members List[Text], static_values Bool, shadowed Bool, repeated Bool, depth Int, count List[Int]) Result[Node, Failure] {
     if depth >= 64 || get(count, 0) >= 65536 {
         // A dead comptime branch must not fail before the selected body is
         // checked. Keep the budget diagnostic in that branch as source AST.
@@ -291,15 +291,15 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
         let mapping = node.kind == NodeKind.ComptimeMap
         let source = child(node, 0)
         // Pack elaboration handles its own final value pack. Other maps wait
-        // until checking resolves their source to a lexical tuple binding.
+        // until checking resolves their source to a lexical aggregate binding.
         if source.kind == NodeKind.Name && source.value == values && !shadowed {
             let iterations = new[Node]()
             var index = 0
-            while index < arity {
+            while index < length(members) {
                 let pack = pack_node(source, NodeKind.Name, values, new[Node]())
-                let element = pack_node(source, NodeKind.Select, std.int.to_text(index), source_nodes(pack))
+                let element = pack_node(source, NodeKind.Select, get(members, index), source_nodes(pack))
                 let binding = pack_binding(node, node.value, element, static_values)
-                let body = expand_pack_iteration(env, owner, child(node, 1), values, arity, static_values, node.value == values, true, depth + 1, count)?
+                let body = expand_pack_iteration(env, owner, child(node, 1), values, members, static_values, node.value == values, true, depth + 1, count)?
                 let statements = source_nodes(binding)
                 push(statements, body)
                 push(iterations, pack_node(node, NodeKind.Block, "", statements))
@@ -312,7 +312,7 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
             push(iterations, pack_node(node, NodeKind.Block, "", new[Node]()))
             return Result.Ok(pack_node(node, NodeKind.Block, "", iterations))
         }
-        // A foreign or shadowed tuple loop remains for the body checker, but
+        // A foreign or shadowed aggregate loop remains for the body checker, but
         // its body still needs this outer expansion's closure identity.
     }
     let children = new[Node]()
@@ -336,7 +336,7 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
             } else {
                 current_shadow
             }
-            push(children, expand_pack_iteration(env, owner, member, values, arity, static_values, member_shadow, repeated, depth + 1, count)?)
+            push(children, expand_pack_iteration(env, owner, member, values, members, static_values, member_shadow, repeated, depth + 1, count)?)
             if node.kind == NodeKind.Block && pack_local_binds(member, values) {
                 current_shadow = true
             }
@@ -532,7 +532,7 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
                 let expanded = if variadic && has_pack_iteration(typed) {
                     let count = new[Int]()
                     push(count, 0)
-                    expand_pack_iteration(env, owner, typed, values.value, arity, static_values, false, false, 0, count)?
+                    expand_pack_iteration(env, owner, typed, values.value, tuple_iteration_members(arity), static_values, false, false, 0, count)?
                 } else {
                     typed
                 }

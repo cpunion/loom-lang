@@ -546,6 +546,7 @@ import std.reflect.Kind
 
 record Sample {
     count Int
+    active Bool
 }
 
 fn main() {
@@ -555,6 +556,14 @@ fn main() {
         missing()
     }
     assert info.root == 0
+    let sample = Sample {
+        count = 7
+        active = true
+    }
+    let fields = comptime map field in sample {
+        field
+    }
+    assert fields.0 == 7 && fields.1
 }
 `;
     await client.change(file, reflection, 41);
@@ -566,6 +575,8 @@ fn main() {
       ...params, position: reflectionDocument.positionAt(reflection.indexOf('info.root') + 'info.ro'.length),
     });
     assert.deepEqual(reflectedMembers.items.map(item => item.label), ['root']);
+    const fieldsHover = await client.rpc.sendRequest('textDocument/hover', at(file, reflection, 'fields.0'));
+    assert.ok(fieldsHover.contents.some(item => item.value === '(Int, Bool)'));
     // Following a dependency outside this folder retains its folder-scoped,
     // relative toolchain settings for diagnostics, hover and formatting.
     const external = path.join(stdRoot, 'loom/source/source.loom');

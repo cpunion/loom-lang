@@ -703,15 +703,41 @@ retain their normal checks. The [variadic example](examples/variadics/main.loom)
 exercises these paths through check/build/test/run.
 
 `comptime for item in values { ... }` visits an immutable, statically shaped
-tuple binding in source order. This includes the final value pack of a variadic
-function, a structural tuple parameter, or an ordinary `let` tuple. Its body
+tuple or record binding. This includes the final value pack of a variadic
+function, a structural tuple parameter, or an ordinary `let` aggregate. Tuples
+use element order; records use field declaration order, not initializer order. Its body
 is copied into a lexical block for each element and checked with that element's
-type; body effects still run normally. Empty tuples execute no iteration.
-Names use ordinary lexical shadowing; a mutable or non-tuple binding rejects.
+type; body effects still run normally. Empty aggregates execute no iteration.
+Names use ordinary lexical shadowing; mutable bindings and runtime-sized Lists reject.
 This static form has no `break` or `continue` target: those statements use an
 enclosing `while`, or reject if none exists. The
 [pack iteration example](examples/pack_iteration/main.loom) covers mixed types,
-effects and Tasks.
+effects and Tasks. [Record iteration](examples/pack_iteration/records.loom)
+also covers generic records, nested maps, shared fields and captured callbacks.
+Field reads retain normal visibility, refinement, resource and Task checks.
+Scalar field copies do not mutate their source; shared containers keep sharing.
+Refined records permit the same reads as explicit field access. Foreign private
+records cannot be inspected, including empty records.
+
+```loom
+record Pair[A, B] {
+    first A
+    second B
+}
+
+fn fields[A, B](value Pair[A, B]) (A, B) {
+    comptime map field in value {
+        field
+    }
+}
+```
+
+A known generic record shape still checks with only its declared type bounds.
+An unconstrained `T` is not assumed to be a record: select such code inside a
+`comptime if` that determines its shape, for example with `std.reflect.describe`.
+Iteration emits ordinary typed projections and lexical blocks, with no runtime
+reflection table, boxing or implicit field mutation. It does not introduce
+field-name bindings, first-class type values or general macro expansion.
 
 A structural parameter takes one tuple argument and one runtime tuple
 parameter. It may have fixed fields around one expanded pattern, such as
@@ -746,11 +772,12 @@ and direct packs, closures, sharing and Task transfer.
 
 `comptime map item in values { expression }` elaborates to an ordered typed
 tuple of lexical block results. Each selected body runs once with its own
-element type and normal effects. An empty tuple maps to an empty tuple; for
-nonempty tuples each body must produce a value. `comptime for` remains a
+element type and normal effects. An empty aggregate maps to an empty tuple; for
+nonempty aggregates each body must produce a value. `comptime for` remains a
 no-result statement. Like `comptime for`, `comptime map` accepts an immutable,
-statically shaped tuple parameter or `let` binding, including the final value
-pack of a variadic function. Mutable and non-tuple bindings reject.
+statically shaped tuple or record binding, including the final value
+pack of a variadic function. A record map also produces a tuple, not a record
+with rewritten field types. Mutable bindings and other shapes reject.
 
 A final `comptime values Ts...` parameter instead specializes each element:
 
