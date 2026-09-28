@@ -23,7 +23,11 @@ fn int_lcg(count Int, seed Int) Int {
 fn fib_recursive(value Int) Int {
     if value < 2 { value } else { fib_recursive(value - 1) + fib_recursive(value - 2) }
 }
-record Point { x Int y Int z Int }
+record Point {
+    x Int
+    y Int
+    z Int
+}
 fn step(value Point, delta Int) Point {
     Point { x = (value.y + delta) % 1000003
         y = (value.z + value.x) % 1000003

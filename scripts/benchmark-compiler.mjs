@@ -177,7 +177,7 @@ function generated(size) {
   mkdirSync(join(directory, "data"), { recursive: true });
   writeFileSync(join(directory, "loom.toml"), '[module]\nname = "benchmark"\n');
   writeFileSync(join(directory, "data/data.loom"),
-    "pub record Item { amount Int label Text }\npub fn identity[T](value T) T { value }\n");
+    "pub record Item { amount Int; label Text }\npub fn identity[T](value T) T { value }\n");
   const calls = Array.from({ length: size }, (_, index) => `    total = step_${index}(total)`);
   writeFileSync(join(directory, "main.loom"), `import benchmark.data.Item
 import benchmark.data.identity

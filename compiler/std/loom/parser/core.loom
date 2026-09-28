@@ -11,8 +11,14 @@ import std.list.push
 import std.result.Result
 import std.text.concat
 
-record Cursor { tokens List[Token] index Int }
-record Step { rest Cursor node Node }
+record Cursor {
+    tokens List[Token]
+    index Int
+}
+record Step {
+    rest Cursor
+    node Node
+}
 enum Items { Types Names Arguments Parameters Bindings }
 
 fn token(cursor Cursor) Token { get(cursor.tokens, cursor.index) }

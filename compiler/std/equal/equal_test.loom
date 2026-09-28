@@ -1,6 +1,8 @@
 import std.text.concat
 
-record Identifier { value Int }
+record Identifier {
+    value Int
+}
 
 impl Equal for Identifier {
     fn equals(self Identifier, other Identifier) Bool { self.value == other.value }

@@ -11,8 +11,15 @@ import std.list.set
 import std.list.length
 import std.result.Result
 
-record ExpansionBinding { local Int value Expr }
-record Evaluation { guard Expr value Expr required Bool }
+record ExpansionBinding {
+    local Int
+    value Expr
+}
+record Evaluation {
+    guard Expr
+    value Expr
+    required Bool
+}
 record Expansion {
     program Program
     budget List[Int]

@@ -32,8 +32,15 @@ import std.result.Result
 
 // Results own a detached project/AST snapshot. Treat all result lists as read-only;
 // IDs belong to this analysis, not to later analyses or persistent declarations.
-pub record Analysis { bindings std.loom.binding.Program program std.loom.typed.Program inputs List[BuildInput] }
-pub record Expression { function Int expression Expr }
+pub record Analysis {
+    bindings std.loom.binding.Program
+    program std.loom.typed.Program
+    inputs List[BuildInput]
+}
+pub record Expression {
+    function Int
+    expression Expr
+}
 
 fn copy_node(node Node) Node {
     let children = new[Node]()

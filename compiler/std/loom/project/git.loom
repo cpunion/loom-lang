@@ -6,7 +6,11 @@ import std.process.Output
 import std.process.ExitStatus
 import std.process.EnvChange
 
-record GitSession { tool Text directory Text options Options }
+record GitSession {
+    tool Text
+    directory Text
+    options Options
+}
 
 // Git for Windows rejects verbatim prefixes in its path validator, even though
 // Windows accepts them. Adapt only Git-facing paths; Loom's canonical paths and

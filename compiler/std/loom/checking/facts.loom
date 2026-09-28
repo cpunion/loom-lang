@@ -8,7 +8,10 @@ import std.list.get
 import std.list.push
 import std.list.length
 
-record FactShape { local Int size Int }
+record FactShape {
+    local Int
+    size Int
+}
 
 fn refinement_declarations(source std.loom.binding.Program) Bool {
     var index = 0

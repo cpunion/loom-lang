@@ -9,7 +9,10 @@ import std.text.length
 
 // Proof arithmetic is mathematical, not machine arithmetic. Little-endian
 // base-1e9 digits keep every intermediate digit operation inside checked Int.
-record Number { negative Bool digits List[Int] }
+record Number {
+    negative Bool
+    digits List[Int]
+}
 
 fn number(negative Bool, digits List[Int]) Number {
     var size = length(digits)

@@ -54,6 +54,7 @@ pub enum Kind {
     BitNot
     Shl
     Shr
+    Semicolon
 }
 
 // Spans are UTF-8 byte offsets. Names/numbers retain their spelling and strings
@@ -70,16 +71,33 @@ record Scan {
 }
 
 fn error(start Int, end Int, message Text) Diagnostic {
-    Diagnostic { span = Span { start = start end = end } message = message }
+    Diagnostic {
+        span = Span {
+            start = start
+            end = end
+        }
+        message = message
+    }
 }
 
-fn digit(value Int) Bool { value >= 48 && value <= 57 }
-fn name_start(value Int) Bool { value == 95 || is_alphabetic(value) }
+fn digit(value Int) Bool {
+    value >= 48 && value <= 57
+}
+
+fn name_start(value Int) Bool {
+    value == 95 || is_alphabetic(value)
+}
 
 fn hex(value Int) Int {
-    if digit(value) { return value - 48 }
-    if value >= 65 && value <= 70 { return value - 55 }
-    if value >= 97 && value <= 102 { return value - 87 }
+    if digit(value) {
+        return value - 48
+    }
+    if value >= 65 && value <= 70 {
+        return value - 55
+    }
+    if value >= 97 && value <= 102 {
+        return value - 87
+    }
     -1
 }
 
@@ -94,7 +112,9 @@ fn unicode_escape(text Text, offset Int, start Int) Result[Scan, Diagnostic] {
     while end < length(text) && hex(byte(text, end)) >= 0 {
         // Keep scanning excessive digits for the complete diagnostic span,
         // but do not overflow while processing malformed input.
-        if end - offset < 6 { value = value * 16 + hex(byte(text, end)) }
+        if end - offset < 6 {
+            value = value * 16 + hex(byte(text, end))
+        }
         end = end + 1
     }
     if end == offset || end - offset > 6 || !starts(text, end, 125) {
@@ -103,7 +123,10 @@ fn unicode_escape(text Text, offset Int, start Int) Result[Scan, Diagnostic] {
     if value > 1114111 || (value >= 55296 && value <= 57343) {
         return Result.Err(error(start, end, "invalid Unicode escape"))
     }
-    Result.Ok(Scan { end = end + 1 value = from_codepoint(value) })
+    Result.Ok(Scan {
+            end = end + 1
+            value = from_codepoint(value)
+        })
 }
 
 fn escape(text Text, offset Int, start Int) Result[Scan, Diagnostic] {
@@ -116,15 +139,28 @@ fn escape(text Text, offset Int, start Int) Result[Scan, Diagnostic] {
         return unicode_escape(text, end + 1, start)
     }
     var decoded = -1
-    if value == 110 { decoded = 10 }
-    if value == 114 { decoded = 13 }
-    if value == 116 { decoded = 9 }
-    if value == 48 { decoded = 0 }
-    if value == 34 || value == 92 { decoded = value }
+    if value == 110 {
+        decoded = 10
+    }
+    if value == 114 {
+        decoded = 13
+    }
+    if value == 116 {
+        decoded = 9
+    }
+    if value == 48 {
+        decoded = 0
+    }
+    if value == 34 || value == 92 {
+        decoded = value
+    }
     if decoded < 0 {
         return Result.Err(error(start, end, "invalid string escape"))
     }
-    Result.Ok(Scan { end = end value = from_codepoint(decoded) })
+    Result.Ok(Scan {
+            end = end
+            value = from_codepoint(decoded)
+        })
 }
 
 fn append(buffer Bytes, value Text, start Int, end Int) {
@@ -142,7 +178,10 @@ fn string_literal(text Text, start Int) Result[Scan, Diagnostic] {
         let current = codepoint(text, offset)
         let end = offset + width(text, offset)
         if current == 34 {
-            return Result.Ok(Scan { end = end value = to_text(buffer) })
+            return Result.Ok(Scan {
+                    end = end
+                    value = to_text(buffer)
+                })
         }
         if current == 10 || current == 13 {
             return Result.Err(error(start, end, "escape newlines inside string literals"))
@@ -160,35 +199,88 @@ fn string_literal(text Text, start Int) Result[Scan, Diagnostic] {
 }
 
 fn symbol(value Int) Kind {
-    if value == 40 { return Kind.LParen }
-    if value == 41 { return Kind.RParen }
-    if value == 123 { return Kind.LBrace }
-    if value == 125 { return Kind.RBrace }
-    if value == 91 { return Kind.LBracket }
-    if value == 93 { return Kind.RBracket }
-    if value == 44 { return Kind.Comma }
-    if value == 46 { return Kind.Dot }
-    if value == 63 { return Kind.Question }
-    if value == 43 { return Kind.Plus }
-    if value == 45 { return Kind.Minus }
-    if value == 42 { return Kind.Star }
-    if value == 47 { return Kind.Slash }
-    if value == 37 { return Kind.Percent }
-    if value == 61 { return Kind.Assign }
-    if value == 33 { return Kind.Not }
-    if value == 60 { return Kind.Lt }
-    if value == 62 { return Kind.Gt }
-    if value == 38 { return Kind.BitAnd }
-    if value == 124 { return Kind.BitOr }
-    if value == 94 { return Kind.BitXor }
-    if value == 126 { return Kind.BitNot }
+    if value == 40 {
+        return Kind.LParen
+    }
+    if value == 41 {
+        return Kind.RParen
+    }
+    if value == 123 {
+        return Kind.LBrace
+    }
+    if value == 125 {
+        return Kind.RBrace
+    }
+    if value == 91 {
+        return Kind.LBracket
+    }
+    if value == 93 {
+        return Kind.RBracket
+    }
+    if value == 44 {
+        return Kind.Comma
+    }
+    if value == 46 {
+        return Kind.Dot
+    }
+    if value == 63 {
+        return Kind.Question
+    }
+    if value == 43 {
+        return Kind.Plus
+    }
+    if value == 45 {
+        return Kind.Minus
+    }
+    if value == 42 {
+        return Kind.Star
+    }
+    if value == 47 {
+        return Kind.Slash
+    }
+    if value == 37 {
+        return Kind.Percent
+    }
+    if value == 59 {
+        return Kind.Semicolon
+    }
+    if value == 61 {
+        return Kind.Assign
+    }
+    if value == 33 {
+        return Kind.Not
+    }
+    if value == 60 {
+        return Kind.Lt
+    }
+    if value == 62 {
+        return Kind.Gt
+    }
+    if value == 38 {
+        return Kind.BitAnd
+    }
+    if value == 124 {
+        return Kind.BitOr
+    }
+    if value == 94 {
+        return Kind.BitXor
+    }
+    if value == 126 {
+        return Kind.BitNot
+    }
     Kind.Eof
 }
 
 fn paired(value Int) Kind {
-    if value == 61 { return Kind.Eq }
-    if value == 33 { return Kind.Ne }
-    if value == 60 { return Kind.Le }
+    if value == 61 {
+        return Kind.Eq
+    }
+    if value == 33 {
+        return Kind.Ne
+    }
+    if value == 60 {
+        return Kind.Le
+    }
     Kind.Ge
 }
 
@@ -204,18 +296,23 @@ fn punctuation(text Text, start Int, end Int, value Int) Result[Token, Diagnosti
             offset = offset + 1
         } else {
             if (value == 38 || value == 124) && starts(text, offset, value) {
-                kind = if value == 38 { Kind.And } else { Kind.Or }
+                kind = if value == 38 {
+                    Kind.And
+                } else {
+                    Kind.Or
+                }
                 offset = offset + 1
             } else {
                 if (value == 60 || value == 62) && starts(text, offset, value) {
-                    kind = if value == 60 { Kind.Shl } else { Kind.Shr }
+                    kind = if value == 60 {
+                        Kind.Shl
+                    } else {
+                        Kind.Shr
+                    }
                     offset = offset + 1
                 }
             }
         }
-    }
-    if value == 59 {
-        return Result.Err(error(start, offset, "statements use newlines, not semicolons"))
     }
     if value == 58 {
         return Result.Err(error(start, offset, "write a type after its name without a colon"))
@@ -224,22 +321,42 @@ fn punctuation(text Text, start Int, end Int, value Int) Result[Token, Diagnosti
         return Result.Err(error(start, offset, "unsupported character"))
     }
     Result.Ok(Token {
-        kind = kind value = ""
-        span = Span { start = start end = offset }
-    })
+            kind = kind
+            value = ""
+            span = Span {
+                start = start
+                end = offset
+            }
+        })
 }
 
 fn scanned(kind Kind, text Text, start Int, end Int) Token {
-    Token { kind = kind value = slice(text, start, end) span = Span { start = start end = end } }
+    Token {
+        kind = kind
+        value = slice(text, start, end)
+        span = Span {
+            start = start
+            end = end
+        }
+    }
 }
 
 fn trivia(start Int, end Int) Token {
-    Token { kind = Kind.Eof value = "" span = Span { start = start end = end } }
+    Token {
+        kind = Kind.Eof
+        value = ""
+        span = Span {
+            start = start
+            end = end
+        }
+    }
 }
 
 fn numeric_literal(text Text, start Int, selector Bool) Result[Token, Diagnostic] {
     var offset = start
-    while offset < length(text) && digit(byte(text, offset)) { offset = offset + 1 }
+    while offset < length(text) && digit(byte(text, offset)) {
+        offset = offset + 1
+    }
     var kind = Kind.Number
     // A numeric field after '.' is an integer position, even in pair.0.1.
     // A name after the dot starts a selector; digits continue a decimal.
@@ -249,21 +366,31 @@ fn numeric_literal(text Text, start Int, selector Bool) Result[Token, Diagnostic
             return Result.Err(error(start, offset, "expected digits after the decimal point"))
         }
         kind = Kind.Float
-        while offset < length(text) && digit(byte(text, offset)) { offset = offset + 1 }
+        while offset < length(text) && digit(byte(text, offset)) {
+            offset = offset + 1
+        }
     }
     if !selector && (starts(text, offset, 101) || starts(text, offset, 69)) {
         kind = Kind.Float
         offset = offset + 1
-        if starts(text, offset, 43) || starts(text, offset, 45) { offset = offset + 1 }
+        if starts(text, offset, 43) || starts(text, offset, 45) {
+            offset = offset + 1
+        }
         let exponent = offset
-        while offset < length(text) && digit(byte(text, offset)) { offset = offset + 1 }
-        if exponent == offset { return Result.Err(error(start, offset, "expected digits in the exponent")) }
+        while offset < length(text) && digit(byte(text, offset)) {
+            offset = offset + 1
+        }
+        if exponent == offset {
+            return Result.Err(error(start, offset, "expected digits in the exponent"))
+        }
     }
     let end = offset
     while offset < length(text) && (codepoint(text, offset) == 95 || is_alphanumeric(codepoint(text, offset))) {
         offset = offset + width(text, offset)
     }
-    if offset != end { return Result.Err(error(start, offset, "invalid numeric literal suffix")) }
+    if offset != end {
+        return Result.Err(error(start, offset, "invalid numeric literal suffix"))
+    }
     Result.Ok(scanned(kind, text, start, offset))
 }
 
@@ -271,8 +398,17 @@ fn next_token(text Text, start Int, selector Bool) Result[Token, Diagnostic] {
     let current = codepoint(text, start)
     var offset = start + width(text, start)
     if current == 10 || current == 13 {
-        if current == 13 && starts(text, offset, 10) { offset = offset + 1 }
-        return Result.Ok(Token { kind = Kind.Newline value = "" span = Span { start = start end = offset } })
+        if current == 13 && starts(text, offset, 10) {
+            offset = offset + 1
+        }
+        return Result.Ok(Token {
+                kind = Kind.Newline
+                value = ""
+                span = Span {
+                    start = start
+                    end = offset
+                }
+            })
     }
     // Internal EOF-kind tokens skip trivia; lex emits only the final EOF.
     // Other Unicode whitespace does not separate statements.
@@ -288,9 +424,13 @@ fn next_token(text Text, start Int, selector Bool) Result[Token, Diagnostic] {
     if current == 34 {
         let literal = string_literal(text, start)?
         return Result.Ok(Token {
-            kind = Kind.Text value = literal.value
-            span = Span { start = start end = literal.end }
-        })
+                kind = Kind.Text
+                value = literal.value
+                span = Span {
+                    start = start
+                    end = literal.end
+                }
+            })
     }
     if digit(current) {
         return numeric_literal(text, start, selector)
@@ -316,6 +456,13 @@ pub fn lex(text Text) Result[List[Token], Diagnostic] {
             selector = token.kind == Kind.Dot
         }
     }
-    push(tokens, Token { kind = Kind.Eof value = "" span = Span { start = offset end = offset } })
+    push(tokens, Token {
+            kind = Kind.Eof
+            value = ""
+            span = Span {
+                start = offset
+                end = offset
+            }
+        })
     Result.Ok(tokens)
 }

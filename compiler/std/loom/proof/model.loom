@@ -4,8 +4,14 @@ import std.list.push
 import std.list.get
 import std.list.length
 
-record Term { id Int factor Number }
-record Linear { constant Number terms List[Term] }
+record Term {
+    id Int
+    factor Number
+}
+record Linear {
+    constant Number
+    terms List[Term]
+}
 enum Predicate {
     Constant(Bool)
     Variable(Int)
@@ -16,9 +22,18 @@ enum Predicate {
     Or(List[Predicate])
 }
 enum Value { Number(Linear) Boolean(Predicate) Record(List[Value]) Empty }
-record State { locals List[Value] facts List[Predicate] }
-record Outcome { state State value Value }
-record Bounds { low Number high Number }
+record State {
+    locals List[Value]
+    facts List[Predicate]
+}
+record Outcome {
+    state State
+    value Value
+}
+record Bounds {
+    low Number
+    high Number
+}
 
 fn constant(value Number) Linear { Linear { constant = value terms = new[Term]() } }
 fn variable(index Int) Linear {

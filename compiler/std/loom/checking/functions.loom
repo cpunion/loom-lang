@@ -19,8 +19,15 @@ import std.list.length
 import std.text.slice
 import std.result.Result
 
-record RuntimeSignature { parameters Int params List[Int] result Int }
-record CheckedBody { context Context function Function }
+record RuntimeSignature {
+    parameters Int
+    params List[Int]
+    result Int
+}
+record CheckedBody {
+    context Context
+    function Function
+}
 
 fn signature(env Environment, id Int, arguments List[Int], node Node) Result[Signature, Failure] {
     signature_in(env, id, arguments, node, get(env.signatures, id).symbol)
@@ -347,7 +354,11 @@ fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failu
     Result.Ok(clauses)
 }
 
-record FunctionScope { context Context preconditions List[Expr] params List[Int] }
+record FunctionScope {
+    context Context
+    preconditions List[Expr]
+    params List[Int]
+}
 
 fn function_scope(env Environment, current Signature, arguments List[Int], constants List[StaticValue], emit Bool) Result[FunctionScope, Failure] {
     let item = symbol(env, current.symbol)

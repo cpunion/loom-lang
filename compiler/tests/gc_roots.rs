@@ -13,10 +13,10 @@ import std.list.new
 import std.list.push
 import std.list.get
 
-record Packet { label Text values List[Text] }
+record Packet { label Text; values List[Text] }
 enum Choice { First(Packet) Second(Packet) }
 enum Outer { Empty(Int) Wrapped(Choice, Text) }
-record Envelope { tag Int wrapped Outer }
+record Envelope { tag Int; wrapped Outer }
 
 fn packet(label Text) Packet {
     let values = new[Text]()

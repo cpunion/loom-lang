@@ -11,7 +11,10 @@ import std.list.set
 import std.list.length
 import std.result.Result
 
-record SlotUse { interface Int slot Int }
+record SlotUse {
+    interface Int
+    slot Int
+}
 
 fn dynamic_member_type(env Environment, ty Int, capability Int) Bool {
     let shape = get(env.types, ty)

@@ -1,7 +1,7 @@
 import std.text.concat
 
 test fn inline_record_refinement_checks_dynamic_construction_once() {
-    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nrecord Inner { count Int }\nrecord Snapshot { inner Inner active Bool }\ntype ActiveCount = Snapshot where self.inner.count >= 0 && self.active\n"
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nrecord Inner { count Int }\nrecord Snapshot { inner Inner; active Bool }\ntype ActiveCount = Snapshot where self.inner.count >= 0 && self.active\n"
     let program = accepted_result(concat(definitions,
             "fn source(value Snapshot) Snapshot { value }\npub fn make(value Snapshot) Result[ActiveCount, ConstraintError] { ActiveCount(source(value)) }\npub fn copy(value ActiveCount) ActiveCount ensures result.inner.count == value.inner.count { ActiveCount(value) }\npub fn widen(value ActiveCount) Snapshot { value }"))
     let make = get(program.functions, 0)
@@ -17,7 +17,7 @@ test fn inline_record_refinement_checks_dynamic_construction_once() {
 }
 
 test fn proven_inline_record_literal_has_a_direct_refined_type() {
-    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nrecord Inner { count Int }\nrecord Snapshot { inner Inner active Bool }\ntype ActiveCount = Snapshot where self.inner.count >= 0 && self.active\n"
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nrecord Inner { count Int }\nrecord Snapshot { inner Inner; active Bool }\ntype ActiveCount = Snapshot where self.inner.count >= 0 && self.active\n"
     let program = accepted_result(concat(definitions,
             "pub fn literal() ActiveCount { ActiveCount(Snapshot { inner = Inner { count = 3 } active = true }) }\npub fn dynamic(value Snapshot) Result[ActiveCount, ConstraintError] { ActiveCount(value) }\npub fn field(value Int) Result[ActiveCount, ConstraintError] { ActiveCount(Snapshot { inner = Inner { count = value } active = true }) }"))
     assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 0
@@ -28,7 +28,7 @@ test fn proven_inline_record_literal_has_a_direct_refined_type() {
 }
 
 test fn closed_float_record_literal_uses_the_compile_time_boundary() {
-    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nrecord Details { amount Float }\nrecord Price { details Details active Bool }\nfn amount_ok(amount Float) Bool { amount >= 0.0 && amount <= 100.0 }\ntype ValidPrice = Price where amount_ok(self.details.amount) && self.active\n"
+    let definitions = "import std.result.Result\nimport std.result.ConstraintError\nrecord Details { amount Float }\nrecord Price { details Details; active Bool }\nfn amount_ok(amount Float) Bool { amount >= 0.0 && amount <= 100.0 }\ntype ValidPrice = Price where amount_ok(self.details.amount) && self.active\n"
     let program = accepted_result(concat(definitions,
             "pub fn literal() ValidPrice { ValidPrice(Price { details = Details { amount = 10.5 } active = true }) }\npub fn computed() ValidPrice { ValidPrice(Price { details = Details { amount = 4.0 + 6.5 } active = true }) }\npub fn dynamic(amount Float) Result[ValidPrice, ConstraintError] { ValidPrice(Price { details = Details { amount = amount } active = true }) }\nfn source() Float { 10.5 }\npub fn from_call() Result[ValidPrice, ConstraintError] { ValidPrice(Price { details = Details { amount = source() } active = true }) }"))
     assert dynamic_count(get(program.functions, 0).body, ExprKind.If) == 0

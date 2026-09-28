@@ -17,7 +17,14 @@ import std.list.length
 import std.result.Result
 import std.io.write_error
 
-record TestFile { package Text path Text text Text tree Node test_only Bool trusted_std Bool }
+record TestFile {
+    package Text
+    path Text
+    text Text
+    tree Node
+    test_only Bool
+    trusted_std Bool
+}
 
 fn source_file(package Text, text Text, trusted Bool) TestFile {
     let tree = match std.loom.parser.parse(text) {

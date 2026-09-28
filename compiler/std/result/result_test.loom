@@ -19,7 +19,10 @@ fn counted[T](calls List[Int], input Result[T, Text]) Result[T, Text] {
     input
 }
 
-record Pair { left Int right Int }
+record Pair {
+    left Int
+    right Int
+}
 
 fn propagated(calls List[Int], input Result[Pair, Text]) Result[Int, Text] {
     let number = counted(calls, input)?.left

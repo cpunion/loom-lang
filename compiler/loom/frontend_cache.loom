@@ -132,7 +132,10 @@ fn frontend_decode(bytes Bytes, prefix Text, project Project, checking Bool) Opt
     }
 }
 
-record FrontendReader { text Text cursor List[Int] }
+record FrontendReader {
+    text Text
+    cursor List[Int]
+}
 fn frontend_read(reader FrontendReader) Result[Text, Text] {
     let start = get(reader.cursor, 0)
     var end = start

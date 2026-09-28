@@ -256,41 +256,46 @@ pub fn format(text Text) Result[Text, Diagnostic] {
                 newline(output)
             }
         } else {
-            if current.kind == Kind.Eof {
-                return Result.Ok(finished(output))
-            }
-            newlines = 0
-            let closing = current.kind == Kind.RBrace || current.kind == Kind.RParen || current.kind == Kind.RBracket
-            if closing {
-                output = Output {
-                    bytes = output.bytes
-                    depth = output.depth - 1
-                    line = output.line
+            // The parser admits semicolons only between record declarations'
+            // fields. Structural field breaks replace them without moving a
+            // trailing comment away from its field.
+            if current.kind != Kind.Semicolon {
+                if current.kind == Kind.Eof {
+                    return Result.Ok(finished(output))
                 }
-            }
-            let separation = get(layout.lines, index)
-            if separation == 2 {
-                output = blankline(output)
-            } else {
-                if pending || separation == 1 || current.kind == Kind.RBrace {
-                    output = newline(output)
+                newlines = 0
+                let closing = current.kind == Kind.RBrace || current.kind == Kind.RParen || current.kind == Kind.RBracket
+                if closing {
+                    output = Output {
+                        bytes = output.bytes
+                        depth = output.depth - 1
+                        line = output.line
+                    }
                 }
-            }
-            if !output.line && spaced(previous, current, get(layout.spaces, index), prefix) {
-                std.bytes.push(output.bytes, 32)
-            }
-            output = write(output, text, current.span.start, current.span.end)
-            let opening = current.kind == Kind.LBrace || current.kind == Kind.LParen || current.kind == Kind.LBracket
-            if opening {
-                output = Output {
-                    bytes = output.bytes
-                    depth = output.depth + 1
-                    line = output.line
+                let separation = get(layout.lines, index)
+                if separation == 2 {
+                    output = blankline(output)
+                } else {
+                    if pending || separation == 1 || current.kind == Kind.RBrace {
+                        output = newline(output)
+                    }
                 }
+                if !output.line && spaced(previous, current, get(layout.spaces, index), prefix) {
+                    std.bytes.push(output.bytes, 32)
+                }
+                output = write(output, text, current.span.start, current.span.end)
+                let opening = current.kind == Kind.LBrace || current.kind == Kind.LParen || current.kind == Kind.LBracket
+                if opening {
+                    output = Output {
+                        bytes = output.bytes
+                        depth = output.depth + 1
+                        line = output.line
+                    }
+                }
+                pending = current.kind == Kind.LBrace
+                previous = current
+                prefix = get(layout.prefixes, index)
             }
-            pending = current.kind == Kind.LBrace
-            previous = current
-            prefix = get(layout.prefixes, index)
         }
         index = index + 1
     }

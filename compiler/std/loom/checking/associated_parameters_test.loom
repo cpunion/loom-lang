@@ -1,5 +1,5 @@
 fn associated_family_definitions() Text {
-    "concept Family { type Item[T] }\nimpl Family for Bool { type Item[T] = List[T] }\nrecord Box[X] { value X }\nimpl[X] Family for Box[X] { type Item[T] = (X, T) }\nfn echo[S Family, T](source S, value S.Item[T]) S.Family.Item[T] { value }\nfn forward[S Family, T](source S, value S.Item[T]) S.Item[T] { echo[S, T](source, value) }\nrecord Packed[S Family, T] { source S value S.Item[T] }\n"
+    "concept Family { type Item[T] }\nimpl Family for Bool { type Item[T] = List[T] }\nrecord Box[X] { value X }\nimpl[X] Family for Box[X] { type Item[T] = (X, T) }\nfn echo[S Family, T](source S, value S.Item[T]) S.Family.Item[T] { value }\nfn forward[S Family, T](source S, value S.Item[T]) S.Item[T] { echo[S, T](source, value) }\nrecord Packed[S Family, T] { source S; value S.Item[T] }\n"
 }
 
 test fn associated_families_normalize_in_generic_calls_data_and_compile_time_execution() {

@@ -90,7 +90,10 @@ fn register_signature(env Environment, current Signature) Result[Int, Failure] {
     Result.Ok(id)
 }
 
-record MethodMatch { slot Int signature Signature }
+record MethodMatch {
+    slot Int
+    signature Signature
+}
 
 fn method_bounds_match(env Environment, declaration Int, implementation Int) Result[Bool, Failure] {
     let expected = member_parameters(env, declaration)

@@ -11,10 +11,29 @@ import std.list.push
 import std.list.length
 import std.result.Result
 
-record ResourceValue { protected Bool fresh Bool pending Int }
-record ResourceSummary { function Int borrowed Int visiting Bool fresh Bool }
-record ResourceAnalysis { env Environment functions List[Function] summaries List[ResourceSummary] }
-record ResourceFlow { analysis ResourceAnalysis function Int locals List[ResourceValue] automatic List[Int] returns List[Bool] }
+record ResourceValue {
+    protected Bool
+    fresh Bool
+    pending Int
+}
+record ResourceSummary {
+    function Int
+    borrowed Int
+    visiting Bool
+    fresh Bool
+}
+record ResourceAnalysis {
+    env Environment
+    functions List[Function]
+    summaries List[ResourceSummary]
+}
+record ResourceFlow {
+    analysis ResourceAnalysis
+    function Int
+    locals List[ResourceValue]
+    automatic List[Int]
+    returns List[Bool]
+}
 
 fn resource_value(protected Bool, fresh Bool, pending Int) ResourceValue {
     ResourceValue { protected = protected fresh = fresh pending = pending }

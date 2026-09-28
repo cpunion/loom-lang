@@ -16,7 +16,7 @@ fn checked(source: &str) -> Result<(), String> {
 fn recursive_nominal_types_need_indirect_layout_edges() {
     for source in [
         "enum Expr { Number(Int) Call(List[Expr]) }",
-        "record Tree[T] { value T children List[Tree[T]] }",
+        "record Tree[T] { value T; children List[Tree[T]] }",
         "record A[T] { children List[B[T]] } enum B[T] { End(T) More(A[T]) }",
         "record Swap[A, B] { children List[Swap[B, A]] } fn use(x Swap[Int, Bool]) {}",
     ] {
@@ -53,7 +53,7 @@ import std.list.push
 import std.text.concat
 
 enum Expr { Number(Int, Text) Sum(List[Expr]) }
-record Tree[T] { value T children List[Tree[T]] }
+record Tree[T] { value T; children List[Tree[T]] }
 
 fn sum(value Expr) Int {
     match value {

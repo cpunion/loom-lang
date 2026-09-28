@@ -24,7 +24,10 @@ import std.process.ExitStatus
 import std.io.write_error
 import std.text.split
 
-record CachedObject { bytes Bytes uses_runtime Bool }
+record CachedObject {
+    bytes Bytes
+    uses_runtime Bool
+}
 
 fn cache_append(output Bytes, value Text) {
     var index = 0

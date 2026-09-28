@@ -17,8 +17,15 @@ import std.text.starts_with
 // Paths remain relative to the declaring manifest. Git sources pin a full
 // commit object ID; project loading resolves sources and verifies module names.
 pub enum DependencySource { Path(Text) Git(Text, Text) }
-pub record Dependency { name Text source DependencySource }
-pub record Module { name Text version Text dependencies List[Dependency] }
+pub record Dependency {
+    name Text
+    source DependencySource
+}
+pub record Module {
+    name Text
+    version Text
+    dependencies List[Dependency]
+}
 
 pub fn segment(value Text) Bool {
     if length(value) == 0 || byte(value, 0) < 97 || byte(value, 0) > 122 { return false }

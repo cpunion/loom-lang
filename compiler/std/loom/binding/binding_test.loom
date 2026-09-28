@@ -18,7 +18,14 @@ import std.text.concat
 import std.int.to_text
 import std.result.Result
 
-record TestFile { package Text path Text text Text tree Node test_only Bool trusted_std Bool }
+record TestFile {
+    package Text
+    path Text
+    text Text
+    tree Node
+    test_only Bool
+    trusted_std Bool
+}
 
 fn source(package Text, path Text, text Text, test_only Bool, trusted Bool) TestFile {
     let tree = match parse(text) {
@@ -300,7 +307,7 @@ test fn declaration_names_and_intrinsic_trust_are_checked() {
     assert rejected(one_source("record A {}\nenum A { Empty }" )).diagnostic.message == "duplicate or reserved data declaration"
     assert rejected(one_source("record A[T, T] {}" )).diagnostic.message == "duplicate or reserved type parameter"
     assert rejected(one_source("fn f[Text](x Text) {}" )).diagnostic.message == "duplicate or reserved type parameter"
-    assert rejected(one_source("record A { x Int x Bool }" )).diagnostic.message == "duplicate declaration member"
+    assert rejected(one_source("record A { x Int; x Bool }" )).diagnostic.message == "duplicate declaration member"
     assert rejected(one_source("fn f(x Int, x Bool) {}" )).diagnostic.message == "duplicate declaration member"
     assert rejected(one_source("enum Empty {}" )).diagnostic.message == "an enum needs at least one variant"
     assert rejected(one_source("intrinsic fn read() Int\n" )).diagnostic.message == "intrinsics require trusted standard-library source; only std.build.input_file can be public"

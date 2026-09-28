@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Require newlines or `;` between record field declarations, rejecting fields
+  separated only by spaces or commas. `loom fmt` emits one field per line and
+  removes field semicolons while preserving comments. Statement syntax is
+  unchanged; semicolons are not statement terminators.
+
 - Add source `std.list.nonempty.NonEmpty[T]` with an explicit outer-copy
   conversion and a private invariant-preserving API. This is not an implicit
   constrained conversion of shared Lists.

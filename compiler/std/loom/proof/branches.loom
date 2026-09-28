@@ -2,7 +2,12 @@ import std.list.clone
 
 // Temporary expansion paths, not native control flow or assumed proof facts.
 // Bindings hold immutable substituted values; each branch owns its binding list.
-record HelperPath { guard Expr bindings List[ExpansionBinding] value Expr returned Bool }
+record HelperPath {
+    guard Expr
+    bindings List[ExpansionBinding]
+    value Expr
+    returned Bool
+}
 
 fn helper_path(paths List[HelperPath], value HelperPath) Result[Bool, Text] {
     if length(paths) >= 256 { return Result.Err("helper branch expansion budget exhausted") }

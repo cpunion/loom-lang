@@ -153,7 +153,12 @@ fn conditional(context Context, node Node, expected Int, enforce Bool) Result[Ex
     if other_falls && output != other_type { return Result.Err(error(context, node, "if branches must have the same type; values require else")) }
     Result.Ok(expression(ExprKind.If, output, node, "", -1, values, condition.falls && (yes.falls || other_falls)))
 }
-record MatchScope { context Context selected Int whole Int locals List[Int] }
+record MatchScope {
+    context Context
+    selected Int
+    whole Int
+    locals List[Int]
+}
 
 fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure] {
     let shape = get(context.env.types, value.ty)
@@ -235,7 +240,11 @@ fn matched(context Context, node Node, expected Int, enforce Bool) Result[Expr, 
     Result.Ok(Expr { kind = ExprKind.Match ty = if output < 0 { 0 } else { output } span = node.span text = "" index = -1 children = expressions(value) arms = arms falls = value.falls && falls })
 }
 
-record ResultShape { declaration Int ok Int err Int }
+record ResultShape {
+    declaration Int
+    ok Int
+    err Int
+}
 fn result_shape(context Context, node Node) Result[ResultShape, Failure] {
     var declaration = -1
     var index = 0
