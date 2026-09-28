@@ -476,6 +476,10 @@ types, respects lexical visibility and reflects only the declared dynamic
 interface. Compile-time-only queries erase; runtime descriptors are fresh
 source data, without a type registry or newly live methods. Typed generation,
 first-class type values and predicate reflection are not implemented by this slice.
+Public parser fragment entry points now reuse the same expression/type/pattern/
+statement/declaration grammar, preserving original spans and rejecting trailing
+input. They run as ordinary pure Loom calls, including at compile time; syntax
+parsing is not hygienic expansion or semantic validation.
 `Int` type predicates can call pure helpers through the same bounded evaluator;
 known constants remove checks, while unknown results retain the runtime
 construction boundary. Execution never substitutes for a required proof:

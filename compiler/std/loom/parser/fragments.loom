@@ -1,0 +1,47 @@
+// Fragment entry points use the compiler's grammar and original byte spans.
+// They consume the entire input: no wrappers, recovery or implicit separators.
+fn fragment_start(text Text) Result[Cursor, Diagnostic] {
+    Result.Ok(newlines(Cursor {
+                tokens = lex(text)?
+                index = 0
+            }))
+}
+
+fn fragment_end(parsed Step, label Text) Result[Node, Diagnostic] {
+    let rest = newlines(parsed.rest)
+    if !at(rest, Kind.Eof) {
+        return Result.Err(error(rest, concat("expected end of ", label)))
+    }
+    Result.Ok(parsed.node)
+}
+
+pub fn parse_expression(text Text) Result[Node, Diagnostic] {
+    fragment_end(expr(fragment_start(text)?, 0, false, true)?, "expression")
+}
+
+pub fn parse_type(text Text) Result[Node, Diagnostic] {
+    fragment_end(type_ref(fragment_start(text)?)?, "type")
+}
+
+// Match patterns and binding patterns deliberately have separate entry points:
+// a bare name names a variant in a match, but introduces a binding in let/var.
+pub fn parse_pattern(text Text) Result[Node, Diagnostic] {
+    fragment_end(pattern(fragment_start(text)?)?, "match pattern")
+}
+
+pub fn parse_binding_pattern(text Text) Result[Node, Diagnostic] {
+    fragment_end(pattern_at(fragment_start(text)?, 0, true, true)?, "binding pattern")
+}
+
+pub fn parse_statement(text Text) Result[Node, Diagnostic] {
+    fragment_end(statement(fragment_start(text)?)?, "statement")
+}
+
+pub fn parse_declaration(text Text) Result[Node, Diagnostic] {
+    let start = fragment_start(text)?
+    fragment_end(if word(start, "import") {
+            import_decl(start)?
+        } else {
+            declaration(start)?
+        }, "declaration")
+}

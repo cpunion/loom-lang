@@ -693,6 +693,14 @@ selection emits no runtime allocation. See the
 Descriptor IDs are local to one graph, not persistent declaration identities
 or first-class source types. Typed generation and predicate reflection remain open.
 
+Public `std.loom.parser` now parses standalone expressions, types, match/binding
+patterns, statements and declarations through the existing grammar. Fragments
+must consume their complete input and retain its original UTF-8 spans. Pure
+runtime and compile-time clients use the same source API, without synthetic
+wrappers or compiler subprocesses. This supplies syntax data, not macro expansion
+or successful semantic checking; see the
+[fragment example](../../compiler/examples/syntax/fragments.loom).
+
 Stable schemas, lossless editing, richer pack iteration, typed macros, broader compile-time
 reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).

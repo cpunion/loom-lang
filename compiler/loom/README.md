@@ -90,7 +90,8 @@ does not write and fails when formatting is needed. `--stdin` formats supplied
 UTF-8 source to stdout without touching files. Formatting preserves AST structure,
 comments, and literal spelling, with four-space indentation and one field or
 statement per line. It separates top-level declarations and retains at most one
-user blank line. This changes layout, not grammar; semicolons remain invalid.
+user blank line. Same-line record fields require semicolons; formatting expands
+them to separate lines. Semicolons do not terminate ordinary statements.
 
 The [VS Code development extension](../../editors/vscode/README.md) provides
 highlighting, document formatting, diagnostics, name/member completion, type hovers, definition
@@ -105,7 +106,8 @@ It offers fields, tuple indices, admitted concept methods and async
 Task `.await`, not proof of an applicable call or valid body. A qualified-path
 Quick Fix offers an import only for one public declaration in an offline-resolved
 direct package when the revised in-memory package checks. Bare-name import
-search, public/API rename and incremental semantic caching remain open. Completion
+search is limited to unique exports of direct dependencies; public/API rename
+and incremental semantic caching remain open. Completion
 can recover a missing cursor name/value or unmatched EOF delimiters
 without modifying the source or making normal builds accept it. Other semantic
 queries use concrete body instances. If package checking fails, an independently
@@ -126,7 +128,8 @@ Local receivers do not fall back to namespaces. Type/constructor paths offer
 types and `dyn` paths offer concepts, without hiding a same-named type parameter.
 Import statements additionally discover direct module edges, directory segments
 and public production declarations through the same offline resolver and unsaved
-overlays. Automatic imports remain open.
+overlays. Verified Quick Fixes insert imports for unique qualified or bare names;
+ambiguous names and unavailable dependencies are not guessed.
 
 ## Public syntax libraries
 
@@ -137,7 +140,7 @@ The compiler and ordinary Loom programs use the same source implementation:
 | `std.loom.source` | `Span`, `Diagnostic`, `Position`, `position`, `render` |
 | `std.loom.lexer` | `lex`, `Token`, `Kind` |
 | `std.loom.ast` | `Node`, `NodeKind`, `has` (direct-child lookup), `same` (exact structural equality) |
-| `std.loom.parser` | `parse(Text) Result[Node, Diagnostic]`, editor-only `completion_source` / `CompletionSource`, lexical `import_cursor` / `ImportCursor` |
+| `std.loom.parser` | `parse`, `parse_expression`, `parse_type`, `parse_pattern`, `parse_binding_pattern`, `parse_statement`, `parse_declaration`; editor-only `completion_source` / `CompletionSource`, lexical `import_cursor` / `ImportCursor` |
 | `std.loom.format` | `format(Text) Result[Text, Diagnostic]` |
 
 `NodeKind.Spread` retains a postfix value/type expansion operand;
@@ -163,6 +166,18 @@ a valid UTF-8 boundary and returns 1-based lines and Unicode scalar columns,
 not terminal-cell columns. Positions are revision-relative, not persistent
 definition identities. The parser implements the current syntax subset;
 successful parsing does not establish type or contract validity.
+All `parse*` entry points take `Text` and return `Result[Node, Diagnostic]`.
+Fragment parsers consume exactly one item plus surrounding whitespace/comments;
+extra tokens reject, and spans refer directly to the supplied text without a
+synthetic file or function wrapper. Expressions retain ordinary newline rules:
+`1 +\n2` continues an expression, while `1\n2` is not one expression.
+`parse_pattern` uses match-arm syntax; `parse_binding_pattern` uses let/var
+binding syntax. For example, a bare name produces `Pattern` in the former and
+`Name` in the latter. A match guard or `a, b` binding list needs its enclosing
+statement; `(a, b)` is one tuple binding pattern. Declarations include imports.
+These ordinary pure functions also run inside `comptime`; see the
+[fragment example](../examples/syntax/fragments.loom). They do not resolve names,
+check context-sensitive obligations, perform macro expansion or recover incomplete code.
 `ast.same` includes spans as well as node values and children; it is not an
 identity-aware or formatting-preserving comparison.
 

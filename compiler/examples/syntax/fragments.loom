@@ -1,0 +1,53 @@
+import std.loom.parser.parse_expression
+import std.loom.parser.parse_type
+import std.loom.parser.parse_pattern
+import std.loom.parser.parse_binding_pattern
+import std.loom.parser.parse_statement
+import std.loom.parser.parse_declaration
+import std.loom.ast.Node
+
+fn required_node(value Result[Node, Diagnostic]) Node {
+    match value {
+        Result.Ok(node) => node
+        Result.Err(_) => {
+            assert false
+            required_node(parse_expression("0"))
+        }
+    }
+}
+
+fn exercise_fragments() {
+    let expression = comptime {
+        required_node(parse_expression("price + tax * 2"))
+    }
+    assert expression.kind == NodeKind.Binary && expression.value == "+"
+    assert expression.children[1].value == "*"
+    assert expression.span.start == 0 && expression.span.end == 15
+
+    let parser fn(Text) Result[Node, Diagnostic] = parse_expression
+    assert required_node(parser("fetch().await?")).kind == NodeKind.Try
+    let ty = required_node(parse_type("fn(Int) Task[Text]"))
+    assert ty.kind == NodeKind.FunctionType
+    assert ty.children[1].children[0].value == "Task"
+    assert required_node(parse_pattern("Empty")).kind == NodeKind.Pattern
+    assert required_node(parse_binding_pattern("item")).kind == NodeKind.Name
+    assert required_node(parse_statement("let (a, b) = pair")).kind == NodeKind.Destructure
+    let declaration = comptime {
+        required_node(parse_declaration("""
+            record Point {
+                x Int
+                y Int
+            }
+            """))
+    }
+    assert declaration.kind == NodeKind.Record && declaration.value == "Point"
+    assert declaration.children[1].value == "x" && declaration.children[2].value == "y"
+    assert match parse_expression("value\nother") {
+        Result.Err(error) => error.span.start == 6 && error.message == "expected end of expression"
+        Result.Ok(_) => false
+    }
+}
+
+test fn parse_fragments_at_runtime_and_compile_time() {
+    exercise_fragments()
+}
