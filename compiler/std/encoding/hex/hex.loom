@@ -1,0 +1,57 @@
+import std.result.Result
+import std.bytes.new
+import std.bytes.length
+import std.bytes.get
+import std.bytes.push
+import std.bytes.to_text
+import std.text.byte
+import std.text.length
+
+pub enum DecodeError {
+    Invalid
+}
+
+// Canonical lowercase encoding. Decoding accepts either case, but no whitespace
+// or prefix; an error never contains any of the input bytes.
+pub fn encode(value Bytes) Text {
+    let output = std.bytes.new()
+    var index = 0
+    while index < std.bytes.length(value) {
+        let current = std.bytes.get(value, index)
+        std.bytes.push(output, std.text.byte("0123456789abcdef", current / 16))
+        std.bytes.push(output, std.text.byte("0123456789abcdef", current % 16))
+        index = index + 1
+    }
+    std.bytes.to_text(output)
+}
+
+fn digit(value Int) Int {
+    if value >= 48 && value <= 57 {
+        return value - 48
+    }
+    if value >= 97 && value <= 102 {
+        return value - 97 + 10
+    }
+    if value >= 65 && value <= 70 {
+        return value - 65 + 10
+    }
+    -1
+}
+
+pub fn decode(value Text) Result[Bytes, DecodeError] {
+    if std.text.length(value) % 2 != 0 {
+        return Result.Err(DecodeError.Invalid)
+    }
+    let output = std.bytes.new()
+    var index = 0
+    while index < std.text.length(value) {
+        let high = digit(std.text.byte(value, index))
+        let low = digit(std.text.byte(value, index + 1))
+        if high < 0 || low < 0 {
+            return Result.Err(DecodeError.Invalid)
+        }
+        std.bytes.push(output, high * 16 + low)
+        index = index + 2
+    }
+    Result.Ok(output)
+}

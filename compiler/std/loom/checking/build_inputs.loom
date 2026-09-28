@@ -2,11 +2,14 @@ import std.loom.project.InputRequest
 import std.loom.project.InputFile
 import std.loom.project.BuildInput
 import std.loom.project.same_request
+import std.loom.project.same_input
+import std.loom.project.input_snapshot
 import std.loom.project.BuildOption
 import std.loom.project.build_option_snapshot
 import std.loom.project.valid_build_option
 import std.loom.project.valid_target_property
 import std.loom.source.Span
+import std.bytes.decode_utf8
 
 // One context per check. The caller can supply snapshots and/or an explicit
 // reader; discovered dependencies append to files. Treat them as read-only.
@@ -95,7 +98,7 @@ pub fn no_input_reader(request InputRequest) Result[InputFile, Text] {
 
 fn build_intrinsic(env Environment, owner Int) Bool {
     let item = symbol(env, owner)
-    if (item.name != "input_file" && item.name != "option_present" && item.name != "option_text" && item.name != "target") ||
+    if (item.name != "input_file" && item.name != "input_bytes" && item.name != "option_present" && item.name != "option_text" && item.name != "target") ||
     !has(item.node, NodeKind.Intrinsic) {
         return false
     }
@@ -106,8 +109,8 @@ fn build_intrinsic(env Environment, owner Int) Bool {
 
 fn build_call(context Context, node Node, owner Int, value StaticValue) Result[Expr, Failure] {
     let name = symbol(context.env, owner).name
-    if name == "input_file" {
-        return input_call(context, node, value)
+    if name == "input_file" || name == "input_bytes" {
+        return input_call(context, node, value, name == "input_bytes")
     }
     let ty = if name == "option_present" {
         2
@@ -148,9 +151,22 @@ fn build_call(context Context, node Node, owner Int, value StaticValue) Result[E
     Result.Ok(expression(ExprKind.Text, 3, node, get(options, index).value, -1, new[Expr](), true))
 }
 
-fn input_call(context Context, node Node, value StaticValue) Result[Expr, Failure] {
+fn input_expression(context Context, node Node, file InputFile, binary Bool) Result[Expr, Failure] {
+    if binary {
+        return Result.Ok(expression(ExprKind.Bytes, 4, node, std.encoding.hex.encode(file.bytes), -1, new[Expr](), true))
+    }
+    let text = match std.bytes.decode_utf8(file.bytes) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(error(context, node, "build input is not valid UTF-8; use input_bytes for binary data"))
+        }
+    }
+    Result.Ok(expression(ExprKind.Text, 3, node, text, -1, new[Expr](), true))
+}
+
+fn input_call(context Context, node Node, value StaticValue, binary Bool) Result[Expr, Failure] {
     if !value.known {
-        return Result.Ok(expression(ExprKind.Deferred, 3, node, "", -1, new[Expr](), true))
+        return Result.Ok(expression(ExprKind.Deferred, if binary { 4 } else { 3 }, node, "", -1, new[Expr](), true))
     }
     let source = get(context.env.source.files, symbol(context.env, context.signature.symbol).file)
     let package = get(context.env.source.packages, source.package)
@@ -164,13 +180,13 @@ fn input_call(context Context, node Node, value StaticValue) Result[Expr, Failur
     while index < length(inputs.files) {
         let saved = get(inputs.files, index)
         if same_request(saved.request, request) {
-            return Result.Ok(expression(ExprKind.Text, 3, node, saved.file.text, -1, new[Expr](), true))
+            return input_expression(context, node, saved.file, binary)
         }
         index = index + 1
     }
     push(inputs.requests, request)
     let file = match inputs.read(request) {
-        Result.Ok(file) => file
+        Result.Ok(file) => input_snapshot(file)
         Result.Err(message) => {
             return Result.Err(error(context, node, message))
         }
@@ -178,7 +194,7 @@ fn input_call(context Context, node Node, value StaticValue) Result[Expr, Failur
     index = 0
     while index < length(inputs.files) {
         let saved = get(inputs.files, index).file
-        if saved.path == file.path && saved.text != file.text {
+        if saved.path == file.path && !same_input(saved, file) {
             return Result.Err(error(context, node, "build input changed during checking"))
         }
         index = index + 1
@@ -187,5 +203,5 @@ fn input_call(context Context, node Node, value StaticValue) Result[Expr, Failur
             request = request
             file = file
         })
-    Result.Ok(expression(ExprKind.Text, 3, node, file.text, -1, new[Expr](), true))
+    input_expression(context, node, file, binary)
 }

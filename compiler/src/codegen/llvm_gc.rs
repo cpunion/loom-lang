@@ -41,6 +41,7 @@ pub(super) fn allocating_functions(
                 checked::ExprKind::DynBox { .. }
                 | checked::ExprKind::DynCall { .. }
                 | checked::ExprKind::List(_)
+                | checked::ExprKind::Bytes(_)
                 | checked::ExprKind::FrameNew(_) => {
                     allocating.insert(*id);
                 }
@@ -218,6 +219,7 @@ pub(super) fn runtime_function<'ctx>(
             "loom_rt_box_new"
                 | "loom_rt_list_new"
                 | "loom_rt_bytes_new"
+                | "loom_rt_bytes_from_static"
                 | "loom_rt_text_new"
                 | "loom_rt_text_concat"
                 | "loom_rt_text_slice"
@@ -261,6 +263,7 @@ impl TemporarySlots {
             checked::ExprKind::DynBox { .. }
             | checked::ExprKind::DynCall { .. }
             | checked::ExprKind::List(_)
+            | checked::ExprKind::Bytes(_)
             | checked::ExprKind::IndirectCall { .. } => true,
             checked::ExprKind::Unary(_, value)
             | checked::ExprKind::Field(value, _)

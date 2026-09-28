@@ -152,7 +152,7 @@ fn input_receiver(inputs CallInputs, source Node) CallInputs {
         Option.None => Option.None
         Option.Some(values) => {
             let prefixed = new[Option[Expr]]()
-            push(prefixed, Option.None)
+            std.list.push(prefixed, Option.None)
             index = 0
             while index < length(values) {
                 push(prefixed, get(values, index))
@@ -171,7 +171,7 @@ fn input_receiver(inputs CallInputs, source Node) CallInputs {
 fn expand_input(context Context, source Node, nodes List[Node], ready List[Option[Expr]], effects List[InputEffect], depth Int) Result[Bool, Failure] {
     if source.kind != NodeKind.Spread {
         push(nodes, source)
-        push(ready, Option.None)
+        std.list.push(ready, Option.None)
         return Result.Ok(true)
     }
     if depth >= 64 {

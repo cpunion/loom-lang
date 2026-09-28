@@ -122,7 +122,7 @@ fn frontend_bundle(prefix Text, value Prepared) Bytes {
         frontend_field(output, input.request.source)
         frontend_field(output, input.request.path)
         frontend_field(output, input.file.path)
-        frontend_field(output, hex(cache_bytes(input.file.text)))
+        frontend_field(output, hex(input.file.bytes))
         index = index + 1
     }
     cache_append(output, value.input)
@@ -212,7 +212,7 @@ fn frontend_payload(text Text, start Int, project Project, checking Bool, contex
         let owner = get(project.packages, get(project.files, source).package).instance
         if get(project.modules, owner).source != request.root { return Result.Err("cached input module changed") }
         let file = read_input(request)?
-        if file.path != path || hex(cache_bytes(file.text)) != digest { return Result.Err("cached input changed") }
+        if file.path != path || hex(file.bytes) != digest { return Result.Err("cached input changed") }
         push(inputs, BuildInput { request = request file = file })
         index = index + 1
     }

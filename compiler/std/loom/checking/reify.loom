@@ -15,6 +15,9 @@ import std.text.length
 import std.int.to_text
 import std.float.to_text
 import std.result.Result
+import std.encoding.hex.encode
+import std.bytes.new
+import std.bytes.push
 
 record ReifyObject {
     value Value
@@ -61,6 +64,11 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
     // revisit an ID, while aggregate fields retain ordinary value semantics.
     if kind == TypeKind.Function && value.text == "closure" {
         return reify_visit(state, get(value.items, length(value.items) - 1), depth + 1)
+    }
+    // Bytes contain no references. Materialize one blob, not an expression
+    // and growth operation per byte; shared container identity still applies.
+    if kind == TypeKind.Bytes {
+        return reify_spend(state, 1, length(value.items) * 2)
     }
     if shared || kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum || kind == TypeKind.Dyn {
         var index = 0
@@ -183,8 +191,22 @@ fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
         let object = get(state.objects, index)
         discard reify_spend(state, 0, 2)?
         let frame = get(context.env.types, object.value.ty).kind == TypeKind.Frame
-        let create = expression(if frame { ExprKind.FrameNew } else { ExprKind.Intrinsic }, object.value.ty, node,
-            if object.value.ty == 4 { "bytes_new" } else { "list_new" }, -1, new[Expr](), true)
+        let create = if object.value.ty == 4 {
+            let bytes = std.bytes.new()
+            var item = 0
+            while item < length(object.value.items) {
+                let value = get(object.value.items, item)
+                if value.ty != 1 || value.number < 0 || value.number > 255 {
+                    return Result.Err(error(context, node, "invalid byte in comptime result"))
+                }
+                std.bytes.push(bytes, value.number)
+                item = item + 1
+            }
+            expression(ExprKind.Bytes, 4, node, encode(bytes), -1, new[Expr](), true)
+        } else {
+            expression(if frame { ExprKind.FrameNew } else { ExprKind.Intrinsic }, object.value.ty, node,
+                "list_new", -1, new[Expr](), true)
+        }
         push(body, expression(ExprKind.Let, 0, node, "", object.local, expressions(create), true))
         index = index + 1
     }
@@ -193,14 +215,14 @@ fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
         let object = get(state.objects, index)
         let frame = get(context.env.types, object.value.ty).kind == TypeKind.Frame
         var item = 0
-        let count = if object.value.ty == 4 || frame { length(object.value.items) } else { list_length(object.value) }
+        let count = if object.value.ty == 4 { 0 } else { if frame { length(object.value.items) } else { list_length(object.value) } }
         while item < count {
             discard reify_spend(state, 0, 2)?
-            let value = if object.value.ty == 4 || frame { get(object.value.items, item) } else { list_element(object.value, item) }
+            let value = if frame { get(object.value.items, item) } else { list_element(object.value, item) }
             let content = reify_value(state, value, 0)?
             let reference = atom(ExprKind.Local, object.value.ty, node, object.local)
             push(body, expression(if frame { ExprKind.FrameStore } else { ExprKind.Intrinsic }, 0, node,
-                if object.value.ty == 4 { "bytes_push" } else { "list_push" }, if frame { item } else { -1 }, pair(reference, content), true))
+                "list_push", if frame { item } else { -1 }, pair(reference, content), true))
             item = item + 1
         }
         index = index + 1

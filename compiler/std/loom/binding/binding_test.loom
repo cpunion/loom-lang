@@ -310,7 +310,7 @@ test fn declaration_names_and_intrinsic_trust_are_checked() {
     assert rejected(one_source("record A { x Int; x Bool }" )).diagnostic.message == "duplicate declaration member"
     assert rejected(one_source("fn f(x Int, x Bool) {}" )).diagnostic.message == "duplicate declaration member"
     assert rejected(one_source("enum Empty {}" )).diagnostic.message == "an enum needs at least one variant"
-    assert rejected(one_source("intrinsic fn read() Int\n" )).diagnostic.message == "intrinsics require trusted standard-library source; only std.build.input_file and target can be public"
+    assert rejected(one_source("intrinsic fn read() Int\n" )).diagnostic.message == "intrinsics require trusted standard-library source; only std.build input_file, input_bytes and target can be public"
     let files = new[TestFile]()
     push(files, source("std.file", "std/file/file.loom", "intrinsic fn read() Int\n", false, true))
     let program = bound(files, false)

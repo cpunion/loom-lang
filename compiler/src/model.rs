@@ -257,6 +257,8 @@ pub mod checked {
         Float(f64),
         Bool(bool),
         Text(String),
+        /// A fresh mutable buffer copied from immutable embedded bytes.
+        Bytes(Vec<u8>),
         Primitive(Primitive, Vec<Expr>),
         /// Same native representation; construction or safe scalar weakening.
         Coerce(Box<Expr>),

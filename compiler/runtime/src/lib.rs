@@ -969,6 +969,27 @@ extern "C-unwind" fn loom_rt_bytes_new() -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
+unsafe extern "C-unwind" fn loom_rt_bytes_from_static(source: *const u8, len: usize) -> *mut u8 {
+    let bytes = loom_rt_bytes_new();
+    if len == 0 {
+        return bytes;
+    }
+    rooted([bytes], |slots| {
+        let data = allocate_storage(len, None, false);
+        // SAFETY: Generated code supplies immutable static storage, which cannot
+        // move during allocation. Reload the rooted header before publication.
+        unsafe {
+            ptr::copy_nonoverlapping(source, data, len);
+            let buffer = (*slots).cast::<Buffer>();
+            (*buffer).data = data;
+            (*buffer).len = len;
+            (*buffer).cap = len;
+            buffer.cast()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn loom_rt_bytes_reserve_one(bytes: *mut u8) {
     // SAFETY: Generated code roots the owning header across this slow path.
     unsafe { reserve(bytes, 1, 1) };

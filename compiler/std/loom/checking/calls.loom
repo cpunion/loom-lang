@@ -281,7 +281,7 @@ fn tuple_pack_input(context Context, inputs CallInputs, position Int) Result[Tup
             let values = new[Option[Expr]]()
             var index = 0
             while index < length(inputs.nodes) {
-                push(values, Option.None)
+                std.list.push(values, Option.None)
                 index = index + 1
             }
             values

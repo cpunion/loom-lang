@@ -1,0 +1,40 @@
+import std.list.length
+import std.list.get
+
+fn decode_valid(value Text) Bytes {
+    match decode(value) {
+        Result.Ok(bytes) => bytes
+        Result.Err(_) => {
+            assert false
+            std.bytes.new()
+        }
+    }
+}
+
+test fn hex_roundtrips_every_byte_and_rejects_malformed_input() {
+    let bytes = std.bytes.new()
+    var index = 0
+    while index < 256 {
+        std.bytes.push(bytes, index)
+        index = index + 1
+    }
+    let encoded = encode(bytes)
+    assert std.text.length(encoded) == 512
+    let decoded = decode_valid(encoded)
+    index = 0
+    while index < 256 {
+        assert std.bytes.get(decoded, index) == index
+        index = index + 1
+    }
+    assert encode(decode_valid("00aAFF")) == "00aaff"
+    assert encode(decode_valid("")) == ""
+    let invalid = ["0", "0g", "ff ", "0xff", "雪"]
+    index = 0
+    while index < std.list.length(invalid) {
+        assert match decode(std.list.get(invalid, index)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}

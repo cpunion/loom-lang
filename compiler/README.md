@@ -1705,6 +1705,14 @@ No working-directory lookup or runtime file read is generated. A missing,
 non-file or invalid UTF-8 input is a checking error. Use explicit runtime file
 APIs when the program must read current contents instead.
 
+`input_bytes(comptime path Text) Bytes` embeds raw binary data instead. Every
+evaluation creates a fresh mutable buffer; repeated calls do not share mutations
+or modify the saved build input. Text and binary requests for the same path share
+one tracked byte snapshot. Binary literals, including compile-time-computed
+buffers, lower to a static data block and a bulk copy, not one append per byte.
+Sharing within a compile-time result graph is preserved. Source `std.encoding.hex`
+provides `encode(Bytes) Text` and strict `decode(Text) Result[Bytes, DecodeError]`.
+
 Dependencies are discovered automatically during checking; repeated requests use
 one snapshot. Ordinary checked bodies can request inputs even when not runtime
 reachable; unselected `comptime if` branches do not. A `comptime` path parameter
@@ -1713,8 +1721,8 @@ resolution and bytes, and build receipts record request identity and content
 digests, never file contents. Output/IR/receipt paths cannot replace a selected
 input. Embedded data is visible in the executable: do not use this for secrets.
 
-See [the runnable example](examples/build_inputs/main.loom). File inputs currently
-support Text only; binary inputs remain future work. Target properties use the
+Public `InputFile.bytes` snapshots carry raw bytes; analysis detaches them before
+checking. See [the runnable example](examples/build_inputs/main.loom). Target properties use the
 separate API above. Network access and commands are not compile-time operations.
 
 Every branch must parse, but unselected `comptime if` branches impose no type or

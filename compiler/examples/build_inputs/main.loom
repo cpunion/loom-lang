@@ -1,5 +1,10 @@
 import std.build.input_file
+import std.build.input_bytes
 import std.io.write_text
+import std.bytes.decode_utf8
+import std.bytes.set
+import std.bytes.get
+import std.result.Result
 
 fn banner(comptime path Text) Text {
     input_file(path)
@@ -15,5 +20,13 @@ test fn embedded_snapshot() {
     } == "Hello from a build input!\n"
     comptime if false {
         discard input_file("not-selected.txt")
+    }
+    let first = input_bytes("banner.txt")
+    let second = input_bytes("banner.txt")
+    std.bytes.set(first, 0, 104)
+    assert std.bytes.get(second, 0) == 72
+    assert match decode_utf8(second) {
+        Result.Ok(text) => text == banner("banner.txt")
+        Result.Err(_) => false
     }
 }

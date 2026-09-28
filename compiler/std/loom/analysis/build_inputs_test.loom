@@ -1,5 +1,19 @@
 import std.loom.project.InputRequest
 import std.loom.project.InputFile
+import std.encoding.hex.decode
+import std.bytes.to_text
+import std.bytes.set
+import std.bytes.new
+
+fn input_bytes_fixture(text Text) Bytes {
+    match std.encoding.hex.decode(text) {
+        Result.Ok(bytes) => bytes
+        Result.Err(_) => {
+            assert false
+            std.bytes.new()
+        }
+    }
+}
 
 test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() {
     let project = input("import std.build.input_file\nfn main() { discard input_file(\"message.txt\") }")
@@ -46,7 +60,7 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
             request = request
             file = InputFile {
                 path = "/app/message.txt"
-                text = "first"
+                bytes = input_bytes_fixture("6669727374")
             }
         })
     let analysis = match analyze_with_inputs(project, false, inputs) {
@@ -59,6 +73,10 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
     assert !is_current(analysis, project, false)
     assert !is_current_with_inputs(analysis, project, false, inputs.files)
     assert is_current_with_inputs(analysis, project, false, inputs.files, inputs.options)
+    std.bytes.set(get(inputs.files, 0).file.bytes, 0, 70)
+    assert std.bytes.to_text(get(analysis.inputs, 0).file.bytes) == "first"
+    assert !is_current_with_inputs(analysis, project, false, inputs.files, inputs.options)
+    std.bytes.set(get(inputs.files, 0).file.bytes, 0, 102)
     set(inputs.options, 0, BuildOption {
             name = "app.mode"
             value = "other"
@@ -89,9 +107,9 @@ test fn analysis_detaches_build_snapshots_and_freshness_checks_their_contents() 
             request = request
             file = InputFile {
                 path = "/app/message.txt"
-                text = "other"
+                bytes = input_bytes_fixture("6f74686572")
             }
         })
-    assert get(analysis.inputs, 0).file.text == "first"
+    assert std.bytes.to_text(get(analysis.inputs, 0).file.bytes) == "first"
     assert !is_current_with_inputs(analysis, project, false, inputs.files, inputs.options)
 }
