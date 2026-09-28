@@ -1,0 +1,27 @@
+import std.build.target
+import std.io.write_text
+import std.text.concat
+
+fn platform() Text {
+    comptime if target("os") == "windows" {
+        "Windows"
+    } else {
+        comptime if target("os") == "macos" {
+            "macOS"
+        } else {
+            "Linux"
+        }
+    }
+}
+
+fn main() {
+    discard write_text(concat(platform(), concat(" / ", target("arch"))))
+}
+
+test fn target_is_a_compile_time_input() {
+    assert comptime {
+        platform()
+    } == platform()
+    assert target("pointer_width") == "64"
+    assert target("endian") == "little"
+}

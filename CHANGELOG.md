@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add compile-time `std.build.target` queries from the actual backend. Bind
+  observed properties to checked artifacts, cache reuse and analysis; reject
+  mismatched emission targets without adding runtime platform queries.
+
 - Add explicit build options to CLI, source `std.build.option`, and editor
   queries. Bind the detached option map to frontend reuse, analysis freshness
   and v3 build receipts, without ambient environment reads or runtime operations.

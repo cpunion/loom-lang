@@ -786,7 +786,14 @@ canonicalized; duplicates reject. CLI and VS Code `loom.buildOptions` feed the s
 checks, member completion, hover, rename and import validation. Frontend-cache
 keys and public analysis freshness include the full option map. V3 receipts bind
 option names and value digests; values can still enter generated artifacts and
-must not contain secrets. Target metadata and finer-grained persistent reuse remain open.
+must not contain secrets.
+`std.build.target` now supplies actual backend OS, architecture, pointer width
+and byte order as compile-time Text. The CLI/editor read target metadata only
+when observed; public analysis can supply a snapshot without a backend process.
+Observed properties survive into checked artifacts, cache revalidation and the
+receipt's checked-input digest. Emission rejects a mismatched target. This adds
+optional backend-neutral metadata, not runtime platform dispatch, cross-compilation
+or a new bootstrap checkpoint. Fine-grained persistent reuse remains open.
 The [native basic benchmark](../../benchmarks/basic/README.md#managed-memory-lowering-repair)
 also records the managed-memory lowering repair, including same-session baseline
 comparisons for native kernels and whole compiler checks. Those measurements

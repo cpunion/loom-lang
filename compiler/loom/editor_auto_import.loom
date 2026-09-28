@@ -73,7 +73,7 @@ fn editor_overlay_checks(options EditorOptions, overlays List[SourceOverlay]) Bo
         Result.Ok(project) => {
             match bind(project, options.tests) {
                 Result.Ok(bindings) => {
-                    return match check_with_inputs(bindings, build_inputs(read_input, options.build_options)) {
+                    return match check_with_inputs(bindings, driver_build_inputs(options.build_options, options.native_tool)) {
                         Result.Ok(_) => true
                         Result.Err(_) => false
                     }
@@ -188,7 +188,7 @@ fn editor_missing_name(options EditorOptions, reference EditorImportReference) B
     if length(candidates(bindings, file, get(project.files, file).test_only, reference.value)) != 0 {
         return false
     }
-    match check_with_inputs(bindings, build_inputs(read_input, options.build_options)) {
+    match check_with_inputs(bindings, driver_build_inputs(options.build_options, options.native_tool)) {
         Result.Ok(_) => false
         Result.Err(failed) => {
             let diagnostic = failed.diagnostic
@@ -343,6 +343,7 @@ test fn editor_bare_import_follows_direct_edges_and_requires_one_declaration() {
         offset = 0
         new_name = ""
         build_options = std.list.new[BuildOption]()
+        native_tool = ""
     }
     assert editor_bare_import(options, "answer") == ""
     assert editor_bare_import(options, "value") == ""
@@ -359,6 +360,7 @@ test fn editor_bare_import_follows_direct_edges_and_requires_one_declaration() {
             offset = 0
             new_name = ""
             build_options = std.list.new[BuildOption]()
+            native_tool = ""
         }, "chosen") == "imports.library.chosen"
 }
 
@@ -383,6 +385,7 @@ test fn editor_bare_import_uses_the_overlaid_source_and_import_group() {
             offset = 54
             new_name = ""
             build_options = std.list.new[BuildOption]()
+            native_tool = ""
         })
     assert !output.failed && std.text.contains(output.text, "\"path\":\"imports.library.chosen\"")
     assert std.text.contains(output.text, "\"start\":33")

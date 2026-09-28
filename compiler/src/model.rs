@@ -160,6 +160,8 @@ pub mod checked {
         pub tests: Vec<usize>,
         /// Optional diagnostic labels, in tests order. Empty means stripped IR.
         pub test_names: Vec<String>,
+        /// Source-observed target properties; emission must preserve them.
+        pub target_inputs: Vec<(String, String)>,
         /// Public functions of the selected package, for a library object.
         pub exports: Vec<usize>,
     }

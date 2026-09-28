@@ -203,11 +203,12 @@ pub fn decode(text: &str) -> Result<c::Program> {
     let mut interfaces = vec![];
     let mut witnesses = vec![];
     let mut test_names = vec![];
-    let mut features = [false; 2];
+    let mut target_inputs = vec![];
+    let mut features = [false; 3];
     while reader.offset != text.len() {
         let tag = reader.index()?;
         let seen = match tag {
-            1 | 2 => &mut features[tag - 1],
+            1..=3 => &mut features[tag - 1],
             _ => return Err("unknown checked-IR feature tag".into()),
         };
         if *seen {
@@ -225,8 +226,18 @@ pub fn decode(text: &str) -> Result<c::Program> {
                     reader.sequence(|reader| optional(reader.integer()?))?,
                 ))
             })?;
-        } else {
+        } else if tag == 2 {
             test_names = reader.sequence(Reader::string)?;
+        } else {
+            target_inputs = reader.sequence(|reader| Ok((reader.string()?, reader.string()?)))?;
+            let mut names = std::collections::HashSet::new();
+            for (name, _) in &target_inputs {
+                if !matches!(name.as_str(), "os" | "arch" | "pointer_width" | "endian")
+                    || !names.insert(name)
+                {
+                    return Err("invalid or duplicate checked target property".into());
+                }
+            }
         }
     }
     if !test_names.is_empty() && test_names.len() != tests.len() {
@@ -242,6 +253,7 @@ pub fn decode(text: &str) -> Result<c::Program> {
         entry,
         tests,
         test_names,
+        target_inputs,
         exports,
     };
     let mut types = Vec::new();
@@ -1493,12 +1505,14 @@ mod tests {
             format!("loom-checked-1\n2\n0\n-1\n2\n-1\n1\n0\n0\n0\n0\n0\n0\n0\n{body}-1\n1\n0\n0\n");
         let names = "2\n1\n12\npackage.test";
         let dynamic = "1\n0\n0\n";
+        let target = "3\n1\n2\nos5\nlinux";
         for tail in [
             String::new(),
             "2\n0\n".into(),
             names.into(),
             format!("{names}{dynamic}"),
             format!("{dynamic}{names}"),
+            format!("{names}{target}"),
         ] {
             let program = decode(&format!("{prefix}{tail}")).unwrap();
             let c::StmtKind::Assert {
@@ -1516,7 +1530,10 @@ mod tests {
         for (tail, error) in [
             (format!("{names}{names}"), "duplicate"),
             (format!("{dynamic}{dynamic}"), "duplicate"),
-            ("3\n".into(), "unknown"),
+            ("4\n".into(), "unknown"),
+            (format!("{target}{target}"), "duplicate"),
+            ("3\n2\n2\nos5\nlinux2\nos5\nmacos".into(), "duplicate"),
+            ("3\n1\n7\nunknown1\nx".into(), "invalid"),
             ("2\n2\n1\na1\nb".into(), "count mismatch"),
         ] {
             assert!(

@@ -20,6 +20,7 @@ record EditorOptions {
     offset Int
     new_name Text
     build_options List[BuildOption]
+    native_tool Text
 }
 
 record EditorOutput {
@@ -97,6 +98,7 @@ fn editor_diagnostic(path Text, diagnostic Diagnostic) EditorOutput {
 fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     var path = ""
     var standard = ""
+    var native_tool = ""
     var tests = false
     var query_path = ""
     var offset = -1
@@ -109,7 +111,13 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
     var index = 2
     while index < std.list.length(args) {
         let argument = get(args, index)
-        if argument == "--build-option" {
+        if argument == "--native-tool" {
+            index = index + 1
+            if index == std.list.length(args) {
+                return Result.Err("--native-tool needs a value")
+            }
+            native_tool = get(args, index)
+        } else if argument == "--build-option" {
             index = index + 1
             if index == std.list.length(args) {
                 return Result.Err("--build-option needs a value")
@@ -208,6 +216,7 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
             offset = offset
             new_name = new_name
             build_options = build_option_snapshot(build_options)?
+            native_tool = native_tool
         })
 }
 
@@ -282,18 +291,18 @@ fn editor_execute(args List[Text]) EditorOutput {
             return editor_error("query byte offset is outside the source")
         }
         if get(args, 1) == "editor-complete" {
-            return editor_completion(bound, index, options.offset, recovery.inserted, build_inputs(read_input, options.build_options))
+            return editor_completion(bound, index, options.offset, recovery.inserted, driver_build_inputs(options.build_options, options.native_tool))
         }
         if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
-            let inputs = build_inputs(read_input, options.build_options)
+            let inputs = driver_build_inputs(options.build_options, options.native_tool)
             return match check_with_inputs(bound, inputs) {
-                Result.Ok(program) => editor_symbols(options, bound, program, index, options.offset, inputs.files)
+                Result.Ok(program) => editor_symbols(options, bound, program, index, options.offset, inputs)
                 Result.Err(failed) => editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
             }
         }
-        return editor_query(bound, index, options.offset, build_inputs(read_input, options.build_options))
+        return editor_query(bound, index, options.offset, driver_build_inputs(options.build_options, options.native_tool))
     }
-    let inputs = build_inputs(read_input, options.build_options)
+    let inputs = driver_build_inputs(options.build_options, options.native_tool)
     match check_with_inputs(bound, inputs) {
         Result.Ok(_) => {
         }

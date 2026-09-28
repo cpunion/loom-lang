@@ -46,11 +46,13 @@ async function settings(uri) {
   let executable = raw?.executable || 'loom';
   const relativeExecutable = !path.isAbsolute(executable) && /[/\\]/.test(executable);
   const relativeStd = raw?.stdRoot && !path.isAbsolute(raw.stdRoot);
-  if (!folder && (relativeExecutable || relativeStd)) {
+  const relativeNative = raw?.nativeTool && !path.isAbsolute(raw.nativeTool);
+  if (!folder && (relativeExecutable || relativeStd || relativeNative)) {
     throw new Error('A file outside a multi-root workspace needs absolute Loom toolchain paths (or an executable on PATH); add its directory as a workspace folder to use relative settings.');
   }
   if (relativeExecutable) executable = path.resolve(folder, executable);
-  return { executable, stdRoot: relativeStd ? path.resolve(folder, raw.stdRoot) : raw?.stdRoot || '', buildOptions: raw?.buildOptions || {} };
+  return { executable, stdRoot: relativeStd ? path.resolve(folder, raw.stdRoot) : raw?.stdRoot || '',
+    nativeTool: relativeNative ? path.resolve(folder, raw.nativeTool) : raw?.nativeTool || '', buildOptions: raw?.buildOptions || {} };
 }
 
 function schedule() {

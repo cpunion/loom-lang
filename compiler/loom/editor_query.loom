@@ -42,6 +42,7 @@ fn editor_query(bindings std.loom.binding.Program, file Int, offset Int, inputs 
                     program = program
                     inputs = inputs.files
                     options = inputs.options
+                    targets = inputs.targets
                 }, file, offset), "")
         Result.Err(failed) => {
             let diagnostic = editor_diagnostic_json(get(bindings.files, failed.source).path, failed.diagnostic)

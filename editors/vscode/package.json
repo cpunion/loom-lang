@@ -22,6 +22,7 @@
       "properties": {
         "loom.executable": { "type": "string", "default": "loom", "scope": "resource", "description": "Loom compiler executable. Absolute paths are recommended; a bare name is found on PATH." },
         "loom.stdRoot": { "type": "string", "default": "", "scope": "resource", "description": "Standard-library directory. Empty uses the compiler default; relative paths use the workspace folder." },
+        "loom.nativeTool": { "type": "string", "default": "", "scope": "resource", "description": "Native backend for compile-time target queries. Empty discovers it beside the compiler; relative paths use the workspace folder." },
         "loom.buildOptions": { "type": "object", "default": {}, "additionalProperties": { "type": "string" }, "scope": "resource", "description": "Explicit compile-time name/value inputs, matching CLI --build-option. Values can enter generated artifacts; do not put secrets here." },
         "loom.trace.server": { "type": "string", "enum": ["off", "messages", "verbose"], "default": "off", "description": "Language server protocol tracing (may include source text)." }
       }

@@ -35,6 +35,8 @@ test fn build_inputs_are_snapshots_erased_before_codegen() {
     // Rechecking from a caller-supplied immutable snapshot needs no reader.
     discard match input_program(source, BuildInputs {
             options = new[BuildOption]()
+            targets = new[BuildOption]()
+            read_target = no_target_reader
             requests = new[InputRequest]()
             files = inputs.files
             read = no_input_reader

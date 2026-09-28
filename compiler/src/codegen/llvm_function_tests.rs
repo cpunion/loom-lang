@@ -83,6 +83,7 @@ fn program(
         entry: Some(2),
         tests: vec![],
         test_names: vec![],
+        target_inputs: vec![],
         exports: vec![],
     }
 }

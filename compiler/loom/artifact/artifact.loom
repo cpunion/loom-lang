@@ -10,7 +10,9 @@ import std.int.to_text
 import std.text.byte
 import std.text.length
 import std.list.get
+import std.list.new
 import std.list.length
+import std.loom.project.BuildOption
 
 // Private source-compiler -> LLVM bridge format, not a package/cache format.
 // Header: loom-checked-1\n. Integers are decimal lines; strings are byte length
@@ -39,6 +41,7 @@ import std.list.length
 // (interface ID,concrete type ID,method function IDs with -1 for unused slots).
 // Tag 2 contains test names, in the same order as tests. It contains no source
 // text. A source-less checked program can omit diagnostic names and messages.
+// Tag 3 contains observed target properties (name,value), checked by the backend.
 // Constraints, proof results, generic metadata and local names are not emitted.
 
 fn raw(buffer Bytes, value Text) {
@@ -221,6 +224,10 @@ fn expression(buffer Bytes, value Expr) {
 }
 
 pub fn encode(program Program) Text {
+    encode(program, std.list.new[BuildOption]())
+}
+
+pub fn encode(program Program, targets List[BuildOption]) Text {
     let buffer = new()
     raw(buffer, "loom-checked-1\n")
     integer(buffer, length(program.types))
@@ -290,6 +297,17 @@ pub fn encode(program Program) Text {
         index = 0
         while index < length(program.test_names) {
             text(buffer, get(program.test_names, index))
+            index = index + 1
+        }
+    }
+    if length(targets) > 0 {
+        integer(buffer, 3)
+        integer(buffer, length(targets))
+        index = 0
+        while index < length(targets) {
+            let property = get(targets, index)
+            text(buffer, property.name)
+            text(buffer, property.value)
             index = index + 1
         }
     }

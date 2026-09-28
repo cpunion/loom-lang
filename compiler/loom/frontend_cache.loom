@@ -106,6 +106,14 @@ fn frontend_bundle(prefix Text, value Prepared) Bytes {
     let output = cache_bytes(prefix)
     frontend_number(output, value.entry)
     frontend_number(output, value.tests)
+    frontend_number(output, length(value.targets))
+    var target = 0
+    while target < length(value.targets) {
+        let property = get(value.targets, target)
+        frontend_field(output, property.name)
+        frontend_field(output, property.value)
+        target = target + 1
+    }
     frontend_number(output, length(value.inputs))
     var index = 0
     while index < length(value.inputs) {
@@ -121,7 +129,7 @@ fn frontend_bundle(prefix Text, value Prepared) Bytes {
     cache_seal(output)
 }
 
-fn frontend_decode(bytes Bytes, prefix Text, project Project, checking Bool) Option[Prepared] {
+fn frontend_decode(bytes Bytes, prefix Text, project Project, checking Bool, inputs BuildInputs) Option[Prepared] {
     let body = match cache_unseal(bytes, prefix) {
         Option.Some(value) => value,
         Option.None => {
@@ -134,7 +142,7 @@ fn frontend_decode(bytes Bytes, prefix Text, project Project, checking Bool) Opt
             return Option.None
         }
     }
-    match frontend_payload(text, length(prefix), project, checking) {
+    match frontend_payload(text, length(prefix), project, checking, inputs) {
         Result.Ok(value) => Option.Some(value)
         Result.Err(_) => Option.None
     }
@@ -164,12 +172,31 @@ fn frontend_read_number(reader FrontendReader) Result[Int, Text] {
         Result.Err(_) => Result.Err("invalid cache number")
     }
 }
-fn frontend_payload(text Text, start Int, project Project, checking Bool) Result[Prepared, Text] {
+fn frontend_payload(text Text, start Int, project Project, checking Bool, context BuildInputs) Result[Prepared, Text] {
     let cursor = new[Int]()
     push(cursor, start)
     let reader = FrontendReader { text = text cursor = cursor }
     let entry = frontend_read_number(reader)?
     let tests = frontend_read_number(reader)?
+    let target_count = frontend_read_number(reader)?
+    if target_count < 0 || target_count > 4 {
+        return Result.Err("invalid cached target count")
+    }
+    let targets = new[BuildOption]()
+    var target = 0
+    while target < target_count {
+        let name = frontend_read(reader)?
+        let value = frontend_read(reader)?
+        if !valid_target_property(name) || context.read_target(name)? != value {
+            return Result.Err("cached target property changed")
+        }
+        push(targets, BuildOption {
+                name = name
+                value = value
+            })
+        target = target + 1
+    }
+    discard build_option_snapshot(targets)?
     let count = frontend_read_number(reader)?
     if count < 0 || count > length(text) { return Result.Err("invalid cache input count") }
     let inputs = new[BuildInput]()
@@ -195,6 +222,7 @@ fn frontend_payload(text Text, start Int, project Project, checking Bool) Result
     }
     Result.Ok(Prepared {
             inputs = inputs
+            targets = targets
             input = input
             entry = entry
             tests = tests
@@ -202,12 +230,12 @@ fn frontend_payload(text Text, start Int, project Project, checking Bool) Result
         })
 }
 
-fn frontend_cached(options Options, project Project) Result[Prepared, Text] {
+fn frontend_cached(options Options, project Project, inputs BuildInputs) Result[Prepared, Text] {
     let identity = match frontend_identity() {
         Option.Some(value) => value
         Option.None => {
             cache_trace("frontend unavailable")
-            return prepare_loaded(options, project)
+            return prepare_loaded(options, project, inputs)
         }
     }
     let key = frontend_key(options, project, identity)
@@ -222,7 +250,7 @@ fn frontend_cached(options Options, project Project) Result[Prepared, Text] {
     } {
         match read_bytes(path) {
             Result.Ok(bytes) => {
-                match frontend_decode(bytes, prefix, project, options.command == "check") {
+                match frontend_decode(bytes, prefix, project, options.command == "check", inputs) {
                     Option.Some(value) => {
                         cache_trace("frontend hit")
                         return Result.Ok(value)
@@ -236,7 +264,7 @@ fn frontend_cached(options Options, project Project) Result[Prepared, Text] {
         }
     }
     cache_trace("frontend miss")
-    let checked = prepare_loaded(options, project)?
+    let checked = prepare_loaded(options, project, inputs)?
     // Publish only successful checks. Readers see one complete, content-checked
     // bundle; concurrent producers own separate staging directories.
     let stage = cache_staging(root)?

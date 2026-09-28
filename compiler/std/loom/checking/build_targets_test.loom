@@ -1,0 +1,79 @@
+import std.text.contains
+
+fn target_program(text Text, inputs BuildInputs) Result[std.loom.typed.Program, Failure] {
+    let files = source_files(concat("import std.build.target\n", text))
+    push(files, source_file("std.build", """
+        pub intrinsic fn target(comptime property Text) Text
+        """, true))
+    check_with_inputs(bind(fixture_project(files), false)?, inputs)
+}
+
+test fn target_queries_use_snapshots_and_defer_unselected_calls() {
+    let inputs = build_inputs(no_input_reader)
+    push(inputs.targets, BuildOption {
+            name = "os"
+            value = "linux"
+        })
+    assert match target_program("""
+        fn selected() Int ensures result == 7 {
+            comptime if target("os") == "linux" {
+                7
+            } else {
+                missing()
+            }
+        }
+
+        fn main() {
+            assert comptime { selected() } == 7
+            comptime if false {
+                discard target("arch")
+            }
+        }
+        """, inputs) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert length(inputs.targets) == 1
+    assert match target_program("""
+        fn main() {
+            discard target("os")
+        }
+        """, build_inputs(no_input_reader)) {
+        Result.Err(failure) => std.text.contains(failure.diagnostic.message, "explicit snapshot or reader")
+        Result.Ok(_) => false
+    }
+    assert match target_program("""
+        fn main() {
+            discard target("unknown")
+        }
+        """, inputs) {
+        Result.Err(failure) => std.text.contains(failure.diagnostic.message, "unknown target property")
+        Result.Ok(_) => false
+    }
+    assert match target_program("""
+        fn read(property Text) Text {
+            target(property)
+        }
+        """, inputs) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn target_reader_runs_once_per_observed_property() {
+    let calls = [0]
+    let inputs = build_inputs(no_input_reader, new[BuildOption](), fn(property Text) Result[Text, Text] {
+            assert property == "os"
+            set(calls, 0, get(calls, 0) + 1)
+            Result.Ok("macos")
+        })
+    assert match target_program("""
+        fn main() {
+            assert target("os") == target("os")
+        }
+        """, inputs) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert get(calls, 0) == 1 && length(inputs.targets) == 1
+}

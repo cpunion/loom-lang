@@ -43,6 +43,7 @@ async function buildOptionSmoke(executable, stdRoot) {
   const settings = { executable, stdRoot, buildOptions: { 'app.mode': 'on' } };
   const client = await session(settings, folder);
   const source = `import std.build.option
+import std.build.target
 
 record Enabled {
     value Int
@@ -53,7 +54,7 @@ record Disabled {
 }
 
 fn main() {
-    let box = comptime if option("app.mode", "off") == "on" {
+    let box = comptime if option("app.mode", "off") == "on" && target("pointer_width") == "64" {
         Enabled { value = 7 }
     } else {
         Disabled { other = true }
@@ -73,6 +74,15 @@ fn main() {
       textDocument: { uri: document.uri }, position: document.positionAt(source.indexOf('box.value') + 6),
     });
     assert.deepEqual(completion.items.map(item => item.label), ['value']);
+    for (const missing of [true, false]) {
+      const after = client.diagnostics.length;
+      await client.rpc.sendNotification('workspace/didChangeConfiguration', {
+        settings: { loom: { ...settings, nativeTool: missing ? path.join(folder, 'missing-backend') : '' } },
+      });
+      const report = await client.wait(file, 1, after);
+      if (missing) assert.ok(report.diagnostics.some(item => item.message.includes('cannot read target properties')), JSON.stringify(report));
+      else assert.deepEqual(report.diagnostics, []);
+    }
     for (const mode of ['off', 'on']) {
       const after = client.diagnostics.length;
       await client.rpc.sendNotification('workspace/didChangeConfiguration', {

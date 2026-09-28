@@ -45,6 +45,10 @@ type NativeResult<T> = Result<T, Box<dyn std::error::Error>>;
 pub struct Llvm;
 
 impl Backend for Llvm {
+    fn target_info(&self) -> Result<Vec<(String, String)>, String> {
+        Ok(NativeTarget::new(Optimization::O0)?.source_info())
+    }
+
     fn cache_identity(
         &self,
         optimization: Optimization,
@@ -172,6 +176,16 @@ fn emit_checked(
     }
     trace_phase("target");
     let native = NativeTarget::new(optimization)?;
+    let target_info = native.source_info();
+    for required in &program.target_inputs {
+        if !target_info.contains(required) {
+            return Err(format!(
+                "checked target property {} does not match the emission target",
+                required.0
+            )
+            .into());
+        }
+    }
     let machine = &native.machine;
     let optimization = native.optimization;
     let context = Context::create();
@@ -2264,6 +2278,7 @@ mod tests {
             entry: None,
             tests: vec![],
             test_names: vec![],
+            target_inputs: vec![],
             exports: vec![],
         };
         let context = Context::create();

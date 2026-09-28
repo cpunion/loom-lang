@@ -238,8 +238,10 @@ trusted-local frontend cache now reuses successful whole-closure checks and
 lowered inputs, bound to compiler bytes and the complete loaded semantic basis.
 Source discovery/parsing, dependency verification and final linking still run.
 Tracked file snapshots and explicit build options now bind checking, editor
-queries, frontend-cache reuse and build receipts. Target metadata, fine-grained
-persistent proof/effect reuse and per-package objects remain open.
+queries, frontend-cache reuse and build receipts. Observed target properties now
+come from the actual backend, with lazy reads, cached-input revalidation and
+emission-time checks against the saved checked artifact. Fine-grained persistent
+proof/effect reuse and per-package objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic
 method calls into the existing direct-call path. Conditional conformance queries,

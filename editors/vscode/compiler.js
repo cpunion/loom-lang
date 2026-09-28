@@ -40,6 +40,7 @@ async function editorReport(settings, directory, mode, extraArgs, overlayArgs, s
     args.push('--build-option', `${name}=${options[name]}`);
   }
   if (settings.stdRoot) args.push('--std', settings.stdRoot);
+  if (settings.nativeTool) args.push('--native-tool', settings.nativeTool);
   const result = await run(settings.executable, args, directory, signal);
   const failure = detail => new Error(`${mode} failed using ${settings.executable}: ${detail}\nSet loom.executable to the current Loom compiler, not an older same-named tool.`);
   if (result.code !== 0 && result.code !== 1) throw failure(result.stderr || `Compiler exited ${result.code}`);

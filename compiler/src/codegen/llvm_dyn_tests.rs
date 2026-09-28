@@ -121,6 +121,7 @@ fn explicit_witnesses_dispatch_and_keep_sparse_reachability() {
         entry: Some(3),
         tests: vec![],
         test_names: vec![],
+        target_inputs: vec![],
         // Public functions can make the source metadata retain full tables,
         // but an executable still starts only at main (or selected tests).
         exports: vec![2],

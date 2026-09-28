@@ -65,6 +65,9 @@ Set `loom.buildOptions` to a string-valued object such as
 Diagnostics and semantic queries share these explicit inputs; changing the
 configuration cancels stale queries and rechecks open packages. Values may be
 compiled into artifacts, so this setting must not contain secrets.
+Compile-time `std.build.target` queries lazily use the backend discovered from
+the compiler. Set `loom.nativeTool` to match an explicit CLI `--native-tool`;
+relative paths follow the same workspace rules as `loom.stdRoot`.
 The configured compiler must support `editor-check`, `editor-query`,
 `editor-complete`, `editor-references`, `editor-rename`, `editor-auto-import`, and
 `fmt --stdin`. Compiler
