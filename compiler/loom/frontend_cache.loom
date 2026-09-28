@@ -187,7 +187,7 @@ fn frontend_payload(text Text, start Int, project Project, checking Bool, contex
     while target < target_count {
         let name = frontend_read(reader)?
         let value = frontend_read(reader)?
-        if !valid_target_property(name) || context.read_target(name)? != value {
+        if !valid_target_property(name) || target_value(context, name)? != value {
             return Result.Err("cached target property changed")
         }
         push(targets, BuildOption {

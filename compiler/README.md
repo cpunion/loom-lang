@@ -1651,16 +1651,18 @@ fn line_end() Text {
 
 Properties are fixed while checking, work in compile-time evaluation and become
 ordinary Text constants. The driver reads its selected native backend lazily,
-once per checking context. Importing the declaration or skipping a query in
+once per checking context, retaining all four properties as one coherent
+snapshot. Importing the declaration or skipping a query in
 an unselected `comptime if` branch needs no backend. This is target introspection,
 not cross-compilation support or runtime platform detection.
 
-Observed properties enter the checked artifact; emission rejects a mismatched
+The requested target snapshot enters the checked artifact; emission rejects a mismatched
 target, including when consuming saved `emit-checked` output. Frontend-cache hits
 revalidate the properties before reuse, and the receipt's checked-input digest
 binds them. Optimization and CPU tuning do not change these four properties.
 Public analysis accepts explicit `BuildInputs.targets` snapshots or `read_target`
-callbacks without a subprocess; freshness includes the observed snapshot.
+callbacks with an explicit `target_context`, without a subprocess; freshness
+includes the snapshot. A supplied snapshot must contain every requested property.
 Editor queries use the compiler's discovered backend or `loom.nativeTool`, matching
 CLI `--native-tool`. See the [native example](examples/build_target/main.loom).
 

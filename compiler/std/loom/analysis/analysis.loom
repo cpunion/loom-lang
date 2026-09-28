@@ -92,7 +92,7 @@ pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
 }
 pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Result[Analysis, Failure] {
     let bindings = bind(snapshot(project), tests)?
-    let detached = build_inputs(inputs.read, new[BuildOption](), inputs.read_target)
+    let detached = build_inputs(inputs.read, new[BuildOption](), inputs.read_target, inputs.target_context)
     var option = 0
     while option < length(inputs.options) {
         push(detached.options, get(inputs.options, option))

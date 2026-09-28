@@ -1,4 +1,5 @@
 import std.loom.project.valid_target_property
+import std.loom.checking.target_value
 
 // Called only after the source observes a target property. Plain checking,
 // formatting and compiler-library consumers do not need a native tool.
@@ -47,24 +48,5 @@ fn native_target_inputs(tool Text) Result[List[BuildOption], Text] {
 }
 
 fn driver_build_inputs(options List[BuildOption], tool Text) BuildInputs {
-    let saved = new[BuildOption]()
-    build_inputs(read_input, options, fn(property Text) Result[Text, Text] {
-            if length(saved) == 0 {
-                let properties = native_target_inputs(tool)?
-                var index = 0
-                while index < length(properties) {
-                    push(saved, get(properties, index))
-                    index = index + 1
-                }
-            }
-            var index = 0
-            while index < length(saved) {
-                let current = get(saved, index)
-                if current.name == property {
-                    return Result.Ok(current.value)
-                }
-                index = index + 1
-            }
-            Result.Err("unknown target property")
-        })
+    build_inputs(read_input, options, native_target_inputs, tool)
 }

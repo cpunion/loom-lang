@@ -60,20 +60,27 @@ test fn target_queries_use_snapshots_and_defer_unselected_calls() {
     }
 }
 
-test fn target_reader_runs_once_per_observed_property() {
+test fn target_reader_supplies_one_coherent_snapshot() {
     let calls = [0]
-    let inputs = build_inputs(no_input_reader, new[BuildOption](), fn(property Text) Result[Text, Text] {
-            assert property == "os"
+    let inputs = build_inputs(no_input_reader, new[BuildOption](), fn(context Text) Result[List[BuildOption], Text] {
+            assert context == "selected-backend"
             set(calls, 0, get(calls, 0) + 1)
-            Result.Ok("macos")
-        })
+            Result.Ok([BuildOption {
+                        name = "os"
+                        value = "macos"
+                    }, BuildOption {
+                        name = "arch"
+                        value = "aarch64"
+                    }])
+        }, "selected-backend")
     assert match target_program("""
         fn main() {
             assert target("os") == target("os")
+            assert target("arch") == "aarch64"
         }
         """, inputs) {
         Result.Ok(_) => true
         Result.Err(_) => false
     }
-    assert get(calls, 0) == 1 && length(inputs.targets) == 1
+    assert get(calls, 0) == 1 && length(inputs.targets) == 2
 }
