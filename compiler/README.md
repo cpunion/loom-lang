@@ -584,6 +584,11 @@ timings; local variables remain conservatively rooted for the function.
   arbitrary binary contents and use the same source-owned read/write loops
   and explicit closure as text I/O. Both write APIs create or truncate a file;
   neither promises atomic publication or crash durability.
+- Source `std.io.read_bytes()` reads stdin to EOF; `write_bytes(Bytes)` writes
+  stdout, and `write_error(Bytes)` writes stderr. These preserve arbitrary bytes,
+  report byte counts/errors, and never close standard streams. `read_text()` still
+  rejects invalid UTF-8. Reads buffer the entire input, not a bounded-memory
+  stream. See the [binary filter](examples/binary_streams/main.loom).
 - Source `std.hash.sha256.digest(Bytes) Bytes` produces a fresh 32-byte digest;
   `hex(Bytes) Text` hashes input and returns its 64 lowercase hexadecimal digits.
   The one-shot implementation uses fixed scratch storage and virtual padding,
