@@ -1,0 +1,29 @@
+import std.result.Result
+import std.text.contains
+import std.text.split
+import std.bytes.new
+import std.bytes.decode_utf8
+
+pub enum ResolveError {
+    InvalidInput
+    Lookup
+}
+
+async intrinsic fn async_resolve(host Text, buffer Bytes, port Int) Int
+
+// Use the OS resolver, including hosts-file entries and numeric IPv4/IPv6.
+// Results are numeric socket addresses in OS order, with the supplied port.
+// A running native lookup must finish before cancellation can drain this Task.
+pub async fn resolve(host Text, port Int) Result[List[Text], ResolveError] {
+    if host == "" || std.text.contains(host, "\0") || port < 0 || port > 65535 {
+        return Result.Err(ResolveError.InvalidInput)
+    }
+    let buffer = std.bytes.new()
+    if async_resolve(host, buffer, port).await <= 0 {
+        return Result.Err(ResolveError.Lookup)
+    }
+    match std.bytes.decode_utf8(buffer) {
+        Result.Ok(text) => Result.Ok(std.text.split(text, "\n"))
+        Result.Err(_) => Result.Err(ResolveError.Lookup)
+    }
+}

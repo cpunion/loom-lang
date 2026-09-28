@@ -4,13 +4,13 @@ use std::fs::File;
 
 // Tokens are private, owner-local and never reused. The table retains native
 // ownership between operations; neither GC nor an OS descriptor is its identity.
-pub(super) struct Files {
+pub(super) struct Workers {
     pool: Pool,
     handles: RefCell<HashMap<i64, File>>,
     next: Cell<i64>,
 }
 
-impl Files {
+impl Workers {
     pub(super) fn new(count: usize) -> io::Result<Self> {
         Ok(Self {
             pool: Pool::new(count)?,
@@ -58,9 +58,9 @@ fn take(token: i64) -> Option<File> {
     edit(|owner, _| Ok(owner.workers.get().and_then(|files| files.take(token))))
 }
 
-fn file_wait(prepare: impl FnOnce() -> Operation) -> i32 {
+fn worker_wait(prepare: impl FnOnce() -> Operation) -> i32 {
     let started = edit(|_, core| {
-        let id = core.current.ok_or("file operation outside a resume")?;
+        let id = core.current.ok_or("worker operation outside a resume")?;
         Ok(core.tasks[&id].operation.is_some())
     });
     // Prepare before any fallible reactor/pool setup. In particular close has
@@ -83,12 +83,12 @@ fn file_wait(prepare: impl FnOnce() -> Operation) -> i32 {
         return i32::from(ready.is_some());
     }
     let submitted = edit(|owner, core| {
-        let id = core.current.ok_or("file operation outside a resume")?;
+        let id = core.current.ok_or("worker operation outside a resume")?;
         let task = core.tasks.get_mut(&id).unwrap();
         let wait = task
             .external
             .as_ref()
-            .ok_or("file operation needs completion registration")?;
+            .ok_or("worker operation needs completion registration")?;
         let workers = match owner.workers() {
             Ok(workers) => workers,
             Err(error) => return Ok(Err(error)),
@@ -107,19 +107,39 @@ fn file_wait(prepare: impl FnOnce() -> Operation) -> i32 {
 
 fn completed() -> Outcome {
     let job = edit(|_, core| {
-        let id = core.current.ok_or("file result outside a resume")?;
+        let id = core.current.ok_or("worker result outside a resume")?;
         let task = core.tasks.get_mut(&id).unwrap();
         if !matches!(task.state, State::Running) || task.external.is_some() {
-            return Err("file result requires completed wait");
+            return Err("worker result requires completed wait");
         }
-        task.operation.take().ok_or("file result already consumed")
+        task.operation
+            .take()
+            .ok_or("worker result already consumed")
     });
     job.take()
 }
 
 #[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_task_wait_resolve(
+    host: *const u8,
+    port: i64,
+) -> i32 {
+    worker_wait(|| {
+        // SAFETY: Snapshot a rooted immutable Text before submission; native
+        // resolution never retains a managed pointer across suspension or GC.
+        let host = unsafe { std::str::from_utf8_unchecked(crate::text_bytes(host)) };
+        match u16::try_from(port) {
+            Ok(port) if !host.is_empty() && !host.contains('\0') => {
+                Operation::Resolve(host.to_owned(), port)
+            }
+            _ => Operation::Failed,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_task_wait_file_read(fd: i64, limit: i64) -> i32 {
-    file_wait(|| match (duplicate(fd), usize::try_from(limit)) {
+    worker_wait(|| match (duplicate(fd), usize::try_from(limit)) {
         (Ok(file), Ok(limit)) => Operation::Read(file, limit),
         _ => Operation::Failed,
     })
@@ -145,7 +165,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_wait_file_write(
 ) -> i32 {
     // SAFETY: The caller supplies a rooted Text. Snapshot only at first start;
     // native workers never retain the pointer or re-read shared input on resume.
-    file_wait(|| write_operation(fd, unsafe { super::super::text_bytes(text) }, offset))
+    worker_wait(|| write_operation(fd, unsafe { super::super::text_bytes(text) }, offset))
 }
 
 #[unsafe(no_mangle)]
@@ -155,7 +175,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_wait_file_write_bytes(
     offset: i64,
 ) -> i32 {
     // SAFETY: As above, for a rooted Bytes header/backing store.
-    file_wait(|| write_operation(fd, unsafe { super::super::buffer_bytes(bytes) }, offset))
+    worker_wait(|| write_operation(fd, unsafe { super::super::buffer_bytes(bytes) }, offset))
 }
 
 #[unsafe(no_mangle)]
@@ -169,7 +189,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_wait_file_open(
     create: i32,
 ) -> i32 {
     // SAFETY: Copy a live UTF-8 Text before submitting work; no pointer escapes.
-    file_wait(|| {
+    worker_wait(|| {
         Operation::Open(
             unsafe { std::str::from_utf8_unchecked(crate::text_bytes(path)) }.to_owned(),
             create != 0,
@@ -188,7 +208,7 @@ pub(super) extern "C-unwind" fn loom_rt_task_file_open_result() -> i64 {
 
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_task_wait_file_close(token: i64) -> i32 {
-    file_wait(|| take(token).map_or(Operation::Failed, Operation::Close))
+    worker_wait(|| take(token).map_or(Operation::Failed, Operation::Close))
 }
 
 #[unsafe(no_mangle)]
@@ -199,7 +219,7 @@ pub(super) extern "C-unwind" fn loom_rt_file_abort(token: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub(super) unsafe extern "C-unwind" fn loom_rt_task_file_read_result(bytes: *mut u8) -> i64 {
+pub(super) unsafe extern "C-unwind" fn loom_rt_task_bytes_result(bytes: *mut u8) -> i64 {
     let outcome = completed();
     if !outcome.bytes.is_empty() {
         // SAFETY: The caller roots Bytes. reserve reloads its moved header;
@@ -231,7 +251,7 @@ mod tests {
 
     #[test]
     fn file_tokens_transfer_once_and_do_not_alias_reused_handles() {
-        let files = Files::new(1).unwrap();
+        let files = Workers::new(1).unwrap();
         let first = files.insert(tempfile::tempfile().unwrap());
         drop(files.duplicate(first).unwrap());
         let close = Operation::Close(files.take(first).unwrap());
@@ -265,7 +285,7 @@ mod tests {
         let (started, running) = mpsc::channel();
         let (release, gate) = mpsc::channel();
         assert_eq!(
-            file_wait(|| Operation::Test(Box::new(move || {
+            worker_wait(|| Operation::Test(Box::new(move || {
                 started.send(()).unwrap();
                 gate.recv().unwrap();
                 finished.store(true, Ordering::SeqCst);

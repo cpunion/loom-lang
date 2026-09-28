@@ -192,7 +192,7 @@ tuple value from a literal, binding, or call, evaluates it once, and uses the
 same `all` fault/cancellation policy without requiring a source import. It
 supports empty tuples produced by a type-pack call and singleton `(task,)`;
 source `()` remains invalid. Scalar Task `.await` is unchanged. Tuple elements
-must all be Tasks; arbitrary Awaitable values are not supported. Socket adapters
+must all be Tasks; arbitrary Awaitable values are not supported. TLS adapters
 and general worker operations remain unfinished requirements.
 Two-argument homogeneous `any`/`race` calls delegate to their List policies,
 including loser cancellation and cleanup.
@@ -211,9 +211,18 @@ Duplication and failure-cleanup close remain synchronous; a stuck native call ca
 delay drain. This is not a general source-level blocking-work executor or support
 for resource-bearing Task results.
 
+`std.net.dns.resolve` uses the same pool for OS hostname resolution, including
+hosts-file entries. Native workers snapshot Text inputs and return numeric socket
+addresses; the owner copies bytes through the shared completion operation. Loom
+constructs the address List and owns error policy. `std.net.tcp.connect(host, port)`
+resolves then tries addresses in OS order, closing failed attempts. The numeric
+single-argument connect path does not resolve. There is no built-in DNS cache,
+connection timeout, or parallel address racing. Running OS resolution cannot be
+interrupted and may delay cancellation drain.
+
 Private async intrinsics must be awaited directly: Loom lowers them to suspension
 of the caller's frame, not separately queued Tasks. Public async function calls
-still create hot child Tasks, including the source timer and file wrappers.
+still create hot child Tasks, including the source timer, file and DNS wrappers.
 
 Loom lowers suspension into ordinary typed constructor/resume functions, using
 private frame/task primitives and control flow; LLVM does not lower source await.

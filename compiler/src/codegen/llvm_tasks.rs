@@ -146,6 +146,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskWaitTimer
             | Primitive::TaskWaitSocket
             | Primitive::TaskWaitFileRead
+            | Primitive::TaskWaitResolve
             | Primitive::TaskWaitFileWrite
             | Primitive::TaskWaitFileWriteBytes
             | Primitive::TaskWaitFileClose => self.task_ready(operation, values),
@@ -226,15 +227,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 Some(self.context.i64_type().into()),
                 values,
             ),
-            Primitive::TaskFileResult | Primitive::TaskFileReadResult => {
+            Primitive::TaskFileResult | Primitive::TaskBytesResult => {
                 let name = if operation == Primitive::TaskFileResult {
                     "task_file_result"
                 } else {
-                    "task_file_read_result"
+                    "task_bytes_result"
                 };
                 let output =
                     self.runtime_call(name, Some(self.context.i64_type().into()), values)?;
-                if operation == Primitive::TaskFileReadResult {
+                if operation == Primitive::TaskBytesResult {
                     self.restore_locals()?;
                 }
                 Ok(output)
@@ -264,6 +265,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::TaskWaitNext => "task_wait_next",
             Primitive::TaskWaitSocket => "task_wait_socket",
             Primitive::TaskWaitFileRead => "task_wait_file_read",
+            Primitive::TaskWaitResolve => "task_wait_resolve",
             Primitive::TaskWaitFileWrite => "task_wait_file_write",
             Primitive::TaskWaitFileWriteBytes => "task_wait_file_write_bytes",
             Primitive::TaskWaitFileOpen => "task_wait_file_open",

@@ -1,0 +1,38 @@
+import std.list.new
+import std.list.push
+import std.list.length
+
+test async fn numeric_hosts_keep_ports_and_ipv6_brackets() {
+    let ipv4 = resolve("127.0.0.1", 0)
+    let ipv6 = resolve("::1", 65535)
+    assert match ipv4.await {
+        Result.Ok(values) => std.list.length(values) == 1 && values[0] == "127.0.0.1:0"
+        Result.Err(_) => false
+    }
+    assert match ipv6.await {
+        Result.Ok(values) => std.list.length(values) == 1 && values[0] == "[::1]:65535"
+        Result.Err(_) => false
+    }
+}
+
+test async fn invalid_inputs_do_not_reach_the_os_resolver() {
+    let inputs = std.list.new[Text]()
+    std.list.push(inputs, "")
+    std.list.push(inputs, "local\0host")
+    var index = 0
+    while index < std.list.length(inputs) {
+        assert match resolve(inputs[index], 80).await {
+            Result.Err(error) => error == ResolveError.InvalidInput
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+    assert match resolve("localhost", -1).await {
+        Result.Err(error) => error == ResolveError.InvalidInput
+        Result.Ok(_) => false
+    }
+    assert match resolve("localhost", 65536).await {
+        Result.Err(error) => error == ResolveError.InvalidInput
+        Result.Ok(_) => false
+    }
+}

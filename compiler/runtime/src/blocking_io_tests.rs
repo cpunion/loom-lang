@@ -125,6 +125,44 @@ fn cancellation_discards_an_open_file_before_result_extraction() {
     assert!(reactor.pop_ready().is_none());
 }
 
+#[test]
+fn resolver_workers_publish_owned_numeric_addresses_in_os_order() {
+    let reactor = Arc::new(Reactor::new().unwrap());
+    let pool = Pool::new(1).unwrap();
+    for host in ["127.0.0.1", "::1", "localhost"] {
+        let token = registration(&reactor, 1);
+        let job = pool.submit(
+            Operation::Resolve(host.into(), 4321),
+            reactor.clone(),
+            token,
+        );
+        let outcome = finish(&reactor, token, &job);
+        assert!(outcome.file.is_none());
+        let text = String::from_utf8(outcome.bytes).unwrap();
+        let addresses: Vec<std::net::SocketAddr> =
+            text.lines().map(|line| line.parse().unwrap()).collect();
+        assert!(!addresses.is_empty());
+        assert_eq!(outcome.count as usize, addresses.len());
+        assert!(
+            addresses
+                .iter()
+                .all(|addr| addr.ip().is_loopback() && addr.port() == 4321)
+        );
+        if host != "localhost" {
+            assert_eq!(
+                addresses,
+                (host, 4321).to_socket_addrs().unwrap().collect::<Vec<_>>()
+            );
+        }
+    }
+    let token = registration(&reactor, 1);
+    // NUL cannot enter a native resolver name; failure needs no external DNS.
+    let job = pool.submit(Operation::Resolve("\0".into(), 80), reactor.clone(), token);
+    let outcome = finish(&reactor, token, &job);
+    assert_eq!(outcome.count, -1);
+    assert!(outcome.bytes.is_empty() && outcome.file.is_none());
+}
+
 struct Dropped(Arc<AtomicBool>);
 impl Drop for Dropped {
     fn drop(&mut self) {

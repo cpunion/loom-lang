@@ -1,0 +1,47 @@
+import std.result.Result
+import std.net.tcp.TcpError
+import std.net.tcp.listen
+import std.net.tcp.connect
+import std.net.tcp.accept
+import std.net.tcp.local_port
+import std.net.tcp.close_listener
+import std.net.tcp.close_stream
+import std.net.tcp.read
+import std.net.tcp.write_bytes
+import std.bytes.new
+import std.bytes.push
+import std.bytes.get
+import std.io.write_text
+
+async fn exchange() Result[Int, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    // Resolution may return ::1 before 127.0.0.1. The source connect policy
+    // closes any failed attempt and tries the next address.
+    let client = connect("localhost", local_port(listener)?).await?
+    defer {
+        discard close_stream(client)
+    }
+    let server = accept(listener).await?
+    defer {
+        discard close_stream(server)
+    }
+    let payload = std.bytes.new()
+    std.bytes.push(payload, 42)
+    discard write_bytes(client, payload).await?
+    let received = std.bytes.new()
+    if read(server, received, 1).await? != 1 {
+        return Result.Err(TcpError.Read)
+    }
+    Result.Ok(std.bytes.get(received, 0))
+}
+
+async fn main() {
+    assert match exchange().await {
+        Result.Ok(value) => value == 42
+        Result.Err(_) => false
+    }
+    discard std.io.write_text("localhost connected\n")
+}
