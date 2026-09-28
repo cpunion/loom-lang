@@ -92,6 +92,8 @@ async fn drain[Ts...](values Task[Ts]...) {
 }
 
 async fn main() {
+    record_iteration()
+    record_tasks().await
     let events = labels()
     assert length(events) == 6
     assert events[0] == "arg-1" && events[1] == "arg-2" && events[2] == "arg-3"

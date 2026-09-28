@@ -1,0 +1,66 @@
+// Static iteration emits normal lexical blocks and field projections. A
+// record's declaration order is its traversal order, not initializer order.
+fn tuple_iteration_members(arity Int) List[Text] {
+    let members = new[Text]()
+    var index = 0
+    while index < arity {
+        push(members, std.int.to_text(index))
+        index = index + 1
+    }
+    members
+}
+
+fn value_iteration(context Context, node Node) Result[Node, Failure] {
+    let source = child(node, 0)
+    let label = if node.kind == NodeKind.ComptimeMap {
+        "comptime map"
+    } else {
+        "comptime for"
+    }
+    let failed = error(context, source, concat(label, " requires an immutable tuple or record binding"))
+    let binding = if source.kind == NodeKind.Name {
+        lookup(context, source.value)
+    } else {
+        -1
+    }
+    if binding < 0 {
+        return Result.Err(failed)
+    }
+    let selected = get(context.bindings, binding)
+    let ty = iteration_type(context, selected)
+    if ty < 0 {
+        return Result.Err(failed)
+    }
+    let shape = get(context.env.types, base_type(context.env, ty))
+    if shape.kind != TypeKind.Tuple && shape.kind != TypeKind.Record {
+        return Result.Err(failed)
+    }
+    let arity = if shape.kind == TypeKind.Tuple {
+        length(shape.arguments)
+    } else {
+        length(shape.fields)
+    }
+    if arity > 1024 || length(context.locals) > 65536 - arity {
+        return Result.Err(error(context, source, "static aggregate iteration budget exceeded"))
+    }
+    let members = if shape.kind == TypeKind.Tuple {
+        tuple_iteration_members(arity)
+    } else {
+        let declaration = symbol(context.env, shape.symbol)
+        let here = symbol(context.env, context.signature.symbol)
+        if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
+            return Result.Err(error(context, source, "cannot inspect a private type from another package"))
+        }
+        let names = new[Text]()
+        var index = 0
+        while index < length(shape.fields) {
+            push(names, get(shape.fields, index).name)
+            index = index + 1
+        }
+        names
+    }
+    let count = new[Int]()
+    push(count, 0)
+    expand_pack_iteration(context.env, context.signature.symbol, node, source.value,
+        members, selected.constant < -1, false, false, 0, count)
+}

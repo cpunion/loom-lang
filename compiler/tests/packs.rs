@@ -53,6 +53,53 @@ fn static_pack_iteration_runs_in_an_independent_package() {
 }
 
 #[test]
+fn scalar_record_iteration_needs_no_runtime_representation() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("main.loom"),
+        r#"
+record Counts {
+    first Int
+    second Int
+}
+type Positive = Counts where self.first > 0 && self.second > 0
+
+fn total(value Positive) Int {
+    var sum = 0
+    comptime for field in value {
+        sum = sum + field
+    }
+    sum
+}
+
+fn main() {
+    let counts = Positive(Counts { second = 2, first = 40 })
+    assert total(counts) == 42
+    let fields = comptime map field in counts {
+        field
+    }
+    assert fields.0 == 40 && fields.1 == 2
+}
+"#,
+    )
+    .unwrap();
+    let executable = common::executable(directory.path(), "record-fields");
+    let ir = directory.path().join("record-fields.ll");
+    success(
+        &common::command(&["build", directory.path().to_str().unwrap()])
+            .arg("--output")
+            .arg(&executable)
+            .arg("--emit-ir")
+            .arg(&ir)
+            .env("LOOM_OPT_LEVEL", "0")
+            .output()
+            .unwrap(),
+    );
+    assert!(!fs::read_to_string(ir).unwrap().contains("@loom_rt_"));
+    success(&Command::new(executable).output().unwrap());
+}
+
+#[test]
 fn static_tuple_map_preserves_order_closures_and_task_transfers() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(

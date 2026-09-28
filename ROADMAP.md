@@ -322,10 +322,12 @@ parameters. Abstract element checking, mapped type patterns and contextual
 function references preserve the existing rules. Empty packs infer an empty
 tuple, without source Unit syntax. Unselected arities are not verified;
 variadic postconditions reject until every arity can be proved. A first
-`comptime for` statically visits immutable fixed-shape tuples, including the final
-value pack in selected bodies;
-`comptime map` produces a typed tuple from the same immutable fixed-shape tuple
-bindings. For a selected variadic arity, `comptime for T in Ts` and
+`comptime for` statically visits immutable fixed-shape tuples and visible record
+fields, including the final value pack in selected bodies;
+`comptime map` produces a typed tuple from the same aggregate bindings. Records
+use declaration order and normal typed projections, preserving generic bounds,
+lexical cleanup, shared aliases and Task transfer without runtime reflection.
+For a selected variadic arity, `comptime for T in Ts` and
 `comptime map T in Ts` also bind each element of the declared type pack as an
 ordinary abstract type parameter; no runtime type-list or type value is added.
 Static `comptime values Ts...` packs preserve per-element scalar/function

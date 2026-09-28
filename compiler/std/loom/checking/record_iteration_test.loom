@@ -1,0 +1,197 @@
+test fn record_iteration_preserves_generic_requirements_and_declared_shape() {
+    discard accepted("""
+        record Pair[A, B] {
+            first A
+            second B
+        }
+        fn fields[A, B](pair Pair[A, B]) (A, B) {
+            comptime map field in pair {
+                field
+            }
+        }
+        fn main() {
+            let pair = fields(Pair { second = true, first = 7 })
+            assert pair.0 == 7 && pair.1
+        }
+        """)
+    rejects("""
+        record Box[T] {
+            value T
+        }
+        fn invalid[T](box Box[T]) Int {
+            var sum = 0
+            comptime for field in box {
+                sum = sum + field
+            }
+            sum
+        }
+        fn main() {
+            discard invalid(Box { value = 1 })
+        }
+        """)
+    rejects("""
+        fn unknown[T](value T) {
+            comptime for field in value {
+                discard field
+            }
+        }
+        """)
+}
+
+test fn record_iteration_keeps_lexical_shadowing_and_selected_branches() {
+    discard accepted("""
+        record Pair {
+            first Int
+            second Bool
+        }
+        fn local[Ts...](values Ts...) (Int, Bool) {
+            let values = Pair { first = 7, second = true }
+            comptime map values in values {
+                values
+            }
+        }
+        fn main() {
+            assert local("ignored").1
+            comptime if Int == Bool {
+                comptime for field in unknown {
+                    missing(field)
+                }
+            }
+        }
+        """)
+    rejects("""
+        record Box {
+            value Int
+        }
+        fn bad() {
+            var box = Box { value = 1 }
+            discard comptime map field in box {
+                field
+            }
+        }
+        """)
+}
+
+test fn record_iteration_cannot_inspect_foreign_private_shapes_even_when_empty() {
+    let library = """
+        record Empty {}
+        record Secret {
+            value Int
+        }
+        pub fn empty() Empty {
+            Empty {}
+        }
+        pub fn secret() Secret {
+            Secret { value = 7 }
+        }
+        """
+    let sources = new[Text]()
+    push(sources, """
+        import hidden.empty
+        fn main() {
+            let value = empty()
+            comptime for field in value {
+                discard field
+            }
+        }
+        """)
+    push(sources, """
+        import hidden.secret
+        fn main() {
+            let value = secret()
+            discard comptime map field in value {
+                field
+            }
+        }
+        """)
+    var index = 0
+    while index < length(sources) {
+        let files = source_files(get(sources, index))
+        push(files, source_file("hidden", library, false))
+        assert match checked(files) {
+            Result.Err(failed) => failed.diagnostic.message == "cannot inspect a private type from another package"
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn record_iteration_cannot_discard_or_duplicate_tasks() {
+    let declarations = """
+        record Pending {
+            work Task[Int]
+        }
+        async fn item() Int {
+            1
+        }
+
+        """
+    rejects(concat(declarations, """
+        async fn main() {
+            let pending = Pending { work = item() }
+            comptime for task in pending {
+                discard task
+            }
+        }
+        """))
+    rejects(concat(declarations, """
+        async fn main() {
+            let pending = Pending { work = item() }
+            discard comptime map task in pending {
+                discard task.await
+                task.await
+            }
+        }
+        """))
+}
+
+test fn record_iteration_reads_refined_records_and_keeps_scoped_resources() {
+    discard accepted_result("""
+        record Counts {
+            first Int
+            second Int
+        }
+        type Positive = Counts where self.first > 0 && self.second > 0
+        pub fn total(value Positive) Int {
+            var sum = 0
+            comptime for field in value {
+                sum = sum + field
+            }
+            sum
+        }
+        """)
+    let resource = """
+        import std.resource.Dispose
+        import std.resource.MustScope
+        record Token {
+            id Int
+        }
+        impl Dispose for Token {
+            fn dispose(self Token) {}
+        }
+        impl MustScope for Token {}
+
+        """
+    resource_accept(concat(resource, """
+        fn main() {
+            scoped token = Token { id = 7 }
+            comptime for field in token {
+                assert field == 7
+            }
+        }
+        """))
+    resource_reject(concat(resource, """
+        record Holder {
+            token Token
+        }
+        impl Dispose for Holder {
+            fn dispose(self Holder) {}
+        }
+        fn main() {
+            scoped holder = Holder { token = Token { id = 7 } }
+            comptime for field in holder {
+                scoped stolen = field
+            }
+        }
+        """))
+}

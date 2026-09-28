@@ -9,7 +9,7 @@ test fn static_iteration_errors_point_to_an_unbound_tuple_name() {
     let source = "fn bad[Ts...](values Ts...) { comptime for value in missing { discard value } }\nfn main() { bad(1, 2) }"
     match checked(source_files(source)) {
         Result.Err(failed) => {
-            assert failed.diagnostic.message == "comptime for requires an immutable tuple binding"
+            assert failed.diagnostic.message == "comptime for requires an immutable tuple or record binding"
             assert slice(source, failed.diagnostic.span.start, failed.diagnostic.span.end) == "missing"
         }
         Result.Ok(_) => {
@@ -140,7 +140,7 @@ test fn static_map_errors_point_to_the_mutable_tuple_source() {
     let source = "fn bad() { var pair = (1, true)\ndiscard comptime map item in pair { item } }"
     match checked(source_files(source)) {
         Result.Err(failed) => {
-            assert failed.diagnostic.message == "comptime map requires an immutable tuple binding"
+            assert failed.diagnostic.message == "comptime map requires an immutable tuple or record binding"
             assert slice(source, failed.diagnostic.span.start, failed.diagnostic.span.end) == "pair"
         }
         Result.Ok(_) => { assert false }

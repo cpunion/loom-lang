@@ -1,0 +1,129 @@
+import std.reflect.describe
+import std.reflect.Kind
+
+record Fields[A, B] {
+    first A
+    second B
+}
+
+record Empty {
+}
+
+fn field_label[T](value T) Text {
+    comptime if T implements Label {
+        value.label()
+    } else {
+        "<value>"
+    }
+}
+
+// Only the selected branch asks for a record shape. This function does not
+// promise that T is a record, or that every field implements Label.
+fn record_labels[T](value T) List[Text] {
+    let output List[Text] = []
+    comptime if describe[T]().types[0].kind == Kind.Record {
+        comptime for field in value {
+            push(output, field_label(field))
+        }
+    }
+    output
+}
+
+fn field_readers[A Label, B Label](value Fields[A, B]) (fn() Text, fn() Text) {
+    comptime map field in value {
+        fn() Text {
+            field.label()
+        }
+    }
+}
+
+fn record_iteration() {
+    // Traversal follows declaration order, independent of initializer order.
+    let value = Fields {
+        second = true
+        first = 42
+    }
+    let names = record_labels(value)
+    assert names[0] == "42" && names[1] == "boolean"
+    assert length(record_labels(Empty {
+            })) == 0
+    assert length(record_labels(7)) == 0
+    let empty = Empty {
+    }
+    discard comptime map field in empty {
+        // An empty record has no selected field body to instantiate.
+        missing(field)
+    }
+    let copies = comptime map field in value {
+        field
+    }
+    assert copies.0 == 42 && copies.1
+    let readers = field_readers(value)
+    assert readers.0() == "42" && readers.1() == "boolean"
+    let constant = comptime {
+        let fields = Fields {
+            first = 6
+            second = 7
+        }
+        var product = 1
+        comptime for field in fields {
+            product = product * field
+        }
+        product
+    }
+    assert constant == 42
+    let shared = [0]
+    let aliases = Fields {
+        first = shared
+        second = shared
+    }
+    comptime for field in aliases {
+        field[0] = field[0] + 1
+    }
+    assert shared[0] == 2
+    let events List[Text] = []
+    comptime for field in value {
+        defer {
+            push(events, "end")
+        }
+        push(events, field_label(field))
+    }
+    assert length(events) == 4
+    assert events[0] == "42" && events[1] == "end"
+    assert events[2] == "boolean" && events[3] == "end"
+    let rows = Fields {
+        first = (1, true)
+        second = Fields {
+            first = "inner"
+            second = 9
+        }
+    }
+    let nested = comptime map row in rows {
+        comptime map field in row {
+            field
+        }
+    }
+    assert nested.0.0 == 1 && nested.0.1
+    assert nested.1.0 == "inner" && nested.1.1 == 9
+    let fallback = record_labels(rows)
+    assert fallback[0] == "<value>" && fallback[1] == "<value>"
+}
+
+async fn record_tasks() {
+    let pending = Fields {
+        first = item(7)
+        second = item(true)
+    }
+    let ready = comptime map task in pending {
+        task.await
+    }
+    assert ready.0 == 7 && ready.1
+}
+
+test fn records_expand_to_typed_fields() {
+    record_iteration()
+}
+
+test async fn record_fields_keep_task_obligations() {
+    record_tasks().await
+}
