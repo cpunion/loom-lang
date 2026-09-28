@@ -31,13 +31,33 @@ fn static_parameters_specialize_before_native_abi_and_reachability() {
 
     fs::write(
         package.path().join("main.loom"),
-        r#"pub fn unused(value Int) Int { value + 9001 }
+        r#"pub fn unused(value Int) Int {
+    value + 9001
+}
 fn adjust(value Int, comptime count Int, comptime enabled Bool, comptime note Text) Int {
-    comptime if enabled { value + count } else { unused(value) }
+    comptime if enabled {
+        value + count
+    } else {
+        unused(value)
+    }
+}
+record Policy {
+    extra Int
+    enabled Bool
+}
+fn configured(value Int, comptime policy Policy) Int {
+    comptime if policy.enabled {
+        value + policy.extra
+    } else {
+        unused(value)
+    }
 }
 fn main() {
     assert adjust(3, 4, true, "first") == 7
     assert adjust(3, 5, true, "second") == 8
+    assert configured(3, Policy { extra = 4, enabled = true }) == 7
+    assert configured(3, Policy { extra = 5, enabled = true }) == 8
+    assert configured(3, Policy { enabled = true, extra = 2 + 2 }) == 7
 }"#,
     )
     .unwrap();
@@ -62,7 +82,7 @@ fn main() {
         .lines()
         .filter(|line| line.starts_with("define ") && line.contains("@loom.fn."))
         .collect();
-    assert_eq!(functions.len(), 3, "{functions:?}");
+    assert_eq!(functions.len(), 5, "{functions:?}");
     for function in functions {
         let parameters = function
             .split_once('(')

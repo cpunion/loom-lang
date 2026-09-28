@@ -788,16 +788,19 @@ fn forward_constants[Ts...](comptime values Ts...) (Ts...) {
 }
 ```
 
-Elements use the ordinary static-parameter rules: Int, Bool, Float, Text or function
-identities, including pure construction and captured callbacks. The pack and
+Elements use the ordinary static-parameter rules: scalars, immutable stored
+aggregates/refinements, or function identities, including pure construction and
+captured callbacks. The pack and
 its `comptime for/map` iteration bindings preserve each element's static identity;
 projections and forwarding need no runtime tuple snapshot. A runtime read of the
 whole pack produces an ordinary tuple. Captured callbacks forward their current
 environment, including through returned closures. Ordinary `let` copies remain
 runtime bindings. Empty packs work without a special case at the call site.
-This form does not admit aggregate static elements or a static structural
-`comptime values (Ts...)` parameter. See the
-[static pack example](examples/variadics/static.loom).
+`comptime values (Ts...)` also accepts one immutable tuple argument, including
+fixed prefix/suffix fields around the expansion. Iteration over a static tuple
+or record preserves the fields' compile-time identities, including nested loops
+and closure capture. See the [static pack example](examples/variadics/static.loom)
+and [aggregate parameter example](examples/comptime_parameters/aggregates.loom).
 
 Unselected arities have not had their bodies verified. Variadic `ensures`
 declarations currently reject even when uncalled: proving selected arities is
@@ -1549,9 +1552,9 @@ fn repeat[T](value T, comptime action fn(T) T, comptime count Int) T {
 fn main() { assert repeat(39, increment, 3) == 42 }
 ```
 
-This slice accepts `Int`, `Bool`, `Float`, `Text`, and function static parameter types,
-including inferred type parameters and associated types that specialize to one
-of these shapes:
+Static parameters accept `Int`, `Bool`, `Float`, `Text`, immutable stored records,
+tuples, enums and constrained values, plus function values as whole parameters.
+Inferred type parameters and associated types can specialize to these shapes:
 
 ```loom
 fn constant[T](comptime value T) T { value }
@@ -1562,11 +1565,23 @@ fn main() {
 ```
 
 The same forms work on concrete and dynamic methods. Abstract declaration
-checking keeps `T` abstract even when a caller supplied a known scalar;
+checking keeps `T` abstract even when a caller supplied a known value;
 requirements must still be declared or selected with `comptime if T implements C`.
-Unsupported concrete parameter shapes (including aggregates) reject
+Unsupported concrete parameter shapes reject
 at specialization, not during native emission. See the
 [generic static example](examples/comptime_parameters/generic.loom).
+
+Aggregate fields must recursively use immutable stored values; every enum
+variant is checked, not only the selected one. List, Bytes, Task, dyn values and
+stored callbacks are not static aggregate fields. MustScope obligations still
+apply before parameter erasure. Ordinary copies remain runtime values and keep
+their normal mutability; this adds no ownership syntax or deep-copy semantics.
+Structural keys include nominal types, enum tags, ordered fields and framed Text,
+so equal configurations reuse one instance independently of initializer order.
+Constrained construction and widening keep their existing checks and proofs.
+Static tuple/record iteration preserves field identities through nested maps,
+shadowing and closures. See the
+[aggregate parameter example](examples/comptime_parameters/aggregates.loom).
 
 Float specialization uses the same round-tripping numeric encoding as ordinary
 compile-time evaluation: equivalent finite values share an instance, positive

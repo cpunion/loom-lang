@@ -1,0 +1,210 @@
+import std.text.length
+
+record Policy {
+    factor Float
+    enabled Bool
+    label Text
+}
+
+enum Choice {
+    Count(Int)
+    Label(Text)
+    Empty
+}
+
+type Positive = Int where self > 0
+
+type Money = Float where self >= 0.0
+
+record Bounds {
+    lower Int
+    upper Int
+}
+
+type Ordered = Bounds where self.lower <= self.upper
+
+fn configured(value Float, comptime policy Policy) Float {
+    comptime if policy.enabled {
+        value * policy.factor
+    } else {
+        value
+    }
+}
+
+fn saved_policy(comptime policy Policy) fn() Policy {
+    fn() Policy {
+        policy
+    }
+}
+
+fn policy_fields(comptime policy Policy) (Float, Bool, Text) {
+    comptime map policy in policy {
+        constant(policy)
+    }
+}
+
+fn bound_readers(comptime bounds Bounds) (fn() Int, fn() Int) {
+    comptime map bounds in bounds {
+        fn() Int {
+            constant(bounds)
+        }
+    }
+}
+
+fn nested_fields(comptime rows (Bounds, Bounds)) ((Int, Int), (Int, Int)) {
+    comptime map rows in rows {
+        comptime map rows in rows {
+            constant(rows)
+        }
+    }
+}
+
+fn tuple_constants[Ts...](comptime values (Ts...)) (Ts...) {
+    comptime map values in values {
+        constant(values)
+    }
+}
+
+fn nested_constants[Ts...](comptime values Ts...) (Ts...) {
+    comptime map value in values {
+        constant(value)
+    }
+}
+
+fn forwarded_tuple[Ts...](comptime values (Ts...)) (Ts...) {
+    nested_constants(values...)
+}
+
+record NestedTuple {
+    pair (Int, Bool)
+}
+
+fn forwarded_field(comptime value NestedTuple) (Int, Bool) {
+    nested_constants(value.pair...)
+}
+
+fn selected(comptime choice Choice) Int {
+    comptime {
+        match choice {
+            Choice.Count(value) => value
+            Choice.Label(value) => std.text.length(value)
+            Choice.Empty => 0
+        }
+    }
+}
+
+fn widened(comptime value Positive) Int {
+    staged(value)
+}
+
+fn widened_money(comptime value Money) Float {
+    scale(8.0, value)
+}
+
+fn bound_fields(comptime bounds Ordered) (Int, Int) {
+    comptime map field in bounds {
+        constant(field)
+    }
+}
+
+concept PolicySource {
+    type Item
+    fn value(self Self, comptime input Self.Item) Self.Item {
+        input
+    }
+}
+
+impl PolicySource for Bool {
+    type Item = Policy
+}
+
+fn aggregate_constants() {
+    assert configured(8.0, Policy {
+            factor = 0.5,
+            enabled = true,
+            label = "half"
+        }) == 4.0
+    assert configured(8.0, Policy {
+            factor = 0.5,
+            enabled = false,
+            label = "same"
+        }) == 8.0
+    let saved = saved_policy(Policy {
+            factor = -0.0,
+            enabled = true,
+            label = "saved"
+        })
+    assert saved().label == "saved" && 1.0 / saved().factor < 0.0
+    let fields = policy_fields(Policy {
+            label = "order",
+            enabled = true,
+            factor = 1.5
+        })
+    assert fields.0 == 1.5 && fields.1 && fields.2 == "order"
+    let values = tuple_constants((Choice.Count(7), (true, "tuple")))
+    match values.0 {
+        Choice.Count(value) => {
+            assert value == 7
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert values.1.0 && values.1.1 == "tuple"
+    let nested = nested_constants(Bounds {
+            lower = 2,
+            upper = 4
+        }, (7, true))
+    assert nested.0.lower == 2 && nested.1.1
+    let readers = bound_readers(Bounds {
+            lower = 3,
+            upper = 8
+        })
+    assert readers.0() == 3 && readers.1() == 8
+    let rows = nested_fields((Bounds {
+                lower = 1,
+                upper = 2
+            }, Bounds {
+                lower = 3,
+                upper = 4
+            }))
+    assert rows.0.0 == 1 && rows.1.1 == 4
+    discard tuple_constants(scalar_constants())
+    assert forwarded_tuple((7, true)).1
+    discard forwarded_tuple(scalar_constants())
+    assert forwarded_field(NestedTuple {
+            pair = (3, true)
+        }).0 == 3
+    let forwarded = forward_constant(Policy {
+            factor = 2.0,
+            enabled = true,
+            label = "forward"
+        })
+    assert forwarded.label == "forward" && forwarded.factor == 2.0
+    assert selected(Choice.Count(9)) == 9
+    assert selected(Choice.Label("nine")) == 4 && selected(Choice.Empty()) == 0
+    assert widened(Positive(2)) == 3
+    assert widened_money(Money(0.5)) == 4.0
+    let bounds = bound_fields(Ordered(Bounds {
+                lower = 2,
+                upper = 4
+            }))
+    assert bounds.0 == 2 && bounds.1 == 4
+    let source dyn PolicySource[Item = Policy] = true
+    assert source.value(Policy {
+            factor = 2.0,
+            enabled = true,
+            label = "dynamic"
+        }).label == "dynamic"
+    assert comptime {
+        configured(4.0, constant(Policy {
+                    factor = 0.5,
+                    enabled = true,
+                    label = "pure"
+                }))
+    } == 2.0
+}
+
+test fn immutable_aggregate_parameters_work_through_existing_call_paths() {
+    aggregate_constants()
+}

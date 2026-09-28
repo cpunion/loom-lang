@@ -196,6 +196,15 @@ fn expand_input(context Context, source Node, nodes List[Node], ready List[Optio
     if shape.kind != TypeKind.Tuple {
         return Result.Err(error(context, source, "expansion requires a statically known tuple, not a runtime-sized List"))
     }
+    if static_projection(context, operand) {
+        var index = 0
+        while index < length(shape.arguments) {
+            push(nodes, pack_node(source, NodeKind.Select, std.int.to_text(index), source_nodes(operand)))
+            std.list.push(ready, Option.None)
+            index = index + 1
+        }
+        return Result.Ok(true)
+    }
     if length(shape.arguments) == 0 {
         if value.kind != ExprKind.Local && !(value.kind == ExprKind.Record && length(value.children) == 0) {
             push(effects, InputEffect { position = length(nodes) value = value })

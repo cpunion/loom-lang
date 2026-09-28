@@ -1,0 +1,179 @@
+test fn aggregate_static_keys_preserve_structure_and_reuse_equal_values() {
+    let program = accepted("""
+        record Pair {
+            first Text
+            second Text
+        }
+        enum Choice {
+            First(Int)
+            Second(Int)
+        }
+        fn constant[T](comptime value T) T {
+            value
+        }
+        fn main() {
+            discard constant(Pair { first = "a", second = "bc" })
+            discard constant(Pair { second = "bc", first = "a" })
+            discard constant(Pair { first = "ab", second = "c" })
+            discard constant(Pair { first = "a/1:", second = "bc" })
+            discard constant(Choice.First(1))
+            discard constant(Choice.First(2 - 1))
+            discard constant(Choice.Second(1))
+            discard constant((0.0,))
+            discard constant((-0.0,))
+        }
+        """)
+    assert length(program.functions) == 8
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        assert length(function.params) == 0
+        assert dynamic_count(function.body, ExprKind.Deferred) == 0
+        index = index + 1
+    }
+}
+
+test fn aggregate_static_parameters_keep_generic_and_runtime_isolation() {
+    rejects("""
+        record Box {
+            value Int
+        }
+        fn incidental[T](comptime value T) Int {
+            value.value
+        }
+        fn main() {
+            discard incidental(Box { value = 1 })
+        }
+        """)
+    rejects("""
+        fn constant[T](comptime value T) T {
+            value
+        }
+        fn runtime(value (Int, Bool)) (Int, Bool) {
+            constant(value)
+        }
+        """)
+    rejects("""
+        record Box {
+            value Int
+        }
+        fn bad(comptime box Box) {
+            box = Box { value = 2 }
+        }
+        """)
+    rejects("""
+        fn take(comptime value Int) Int {
+            value
+        }
+        fn copied(comptime values (Int, Bool)) Int {
+            let copy = values
+            take(copy.0)
+        }
+        fn main() {
+            discard copied((1, true))
+        }
+        """)
+}
+
+test fn aggregate_static_parameters_reject_mutable_storage_in_every_variant() {
+    let declaration = """
+        fn constant[T](comptime value T) T {
+            value
+        }
+
+        """
+    rejects(concat(declaration, """
+        record Box[T] {
+            value T
+        }
+        fn main() {
+            discard constant(Box { value = [1] })
+        }
+        """))
+    rejects(concat(declaration, """
+        enum Choice {
+            Safe(Int)
+            Mutable(List[Int])
+        }
+        fn main() {
+            discard constant(Choice.Safe(1))
+        }
+        """))
+    rejects("""
+        fn invalid(comptime value (Int, Bytes)) {}
+        """)
+    rejects("""
+        record Callback {
+            action fn() Int
+        }
+        fn invalid(comptime value Callback) {}
+        """)
+    rejects("""
+        record Pending {
+            work Task[Int]
+        }
+        fn invalid(comptime value Pending) {}
+        """)
+}
+
+test fn aggregate_static_parameters_keep_constraints_and_resource_obligations() {
+    rejects_result("""
+        type Positive = Int where self > 0
+        fn take(comptime value Positive) Int {
+            value
+        }
+        fn main() {
+            discard take(Positive(0))
+        }
+        """)
+    let resource = """
+        import std.resource.Dispose
+        import std.resource.MustScope
+        record Token {
+            id Int
+        }
+        impl Dispose for Token {
+            fn dispose(self Token) {}
+        }
+        impl MustScope for Token {}
+
+        """
+    resource_reject_reason(concat(resource, """
+        fn erased(comptime token Token) {}
+        """), "MustScope values cannot be ordinary parameters; use a scoped receiver method")
+    resource_reject(concat(resource, """
+        fn erased[T](comptime value T) {}
+        fn main() {
+            erased((Token { id = 1 }, true))
+        }
+        """))
+}
+
+test fn static_aggregate_iteration_preserves_private_shapes() {
+    let files = source_files("""
+        import hidden.secret
+        fn inspect[T](comptime value T) {
+            comptime if T == T {
+                comptime for field in value {
+                    discard field
+                }
+            }
+        }
+        fn main() {
+            inspect(secret())
+        }
+        """)
+    push(files, source_file("hidden", """
+        record Secret {
+            value Int
+        }
+        pub fn secret() Secret {
+            Secret { value = 1 }
+        }
+        """, false))
+    // Abstract T cannot grant access to an incidental concrete record shape.
+    assert match checked(files) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

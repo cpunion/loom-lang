@@ -44,6 +44,9 @@ record StaticValue {
     text Text
     arguments List[Int]
     capture Int
+    // Immutable aggregate/refinement value in the current computation table.
+    // Identity uses text's structural key, never this incidental table index.
+    snapshot Int
 }
 record StaticAlias {
     node Node

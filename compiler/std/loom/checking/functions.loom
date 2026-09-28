@@ -42,7 +42,7 @@ fn signature_in(env Environment, id Int, arguments List[Int], node Node, owner I
     while index < length(original.params) {
         let ty = substitute(env, owner, get(original.params, index), arguments, node)?
         if is_static(original, index) && !static_parameter_type(env, ty) {
-            return Result.Err(failure(env, owner, node, "comptime parameters require Int, Bool, Float, Text or a function type after specialization"))
+            return Result.Err(failure(env, owner, node, "comptime parameters require immutable stored values or a function type after specialization"))
         }
         push(params, ty)
         index = index + 1

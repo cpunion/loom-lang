@@ -304,12 +304,15 @@ value pack, or the first structural tuple. Context-dependent tuples need explici
 types or a prior typed binding. Native O0/O2 and forced-GC coverage includes
 evaluation order, shared aliases, closures and independent Task consumption in
 the [shared pack example](../../compiler/examples/variadics/shared.loom).
-Final `comptime values Ts...` packs now specialize each scalar/function element.
+Final `comptime values Ts...` packs specialize each supported static element.
 Projections, expansion, static iteration and closure capture retain static
 identity; captured callbacks forward current shared environments. Compiler-only
-aliases introduce no runtime pack or scalar parameter slots. Ordinary tuple
-copies remain runtime values; aggregate static elements and static structural
-tuple parameters are not supported. See the [static pack example](../../compiler/examples/variadics/static.loom).
+aliases introduce no runtime pack or static-value parameter slots. Immutable
+aggregate elements and structural `comptime values (Ts...)` parameters are also
+supported. Static tuple/record iteration retains field identities through nested
+maps, lexical shadowing and closures; ordinary `let` copies remain runtime values.
+See the [static pack example](../../compiler/examples/variadics/static.loom) and
+[aggregate example](../../compiler/examples/comptime_parameters/aggregates.loom).
 Multiple packs, methods/data packs and general pack reflection remain open. See the [variadic example](../../compiler/examples/variadics/main.loom)
 and [pack iteration example](../../compiler/examples/pack_iteration/main.loom).
 
@@ -422,7 +425,7 @@ selected build, retaining the existing typed witness ABI and reachability model.
 No runtime type discovery, generic code generation or new bootstrap checkpoint
 is required. Native objects remain build-specific, not open-ended generic libraries.
 
-Methods now accept Int/Bool/Float/Text and function `comptime` parameters, with matching
+Methods accept scalar, immutable aggregate/refinement and function `comptime` parameters, with matching
 positions in the concept and implementation. Static and dynamic calls share
 selected-branch validation under declared bounds; known implementations in unused
 bodies cannot hide an invalid selected branch. Overrides do not instantiate the
@@ -709,17 +712,24 @@ Stable schemas, lossless editing, richer pack iteration, typed macros, broader c
 reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 
-`comptime` parameters specialize named calls using canonical Int/Bool/Float/Text or
-source-function identities; scalar values and function identities disappear
+`comptime` parameters specialize named calls using scalar, immutable aggregate or
+source-function identities; static values and function identities disappear
 before the native ABI. Inferred generic and associated parameter types now
 specialize to those same supported shapes, including concrete/dynamic methods;
-unsupported concrete shapes reject before evaluation/emission. Generic scalar
+unsupported concrete shapes reject before evaluation/emission. Generic static
 values remain abstract during declaration checking, just like callbacks.
 Float keys use CTFE's round-tripping encoding rather than IEEE equality, keeping
 signed zeros distinct and reusing the existing canonical NaN encoding. This
 does not add a runtime argument, numeric representation or Float proof rule;
 the [Float example](../../compiler/examples/comptime_parameters/floats.loom)
 covers static packs, forwarding, closures and associated dynamic methods.
+Records, tuples, enums and constrained values use framed structural keys, retaining
+nominal type, enum tag, field order and Text/Float distinctions. Equal configurations
+reuse a specialization even when constructed differently. All stored fields and
+enum variants must be immutable; List/Bytes, Task, dyn values and stored callbacks
+are excluded. MustScope obligations and constraint checks remain unchanged.
+The [aggregate example](../../compiler/examples/comptime_parameters/aggregates.loom)
+covers static/dynamic calls, refinement widening, nested iteration and closures.
 Known functions use determined targets; generic references, pure selectors and forwarding preserve
 type checks and target preconditions. Static-value branches are checked with
 abstract type arguments and declared requirements, not incidental concrete

@@ -1,0 +1,102 @@
+import std.text.join
+
+// Stored values cannot carry mutable identity. Functions keep their separate
+// top-level target/environment protocol; they are not aggregate static fields.
+fn static_stored_type(env Environment, ty Int, checked List[Int], depth Int) Bool {
+    if ty == 1 || ty == 2 || ty == 3 || ty == 5 {
+        return true
+    }
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
+        return true
+    }
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple &&
+    shape.kind != TypeKind.Enum && shape.kind != TypeKind.Refined {
+        return false
+    }
+    // Header discovery may not yet have expanded nominal fields. Signature
+    // substitution checks the completed shape before a body can be emitted.
+    if get(env.type_states, ty).phase != 2 {
+        return true
+    }
+    if resource_seen(checked, ty) {
+        return true
+    }
+    if depth >= 64 {
+        return false
+    }
+    var index = 0
+    while index < length(shape.fields) {
+        if !static_stored_type(env, get(shape.fields, index).ty, checked, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if !static_stored_type(env, get(fields, field), checked, depth + 1) {
+                return false
+            }
+            field = field + 1
+        }
+        index = index + 1
+    }
+    push(checked, ty)
+    true
+}
+
+fn static_key_part(context Context, node Node, parts List[Text], budget List[Int], text Text) Result[Bool, Failure] {
+    if std.text.length(text) > get(budget, 1) {
+        return Result.Err(error(context, node, "comptime argument key size exhausted"))
+    }
+    set(budget, 1, get(budget, 1) - std.text.length(text))
+    push(parts, text)
+    Result.Ok(true)
+}
+
+fn static_key_value(context Context, node Node, value Value, parts List[Text], budget List[Int], depth Int) Result[Bool, Failure] {
+    if depth >= 256 || get(budget, 0) == 0 {
+        return Result.Err(error(context, node, "comptime argument key expansion exhausted"))
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    let kind = get(context.env.types, value.ty).kind
+    let base = base_type(context.env, value.ty)
+    let scalar = if base == 1 || base == 2 {
+        std.int.to_text(value.number)
+    } else if base == 5 {
+        std.float.to_text(value.floating)
+    } else if base == 3 {
+        value.text
+    } else {
+        ""
+    }
+    // Type IDs belong only to this check. Tags distinguish enum variants;
+    // length framing preserves arbitrary Text, including NUL and delimiters.
+    discard static_key_part(context, node, parts, budget, concat(std.int.to_text(value.ty), "/"))?
+    discard static_key_part(context, node, parts, budget, concat(std.int.to_text(if kind == TypeKind.Enum {
+                    value.number
+                } else {
+                    0
+                }), "/"))?
+    discard static_key_part(context, node, parts, budget, concat(std.int.to_text(std.text.length(scalar)), ":"))?
+    discard static_key_part(context, node, parts, budget, scalar)?
+    discard static_key_part(context, node, parts, budget, concat("/", concat(std.int.to_text(length(value.items)), ";")))?
+    var index = 0
+    while index < length(value.items) {
+        discard static_key_value(context, node, get(value.items, index), parts, budget, depth + 1)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn static_value_key(context Context, node Node, value Value) Result[Text, Failure] {
+    let parts = new[Text]()
+    let budget = new[Int]()
+    push(budget, 100000)
+    push(budget, 16777216)
+    discard static_key_value(context, node, value, parts, budget, 0)?
+    Result.Ok(std.text.join(parts, ""))
+}
