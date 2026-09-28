@@ -56,11 +56,10 @@ jobs:
 
       - name: Core experience source trials
         run: |
-          target/loom test compiler/std/loom/checking
+          # The workspace frontend suite already runs checker and std.task tests.
           target/loom test compiler/std/list/nonempty
           target/loom test compiler/std/json
           target/loom test compiler/std/storage
-          target/loom test compiler/std/task
           target/loom run compiler/examples/contracts
           target/loom test compiler/examples/record_contracts
           target/loom test compiler/examples/concept_contracts

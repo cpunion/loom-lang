@@ -1,0 +1,29 @@
+test fn record_updates_have_one_final_base_expression() {
+    let statements = body(child(parsed("""
+        fn copy() {
+            let value = Pair {
+                second = 2
+                ..make(1),
+            }
+        }
+        """), 0))
+    let value = child(child(statements, 0), 0)
+    assert value.kind == NodeKind.Construct && length(value.children) == 3
+    let spread = child(value, 2)
+    assert spread.kind == NodeKind.Spread && child(spread, 0).kind == NodeKind.Call
+    discard rejected("""
+        fn bad() {
+            discard Pair { ..source, first = 1 }
+        }
+        """)
+    discard rejected("""
+        fn bad() {
+            discard Pair { ..first, ..second }
+        }
+        """)
+    discard rejected("""
+        fn bad() {
+            discard Pair { ...source }
+        }
+        """)
+}

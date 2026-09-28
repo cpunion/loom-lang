@@ -499,6 +499,19 @@ leaves can do the same when compile-time evaluation establishes the predicate.
 Unknown inputs and unevaluated expressions retain the `Result` boundary.
 Shared-state invariants remain open.
 
+Record updates now accept one final `..base`, preserving missing fields from
+the same nominal record declaration. Explicit fields and the base evaluate once
+in written order. New values preserve shared fields without mutating the base;
+generic arguments may change when retained fields remain compatible. Refinement
+truth is not inherited: normal constrained construction validates the new whole
+value, so failed validation cannot leave the original partially updated.
+Required contracts and compile-time execution reuse the same typed operations.
+Task-bearing bases transfer whole values, NoSuspend operands retain their
+pending obligations, and MustScope updates reject. Native O0/O2 forced-GC tests
+cover the [runnable example](../../compiler/examples/record_updates/main.loom);
+scalar updates need no runtime calls at O0. This is explicit new-value
+construction, not fine-grained shared-state invariant analysis.
+
 Managed memory now uses stop-the-world copying collection with a traced
 large-object space; stress mode relocates all sizes. Rewritable typed
 roots cover records, active/nested enum payloads, dyn boxes, shared headers and

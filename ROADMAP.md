@@ -313,6 +313,14 @@ field validation with matches and retaining initializer order, ordinary mutabili
 Task/resource obligations and compile-time execution. This adds no matcher or
 bootstrap checkpoint; refutable and scoped bindings remain open.
 
+Record initializers now accept one final `..base` to construct an updated value.
+Typed operands preserve source order, shared fields and one-shot obligations;
+ordinary contracts and compile-time execution use the same construction path.
+Refined bases do not confer their invariant on the new record: explicit checked
+construction validates multi-field updates without modifying the original.
+This supplies the preferred new-value update pattern, not general invariant-aware
+mutation of shared state. See the [example](compiler/examples/record_updates/main.loom).
+
 Tuple value expansion now forwards heterogeneous arguments and assembles tuple
 or List literals through the same typed calls/projections. Saved operands evaluate
 once and preserve Task/resource obligations; literal expansion retains contextual
