@@ -1689,9 +1689,9 @@ resolution and bytes, and build receipts record request identity and content
 digests, never file contents. Output/IR/receipt paths cannot replace a selected
 input. Embedded data is visible in the executable: do not use this for secrets.
 
-See [the runnable example](examples/build_inputs/main.loom). This first slice is
-text files only; target metadata and binary build inputs remain
-future work. Network access and commands are not compile-time operations.
+See [the runnable example](examples/build_inputs/main.loom). File inputs currently
+support Text only; binary inputs remain future work. Target properties use the
+separate API above. Network access and commands are not compile-time operations.
 
 Every branch must parse, but unselected `comptime if` branches impose no type or
 call requirements. Type guards compare unshadowed types with `==` or `!=`,
