@@ -357,7 +357,7 @@ Callback construction may retain effectful or async targets; actual compile-time
 calls still validate the reachable target closure and prohibit real I/O or Tasks.
 See the [static closure example](compiler/examples/comptime_closures/README.md).
 
-Compile-time parameters now specialize named calls with Int/Bool/Text values or
+Compile-time parameters now specialize named calls with Int/Bool/Float/Text values or
 known source-function identities and leave runtime arguments and any captured
 environments in the native ABI. Generic and associated static parameter types
 now specialize to these supported shapes; declaration validation still sees
@@ -366,6 +366,8 @@ preserve target preconditions and reject compile-time effects. Selected branches
 retain explicit generic requirements and mandatory abstract proofs. Concept and
 implementation methods use the same static parameters; dynamic slots include
 static values in their identity and erase them from the runtime signature.
+Float keys reuse CTFE's round-tripping encoding, distinguishing signed zeros
+without using IEEE equality to identify instances. This adds no Float proof rules.
 Selected bodies retain abstract checking without emitting unused callers. Function
 references to partially specialized static declarations remain open. Captured
 function parameters use the typed environments above.

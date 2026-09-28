@@ -1,0 +1,52 @@
+test fn float_static_keys_round_trip_values_without_runtime_slots() {
+    let program = accepted("""
+        fn constant(comptime value Float) Float {
+            value
+        }
+        fn main() {
+            discard constant(0.0)
+            discard constant(-0.0)
+            discard constant(1.5)
+            discard constant(3.0 / 2.0)
+            discard constant(0.0 / 0.0)
+            discard constant(0.0 / 0.0)
+        }
+        """)
+    // main and four value instances; equality would merge signed zeros and
+    // fail to reuse NaN. Different spellings of one value share an instance.
+    assert length(program.functions) == 5
+    var index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        assert length(function.params) == 0
+        assert dynamic_count(function.body, ExprKind.Deferred) == 0
+        index = index + 1
+    }
+}
+
+test fn static_float_values_do_not_grant_runtime_captures_or_float_proofs() {
+    rejects("""
+        fn fixed(comptime value Float) Float {
+            value
+        }
+        fn runtime(value Float) Float {
+            fixed(value)
+        }
+        """)
+    rejects("""
+        fn invalid(comptime value Float) Float ensures result >= 0.0 {
+            value
+        }
+        fn main() {
+            discard invalid(1.0)
+        }
+        """)
+    rejects("""
+        fn incidental[T](comptime value T) Float {
+            value + 1.0
+        }
+        fn main() {
+            discard incidental(1.0)
+        }
+        """)
+}

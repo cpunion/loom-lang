@@ -15,7 +15,7 @@ import std.result.Result
 fn has_static(signature Signature) Bool { length(signature.compile_time) != 0 }
 fn static_parameter_type(env Environment, ty Int) Bool {
     let kind = get(env.types, ty).kind
-    ty == 1 || ty == 2 || ty == 3 || kind == TypeKind.Function ||
+    ty == 1 || ty == 2 || ty == 3 || ty == 5 || kind == TypeKind.Function ||
         kind == TypeKind.Parameter || kind == TypeKind.Associated
 }
 fn is_static(signature Signature, position Int) Bool {
@@ -86,7 +86,15 @@ fn static_expression(context Context, node Node, index Int) Result[Expr, Failure
         }
         return Result.Ok(reference)
     }
-    let kind = if value.ty == 1 { ExprKind.Integer } else { if value.ty == 2 { ExprKind.Bool } else { ExprKind.Text } }
+    let kind = if value.ty == 1 {
+        ExprKind.Integer
+    } else if value.ty == 2 {
+        ExprKind.Bool
+    } else if value.ty == 5 {
+        ExprKind.Float
+    } else {
+        ExprKind.Text
+    }
     let text = if value.ty == 1 { std.int.to_text(value.number) } else {
         if value.ty == 2 { if value.number != 0 { "true" } else { "false" } } else { value.text }
     }
@@ -157,7 +165,7 @@ fn static_probe(context Context, node Node, expected Int) Result[Expr, Failure] 
 }
 fn static_argument(context Context, node Node, checked Expr, expected Int) Result[StaticValue, Failure] {
     if !static_parameter_type(context.env, expected) {
-        return Result.Err(error(context, node, "comptime parameters require Int, Bool, Text or a function type after specialization"))
+        return Result.Err(error(context, node, "comptime parameters require Int, Bool, Float, Text or a function type after specialization"))
     }
     if contains_deferred(checked) || !concrete(context.env, expected) ||
         (abstract_context(context) && depends_on_type(context, node)) {
@@ -203,9 +211,22 @@ fn static_argument(context Context, node Node, checked Expr, expected Int) Resul
         while index < count { push(arguments, get(value.items, index).number)
             index = index + 1 }
     }
-    Result.Ok(StaticValue { ty = expected known = true number = if expected == 3 { 0 } else { value.number }
-        text = if expected == 3 { value.text } else { "" } arguments = arguments
-        capture = if captured { computation } else { -1 } })
+    // Reuse CTFE's round-tripping Float encoding rather than IEEE equality as
+    // the instance key: signed zeros differ and repeated NaNs reuse an instance.
+    Result.Ok(StaticValue {
+            ty = expected
+            known = true
+            number = if expected == 3 || expected == 5 { 0 } else { value.number }
+            text = if expected == 5 {
+                std.float.to_text(value.floating)
+            } else if expected == 3 {
+                value.text
+            } else {
+                ""
+            }
+            arguments = arguments
+            capture = if captured { computation } else { -1 }
+        })
 }
 
 // A selected static tuple is checked with abstract types and only the public

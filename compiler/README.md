@@ -788,7 +788,7 @@ fn forward_constants[Ts...](comptime values Ts...) (Ts...) {
 }
 ```
 
-Elements use the ordinary static-parameter rules: Int, Bool, Text or function
+Elements use the ordinary static-parameter rules: Int, Bool, Float, Text or function
 identities, including pure construction and captured callbacks. The pack and
 its `comptime for/map` iteration bindings preserve each element's static identity;
 projections and forwarding need no runtime tuple snapshot. A runtime read of the
@@ -1549,7 +1549,7 @@ fn repeat[T](value T, comptime action fn(T) T, comptime count Int) T {
 fn main() { assert repeat(39, increment, 3) == 42 }
 ```
 
-This slice accepts `Int`, `Bool`, `Text`, and function static parameter types,
+This slice accepts `Int`, `Bool`, `Float`, `Text`, and function static parameter types,
 including inferred type parameters and associated types that specialize to one
 of these shapes:
 
@@ -1564,9 +1564,18 @@ fn main() {
 The same forms work on concrete and dynamic methods. Abstract declaration
 checking keeps `T` abstract even when a caller supplied a known scalar;
 requirements must still be declared or selected with `comptime if T implements C`.
-Unsupported concrete parameter shapes (including Float and aggregates) reject
+Unsupported concrete parameter shapes (including aggregates) reject
 at specialization, not during native emission. See the
 [generic static example](examples/comptime_parameters/generic.loom).
+
+Float specialization uses the same round-tripping numeric encoding as ordinary
+compile-time evaluation: equivalent finite values share an instance, positive
+and negative zero remain distinct, and NaNs use the existing canonical encoding.
+This is an instance key, not a change to IEEE value equality; NaN still differs
+from itself. Subnormals and infinities are preserved. Float parameters also work
+through static packs, closures and dynamic method slots, without runtime
+parameter storage or a new proof rule. See the
+[Float static example](examples/comptime_parameters/floats.loom).
 
 Literals, pure computed expressions and forwarded static parameters specialize
 the declaration; static values participate in instance and computation keys.

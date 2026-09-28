@@ -27,7 +27,7 @@ test fn static_selection_preserves_abstract_generic_requirements_and_mandatory_p
     rejects("fn unused(comptime value Int) Int ensures result == 1 { 0 }")
     rejects("fn unproved(comptime value Int) Int ensures result == value { value }")
     rejects("fn infinite(comptime value Int) Int { infinite(value + 1) }\nfn main() { discard infinite(0) }")
-    rejects("fn invalid(comptime value Float) Float { value }")
+    rejects("fn invalid(comptime value List[Int]) List[Int] { value }")
     rejects("fn value(comptime number Int) Int { number }\nfn value(number Int) Int { number }")
     rejects("fn value(comptime number Int) Int { number }\nfn main() { let callback = value\ndiscard callback }")
     rejects("fn value(comptime number Int) Int { number = 1\nnumber }")

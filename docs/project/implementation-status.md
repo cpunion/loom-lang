@@ -278,12 +278,16 @@ can prove every arity, including for uncalled declarations. Empty tuple operands
 retain their evaluation at the source gap, even with no resulting arguments,
 indirect/method calls or suspension. Their effects cannot enter erased comptime
 arguments; those boundaries still require a prior binding. A body-level
-`comptime for item in values` form unrolls an immutable structural tuple binding,
-including the final value pack for each selected arity, and checks every element
-with ordinary effects and Task rules.
+`comptime for item in values` form unrolls an immutable tuple or visible record
+binding, including the final value pack for each selected arity, and checks every
+element with ordinary effects and Task rules. Records use declaration order;
+generic bounds, refinement reads, lexical cleanup and shared aliases retain
+their usual checks, including through nested expansion and captured callbacks.
+The [record example](../../compiler/examples/pack_iteration/records.loom)
+uses only typed field projections, with no runtime reflection or boxing.
 A structural `(Pattern[Ts]...)` parameter takes one runtime tuple and
 infers arity from its known type. `comptime map` produces an ordered typed tuple
-of lexical results from an immutable fixed-shape tuple parameter or local,
+of lexical results from an immutable fixed-shape tuple or record binding,
 including the final value pack; `comptime for` remains a no-result statement.
 In a selected variadic body, the same forms may iterate its declared type pack:
 `comptime for T in Ts` and `comptime map T in Ts` bind each `T` to an existing
@@ -418,7 +422,7 @@ selected build, retaining the existing typed witness ABI and reachability model.
 No runtime type discovery, generic code generation or new bootstrap checkpoint
 is required. Native objects remain build-specific, not open-ended generic libraries.
 
-Methods now accept Int/Bool/Text and function `comptime` parameters, with matching
+Methods now accept Int/Bool/Float/Text and function `comptime` parameters, with matching
 positions in the concept and implementation. Static and dynamic calls share
 selected-branch validation under declared bounds; known implementations in unused
 bodies cannot hide an invalid selected branch. Overrides do not instantiate the
@@ -705,12 +709,17 @@ Stable schemas, lossless editing, richer pack iteration, typed macros, broader c
 reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 
-`comptime` parameters specialize named calls using canonical Int/Bool/Text or
+`comptime` parameters specialize named calls using canonical Int/Bool/Float/Text or
 source-function identities; scalar values and function identities disappear
 before the native ABI. Inferred generic and associated parameter types now
 specialize to those same supported shapes, including concrete/dynamic methods;
 unsupported concrete shapes reject before evaluation/emission. Generic scalar
 values remain abstract during declaration checking, just like callbacks.
+Float keys use CTFE's round-tripping encoding rather than IEEE equality, keeping
+signed zeros distinct and reusing the existing canonical NaN encoding. This
+does not add a runtime argument, numeric representation or Float proof rule;
+the [Float example](../../compiler/examples/comptime_parameters/floats.loom)
+covers static packs, forwarding, closures and associated dynamic methods.
 Known functions use determined targets; generic references, pure selectors and forwarding preserve
 type checks and target preconditions. Static-value branches are checked with
 abstract type arguments and declared requirements, not incidental concrete
@@ -757,7 +766,7 @@ same-directory test; it rejects existing directories and invalid module names.
 Development compiler paths resolve std/native from their checkout, allowing
 check/build/test/run from the application's own directory; `run --` forwards
 program arguments. The VS Code development host has a dedicated trial workspace.
-Real host/protocol smoke tests cover the editing loop. Bare-name imports, broader syntax-error
+Real host/protocol smoke tests cover the editing loop. Public/API rename, broader syntax-error
 recovery and typed queries within erroneous functions remain programming-experience
 gaps. Native assertions now carry static
 definition-file/line/Unicode-column diagnostics. Test entries set one current
