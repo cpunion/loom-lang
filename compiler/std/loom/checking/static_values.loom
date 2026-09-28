@@ -1,0 +1,103 @@
+import std.text.join
+
+// Stored values cannot carry mutable identity. Functions keep their separate
+// top-level target/environment protocol; they are not aggregate static fields.
+// Return the remaining traversal budget, or -1 for an unsupported shape. This
+// predicate must stay allocation-free, like the scalar type fast path.
+fn static_storage_budget(env Environment, ty Int, depth Int, budget Int) Int {
+    if depth >= 64 || budget <= 0 {
+        return -1
+    }
+    if ty == 1 || ty == 2 || ty == 3 || ty == 5 {
+        return budget - 1
+    }
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
+        return budget - 1
+    }
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple &&
+    shape.kind != TypeKind.Enum && shape.kind != TypeKind.Refined {
+        return -1
+    }
+    // Header discovery may not yet have expanded nominal fields. Signature
+    // substitution checks the completed shape before a body can be emitted.
+    if get(env.type_states, ty).phase != 2 {
+        return budget - 1
+    }
+    var remaining = budget - 1
+    var index = 0
+    while index < length(shape.fields) {
+        remaining = static_storage_budget(env, get(shape.fields, index).ty, depth + 1, remaining)
+        if remaining < 0 {
+            return -1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            remaining = static_storage_budget(env, get(fields, field), depth + 1, remaining)
+            if remaining < 0 {
+                return -1
+            }
+            field = field + 1
+        }
+        index = index + 1
+    }
+    remaining
+}
+
+fn static_key_part(context Context, node Node, parts List[Text], budget List[Int], text Text) Result[Bool, Failure] {
+    if std.text.length(text) > get(budget, 1) {
+        return Result.Err(error(context, node, "comptime argument key size exhausted"))
+    }
+    set(budget, 1, get(budget, 1) - std.text.length(text))
+    push(parts, text)
+    Result.Ok(true)
+}
+
+fn static_key_value(context Context, node Node, value Value, parts List[Text], budget List[Int], depth Int) Result[Bool, Failure] {
+    if depth >= 256 || get(budget, 0) == 0 {
+        return Result.Err(error(context, node, "comptime argument key expansion exhausted"))
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    let kind = get(context.env.types, value.ty).kind
+    let base = base_type(context.env, value.ty)
+    let scalar = if base == 1 || base == 2 {
+        std.int.to_text(value.number)
+    } else if base == 5 {
+        std.float.to_text(value.floating)
+    } else if base == 3 {
+        value.text
+    } else {
+        ""
+    }
+    // Type IDs belong only to this check. Tags distinguish enum variants;
+    // length framing preserves arbitrary Text, including NUL and delimiters.
+    discard static_key_part(context, node, parts, budget, concat(std.int.to_text(value.ty), "/"))?
+    discard static_key_part(context, node, parts, budget, concat(std.int.to_text(if kind == TypeKind.Enum {
+                    value.number
+                } else {
+                    0
+                }), "/"))?
+    discard static_key_part(context, node, parts, budget, concat(std.int.to_text(std.text.length(scalar)), ":"))?
+    discard static_key_part(context, node, parts, budget, scalar)?
+    discard static_key_part(context, node, parts, budget, concat("/", concat(std.int.to_text(length(value.items)), ";")))?
+    var index = 0
+    while index < length(value.items) {
+        discard static_key_value(context, node, get(value.items, index), parts, budget, depth + 1)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn static_value_key(context Context, node Node, value Value) Result[Text, Failure] {
+    let parts = new[Text]()
+    let budget = new[Int]()
+    push(budget, 100000)
+    push(budget, 16777216)
+    discard static_key_value(context, node, value, parts, budget, 0)?
+    Result.Ok(std.text.join(parts, ""))
+}

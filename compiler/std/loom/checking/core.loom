@@ -36,14 +36,16 @@ record Requirement {
 }
 // Function constants use a source symbol plus concrete type arguments, never
 // an index into a transient emission/evaluation queue.
-// capture is a current-check computation index, or -1 for an uncaptured value.
 record StaticValue {
     ty Int
     known Bool
     number Int
     text Text
     arguments List[Int]
-    capture Int
+    // Current-check computation storage: >= 0 = live callback environment,
+    // -1 = none, <= -2 = immutable value at -2 - storage. Neither index is an
+    // instance identity. The cases share a slot to keep this hot value small.
+    storage Int
 }
 record StaticAlias {
     node Node

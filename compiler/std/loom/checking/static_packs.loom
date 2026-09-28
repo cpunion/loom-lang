@@ -23,6 +23,7 @@ fn static_alias_source(context Context, node Node) Option[Node] {
                         Result.Err(_) => {}
                     }
                 }
+                return Option.Some(pack_node(node, NodeKind.Select, node.value, source_nodes(tuple)))
             }
             Option.None => {}
         }
@@ -52,7 +53,7 @@ fn static_alias_type(context Context, node Node) Result[Int, Failure] {
     }
     if node.kind == NodeKind.Select {
         let ty = static_alias_type(context, child(node, 0))?
-        let projection = tuple_member(context, node, atom(ExprKind.Deferred, ty, node, -1), node.value)?
+        let projection = member(context, node, atom(ExprKind.Deferred, ty, node, -1), node.value)?
         return Result.Ok(projection.ty)
     }
     Result.Err(error(context, node, "invalid static pack binding"))
@@ -62,6 +63,13 @@ fn bind_static_pack(context Context, node Node, boundary Int) Result[Step, Failu
     let source = child(node, 0)
     // Read only the type: an unused callback must not be captured or scheduled.
     let ty = static_alias_type(context, source)?
+    if source.kind == NodeKind.Name {
+        let found = lookup(context, source.value)
+        if found >= 0 && get(context.bindings, found).constant >= 0 {
+            let next = bind_name(context, node, node.value, -1, get(context.bindings, found).constant, boundary)?
+            return Result.Ok(Step { context = next expression = expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true) })
+        }
+    }
     let recipe = match static_alias_source(context, source) {
         Option.Some(value) => value
         Option.None => source
@@ -80,14 +88,38 @@ fn pack_binding(node Node, name Text, value Node, static_values Bool) Node {
 
 fn iteration_type(context Context, binding Binding) Int {
     if binding.constant < -1 { return get(context.env.static_aliases, -2 - binding.constant).ty }
+    if binding.constant >= 0 { return static_type(context, binding.constant) }
     if binding.local < 0 { return -1 }
     let local = get(context.locals, binding.local)
     if local.mutable { -1 } else { local.ty }
 }
 
+// Static aggregate projections have no runtime evaluation to save during ...
+// expansion. Calls and ordinary let copies deliberately do not enter this path.
+fn static_projection(context Context, node Node) Bool {
+    if node.kind == NodeKind.Select { return static_projection(context, child(node, 0)) }
+    if node.kind == NodeKind.Name {
+        let found = lookup(context, slice(node.value, 0, first_dot(node.value)))
+        if found >= 0 {
+            let binding = get(context.bindings, found)
+            if binding.constant >= 0 { return true }
+            if binding.constant < -1 { return static_projection(context, get(context.env.static_aliases, -2 - binding.constant).node) }
+        }
+    }
+    if node.kind == NodeKind.Tuple {
+        var index = 0
+        while index < length(node.children) {
+            if !static_projection(context, child(node, index)) { return false }
+            index = index + 1
+        }
+        return true
+    }
+    false
+}
+
 // Repeated source AST can read different elements of the same specialization.
 // Immutable alias IDs identify that lexical basis, including captured aliases;
-// scalar/function identities still come from the existing constants key.
+// value/function identities still come from the existing constants key.
 fn static_alias_basis(context Context) List[Int] {
     let aliases = new[Int]()
     if length(context.env.static_aliases) == 0 { return aliases }

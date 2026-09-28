@@ -61,6 +61,18 @@ fn value_iteration(context Context, node Node) Result[Node, Failure] {
     }
     let count = new[Int]()
     push(count, 0)
+    if selected.constant >= 0 {
+        // Freeze the original constant under an unspellable name before field
+        // aliases are introduced. A loop variable may shadow its source name.
+        let name = concat("$aggregate", std.int.to_text(length(context.bindings)))
+        let children = source_nodes(pack_node(source, NodeKind.Name, name, new[Node]()))
+        push(children, child(node, 1))
+        let renamed = pack_node(node, node.kind, node.value, children)
+        let body = source_nodes(pack_binding(source, name, source, true))
+        push(body, expand_pack_iteration(context.env, context.signature.symbol, renamed,
+                name, members, true, false, false, 0, count)?)
+        return Result.Ok(pack_node(node, NodeKind.Block, "", body))
+    }
     expand_pack_iteration(context.env, context.signature.symbol, node, source.value,
         members, selected.constant < -1, false, false, 0, count)
 }

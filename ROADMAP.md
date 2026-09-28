@@ -330,11 +330,16 @@ lexical cleanup, shared aliases and Task transfer without runtime reflection.
 For a selected variadic arity, `comptime for T in Ts` and
 `comptime map T in Ts` also bind each element of the declared type pack as an
 ordinary abstract type parameter; no runtime type-list or type value is added.
-Static `comptime values Ts...` packs preserve per-element scalar/function
-identities through projections, expansion, iteration and closure capture.
-They reuse ordinary specialization; scalar elements have no runtime argument
-slots, and captured callbacks forward live environments. Aggregate static
-elements and static structural tuple parameters remain unsupported.
+Static `comptime values Ts...` packs preserve per-element identities through
+projections, expansion, iteration and closure capture. Immutable stored records,
+tuples, enums and constrained values now specialize alongside scalars; structural
+`comptime values (Ts...)` parameters also work. Value keys preserve nominal types,
+tags, field order and Float/Text distinctions, reusing equal configurations.
+Static tuple/record traversal retains compile-time field bindings even through
+shadowing and nested closures. These values have no runtime argument slots;
+captured callbacks keep their separate live-environment protocol. Mutable shared
+storage, Tasks, dyn values and stored callbacks remain outside aggregate static
+parameters, and MustScope obligations cannot be erased.
 General pack reflection and methods/data packs remain open. Structural tuple
 parameters now allow fixed prefixes and suffixes around one expanded pattern.
 Calls and contextual function references infer the pack width after subtracting
@@ -357,8 +362,8 @@ Callback construction may retain effectful or async targets; actual compile-time
 calls still validate the reachable target closure and prohibit real I/O or Tasks.
 See the [static closure example](compiler/examples/comptime_closures/README.md).
 
-Compile-time parameters now specialize named calls with Int/Bool/Float/Text values or
-known source-function identities and leave runtime arguments and any captured
+Compile-time parameters specialize named calls with scalar and immutable
+aggregate/refinement values or known source-function identities, leaving runtime arguments and captured
 environments in the native ABI. Generic and associated static parameter types
 now specialize to these supported shapes; declaration validation still sees
 abstract types, not incidental caller capabilities. Static callbacks use determined targets; generic forwarding and pure selectors

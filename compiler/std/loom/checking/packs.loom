@@ -40,7 +40,7 @@ fn mentions_pack(node Node, name Text) Bool {
     false
 }
 
-// A structural pack takes one tuple at runtime. Each expanded type pattern
+// A structural pack takes one tuple argument. Each expanded type pattern
 // shares the same arity after subtracting its fixed prefix and suffix fields.
 fn tuple_pack_expansion(parameter Node) Int {
     let ty = child(parameter, 0)
@@ -147,9 +147,6 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         let tuple = tuple_pack_parameter(parameter)
         if spread && index + 1 != length(parameters) {
             return Result.Err(failure(env, owner, parameter, "a variadic value parameter must be last"))
-        }
-        if tuple && has(parameter, NodeKind.Comptime) {
-            return Result.Err(failure(env, owner, parameter, "a comptime value pack uses Ts..., not a structural tuple parameter"))
         }
         if spread && !mentions_pack(child(parameter, 0), pack.value) {
             return Result.Err(failure(env, owner, parameter, "the variadic parameter type must use the declared pack"))

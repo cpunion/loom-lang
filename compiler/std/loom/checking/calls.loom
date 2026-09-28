@@ -263,40 +263,21 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     Result.Ok(empty_inputs(context, inputs, node,
         expression(ExprKind.Variant, constructed_type(context, declaration, arguments, node)?, node, "", selected, values, all_fall(values))))
 }
-record TuplePackInput {
-    inputs CallInputs
-    arity Int
-}
-
-fn tuple_pack_input(context Context, inputs CallInputs, position Int) Result[TuplePackInput, Failure] {
+// Arity discovery is a type probe, not a saved runtime tuple expansion. Keep
+// its locals/queues private until overload selection decides the input phase.
+fn tuple_pack_arity(context Context, inputs CallInputs, position Int) Result[Int, Failure] {
     let node = get(inputs.nodes, position)
     let value = match saved_input(inputs, position) {
         Option.Some(saved) => saved,
-        Option.None => expr(context, node, -1)?
+        Option.None => static_probe(context, node, -1)?
     }
     let shape = get(context.env.types, value.ty)
-    let ready = match inputs.ready {
-        Option.Some(values) => values,
-        Option.None => {
-            let values = new[Option[Expr]]()
-            var index = 0
-            while index < length(inputs.nodes) {
-                std.list.push(values, Option.None)
-                index = index + 1
-            }
-            values
-        }
-    }
-    set(ready, position, Option.Some(value))
-    Result.Ok(TuplePackInput {
-        inputs = CallInputs { nodes = inputs.nodes ready = Option.Some(ready) effects = inputs.effects }
-        arity = if shape.kind == TypeKind.Tuple { length(shape.arguments) } else { -1 }
-    })
+    Result.Ok(if shape.kind == TypeKind.Tuple { length(shape.arguments) } else { -1 })
 }
 
 fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let types = child(node, 0).children
-    var inputs = call_inputs(context, child(node, 1).children)?
+    let inputs = call_inputs(context, child(node, 1).children)?
     let first = slice(node.value, 0, first_dot(node.value))
     if lookup(context, first) >= 0 {
         if package(node.value) == "" {
@@ -377,9 +358,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
                             }
                         }
                     } else {
-                        let tuple = tuple_pack_input(context, inputs, position)?
-                        inputs = tuple.inputs
-                        arity = tuple.arity - tuple_pack_fixed(get(parameters, position))
+                        arity = tuple_pack_arity(context, inputs, position)? - tuple_pack_fixed(get(parameters, position))
                     }
                 }
             }
@@ -547,14 +526,14 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
                     // Re-evaluating a captured function would materialize a
                     // second environment, losing aliases with runtime fields
                     // of the saved tuple.
-                    if value.capture >= 0 {
+                    if value.storage >= 0 {
                         return Result.Err(error(context, input, "a comptime function field cannot split a saved tuple's captured environment"))
                     }
                 }
                 Option.None => {}
             }
             push(constants, value)
-            if value.capture >= 0 { push(runtime_values, static_environment_argument(context, input, value)?) }
+            if value.storage >= 0 { push(runtime_values, static_environment_argument(context, input, value)?) }
         } else {
             let value = if length(probes) != 0 && get(probes, index) { input_value(context, inputs, index, target, false)? } else {
                 typed(context, input, get(values, index), target)?
