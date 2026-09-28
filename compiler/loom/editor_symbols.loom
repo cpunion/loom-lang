@@ -514,14 +514,15 @@ fn editor_rename_output(bindings std.loom.binding.Program, references List[Locat
 }
 
 fn editor_symbols(options EditorOptions, bindings std.loom.binding.Program, program std.loom.typed.Program,
-    file Int, offset Int, inputs List[BuildInput]) EditorOutput {
+    file Int, offset Int, inputs BuildInputs) EditorOutput {
     let new_name = options.new_name
     let rename = new_name != ""
     let analysis = Analysis {
         bindings = bindings
         program = program
-        inputs = inputs
+        inputs = inputs.files
         options = options.build_options
+        targets = inputs.targets
     }
     let tokens = match lex(get(bindings.files, file).text) {
         Result.Ok(value) => value,

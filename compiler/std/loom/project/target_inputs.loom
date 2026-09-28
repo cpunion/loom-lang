@@ -1,0 +1,5 @@
+// Target properties are separate from user build options. A frontend may
+// provide explicit snapshots without loading a native backend.
+pub fn valid_target_property(name Text) Bool {
+    name == "os" || name == "arch" || name == "pointer_width" || name == "endian"
+}

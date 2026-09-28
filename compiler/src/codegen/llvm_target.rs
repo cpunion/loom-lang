@@ -18,6 +18,43 @@ pub(super) struct NativeTarget {
 }
 
 impl NativeTarget {
+    pub(super) fn source_info(&self) -> Vec<(String, String)> {
+        let triple = self.machine.get_triple();
+        let triple = triple.as_str().to_string_lossy();
+        let parts: Vec<_> = triple.split('-').collect();
+        let arch = match parts[0] {
+            "arm64" => "aarch64",
+            "i386" | "i486" | "i586" | "i686" => "x86",
+            arch => arch,
+        };
+        let os = if parts
+            .iter()
+            .any(|part| part.starts_with("darwin") || part.starts_with("macosx"))
+        {
+            "macos"
+        } else if parts.contains(&"windows") {
+            "windows"
+        } else if parts.contains(&"linux") {
+            "linux"
+        } else {
+            "unknown"
+        };
+        let data = self.machine.get_target_data();
+        let endian = match data.get_byte_ordering() {
+            inkwell::targets::ByteOrdering::LittleEndian => "little",
+            inkwell::targets::ByteOrdering::BigEndian => "big",
+        };
+        vec![
+            ("os".into(), os.into()),
+            ("arch".into(), arch.into()),
+            (
+                "pointer_width".into(),
+                (data.get_pointer_byte_size(None) * 8).to_string(),
+            ),
+            ("endian".into(), endian.into()),
+        ]
+    }
+
     pub(super) fn new(optimization: Optimization) -> Result<Self, String> {
         Self::configured(optimization, std::env::var_os("LOOM_TARGET_CPU").as_deref())
     }

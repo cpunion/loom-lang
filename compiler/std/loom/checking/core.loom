@@ -293,7 +293,7 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
 }
 fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Result[Environment, Failure] {
     let input_state = new[BuildInputs]()
-    let options = match build_option_snapshot(inputs.options) {
+    let options = match input_options(inputs) {
         Result.Ok(value) => value
         Result.Err(message) => {
             return Result.Err(Failure {
@@ -310,6 +310,9 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Resu
     }
     push(input_state, BuildInputs {
             options = options
+            targets = inputs.targets
+            target_context = inputs.target_context
+            read_target = inputs.read_target
             files = inputs.files
             requests = inputs.requests
             read = inputs.read

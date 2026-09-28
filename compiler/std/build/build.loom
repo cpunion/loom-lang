@@ -6,6 +6,8 @@ import std.option.Option
 
 intrinsic fn option_present(comptime name Text) Bool
 intrinsic fn option_text(comptime name Text) Text
+// os, arch, pointer_width and endian describe the selected emission target.
+pub intrinsic fn target(comptime property Text) Text
 
 // Missing and explicitly empty values are distinct. The compiler receives
 // these inputs explicitly; this API never reads the process environment.

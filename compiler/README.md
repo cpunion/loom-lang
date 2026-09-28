@@ -403,8 +403,9 @@ runtime performance. Tiny packages regress because hashing exceeds saved work.
 retain the measurement basis; these are local observations, not platform targets.
 
 Bootstrap generation comparisons and editor queries do not enable this cache.
-Tracked external compile-time inputs and finer-grained persistent summaries
-remain future work; ordinary compile-time execution cannot read arbitrary I/O.
+Tracked files, explicit options and observed target properties bind reuse;
+finer-grained persistent summaries remain future work. Ordinary compile-time
+execution cannot read arbitrary I/O.
 
 ### Earlier uncached measurements
 
@@ -1625,9 +1626,45 @@ step. Values can enter artifacts and are **not a secret channel**.
 Frontend-cache keys include the canonical option map. V3 build receipts include
 names and value digests. Public checking/analysis can supply `BuildInputs.options`
 without filesystem access; analysis snapshots and freshness checks include it.
-Editor requests use workspace `loom.buildOptions`. Target metadata is separate
-unfinished work, not inferred from option names. See the
+Editor requests use workspace `loom.buildOptions`. Target metadata is separate,
+not inferred from option names. See the
 [runnable example](examples/build_options/main.loom).
+
+### Target properties
+
+`std.build.target(comptime property Text) Text` reads `os` (`macos`, `linux`,
+`windows` on the supported hosts), `arch` (`aarch64` or `x86_64`), `pointer_width`
+(`"64"`), or `endian` (`"little"`). These describe the actual backend target,
+not the frontend's host or the width of Loom `Int`. Unknown names reject.
+
+```loom
+import std.build.target
+
+fn line_end() Text {
+    comptime if target("os") == "windows" {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+```
+
+Properties are fixed while checking, work in compile-time evaluation and become
+ordinary Text constants. The driver reads its selected native backend lazily,
+once per checking context, retaining all four properties as one coherent
+snapshot. Importing the declaration or skipping a query in
+an unselected `comptime if` branch needs no backend. This is target introspection,
+not cross-compilation support or runtime platform detection.
+
+The requested target snapshot enters the checked artifact; emission rejects a mismatched
+target, including when consuming saved `emit-checked` output. Frontend-cache hits
+revalidate the properties before reuse, and the receipt's checked-input digest
+binds them. Optimization and CPU tuning do not change these four properties.
+Public analysis accepts explicit `BuildInputs.targets` snapshots or `read_target`
+callbacks with an explicit `target_context`, without a subprocess; freshness
+includes the snapshot. A supplied snapshot must contain every requested property.
+Editor queries use the compiler's discovered backend or `loom.nativeTool`, matching
+CLI `--native-tool`. See the [native example](examples/build_target/main.loom).
 
 ### Tracked build inputs
 
@@ -1654,9 +1691,9 @@ resolution and bytes, and build receipts record request identity and content
 digests, never file contents. Output/IR/receipt paths cannot replace a selected
 input. Embedded data is visible in the executable: do not use this for secrets.
 
-See [the runnable example](examples/build_inputs/main.loom). This first slice is
-text files only; target metadata and binary build inputs remain
-future work. Network access and commands are not compile-time operations.
+See [the runnable example](examples/build_inputs/main.loom). File inputs currently
+support Text only; binary inputs remain future work. Target properties use the
+separate API above. Network access and commands are not compile-time operations.
 
 Every branch must parse, but unselected `comptime if` branches impose no type or
 call requirements. Type guards compare unshadowed types with `==` or `!=`,

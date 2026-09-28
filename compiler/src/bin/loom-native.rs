@@ -24,6 +24,7 @@ fn main() -> ExitCode {
 
 enum Action {
     Identity,
+    TargetInfo,
     Compile(OsString),
     Link(PathBuf),
 }
@@ -47,6 +48,8 @@ impl Arguments {
         let input = arguments.next().ok_or("usage: loom-native <checked-input|-> --output <artifact>; --cache-identity [--test]; --link-object <object> --output <artifact>")?;
         let action = if input == "--cache-identity" {
             Action::Identity
+        } else if input == "--target-info" {
+            Action::TargetInfo
         } else if input == "--link-object" {
             Action::Link(PathBuf::from(
                 arguments.next().ok_or("--link-object needs an object")?,
@@ -123,7 +126,7 @@ impl Arguments {
 
     fn validate(&self) -> Result<(), String> {
         match self.action {
-            Action::Identity => {
+            Action::Identity | Action::TargetInfo => {
                 if self.output.is_some()
                     || self.ir.is_some()
                     || self.runtime.is_some()
@@ -133,8 +136,9 @@ impl Arguments {
                     || self.object_only
                     || self.library
                     || self.uses_runtime
+                    || (matches!(self.action, Action::TargetInfo) && self.test_mode)
                 {
-                    return Err("--cache-identity accepts only --test".into());
+                    return Err("metadata queries do not accept compilation options; only --cache-identity accepts --test".into());
                 }
             }
             Action::Compile(_) => {
@@ -183,7 +187,7 @@ impl Arguments {
                 }
             }
         }
-        if !matches!(self.action, Action::Identity) && self.output.is_none() {
+        if !matches!(self.action, Action::Identity | Action::TargetInfo) && self.output.is_none() {
             return Err("native bridge requires --output".into());
         }
         Ok(())
@@ -194,6 +198,13 @@ fn execute() -> Result<(), String> {
     let arguments = Arguments::parse(std::env::args_os().skip(1))?;
     if let Action::Link(object) = &arguments.action {
         return link_object(object, &arguments);
+    }
+    if matches!(arguments.action, Action::TargetInfo) {
+        println!("loom-target 1");
+        for (name, value) in Llvm.target_info()? {
+            println!("{name} {value}");
+        }
+        return Ok(());
     }
     let optimization = optimization_level(std::env::var_os("LOOM_OPT_LEVEL").as_deref())?;
     if matches!(arguments.action, Action::Identity) {
@@ -446,6 +457,7 @@ mod tests {
         let object = format!("- --output program.o --object-only --expect-cache-identity {digest}");
         for args in [
             "--cache-identity",
+            "--target-info",
             "--cache-identity --test",
             "- --output program --test --emit-ir program.ll",
             &object,
@@ -457,6 +469,8 @@ mod tests {
             assert!(parse(args).is_ok(), "{args}");
         }
         for args in [
+            "--target-info --test",
+            "--target-info --output program",
             "--cache-identity --output program",
             "--cache-identity --test --test",
             "--cache-identity --protect-directory cache",

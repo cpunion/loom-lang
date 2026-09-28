@@ -31,6 +31,10 @@ pub struct EmissionResult {
 /// Emit an object preserving checked operations, faults, and the runtime ABI.
 /// Linking and publication belong to the host tool, not the code generator.
 pub trait Backend {
+    /// Source-visible properties of the actual emission target, not the host
+    /// running a frontend. Values are stable across optimization/CPU tuning.
+    fn target_info(&self) -> Result<Vec<(String, String)>, String>;
+
     /// Opaque content identity for object reuse, or None when the loaded
     /// implementation cannot be identified. This is not cache authentication.
     fn cache_identity(

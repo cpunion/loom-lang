@@ -49,6 +49,7 @@ record Options {
 
 record Prepared {
     inputs List[BuildInput]
+    targets List[BuildOption]
     input Text
     entry Int
     tests Int
@@ -234,27 +235,28 @@ fn diagnostic(files List[SourceFile], failure Failure) Text {
 
 fn prepared(options Options) Result[Prepared, Text] {
     let loaded = load(options.path, options.std_root, options.command == "test")?
+    let inputs = driver_build_inputs(options.build_options, options.native_tool)
     if options.frontend_cache != "" {
-        return frontend_cached(options, loaded)
+        return frontend_cached(options, loaded, inputs)
     }
-    prepare_loaded(options, loaded)
+    prepare_loaded(options, loaded, inputs)
 }
 
-fn prepare_loaded(options Options, loaded Project) Result[Prepared, Text] {
+fn prepare_loaded(options Options, loaded Project, inputs BuildInputs) Result[Prepared, Text] {
     let bound = match bind(loaded, options.command == "test") {
         Result.Ok(value) => value
         Result.Err(failure) => {
             return Result.Err(diagnostic(loaded.files, failure))
         }
     }
-    let inputs = build_inputs(read_input, options.build_options)
     match check_with_inputs(bound, inputs) {
         Result.Ok(value) => Result.Ok(Prepared {
                 inputs = inputs.files
+                targets = inputs.targets
                 input = if options.command == "check" {
                     ""
                 } else {
-                    encode(lower(value))
+                    encode(lower(value), inputs.targets)
                 }
                 entry = value.entry
                 tests = length(value.tests)

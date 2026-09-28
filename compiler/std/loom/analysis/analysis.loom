@@ -39,6 +39,7 @@ pub record Analysis {
     program std.loom.typed.Program
     inputs List[BuildInput]
     options List[BuildOption]
+    targets List[BuildOption]
 }
 pub record Expression {
     function Int
@@ -91,13 +92,18 @@ pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
 }
 pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Result[Analysis, Failure] {
     let bindings = bind(snapshot(project), tests)?
-    let detached = build_inputs(inputs.read)
+    let detached = build_inputs(inputs.read, new[BuildOption](), inputs.read_target, inputs.target_context)
     var option = 0
     while option < length(inputs.options) {
         push(detached.options, get(inputs.options, option))
         option = option + 1
     }
     let files = detached.files
+    var target = 0
+    while target < length(inputs.targets) {
+        push(detached.targets, get(inputs.targets, target))
+        target = target + 1
+    }
     var index = 0
     while index < length(inputs.files) {
         push(files, get(inputs.files, index))
@@ -109,6 +115,7 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
             program = program
             inputs = files
             options = detached.options
+            targets = detached.targets
         })
 }
 
@@ -123,7 +130,11 @@ pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, in
 }
 
 pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, inputs List[BuildInput], options List[BuildOption]) Bool {
-    if !same_build_options(analysis.options, options) {
+    is_current_with_inputs(analysis, project, tests, inputs, options, new[BuildOption]())
+}
+
+pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, inputs List[BuildInput], options List[BuildOption], targets List[BuildOption]) Bool {
+    if !same_build_options(analysis.options, options) || !same_build_options(analysis.targets, targets) {
         return false
     }
     if length(analysis.inputs) != length(inputs) { return false }

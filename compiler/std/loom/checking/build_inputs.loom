@@ -5,12 +5,16 @@ import std.loom.project.same_request
 import std.loom.project.BuildOption
 import std.loom.project.build_option_snapshot
 import std.loom.project.valid_build_option
+import std.loom.project.valid_target_property
 import std.loom.source.Span
 
 // One context per check. The caller can supply snapshots and/or an explicit
 // reader; discovered dependencies append to files. Treat them as read-only.
 pub record BuildInputs {
     options List[BuildOption]
+    targets List[BuildOption]
+    target_context Text
+    read_target fn(Text) Result[List[BuildOption], Text]
     files List[BuildInput]
     // Includes failed reads, so editors can observe a missing input's creation.
     requests List[InputRequest]
@@ -22,12 +26,67 @@ pub fn build_inputs(reader fn(InputRequest) Result[InputFile, Text]) BuildInputs
 }
 
 pub fn build_inputs(reader fn(InputRequest) Result[InputFile, Text], options List[BuildOption]) BuildInputs {
+    build_inputs(reader, options, no_target_reader, "")
+}
+
+pub fn build_inputs(reader fn(InputRequest) Result[InputFile, Text], options List[BuildOption], target_reader fn(Text) Result[List[BuildOption], Text], target_context Text) BuildInputs {
     BuildInputs {
         options = options
+        targets = new[BuildOption]()
+        target_context = target_context
+        read_target = target_reader
         files = new[BuildInput]()
         requests = new[InputRequest]()
         read = reader
     }
+}
+
+pub fn no_target_reader(context Text) Result[List[BuildOption], Text] {
+    Result.Err("target properties require an explicit snapshot or reader")
+}
+
+// Read one coherent target snapshot only when requested. The explicit reader
+// context keeps the compiler on the named-function bootstrap subset.
+pub fn target_value(inputs BuildInputs, name Text) Result[Text, Text] {
+    if !valid_target_property(name) {
+        return Result.Err("unknown target property; expected os, arch, pointer_width or endian")
+    }
+    if length(inputs.targets) == 0 {
+        let values = build_option_snapshot(inputs.read_target(inputs.target_context)?)?
+        var index = 0
+        while index < length(values) {
+            if !valid_target_property(get(values, index).name) {
+                return Result.Err("unknown target property in build snapshot")
+            }
+            index = index + 1
+        }
+        index = 0
+        while index < length(values) {
+            push(inputs.targets, get(values, index))
+            index = index + 1
+        }
+    }
+    var index = 0
+    while index < length(inputs.targets) {
+        let property = get(inputs.targets, index)
+        if property.name == name {
+            return Result.Ok(property.value)
+        }
+        index = index + 1
+    }
+    Result.Err(concat("target snapshot does not supply property ", name))
+}
+
+fn input_options(inputs BuildInputs) Result[List[BuildOption], Text] {
+    let targets = build_option_snapshot(inputs.targets)?
+    var index = 0
+    while index < length(targets) {
+        if !valid_target_property(get(targets, index).name) {
+            return Result.Err("unknown target property in build snapshot")
+        }
+        index = index + 1
+    }
+    build_option_snapshot(inputs.options)
 }
 
 pub fn no_input_reader(request InputRequest) Result[InputFile, Text] {
@@ -36,7 +95,7 @@ pub fn no_input_reader(request InputRequest) Result[InputFile, Text] {
 
 fn build_intrinsic(env Environment, owner Int) Bool {
     let item = symbol(env, owner)
-    if (item.name != "input_file" && item.name != "option_present" && item.name != "option_text") ||
+    if (item.name != "input_file" && item.name != "option_present" && item.name != "option_text" && item.name != "target") ||
     !has(item.node, NodeKind.Intrinsic) {
         return false
     }
@@ -57,6 +116,15 @@ fn build_call(context Context, node Node, owner Int, value StaticValue) Result[E
     }
     if !value.known {
         return Result.Ok(expression(ExprKind.Deferred, ty, node, "", -1, new[Expr](), true))
+    }
+    if name == "target" {
+        let selected = match target_value(get(context.env.inputs, 0), value.text) {
+            Result.Ok(value) => value
+            Result.Err(message) => {
+                return Result.Err(error(context, node, message))
+            }
+        }
+        return Result.Ok(expression(ExprKind.Text, 3, node, selected, -1, new[Expr](), true))
     }
     if !valid_build_option(value.text) {
         return Result.Err(error(context, node, "invalid build option name"))

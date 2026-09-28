@@ -1,0 +1,52 @@
+import std.loom.project.valid_target_property
+import std.loom.checking.target_value
+
+// Called only after the source observes a target property. Plain checking,
+// formatting and compiler-library consumers do not need a native tool.
+fn native_target_inputs(tool Text) Result[List[BuildOption], Text] {
+    let selected = if tool != "" {
+        tool
+    } else {
+        discovered_tools(get(std.process.arguments(), 0))?.native_tool
+    }
+    let arguments = new[Text]()
+    push(arguments, selected)
+    push(arguments, "--target-info")
+    let output = match capture(arguments) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("cannot read target properties; build or install the native tool, or pass --native-tool")
+        }
+    }
+    if !cache_success(output) {
+        return Result.Err("native tool could not describe its target")
+    }
+    let text = match decode_utf8(output.stdout) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("native target metadata is not UTF-8")
+        }
+    }
+    let lines = split(text, "\n")
+    if length(lines) != 6 || get(lines, 0) != "loom-target 1" || get(lines, 5) != "" {
+        return Result.Err("invalid native target metadata")
+    }
+    let properties = new[BuildOption]()
+    var index = 1
+    while index < 5 {
+        let fields = split(get(lines, index), " ")
+        if length(fields) != 2 || !valid_target_property(get(fields, 0)) || get(fields, 1) == "" {
+            return Result.Err("invalid native target property")
+        }
+        push(properties, BuildOption {
+                name = get(fields, 0)
+                value = get(fields, 1)
+            })
+        index = index + 1
+    }
+    build_option_snapshot(properties)
+}
+
+fn driver_build_inputs(options List[BuildOption], tool Text) BuildInputs {
+    build_inputs(read_input, options, native_target_inputs, tool)
+}

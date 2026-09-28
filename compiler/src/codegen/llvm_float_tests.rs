@@ -238,6 +238,7 @@ fn ieee_float_operations_and_aggregate_payloads_execute_without_runtime() {
         entry: Some(entry),
         tests: vec![],
         test_names: vec![],
+        target_inputs: vec![],
         exports: vec![],
     };
     assert_eq!(value_words(&program, Type::Data(1)).unwrap(), 2);

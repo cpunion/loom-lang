@@ -1094,6 +1094,7 @@ mod tests {
             entry: None,
             tests: vec![],
             test_names: vec![],
+            target_inputs: vec![],
             exports: vec![],
         }
     }

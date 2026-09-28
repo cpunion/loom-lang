@@ -67,6 +67,7 @@ fn program(locals: Vec<Type>, statements: Vec<checked::Stmt>) -> checked::Progra
         entry: Some(0),
         tests: vec![],
         test_names: vec![],
+        target_inputs: vec![],
         exports: vec![],
     }
 }

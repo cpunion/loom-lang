@@ -1,3 +1,12 @@
+import std.loom.checking.no_input_reader
+
+fn cache_target_snapshot(os Text) Result[List[BuildOption], Text] {
+    Result.Ok([BuildOption {
+                name = "os"
+                value = os
+            }])
+}
+
 test fn frontend_bundles_bind_metadata_and_artifact_bytes() {
     let project = match load("compiler/examples/scalar", "compiler/std", false) {
         Result.Ok(value) => value
@@ -28,13 +37,15 @@ test fn frontend_bundles_bind_metadata_and_artifact_bytes() {
     let prefix = frontend_prefix(key)
     let checked = Prepared {
         inputs = new[BuildInput]()
+        targets = new[BuildOption]()
         input = "loom-checked-1\nartifact\n"
         entry = 2
         tests = 3
         project = project
     }
     let bundle = frontend_bundle(prefix, checked)
-    match frontend_decode(bundle, prefix, project, false) {
+    let inputs = build_inputs(std.loom.checking.no_input_reader)
+    match frontend_decode(bundle, prefix, project, false, inputs) {
         Option.Some(value) => {
             assert value.entry == 2 && value.tests == 3 && value.input == checked.input
         }
@@ -42,17 +53,37 @@ test fn frontend_bundles_bind_metadata_and_artifact_bytes() {
             assert false
         }
     }
-    assert match frontend_decode(bundle, prefix, project, true) {
+    assert match frontend_decode(bundle, prefix, project, true, inputs) {
         Option.None => true,
         _ => false
     }
-    assert match frontend_decode(bundle, frontend_prefix("other"), project, false) {
+    assert match frontend_decode(bundle, frontend_prefix("other"), project, false, inputs) {
         Option.None => true,
         _ => false
+    }
+    // Reuse revalidates the target snapshot requested by the check.
+    push(checked.targets, BuildOption {
+            name = "os"
+            value = "linux"
+        })
+    let targeted = frontend_bundle(prefix, checked)
+    let target_inputs = build_inputs(no_input_reader, new[BuildOption](), cache_target_snapshot, "linux")
+    assert match frontend_decode(targeted, prefix, project, false, target_inputs) {
+        Option.Some(_) => true
+        Option.None => false
+    }
+    let changed = build_inputs(no_input_reader, new[BuildOption](), cache_target_snapshot, "macos")
+    assert match frontend_decode(targeted, prefix, project, false, changed) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    assert match frontend_decode(targeted, prefix, project, false, inputs) {
+        Option.None => true
+        Option.Some(_) => false
     }
     // The checksum covers metadata as well as the complete artifact payload.
     std.bytes.set(bundle, length(prefix), 48)
-    assert match frontend_decode(bundle, prefix, project, false) {
+    assert match frontend_decode(bundle, prefix, project, false, inputs) {
         Option.None => true,
         _ => false
     }
