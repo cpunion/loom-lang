@@ -101,7 +101,7 @@ fn expanded_branches(context Expansion, value Expr, guard Expr, bindings List[Ex
     if length(paths) == 0 { return Result.Err("helper body has no scalar result") }
     var index = length(paths) - 1
     var output = get(paths, index).value
-    if !scalar_type(output.ty) { return Result.Err("helper body has no scalar result") }
+    if !helper_type(context.program, output.ty, 0) { return Result.Err("helper body has no scalar or inline aggregate result") }
     while index > 0 {
         index = index - 1
         let path = get(paths, index)

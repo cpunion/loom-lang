@@ -1,0 +1,198 @@
+fn proof_pair() Text {
+    """
+    record Pair {
+        first Int
+        second Int
+    }
+
+    """
+}
+
+test fn aggregate_helpers_preserve_paths_and_eager_evaluation() {
+    discard accepted(concat(proof_pair(), """
+        fn identity(value Pair, ignored Int) Pair
+        ensures result.first == value.first
+        ensures result.second == value.second
+        {
+            value
+        }
+        pub fn snapshot() Int
+        ensures result == 1
+        {
+            var value = Pair { first = 1, second = 2 }
+            let saved = identity(value, {
+                value = Pair { first = 3, second = 4 }
+                0
+            })
+            saved.first
+        }
+        fn predicate(value Pair) Bool {
+            if value.first > 0 {
+                let copy = value
+                return copy.second >= value.second
+            }
+            true
+        }
+        pub fn checked(value Pair) Pair
+        ensures predicate(result)
+        {
+            value
+        }
+        """))
+    discard accepted(concat(proof_pair(), """
+        fn ignored(value Pair) Bool {
+            true
+        }
+        pub fn safe(value Int) Int
+        requires value < 9223372036854775807
+        ensures ignored(Pair { first = value, second = value + 1 })
+        {
+            value
+        }
+        """))
+    rejects(concat(proof_pair(), """
+        fn ignored(value Pair) Bool {
+            true
+        }
+        pub fn unsafe(value Int) Int
+        ensures ignored(Pair { first = value, second = value + 1 })
+        {
+            value
+        }
+        """))
+    rejects(concat(proof_pair(), """
+        fn admitted(value Pair) Bool
+        requires value.first > 0
+        {
+            true
+        }
+        pub fn unsafe(value Pair) Pair
+        ensures admitted(result)
+        {
+            value
+        }
+        """))
+}
+
+test fn aggregate_calls_keep_abstract_siblings_and_refined_leaves() {
+    discard accepted("""
+        type Count = Int where self >= 0
+        record Box[T] {
+            count Count
+            other T
+        }
+        fn identity[T](value Box[T]) Box[T]
+        ensures result.count == value.count
+        {
+            value
+        }
+        pub fn forward[T](value Box[T]) Box[T]
+        ensures result.count == value.count
+        {
+            identity(identity(value))
+        }
+        """)
+    discard accepted("""
+        fn identity(value (Int, Bool)) (Int, Bool)
+        ensures result.0 == old(value.0)
+        ensures result.1 == value.1
+        {
+            value
+        }
+        pub fn forward(value (Int, Bool)) (Int, Bool)
+        ensures result.0 == value.0
+        ensures result.1 == value.1
+        {
+            identity(identity(value))
+        }
+        """)
+}
+
+test fn aggregate_summaries_do_not_invent_field_or_call_equalities() {
+    let definitions = concat(proof_pair(), """
+        fn weak(value Pair) Pair
+        ensures result.first == value.first
+        ensures result.second >= 0
+        {
+            Pair { first = value.first, second = 0 }
+        }
+
+        """)
+    discard accepted(concat(definitions, """
+        pub fn forward(value Pair) Pair
+        ensures result.first == value.first
+        ensures result.second >= 0
+        {
+            weak(weak(value))
+        }
+        """))
+    rejects(concat(definitions, """
+        pub fn invented(value Pair) Pair
+        ensures result.second == value.second
+        {
+            weak(value)
+        }
+        """))
+    rejects(concat(definitions, """
+        pub fn independent(value Pair) Int
+        ensures result == 0
+        {
+            weak(value).second - weak(value).second
+        }
+        """))
+    rejects(concat(definitions, """
+        pub fn distinct_fields(value Pair) Pair
+        ensures result.first == result.second
+        {
+            weak(value)
+        }
+        """))
+    rejects(concat(proof_pair(), """
+        fn false_summary(value Pair) Pair
+        ensures result.first == value.first
+        {
+            Pair { first = 0, second = value.second }
+        }
+        fn main() {
+        }
+        """))
+}
+
+test fn aggregate_helpers_keep_shared_storage_and_float_reasoning_opaque() {
+    rejects("""
+        record Holder {
+            values List[Int]
+        }
+        fn element(value Holder) Int {
+            value.values[0]
+        }
+        pub fn unsafe(value Holder) Int
+        ensures result == element(value)
+        {
+            0
+        }
+        """)
+    rejects("""
+        record Holder {
+            number Float
+        }
+        fn number(value Holder) Float {
+            value.number
+        }
+        pub fn unsafe(value Holder) Holder
+        ensures number(result) == number(value)
+        {
+            value
+        }
+        """)
+    rejects(concat(proof_pair(), """
+        fn recursive(value Pair) Pair {
+            recursive(value)
+        }
+        pub fn unsafe(value Pair) Pair
+        ensures result.first == value.first
+        {
+            recursive(value)
+        }
+        """))
+}

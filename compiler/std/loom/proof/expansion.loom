@@ -28,6 +28,44 @@ record Expansion {
 }
 
 fn scalar_type(ty Int) Bool { ty == 1 || ty == 2 || ty == 5 }
+fn helper_type(program Program, ty Int, depth Int) Bool {
+    if scalar_type(ty) {
+        return true
+    }
+    if depth >= 16 || ty < 0 || ty >= length(program.types) {
+        return false
+    }
+    let shape = get(program.types, ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        return helper_type(program, get(shape.fields, 0).ty, depth + 1)
+    }
+    // Inline aggregate leaves may be opaque. Projection does not establish
+    // facts about their shared storage or permit operations on that storage.
+    shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple
+}
+
+fn expanded_field(context Expansion, field Expr, value Expr, depth Int) Result[Expr, Text] {
+    discard expansion_step(context, depth)?
+    if value.kind == ExprKind.Record {
+        var index = 0
+        while index < length(value.children) {
+            let member = get(value.children, index)
+            if member.index == field.index {
+                return Result.Ok(get(member.children, 0))
+            }
+            index = index + 1
+        }
+        return Result.Err("invalid helper record projection")
+    }
+    if value.kind == ExprKind.If {
+        let yes = expanded_field(context, field, get(value.children, 1), depth + 1)?
+        let no = expanded_field(context, field, get(value.children, 2), depth + 1)?
+        return Result.Ok(proof_choice(get(value.children, 0), yes, no))
+    }
+    let children = new[Expr]()
+    push(children, value)
+    Result.Ok(proof_expr(field, ExprKind.Field, field.ty, "", field.index, children))
+}
 fn expansion_step(context Expansion, depth Int) Result[Bool, Text] {
     if depth >= 64 || get(context.budget, 0) == 0 { return Result.Err("helper proof expansion budget exhausted") }
     set(context.budget, 0, get(context.budget, 0) - 1)
@@ -83,8 +121,8 @@ fn scalar_operator(value Expr) Bool {
 fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int) Result[Expr, Text] {
     if value.index < 0 || value.index >= length(context.program.functions) || calls >= 32 { return Result.Err("helper has no bounded checked instance") }
     let function = get(context.program.functions, value.index)
-    if function.runtime_name != "" || !scalar_type(function.result) || length(function.params) != length(value.children) {
-        return Result.Err("helper proof needs a source scalar function")
+    if function.runtime_name != "" || !helper_type(context.program, function.result, 0) || length(function.params) != length(value.children) {
+        return Result.Err("helper proof needs a source scalar or inline aggregate function")
     }
     var index = 0
     while index < calls {
@@ -96,7 +134,9 @@ fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[Expans
     // Call arguments execute eagerly, even when an unused parameter or the
     // helper's own short circuit would omit their substituted expressions.
     while index < length(function.params) {
-        if !scalar_type(get(function.params, index)) { return Result.Err("helper parameters must be primitive scalars") }
+        if !helper_type(context.program, get(function.params, index), 0) {
+            return Result.Err("helper parameters must be scalars or inline aggregates")
+        }
         let argument = expanded(context, get(value.children, index), guard, bindings, locals, self, calls, depth + 1)?
         push(arguments, ExpansionBinding { local = index value = argument })
         index = index + 1
@@ -152,7 +192,7 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     discard expansion_step(context, depth)?
     if value.kind == ExprKind.Block { return expanded_block(context, value, guard, bindings, locals, self, calls, depth + 1, false) }
     if value.kind == ExprKind.If { return expanded_branches(context, value, guard, bindings, locals, self, calls, depth + 1, false) }
-    if !scalar_type(value.ty) || length(value.arms) != 0 { return Result.Err("helper expression is not a primitive scalar") }
+    if length(value.arms) != 0 { return Result.Err("helper expression has unsupported match paths") }
     if value.kind == ExprKind.Local {
         var index = length(bindings)
         while index > 0 {
@@ -166,6 +206,24 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     if value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool { return Result.Ok(value) }
     if value.kind == ExprKind.Call { return expanded_call(context, value, guard, bindings, locals, self, calls, depth + 1) }
     if value.kind == ExprKind.Coerce { return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1) }
+    if value.kind == ExprKind.Field {
+        let receiver = expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?
+        return expanded_field(context, value, receiver, depth + 1)
+    }
+    if value.kind == ExprKind.Record {
+        let fields = new[Expr]()
+        var index = 0
+        while index < length(value.children) {
+            let field = get(value.children, index)
+            let input = expanded(context, get(field.children, 0), guard, bindings, locals, self, calls, depth + 1)?
+            let children = new[Expr]()
+            push(children, input)
+            push(fields, proof_expr(field, ExprKind.Field, field.ty, "", field.index, children))
+            index = index + 1
+        }
+        return Result.Ok(proof_expr(value, ExprKind.Record, value.ty, "", -1, fields))
+    }
+    if !scalar_type(value.ty) { return Result.Err("helper expression is not a primitive scalar or inline aggregate") }
     if (value.kind != ExprKind.Unary && value.kind != ExprKind.Binary) || !scalar_operator(value) {
         return Result.Err("unsupported helper proof expression")
     }
@@ -187,7 +245,8 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
 // separate from equality: a successfully evaluated NaN is not equal to itself.
 fn total_scalar(value Expr) Bool {
     if value.kind == ExprKind.Local || value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool { return true }
-    if value.kind != ExprKind.Unary && value.kind != ExprKind.Binary && value.kind != ExprKind.If { return false }
+    if value.kind != ExprKind.Unary && value.kind != ExprKind.Binary && value.kind != ExprKind.If &&
+        value.kind != ExprKind.Field && value.kind != ExprKind.Record { return false }
     var index = 0
     while index < length(value.children) {
         if !total_scalar(get(value.children, index)) { return false }

@@ -283,16 +283,21 @@ Standalone exit guards retain the condition of their sole continuing branch.
 Mutable/shared-alias facts, general cross-local
 relations and two-live-branch join inference remain later work. Bounded expansion of
 direct scalar helpers now supports refinement implication while retaining
-evaluation and precondition obligations; general helper control flow remains open.
+evaluation and precondition obligations. Conditional bodies and early returns
+are supported; helper loops, mutation and recursive dependencies remain open.
 
 Required function contracts now reuse that bounded helper expansion, preserving
 multiple parameter/result identities and guarded evaluation obligations. Pure
 predicates remain normal source functions; proof-only callees do not become native
 roots. Their own contracts and unused callers still undergo mandatory checking.
-Direct scalar body calls now reuse verified callee summaries or finite pure
-expansion, preserving eager argument values and the original native body.
-Recursive proof dependencies, unexpanded helper control flow, indirect/dynamic
-calls and required Float reasoning remain open.
+Direct body calls over scalars and inline records/tuples now reuse verified
+callee summaries or finite pure expansion, preserving eager argument values
+and the original native body. Aggregate summaries retain proved field identities
+through nested calls and whole-value updates without equating unspecified fields
+or independent calls. Shared contents remain opaque. Synchronous dynamic calls
+use only the exact method's verified scalar contract, not hidden witnesses.
+Recursive proof dependencies, helper loops/mutation, indirect calls and required
+Float reasoning remain open. See the [example](compiler/examples/aggregate_contracts/main.loom).
 
 Structural tuples, numeric projection, and nested let/var destructuring use the
 native aggregate path, including generics, shared containers, and compile-time
@@ -507,14 +512,14 @@ construction boundary. Execution never substitutes for a required proof:
 function contracts use the documented symbolic proof fragment, including bounded
 expansion of checked scalar helpers.
 `old(expr)` in `ensures` currently accepts immutable parameter scalars and
-inline record scalar paths, where the entry value cannot change. Shared-data
+inline record/tuple scalar paths, where the entry value cannot change. Shared-data
 snapshots and general entry-state expressions remain open and reject.
 Explicit Int refinement conversion now reuses that fragment to eliminate a
 destination check only when both truth and definedness follow from the source
 predicate. Exact call-free conjunction reuse also handles Float without
 arithmetic rewriting. Immutable local-flow facts and bounded direct scalar-helper
-expansion extend this optional proof as described above; mutable/alias facts and
-general helper control flow remain open.
+expansion extend this optional proof as described above; mutable/alias facts,
+helper loops and recursive proof dependencies remain open.
 
 Typed metaprogramming later reuses this infrastructure. A narrow stable-ID
 move-plus-edit merge preview can read Git commits, preserve source trivia and

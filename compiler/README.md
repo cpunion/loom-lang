@@ -1587,8 +1587,8 @@ refined parameters remain open.
 proved; unknown or unsupported proofs reject the build, including for functions
 outside the emitted entry closure. There is no runtime postcondition fallback.
 
-Function contracts can reuse direct, acyclic scalar helpers with immutable locals
-and conditional bodies. The [contract example](examples/contracts/README.md)
+Function contracts can reuse direct, acyclic helpers over scalars and inline
+records/tuples, with immutable locals and conditional bodies. The [contract example](examples/contracts/README.md)
 shows a predicate with its own `requires`: proving its returned Boolean alone is
 not enough; the caller must also establish that requirement. Expansion preserves
 multiple parameters, branch/short-circuit guards, eager arguments and unused
@@ -1600,15 +1600,29 @@ bodies and own contracts are still checked in their defining scope, including
 when the caller is unused. Verified postconditions retain call-free checked
 expressions for compile-time execution.
 
-Direct `Int`/`Bool` calls in a body requiring proof use the callee's verified
-postconditions as a summary. Synchronous `dyn` calls can use the exact concept
+Direct calls in a body requiring proof use the callee's verified postconditions
+as a summary for `Int`/`Bool` values and leaves of inline records/tuples.
+Synchronous `dyn` calls can use the exact concept
 method's declared scalar contract, which every implementation must satisfy;
 the proof never guesses a concrete witness. For example, `identity(value)` with
 `ensures result == value` lets a forwarding function prove the same contract.
-Without a summary, the prover can expand a finite pure scalar body. Arguments
+Without a summary, the prover can expand a finite pure body using those values. Arguments
 are evaluated in order and their values captured before applying the summary;
 separate call results are not equated merely because they share a callee. The
 emitted function keeps its ordinary calls and original locals.
+
+Aggregate summaries compose through nested calls, field projections and
+whole-value updates. Unconditional proved equalities such as
+`ensures result.count == value.count` preserve that field's exact value;
+unspecified fields and independent calls retain separate unknowns. A weak
+summary does not inherit stronger facts from its implementation. Shared fields
+can pass through an aggregate but their contents remain opaque; this is not a
+shared-state invariant or alias-mutation proof. Predicate helpers still evaluate
+every argument and initializer, including an unused field that could overflow.
+`old(value.count)` and `old(value.0)` can denote immutable scalar paths through
+entry record/tuple parameters; shared-data snapshots and arbitrary entry
+expressions remain unsupported.
+See the [aggregate contract example](examples/aggregate_contracts/main.loom).
 
 The current proof fragment supports scalar linear arithmetic, comparisons,
 Boolean facts, local assignments, and acyclic branches/returns. It reasons from

@@ -1,0 +1,121 @@
+record Pair {
+    first Int
+    second Int
+}
+
+record Envelope {
+    pair Pair
+    active Bool
+    shared List[Int]
+}
+
+fn ordered(value Pair) Bool {
+    value.first <= value.second
+}
+
+fn replace(value Pair, first Int) Pair
+ensures result.first == first
+ensures result.second == value.second
+{
+    Pair {
+        first = first
+        ..value
+    }
+}
+
+fn forward(value Pair, first Int) Pair
+ensures result.first == first
+ensures result.second == old(value.second)
+{
+    replace(value, first)
+}
+
+fn normalize(value Pair) Pair {
+    if ordered(value) {
+        value
+    } else {
+        Pair {
+            first = value.second
+            second = value.first
+        }
+    }
+}
+
+fn sorted(value Pair) Pair
+ensures ordered(result)
+{
+    normalize(value)
+}
+
+fn preserve(value Envelope) Envelope
+ensures result.pair.first == value.pair.first
+ensures result.pair.second == value.pair.second
+ensures result.active == value.active
+{
+    value
+}
+
+fn nested(value Envelope) Envelope
+ensures result.pair.first == value.pair.first
+ensures result.pair.second == value.pair.second
+ensures result.active == value.active
+{
+    preserve(preserve(value))
+}
+
+fn tuple(value (Int, Bool)) (Int, Bool)
+ensures result.0 == old(value.0)
+ensures result.1 == value.1
+{
+    value
+}
+
+fn tuple_forward(value (Int, Bool)) (Int, Bool)
+ensures result.0 == value.0
+ensures result.1 == value.1
+{
+    tuple(tuple(value))
+}
+
+fn scalar(value Pair) Int
+ensures result == value.second
+{
+    forward(value, 4).second
+}
+
+fn exercise() {
+    let value = Pair {
+        first = 9
+        second = 3
+    }
+    let updated = forward(value, 2)
+    assert value.first == 9 && updated.first == 2 && updated.second == 3
+    let ascending = sorted(value)
+    assert ascending.first == 3 && ascending.second == 9
+    assert scalar(value) == 3
+    let shared = [7]
+    let copy = nested(Envelope {
+            pair = value
+            active = true
+            shared = shared
+        })
+    shared[0] = 8
+    assert copy.pair.first == 9 && copy.active && copy.shared[0] == 8
+    let pair = tuple_forward((42, true))
+    assert pair.0 == 42 && pair.1
+    let constant = comptime {
+        sorted(Pair {
+                first = 5
+                second = 1
+            })
+    }
+    assert constant.first == 1 && constant.second == 5
+}
+
+fn main() {
+    exercise()
+}
+
+test fn aggregate_contracts_compose_across_calls() {
+    exercise()
+}
