@@ -1,0 +1,165 @@
+test fn tuple_packs_share_types_across_parameters_and_function_references() {
+    discard accepted("""
+        fn choose[Ts...](left (Ts...), right (Ts...), first Bool) (Ts...) {
+            if first {
+                left
+            } else {
+                right
+            }
+        }
+        fn pack[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn main() {
+            assert choose((1, true), (2, false), true).1
+            assert choose[Int, Bool]((1, true), (2, false), false).0 == 2
+            discard choose(pack(), pack(), true)
+            let callback fn((Int, Bool), (Int, Bool), Bool) (Int, Bool) = choose
+            assert callback((1, false), (2, true), false).1
+            let explicit = choose[Int]
+            assert explicit((1,), (2,), false).0 == 2
+            assert comptime { choose((3,), (4,), true).0 } == 3
+        }
+        """)
+}
+
+test fn tuple_packs_support_independent_fixed_fields_and_a_final_value_pack() {
+    discard accepted("""
+        record Box[T] {
+            value T
+        }
+        fn framed[Ts...](left (Int, Ts...), right (Box[Ts]..., Text), end Bool) (Box[Ts]..., Text) {
+            discard left
+            assert end
+            right
+        }
+        fn joined[Ts...](left (Ts...), right Ts...) ((Ts...), (Ts...)) {
+            (left, right)
+        }
+        fn main() {
+            assert framed((1, true), (Box { value = false }, "end"), true).1 == "end"
+            assert framed((1,), ("empty",), true).0 == "empty"
+            assert joined((1, true), 2, false).1.0 == 2
+            let callback fn((Int,), Int) ((Int,), (Int,)) = joined
+            assert callback((3,), 4).1.0 == 4
+        }
+        """)
+}
+
+test fn tuple_packs_check_every_shape_element_and_declared_bound() {
+    let choose = """
+        fn choose[Ts...](left (Ts...), right (Ts...), first Bool) (Ts...) {
+            if first {
+                left
+            } else {
+                right
+            }
+        }
+
+        """
+    rejects(concat(choose, """
+        fn main() {
+            discard choose((1, true), (2,), false)
+        }
+        """))
+    rejects(concat(choose, """
+        fn main() {
+            discard choose((1, true), (2, "wrong"), false)
+        }
+        """))
+    rejects(concat(choose, """
+        fn main() {
+            let callback fn((Int,), (Bool,), Bool) (Int,) = choose
+            discard callback
+        }
+        """))
+    rejects("""
+        fn mixed[Ts...](tuple (Ts...), values Ts...) {
+            discard tuple
+            discard values
+        }
+        fn main() {
+            mixed((1, true), 2)
+        }
+        """)
+    rejects("""
+        fn bad[Ts...](values Ts..., tail Bool) {
+            discard values
+            discard tail
+        }
+        """)
+    rejects("""
+        concept Show {
+            fn show(self Self) Text
+        }
+        impl Show for Int {
+            fn show(self Int) Text {
+                "int"
+            }
+        }
+        fn undeclared[Ts...](left (Ts...), right (Ts...)) Text {
+            discard left
+            right.0.show()
+        }
+        fn main() {
+            discard undeclared((1,), (2,))
+        }
+        """)
+}
+
+test fn tuple_pack_iteration_respects_all_parameter_bindings() {
+    discard accepted("""
+        fn reader[T](value T) fn() T {
+            fn() T {
+                value
+            }
+        }
+        fn callbacks[Ts...](left (Ts...), right (Ts...), marker Bool) ((fn() Ts...), (fn() Ts...)) {
+            assert marker
+            let a = comptime map item in left { reader(item) }
+            let b = comptime map item in right { reader(item) }
+            (a, b)
+        }
+        fn shadow[Ts...](Ts (Ts...), ignored Bool) (Ts...) {
+            discard ignored
+            comptime map item in Ts { item }
+        }
+        fn main() {
+            let readers = callbacks((1, true), (2, false), true)
+            assert readers.0.0() == 1 && readers.0.1()
+            assert readers.1.0() == 2 && !readers.1.1()
+            assert shadow((3, true), false).1
+        }
+        """)
+}
+
+test fn tuple_packs_keep_task_obligations_in_each_parameter() {
+    discard accepted("""
+        async fn item[T](value T) T {
+            value
+        }
+        async fn both[Ts...](left (Task[Ts]...), right (Task[Ts]...)) ((Ts...), (Ts...)) {
+            let a = comptime map task in left { task.await }
+            let b = comptime map task in right { task.await }
+            (a, b)
+        }
+        async fn main() {
+            let results = both((item(1), item(true)), (item(2), item(false))).await
+            assert results.0.0 == 1 && results.0.1
+            assert results.1.0 == 2 && !results.1.1
+        }
+        """)
+    rejects("""
+        async fn item() Int {
+            1
+        }
+        async fn both[Ts...](left (Task[Ts]...), right (Task[Ts]...)) {
+            comptime for task in left { discard task.await }
+            comptime for task in right { discard task.await }
+        }
+        async fn main() {
+            let task = item()
+            both((task,), (task,)).await
+        }
+        """)
+}

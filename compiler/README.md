@@ -663,9 +663,10 @@ runtime evaluation. A tuple of Tasks can be awaited directly; this uses
 
 ### Variadic functions
 
-An ordinary top-level function can declare one final type pack and one final
-value parameter that expands it. Type patterns expand elementwise; the named
-value pack is an immutable tuple. Ordinary parameters may precede both packs.
+An ordinary top-level function can declare one final type pack. Structural tuple
+parameters may expand it at any parameter position; a direct variadic value
+parameter must be last. Type patterns expand elementwise; the named value pack
+is an immutable tuple.
 
 ```loom
 pub fn pack[Ts...](values Ts...) (Ts...) { values }
@@ -707,15 +708,36 @@ enclosing `while`, or reject if none exists. The
 [pack iteration example](examples/pack_iteration/main.loom) covers mixed types,
 effects and Tasks.
 
-A final structural parameter takes one tuple argument and one runtime tuple
+A structural parameter takes one tuple argument and one runtime tuple
 parameter. It may have fixed fields around one expanded pattern, such as
 `values (Int, Pattern[Ts]..., Text)`. The pack arity is the argument's statically
 known tuple width minus the fixed fields, including for named tuples, function
 results and contextual function references. A zero-element pack retains the
 fixed fields. Ordinary checking validates those fields and every expanded
 element; `comptime for/map` visits the entire value tuple, while iteration over
-`Ts` visits only its type pack. Tuple elements that need contextual inference
-must be bound to a typed value first.
+`Ts` visits only its type pack. Several parameters may use the same pack, each
+with its own fixed fields and element pattern:
+
+```loom
+fn choose[Ts...](left (Ts...), right (Ts...), first Bool) (Ts...) {
+    if first {
+        left
+    } else {
+        right
+    }
+}
+
+let selected = choose((1, true), (2, false), false)
+```
+
+All occurrences must agree on arity and element types. Arity comes from explicit
+type arguments, the final direct variadic argument count, or the first structural
+tuple's type; ordinary checking validates the remaining occurrences. This also
+works for contextual function references. Supply explicit type arguments or a
+prior typed binding when that first tuple needs contextual inference. Arguments
+still evaluate once, left to right; there is no runtime shape dispatch. The
+[shared pack example](examples/variadics/shared.loom) includes mixed structural
+and direct packs, closures, sharing and Task transfer.
 
 `comptime map item in values { expression }` elaborates to an ordered typed
 tuple of lexical block results. Each selected body runs once with its own

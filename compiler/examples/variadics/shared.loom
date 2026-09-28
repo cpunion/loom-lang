@@ -1,0 +1,88 @@
+import std.list.length
+
+// Both tuples have the same element types. The selector is an ordinary
+// trailing parameter; only a direct value pack must be last.
+fn choose[Ts...](left (Ts...), right (Ts...), first Bool) (Ts...) {
+    if first {
+        left
+    } else {
+        right
+    }
+}
+
+fn joined[Ts...](left (Ts...), right Ts...) ((Ts...), (Ts...)) {
+    (left, right)
+}
+
+fn framed_pair[Ts...](left (Int, Ts...), right (Ts..., Text)) ((Int, Ts...), (Ts..., Text)) {
+    (left, right)
+}
+
+fn reader[T](value T) fn() T {
+    fn() T {
+        value
+    }
+}
+
+fn readers[Ts...](left (Ts...), right (Ts...)) ((fn() Ts...), (fn() Ts...)) {
+    let first = comptime map item in left {
+        reader(item)
+    }
+    let second = comptime map item in right {
+        reader(item)
+    }
+    (first, second)
+}
+
+fn exercise_shared_packs() {
+    let log List[Int] = []
+    let selected = choose((mark(log, 1), true), (mark(log, 2), false), mark(log, 3) == 0)
+    assert selected.0 == 2 && !selected.1
+    assert length(log) == 3
+    assert log[0] == 1 && log[1] == 2 && log[2] == 3
+    assert choose[Int, Bool]((1, true), (2, false), true).1
+    let callback fn((Int, Bool), (Int, Bool), Bool) (Int, Bool) = choose
+    assert callback((3, false), (4, true), false).1
+    let explicit = choose[Int]
+    assert explicit((5,), (6,), false).0 == 6
+    discard choose(pack(), pack(), true)
+
+    let pair = joined((7, true), 8, false)
+    assert pair.0.0 == 7 && pair.0.1
+    assert pair.1.0 == 8 && !pair.1.1
+    discard joined(pack())
+    let framed = framed_pair((9, true), (false, "end"))
+    assert framed.0.0 == 9 && framed.0.1
+    assert !framed.1.0 && framed.1.1 == "end"
+    let empty = framed_pair((10,), ("empty",))
+    assert empty.0.0 == 10 && empty.1.0 == "empty"
+
+    let callbacks = readers((11, true), (12, false))
+    assert callbacks.0.0() == 11 && callbacks.0.1()
+    assert callbacks.1.0() == 12 && !callbacks.1.1()
+    assert comptime {
+        choose((13, "first"), (14, "second"), false).1
+    } == "second"
+
+    let shared = [15]
+    let aliases = joined((shared,), shared)
+    aliases.0.0[0] = 16
+    assert aliases.1.0[0] == 16 && shared[0] == 16
+}
+
+async fn both[Ts...](left (Task[Ts]...), right (Task[Ts]...)) ((Ts...), (Ts...)) {
+    let first = comptime map task in left {
+        task.await
+    }
+    let second = comptime map task in right {
+        task.await
+    }
+    (first, second)
+}
+
+async fn exercise_shared_tasks() {
+    let results = both((item(1), item("left")), (item(2), item("right"))).await
+    assert results.0.0 == 1 && results.0.1 == "left"
+    assert results.1.0 == 2 && results.1.1 == "right"
+    discard both(pack(), pack()).await
+}
