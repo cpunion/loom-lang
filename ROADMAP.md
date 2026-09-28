@@ -331,12 +331,14 @@ identities through projections, expansion, iteration and closure capture.
 They reuse ordinary specialization; scalar elements have no runtime argument
 slots, and captured callbacks forward live environments. Aggregate static
 elements and static structural tuple parameters remain unsupported.
-General pack reflection, methods/data packs and inference
-from multiple tuple expansions remain open. Structural tuple
+General pack reflection and methods/data packs remain open. Structural tuple
 parameters now allow fixed prefixes and suffixes around one expanded pattern.
 Calls and contextual function references infer the pack width after subtracting
 fixed fields; value iteration still visits the full tuple, including empty-pack
-cases and Task-bearing fields.
+cases and Task-bearing fields. Multiple tuple parameters now share the same pack
+at any parameter position, optionally alongside a final direct value pack.
+Ordinary checking enforces every shape and element type after arity selection;
+this needs no runtime pack representation or new bootstrap checkpoint.
 
 Named function values now support ordinary higher-order functions, structural
 signatures, aggregate storage, exact-reference reachability and pure compile-time

@@ -281,7 +281,7 @@ arguments; those boundaries still require a prior binding. A body-level
 `comptime for item in values` form unrolls an immutable structural tuple binding,
 including the final value pack for each selected arity, and checks every element
 with ordinary effects and Task rules.
-A final structural `(Pattern[Ts]...)` parameter takes one runtime tuple and
+A structural `(Pattern[Ts]...)` parameter takes one runtime tuple and
 infers arity from its known type. `comptime map` produces an ordered typed tuple
 of lexical results from an immutable fixed-shape tuple parameter or local,
 including the final value pack; `comptime for` remains a no-result statement.
@@ -292,7 +292,14 @@ general reflection. A lexical value tuple named `Ts` shadows that source.
 Structural tuple parameters allow fixed fields around one expanded pattern,
 including zero-element packs. Calls and contextual function references subtract
 the fixed fields to infer pack arity; value iteration covers the entire tuple.
-Context-dependent tuple elements need a prior typed binding.
+Several structural parameters may share one pack at any parameter position,
+including alongside a final direct value pack. Each has its own fixed fields;
+all expanded element types and arities must agree. Calls and function references
+reuse ordinary generic checking. Arity comes from explicit types, a final direct
+value pack, or the first structural tuple. Context-dependent tuples need explicit
+types or a prior typed binding. Native O0/O2 and forced-GC coverage includes
+evaluation order, shared aliases, closures and independent Task consumption in
+the [shared pack example](../../compiler/examples/variadics/shared.loom).
 Final `comptime values Ts...` packs now specialize each scalar/function element.
 Projections, expansion, static iteration and closure capture retain static
 identity; captured callbacks forward current shared environments. Compiler-only
