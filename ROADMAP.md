@@ -483,8 +483,12 @@ Source `std.reflect.describe[T]()` now supplies structural type metadata as a
 finite graph of ordinary records/enums/Lists. It handles inferred and recursive
 types, respects lexical visibility and reflects only the declared dynamic
 interface. Compile-time-only queries erase; runtime descriptors are fresh
-source data, without a type registry or newly live methods. Typed generation,
-first-class type values and predicate reflection are not implemented by this slice.
+source data, without a type registry or newly live methods. Static iteration now
+exposes record/tuple field types, and `std.reflect.from_fields` reconstructs
+visible records from checked tuples using ordinary native operations. Source
+`std.json` uses these mechanisms for typed encoding and strict decoding, with
+refinement construction left explicit. General typed macros, first-class type
+values and predicate reflection remain open.
 Public parser fragment entry points now reuse the same expression/type/pattern/
 statement/declaration grammar, preserving original spans and rejecting trailing
 input. They run as ordinary pure Loom calls, including at compile time; syntax

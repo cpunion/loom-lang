@@ -24,6 +24,9 @@ fn abstract_context(context Context) Bool {
     !known_constants(context.constants)
 }
 fn parameter_name(context Context, name Text) Bool {
+    if std.text.starts_with(name, "$type#") {
+        return true
+    }
     if name == "Self" && enclosing(context.env, context.signature.symbol) >= 0 { return true }
     let parameters = type_parameters(context.env, context.signature.symbol)
     var index = 0

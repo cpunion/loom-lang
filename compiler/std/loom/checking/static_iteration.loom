@@ -24,6 +24,9 @@ fn value_iteration(context Context, node Node) Result[Node, Failure] {
         -1
     }
     if binding < 0 {
+        if parameter_name(context, source.value) || find_data(context.env, context.signature.symbol, source, source.value)? >= 0 {
+            return shape_iteration(context, node, context_type(context, source)?)
+        }
         return Result.Err(failed)
     }
     let selected = get(context.bindings, binding)
@@ -79,4 +82,43 @@ fn value_iteration(context Context, node Node) Result[Node, Failure] {
     }
     expand_pack_iteration(context.env, context.signature.symbol, node, source.value,
         members, named, selected.constant < -1, false, false, 0, count)
+}
+
+// Iterate types without constructing sample values or exposing runtime type
+// handles. Value bindings take precedence at the source lookup above.
+fn shape_iteration(context Context, node Node, ty Int) Result[Node, Failure] {
+    let shape = get(context.env.types, base_type(context.env, ty))
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+        return Result.Err(error(context, child(node, 0), "static type iteration requires a known tuple or record shape"))
+    }
+    if shape.kind == TypeKind.Record {
+        let declaration = symbol(context.env, shape.symbol)
+        let here = symbol(context.env, context.signature.symbol)
+        if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
+            return Result.Err(error(context, node, "cannot inspect a private type from another package"))
+        }
+    }
+    if length(shape.fields) > 1024 {
+        return Result.Err(error(context, node, "static aggregate iteration budget exceeded"))
+    }
+    let iterations = new[Node]()
+    let count = ints(0)
+    var index = 0
+    while index < length(shape.fields) {
+        let field = get(shape.fields, index)
+        let selected = concat("$type#", std.int.to_text(field.ty))
+        let substituted = bind_type_iteration(child(node, 1), node.value, selected, false, false, 0)
+        let body = expand_pack_iteration(context.env, context.signature.symbol, substituted,
+            "", new[Text](), false, false, true, true, 0, count)?
+        let statements = new[Node]()
+        iteration_key(node, statements, field.name, shape.kind == TypeKind.Record)
+        push(statements, body)
+        push(iterations, pack_node(node, NodeKind.Block, "", statements))
+        index = index + 1
+    }
+    if node.kind == NodeKind.ComptimeMap {
+        return Result.Ok(pack_node(node, NodeKind.Tuple, "", iterations))
+    }
+    push(iterations, pack_node(node, NodeKind.Block, "", new[Node]()))
+    Result.Ok(pack_node(node, NodeKind.Block, "", iterations))
 }

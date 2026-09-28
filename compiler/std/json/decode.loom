@@ -1,0 +1,131 @@
+import std.reflect.from_fields
+import std.int.parse
+import std.float.parse
+
+pub enum DecodeError {
+    Syntax(ParseError)
+    TypeMismatch
+    InvalidNumber
+    FieldCount
+    MissingField(Text)
+    UnsupportedType
+}
+
+fn object_field(fields List[(Text, Value)], name Text) Result[Value, DecodeError] {
+    var index = 0
+    while index < std.list.length(fields) {
+        let field = get(fields, index)
+        if field.0 == name {
+            return Result.Ok(field.1)
+        }
+        index = index + 1
+    }
+    Result.Err(DecodeError.MissingField(name))
+}
+
+fn decode_items[T](value Value) Result[List[T], DecodeError] {
+    match value {
+        Value.Array(items) => {
+            let output = std.list.new[T]()
+            var index = 0
+            while index < std.list.length(items) {
+                std.list.push(output, decode_value[T](get(items, index))?)
+                index = index + 1
+            }
+            Result.Ok(output)
+        }
+        _ => Result.Err(DecodeError.TypeMismatch)
+    }
+}
+
+fn decode_value[T](value Value) Result[T, DecodeError] {
+    comptime if T == Value {
+        return Result.Ok(value)
+    }
+    comptime if T == Bool {
+        return match value {
+            Value.Boolean(flag) => Result.Ok(flag)
+            _ => Result.Err(DecodeError.TypeMismatch)
+        }
+    }
+    comptime if T == Int {
+        return match value {
+            Value.Number(raw) => match std.int.parse(raw) {
+                Result.Ok(number) => Result.Ok(number)
+                Result.Err(_) => Result.Err(DecodeError.InvalidNumber)
+            }
+            _ => Result.Err(DecodeError.TypeMismatch)
+        }
+    }
+    comptime if T == Float {
+        return match value {
+            Value.Number(raw) => match std.float.parse(raw) {
+                Result.Ok(number) => {
+                    if !is_finite(number) {
+                        return Result.Err(DecodeError.InvalidNumber)
+                    }
+                    Result.Ok(number)
+                }
+                Result.Err(_) => Result.Err(DecodeError.InvalidNumber)
+            }
+            _ => Result.Err(DecodeError.TypeMismatch)
+        }
+    }
+    comptime if T == Text {
+        return match value {
+            Value.String(text) => Result.Ok(text)
+            _ => Result.Err(DecodeError.TypeMismatch)
+        }
+    }
+    comptime if describe[T]().types[0].kind == Kind.List {
+        return decode_items(value)
+    }
+    comptime if describe[T]().types[0].kind == Kind.Tuple {
+        return match value {
+            Value.Array(items) => {
+                let count = comptime {
+                    std.list.length(describe[T]().types[0].arguments)
+                }
+                if std.list.length(items) != count {
+                    return Result.Err(DecodeError.FieldCount)
+                }
+                let fields = comptime map index, Field in T {
+                    decode_value[Field](get(items, index))?
+                }
+                Result.Ok(fields)
+            }
+            _ => Result.Err(DecodeError.TypeMismatch)
+        }
+    }
+    comptime if describe[T]().types[0].kind == Kind.Record {
+        return match value {
+            Value.Object(items) => {
+                let count = comptime {
+                    std.list.length(describe[T]().types[0].fields)
+                }
+                if std.list.length(items) != count {
+                    return Result.Err(DecodeError.FieldCount)
+                }
+                let fields = comptime map name, Field in T {
+                    decode_value[Field](object_field(items, name)?)?
+                }
+                let assembled T = from_fields(fields)
+                Result.Ok(assembled)
+            }
+            _ => Result.Err(DecodeError.TypeMismatch)
+        }
+    }
+    Result.Err(DecodeError.UnsupportedType)
+}
+
+// Exact visible shapes: no implicit enum, refinement, null or extra-field policy.
+// Parse first so duplicate keys, number syntax and nesting have one definition.
+pub fn decode[T](input Text) Result[T, DecodeError] {
+    let value = match std.json.parse(input) {
+        Result.Ok(parsed) => parsed
+        Result.Err(problem) => {
+            return Result.Err(DecodeError.Syntax(problem))
+        }
+    }
+    decode_value[T](value)
+}

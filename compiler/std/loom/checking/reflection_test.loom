@@ -5,10 +5,201 @@ fn reflected(text Text) Result[std.loom.typed.Program, Failure] {
         import std.reflect.describe
         import std.reflect.Schema
         import std.reflect.Kind
+        import std.reflect.from_fields
 
         """, text))
     push(files, source_file("std.reflect", input_file("../../reflect/reflect.loom"), true))
     checked(files)
+}
+
+test fn generated_records_check_field_shape_and_never_bypass_constraints() {
+    let prefix = """
+        record Pair {
+            count Int
+            active Bool
+        }
+        type Positive = Int where self > 0
+        type Valid = Pair where self.count > 0
+
+        """
+    assert match reflected(concat(prefix, """
+        fn main() {
+            let value Pair = from_fields((1, true))
+            assert value.count == 1 && value.active
+        }
+        """)) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let invalid = new[Text]()
+    push(invalid, """
+        fn unknown[T, Fields](values Fields) T {
+            from_fields(values)
+        }
+        """)
+    push(invalid, """
+        fn main() {
+            let value Pair = from_fields((true, 1))
+        }
+        """)
+    push(invalid, """
+        fn main() {
+            let value Pair = from_fields((1,))
+        }
+        """)
+    push(invalid, """
+        fn main() {
+            let value Valid = from_fields((0, true))
+        }
+        """)
+    push(invalid, """
+        fn main() {
+            let value Positive = from_fields((0,))
+        }
+        """)
+    push(invalid, """
+        fn main() {
+            let callback = from_fields[Pair, (Int, Bool)]
+            discard callback((1, true))
+        }
+        """)
+    var index = 0
+    while index < length(invalid) {
+        assert match reflected(concat(prefix, get(invalid, index))) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}
+
+test fn type_iteration_does_not_assume_generic_shape_or_leak_type_bindings() {
+    rejects("""
+        fn bad[T]() {
+            comptime for Field in T {
+                discard 1
+            }
+        }
+        """)
+    rejects("""
+        record One {
+            value Int
+        }
+        fn bad() {
+            comptime for Field in One {
+                let value Field = 1
+            }
+            let outside Field = 1
+        }
+        """)
+    rejects("""
+        record One {
+            value Int
+        }
+        fn bad() {
+            let One = [1]
+            comptime for Field in One {
+                discard 1
+            }
+        }
+        """)
+}
+
+test fn generated_records_preserve_task_and_resource_obligations() {
+    assert match reflected("""
+        record Pair {
+            first Task[Int]
+            second Task[Int]
+        }
+        async fn item() Int {
+            7
+        }
+        async fn main() {
+            let task = item()
+            let pair Pair = from_fields((task, task))
+            discard pair.first.await
+            discard pair.second.await
+        }
+        """) {
+        Result.Err(failed) => failed.diagnostic.message == "this task was already awaited or transferred"
+        Result.Ok(_) => false
+    }
+    let files = source_files("""
+        import std.reflect.from_fields
+        import std.resource.Dispose
+        import std.resource.MustScope
+        record Handle {
+            id Int
+        }
+        impl Dispose for Handle {
+            fn dispose(self Handle) {
+            }
+        }
+        impl MustScope for Handle {
+        }
+        fn main() {
+            scoped value Handle = from_fields((1,))
+        }
+        """)
+    push(files, source_file("std.reflect", input_file("../../reflect/reflect.loom"), true))
+    push(files, source_file("std.resource", input_file("../../resource/resource.loom"), true))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "from_fields cannot create a MustScope resource"
+        Result.Ok(_) => false
+    }
+}
+
+test fn generated_construction_and_type_iteration_respect_private_nominal_types() {
+    let operations = new[Text]()
+    push(operations, """
+        let rebuilt T = from_fields((1,))
+        rebuilt
+        """)
+    push(operations, """
+        comptime for Field in T {
+            discard 1
+        }
+        value
+        """)
+    var index = 0
+    while index < length(operations) {
+        let files = source_files(concat("""
+            import std.reflect.describe
+            import std.reflect.Kind
+            import std.reflect.from_fields
+            import hidden.secret
+            fn inspect[T](value T) T {
+                comptime if describe[T]().types[0].kind == Kind.Opaque {
+
+            """, concat(get(operations, index), """
+
+                } else {
+                    value
+                }
+            }
+            fn main() {
+                discard inspect(secret())
+            }
+            """)))
+        push(files, source_file("std.reflect", input_file("../../reflect/reflect.loom"), true))
+        push(files, source_file("hidden", """
+            record Secret {
+                number Int
+            }
+            pub fn secret() Secret {
+                Secret { number = 7 }
+            }
+            """, false))
+        assert match checked(files) {
+            Result.Err(failed) => failed.diagnostic.message == if index == 0 {
+                "cannot construct a private type from another package"
+            } else {
+                "cannot inspect a private type from another package"
+            }
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
 }
 
 test fn reflection_selects_only_determined_instances_without_assuming_proofs() {

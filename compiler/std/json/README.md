@@ -15,8 +15,23 @@ Private types from another package are opaque. Enums other than `Value`, Bytes,
 callbacks and other unsupported types return `WriteError.UnsupportedType`; no
 enum tagging, binary encoding or hidden-field exposure is guessed. Task and
 MustScope obligations still apply at checking. Non-finite Floats return
-`WriteError.InvalidNumber`. This API does not provide typed decoding or custom
-field mappings yet; use `Value` for an explicit wire representation.
+`WriteError.InvalidNumber`.
+
+`decode[T](text Text)` returns a `Result[T, DecodeError]`. It first parses a
+`Value` tree, then generates ordinary typed construction for Bool, Int, finite
+Float, Text, Lists, tuples and visible records. Recursive records work through
+Lists; `Value` itself retains the parsed representation. Record objects must
+contain exactly their declared fields, in any input order; tuple arrays must
+have exactly their declared length. Missing fields, extra fields and wrong
+value kinds reject. Int decoding checks the decimal spelling and range directly,
+without a Float round trip; `1.0` is not an Int spelling.
+
+Decoding does not guess defaults, null/enum representations or custom field
+mappings. Refined types return `DecodeError.UnsupportedType`, as do foreign
+private types and other unsupported kinds. Decode an unconstrained wire record,
+then use normal checked construction for constrained application types. This
+keeps invariant checks at their explicit boundaries, including nested fields.
+Malformed input returns `DecodeError.Syntax(ParseError)`.
 
 `Value.Number` stores a validated JSON number spelling as `Text`, so parsing
 does not round large integers or decimals through `Float`. A manually built
@@ -27,4 +42,5 @@ escapes, including UTF-16 surrogate pairs, into Loom's UTF-8 `Text`.
 Both directions cap array/object nesting at 64 levels; this also makes a
 manually constructed cyclic `Value` return `WriteError.DepthExceeded` instead
 of recursing forever. `encode` uses the same limit, including recursive records
-with shared Lists. These are in-memory APIs, not streaming parsers or writers.
+with shared Lists. Typed decoding uses the parser's same nesting limit. These
+are in-memory APIs, not streaming parsers or writers.
