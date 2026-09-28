@@ -107,16 +107,21 @@ async fn exercise_tasks() {
 }
 
 async fn main() {
+    guard_values()
     record_values()
     record_tasks().await
     record_bindings()
     record_task_bindings().await
     exercise_values()
     literal_values()
+    multiline_values()
     comptime {
+        guard_values()
         exercise_values()
         literal_values()
+        multiline_values()
     }
     exercise_tasks().await
     literal_tasks().await
+    guard_tasks().await
 }

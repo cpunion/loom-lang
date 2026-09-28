@@ -422,7 +422,12 @@ fn next_token(text Text, start Int, selector Bool) Result[Token, Diagnostic] {
         return Result.Ok(trivia(start, offset))
     }
     if current == 34 {
-        let literal = string_literal(text, start)?
+        let quotes = quote_count(text, start)
+        let literal = if quotes >= 3 {
+            multiline_literal(text, start, quotes)?
+        } else {
+            string_literal(text, start)?
+        }
         return Result.Ok(Token {
                 kind = Kind.Text
                 value = literal.value

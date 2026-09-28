@@ -66,13 +66,21 @@ fn member_context(context Context, node Node, offset Int) Result[Context, Failur
         var index = 1
         while index < length(node.children) {
             let arm = child(node, index)
-            if query_inside(child(arm, 1), offset) {
-                if nested_pattern(child(arm, 0)) {
-                    let scope = pattern_scope(context, child(arm, 0), value.ty, child(arm, 1), context.head, 0)?
-                    return member_context(scope.context, child(arm, 1), offset)
+            if query_inside(arm, offset) && !query_inside(child(arm, 0), offset) {
+                if nested_pattern(child(arm, 0)) || match_guarded(arm) {
+                    let scope = pattern_scope(context, child(arm, 0), value.ty, match_body(arm), context.head, 0)?
+                    var selected = scope.context
+                    if match_guarded(arm) {
+                        let guard = child(arm, 1)
+                        if query_inside(guard, offset) {
+                            return member_context(selected, guard, offset)
+                        }
+                        selected = assuming(selected, expr(selected, guard, 2)?, true, 0)
+                    }
+                    return member_context(selected, match_body(arm), offset)
                 }
                 let scope = match_scope(context, value, arm)?
-                return member_context(scope.context, child(arm, 1), offset)
+                return member_context(scope.context, match_body(arm), offset)
             }
             index = index + 1
         }
@@ -117,7 +125,9 @@ fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCand
     let original = get(env.types, value.ty)
     let shape = if original.kind == TypeKind.Refined && get(env.types, base_type(env, value.ty)).kind == TypeKind.Record {
         get(env.types, base_type(env, value.ty))
-    } else { original }
+    } else {
+        original
+    }
     let hints = new[MemberCandidate]()
     if shape.kind == TypeKind.Record {
         let declaration = symbol(env, shape.symbol)

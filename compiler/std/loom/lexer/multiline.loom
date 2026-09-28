@@ -1,0 +1,86 @@
+fn quote_count(text Text, start Int) Int {
+    var end = start
+    while starts(text, end, 34) {
+        end = end + 1
+    }
+    end - start
+}
+
+fn text_line_end(text Text, start Int) Int {
+    var end = start
+    while end < length(text) && !starts(text, end, 10) && !starts(text, end, 13) {
+        end = end + 1
+    }
+    end
+}
+
+fn after_line_end(text Text, end Int) Int {
+    if starts(text, end, 13) && starts(text, end + 1, 10) {
+        end + 2
+    } else {
+        end + 1
+    }
+}
+
+fn text_indent_end(text Text, start Int, end Int) Int {
+    var offset = start
+    while offset < end && (starts(text, offset, 32) || starts(text, offset, 9)) {
+        offset = offset + 1
+    }
+    offset
+}
+
+// The closing delimiter supplies an exact whitespace prefix, not a tab width
+// or a guessed minimum indent. Empty lines need not carry that prefix.
+fn multiline_value(text Text, start Int, end Int, indent Text) Result[Text, Diagnostic] {
+    let buffer = std.bytes.new()
+    var offset = start
+    while offset < end {
+        let boundary = text_line_end(text, offset)
+        let line_end = if boundary < end {
+            boundary
+        } else {
+            end
+        }
+        let blank = text_indent_end(text, offset, line_end) == line_end
+        var prefix = 0
+        while prefix < length(indent) && offset + prefix < line_end &&
+        byte(text, offset + prefix) == byte(indent, prefix) {
+            prefix = prefix + 1
+        }
+        if !blank && prefix != length(indent) {
+            return Result.Err(error(offset, line_end, "multiline text line must match the closing delimiter's indentation"))
+        }
+        if !blank {
+            append(buffer, text, offset + prefix, line_end)
+        }
+        if line_end < end {
+            std.bytes.push(buffer, 10)
+        }
+        offset = after_line_end(text, line_end)
+    }
+    Result.Ok(to_text(buffer))
+}
+
+fn multiline_literal(text Text, start Int, quotes Int) Result[Scan, Diagnostic] {
+    let opening = start + quotes
+    if !starts(text, opening, 10) && !starts(text, opening, 13) {
+        return Result.Err(error(start, opening, "multiline text opening quotes must be followed by a newline"))
+    }
+    let content = after_line_end(text, opening)
+    var offset = content
+    var end = content
+    while offset < length(text) {
+        let line_end = text_line_end(text, offset)
+        let first = text_indent_end(text, offset, line_end)
+        if quote_count(text, first) == quotes {
+            return Result.Ok(Scan {
+                    end = first + quotes
+                    value = multiline_value(text, content, end, slice(text, offset, first))?
+                })
+        }
+        end = line_end
+        offset = after_line_end(text, line_end)
+    }
+    Result.Err(error(start, length(text), "unterminated multiline text literal"))
+}

@@ -1,4 +1,4 @@
-# Nested, literal and record patterns
+# Nested, literal, record and guarded patterns
 
 ```sh
 target/loom check compiler/examples/patterns
@@ -45,5 +45,16 @@ turn those names into references to the record's fields. Shared Lists still
 share their contents. Omitted fields cannot drop Tasks or MustScope resources,
 and a MustScope record still requires `scoped`, not destructuring.
 
-Literal and enum patterns remain `match`-only. Guards, field shorthand, scoped
+`pattern if condition => body` tests its Boolean guard only after the pattern
+matches, with bindings in scope. A false guard keeps its effects and tries the
+next arm. Guards do not establish exhaustive coverage. `guards.loom` exercises
+source order, shared mutation, guard cleanup/returns, compile-time evaluation,
+timer waits and Task payload retention. Consuming a Task needed by a later path
+rejects; guarded matches containing MustScope resources currently reject.
+
+`multiline.loom` also uses raw triple-quoted Text for native and compile-time
+comparisons and patterns. Closing indentation is removed without interpreting
+backslash escapes; longer quote delimiters can embed triple quotes.
+
+Literal and enum patterns remain `match`-only. Field shorthand, scoped
 destructuring and parallel reassignment are not implemented.

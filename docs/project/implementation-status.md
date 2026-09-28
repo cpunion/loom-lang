@@ -238,12 +238,20 @@ normalize equal numeric spellings and decoded Text without rewriting source.
 Named record patterns now share the tuple product decisions, with nominal checking,
 source-ordered field bindings and explicit `..` omission. Typed field projections
 and fallback reconstruction preserve shared data and Task obligations without new
-runtime or checked-artifact operations. Guards remain open. Compiler production
-sources retain flat patterns.
+runtime or checked-artifact operations. Boolean `pattern if condition` guards
+now preserve source-order evaluation, bindings, scalar refinement facts and
+false-path effects. They do not claim coverage. Task bindings transfer only on
+success; unsafe consumption and delayed MustScope adoption reject. Native,
+compile-time and async examples exercise the same typed branch lowering.
+Compiler production sources retain flat patterns.
 Record field declarations require newlines or `;`, not adjacency or commas.
 Formatting expands declarations to one field per line and removes semicolons;
 statement and constructor syntax are unchanged. Current compiler/std sources
 use newlines, so this restriction needs no additional bootstrap checkpoint.
+Raw triple-quoted Text supports closing-indent removal, normalized line endings
+and longer quote delimiters. Formatting preserves literal spelling; lexer tests,
+native/compile-time examples and multiline assertion fixtures share this path.
+This adds no runtime representation or bootstrap checkpoint.
 Record `let`/`var` patterns now share that field validation and the existing tuple
 binding projections. Initializers evaluate once before any new name enters scope;
 mutable names rebind locally without changing record fields. Nested bindings,

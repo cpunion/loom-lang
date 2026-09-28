@@ -1,0 +1,29 @@
+fn multiline_values() {
+    let source = """
+        fn greeting() Text {
+            "hello, 雪\n"
+        }
+        """
+    assert source == "fn greeting() Text {\n    \"hello, 雪\\n\"\n}"
+    assert """
+        first
+
+        second
+
+        """ == "first\n\nsecond\n"
+    assert """
+        """ == ""
+    assert """"
+        """
+        raw \n and "quotes"
+        """
+        """" == "\"\"\"\nraw \\n and \"quotes\"\n\"\"\""
+    assert match source {
+        """
+            fn greeting() Text {
+                "hello, 雪\n"
+            }
+            """ => true
+        _ => false
+    }
+}

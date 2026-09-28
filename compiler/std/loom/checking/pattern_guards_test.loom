@@ -1,0 +1,235 @@
+test fn guards_use_pattern_bindings_without_claiming_coverage() {
+    let header = """
+        enum Item {
+            Some(Int)
+            None
+        }
+
+        """
+    discard accepted(concat(header, """
+        pub fn pick(v Item) Int {
+            match v {
+                Item.Some(n) if n > 0 => n
+                Item.Some(n) if n == 0 => 1
+                Item.Some(_) => -1
+                Item.None => 0
+            }
+        }
+
+        """))
+    discard accepted("""
+        pub fn pick(v (Bool, Int)) Int {
+            match v {
+                (true, n) if n > 0 => n
+                (false, n) => n
+                _ => 0
+            }
+        }
+
+        """)
+    rejects(concat(header, """
+        pub fn pick(v Item) Int {
+            match v {
+                Item.Some(n) if n > 0 => n
+                Item.None => 0
+            }
+        }
+
+        """))
+    rejects("""
+        pub fn pick(v Bool) Int {
+            match v {
+                _ if true => 0
+            }
+        }
+
+        """)
+    rejects("""
+        pub fn pick(v Bool) Int {
+            match v {
+                _ => 0
+                _ if true => 1
+            }
+        }
+
+        """)
+    rejects(concat(header, """
+        pub fn pick(v Item) Int {
+            match v {
+                Item.Some(_) => 0
+                Item.Some(n) if n > 0 => n
+                Item.None => 0
+            }
+        }
+
+        """))
+    rejects("""
+        pub fn pick(v Int) Int {
+            match v {
+                n if n => 1
+                _ => 0
+            }
+        }
+
+        """)
+    rejects("""
+        pub fn pick(v Int) Int {
+            match v {
+                n if n > 0 => true
+                _ => 0
+            }
+        }
+
+        """)
+    rejects("""
+        pub fn pick(v Int) Int {
+            match v {
+                n if n > 0 => n
+                _ => n
+            }
+        }
+
+        """)
+    discard accepted("""
+        type Positive = Int where self > 0
+
+        pub fn pick(v Int) Int {
+            match v {
+                n if n > 0 => {
+                    let checked Positive = Positive(n)
+                    checked
+                }
+                _ => 0
+            }
+        }
+
+        """)
+    discard accepted("""
+        pub fn bit(v Bool) Int
+        ensures result >= 0 && result <= 1 {
+            match v {
+                _ if v => 1
+                _ => 0
+            }
+        }
+
+        """)
+}
+
+test fn guards_preserve_candidate_tasks_and_require_immediate_resource_adoption() {
+    let header = """
+        record Pending {
+            task Task[Int]
+            count Int
+        }
+
+        """
+    discard accepted(concat(header, """
+        async fn pick(v Pending) Int {
+            match v {
+                Pending {
+                    task = task,
+                    count = n
+                } if n > 0 => task.await
+                whole if whole.count == 0 => whole.task.await
+                rest => rest.task.await
+            }
+        }
+
+        """))
+    discard accepted("""
+        async fn pick(v (Task[Int], Int)) Int {
+            match v {
+                (task, n) if n > 0 => task.await
+                whole if whole.1 == 0 => whole.0.await
+                (task, _) => task.await
+            }
+        }
+
+        """)
+    rejects(concat(header, """
+        async fn pick(v Pending) Int {
+            match v {
+                whole if whole.task.await > 0 => 1
+                rest => rest.task.await
+            }
+        }
+
+        """))
+    rejects("""
+        async fn pick(v Task[Int]) Int {
+            match v {
+                task if true => 1
+                rest => rest.await
+            }
+        }
+
+        """)
+    resource_reject_reason(concat(resource_header(), """
+        import std.result.Result
+
+        fn open(log List[Int]) Result[Handle, Text] {
+            Result.Ok(make(log))
+        }
+
+        fn main() {
+            match open([0]) {
+                Result.Ok(payload) if true => {
+                    scoped value = payload
+                }
+                Result.Ok(payload) => {
+                    scoped value = payload
+                }
+                Result.Err(_) => {
+                }
+            }
+        }
+
+        """),
+        "guarded matching cannot delay scoped resource adoption")
+}
+
+test fn guard_and_body_patterns_shadow_variadic_pack_names() {
+    discard accepted("""
+        fn pick[Ts...](values Ts...) Int {
+            match ((1, 2),) {
+                (values,) if {
+                    comptime for n in values {
+                        discard n
+                    }
+                    true
+                } => {
+                    comptime for n in values {
+                        discard n
+                    }
+                    values.0
+                }
+                _ => 0
+            }
+        }
+
+        fn main() {
+            assert pick(1, true) == 1
+        }
+
+        """)
+    discard accepted("""
+        fn pick[Ts...](values Ts...) Int {
+            comptime for T in Ts {
+                match ((1, 2),) {
+                    (T,) if T.0 > 0 => {
+                        discard T.1
+                    }
+                    _ => {
+                    }
+                }
+            }
+            1
+        }
+
+        fn main() {
+            assert pick(1, true) == 1
+        }
+
+        """)
+}

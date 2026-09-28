@@ -1,0 +1,27 @@
+test fn multiline_text_is_raw_dedented_and_has_one_source_span() {
+    let source = """"
+        """
+            fn value() Text {
+                "\n雪"
+            }
+            """
+        """"
+    let tokens = lexed(source)
+    assert std.list.length(tokens) == 2
+    token_is(tokens, 0, Kind.Text, """
+        fn value() Text {
+            "\n雪"
+        }
+        """, 0, std.text.length(source))
+    token_is(lexed("\"\"\"\n\"\"\""), 0, Kind.Text, "", 0, 7)
+    assert get(lexed("\"\"\"\r\n\tfirst\r\n\tsecond\r\n\t\r\n\t\"\"\""), 0).value == "first\nsecond\n"
+    assert get(lexed("\"\"\"\n    first\n\n    second\n    \"\"\""), 0).value == "first\n\nsecond"
+    assert get(lexed("\"\"\"\"\n    \"\"\"\n    \"\"\"\""), 0).value == "\"\"\""
+}
+
+test fn multiline_text_reports_unclosed_or_inconsistent_delimiters() {
+    error_is("\"\"\"same line\"\"\"", "multiline text opening quotes must be followed by a newline", 0, 3)
+    error_is("\"\"\"\ntext", "unterminated multiline text literal", 0, 8)
+    error_is("\"\"\"\n x\n  \"\"\"", "multiline text line must match the closing delimiter's indentation", 4, 6)
+    error_is("\"\"\"\ntext\n\"\"\"\"", "unterminated multiline text literal", 0, 13)
+}

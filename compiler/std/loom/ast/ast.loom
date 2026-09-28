@@ -41,7 +41,8 @@ pub enum NodeKind {
 // Defer is a statement with one Block child; its span includes the keyword.
 // Scoped has the same name/optional type/initializer shape as Let.
 // Within match arms, Tuple contains patterns and Pattern contains Bindings of
-// recursive patterns. Bare payload Names bind values; qualified paths or calls
+// recursive patterns. Arm children are [pattern, optional Bool guard, Block].
+// Bare payload Names bind values; qualified paths or calls
 // identify variants. The same source tree serves parsing, checking and tooling.
 // RecordPattern stores the nominal path and source-ordered Field(name, pattern)
 // children, with an optional final RestPattern for explicitly omitted fields.

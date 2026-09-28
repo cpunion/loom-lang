@@ -1,0 +1,38 @@
+test fn match_guards_preserve_source_order_and_pattern_scope() {
+    let tree = parsed("""
+        fn choose(v Item) Int {
+            match v {
+                Item.Some(n) if n > 0 => n
+                rest if { true } => 1
+                _ => 0
+            }
+        }
+        """)
+    let matched = child(body(child(tree, 0)), 0)
+    let first = child(matched, 1)
+    assert length(first.children) == 3
+    assert child(first, 0).kind == NodeKind.Pattern
+    assert child(first, 1).kind == NodeKind.Binary
+    assert child(first, 1).value == ">"
+    assert child(first, 2).kind == NodeKind.Block
+    assert child(first, 0).span.end < child(first, 1).span.start
+    assert child(first, 1).span.end < child(first, 2).span.start
+    assert child(child(matched, 2), 1).kind == NodeKind.Block
+    assert length(child(matched, 3).children) == 2
+    discard rejected("""
+        fn f() {
+            match x {
+                n if => n
+                _ => 0
+            }
+        }
+        """)
+    discard rejected("""
+        fn f() {
+            match x {
+                n if true n
+                _ => 0
+            }
+        }
+        """)
+}

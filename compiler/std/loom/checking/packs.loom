@@ -44,10 +44,14 @@ fn mentions_pack(node Node, name Text) Bool {
 // determines arity after subtracting its fixed prefix and suffix fields.
 fn tuple_pack_expansion(parameter Node) Int {
     let ty = child(parameter, 0)
-    if ty.kind != NodeKind.TupleType { return -1 }
+    if ty.kind != NodeKind.TupleType {
+        return -1
+    }
     var index = 0
     while index < length(ty.children) {
-        if child(ty, index).kind == NodeKind.Spread { return index }
+        if child(ty, index).kind == NodeKind.Spread {
+            return index
+        }
         index = index + 1
     }
     -1
@@ -58,7 +62,11 @@ fn tuple_pack_parameter(parameter Node) Bool {
 }
 
 fn tuple_pack_fixed(parameter Node) Int {
-    if tuple_pack_parameter(parameter) { length(child(parameter, 0).children) - 1 } else { 0 }
+    if tuple_pack_parameter(parameter) {
+        length(child(parameter, 0).children) - 1
+    } else {
+        0
+    }
 }
 
 fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
@@ -117,7 +125,7 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         let tuple = tuple_pack_parameter(parameter)
         let final = index + 1 == length(parameters)
         if final && !spread && !tuple && child(parameter, 0).kind == NodeKind.TupleType &&
-            mentions_pack(child(parameter, 0), pack.value) {
+        mentions_pack(child(parameter, 0), pack.value) {
             return Result.Err(failure(env, owner, parameter, "a structural tuple parameter needs one direct expansion to infer its pack arity"))
         }
         if (spread || tuple) != final {
@@ -215,10 +223,14 @@ fn pack_contract(node Node, name Text) Bool {
 }
 
 fn pack_pattern_binds(node Node, name Text) Bool {
-    if node.kind == NodeKind.Name && node.value == name { return true }
+    if node.kind == NodeKind.Name && node.value == name {
+        return true
+    }
     var index = 0
     while index < length(node.children) {
-        if pack_pattern_binds(child(node, index), name) { return true }
+        if pack_pattern_binds(child(node, index), name) {
+            return true
+        }
         index = index + 1
     }
     false
@@ -235,10 +247,14 @@ fn pack_local_binds(node Node, name Text) Bool {
 }
 
 fn has_pack_iteration(node Node) Bool {
-    if node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap { return true }
+    if node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap {
+        return true
+    }
     var index = 0
     while index < length(node.children) {
-        if has_pack_iteration(child(node, index)) { return true }
+        if has_pack_iteration(child(node, index)) {
+            return true
+        }
         index = index + 1
     }
     false
@@ -272,7 +288,9 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
                 push(iterations, pack_node(node, NodeKind.Block, "", statements))
                 index = index + 1
             }
-            if mapping { return Result.Ok(pack_node(node, NodeKind.Tuple, "", iterations)) }
+            if mapping {
+                return Result.Ok(pack_node(node, NodeKind.Tuple, "", iterations))
+            }
             // A static loop is a Unit statement even when it ends its parent block.
             push(iterations, pack_node(node, NodeKind.Block, "", new[Node]()))
             return Result.Ok(pack_node(node, NodeKind.Block, "", iterations))
@@ -294,11 +312,13 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
     while index < length(node.children) {
         let member = child(node, index)
         if !(repeated && node.kind == NodeKind.Function && node.value == "" && member.kind == NodeKind.ExpansionId) {
-            let member_shadow = if node.kind == NodeKind.Arm && index == 1 {
+            let member_shadow = if node.kind == NodeKind.Arm && index > 0 {
                 current_shadow || pack_pattern_binds(child(node, 0), values)
             } else if (node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap) && index == 1 {
                 current_shadow || node.value == values
-            } else { current_shadow }
+            } else {
+                current_shadow
+            }
             push(children, expand_pack_iteration(env, owner, member, values, arity, static_values, member_shadow, repeated, depth + 1, count)?)
             if node.kind == NodeKind.Block && pack_local_binds(member, values) {
                 current_shadow = true
@@ -309,7 +329,11 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, ari
     if repeated && node.kind == NodeKind.Function && node.value == "" {
         let previous = part(node, NodeKind.ExpansionId)
         let suffix = std.int.to_text(identity)
-        let marker = if previous < 0 { suffix } else { concat(child(node, previous).value, concat(".", suffix)) }
+        let marker = if previous < 0 {
+            suffix
+        } else {
+            concat(child(node, previous).value, concat(".", suffix))
+        }
         push(children, pack_node(node, NodeKind.ExpansionId, marker, new[Node]()))
     }
     Result.Ok(pack_node(node, node.kind, node.value, children))
@@ -341,21 +365,25 @@ fn bind_type_iteration(node Node, binding Text, selected Text, shadowed Bool, ty
     index = 0
     while index < length(node.children) {
         let member = child(node, index)
-        // Pattern names declare new values; only their bodies use the outer
+        // Pattern names declare new values; their guards/bodies use the outer
         // type binding, and an identically named value shadows Name uses.
         if (node.kind == NodeKind.Arm || node.kind == NodeKind.Destructure) && index == 0 {
             push(children, member)
         } else {
-            let member_shadow = if node.kind == NodeKind.Arm && index == 1 {
+            let member_shadow = if node.kind == NodeKind.Arm && index > 0 {
                 current_shadow || pack_pattern_binds(child(node, 0), binding)
             } else if (node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap) && index == 1 {
                 current_shadow || node.value == binding
-            } else { current_shadow }
+            } else {
+                current_shadow
+            }
             let member_type_shadow = type_shadowed ||
-                ((node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap) &&
-                    index == 1 && node.value == binding && child(node, 0).kind == NodeKind.Name)
+            ((node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap) &&
+                index == 1 && node.value == binding && child(node, 0).kind == NodeKind.Name)
             push(children, bind_type_iteration(member, binding, selected, member_shadow, member_type_shadow, depth + 1))
-            if node.kind == NodeKind.Block && pack_local_binds(member, binding) { current_shadow = true }
+            if node.kind == NodeKind.Block && pack_local_binds(member, binding) {
+                current_shadow = true
+            }
         }
         index = index + 1
     }
@@ -381,7 +409,9 @@ fn expand_type_iteration(env Environment, owner Int, node Node, pack Text, arity
                 push(iterations, expand_type_iteration(env, owner, substituted, pack, arity, false, true, depth + 1, count)?)
                 index = index + 1
             }
-            if node.kind == NodeKind.ComptimeMap { return Result.Ok(pack_node(node, NodeKind.Tuple, "", iterations)) }
+            if node.kind == NodeKind.ComptimeMap {
+                return Result.Ok(pack_node(node, NodeKind.Tuple, "", iterations))
+            }
             push(iterations, pack_node(node, NodeKind.Block, "", new[Node]()))
             return Result.Ok(pack_node(node, NodeKind.Block, "", iterations))
         }
@@ -400,20 +430,28 @@ fn expand_type_iteration(env Environment, owner Int, node Node, pack Text, arity
     while index < length(node.children) {
         let member = child(node, index)
         if !(repeated && node.kind == NodeKind.Function && node.value == "" && member.kind == NodeKind.ExpansionId) {
-            let member_shadow = if node.kind == NodeKind.Arm && index == 1 {
+            let member_shadow = if node.kind == NodeKind.Arm && index > 0 {
                 current_shadow || pack_pattern_binds(child(node, 0), pack)
             } else if (node.kind == NodeKind.ComptimeFor || node.kind == NodeKind.ComptimeMap) && index == 1 {
                 current_shadow || node.value == pack
-            } else { current_shadow }
+            } else {
+                current_shadow
+            }
             push(children, expand_type_iteration(env, owner, member, pack, arity, member_shadow, repeated, depth + 1, count)?)
-            if node.kind == NodeKind.Block && pack_local_binds(member, pack) { current_shadow = true }
+            if node.kind == NodeKind.Block && pack_local_binds(member, pack) {
+                current_shadow = true
+            }
         }
         index = index + 1
     }
     if repeated && node.kind == NodeKind.Function && node.value == "" {
         let previous = part(node, NodeKind.ExpansionId)
         let suffix = std.int.to_text(identity)
-        let marker = if previous < 0 { suffix } else { concat(child(node, previous).value, concat(".", suffix)) }
+        let marker = if previous < 0 {
+            suffix
+        } else {
+            concat(child(node, previous).value, concat(".", suffix))
+        }
         push(children, pack_node(node, NodeKind.ExpansionId, marker, new[Node]()))
     }
     Result.Ok(pack_node(node, node.kind, node.value, children))
@@ -454,7 +492,9 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
             let name = pack_name(values.value, index)
             let ty = expand_pack_type(env, owner, child(child(values, 0), 0), pack.value, arity, index, true, 0)?
             let parts = source_nodes(ty)
-            if static_values { push(parts, pack_node(values, NodeKind.Comptime, "", new[Node]())) }
+            if static_values {
+                push(parts, pack_node(values, NodeKind.Comptime, "", new[Node]()))
+            }
             push(expanded_params, pack_node(values, NodeKind.Parameter, name, parts))
             push(elements, pack_node(values, NodeKind.Name, name, new[Node]()))
             index = index + 1
@@ -476,14 +516,20 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
                     let count = new[Int]()
                     push(count, 0)
                     expand_pack_iteration(env, owner, typed, values.value, value_arity, static_values, false, false, 0, count)?
-                } else { typed }
+                } else {
+                    typed
+                }
                 let type_expanded = if has_pack_iteration(expanded) && pack.value != values.value {
                     let count = new[Int]()
                     push(count, 0)
                     expand_type_iteration(env, owner, expanded, pack.value, arity, false, false, 0, count)?
-                } else { expanded }
+                } else {
+                    expanded
+                }
                 if member.kind == NodeKind.Block {
-                    let body = if structural { new[Node]() } else {
+                    let body = if structural {
+                        new[Node]()
+                    } else {
                         source_nodes(pack_binding(values, values.value, tuple, static_values))
                     }
                     // The source body retains its own scope, including shadowing
@@ -557,15 +603,20 @@ fn pack_signature(env Environment, owner Int, arity Int) Result[Int, Failure] {
 fn pack_state(env Environment, index Int, state Int, depth Int) {
     let pack = get(env.packs, index)
     set(env.packs, index, PackInstance {
-            source = pack.source arity = pack.arity signature = pack.signature
-            state = state depth = depth
+            source = pack.source
+            arity = pack.arity
+            signature = pack.signature
+            state = state
+            depth = depth
         })
 }
 
 fn active_pack(env Environment) Int {
     var index = 0
     while index < length(env.packs) {
-        if get(env.packs, index).state == 1 { return index }
+        if get(env.packs, index).state == 1 {
+            return index
+        }
         index = index + 1
     }
     -1
@@ -574,7 +625,9 @@ fn active_pack(env Environment) Int {
 fn queued_pack(env Environment) Int {
     var index = 0
     while index < length(env.packs) {
-        if get(env.packs, index).state == 3 { return index }
+        if get(env.packs, index).state == 3 {
+            return index
+        }
         index = index + 1
     }
     -1
@@ -585,7 +638,11 @@ fn finish_pack_batch(env Environment, proved Bool) {
     while index < length(env.packs) {
         let state = get(env.packs, index).state
         if state == 1 || state == 3 || state == 4 {
-            pack_state(env, index, if proved { 2 } else { 0 }, 0)
+            pack_state(env, index, if proved {
+                    2
+                } else {
+                    0
+                }, 0)
         }
         index = index + 1
     }
@@ -597,24 +654,32 @@ fn pending_pack_snapshot(env Environment) List[Int] {
     let pending = new[Int]()
     var index = 0
     while index < length(env.packs) {
-        if get(env.packs, index).state == 3 { push(pending, index) }
+        if get(env.packs, index).state == 3 {
+            push(pending, index)
+        }
         index = index + 1
     }
     pending
 }
 
 fn rollback_new_pending_packs(env Environment, before List[Int]) {
-    if active_pack(env) < 0 { return }
+    if active_pack(env) < 0 {
+        return
+    }
     var index = 0
     while index < length(env.packs) {
         if get(env.packs, index).state == 3 {
             var retained = false
             var previous = 0
             while previous < length(before) {
-                if get(before, previous) == index { retained = true }
+                if get(before, previous) == index {
+                    retained = true
+                }
                 previous = previous + 1
             }
-            if !retained { pack_state(env, index, 0, 0) }
+            if !retained {
+                pack_state(env, index, 0, 0)
+            }
         }
         index = index + 1
     }
@@ -630,12 +695,18 @@ fn check_pack_arity(env Environment, signature Int) Result[Bool, Failure] {
         return Result.Ok(true)
     }
     let active = active_pack(env)
-    let depth = if active < 0 { 1 } else { get(env.packs, active).depth + 1 }
+    let depth = if active < 0 {
+        1
+    } else {
+        get(env.packs, active).depth + 1
+    }
     if depth > 64 {
         return Result.Err(failure(env, pack.source, symbol(env, pack.source).node, "type pack specialization depth exceeded; expansion must be finite"))
     }
     pack_state(env, index, 3, depth)
-    if active >= 0 { return Result.Ok(true) }
+    if active >= 0 {
+        return Result.Ok(true)
+    }
     // Check a breadth-first worklist. A pack body can discover more arities,
     // but no native checker frames remain live across those bodies.
     var queued = queued_pack(env)
@@ -644,7 +715,9 @@ fn check_pack_arity(env Environment, signature Int) Result[Bool, Failure] {
         pack_state(env, queued, 1, next.depth)
         let current = get(env.signatures, next.signature)
         match function(env, next.signature, abstract_arguments(env, current.parameters), unknown_constants(current), false) {
-            Result.Ok(_) => { pack_state(env, queued, 4, next.depth) }
+            Result.Ok(_) => {
+                pack_state(env, queued, 4, next.depth)
+            }
             Result.Err(failed) => {
                 finish_pack_batch(env, false)
                 return Result.Err(failed)
@@ -685,11 +758,15 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
                 if structural {
                     let position = length(parameters) - 1
                     if length(shape) == length(parameters) + 1 &&
-                        get(context.env.types, get(shape, position)).kind == TypeKind.Tuple {
+                    get(context.env.types, get(shape, position)).kind == TypeKind.Tuple {
                         length(get(context.env.types, get(shape, position)).arguments) -
-                            tuple_pack_fixed(get(parameters, position))
-                    } else { -1 }
-                } else { length(shape) - length(parameters) }
+                        tuple_pack_fixed(get(parameters, position))
+                    } else {
+                        -1
+                    }
+                } else {
+                    length(shape) - length(parameters)
+                }
             } else {
                 if length(types) != 0 {
                     length(types) - pack_parameter(declaration)

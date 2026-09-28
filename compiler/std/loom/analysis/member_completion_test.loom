@@ -66,6 +66,26 @@ test fn member_scope_reuses_match_bindings_and_selected_comptime_evidence() {
     assert completion_found(member_completion(record_case, ".va", 3), "value").detail == "value Int"
     let whole = concat(header, "fn demo(box Box) { match box { whole => { discard whole.va } } }")
     assert completion_found(member_completion(whole, ".va", 3), "value").detail == "value Int"
+    let guard_member = concat(header, """
+        fn demo(v Choice) {
+            match v {
+                Choice.Some(box) if box.va == 7 => {}
+                _ => {}
+            }
+        }
+        """)
+    assert completion_found(member_completion(guard_member, ".va", 3), "value").detail == "value Int"
+    let guard_body = concat(header, """
+        fn demo(v Choice) {
+            match v {
+                Choice.Some(box) if box.value > 0 => {
+                    discard box.va
+                }
+                _ => {}
+            }
+        }
+        """)
+    assert completion_found(member_completion(guard_body, "discard box.va", 14), "value").detail == "value Int"
     let guarded = "concept Show { fn show(self Self) Text }\nfn demo[T Show](value T) { comptime if T implements Show { discard value.sh } else {} }"
     assert length(member_completion(guarded, ".sh", 3).items) == 1
     let task = "async fn item() Int { 7 }\nasync fn main() { let pending = item()\ndiscard pending.aw }"

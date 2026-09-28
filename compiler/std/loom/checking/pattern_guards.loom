@@ -1,0 +1,104 @@
+// A failed guard must leave candidate Tasks available to the next source arm.
+// Bind ordinary values before the guard, but transfer Task-bearing bindings
+// only on success. During the guard, refer to their still-live decision slots.
+fn guard_binding(value Expr, bindings List[Expr]) Int {
+    var root = value
+    while root.kind == ExprKind.Field {
+        root = get(root.children, 0)
+    }
+    if root.kind == ExprKind.Local {
+        var index = 0
+        while index < length(bindings) {
+            if get(bindings, index).index == root.index {
+                return index
+            }
+            index = index + 1
+        }
+    }
+    -1
+}
+
+fn guard_view(plan PatternPlan, value Expr, bindings List[Expr], depth Int) Result[Expr, Failure] {
+    discard pattern_step(plan, depth)?
+    let binding = guard_binding(value, bindings)
+    if value.kind == ExprKind.Local && binding >= 0 {
+        return Result.Ok(get(get(bindings, binding).children, 0))
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, guard_view(plan, get(value.children, index), bindings, depth + 1)?)
+        index = index + 1
+    }
+    // Fold projections only through a compiler-reconstructed pattern binding,
+    // never through a user constructor whose other fields may have effects.
+    if value.kind == ExprKind.Field && binding >= 0 {
+        let receiver = get(children, 0)
+        if receiver.kind == ExprKind.Record {
+            index = 0
+            while index < length(receiver.children) {
+                let field = get(receiver.children, index)
+                if field.index == value.index {
+                    return Result.Ok(get(field.children, 0))
+                }
+                index = index + 1
+            }
+        }
+    }
+    let arms = new[Arm]()
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let body = new[Expr]()
+        var item = 0
+        while item < length(arm.body) {
+            push(body, guard_view(plan, get(arm.body, item), bindings, depth + 1)?)
+            item = item + 1
+        }
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = arm.bindings
+                whole = arm.whole
+                body = body
+            })
+        index = index + 1
+    }
+    Result.Ok(Expr {
+            kind = value.kind
+            ty = value.ty
+            span = value.span
+            text = value.text
+            index = value.index
+            children = children
+            arms = arms
+            falls = value.falls
+        })
+}
+
+fn guarded_leaf(plan PatternPlan, row PatternRow, bindings List[Expr], fallback Expr, depth Int) Result[Expr, Failure] {
+    let before = new[Expr]()
+    let transfers = new[Expr]()
+    var index = 0
+    while index < length(bindings) {
+        let binding = get(bindings, index)
+        if task_value(plan.context.env, get(binding.children, 0).ty) {
+            push(transfers, binding)
+        } else {
+            push(before, binding)
+        }
+        index = index + 1
+    }
+    let source = get(row.guard, 0)
+    let condition = if length(transfers) == 0 {
+        source
+    } else {
+        guard_view(plan, source, transfers, depth)?
+    }
+    let yes = pattern_block(plan.source, transfers, row.body)
+    let no = pattern_block(plan.source, new[Expr](), fallback)
+    let branches = pair(condition, yes)
+    push(branches, no)
+    let chosen = expression(ExprKind.If, plan.output, plan.source, "", -1, branches,
+        condition.falls && (yes.falls || no.falls))
+    Result.Ok(pattern_block(plan.source, before, chosen))
+}

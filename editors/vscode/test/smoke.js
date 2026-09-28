@@ -446,6 +446,22 @@ async function main() {
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...unicode, newName: 'result' }), /valid non-reserved/);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...inner, newName: 'shadow' }), /conflict/);
     await client.rpc.sendNotification('textDocument/didClose', { textDocument: { uri: shadowUri } });
+    const multiline = String.raw`fn main() {
+    let sample = """
+        雪😀
+        raw \n
+        """
+    assert sample == "雪😀\nraw \\n"
+}
+`;
+    await client.change(file, multiline, 40);
+    assert.deepEqual((await client.wait(file, 40)).diagnostics, []);
+    const literalHover = await client.rpc.sendRequest('textDocument/hover', at(file, multiline, 'sample =='));
+    assert.ok(literalHover.contents.some(item => item.value === 'Text'));
+    const literalEdits = await client.rpc.sendRequest('textDocument/formatting', {
+      textDocument: { uri: params.textDocument.uri }, options: { tabSize: 4, insertSpaces: true },
+    });
+    assert.equal(TextDocument.applyEdits(TextDocument.create(params.textDocument.uri, 'loom', 40, multiline), literalEdits), multiline);
     // Following a dependency outside this folder retains its folder-scoped,
     // relative toolchain settings for diagnostics, hover and formatting.
     const external = path.join(stdRoot, 'loom/source/source.loom');
