@@ -6,26 +6,28 @@ use common::{loom, success};
 fn static_parameters_specialize_before_native_abi_and_reachability() {
     let package = tempfile::tempdir().unwrap();
     let executable = common::executable(package.path(), "comptime-parameters");
-    success(
-        &common::command(&[
-            "build",
-            common::root()
-                .join("compiler/examples/comptime_parameters")
-                .to_str()
-                .unwrap(),
-            "--output",
-            executable.to_str().unwrap(),
-        ])
-        .env("LOOM_OPT_LEVEL", "0")
-        .output()
-        .unwrap(),
-    );
-    success(
-        &Command::new(executable)
-            .env("LOOM_GC_STRESS", "1")
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                common::root()
+                    .join("compiler/examples/comptime_parameters")
+                    .to_str()
+                    .unwrap(),
+                "--output",
+                executable.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
             .output()
             .unwrap(),
-    );
+        );
+        success(
+            &Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
 
     fs::write(
         package.path().join("main.loom"),
@@ -78,6 +80,66 @@ fn main() {
 }
 
 #[test]
+fn float_static_values_leave_only_native_runtime_parameters() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(
+        package.path().join("main.loom"),
+        r#"
+fn factor() Float {
+    0.5
+}
+
+fn scale(value Float, comptime factor Float) Float {
+    value * factor
+}
+
+fn main() {
+    assert scale(8.0, factor()) == 4.0
+    assert scale(8.0, 0.25) == 2.0
+    assert scale(12.0, 1.0 / 2.0) == 6.0
+    assert 1.0 / scale(1.0, 0.0) > 0.0
+    assert 1.0 / scale(1.0, -0.0) < 0.0
+}
+"#,
+    )
+    .unwrap();
+    let executable = common::executable(package.path(), "static-floats");
+    let ir = package.path().join("static-floats.ll");
+    success(
+        &common::command(&["build", package.path().to_str().unwrap()])
+            .arg("--output")
+            .arg(&executable)
+            .arg("--emit-ir")
+            .arg(&ir)
+            .env("LOOM_OPT_LEVEL", "0")
+            .output()
+            .unwrap(),
+    );
+    success(&Command::new(executable).output().unwrap());
+    let lowered = fs::read_to_string(ir).unwrap();
+    let functions: Vec<_> = lowered
+        .lines()
+        .filter(|line| line.starts_with("define ") && line.contains("@loom.fn."))
+        .collect();
+    assert_eq!(functions.len(), 5, "{functions:?}");
+    for function in functions {
+        let parameters = function
+            .split_once('(')
+            .unwrap()
+            .1
+            .split(')')
+            .next()
+            .unwrap();
+        assert!(
+            parameters.is_empty()
+                || (parameters.starts_with("double ") && !parameters.contains(',')),
+            "static Float leaked into the ABI: {function}"
+        );
+    }
+    assert!(!lowered.contains("@loom_rt_"));
+}
+
+#[test]
 fn static_arguments_reject_captures_effects_and_undeclared_generic_requirements() {
     let package = tempfile::tempdir().unwrap();
     let declaration = "fn f(value Int, comptime count Int) Int { value + count }\n";
@@ -91,8 +153,8 @@ fn static_arguments_reject_captures_effects_and_undeclared_generic_requirements(
         ),
         format!("{declaration}fn main() {{ discard f(1, 1 / 0) }}"),
         format!("{declaration}fn main() {{ let callback = f\ndiscard callback }}"),
-        "fn unsupported(comptime value Float) Float { value }\nfn main() {}".into(),
-        "fn generic[T](comptime value T) T { value }\nfn main() { discard generic(1.0) }".into(),
+        "fn unsupported(comptime value List[Int]) List[Int] { value }\nfn main() {}".into(),
+        "fn generic[T](comptime value T) T { value }\nfn main() { let value = 1.0\ndiscard generic(value) }".into(),
         "fn generic[T](comptime value T, comptime selected Bool) Int { comptime if selected { value + 1 } else { 0 } }\nfn main() { discard generic(1, true) }".into(),
         "fn f(value Int) Int { value }\nfn f(comptime value Int) Int { value }\nfn main() {}"
             .into(),

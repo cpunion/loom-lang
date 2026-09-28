@@ -59,7 +59,7 @@ fn source_signature(env Environment, owner Int, arguments List[Int], obligations
             return Result.Err(failure(env, owner, declaration, "the method receiver cannot be comptime"))
         }
         if constant && !static_parameter_type(env, ty) {
-            return Result.Err(failure(env, owner, declaration, "comptime parameters require Int, Bool, Text or a function type after specialization"))
+            return Result.Err(failure(env, owner, declaration, "comptime parameters require Int, Bool, Float, Text or a function type after specialization"))
         }
         push(params, ty)
         if constant { push(compile_time, parameter) }

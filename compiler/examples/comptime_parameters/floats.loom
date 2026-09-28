@@ -1,0 +1,72 @@
+import std.float.is_nan
+import std.float.is_finite
+
+fn scale(value Float, comptime factor Float) Float {
+    value * factor
+}
+
+fn zero_sign(comptime value Float) Int {
+    comptime if 1.0 / value < 0.0 {
+        -1
+    } else {
+        1
+    }
+}
+
+fn saved_float(comptime value Float) fn() Float {
+    fn() Float {
+        value
+    }
+}
+
+fn scalar_constants[Ts...](comptime values Ts...) (Ts...) {
+    values
+}
+
+concept FloatSource {
+    type Item
+    fn value(self Self, comptime input Self.Item) Self.Item {
+        input
+    }
+}
+
+impl FloatSource for Float {
+    type Item = Float
+}
+
+fn float_constants() {
+    assert scale(8.0, 0.5) == 4.0
+    assert scale(8.0, 3.0 / 2.0) == 12.0
+    assert constant(1.25) == 1.25
+    assert forward_constant(2.5) == 2.5
+    assert zero_sign(0.0) == 1 && zero_sign(-0.0) == -1
+    assert 1.0 / constant(0.0) > 0.0
+    assert 1.0 / constant(-0.0) < 0.0
+    assert constant(5e-324) > 0.0
+    assert constant(5e-324) == 5e-324
+    assert constant(1.7976931348623157e308) == 1.7976931348623157e308
+    assert !is_finite(constant(1.0 / 0.0))
+    assert constant(1.0 / 0.0) > 0.0
+    assert constant(-1.0 / 0.0) < 0.0
+    assert is_nan(constant(0.0 / 0.0))
+    assert is_nan(constant(0.0 / 0.0))
+    let read = saved_float(-0.0)
+    assert 1.0 / read() < 0.0
+    let values = scalar_constants(1.25, true, -0.0)
+    assert values.0 == 1.25 && values.1
+    assert 1.0 / values.2 < 0.0
+    assert comptime {
+        zero_sign(-0.0) == -1 && forward_constant(5e-324) > 0.0
+    }
+    let source = 1.0
+    assert source.value(1.25) == 1.25
+    let dynamic dyn FloatSource[Item = Float] = source
+    assert dynamic.value(1.25) == 1.25
+    assert 1.0 / dynamic.value(0.0) > 0.0
+    assert 1.0 / dynamic.value(-0.0) < 0.0
+    assert is_nan(dynamic.value(0.0 / 0.0))
+}
+
+test fn float_parameters_specialize_before_runtime() {
+    float_constants()
+}

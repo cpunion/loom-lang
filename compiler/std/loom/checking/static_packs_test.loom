@@ -6,7 +6,15 @@ test fn static_value_packs_preserve_each_parameter_and_static_iteration() {
 
 test fn static_value_packs_reject_runtime_inputs_and_undeclared_capabilities() {
     rejects("fn pack[Ts...](comptime values Ts...) (Ts...) { values }\nfn main() { let value = 1\ndiscard pack(value) }")
-    rejects("fn pack[Ts...](comptime values Ts...) (Ts...) { values }\nfn main() { discard pack(1.0) }")
+    discard accepted("""
+        fn pack[Ts...](comptime values Ts...) (Ts...) {
+            values
+        }
+        fn main() {
+            let values = pack(1.0, -0.0)
+            assert values.0 == 1.0 && 1.0 / values.1 < 0.0
+        }
+        """)
     rejects("fn pack[Ts...](comptime values Ts...) (Ts...) { values }\nfn main() { discard pack([1]) }")
     rejects("fn pack[Ts...](comptime values (Ts...)) (Ts...) { values }")
     rejects("fn bad[Ts...](comptime values Ts...) Int { values.0 + 1 }\nfn main() { discard bad(1) }")
