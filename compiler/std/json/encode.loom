@@ -1,0 +1,102 @@
+import std.reflect.describe
+import std.reflect.Kind
+import std.int.to_text
+import std.float.to_text
+import std.float.is_finite
+
+// Descriptors are consumed during specialization, never visited at runtime.
+// Refinements keep their validated value but encode as their underlying shape.
+fn encoding_kind[T]() Kind {
+    let schema = describe[T]()
+    var index = schema.root
+    while schema.types[index].kind == Kind.Refined {
+        index = schema.types[index].arguments[0]
+    }
+    schema.types[index].kind
+}
+
+fn encode_value[T](output Bytes, value T, depth Int) Result[Bool, WriteError] {
+    comptime if T == Value {
+        return write_value(output, value, depth)
+    }
+    comptime if encoding_kind[T]() == Kind.Bool {
+        append_text(output, if value {
+                "true"
+            } else {
+                "false"
+            })
+        return Result.Ok(true)
+    }
+    comptime if encoding_kind[T]() == Kind.Int {
+        append_text(output, std.int.to_text(value))
+        return Result.Ok(true)
+    }
+    comptime if encoding_kind[T]() == Kind.Float {
+        if !is_finite(value) {
+            return Result.Err(WriteError.InvalidNumber)
+        }
+        append_text(output, std.float.to_text(value))
+        return Result.Ok(true)
+    }
+    comptime if encoding_kind[T]() == Kind.Text {
+        write_string(output, value)
+        return Result.Ok(true)
+    }
+    comptime if encoding_kind[T]() == Kind.List {
+        if depth >= 64 {
+            return Result.Err(WriteError.DepthExceeded)
+        }
+        std.bytes.push(output, 91)
+        var index = 0
+        while index < std.list.length(value) {
+            if index > 0 {
+                std.bytes.push(output, 44)
+            }
+            discard encode_value(output, get(value, index), depth + 1)?
+            index = index + 1
+        }
+        std.bytes.push(output, 93)
+        return Result.Ok(true)
+    }
+    comptime if encoding_kind[T]() == Kind.Tuple {
+        if depth >= 64 {
+            return Result.Err(WriteError.DepthExceeded)
+        }
+        std.bytes.push(output, 91)
+        comptime for index, element in value {
+            comptime if index > 0 {
+                std.bytes.push(output, 44)
+            }
+            discard encode_value(output, element, depth + 1)?
+        }
+        std.bytes.push(output, 93)
+        return Result.Ok(true)
+    }
+    comptime if encoding_kind[T]() == Kind.Record {
+        if depth >= 64 {
+            return Result.Err(WriteError.DepthExceeded)
+        }
+        std.bytes.push(output, 123)
+        var first = true
+        comptime for name, field in value {
+            if !first {
+                std.bytes.push(output, 44)
+            }
+            first = false
+            write_string(output, name)
+            std.bytes.push(output, 58)
+            discard encode_value(output, field, depth + 1)?
+        }
+        std.bytes.push(output, 125)
+        return Result.Ok(true)
+    }
+    Result.Err(WriteError.UnsupportedType)
+}
+
+// Visible records use declared field names/order; tuples and Lists are arrays.
+// Enums and opaque/resource/callback types have no implicit JSON convention.
+pub fn encode[T](value T) Result[Text, WriteError] {
+    let output = std.bytes.new()
+    discard encode_value(output, value, 0)?
+    Result.Ok(std.bytes.to_text(output))
+}

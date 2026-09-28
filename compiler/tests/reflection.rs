@@ -4,6 +4,32 @@ mod common;
 use common::{loom, success};
 
 #[test]
+fn typed_json_is_a_source_library_with_lexical_visibility() {
+    let package = "compiler/examples/json_encoding";
+    for command in ["check", "test", "run"] {
+        success(&loom(&[command, package]));
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::executable(temporary.path(), "json-encoding");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package])
+                .arg("--output")
+                .arg(&executable)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(
+            &Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
+}
+
+#[test]
 fn reflection_is_typed_source_data_without_runtime_discovery() {
     success(&loom(&["test", "compiler/examples/reflection"]));
     let temporary = tempfile::tempdir().unwrap();

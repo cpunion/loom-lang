@@ -285,6 +285,10 @@ generic bounds, refinement reads, lexical cleanup and shared aliases retain
 their usual checks, including through nested expansion and captured callbacks.
 The [record example](../../compiler/examples/pack_iteration/records.loom)
 uses only typed field projections, with no runtime reflection or boxing.
+An optional `key, item` binding supplies static record field names or tuple/pack
+positions, including to `comptime` parameters and captured callbacks. The
+[keyed example](../../compiler/examples/pack_iteration/keys.loom) exercises
+value and type packs, nested maps and source-name shadowing.
 A structural `(Pattern[Ts]...)` parameter takes one runtime tuple and
 infers arity from its known type. `comptime map` produces an ordered typed tuple
 of lexical results from an immutable fixed-shape tuple or record binding,
@@ -370,7 +374,12 @@ Source `std.json` parses and writes in-memory JSON without runtime support.
 Numbers retain their exact lexical spelling, strings decode Unicode surrogate
 pairs, objects preserve field order and reject duplicate decoded keys. Nesting
 is capped at 64 levels, including cyclic values supplied to the writer. This is
-not yet a streaming API or automatic typed record mapping.
+not yet a streaming API. `encode[T]` now specializes source code for primitive
+values, Lists, tuples, visible records and supported refinements, reusing the
+writer's escaping and limits without constructing an intermediate `Value` tree.
+Foreign private types remain opaque; unsupported kinds report `UnsupportedType`.
+The [typed encoding example](../../compiler/examples/json_encoding/main.loom)
+runs at O0/O2 under forced GC. Typed decoding and custom wire mappings remain open.
 
 Static concepts use explicit nominal `impl` declarations, generic bounds and
 ordinary direct-call specialization. Conditional `T implements C` tests select

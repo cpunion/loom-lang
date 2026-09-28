@@ -320,13 +320,7 @@ fn statement(cursor Cursor) Result[Step, Diagnostic] {
         return Result.Ok(done(cursor, body.rest, NodeKind.Defer, "", one(body.node)))
     }
     if word(rest, "comptime") && word(next(rest), "for") {
-        let binding = name(next(next(rest)))?
-        if !word(binding.rest, "in") {
-            return Result.Err(error(binding.rest, "expected 'in' after the static loop binding"))
-        }
-        let values = name(next(binding.rest))?
-        let body = block(values.rest)?
-        return Result.Ok(done(cursor, body.rest, NodeKind.ComptimeFor, binding.node.value, two(values.node, body.node)))
+        return static_iteration(cursor, next(next(rest)), NodeKind.ComptimeFor)
     }
     if word(rest, "let") || word(rest, "var") || word(rest, "scoped") {
         let kind = if word(rest, "scoped") {

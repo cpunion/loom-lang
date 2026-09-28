@@ -66,8 +66,12 @@ type Positive = Counts where self.first > 0 && self.second > 0
 
 fn total(value Positive) Int {
     var sum = 0
-    comptime for field in value {
-        sum = sum + field
+    comptime for name, field in value {
+        comptime if name == "first" {
+            sum = sum + field
+        } else {
+            sum = sum + field
+        }
     }
     sum
 }
@@ -75,7 +79,10 @@ fn total(value Positive) Int {
 fn main() {
     let counts = Positive(Counts { second = 2, first = 40 })
     assert total(counts) == 42
-    let fields = comptime map field in counts {
+    let fields = comptime map name, field in counts {
+        comptime if name == "first" {
+            assert field == 40
+        }
         field
     }
     assert fields.0 == 40 && fields.1 == 2

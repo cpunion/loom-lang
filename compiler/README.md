@@ -737,7 +737,16 @@ An unconstrained `T` is not assumed to be a record: select such code inside a
 `comptime if` that determines its shape, for example with `std.reflect.describe`.
 Iteration emits ordinary typed projections and lexical blocks, with no runtime
 reflection table, boxing or implicit field mutation. It does not introduce
-field-name bindings, first-class type values or general macro expansion.
+first-class type values or general macro expansion.
+
+The optional two-binding form `comptime for key, item in values` (also available
+with `comptime map`) binds a compile-time key: `Text` field names for records,
+or zero-based `Int` positions for tuples and type/value packs. Both names are
+lexically scoped to the body and must differ. Keys may feed `comptime`
+parameters even when the corresponding value is runtime data. See the
+[keyed example](examples/pack_iteration/keys.loom). Source
+[`std.json.encode`](std/json/README.md) uses this to encode records without a
+runtime reflection table; JSON policy stays in the library.
 
 A structural parameter takes one tuple argument and one runtime tuple
 parameter. It may have fixed fields around one expanded pattern, such as
