@@ -57,8 +57,17 @@ fn main() {
         }
         return
     }
-    if mode == "editor-check" || mode == "editor-query" || mode == "editor-complete" ||
-    mode == "editor-references" || mode == "editor-rename" || mode == "editor-auto-import" {
+    if mode == "editor-session" {
+        match editor_session(get(args, 0)) {
+            Result.Ok(_) => {}
+            Result.Err(message) => {
+                report(message)
+                exit_code(1)
+            }
+        }
+        return
+    }
+    if editor_mode(mode) {
         let output = editor_execute(args)
         match write_text(output.text) {
             Result.Ok(_) => {

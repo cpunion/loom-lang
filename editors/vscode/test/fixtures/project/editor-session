@@ -1,0 +1,31 @@
+// Transport fixture only. Delegate each request to the existing one-shot fixture.
+const { execFile } = require('node:child_process');
+let buffer = Buffer.alloc(0), fields = [], count = null, pending = Promise.resolve();
+process.stdin.on('data', data => {
+  buffer = Buffer.concat([buffer, data]);
+  while (true) {
+    const newline = buffer.indexOf(10);
+    if (newline < 0) return;
+    const size = Number(buffer.subarray(0, newline).toString());
+    if (buffer.length < newline + 1 + size) return;
+    const text = buffer.subarray(newline + 1, newline + 1 + size).toString('utf8');
+    buffer = buffer.subarray(newline + 1 + size);
+    if (count === null) count = Number(text);
+    else fields.push(text);
+    if (count !== null && fields.length === count) {
+      const args = fields;
+      fields = []; count = null;
+      pending = pending.then(() => new Promise((resolve, reject) => {
+        const child = execFile(process.execPath, args, (error, stdout, stderr) => {
+          process.removeListener('exit', stop);
+          if (error && typeof error.code !== 'number') { reject(error); return; }
+          if (stderr) process.stderr.write(stderr);
+          process.stdout.write(stdout.trimEnd() + '\n');
+          resolve();
+        });
+        const stop = () => child.kill();
+        process.once('exit', stop);
+      }));
+    }
+  }
+});

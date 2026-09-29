@@ -34,23 +34,6 @@ fn editor_source(project Project, path Text) Result[Int, Text] {
     Result.Ok(selected)
 }
 
-fn editor_query(bindings std.loom.binding.Program, file Int, offset Int, inputs BuildInputs) EditorOutput {
-    match check_with_inputs(bindings, inputs) {
-        Result.Ok(program) => editor_inspection(bindings,
-            inspect_at(Analysis {
-                    bindings = bindings
-                    program = program
-                    inputs = inputs.files
-                    options = inputs.options
-                    targets = inputs.targets
-                }, file, offset), "")
-        Result.Err(failed) => {
-            let diagnostic = editor_diagnostic_json(get(bindings.files, failed.source).path, failed.diagnostic)
-            editor_inspection(bindings, inspect_independent(bindings, file, offset, inputs), diagnostic)
-        }
-    }
-}
-
 fn editor_inspection(bindings std.loom.binding.Program, inspection Option[Inspection], diagnostic Text) EditorOutput {
     let prefix = concat("{\"diagnostics\":[", concat(diagnostic, "],\"hover\":"))
     let information = match inspection {

@@ -106,8 +106,10 @@ It offers fields, tuple indices, admitted concept methods and async
 Task `.await`, not proof of an applicable call or valid body. A qualified-path
 Quick Fix offers an import only for one public declaration in an offline-resolved
 direct package when the revised in-memory package checks. Bare-name import
-search is limited to unique exports of direct dependencies; public/API rename
-and incremental semantic caching remain open. Completion
+search is limited to unique exports of direct dependencies. A resident editor
+session reuses an unchanged checked snapshot across diagnostics, hover and
+navigation after reloading sources and verifying build inputs/options/targets.
+Public/API rename and per-definition incremental checking remain open. Completion
 can recover a missing cursor name/value or unmatched EOF delimiters
 without modifying the source or making normal builds accept it. Other semantic
 queries use concrete body instances. If package checking fails, an independently
