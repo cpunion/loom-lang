@@ -103,6 +103,7 @@ async function validate(ticket) {
   checking = controller;
   const buffers = capturedBuffers();
   const roots = new Map(buffers.map(buffer => [path.dirname(buffer.path), buffer.uri]));
+  compiler.retain(new Set(roots.keys()));
   const reports = new Map();
   const inputs = new Set();
   let overlays;

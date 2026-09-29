@@ -84,4 +84,5 @@ function byteOffset(document, position) {
   return Buffer.byteLength(document.getText().slice(0, document.offsetAt(position)), 'utf8');
 }
 
-module.exports = { snapshots, check, query, symbols, autoImport, format, bytePosition, byteOffset, close: editorProcess.close };
+module.exports = { snapshots, check, query, symbols, autoImport, format, bytePosition, byteOffset,
+  close: editorProcess.close, retain: editorProcess.retain };

@@ -230,7 +230,8 @@ snapshot. Every request reloads the source closure and verifies observed build
 input bytes, explicit options and target properties before reuse. Changed inputs
 trigger a fresh check; errors and repaired completion snapshots are not cached.
 Completion still performs its focused receiver check. Canceling an active request
-restarts that worker, and shutdown releases all workers. Restart the language
+restarts that worker; closing a package's last buffer or shutting down releases
+its worker. Restart the language
 server after replacing the compiler executable; configuration changes also restart
 workers. This is whole-snapshot reuse, not per-definition incremental compilation.
 Failure to start a package check is reported for that package and does not clear

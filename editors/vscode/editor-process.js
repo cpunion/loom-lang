@@ -102,5 +102,14 @@ function close() {
   workers.clear();
 }
 
+function retain(directories) {
+  for (const [key, worker] of workers) {
+    if (!directories.has(worker.directory)) {
+      worker.close();
+      workers.delete(key);
+    }
+  }
+}
+
 process.once('exit', close);
-module.exports = { request, close };
+module.exports = { request, close, retain };
