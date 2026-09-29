@@ -128,7 +128,8 @@ fn query(node Node, token Token, tokens List[Token]) Option[Query] {
             return Option.None
         }
     } else {
-        if kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign || kind == NodeKind.Field {
+        if kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Scoped ||
+        kind == NodeKind.Parameter || kind == NodeKind.Pattern || kind == NodeKind.Assign || kind == NodeKind.Field {
             match name_span(tokens, node, node.value) {
                 Option.Some(span) => {
                     if !same_span(span, token.span) {
@@ -191,7 +192,11 @@ fn declaration(analysis SemanticView, report Inspection, file Int, node Node) {
     }
     match lex(get(analysis.bindings.files, file).text) {
         Result.Ok(tokens) => {
-            match name_span(tokens, node, if node.kind == NodeKind.Function && node.value == "" { "fn" } else { node.value }) {
+            match name_span(tokens, node, if node.kind == NodeKind.Function && node.value == "" {
+                    "fn"
+                } else {
+                    node.value
+                }) {
                 Option.Some(span) => {
                     add_location(report, file, span)
                 }
@@ -211,7 +216,8 @@ fn symbol_location(analysis SemanticView, report Inspection, id Int) {
 
 fn source_binding(node Node, span Span) Option[Node] {
     if same_span(node.span, span) &&
-    (node.kind == NodeKind.Let || node.kind == NodeKind.Var || node.kind == NodeKind.Name) {
+    (node.kind == NodeKind.Let || node.kind == NodeKind.Var || node.kind == NodeKind.Scoped ||
+        node.kind == NodeKind.Name || node.kind == NodeKind.Pattern) {
         return Option.Some(node)
     }
     var index = 0
@@ -228,21 +234,78 @@ fn source_binding(node Node, span Span) Option[Node] {
     Option.None
 }
 
-fn local_binding(value Expr, local Int, spans List[Span]) {
+// Direct enum matches retain payload/whole locals on the checked arm rather
+// than emitting a Let. Match its exact source body, never a same-spelled name.
+// Expanded decision-tree arms have synthetic bodies and use their source Lets.
+fn source_arm(node Node, body Span) Option[Node] {
+    if node.kind == NodeKind.Arm && length(node.children) > 0 &&
+    same_span(get(node.children, length(node.children) - 1).span, body) {
+        return Option.Some(node)
+    }
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.span.start <= body.start && child.span.end >= body.end {
+            match source_arm(child, body) {
+                Option.Some(found) => {
+                    return Option.Some(found)
+                }
+                Option.None => {
+                }
+            }
+        }
+        index = index + 1
+    }
+    Option.None
+}
+
+fn local_binding(source Node, value Expr, local Int, spans List[Span]) {
     if value.kind == ExprKind.Let && value.index == local {
         push(spans, value.span)
     }
     var index = 0
     while index < length(value.children) {
-        local_binding(get(value.children, index), local, spans)
+        local_binding(source, get(value.children, index), local, spans)
         index = index + 1
     }
     index = 0
     while index < length(value.arms) {
         let arm = get(value.arms, index)
+        var binding = if arm.whole == local {
+            -1
+        } else {
+            -2
+        }
+        var slot = 0
+        while slot < length(arm.bindings) {
+            if get(arm.bindings, slot) == local {
+                binding = slot
+            }
+            slot = slot + 1
+        }
+        if binding >= -1 && length(arm.body) == 1 {
+            match source_arm(source, get(arm.body, 0).span) {
+                Option.Some(original) => {
+                    let pattern = get(original.children, 0)
+                    if binding == -1 {
+                        push(spans, pattern.span)
+                    }
+                    var group = 0
+                    while group < length(pattern.children) {
+                        let bindings = get(pattern.children, group)
+                        if binding >= 0 && bindings.kind == NodeKind.Bindings && length(bindings.children) == length(arm.bindings) {
+                            push(spans, get(bindings.children, binding).span)
+                        }
+                        group = group + 1
+                    }
+                }
+                Option.None => {
+                }
+            }
+        }
         var child = 0
         while child < length(arm.body) {
-            local_binding(get(arm.body, child), local, spans)
+            local_binding(source, get(arm.body, child), local, spans)
             child = child + 1
         }
         index = index + 1
@@ -253,7 +316,11 @@ fn local_location(analysis SemanticView, report Inspection, function Function, l
     let symbol = get(analysis.bindings.symbols, function.symbol)
     var index = 0
     var parameter = if symbol.node.value == "" && length(function.params) != 0 &&
-        get(analysis.data.types, get(function.params, 0)).kind == TypeKind.Frame { 1 } else { 0 }
+    get(analysis.data.types, get(function.params, 0)).kind == TypeKind.Frame {
+        1
+    } else {
+        0
+    }
     while index < length(symbol.node.children) {
         let group = get(symbol.node.children, index)
         if group.kind == NodeKind.Parameters {
@@ -261,7 +328,7 @@ fn local_location(analysis SemanticView, report Inspection, function Function, l
             while child < length(group.children) {
                 let node = get(group.children, child)
                 let environment = has(node, NodeKind.Comptime) && parameter < length(function.params) &&
-                    get(function.locals, parameter).name == node.value && get(analysis.data.types, get(function.params, parameter)).kind == TypeKind.Frame
+                get(function.locals, parameter).name == node.value && get(analysis.data.types, get(function.params, parameter)).kind == TypeKind.Frame
                 if !has(node, NodeKind.Comptime) || environment {
                     if parameter == local {
                         declaration(analysis, report, symbol.file, node)
@@ -275,7 +342,7 @@ fn local_location(analysis SemanticView, report Inspection, function Function, l
         index = index + 1
     }
     let spans = new[Span]()
-    local_binding(function.body, local, spans)
+    local_binding(symbol.node, function.body, local, spans)
     index = 0
     while index < length(spans) {
         match source_binding(symbol.node, get(spans, index)) {
@@ -312,7 +379,9 @@ fn capture_location(analysis SemanticView, report Inspection, parent Function, f
                 let field = get(environment.children, index)
                 if get(fields, field.index).name == name {
                     let source = get(field.children, 0)
-                    if source.kind == ExprKind.Local { local_location(analysis, report, parent, source.index) }
+                    if source.kind == ExprKind.Local {
+                        local_location(analysis, report, parent, source.index)
+                    }
                 }
                 index = index + 1
             }
@@ -339,7 +408,9 @@ fn source_local_type(analysis SemanticView, ty Int) Int {
     let shape = get(analysis.data.types, ty)
     if shape.kind == TypeKind.Frame && shape.symbol == -1 && length(shape.arguments) == 1 {
         get(shape.arguments, 0)
-    } else { ty }
+    } else {
+        ty
+    }
 }
 
 fn signature_name(analysis SemanticView, params List[Int], output Int) Text {
@@ -348,7 +419,9 @@ fn signature_name(analysis SemanticView, params List[Int], output Int) Text {
     var count = 0
     while index < length(params) {
         if get(analysis.data.types, get(params, index)).kind != TypeKind.Frame {
-            if count > 0 { label = concat(label, ", ") }
+            if count > 0 {
+                label = concat(label, ", ")
+            }
             label = concat(label, query_type_name(analysis, get(params, index)))
             count = count + 1
         }
@@ -434,7 +507,9 @@ fn path_depth(analysis SemanticView, value Expr) Int {
     if value.kind == ExprKind.Field && length(value.children) == 1 {
         let child = get(value.children, 0)
         if same_span(value.span, child.span) {
-            if source_local_type(analysis, child.ty) != child.ty { return 0 }
+            if source_local_type(analysis, child.ty) != child.ty {
+                return 0
+            }
             let depth = path_depth(analysis, child)
             if depth >= 0 {
                 return depth + 1
@@ -455,15 +530,18 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
             return
         }
         let shape = get(analysis.data.types, get(function.locals, value.index).ty)
-        if shape.kind == TypeKind.Frame && shape.symbol >= 0 { return }
-        if (path && target.segment == 0) || kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Assign {
+        if shape.kind == TypeKind.Frame && shape.symbol >= 0 {
+            return
+        }
+        if (path && target.segment == 0) || kind == NodeKind.Let || kind == NodeKind.Var ||
+        kind == NodeKind.Scoped || kind == NodeKind.Pattern || kind == NodeKind.Assign {
             add_type(report, query_type_name(analysis, source_local_type(analysis, get(function.locals, value.index).ty)))
             local_location(analysis, report, function, value.index)
         }
         return
     }
     if value.kind == ExprKind.Field {
-        if kind == NodeKind.Field || kind == NodeKind.Select ||(path && path_depth(analysis, value) == target.segment) {
+        if kind == NodeKind.Field || kind == NodeKind.Select || (path && path_depth(analysis, value) == target.segment) {
             add_type(report, query_type_name(analysis, value.ty))
             let ty = if kind == NodeKind.Field {
                 parent_type
@@ -477,7 +555,7 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
         return
     }
     let final = target.segment + 1 == target.segments
-    if final &&(path || kind == NodeKind.MethodCall) {
+    if final && (path || kind == NodeKind.MethodCall) {
         if value.kind == ExprKind.Call || value.kind == ExprKind.FunctionRef || value.kind == ExprKind.TaskCall {
             if value.index >= 0 {
                 let callee = get(analysis.data.functions, value.index)
@@ -533,7 +611,9 @@ fn inspect_tree(analysis SemanticView, report Inspection, function Function, tar
         return
     }
     inspect_expression(analysis, report, function, target, value, parent_type)
-    if value.kind == ExprKind.FunctionRef && same_span(value.span, target.node.span) { return }
+    if value.kind == ExprKind.FunctionRef && same_span(value.span, target.node.span) {
+        return
+    }
     var index = 0
     while index < length(value.children) {
         inspect_tree(analysis, report, function, target, get(value.children, index), if value.kind == ExprKind.Record {
@@ -557,7 +637,7 @@ fn inspect_tree(analysis SemanticView, report Inspection, function Function, tar
 
 // Uses actual checked instances, never spelling-only resolution. Results merge
 // every concrete instance; locations and type labels are deduplicated. Whitespace,
-// comments, punctuation, signatures and uninstantiated bodies have no result.
+// comments, punctuation and uninstantiated bodies have no result.
 // Match bindings and lowered checked constructors have types but no location. Dynamic calls
 // navigate to a unique concept signature, never a speculative implementation;
 // overloaded signatures not distinguished by name/arity omit the location.
@@ -566,7 +646,9 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
     var index = 0
     while index < length(declarations) {
         let node = get(declarations, index)
-        if node.kind == NodeKind.Comptime && inside(node.span, offset) { return Option.None }
+        if node.kind == NodeKind.Comptime && inside(node.span, offset) {
+            return Option.None
+        }
         index = index + 1
     }
     inspect_view(SemanticView {
@@ -628,7 +710,9 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
     while index < length(analysis.data.functions) {
         let function = get(analysis.data.functions, index)
         let declaration = get(analysis.bindings.symbols, function.symbol)
-        if declaration.file == file && !macro_generated(declaration.node) {
+        if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
+            let types_before = length(report.types)
+            let locations_before = length(report.definitions)
             inspect_tree(analysis, report, function, target, function.body, -1)
             var clause = 0
             while clause < length(function.preconditions) {
@@ -640,6 +724,9 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
                 inspect_tree(analysis, report, function, target, get(function.postconditions, clause), -1)
                 clause = clause + 1
             }
+            if length(report.types) == types_before && length(report.definitions) == locations_before {
+                inspect_binding_declaration(analysis, report, function, target, file)
+            }
         }
         index = index + 1
     }
@@ -647,6 +734,41 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
         return Option.None
     }
     Option.Some(report)
+}
+
+// Parameters and direct match payloads need not have an expression at their
+// declaration. A candidate's spelling only narrows the search; the checked
+// local ID must lead back to this exact source token before publishing evidence.
+fn inspect_binding_declaration(analysis SemanticView, report Inspection, function Function, target Query, file Int) {
+    let kind = target.node.kind
+    if kind != NodeKind.Name && kind != NodeKind.Parameter && kind != NodeKind.Pattern &&
+    kind != NodeKind.Let && kind != NodeKind.Var && kind != NodeKind.Scoped {
+        return
+    }
+    var index = 0
+    while index < length(function.locals) {
+        let local = get(function.locals, index)
+        if local.name == target.token.value {
+            let candidate = Inspection {
+                span = target.token.span
+                types = new[Text]()
+                definitions = new[Location]()
+            }
+            local_location(analysis, candidate, function, index)
+            var location = 0
+            while location < length(candidate.definitions) {
+                let defined = get(candidate.definitions, location)
+                let shape = get(analysis.data.types, local.ty)
+                if defined.file == file && same_span(defined.span, target.token.span) &&
+                !(shape.kind == TypeKind.Frame && shape.symbol >= 0) {
+                    add_type(report, query_type_name(analysis, source_local_type(analysis, local.ty)))
+                    add_location(report, defined.file, defined.span)
+                }
+                location = location + 1
+            }
+        }
+        index = index + 1
+    }
 }
 
 fn macro_generated(node Node) Bool {
