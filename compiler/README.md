@@ -2407,6 +2407,16 @@ The [loops example](examples/loops/main.loom) includes same-package unit tests.
 
 ## Source Tasks
 
+For deadline-aware outcomes, use `std.task.deadline.at(task, deadline).await`
+with an absolute process-local monotonic timestamp, or
+`after_ns(task, duration).await` to compute one at the call. The source policy
+requests cancellation, drains cleanup and returns the actual `Outcome`:
+Completed results are preserved, cleanup faults remain Faulted, and successful
+cancellation returns Cancelled. This is not a hard execution-time bound; running
+OS calls and cooperative scheduling can delay return. `std.task.cancel_when`
+provides the underlying source-level trigger composition. See the
+[outcome example](examples/task_outcomes/README.md).
+
 An `async fn` declares its logical result; calling it creates a hot `Task[T]`.
 Both children below enter the ready queue before either body runs:
 

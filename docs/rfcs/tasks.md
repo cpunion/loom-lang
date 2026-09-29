@@ -84,6 +84,16 @@ the first external wait. There is no thread per task, spin loop or fairness
 promise. Past deadlines and zero delays are valid but do not guarantee a yield.
 See the [timer example](../../compiler/examples/timers).
 
+Source `std.task.cancel_when(task, trigger)` waits for completion or requests
+cancellation from a terminal trigger, preserving the work's actual outcome after
+drain. Trigger results/existing faults are deliberately discarded: it is a signal,
+not a second result-bearing operation.
+`std.task.deadline.at` supplies an absolute monotonic timer;
+`after_ns` computes that deadline at the call, not in a queued body. A completed
+result cannot be erased to manufacture timeout status. Cancelling the waiter
+drains both subtrees; an earlier work fault retains priority over trigger cleanup
+faults. These are cooperative source policies, not hard execution-time limits.
+
 Direct Task parameters and returns now transfer one-shot obligations, including
 nested `Task[Task[T]]`. Sync helpers expose their owner requirement through a
 Task-bearing parameter/result and use the caller's owner; async constructors adopt

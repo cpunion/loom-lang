@@ -17,6 +17,7 @@ import std.bytes.length
 import std.int.to_text
 import std.text.concat
 import std.task.cancel
+import std.task.deadline.after_ns
 import std.task.Outcome
 import std.time.sleep_ms
 
@@ -101,7 +102,7 @@ test async fn numeric_client_connect_roundtrips_with_server_task() {
     }
 }
 
-test async fn cancelled_client_read_releases_lease_before_close() {
+test async fn deadline_cancels_client_read_and_releases_lease_before_close() {
     let listener = match listen("127.0.0.1:0").await {
         Result.Ok(value) => value
         Result.Err(_) => {
@@ -132,7 +133,7 @@ test async fn cancelled_client_read_releases_lease_before_close() {
         Result.Err(error) => error == TcpError.Close
         Result.Ok(_) => false
     }
-    assert match cancel(pending) {
+    assert match after_ns(pending, 1000000).await {
         Outcome.Cancelled => true
         _ => false
     }

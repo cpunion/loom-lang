@@ -157,6 +157,9 @@ transfer through functions, callbacks, dyn methods and aggregates. Outcomes,
 draining cancellation and tuple/List joins are source library policy over narrow
 completion notifications. Tuple `.await` joins and scalar `.await?` preserve
 ordinary typed result rules.
+Source `std.task.deadline` composes cancellation with a monotonic deadline,
+preserving completed results and draining both work and timer subtrees. It
+requests cancellation, not a hard return-time guarantee for blocking OS calls.
 
 Real timer/readiness/completion registration wakes the owner without per-Task
 threads or busy polling. Nonblocking TCP, OS DNS and asynchronous files are

@@ -1,0 +1,25 @@
+// Any terminal trigger requests cancellation; an earlier task completion retires
+// the trigger. Return the work's actual outcome, including late completed values.
+// This is a signal, not a second result: trigger values and existing faults are
+// discarded, including draining Task-bearing payloads. Newly raised trigger
+// cleanup faults fail the waiter unless an earlier work fault is already primary.
+pub async fn cancel_when[T, S](task Task[T], trigger Task[S]) Outcome[T] {
+    let observed = task_observe(task, 0)
+    let signal = task_observe(trigger, 1)
+    let selected = task_next().await
+    if selected == 0 {
+        match task_outcome(observed).await {
+            Outcome.Faulted(error) => {
+                task_drain(signal, true)
+                Outcome.Faulted(error)
+            }
+            value => {
+                task_drain(signal, false)
+                value
+            }
+        }
+    } else {
+        task_drain(signal, false)
+        task_cancel(observed)
+    }
+}
