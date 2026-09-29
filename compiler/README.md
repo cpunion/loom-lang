@@ -587,8 +587,10 @@ timings; local variables remain conservatively rooted for the function.
 - Source `std.io.read_bytes()` reads stdin to EOF; `write_bytes(Bytes)` writes
   stdout, and `write_error(Bytes)` writes stderr. These preserve arbitrary bytes,
   report byte counts/errors, and never close standard streams. `read_text()` still
-  rejects invalid UTF-8. Reads buffer the entire input, not a bounded-memory
-  stream. See the [binary filter](examples/binary_streams/main.loom).
+  rejects invalid UTF-8. These whole-input reads buffer to EOF;
+  `read_chunk(buffer, limit)` instead appends up to a positive byte limit and
+  returns the count (zero at EOF), allowing interactive framed input without
+  closing stdin. See the [binary filter](examples/binary_streams/main.loom).
 - Source `std.hash.sha256.digest(Bytes) Bytes` produces a fresh 32-byte digest;
   `hex(Bytes) Text` hashes input and returns its 64 lowercase hexadecimal digits.
   The one-shot implementation uses fixed scratch storage and virtual padding,

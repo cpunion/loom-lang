@@ -523,7 +523,10 @@ Quick Fix verifies one public declaration in a direct offline package against
 the edited in-memory package; missing bare names are searched only through
 selected direct module edges and require one exact export. Checked local and
 unique package-private function rename cover narrow source cases; public/API
-rename and incremental semantic reuse remain open. See the [editor trial](editors/vscode/README.md)
+rename and per-definition incremental checking remain open. A resident editor
+worker now reuses whole checked snapshots across diagnostics and navigation,
+revalidating the loaded source closure and observed build inputs before each
+reuse. See the [editor trial](editors/vscode/README.md)
 and its [import](editors/vscode/test/fixtures/import_project/library/defs.loom)
 and [rename](editors/vscode/test/fixtures/rename_project/helper.loom) fixtures.
 Native failing assertions now report their source location and current test,
@@ -541,8 +544,8 @@ resolved by guessing later operands.
 Shared-container
 results preserve internal aliases and cycles while constructing a fresh graph
 on each runtime evaluation. Successful pure results can be reused within one
-check; persistent/incremental reuse, richer pack iteration, typed macros, and broader
-reflection remain incomplete.
+check; persistent CTFE reuse, AST/declaration macros, and broader reflection
+remain incomplete.
 Source `std.reflect.describe[T]()` now supplies structural type metadata as a
 finite graph of ordinary records/enums/Lists. It handles inferred and recursive
 types, respects lexical visibility and reflects only the declared dynamic
@@ -572,7 +575,8 @@ arithmetic rewriting. Immutable local-flow facts and bounded direct scalar-helpe
 expansion extend this optional proof as described above; mutable/alias facts,
 helper loops and recursive proof dependencies remain open.
 
-Typed metaprogramming later reuses this infrastructure. The separate source
+Typed expression macros use this infrastructure; AST/declaration generation
+and first-class type values remain open. The separate source
 change tool maintains explicit stable-ID sidecars, reads directory or Git
 snapshots, and applies an exact reviewed merge to a new directory. Same-file
 overloads use parameter-type locators, not declaration positions; move-plus-edit

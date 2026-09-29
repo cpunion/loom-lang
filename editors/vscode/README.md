@@ -5,7 +5,9 @@ diagnostics, name/member completion, checked type hover, go to definition, find 
 conservative local/private-function rename, import quick fixes, and document
 formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
-Loom. Public/API rename and incremental semantic caching are not implemented.
+Loom. A resident compiler reuses unchanged checked snapshots for diagnostics,
+hover and navigation. Public/API rename and per-definition incremental checking
+are not implemented.
 
 ## Try it
 
@@ -222,12 +224,22 @@ is not a pass. The launcher captures VS Code logs and prints their tail on failu
 `VSCODE_EXECUTABLE` selects an installed VS Code launcher (use the
 absolute `Code.exe` path on Windows). No VS Code download is performed.
 `Loom` in the Output panel contains server messages. Protocol tracing is opt-in
-and can contain source text. Checks currently stop at the compiler's first error;
-they are fresh checks, not a persistent compiler session.
+and can contain source text. Checks stop at the compiler's first error.
+Each executable/package pair uses a resident compiler with one successful checked
+snapshot. Every request reloads the source closure and verifies observed build
+input bytes, explicit options and target properties before reuse. Changed inputs
+trigger a fresh check; errors and repaired completion snapshots are not cached.
+Completion still performs its focused receiver check. Canceling an active request
+restarts that worker; closing a package's last buffer or shutting down releases
+its worker. Restart the language
+server after replacing the compiler executable; configuration changes also restart
+workers. This is whole-snapshot reuse, not per-definition incremental compilation.
 Failure to start a package check is reported for that package and does not clear
 diagnostics from other successfully checked packages.
 
-The adapter calls:
+The adapter sends these commands through the private `loom editor-session`
+length-prefixed UTF-8 transport; each is also available as a one-shot command.
+Formatting remains a separate process:
 
 ```text
 loom editor-check PACKAGE --tests [--std STD] [--overlay ORIGINAL SNAPSHOT]...

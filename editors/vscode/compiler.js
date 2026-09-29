@@ -3,6 +3,7 @@ const { execFile } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const editorProcess = require('./editor-process');
 
 function run(executable, args, cwd, signal, input = '') {
   return new Promise((resolve, reject) => {
@@ -41,7 +42,7 @@ async function editorReport(settings, directory, mode, extraArgs, overlayArgs, s
   }
   if (settings.stdRoot) args.push('--std', settings.stdRoot);
   if (settings.nativeTool) args.push('--native-tool', settings.nativeTool);
-  const result = await run(settings.executable, args, directory, signal);
+  const result = await editorProcess.request(settings.executable, directory, args, signal);
   const failure = detail => new Error(`${mode} failed using ${settings.executable}: ${detail}\nSet loom.executable to the current Loom compiler, not an older same-named tool.`);
   if (result.code !== 0 && result.code !== 1) throw failure(result.stderr || `Compiler exited ${result.code}`);
   let report;
@@ -83,4 +84,5 @@ function byteOffset(document, position) {
   return Buffer.byteLength(document.getText().slice(0, document.offsetAt(position)), 'utf8');
 }
 
-module.exports = { snapshots, check, query, symbols, autoImport, format, bytePosition, byteOffset };
+module.exports = { snapshots, check, query, symbols, autoImport, format, bytePosition, byteOffset,
+  close: editorProcess.close, retain: editorProcess.retain };

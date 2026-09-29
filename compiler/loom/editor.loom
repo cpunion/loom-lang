@@ -221,6 +221,10 @@ fn editor_options(args List[Text]) Result[EditorOptions, Text] {
 }
 
 fn editor_execute(args List[Text]) EditorOutput {
+    editor_execute(args, editor_cache())
+}
+
+fn editor_execute(args List[Text], cache EditorCache) EditorOutput {
     let options = match editor_options(args) {
         Result.Ok(value) => value
         Result.Err(message) => {
@@ -271,6 +275,15 @@ fn editor_execute(args List[Text]) EditorOutput {
             }
         }
     }
+    let inputs = driver_build_inputs(options.build_options, options.native_tool)
+    if get(args, 1) != "editor-complete" {
+        match editor_reuse(cache, project, options.tests, inputs) {
+            Option.Some(analysis) => {
+                return editor_analyzed(args, options, project, analysis, inputs)
+            }
+            Option.None => {}
+        }
+    }
     let bound = match bind(project, options.tests) {
         Result.Ok(value) => value
         Result.Err(failed) => {
@@ -293,22 +306,39 @@ fn editor_execute(args List[Text]) EditorOutput {
         if get(args, 1) == "editor-complete" {
             return editor_completion(bound, index, options.offset, recovery.inserted, driver_build_inputs(options.build_options, options.native_tool))
         }
-        if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
-            let inputs = driver_build_inputs(options.build_options, options.native_tool)
-            return match check_with_inputs(bound, inputs) {
-                Result.Ok(program) => editor_symbols(options, bound, program, index, options.offset, inputs)
-                Result.Err(failed) => editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic)
-            }
-        }
-        return editor_query(bound, index, options.offset, driver_build_inputs(options.build_options, options.native_tool))
     }
-    let inputs = driver_build_inputs(options.build_options, options.native_tool)
-    match check_with_inputs(bound, inputs) {
-        Result.Ok(_) => {
-        }
+    match editor_checked(bound, inputs, cache) {
+        Result.Ok(analysis) => editor_analyzed(args, options, project, analysis, inputs)
         Result.Err(failed) => {
-            return editor_input_report(inputs, editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic))
+            if get(args, 1) == "editor-query" {
+                let index = match editor_source(project, options.query_path) {
+                    Result.Ok(value) => value
+                    Result.Err(message) => { return editor_error(message) }
+                }
+                let diagnostic = editor_diagnostic_json(get(project.files, failed.source).path, failed.diagnostic)
+                return editor_input_report(inputs, editor_inspection(bound,
+                    inspect_independent(bound, index, options.offset, inputs), diagnostic))
+            }
+            editor_input_report(inputs, editor_diagnostic(get(project.files, failed.source).path, failed.diagnostic))
         }
+    }
+}
+
+fn editor_analyzed(args List[Text], options EditorOptions, project Project, analysis Analysis, inputs BuildInputs) EditorOutput {
+    if options.query_path != "" {
+        let index = match editor_source(project, options.query_path) {
+            Result.Ok(value) => value
+            Result.Err(message) => { return editor_error(message) }
+        }
+        if options.offset > std.text.length(get(project.files, index).text) {
+            return editor_error("query byte offset is outside the source")
+        }
+        let output = if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
+            editor_symbols(options, analysis.bindings, analysis.program, index, options.offset, inputs)
+        } else {
+            editor_inspection(analysis.bindings, inspect_at(analysis, index, options.offset), "")
+        }
+        return editor_input_report(inputs, output)
     }
     editor_input_report(inputs, EditorOutput {
         text = "{\"diagnostics\":[]}\n"

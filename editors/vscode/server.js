@@ -103,6 +103,7 @@ async function validate(ticket) {
   checking = controller;
   const buffers = capturedBuffers();
   const roots = new Map(buffers.map(buffer => [path.dirname(buffer.path), buffer.uri]));
+  compiler.retain(new Set(roots.keys()));
   const reports = new Map();
   const inputs = new Set();
   let overlays;
@@ -162,7 +163,11 @@ async function validate(ticket) {
 documents.onDidChangeContent(schedule);
 documents.onDidClose(schedule);
 connection.onDidChangeWatchedFiles(schedule);
-connection.onDidChangeConfiguration(change => { defaults = change.settings?.loom || {}; schedule(); });
+connection.onDidChangeConfiguration(change => {
+  defaults = change.settings?.loom || {};
+  schedule();
+  compiler.close();
+});
 
 async function semanticQuery(params, token, kind) {
   const current = documents.get(params.textDocument.uri);
@@ -279,6 +284,7 @@ connection.onShutdown(async () => {
   checking?.abort();
   for (const controller of queries) controller.abort();
   await Promise.allSettled(pending);
+  compiler.close();
   await inputWatcher?.dispose();
 });
 documents.listen(connection);

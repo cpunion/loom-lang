@@ -595,7 +595,9 @@ added. Source `std.bytes.decode_utf8` now exposes that strict validation as
 `std.file.read_text` reuses it and maps errors, without a second private decoding
 path. These file writes truncate their destination, not atomically publish it.
 Source `std.io` also exposes binary stdin/stdout/stderr without new runtime APIs.
-Reads buffer to EOF; writes handle partial counts without closing standard streams.
+Whole-input reads buffer to EOF; `read_chunk(buffer, limit)` appends a bounded
+chunk without waiting for EOF. Writes handle partial counts without closing
+standard streams. The resident editor uses chunked stdin through this source API.
 Native O0/O2 and forced-GC tests cover empty/multichunk inputs, all byte values,
 continued stream access, and strict text decoding. See the
 [binary filter](../../compiler/examples/binary_streams/main.loom).
@@ -730,7 +732,15 @@ closure. Conservative local `let`/`var` and unique package-private function rena
 refuse unchecked occurrences and collisions; the latter includes test files and
 rechecks virtual cross-file edits. See the
 [cross-file rename fixture](../../editors/vscode/test/fixtures/rename_project/helper.loom).
-Public/API rename and incremental semantic caching remain unimplemented.
+The editor now keeps one successful typed analysis per resident package worker.
+Diagnostics, hover, references and rename reuse it only after reloading the
+source closure and comparing source/AST, imports, test mode, build-input bytes,
+options and observed target properties. Missing or changed input files trigger a
+fresh check without relying on client notifications. Failed checks and completion
+repairs do not become cached evidence. Cancellation restarts the affected worker;
+shutdown releases it. Real protocol tests exercise reuse, unsaved type changes,
+file membership and build-input invalidation. Public/API rename and per-definition
+incremental checking remain unimplemented.
 Qualified paths now enumerate existing package/import spellings, preserving
 overloads and source-instance/test identity. Local receiver bindings take priority;
 type and dyn positions filter declarations without claiming valid instantiation.

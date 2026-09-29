@@ -19,6 +19,15 @@ intrinsic fn write_bytes(handle Int, value Bytes, offset Int) Int
 
 intrinsic fn read(handle Int, buffer Bytes, limit Int) Int
 
+// Append up to limit bytes from stdin. Zero means EOF; the stream stays open.
+pub fn read_chunk(buffer Bytes, limit Int) Result[Int, ReadError]
+requires limit > 0
+{
+    let count = read(0, buffer, limit)
+    if count < 0 { return Result.Err(ReadError.Failed) }
+    Result.Ok(count)
+}
+
 // Read standard input to EOF without decoding or closing the process-owned stream.
 pub fn read_bytes() Result[Bytes, ReadError] {
     let buffer = new()
