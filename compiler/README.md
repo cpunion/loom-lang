@@ -1576,8 +1576,12 @@ fn replace_first(pair IntPair, value Int) {
 
 Aliases observe that replacement. Source helpers such as `set` and `reverse`
 work by the same inferred effects, without special library-name rules or a new
-check after each write. Length changes still reject. A predicate that observes
-elements keeps the read-only capability; unknown effects, raw alias returns and
+check after each write. Appending additionally requires a static proof that
+the predicate at length `n` implies it at `n + 1`, including helper preconditions
+and arithmetic definedness. Thus `length(self) > 0` permits `push` and source
+append helpers, while fixed length and upper bounds do not. Capacity/length
+overflow faults before mutation. Unsupported proofs do not grant permission.
+A predicate that observes elements keeps the read-only capability; unknown effects, raw alias returns and
 publication into another aggregate reject at compile time. Factories
 and borrows are checked through helper bodies, not trusted annotations. These
 rules also run for compile-time code and unused concrete functions. The constrained

@@ -77,7 +77,8 @@ record Association {
 record TypeState {
     phase Int
     task_width Int
-    list_element_writes Bool
+    // 0: read-only; 1: element replacement; 2: replacement and proved append.
+    list_writes Int
 }
 
 record Environment {

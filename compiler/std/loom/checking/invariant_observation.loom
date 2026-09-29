@@ -9,7 +9,7 @@ record InvariantReads {
     functions List[Function]
     references List[Expr]
     contents Bool
-    element_writes Bool
+    writes Int
     element_reads List[Bool]
     calls List[InvariantCall]
     valid List[Bool]
@@ -86,7 +86,7 @@ fn invariant_call(reads InvariantReads, target Int, inputs List[InputOrigin], de
             inputs = inputs
             origin = origin_input()
         })
-    if function.runtime_name != "" && !invariant_intrinsic_allowed(reads.contents, reads.element_writes, function.runtime_name, inputs) {
+    if function.runtime_name != "" && !invariant_intrinsic_allowed(reads.contents, reads.writes, function.runtime_name, inputs) {
         set(reads.valid, 0, false)
         return origin_input()
     }
@@ -172,7 +172,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     if kind == ExprKind.Intrinsic && origin_shared(borrowed) && value.text != "list_len" {
         set(reads.element_reads, 0, true)
     }
-    if ((kind == ExprKind.Intrinsic && !invariant_intrinsic_allowed(reads.contents, reads.element_writes, value.text, inputs)) || kind == ExprKind.DynCall ||
+    if ((kind == ExprKind.Intrinsic && !invariant_intrinsic_allowed(reads.contents, reads.writes, value.text, inputs)) || kind == ExprKind.DynCall ||
         kind == ExprKind.FrameStore) && origin_shared(borrowed) {
         set(reads.valid, 0, false)
     }
@@ -228,7 +228,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     borrowed
 }
 
-fn invariant_reads(env Environment, functions List[Function], value Expr, contents Bool, element_writes Bool) InvariantReads {
+fn invariant_reads(env Environment, functions List[Function], value Expr, contents Bool, writes Int) InvariantReads {
     let references = new[Expr]()
     invariant_references(value, references)
     var function = 0
@@ -247,7 +247,7 @@ fn invariant_reads(env Environment, functions List[Function], value Expr, conten
         functions = functions
         references = references
         contents = contents
-        element_writes = element_writes
+        writes = writes
         element_reads = invariant_flag(false)
         calls = new[InvariantCall]()
         valid = invariant_flag(true)
@@ -255,7 +255,7 @@ fn invariant_reads(env Environment, functions List[Function], value Expr, conten
 }
 
 fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int, contents Bool) InvariantReads {
-    let reads = invariant_reads(env, program.functions, value, contents, false)
+    let reads = invariant_reads(env, program.functions, value, contents, 0)
     let inputs = new[InputOrigin]()
     push(inputs, origin_input())
     let frame = invariant_frame(count, inputs)
@@ -268,13 +268,16 @@ fn invariant_observation(env Environment, program std.loom.typed.Program, value 
     reads
 }
 
-fn invariant_intrinsic_allowed(contents Bool, element_writes Bool, name Text, inputs List[InputOrigin]) Bool {
+fn invariant_intrinsic_allowed(contents Bool, writes Int, name Text, inputs List[InputOrigin]) Bool {
     if contents && invariant_read_intrinsic(name) {
         return true
     }
     // Element replacement cannot change length. Neither the index nor the
     // stored value may transport protected storage to another alias graph.
-    element_writes && name == "list_set" && length(inputs) == 3 &&
+    if writes >= 2 && name == "list_push" && length(inputs) == 2 {
+        return !origin_shared(get(inputs, 1))
+    }
+    writes >= 1 && name == "list_set" && length(inputs) == 3 &&
     !origin_shared(get(inputs, 1)) && !origin_shared(get(inputs, 2))
 }
 

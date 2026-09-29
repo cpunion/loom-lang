@@ -24,6 +24,17 @@ fn pair_length(values List[Int]) Bool {
 
 type IntPair = List[Int] where pair_length(self)
 
+fn has_values(values List[Int]) Bool {
+    length(values) > 0
+}
+
+type NonEmptyValues = List[Int] where has_values(self)
+
+fn add_two(values List[Int], value Int) {
+    push(values, value)
+    push(values, value)
+}
+
 fn positive_copy(values List[Int]) Result[PositiveValues, ConstraintError] {
     PositiveValues(clone(values))
 }
@@ -73,6 +84,11 @@ fn list_constraint_scope() Bool {
     set(pair, 0, 9)
     assert pair_alias[0] == 9 && pair_alias[1] == -7
     assert length(pair) == 2
+    let growing = NonEmptyValues([1])
+    let growing_alias = growing
+    add_two(growing, 2)
+    growing[0] = -1
+    assert length(growing_alias) == 3 && values_sum(growing_alias) == 3
     true
 }
 
