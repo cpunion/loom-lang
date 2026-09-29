@@ -328,13 +328,19 @@ fn activate_witnesses(env Environment, retain Bool) Result[Bool, Failure] {
     Result.Ok(changed)
 }
 fn emit_functions(env Environment, retain Bool) Result[List[Function], Failure] {
+    emit_functions_reusing(env, retain, no_body_reuse())
+}
+fn emit_functions_reusing(env Environment, retain Bool, bodies BodyReuse) Result[List[Function], Failure] {
     let functions = new[Function]()
     var index = 0
     var more = true
     while more {
         while index < length(env.pending) {
             let instance = get(env.pending, index)
-            push(functions, function(env, instance.signature, instance.arguments, instance.constants, true)?)
+            match reuse_body(env, bodies, instance)? {
+                Option.Some(value) => { push(functions, value) }
+                Option.None => { push(functions, function(env, instance.signature, instance.arguments, instance.constants, true)?) }
+            }
             index = index + 1
         }
         more = activate_witnesses(env, retain)?

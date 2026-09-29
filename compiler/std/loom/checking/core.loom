@@ -375,6 +375,10 @@ pub fn check_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Re
     checked_program(env, new[Bool](), new[Bool](), ints(0))
 }
 fn checked_program(env Environment, reuse List[Bool], reusable List[Bool], hits List[Int]) Result[std.loom.typed.Program, Failure] {
+    checked_program_reusing(env, reuse, reusable, hits, no_body_reuse())
+}
+
+fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool], hits List[Int], bodies BodyReuse) Result[std.loom.typed.Program, Failure] {
     let source = env.source
     let resource_roots = new[Int]()
     var index = 0
@@ -416,7 +420,7 @@ fn checked_program(env Environment, reuse List[Bool], reusable List[Bool], hits 
         }
         index = index + 1
     }
-    let functions = emit_functions(env, entry < 0 || length(exports) != 0)?
+    let functions = emit_functions_reusing(env, entry < 0 || length(exports) != 0, bodies)?
     discard runtime_meta(env, functions)?
     discard resource_unreached(env, resource_roots)?
     discard layouts(env)?

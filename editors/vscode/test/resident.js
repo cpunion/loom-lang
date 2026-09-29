@@ -109,10 +109,12 @@ fn main() {
     const moved = await compiler.check(settings, folder, []);
     assert.deepEqual(moved.diagnostics, []);
     assert.equal(moved.definitionsReused, 4);
+    assert.equal(moved.bodiesReused, 3);
     await fs.appendFile(sibling, '\nfn extra() Int {\n    9\n}\n');
     const extended = await compiler.check(settings, folder, []);
     assert.deepEqual(extended.diagnostics, []);
     assert.equal(extended.definitionsReused, 4);
+    assert.equal(extended.bodiesReused, 3);
     await fs.unlink(sibling);
     await fs.writeFile(file, edited.replace('value + 12', 'true'));
     assert.ok((await compiler.check(settings, folder, [])).diagnostics.length);

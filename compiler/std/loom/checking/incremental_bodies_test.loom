@@ -1,0 +1,125 @@
+fn cached_function(value CachedCheck, name Text) Int {
+    var index = 0
+    while index < length(value.program.functions) {
+        let function = get(value.program.functions, index)
+        if get(value.bindings.symbols, function.symbol).name == name {
+            return index
+        }
+        index = index + 1
+    }
+    assert false
+    -1
+}
+
+fn cached_answer(value CachedCheck) Int {
+    let index = cached_function(value, "answer")
+    let function = get(value.program.functions, index)
+    let call = expression(ExprKind.Call, function.result, get(value.bindings.symbols, function.symbol).node,
+        "", index, new[Expr](), true)
+    match std.loom.eval.evaluate(value.program, call, 0) {
+        Result.Ok(answer) => answer.number
+        Result.Err(_) => {
+            assert false
+            0
+        }
+    }
+}
+
+test fn concrete_bodies_rekey_nominals_calls_and_generic_instances() {
+    let cache = definition_cache()
+    let source = """
+        record Box[T] {
+            value T
+        }
+        fn identity[T](value T) T {
+            value
+        }
+        fn unbox(value Box[Int]) Int {
+            identity(value).value
+        }
+        pub fn answer() Int {
+            unbox(Box { value = 7 })
+        }
+        """
+    let first = match cached_source(cache, source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert cached_answer(first) == 7 && bodies_reused(cache) == 0
+    // Alter public checked output: the cache must retain its own evidence.
+    let answer = get(first.program.functions, cached_function(first, "answer"))
+    set(answer.body.children, 0, expression(ExprKind.Integer, 1,
+            get(first.bindings.symbols, answer.symbol).node, "99", -1, new[Expr](), true))
+    assert cached_answer(first) == 99
+    let second = match cached_source(cache, concat("""
+        fn added(value List[Bool]) List[Bool] {
+            value
+        }
+
+        """, source)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert cached_answer(second) == 7 && bodies_reused(cache) == 3
+    let third = match cached_source(cache, source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert cached_answer(third) == 7 && bodies_reused(cache) == 6
+}
+
+test fn reused_assertions_follow_moved_source_and_failed_checks_do_not_publish() {
+    let cache = definition_cache()
+    let source = """
+        pub fn answer() Int {
+            assert true
+            7
+        }
+        """
+    assert match cached_source(cache, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let file = source_file("app", concat("\n\n", source), false)
+    let files = new[TestFile]()
+    push(files, TestFile {
+            path = "moved.loom"
+            ..file
+        })
+    let moved = match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), cache) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let function = get(moved.program.functions, cached_function(moved, "answer"))
+    let assertion = get(function.body.children, 0)
+    assert assertion.text == "moved.loom:4:5: assertion failed"
+    assert bodies_reused(cache) == 1 && cached_answer(moved) == 7
+    assert match cached_source(cache, """
+        pub fn answer() Int {
+            true
+        }
+        """) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let restored = match cached_source(cache, source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert cached_answer(restored) == 7 && bodies_reused(cache) == 2
+}

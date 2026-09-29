@@ -5,6 +5,7 @@ import std.io.read_chunk
 import std.loom.checking.DefinitionCache
 import std.loom.checking.definition_cache
 import std.loom.checking.definitions_reused
+import std.loom.checking.bodies_reused
 import std.loom.checking.check_project_cached
 import std.loom.checking.has_declaration_stages
 import std.loom.binding.bind_headers
@@ -206,14 +207,16 @@ fn editor_session(executable Text) Result[Bool, Text] {
         }
         let hits = get(cache.hits, 0)
         let definitions = definitions_reused(cache.definitions)
+        let bodies = bodies_reused(cache.definitions)
         let output = editor_execute(args, cache)
         let reused = if get(cache.hits, 0) > hits {
             "true"
         } else {
             "false"
         }
-        let response = concat("{\"analysisReused\":", concat(reused, concat(",\"definitionsReused\":",
-                    concat(to_text(definitions_reused(cache.definitions) - definitions), concat(",", slice(output.text, 1, std.text.length(output.text)))))))
+        let response = concat("{\"bodiesReused\":", concat(to_text(bodies_reused(cache.definitions) - bodies),
+                concat(",\"analysisReused\":", concat(reused, concat(",\"definitionsReused\":",
+                    concat(to_text(definitions_reused(cache.definitions) - definitions), concat(",", slice(output.text, 1, std.text.length(output.text)))))))))
         match write_text(response) {
             Result.Ok(_) => {
             }
