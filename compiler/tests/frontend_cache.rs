@@ -30,6 +30,86 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn scoped_body_reuse_retains_list_cleanup_fault_draining_and_hidden_dispose_edges() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+import std.resource.Dispose
+import std.resource.MustScope
+import std.list.push
+import std.task.outcome
+import std.task.Outcome
+import std.time.sleep_ms
+record Guard {
+    id Int
+    trace List[Int]
+}
+impl MustScope for Guard {
+}
+impl Dispose for Guard {
+    fn dispose(self Guard) {
+        push(self.trace, self.id)
+        if self.id == 2 {
+            assert false
+        }
+    }
+}
+fn acquire(id Int, trace List[Int]) Guard {
+    Guard { id = id, trace = trace }
+}
+async fn worker(trace List[Int]) {
+    defer {
+        push(trace, 9)
+    }
+    scoped values = [acquire(1, trace), acquire(2, trace)]
+    sleep_ms(1).await
+}
+async fn main() {
+    let trace List[Int] = []
+    match outcome(worker(trace)).await {
+        Outcome.Faulted(_) => {}
+        _ => {
+            assert false
+        }
+    }
+    assert trace[0] == 2 && trace[1] == 1 && trace[2] == 9
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(&path, format!("fn unused() Int {{ 1 }}\n\n{source}")).unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    let bodies: usize = trace
+        .split(", bodies reused ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(bodies >= 5, "{trace}");
+    let executed = common::command(&["run"])
+        .arg(&package)
+        .arg("--frontend-cache")
+        .arg(&cache)
+        .env("LOOM_GC_STRESS", "1")
+        .env("LOOM_NATIVE_TIMINGS", "1")
+        .output()
+        .unwrap();
+    checked(&executed, true);
+    // No explicit dispose() appears in worker's AST. The introduced cleanup
+    // edge must still follow the changed implementation, which no longer faults.
+    fs::write(&path, source.replace("self.id == 2", "self.id == 3")).unwrap();
+    assert!(!cached("run", &package, &cache, &[]).status.success());
+    fs::write(&path, source.replace("scoped values", "let values")).unwrap();
+    assert!(!cached("check", &package, &cache, &[]).status.success());
+}
+
+#[test]
 fn dynamic_instances_rebuild_witnesses_slots_and_async_dispatch() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

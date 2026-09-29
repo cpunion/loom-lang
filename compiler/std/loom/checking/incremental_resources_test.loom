@@ -1,0 +1,40 @@
+test fn scoped_resource_bodies_reuse_without_skipping_current_flow_checks() {
+    let source = concat(resource_header(), """
+        pub fn run() Int {
+            let log = [0]
+            {
+                defer {
+                    push(log, 8)
+                }
+                scoped values = [make(log), make(log)]
+                assert values[0].use() == 7
+            }
+            log[2] + log[3] + log[4]
+        }
+        """)
+    let initial = definition_cache()
+    let first = match check_project_cached(fixture_project(resource_source_files(source)), false, build_inputs(no_input_reader), initial) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            assert false
+            return
+        }
+    }
+    let cache = restored_definition_cache(initial)
+    let changed = concat("fn unrelated() Bool { true }\n", source)
+    assert match check_project_cached(fixture_project(resource_source_files(changed)), false, build_inputs(no_input_reader), cache) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    assert bodies_reused(cache) == length(first.program.functions)
+    discard restored_definition_cache(cache)
+    let invalid = std.text.join(std.text.split(source, "scoped values"), "let values")
+    assert match check_project_cached(fixture_project(resource_source_files(invalid)), false, build_inputs(no_input_reader), cache) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

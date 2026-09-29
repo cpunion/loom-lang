@@ -1,4 +1,4 @@
-fn resource_checked(source Text) Result[std.loom.typed.Program, Failure] {
+fn resource_source_files(source Text) List[TestFile] {
     let files = source_files(source)
     push(files, source_file("std.resource", """
         pub concept Dispose {
@@ -16,7 +16,10 @@ fn resource_checked(source Text) Result[std.loom.typed.Program, Failure] {
     push(files, source_file("std.result", "pub enum Result[T, E] { Ok(T) Err(E) }", true))
     push(files, source_file("std.option", "pub enum Option[T] { Some(T) None }", true))
     push(files, source_file("std.list", "intrinsic fn list_push[T](values List[T], value T)\npub fn push[T](values List[T], value T) { list_push(values, value) }", true))
-    checked(files)
+    files
+}
+fn resource_checked(source Text) Result[std.loom.typed.Program, Failure] {
+    checked(resource_source_files(source))
 }
 fn resource_accept(source Text) {
     match resource_checked(source) {

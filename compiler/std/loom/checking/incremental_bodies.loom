@@ -240,7 +240,7 @@ fn body_expression_supported(reuse BodyReuse, value Expr, span Span, seen List[I
     let kind = value.kind
     if kind == ExprKind.Deferred ||
     kind == ExprKind.FrameNew || kind == ExprKind.FrameStore ||
-    kind == ExprKind.ResourceDrain || kind == ExprKind.TypeValue {
+    kind == ExprKind.TypeValue {
         return false
     }
     if !body_type_supported(reuse, value.ty, seen) || value.span.start < span.start || value.span.end > span.end {
