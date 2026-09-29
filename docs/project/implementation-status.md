@@ -847,8 +847,16 @@ completed payloads before later arguments execute. Scope cleanup selects the
 active variant, with independent callbacks so an outer or child fault cannot skip
 remaining payloads. Flat, nested and guarded scoped matches borrow payloads without
 transferring cleanup ownership. Native O0/O2, compile-time, forced-GC, suspension
-and cancellation tests cover this path. Resource Lists, recursive resource cleanup
-and transfer into Tasks remain unsupported.
+and cancellation tests cover this path. Resource Lists now support fresh literals
+and `std.resource.generate(count, factory)` with runtime counts. Typed callbacks
+drain elements in reverse order, including partially constructed Lists and nested
+record/enum/List cleanup faults. Synchronous MustScope parameters are checked
+borrows; indexing and read-only calls preserve the single cleanup owner. Native,
+compile-time, moving-GC, suspension and cancellation tests cover this path.
+Recursive resource layouts through Lists now use finite typed cleanup functions;
+recursive factories and borrowed traversal share the same fresh/no-escape checks.
+Native/compile-time resource trees and nested fault/cancellation tests cover this
+path. Resource transfer into Tasks remains unsupported.
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
 same-directory tests, a separate library package, Unicode text and file I/O.

@@ -40,6 +40,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         ty: Type,
         capacity: usize,
     ) -> NativeResult<PointerValue<'ctx>> {
+        self.list_with_capacity(ty, self.size_type.const_int(capacity as u64, false))
+    }
+
+    pub(super) fn list_with_capacity(
+        &mut self,
+        ty: Type,
+        capacity: IntValue<'ctx>,
+    ) -> NativeResult<PointerValue<'ctx>> {
         let Type::List(id) = ty else {
             return Err("invalid list constructor type".into());
         };
@@ -68,11 +76,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .runtime_call(
                 "list_new",
                 Some(pointer.into()),
-                &[
-                    stride.into(),
-                    trace.into(),
-                    self.size_type.const_int(capacity as u64, false).into(),
-                ],
+                &[stride.into(), trace.into(), capacity.into()],
             )?
             .ok_or("missing list allocation")?
             .into_pointer_value();

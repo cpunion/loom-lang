@@ -1,0 +1,105 @@
+enum ResourceTree {
+    Leaf(Leaf)
+    Fallible(GenericChild)
+    Branch(List[ResourceTree])
+}
+
+impl Dispose for ResourceTree {
+    fn dispose(self ResourceTree) {
+    }
+}
+
+fn resource_tree(depth Int, first Int, trace List[Int]) ResourceTree {
+    if depth == 0 {
+        return ResourceTree.Leaf(acquire(first, trace))
+    }
+    ResourceTree.Branch([
+            resource_tree(depth - 1, first, trace),
+            resource_tree(depth - 1, first + (1 << (depth - 1)), trace),
+        ])
+}
+
+fn leaf_count(tree ResourceTree) Int {
+    match tree {
+        ResourceTree.Leaf(_) => 1
+        ResourceTree.Fallible(_) => 1
+        ResourceTree.Branch(children) => {
+            var count = 0
+            var index = 0
+            while index < length(children) {
+                count = count + leaf_count(children[index])
+                index = index + 1
+            }
+            count
+        }
+    }
+}
+
+fn tree_scope() Int {
+    let trace List[Int] = []
+    {
+        scoped tree = resource_tree(3, 1, trace)
+        assert leaf_count(tree) == 8
+    }
+    assert length(trace) == 16
+    var index = 0
+    while index < 8 {
+        assert trace[index] == (index + 1) * 10
+        assert trace[8 + index] == 8 - index
+        index = index + 1
+    }
+    length(trace)
+}
+
+test fn recursive_resource_trees_construct_and_clean_with_finite_typed_helpers() {
+    assert tree_scope() == 16
+    assert comptime {
+        tree_scope()
+    } == 16
+}
+
+fn fallible_tree(trace List[Int]) ResourceTree {
+    ResourceTree.Branch([
+            ResourceTree.Branch([
+                    ResourceTree.Fallible(generic_child(1, trace, true)),
+                    ResourceTree.Leaf(acquire(2, trace)),
+                ]),
+            ResourceTree.Fallible(generic_child(3, trace, true)),
+        ])
+}
+
+async fn suspended_tree(trace List[Int], delay Int) {
+    scoped tree = fallible_tree(trace)
+    sleep_ms(delay).await
+}
+
+fn assert_tree_closed(trace List[Int]) {
+    assert length(trace) == 8
+    assert trace[3] == 300 && trace[4] == 3 && trace[5] == 2
+    assert trace[6] == 100 && trace[7] == 1
+}
+
+test async fn recursive_cleanup_continues_after_faults_and_cancellation() {
+    let trace List[Int] = []
+    match outcome(suspended_tree(trace, 1)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert_tree_closed(trace)
+    let stopped List[Int] = []
+    let pending = suspended_tree(stopped, 10000)
+    while length(stopped) < 3 {
+        sleep_ms(1).await
+    }
+    match cancel(pending) {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert_tree_closed(stopped)
+}

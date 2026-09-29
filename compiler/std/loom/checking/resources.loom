@@ -73,8 +73,13 @@ fn resource_type(env Environment, owner Int, obligations List[Requirement], ty I
 fn marker_type(env Environment, owner Int, obligations List[Requirement], ty Int, capability Int, seen List[Int]) Result[Bool, Failure] {
     if capability < 0 || resource_seen(seen, ty) { return Result.Ok(false) }
     push(seen, ty)
-    if admitted(env, owner, obligations, ty, capability)? { return Result.Ok(true) }
     let shape = get(env.types, ty)
+    // A test-defined nominal type keeps its own resource semantics when it is
+    // passed through production generics. Test extensions of production types
+    // still require explicit evidence and cannot change production behavior.
+    let declaration = if (shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum) &&
+        symbol(env, shape.symbol).test_only { shape.symbol } else { owner }
+    if admitted(env, declaration, obligations, ty, capability)? { return Result.Ok(true) }
     if shape.kind == TypeKind.Function { return Result.Ok(false) }
     // Nominal arguments and dyn associated bindings describe types, not stored
     // values. Follow their concrete fields below; List/Task hold their payload.
@@ -148,19 +153,6 @@ fn resource_body_required(env Environment, current Signature, body Expr) Result[
     Result.Ok(false)
 }
 
-fn resource_parameters(context Context) Result[Bool, Failure] {
-    if resource_concept(context.env, "MustScope") < 0 { return Result.Ok(true) }
-    let method = method_declaration(context.env, context.signature.symbol) >= 0
-    var index = 0
-    while index < length(context.signature.params) {
-        if !(method && index == 0) && must_scope(context, get(context.signature.params, index))? {
-            return Result.Err(error(context, symbol(context.env, context.signature.symbol).node, "MustScope values cannot be ordinary parameters; use a scoped receiver method"))
-        }
-        index = index + 1
-    }
-    Result.Ok(true)
-}
-
 fn resource_binding(context Context, node Node, value Expr) Result[Bool, Failure] {
     if must_scope(context, value.ty)? {
         return Result.Err(error(context, node, "MustScope values require scoped, not an ordinary binding or discard"))
@@ -188,6 +180,9 @@ fn scoped_receiver_root(context Context, value Expr) Bool {
         (value.index == 0 && method_declaration(context.env, context.signature.symbol) >= 0)
     }
     if value.kind == ExprKind.Field {
+        return scoped_receiver_root(context, get(value.children, 0))
+    }
+    if value.kind == ExprKind.Intrinsic && value.text == "list_get" {
         return scoped_receiver_root(context, get(value.children, 0))
     }
     false
@@ -251,6 +246,6 @@ fn resource_computation(context Context, functions List[Function], value Functio
     while index < length(functions) { push(closure, get(functions, index))
         index = index + 1 }
     push(closure, value)
-    discard resource_function(ResourceAnalysis { env = context.env functions = closure summaries = new[ResourceSummary]() }, length(functions), -1)?
+    discard resource_function(ResourceAnalysis { env = context.env functions = closure summaries = new[ResourceSummary]() computation_requirements = context.signature.requirements }, length(functions), new[Int]())?
     Result.Ok(true)
 }

@@ -1,0 +1,92 @@
+fn pending_scope(context Context, node Node, receiver Expr, body List[Expr], flags List[Int], cleanups List[Int]) Result[Bool, Failure] {
+    let disposals = new[Expr]()
+    discard resource_cleanups(context, node, receiver, disposals, 0)?
+    var index = 0
+    while index < length(disposals) {
+        let flag = length(context.locals)
+        push(context.locals, Local {
+                name = ""
+                ty = 2
+                mutable = true
+                is_scoped = false
+            })
+        push(body, expression(ExprKind.Let, 0, node, "", flag,
+                expressions(expression(ExprKind.Bool, 2, node, "true", -1, new[Expr](), true)), true))
+        let dispose = expression(ExprKind.Block, 0, node, "", -1, expressions(get(disposals, index)), true)
+        let guarded = expression(ExprKind.If, 0, node, "", -1,
+            pair(atom(ExprKind.Local, 2, node, flag), dispose), true)
+        let cleanup = expression(ExprKind.Block, 0, node, "", -1, expressions(guarded), true)
+        let head = length(context.cleanups)
+        push(context.cleanups, Cleanup {
+                body = cleanup
+                previous = if length(cleanups) == 0 {
+                    context.cleanup_head
+                } else {
+                    get(cleanups, length(cleanups) - 1)
+                }
+            })
+        push(body, expression(ExprKind.Defer, 0, node, "resource-pending", head, expressions(cleanup), true))
+        push(flags, flag)
+        push(cleanups, head)
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn pending_disarm(context Context, node Node, body List[Expr], flags List[Int], cleanups List[Int]) {
+    var index = 0
+    while index < length(flags) {
+        push(body, expression(ExprKind.Assign, 0, node, "", get(flags, index),
+                expressions(expression(ExprKind.Bool, 2, node, "false", -1, new[Expr](), true)), true))
+        index = index + 1
+    }
+    index = length(cleanups)
+    while index > 0 {
+        index = index - 1
+        let head = get(cleanups, index)
+        push(body, expression(ExprKind.Cleanup, 0, node, "resource-disarm", head,
+                expressions(get(context.cleanups, head).body), true))
+    }
+}
+
+fn generated_resources(context Context, node Node, ty Int) Result[Expr, Failure] {
+    let body = new[Expr]()
+    let flags = new[Int]()
+    let cleanups = new[Int]()
+    let list = length(context.locals)
+    push(context.locals, Local {
+            name = ""
+            ty = ty
+            mutable = false
+            is_scoped = true
+        })
+    let count = atom(ExprKind.Local, 1, node, 0)
+    let allocate = expression(ExprKind.Intrinsic, ty, node, "list_new_capacity", -1, expressions(count), true)
+    push(body, expression(ExprKind.Let, 0, node, "", list, expressions(allocate), true))
+    let receiver = atom(ExprKind.Local, ty, node, list)
+    discard pending_scope(context, node, receiver, body, flags, cleanups)?
+    let index = length(context.locals)
+    push(context.locals, Local {
+            name = ""
+            ty = 1
+            mutable = true
+            is_scoped = false
+        })
+    push(body, expression(ExprKind.Let, 0, node, "", index,
+            expressions(expression(ExprKind.Integer, 1, node, "0", -1, new[Expr](), true)), true))
+    let position = atom(ExprKind.Local, 1, node, index)
+    let factory = atom(ExprKind.Local, get(context.signature.params, 1), node, 1)
+    let element = get(get(context.env.types, ty).arguments, 0)
+    let created = expression(ExprKind.IndirectCall, element, node, "", -1, pair(factory, position), true)
+    // Only this unexposed constructor temporary may accept transferred elements.
+    let append = expression(ExprKind.Intrinsic, 0, node, "list_push", list, pair(receiver, created), true)
+    let next = expression(ExprKind.Binary, 1, node, "+", -1,
+        pair(position, expression(ExprKind.Integer, 1, node, "1", -1, new[Expr](), true)), true)
+    let iteration = expression(ExprKind.Block, 0, node, "", -1,
+        pair(append, expression(ExprKind.Assign, 0, node, "", index, expressions(next), true)), true)
+    let condition = expression(ExprKind.Binary, 2, node, "<", -1, pair(position, count), true)
+    push(body, expression(ExprKind.While, 0, node, "", -1, pair(condition, iteration), true))
+    pending_disarm(context, node, body, flags, cleanups)
+    push(body, expression(ExprKind.Coerce, ty, node, "resource-pending-transfer", -1, expressions(receiver), true))
+    Result.Ok(expression(ExprKind.Block, ty, node, "", -1, body, true))
+}

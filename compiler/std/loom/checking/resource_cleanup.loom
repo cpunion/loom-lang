@@ -1,23 +1,80 @@
 // One callback per stored resource. Enum callbacks select only the active
 // variant; independent registrations keep draining if an earlier dispose faults.
+fn resource_cleanup_context(context Context, ty Int) Context {
+    let shape = get(context.env.types, ty)
+    if (shape.kind != TypeKind.Record && shape.kind != TypeKind.Enum) ||
+        !symbol(context.env, shape.symbol).test_only || symbol(context.env, context.signature.symbol).test_only {
+        return context
+    }
+    let current = context.signature
+    let signature = Signature {
+        symbol = shape.symbol
+        parameters = current.parameters
+        params = current.params
+        compile_time = current.compile_time
+        result = current.result
+        requirements = current.requirements
+    }
+    Context { lexical = context.lexical env = context.env signature = signature arguments = context.arguments
+        constants = context.constants locals = context.locals bindings = context.bindings head = context.head
+        cleanups = context.cleanups cleanup_head = context.cleanup_head loop_boundary = context.loop_boundary
+        facts = context.facts fact_head = context.fact_head emit = context.emit }
+}
+
+record ResourcePath {
+    ty Int
+    local Int
+}
+
 fn resource_cleanups(context Context, node Node, receiver Expr, output List[Expr], depth Int) Result[Bool, Failure] {
+    resource_cleanup_path(context, node, receiver, output, depth, new[ResourcePath]())
+}
+
+fn resource_cleanup_path(original Context, node Node, receiver Expr, output List[Expr], depth Int, path List[ResourcePath]) Result[Bool, Failure] {
+    let context = resource_cleanup_context(original, receiver.ty)
     if depth >= 64 {
         return Result.Err(error(context, node, "nested resource aggregate depth limit exceeded"))
     }
+    let shape = get(context.env.types, receiver.ty)
     let capability = resource_concept(context.env, "Dispose")
     if capability < 0 || !satisfies(context, receiver.ty, capability)? {
         return Result.Err(error(context, node, "scoped resources must implement std.resource.Dispose"))
     }
-    let shape = get(context.env.types, receiver.ty)
     if shape.kind == TypeKind.List && must_scope(context, get(shape.arguments, 0))? {
-        return Result.Err(error(context, node, "resource lists require pending-transfer cleanup, which is not yet supported"))
+        var previous = 0
+        while previous < length(path) {
+            let entry = get(path, previous)
+            if entry.ty == receiver.ty {
+                push(output, expression(ExprKind.ResourceDrain, 0, node, "", entry.local, expressions(receiver), true))
+                push(output, method_call_checked(context, node, node, receiver, "dispose", new[Node](),
+                        plain_inputs(new[Node]()), capability, 0)?)
+                return Result.Ok(true)
+            }
+            previous = previous + 1
+        }
+        let ty = get(shape.arguments, 0)
+        let local = length(context.locals)
+        push(context.locals, Local {
+                name = ""
+                ty = ty
+                mutable = false
+                is_scoped = true
+            })
+        let steps = expressions(receiver)
+        let nested = std.list.clone(path)
+        push(nested, ResourcePath { ty = receiver.ty local = local })
+        discard resource_cleanup_path(context, node, atom(ExprKind.Local, ty, node, local), steps, depth + 1, nested)?
+        push(output, expression(ExprKind.ResourceDrain, 0, node, "", local, steps, true))
+        push(output, method_call_checked(context, node, node, receiver, "dispose", new[Node](),
+                plain_inputs(new[Node]()), capability, 0)?)
+        return Result.Ok(true)
     }
     var index = 0
     while index < length(shape.fields) {
         let field = get(shape.fields, index)
         if must_scope(context, field.ty)? {
             let value = expression(ExprKind.Field, field.ty, node, "", index, expressions(receiver), true)
-            discard resource_cleanups(context, node, value, output, depth + 1)?
+            discard resource_cleanup_path(context, node, value, output, depth + 1, path)?
         }
         index = index + 1
     }
@@ -39,7 +96,7 @@ fn resource_cleanups(context Context, node Node, receiver Expr, output List[Expr
                         is_scoped = true
                     })
                 push(bindings, local)
-                discard resource_cleanups(context, node, atom(ExprKind.Local, ty, node, local), children, depth + 1)?
+                discard resource_cleanup_path(context, node, atom(ExprKind.Local, ty, node, local), children, depth + 1, path)?
             } else {
                 push(bindings, -1)
             }

@@ -43,6 +43,7 @@ record Step {
 record Frame {
     locals List[Value]
     calls Int
+    drains List[Expr]
 }
 // Shared work/allocation counters and next container ID cover all calls.
 record State {
@@ -136,7 +137,7 @@ pub fn validate(program Program, expression Expr) Result[Bool, Failure] {
 pub fn evaluate(program Program, expression Expr, locals Int) Result[Value, Failure] {
     let state = state(program, false)
     discard purity(state, expression)?
-    let frame = Frame { locals = slots(state, expression, locals)? calls = 0 }
+    let frame = Frame { locals = slots(state, expression, locals)? calls = 0 drains = new[Expr]() }
     finished(expression, execute(state, expression, frame, 0)?)
 }
 
@@ -149,5 +150,5 @@ pub fn scalar(expression Expr, self_value Value) Result[Value, Failure] {
     discard purity(state, expression)?
     let locals = new[Value]()
     push(locals, self_value)
-    finished(expression, execute(state, expression, Frame { locals = locals calls = 0 }, 0)?)
+    finished(expression, execute(state, expression, Frame { locals = locals calls = 0 drains = new[Expr]() }, 0)?)
 }

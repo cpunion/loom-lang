@@ -2125,8 +2125,32 @@ that scoped enum or a borrowed receiver borrows payloads, including nested and
 guarded patterns. It does not permit copying, returning, manually disposing, or
 putting those payloads into another `scoped` binding. See the
 [enum cleanup tests](examples/cleanup/resource_enum_test.loom).
-Resource Lists and recursive resource cleanup remain unsupported; static cleanup
-expansion retains its finite depth bound.
+Resource Lists support fresh literals and dynamically sized construction:
+
+```loom
+import std.resource.generate
+
+fn use_tickets(count Int, trace List[Int]) {
+    scoped tickets = generate(count, fn(index Int) Ticket {
+        create(trace)
+    })
+}
+```
+
+`generate` requires a nonnegative count and a fresh `Dispose + MustScope` result
+from each factory call. Construction preallocates the outer List; if a factory
+fails, already-created elements still close. Scope exit cleans elements in reverse
+order, continuing through nested cleanup faults. Read-only calls and indexing
+borrow the scoped container; they cannot copy, return, capture, re-scope, mutate,
+or manually dispose resource elements. Synchronous MustScope parameters are
+checked borrows, including indirect calls; callers must scope fresh arguments
+first. No borrowing syntax is required. See the
+[List cleanup tests](examples/cleanup/resource_list_test.loom).
+Recursive record/enum layouts through Lists also clean up through finite typed
+helpers. Recursive factories retain the fresh-return requirement; read-only
+recursive traversal borrows the tree. Copying or mutating scoped resource edges
+cannot manufacture shared ownership or cycles. See the
+[resource tree tests](examples/cleanup/resource_tree_test.loom).
 Lexical cleanup across suspension is
 supported as described in [Source Tasks](#source-tasks).
 

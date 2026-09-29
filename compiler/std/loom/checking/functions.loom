@@ -182,6 +182,10 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "directory_create" || name == "file_remove" || name == "directory_remove" || name == "path_entry_kind" { return runtime(0, ints(3), 1) }
     if name == "path_rename" { return runtime(0, two_types(3, 3), 1) }
     let parameter = get(abstract_arguments(env, 1), 0)
+    if name == "resource_generate" {
+        let callback = intern(env, TypeKind.Function, -1, two_types(1, parameter))
+        return runtime(1, two_types(1, callback), intern(env, TypeKind.List, -1, ints(parameter)))
+    }
     if name == "task_drain" {
         return runtime(1, two_types(intern(env, TypeKind.Task, -1, ints(parameter)), 2), 0)
     }
@@ -386,15 +390,18 @@ fn function_scope(env Environment, current Signature, arguments List[Int], const
     var context = Context { lexical = new_lexical() env = env signature = current arguments = arguments
         constants = constants locals = new[Local]() bindings = new[Binding]() head = -1
         cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2 facts = new[Fact]() fact_head = -1 emit = emit }
-    discard resource_parameters(context)?
     let parameters = group(item.node, NodeKind.Parameters)
     let filtered = has_static(current)
     let runtime_params = if filtered { new[Int]() } else { current.params }
+    let resources = resource_concept(env, "MustScope") >= 0
     var index = 0
     var constant = 0
     while index < length(parameters) {
         let parameter = get(parameters, index)
         if is_static(current, index) {
+            if resources && must_scope(context, get(current.params, index))? {
+                return Result.Err(error(context, parameter, "comptime parameters cannot contain MustScope resources"))
+            }
             let storage = static_environment_type(env, get(constants, constant))
             let local = if storage >= 0 { length(context.locals) } else { -1 }
             context = bind_name(context, parameter, parameter.value, local, constant, -1)?
@@ -405,6 +412,9 @@ fn function_scope(env Environment, current Signature, arguments List[Int], const
             constant = constant + 1
         } else {
             context = bind_local(context, parameter, parameter.value, get(current.params, index), false, -1)?
+            if resources && must_scope(context, get(current.params, index))? {
+                resource_borrow_local(context, length(context.locals) - 1)
+            }
             if filtered { push(runtime_params, get(current.params, index)) }
         }
         index = index + 1
@@ -439,6 +449,8 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
     var context = scope.context
     let body = if runtime_name == "" {
         block(context, child(item.node, part(item.node, NodeKind.Block)), current.result, true)?
+    } else if runtime_name == "resource_generate" {
+        generated_resources(context, item.node, current.result)?
     } else if build_intrinsic(env, current.symbol) || reflection_intrinsic(env, current.symbol) {
         expression(ExprKind.Deferred, current.result, item.node, "", -1, new[Expr](), true)
     } else {
@@ -462,7 +474,7 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
     }
     let checked_function = Function { is_async = has(item.node, NodeKind.Async) symbol = current.symbol arguments = arguments params = scope.params result = current.result
         locals = context.locals preconditions = scope.preconditions postconditions = new[Expr]() result_local = result_local
-        body = body runtime_name = runtime_name span = item.node.span }
+        body = body runtime_name = if runtime_name == "resource_generate" { "" } else { runtime_name } span = item.node.span }
     discard task_flow(context, checked_function)?
     Result.Ok(CheckedBody { context = context function = checked_function })
 }

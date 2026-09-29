@@ -297,7 +297,7 @@ fn main() {
         "fn main() { scoped value = guard(1, [])\nlet copied = value\ndiscard copied }",
         "fn main() { scoped value = guard(1, [])\nvalue = guard(2, []) }",
         "fn escape(trace List[Int]) Guard { scoped value = guard(1, trace)\nvalue }\nfn main() { discard escape([]) }",
-        "fn keep(value Guard) {}\nfn main() { scoped value = guard(1, [])\nkeep(value) }",
+        "fn keep(value Guard) Guard { value }\nfn main() { scoped value = guard(1, [])\ndiscard keep(value) }",
         "fn main() { scoped value = guard(1, [])\nvalue.dispose() }",
         "fn main() { discard required(1, []) }",
         "fn main() { match attempt(1, [], true) { Result.Ok(value) => { discard value }, Result.Err(_) => {} } }",

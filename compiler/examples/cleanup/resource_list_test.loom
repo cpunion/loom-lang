@@ -1,0 +1,159 @@
+import std.resource.generate
+import std.process.arguments
+import std.text.contains
+
+fn inspect_resources(values List[Leaf]) Int {
+    var index = 0
+    while index < length(values) {
+        values[index].touch()
+        index = index + 1
+    }
+    length(values)
+}
+
+fn list_scope() Int {
+    let trace List[Int] = []
+    {
+        scoped values = [acquire(1, trace), acquire(2, trace), acquire(3, trace)]
+        assert inspect_resources(values) == 3
+    }
+    assert length(trace) == 9
+    assert trace[6] == 3 && trace[7] == 2 && trace[8] == 1
+    length(trace)
+}
+
+test fn resource_lists_construct_borrow_and_clean_in_reverse_order() {
+    assert list_scope() == 9
+    assert comptime {
+        list_scope()
+    } == 9
+}
+
+async fn list_factory_fault(trace List[Int]) {
+    scoped values = [acquire(1, trace), maybe_acquire(2, trace, true)]
+}
+
+async fn list_cleanup_fault(trace List[Int]) {
+    scoped values = [generic_child(1, trace, true), generic_child(2, trace, true)]
+    sleep_ms(1).await
+}
+
+test async fn resource_lists_drain_completed_elements_and_nested_faults() {
+    let pending List[Int] = []
+    match outcome(list_factory_fault(pending)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(pending) == 2 && pending[0] == 10 && pending[1] == 1
+    let trace List[Int] = []
+    match outcome(list_cleanup_fault(trace)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 6
+    assert trace[2] == 200 && trace[3] == 2 && trace[4] == 100 && trace[5] == 1
+}
+
+fn generated_list_scope(count Int) Int {
+    let trace List[Int] = []
+    {
+        scoped values = generate(count, fn(index Int) Leaf {
+                acquire(index + 1, trace)
+            })
+        assert inspect_resources(values) == count
+    }
+    assert length(trace) == count * 3
+    var index = 0
+    while index < count {
+        assert trace[count * 2 + index] == count - index
+        index = index + 1
+    }
+    length(trace)
+}
+
+test fn resource_list_factories_accept_runtime_counts_and_pure_compile_time_calls() {
+    let count = length(std.process.arguments()) + 3
+    assert generated_list_scope(count) == count * 3
+    assert generated_list_scope(0) == 0
+    assert comptime {
+        generated_list_scope(3)
+    } == 9
+}
+
+async fn generated_list_fault(trace List[Int]) {
+    scoped values = generate(5, fn(index Int) GenericChild {
+            assert index < 2
+            generic_child(index + 1, trace, true)
+        })
+}
+
+test async fn runtime_list_construction_retains_factory_fault_and_drains_all_children() {
+    let trace List[Int] = []
+    match outcome(generated_list_fault(trace)).await {
+        Outcome.Faulted(failed) => {
+            assert std.text.contains(failed.message, "resource_list_test.loom")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 6
+    assert trace[2] == 200 && trace[3] == 2 && trace[4] == 100 && trace[5] == 1
+}
+
+enum ResourceBatch {
+    Items(List[GenericChild])
+    Empty
+}
+
+impl Dispose for ResourceBatch {
+    fn dispose(self ResourceBatch) {
+    }
+}
+
+async fn suspended_resource_batches(trace List[Int], delay Int) {
+    let build = fn() {
+        scoped values = [[acquire(1, trace)], [acquire(2, trace)]]
+        values[0][0].touch()
+    }
+    build()
+    scoped batches = [ResourceBatch.Empty(), ResourceBatch.Items(
+            generate(2, fn(index Int) GenericChild {
+                    generic_child(index + 3, trace, true)
+                }))]
+    sleep_ms(delay).await
+}
+
+test async fn nested_resource_lists_survive_closures_suspension_and_cancellation() {
+    let trace List[Int] = []
+    match outcome(suspended_resource_batches(trace, 1)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 11
+    assert trace[3] == 2 && trace[4] == 1
+    assert trace[7] == 400 && trace[8] == 4 && trace[9] == 300 && trace[10] == 3
+    let stopped List[Int] = []
+    let task = suspended_resource_batches(stopped, 10000)
+    while length(stopped) < 7 {
+        sleep_ms(1).await
+    }
+    match cancel(task) {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(stopped) == 11
+    assert stopped[7] == 400 && stopped[8] == 4 && stopped[9] == 300 && stopped[10] == 3
+}

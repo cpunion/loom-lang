@@ -21,6 +21,7 @@ import std.float.to_text
 
 fn arity(name Text) Int {
     if name == "list_new" || name == "bytes_new" { return 0 }
+    if name == "list_new_capacity" { return 1 }
     if name == "text_len" || name == "list_len" || name == "list_take" || name == "bytes_len" || name == "bytes_utf8" || name == "bytes_text_copy" ||
         name == "float_from_int" || name == "float_to_int" || name == "float_parse" || name == "float_format" ||
         name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" { return 1 }
@@ -68,7 +69,10 @@ fn primitive(state State, expr Expr, values List[Value]) Result[Value, Failure] 
     let name = expr.text
     if !pure_intrinsic(name) { return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", name))) }
     if length(values) != arity(name) { return Result.Err(failure(expr, "invalid checked intrinsic arity")) }
-    if name == "list_new" || name == "bytes_new" {
+    if name == "list_new" || name == "bytes_new" || name == "list_new_capacity" {
+        if name == "list_new_capacity" && integer_argument(expr, get(values, 0))? < 0 {
+            return Result.Err(failure(expr, "invalid list capacity"))
+        }
         return Result.Ok(fresh(state, expr.ty))
     }
     let first = get(values, 0)

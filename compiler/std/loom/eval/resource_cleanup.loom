@@ -1,0 +1,35 @@
+import std.list.clone
+
+fn resource_drain_frame(state State, expression Expr, parent Frame) Result[Frame, Failure] {
+    var template = expression
+    if length(expression.children) == 1 {
+        var index = length(parent.drains)
+        var found = false
+        while index > 0 && !found {
+            index = index - 1
+            let candidate = get(parent.drains, index)
+            if candidate.index == expression.index {
+                template = candidate
+                found = true
+            }
+        }
+        if !found {
+            return Result.Err(failure(expression, "recursive resource cleanup has no enclosing traversal"))
+        }
+    }
+    let drains = std.list.clone(parent.drains)
+    push(drains, template)
+    // Recursive callbacks have their own pattern/element locals, just as the
+    // native typed helper does. Ordinary shared field data remains shared.
+    let locals = slots(state, expression, length(parent.locals))?
+    var index = 0
+    while index < length(locals) {
+        set(locals, index, get(parent.locals, index))
+        index = index + 1
+    }
+    Result.Ok(Frame {
+            locals = locals
+            calls = parent.calls
+            drains = drains
+        })
+}
