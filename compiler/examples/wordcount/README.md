@@ -59,8 +59,9 @@ it is not part of the starting example.
 
 During the exercise, note where you had to guess syntax or look up an API,
 whether diagnostics pointed to the mistake, and whether formatting or navigation
-interrupted your work. Name/member completion is available; rename and automatic
-discovery of dependency tests remain open.
+interrupted your work. Name/member completion and checked local/private-function
+rename are available. Recursive tests select local packages explicitly, not all
+dependency tests; public/API rename remains open.
 
 For a standalone executable:
 
@@ -75,8 +76,8 @@ explicit `--std` and `--native-tool` paths. `loom init <name>` creates a separat
 minimal project; this example's extra `stats` package is written by hand.
 
 See the [VS Code trial](../../../editors/vscode/README.md#try-it) for unsaved
-diagnostics, formatting, completion, hover, and definition navigation. Rename is
-not implemented. Independent ordinary functions remain queryable
+diagnostics, formatting, completion, hover, definition navigation and supported
+rename operations. Independent ordinary functions remain queryable
 despite unrelated body errors; syntax and template errors can still block queries.
 A failed native assertion reports
 the test name and the assertion's original file, line and Unicode column,

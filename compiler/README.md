@@ -1490,7 +1490,8 @@ Git-facing Windows drive/UNC paths use forward slashes without verbatim prefixes
 Loom's canonical paths and native cwd remain unchanged. Windows Git sessions
 enable its builtin long-path support, not a promise about arbitrary external tools.
 Private-repository authentication, version ranges, graph-wide fork overrides,
-source-subdirectory selection and native object caching remain open.
+and source-subdirectory selection remain open. Native object and frontend caches
+are separate, opt-in trusted-local facilities described above.
 Resolution currently assumes a single writer and trusted filesystem ancestors;
 atomic lock replacement is not crash durability or protection from concurrent
 same-user mutation. Failed work leaves the prior lock unchanged, with best-effort
@@ -2667,8 +2668,8 @@ collects before every allocation and relocates all sizes for focused testing.
 The LLVM tool links managed
 programs with `libloom_runtime.a` (`loom_runtime.lib` on Windows) beside it, or at
 `LOOM_RUNTIME_LIBRARY`.
-No handles escape the file helpers; every recoverable branch closes the
-file explicitly. This is not general scoped cleanup or finalization.
+Whole-file helpers close handles explicitly on recoverable branches. Lexical
+resource cleanup is described separately above; neither mechanism uses GC finalization.
 
 The N0 source-to-native gate is exercised by the examples and integration tests.
 N1 now includes the complete source frontend for this subset and native staged
@@ -2677,13 +2678,13 @@ are absent from the active tree; the pinned historical fallback is not an
 old-language support policy. Stage numbers denote bootstrap generations, not
 language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
-Mutable record fields, broader proofs,
-nested resource transfers, complete Task/I/O composition, complete compile-time programming,
-version normalization, authenticated Git sources, graph-wide fork policies,
-complete incremental coverage, deployment and semantic-change tools remain
-outside this slice. Exact HTTPS Git/fork resolution, verified source locks and
-trusted-local object, checked-closure and ordinary-definition reuse are implemented. No complete
-language or `std` claim is made.
+Broader proofs and mutable-alias preservation, general resource transfer into
+Tasks, TLS/general worker APIs, remaining pack combinations, version normalization,
+authenticated Git sources, graph-wide fork policies and complete incremental
+coverage remain open. Semantic-change and deployment tools have bounded working
+prototypes, not their general accepted workflows. See the concise
+[status](../docs/project/implementation-status.md) and
+[roadmap](../ROADMAP.md). No complete language or `std` claim is made.
 
 Unsupported syntax and manifest features reject explicitly. In particular,
 unsupported dependency sources and target declarations are not silently ignored. The accepted

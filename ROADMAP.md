@@ -1,676 +1,140 @@
 # Loom roadmap
 
-This is the implementation route for the accepted
-[project goals](docs/project/charter.md),
+The [charter](docs/project/charter.md),
 [language foundation](docs/rfcs/language-foundation.md), and
-[change/deployment design](docs/rfcs/change-and-deployment.md). It is not a
-release schedule or an assertion that these capabilities already work.
-Current evidence stays in the
-[implementation status](docs/project/implementation-status.md).
+[change/deployment design](docs/rfcs/change-and-deployment.md) define the goals.
+This roadmap defines delivery gates, not a second language specification or a
+chronological changelog. See [implementation status](docs/project/implementation-status.md)
+for current capabilities, evidence, and limitations.
 
 ## Implementation approach
 
-Maintain one Loom-written frontend over an existing Rust LLVM binding. Keep
-one checked semantic model for native compilation and compile-time evaluation.
-An AST, a checked typed program, and LLVM lowering are the initial
-boundaries; add another representation only for a demonstrated consumer.
+Maintain one Loom-written frontend and checked semantic model, shared by native
+compilation, compile-time execution, and public analysis libraries. Keep syntax,
+checked programs, and native lowering as distinct boundaries; add another
+representation only for a demonstrated consumer. LLVM 22 through the Rust
+Inkwell binding is the current backend, not a source-language dependency.
 
-Compile ordinary scalar operations and calls directly. Carry GC, fault, or
-scheduler context only where required by effects; do not make ordinary functions
-participate in a runtime dependency executor. Library policies resolve to Loom
-definitions, not public-name compiler dispatch tables.
+Compile ordinary calls and scalar operations directly. Carry GC, fault, and
+scheduler context only where required. Dependency semantics do not require an
+executor or execution graph around every function. Library policy belongs in
+Loom; the runtime supplies irreducible memory, scheduling, and platform operations.
 
-Reuse audited LLVM/platform code when it fits. Do not port the current layer
-structure or maintain an interpreter/native feature matrix as a goal. A bounded
-compile-time evaluator uses the same checked rules; it is not a second public
-runtime backend. Remove replaced paths instead of adding compatibility adapters.
-
-The [native compiler](compiler/README.md) now passes the N0 vertical-slice gate on
-macOS, Linux, and Windows: real check/build/test/run, typed data, shared lists, source file I/O,
-constrained construction, and bounded required proofs. N1 now has a
-[Loom-written compiler](compiler/loom/README.md) producing successive native
-compiler stages through the retained LLVM tool; later
-milestones below remain exit criteria, not completion claims.
+Develop ordinary applications alongside the compiler. Each new capability must
+work through real check/build/test/run and a representative source program.
+Keep tests proportional to the changed boundary, without rebuilding a second
+interpreter or a large dual-backend comparison framework.
 
 ## N0 — A native vertical slice
 
-Build the smallest useful source-to-native path on macOS first:
+**Gate met for the documented subset on macOS, Linux, and Windows.**
 
-- directory packages, explicit imports, `pub`, and isolated test roots;
-- functions, scalar values, records/enums, basic generics and overloads,
-  control flow, and the shared-data semantics needed by the slice;
-- a small source `std`, including the text/collection and real file-I/O
-  facilities needed to write a compiler;
-- constrained construction and a small sound postcondition prover: unsupported
-  required proofs are explicit errors, never unchecked assumptions or runtime
-  postcondition fallbacks;
-- ordinary `loom check`, `build`, `test`, and `run` on the same native program.
+- Directory packages, explicit imports, `pub`, colocated tests and test isolation.
+- Functions, scalar and aggregate types, generic code, control flow and shared data.
+- Source libraries for text, collections, errors and real file I/O.
+- Constrained construction and mandatory postconditions within a sound bounded
+  proof fragment; unsupported required proofs block the build.
+- Real `loom check`, `build`, `test`, and `run`, including boundary failures,
+  excluded library tests and straightforward scalar/record native code.
 
-Keep one representative application with a same-directory `*_test.loom` file
-and an embedded `test fn`. Show that library builds exclude both forms of test
-code. Include one boundary failure and one required-proof rejection. Inspect
-one scalar/record hot path for unnecessary allocation or scheduler machinery.
-Use real I/O and the necessary memory/resource substrate, not a mock executor
-or a host-language implementation masquerading as source `std`.
+This is a usable foundation, not completion of the language or standard library.
 
 ## N1 — Move the compiler into Loom
 
-Source handling, package loading, binding, typing, bounded required proofs,
-and checked program construction now run as native Loom code. Stage 1 builds
-stage 2, and stage 2 builds a byte-identical stage 3 on all three CI hosts, using the same
-retained Rust LLVM/platform bridge. Stage 3 passes compiler, `std`, and example
-tests; stages agree on selected type/proof failure diagnostics. The first
-bootstrap gate below is met for this subset, not all of N2.
+**Self-hosting gate met. Delivery remains development-toolchain quality.**
 
-Stages are generations of a bootstrap run, not language versions or permanent
-compiler tiers:
+Source loading, parsing, binding, typing, proofs, and checked-program emission
+run as compiled Loom. Rust owns LLVM lowering, linking and private runtime/platform
+boundaries, not a parallel source frontend. Public parser/project/analysis libraries
+share the implementation without requiring the CLI or native backend.
 
-1. Stage 0 is an existing, validated Loom compiler. Without one, macOS/Linux
-   build it from a frozen Rust seed followed by pinned Loom source checkpoints
-   in a bootstrap cache. Windows builds it from a small, source-bound checked
-   input verified against the same pinned source on macOS/Linux CI.
-2. Stage 0 compiles the current Loom compiler source into stage 1.
-3. Stage 1 compiles the same source into stage 2; stage 2 produces stage 3.
-4. Compare stage 2/3 artifacts and selected diagnostics; run compiler, `std`,
-   and application tests with the resulting compiler.
+Stages are bootstrap generations, not language versions:
 
-The Windows bootstrap path builds its initial native compiler from the committed
-checked input of a pinned source commit, then follows stages 1/2/3 on Windows.
-The compressed input is checksum-checked locally and reproduced byte-for-byte
-from source on both Unix CI hosts. No preinstalled compiler or second frontend
-is required. Native MSVC linking, Unicode/binary I/O, and Windows package paths
-pass the full native gate.
+1. Obtain a validated existing compiler. Cold Unix builds recover it from the
+   pinned historical Rust seed and immutable Loom checkpoints; Windows uses a
+   source-bound checked stage 0 reproduced on Unix CI.
+2. Stage 0 builds stage 1; stage 1 builds stage 2; stage 2 builds stage 3.
+3. Compare stage 2/3 artifacts and selected diagnostics, then run native compiler,
+   source `std`, and application tests. Agreement is evidence, not correctness proof.
 
-Local toolchain staging now builds a generic-CPU frontend and relocates it with
-its source std and existing native bridge/runtime. CLI and editor discovery share
-one executable-relative layout, with an out-of-checkout programming trial in the
-three-platform workflow. CI also packages and smoke-tests a relocatable local
-archive for each host, with dependency notices and a SHA-256 checksum. The bridge
-still needs host LLVM/linker dependencies. Formal release publication, bundled
-host dependencies, and broader target guarantees remain delivery work.
+Daily development uses the single-stage `--dev` build. Compiler production
+sources remain on a conservative seed subset: a new user feature alone does
+not justify another checkpoint. Raise the minimum seed only for substantial
+simplification or measured benefit, batching necessary changes.
 
-Keep the compiler and its production library closure on a conservative bootstrap
-subset. Implementing a language feature does not justify using it in the compiler
-or adding another source checkpoint. Raise the minimum seed only for a substantial
-implementation simplification or measured performance benefit; batch necessary
-upgrades instead of extending the recovery chain for each feature. New user
-features and their test fixtures are not limited by this implementation policy.
-
-The selected seed must support both source syntax and the library/checked-artifact
-interfaces used by that closure. Verify new library adoption with the existing
-seed first; change a required boundary in a verified step without permanent
-compatibility adapters. A future pinned compiler artifact can shorten cold
-recovery without restricting the language. Daily development uses one-stage
-`--dev`; stage 2/3 comparison remains a bootstrap/CI gate, not a per-edit rebuild.
-
-Remove the replaced Rust parser, binder, checker, and prover from the active
-tree. The frozen history is a bootstrap input, not an old-language compatibility
-policy or another frontend to extend. Keep the Windows checked stage 0 bound to
-one pinned source commit and refresh it only when its private backend format or
-required seed source changes. The retained Rust LLVM binding, host linker, GC,
-and platform runtime are separate implementation boundaries, not a permanent
-basic language version.
-They may evolve for native code and platform facilities without duplicating
-source-language analysis. Codegen consumes backend-neutral checked programs;
-LLVM is a replaceable implementation, not part of the source language or its
-proof rules. Bootstrap agreement is evidence, not a proof of
-compiler correctness.
+CI stages and tests relocatable toolchain archives for all three hosts. Published
+releases, bundled host LLVM/linker dependencies and additional target guarantees
+need separate delivery evidence. The historical seed stays a recovery input in
+Git history, not maintained legacy compatibility.
 
 ## N2 — Complete the language and source library
 
-The first source Task slice implements hot child creation, postfix await,
-one-shot obligations and a ready queue on one owner thread. Loom lowers
-suspension into typed functions and GC-traced frames; ordinary functions gain
-no executor or per-call persistent-root registration. Resume faults propagate
-through awaits and cancel/drain queued or suspended descendants. See the
-[example](compiler/examples/tasks).
+**In progress.** The current native path includes concepts/dyn, associated types,
+compile-time programming, typed macros/reflection, bounded contracts, moving GC,
+lexical cleanup and real stackless async I/O. These do not close the gates below.
 
-Source `std.time` connects monotonic timer waits to that ready queue. Deadlines
-are computed once, the reactor is created only on the first external wait, and
-the idle owner blocks without spinning or creating per-task threads. Relative
-sleeps start in their task body; the clock origin is process-local and scheduling
-promises no fairness. See the [timer example](compiler/examples/timers).
+| Workstream | Remaining exit criteria |
+| --- | --- |
+| Constraints and proofs | Broaden sound contract composition, entry-state reasoning and mutation preservation; close the sorting/permutation and constrained shared-data stories without replacing proof with tests. |
+| Compile-time programming | Complete accepted pack/type/function combinations and useful reflection while retaining explicit requirements, selected branches, visibility and tracked inputs. |
+| Source `std` and async | Complete application I/O, including TLS and the remaining worker/socket policies, over narrow platform boundaries; retain cancellation and resource guarantees. |
+| Modules | Normalize permitted versions, support authenticated sources and explicit graph-wide fork policy, preserving source identity and locked offline builds. |
+| Programming feedback | Broaden checked editor operations and incremental coverage; reduce real edited-source latency and memory, not only unchanged-cache timings. |
+| Effect reasoning | Validate transformations against actual data/control/resource conflicts, including aliasing, faults and cleanup; unknown overlap must retain ordering. |
 
-Direct Task parameters and returns now support reusable functions and nested Task
-results, with one-shot argument obligations and lazy returned-subtree handoff.
-Sync helpers do not install an executor; they expose Task inputs or an output.
-Generic compile-time selection now retains pending Task states during abstract
-checking, then validates the selected instance's real transfers before emission.
-That uncertainty neither enters native IR nor discharges required proofs.
+Use these complete acceptance stories, rather than a count of syntax features:
 
-Lexical cleanup now survives suspension through frame-backed captures, with
-children and waits drained before parent cleanup. `NoSuspend` remains an
-independent capability restriction, without ownership syntax. See the
-[cleanup trial](compiler/examples/async_cleanup).
+- An application combines private directory packages, colocated tests, constrained
+  inputs, resources and async I/O through the native commands and editor.
+- A fixed-shape shared view survives source resizing; content constraints cannot
+  be invalidated through another alias. Explicit isolation remains explicit.
+- Sorting proves its declared normal-return properties. Unknown proofs reject;
+  no undeclared termination or non-aliasing promise is inferred.
+- A source compiler uses generic algorithms, known callbacks, metaprogramming and
+  tracked inputs without compiler-only shortcuts or a longer seed chain per feature.
+- Published compiler data survives later passes and suspension; mutable drafts
+  cannot silently invalidate another pass's constrained shared data.
 
-Source `std.file.tasks` now supplies byte/text reads and writes through bounded
-native workers and the existing completion reactor. Source loops retain partial-I/O,
-UTF-8 and close policy; cancellation drains active OS calls before scope cleanup.
-Open/create and normal close also use workers, with owned results until extraction
-or cancellation and single-transfer close tokens. Private native waits suspend
-their caller without child Tasks. Duplication and failure-cleanup close remain
-synchronous; a stuck OS call can delay cancellation. See the
-[file task example](compiler/examples/async_files).
-
-Async methods now reuse typed constructors through concrete, generic and dynamic
-calls. Declared async effects must match; defaults and associated/generic/comptime
-methods keep ordinary specialization and sparse witnesses. Direct Task transfers
-also work through synchronous dynamic methods. Scoped receiver transfer remains
-unsupported. See the [method example](compiler/examples/async_methods).
-
-Named async function values now use `fn(A) Task[B]`, like synchronous Task
-factories. Callbacks can be copied, returned and stored without retaining a Task;
-actual calls preserve owner requirements, creation locations and one-shot transfers.
-Named callbacks use a null managed environment and an entry pointer; direct
-functions and private coroutine callbacks keep their ABI. See the
-[callback example](compiler/examples/task_callbacks).
-
-Task-bearing tuples and records now support whole-value transfer, independent
-field consumption and tuple destructuring. Async calls adopt every Task field;
-completed producers retain all returned subtrees until extraction. Ordinary
-metadata remains readable after Task fields transfer. See the
-[aggregate example](compiler/examples/task_aggregates).
-
-Task-bearing enums now transfer their active payload through ordinary `match`,
-including Option and Result propagation. Typed matches adopt/return only the
-selected variant's Tasks; empty variants create no task obligation at runtime.
-See the [enum example](compiler/examples/task_enums).
-
-Task-bearing Lists now use source transfer operations with a shared header and
-one dynamic obligation group. Typed helpers adopt/retain nested children, including
-recursive enum/List layouts. Loops consume the group through actual break/return
-exits. See the [dynamic list example](compiler/examples/task_lists).
-
-The native Task owner has a socket-token readiness lease, including real
-loopback, cancellation, and close tests. Source `std.net.tcp` now adds a
-numeric-address listen/accept/connect/read/write path with opaque token
-wrappers. `std.net.dns.resolve(host, port)` shares the bounded I/O workers;
-`connect(host, port)` resolves and tries numeric addresses in source-defined
-sequence. See the [hostname example](compiler/examples/hostname_connect).
-TLS and general worker operations remain async gates.
-Task scheduling is cooperative, not parallel Loom threads.
-The [accepted Task design](docs/rfcs/tasks.md) remains broader than this slice.
-Private multi-task completion observation now retains terminal order, wakes
-typed Loom frames and detaches selections without consuming their results.
-Children register once; cancellation removes observations before parent cleanup.
-Typed outcome extraction and explicit draining cancellation now support source
-`std.task.outcome` and `cancel`, including no-result and Task-valued results.
-Already-terminal children keep their result; cleanup faults become owned data.
-List `all/settled/any/race` policies now run in Loom over one-time registration,
-typed outcomes and indexed slot transfer. Joins retire losing subtrees before
-returning; inferred no-result payloads and returned Tasks keep the same generic
-rules. Arbitrary-arity heterogeneous tuple `all/settled` joins now work without
-per-element helper Tasks. Tuple `.await` uses source `std.task.all` for a
-statically typed tuple of Tasks. Broader source socket operations and general
-worker APIs remain open. See the [join example](compiler/examples/task_joins).
-
-Extend the self-hosted path with the remaining accepted capabilities:
-
-- application-grade source collections, text, error, and I/O libraries;
-- concept/dynamic dispatch, associated types, and precise reachability;
-- compile-time value/type/function parameters, variadics, selected-branch
-  instantiation, typed macro generation, and structured reflection;
-- tracked build inputs and reusable proof/effect summaries;
-- broader contract reasoning and fine-grained, alias-safe constrained mutation;
-- moving GC, complete lexical resource cleanup, stackless Tasks, real timer/I/O
-  registration, and source-level tuple/list task composition;
-- module resolution, multiversion normalization, scoped fork policies, lockfiles,
-  and incremental reuse tied to actual inputs.
-
-Typed expression macros now provide a native vertical slice: ordinary Loom
-generators receive inferred input schemas, generate hygienic expression Text or ASTs,
-and reuse the normal checker/evaluator. Definition-site visibility, once-only
-input evaluation, contracts, cleanup, formatting and editor navigation are
-covered by the [example](compiler/examples/typed_macros). `std.loom.syntax`
-also supports explicit [declaration generation tools](compiler/examples/ast_generation).
-First-class compile-time type identities now flow through pure functions and
-compile-time data into local types and generic arguments, with no runtime type
-registry. Explicit top-level `comptime` blocks now generate Text or AST
-declarations in one pre-binding phase, without writing files or adding implicit
-dependencies. The [example](compiler/examples/declaration_generation) exercises
-normal proofs, imported generated symbols, isolated tests and closure identities.
-
-Fixed-shape shared List views now preserve element identities through removal,
-regrowth, moving GC, suspension and compile-time graph reification. Immutable
-range metadata supports persistent length constraints without isolating the
-source. Predicate effect analysis now distinguishes input aliases from fresh
-scratch through direct calls, known named/captured callback targets, returns and loop/branch assignments. It also
-recognizes stable enum tags and inline payloads. General mutable-content
-invariants still need a preservation proof over all reachable writes. An explicit
-isolation route now works for List-backed constraints with immutable elements:
-fresh literals or proved non-publishing factories establish the boundary, and
-inferred non-escaping operations preserve it. Copies of constrained values share.
-Length-only predicates admit element replacement and source `set`/`reverse`;
-content-dependent predicates retain read-only storage. Appends require a bounded
-proof from the current length predicate to its next-length predicate; nonempty
-and lower-bound constraints work, while fixed lengths and upper bounds reject.
-Unproved length changes and raw alias escape reject. These preservation proofs
-add no implicit copy or runtime monitor; arbitrary predicates remain open.
-
-Each addition must work through the native CLI and its `std` tests. Required
-proofs remain mandatory even while the supported prover fragment grows. Exact
-overload ranking, macro spelling, solver choice, artifact encoding, and runtime
-layout belong to focused implementation designs, not new feature checklists.
-
-Basic source Map/Set now reuse bounded concepts, private nominal storage and
-shared Lists, including collision handling, removal, alias-preserving resizing,
-snapshots and compile-time execution. Native forced-GC tests cover managed keys
-and values. This is a library addition, not new compiler/runtime container
-dispatch; broader application I/O and collection APIs remain incremental work.
-
-Offline path dependencies now traverse importer-local manifest edges and reuse
-canonical source roots, with instance-qualified package/test isolation. Distinct
-roots with the same module name coexist without merging nominal types, scopes
-or entry points. Exact HTTPS Git/fork sources now use the same selected-import
-traversal, with explicit resolution, locked source edges and actual snapshot
-content/membership verification. Local path inputs remain editable. Version
-ranges/normalization, graph-wide fork policies and authenticated transport remain
-open. Native commands now have opt-in, trusted-local whole-closure object reuse
-keyed by checked inputs and actual backend/toolchain content. An independent
-trusted-local frontend cache now reuses successful whole-closure checks and
-lowered inputs, bound to compiler bytes and the complete loaded semantic basis.
-Source discovery/parsing, dependency verification and final linking still run.
-Tracked text/binary file snapshots and explicit build options now bind checking, editor
-queries, frontend-cache reuse and build receipts. Observed target properties now
-come from the actual backend, with lazy reads, cached-input revalidation and
-emission-time checks against the saved checked artifact. Embedded Bytes and
-computed byte buffers now use compact static blobs, with fresh mutable copies
-and preserved aliases inside computed graphs. The resident editor also reuses
-successful abstract checks of unchanged definitions, invalidating
-transitive callers and rechecking opaque dependencies. Current bindings, type
-IDs are rebuilt; eligible concrete bodies now rekey types, calls and source
-locations against those bindings instead of rechecking. The opt-in frontend cache
-also persists this last-successful definition basis across CLI processes, with
-compiler identity, source and observed-input validation. Declaration generation
-reruns before matching; private snapshots retain both raw and expanded source.
-Compile-time-specialized bodies also reuse detached immutable constants, with
-current type/function identities and rebuilt aggregate keys. Variadic instances
-key the original declaration and arity, rebuilding signatures and arity validation
-before reusing concrete bodies. Concrete methods keep current conformance checks
-and independent inherited-contract source mapping. Async/Task body reuse precedes
-fresh coroutine lowering and refreshes task-creation labels. Dynamic bodies
-rebuild current interfaces, specialized slots and sparse witness uses. Scoped
-cleanup bodies retain current resource-flow validation and implicit Dispose
-dependency invalidation. Unsupported cases recheck;
-per-package native objects remain open.
-
-Static nominal concepts now lower explicit implementations and bounded generic
-method calls into the existing direct-call path. Conditional conformance queries,
-method qualification and source `std.display` use the same model. Native `dyn C`
-uses explicit conformance evidence, GC-owned receiver snapshots and sparse method
-tables, including generic calls and managed aggregate storage. Static associated
-types and bounded generic records/enums normalize under explicit declaration or
-branch evidence. Concept default methods use abstract Self checking and the same
-static/dynamic call paths; explicit overrides remain authoritative. Generic
-implementations infer target parameters and recursively check prerequisites,
-including associated bindings and dynamic witness calls. Potentially overlapping
-implementations reject. Dynamic associated bindings now retain exact type
-identity through generic substitution, boxing and sparse witnesses;
-there is no runtime conformance registry or erased-value
-type discovery.
-
-Associated members also accept explicit concept requirements and default type
-bindings. Implementations establish the requirements; generic/default method
-bodies consume those promises without assuming an overridable default's equality.
-Effective binding cycles reject. Generic associated members accept their own
-parameters, inherited input bounds and defaults; applications normalize into
-ordinary concrete types after input validation. Generic methods have independent
-parameters and inherited concept requirements. Static calls specialize directly;
-dynamic calls materialize finite, used method instances in ordinary sparse witness
-slots. Dynamic associated type families remain open.
-
-Native binary64 `Float`, source numeric parsing/conversion, compile-time execution
-and Float-based constrained types now share the checked/native path. The compiler
-adopts Float through a pinned source checkpoint without extending the frozen Rust
-frontend. Exact held predicates/conjuncts now discharge redundant Float
-refinement checks. General required Float postconditions still reject; integer
-algebra must not stand in for IEEE floating-point proofs.
-
-Lexical immutable-scalar facts from preconditions, assertions and branch guards
-now also discharge construction checks and survive immutable scalar copies.
-Standalone exit guards retain the condition of their sole continuing branch.
-Integer facts now retain distinct bindings, immutable initializer equalities and
-bounded difference propagation across locals. Later evidence can validate an
-earlier immutable Int copy; source guards and initializer faults remain intact.
-Mutable/shared-alias facts, general relational solving and two-live-branch join
-inference remain later work. See the [example](compiler/examples/relational_constraints).
-Bounded expansion of
-direct scalar helpers now supports refinement implication while retaining
-evaluation and precondition obligations. Conditional bodies and early returns
-are supported; helper loops, mutation and recursive dependencies remain open.
-
-Required function contracts now reuse that bounded helper expansion, preserving
-multiple parameter/result identities and guarded evaluation obligations. Pure
-predicates remain normal source functions; proof-only callees do not become native
-roots. Their own contracts and unused callers still undergo mandatory checking.
-Direct body calls over scalars and inline records/tuples now reuse verified
-callee summaries or finite pure expansion, preserving eager argument values
-and the original native body. Aggregate summaries retain proved field identities
-through nested calls and whole-value updates without equating unspecified fields
-or independent calls. Shared contents remain opaque. Synchronous dynamic calls
-use only the exact method's verified scalar contract, not hidden witnesses.
-Recursive proof dependencies, helper loops/mutation, indirect calls and required
-Float reasoning remain open. See the [example](compiler/examples/aggregate_contracts/main.loom).
-
-Required postconditions now share bounded integer difference propagation with
-refinement construction. Preconditions, successful assertions and verified
-callee summaries can propagate bounds across scalar parameters, inline aggregate
-leaves and fresh call results. Symbol identities survive local substitution and
-reassignment; short-circuit clauses retain their own guards and definedness
-obligations. A failed direct comparison can now query a bounded difference graph:
-transitive relative bounds and equality cycles do not need absolute anchors.
-Queries reuse the same unit-coefficient facts and mathematical arithmetic, without
-an all-pairs closure or a general nonlinear solver.
-See the [contract example](compiler/examples/relational_contracts).
-
-Required contracts also consume checked input-type invariants for immutable
-integer/Boolean and inline record values. Refined leaves retain their identities
-through nested records/tuples; no caller-local index or shared sibling becomes
-evidence about another value. Supported conjuncts can establish facts without a
-duplicate `requires` clause or native check. When needed, a private checked helper
-closure supplies bounded symbolic expansion of input invariants, retaining
-guarded preconditions and successful arithmetic without new runtime roots.
-Immutable predicate fields now coexist with unobserved shared siblings in a
-record refinement; aliases can mutate those siblings without invalidating the
-constraint. Whole-record predicate helpers can copy and forward shared handles;
-transitive read analysis checks their bodies and preconditions, including cycles.
-Supported helper conjuncts retain facts beside unsupported clauses. Proofs of
-helper loops/recursion and general mutation-preservation proofs remain open.
-See the [example](compiler/examples/invariant_contracts).
-
-Structural tuples, numeric projection, and nested let/var destructuring use the
-native aggregate path, including generics, shared containers, and compile-time
-results. Nested enum/tuple patterns in `match` now use typed decisions with
-source-order selection, exhaustive coverage and one-shot Task transfer, without
-a native matcher or a new bootstrap checkpoint. Binding wildcards use ordinary
-discard rules; nested names keep lexical scope and var mutability.
-Scalar literal patterns now reuse those decisions and ordinary equality, including
-nested Task payloads and finite Bool coverage. Named record patterns reuse the
-tuple product decisions, with explicit field omission and ordinary resource
-obligations. Boolean guards now preserve source order and false-path effects,
-with bindings and conditional Task transfer; they do not establish coverage.
-Guarded MustScope matches still reject. Heterogeneous tuple Task joins
-and tuple `.await` are implemented; dynamic List joins use the separate source
-policies above.
-Named record bindings now also use the direct tuple-destructuring path, sharing
-field validation with matches and retaining initializer order, ordinary mutability,
-Task/resource obligations and compile-time execution. This adds no matcher or
-bootstrap checkpoint; refutable and scoped bindings remain open.
-
-Record initializers now accept one final `..base` to construct an updated value.
-Typed operands preserve source order, shared fields and one-shot obligations;
-ordinary contracts and compile-time execution use the same construction path.
-Refined bases do not confer their invariant on the new record: explicit checked
-construction validates multi-field updates without modifying the original.
-This supplies the preferred new-value update pattern, not general invariant-aware
-mutation of shared state. See the [example](compiler/examples/record_updates/main.loom).
-
-Tuple value expansion now forwards heterogeneous arguments and assembles tuple
-or List literals through the same typed calls/projections. Saved operands evaluate
-once and preserve Task/resource obligations; literal expansion retains contextual
-and compile-time argument checking. Top-level variadic functions now select an
-arity, then elaborate one final type/value pack into ordinary generic/native
-parameters. Abstract element checking, mapped type patterns and contextual
-function references preserve the existing rules. Empty packs infer an empty
-tuple, without source Unit syntax. Unselected arities are not verified;
-variadic postconditions reject until every arity can be proved. A first
-`comptime for` statically visits immutable fixed-shape tuples and visible record
-fields, including the final value pack in selected bodies;
-`comptime map` produces a typed tuple from the same aggregate bindings. Records
-use declaration order and normal typed projections, preserving generic bounds,
-lexical cleanup, shared aliases and Task transfer without runtime reflection.
-For a selected variadic arity, `comptime for T in Ts` and
-`comptime map T in Ts` also bind each element of the declared type pack as an
-ordinary abstract type parameter; no runtime type-list or type value is added.
-Static `comptime values Ts...` packs preserve per-element identities through
-projections, expansion, iteration and closure capture. Immutable stored records,
-tuples, enums and constrained values now specialize alongside scalars; structural
-`comptime values (Ts...)` parameters also work. Value keys preserve nominal types,
-tags, field order and Float/Text distinctions, reusing equal configurations.
-Static tuple/record traversal retains compile-time field bindings even through
-shadowing and nested closures. These values have no runtime argument slots;
-captured callbacks keep their separate live-environment protocol. Mutable shared
-storage, Tasks, dyn values and stored callbacks remain outside aggregate static
-parameters, and MustScope obligations cannot be erased.
-General pack reflection and methods/data packs remain open. Structural tuple
-parameters now allow fixed prefixes and suffixes around one expanded pattern.
-Calls and contextual function references infer the pack width after subtracting
-fixed fields; value iteration still visits the full tuple, including empty-pack
-cases and Task-bearing fields. Multiple tuple parameters now share the same pack
-at any parameter position, optionally alongside a final direct value pack.
-Ordinary checking enforces every shape and element type after arity selection;
-this needs no runtime pack representation or new bootstrap checkpoint.
-
-Named function values now support ordinary higher-order functions, structural
-signatures, aggregate storage, exact-reference reachability and pure compile-time
-invocation/reification. Native captured environments now reuse typed managed
-payloads and GC snapshots, with shared escaping state tested at O0/O2. Source
-closure conversion now supports shared mutable bindings, nested/async literals
-and pure compile-time capture evaluation. Captures cannot erase scoped resource
-or one-shot Task obligations. Captured function `comptime` parameters now fix
-the target while passing a typed environment. Construction materializes once;
-forwarding retains live shared state without specializing by captured contents.
-Callback construction may retain effectful or async targets; actual compile-time
-calls still validate the reachable target closure and prohibit real I/O or Tasks.
-See the [static closure example](compiler/examples/comptime_closures/README.md).
-
-Compile-time parameters specialize named calls with scalar and immutable
-aggregate/refinement values or known source-function identities, leaving runtime arguments and captured
-environments in the native ABI. Generic and associated static parameter types
-now specialize to these supported shapes; declaration validation still sees
-abstract types, not incidental caller capabilities. Static callbacks use determined targets; generic forwarding and pure selectors
-preserve target preconditions and reject compile-time effects. Selected branches
-retain explicit generic requirements and mandatory abstract proofs. Concept and
-implementation methods use the same static parameters; dynamic slots include
-static values in their identity and erase them from the runtime signature.
-Float keys reuse CTFE's round-tripping encoding, distinguishing signed zeros
-without using IEEE equality to identify instances. This adds no Float proof rules.
-Selected bodies retain abstract checking without emitting unused callers. Function
-references to partially specialized static declarations remain open. Captured
-function parameters use the typed environments above.
-
-Pure dynamic construction, calls and returned values now share the compile-time
-evaluator, with exact associated/generic/static witness slots. Purity follows the
-called slot's checked targets; reification rebuilds admitted witnesses without
-leaking evaluation queues, preserving shared/cyclic receiver data. Concept
-method contracts now inherit into implementations, with required override
-proofs and runtime dynamic preconditions. Broader dynamic proof composition
-remains open. Explicit `impl D for dyn C` adapters permit statically checked
-cross-concept conversion by boxing the known erased value; zero-allocation
-witness upcasts and implicit concept inclusion remain open.
-
-Lexical `defer` handles block completion, return, `Result?`, `break` and `continue`,
-preserving LIFO order and saved result values. Native stack registrations also
-drain synchronous language faults before process termination, preserving the
-first error if a cleanup faults. Only an explicit native resume boundary catches
-faults; OOM and external termination do not guarantee cleanup. Synchronous `scoped` selects the source
-Dispose capability and checks resource escape; MustScope also rejects ordinary
-bindings and discard. Direct factories and immediate single-payload Result/Option
-transfer are supported. MustScope results retain their fresh-return obligation
-through runtime function values and dynamic factory methods; every selected
-implementation is checked. A Dispose-only callback result has no such guarantee.
-Multi-field MustScope aggregates now disarm per-field pending cleanup after
-successful construction. Nested record resources also receive pending cleanup.
-Generic parameters and associated fields use declared Dispose/MustScope bounds;
-selected concrete instances rebuild guards for all actual descendants, including
-fault exits. Enum payloads now use the same pending guards and active-variant
-cleanup; scoped enum matches borrow rather than transfer their payloads, including
-nested and guarded patterns. Native and compile-time tests cover generic payloads,
-cleanup faults, suspension and cancellation. Resource Lists support literals and
-runtime-sized factory construction, reverse cleanup after partial construction,
-and checked borrowing through parameters/indexing. Nested List/enum/record
-cleanup shares typed callbacks and continues after faults; moving-GC, suspension
-and cancellation tests cover the path. Recursive resource layouts through Lists
-now lower to finite typed helpers; resource-tree construction, borrowed traversal,
-compile-time execution and fault/cancellation cleanup are covered.
-Suspended lexical cleanup is implemented as described above, not a
-general resource-transfer facility.
-
-List literals now share typed/native/compile-time semantics. Runtime literals
-allocate known capacity once and store elements directly; general compile-time
-graph reification retains its alias/cycle-preserving allocate-then-fill path.
-List/Bytes subscript reads and writes now lower to the same direct primitives as
-source-library access, preserving shared aliases, operand order and fault cleanup.
-Generic application and indexed callbacks are distinguished by binding, not naming
-heuristics. This does not yet implement fine-grained constrained shared views.
-
-Stop-the-world copying GC now rewrites precise typed roots and object fields,
-preserving shared aliases, cycles and allocation-crossing expression snapshots.
-Nonallocating functions remain root-free and collection adds no per-access
-barrier. This completes moving-memory support for the current native layouts,
-not general local root liveness or concurrent collection. Suspended Tasks now
-use separate typed spill liveness and owner-scoped frame roots.
-
-The early syntax portion of the
-[compiler-library gate](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)
-now has native evidence: an independent [user package](compiler/examples/syntax/main.loom)
-imports `std.loom.parser` and `std.loom.ast`, parses in-memory source, inspects
-declarations and spans, and reports a syntax diagnostic. It does not import
-the compiler CLI, LLVM bridge, project loader, or compiler-specific runtime
-hooks; the compiler uses the same source libraries.
-
-The opt-in `std.loom.manifest`, `project`, and `binding` layers now share the
-compiler's implementation. A standalone
-[project inspector](compiler/examples/project/main.loom) loads a selected
-package/import closure and reports declarations and visible overload candidates
-without a compiler subprocess. These are program-local indices and name
-candidates, not final call resolution or checked expression types.
-
-The opt-in `std.loom.analysis` layer now exposes checked expression types and
-concrete call targets from a detached source snapshot. An independent
-[semantic consumer](compiler/examples/semantic/main.loom) uses the same checker
-and required prover without the compiler CLI/backend. Queries cover concrete
-instances, not every template or signature position; snapshot checks are not
-incremental reuse.
-
-Prioritize ordinary programming feedback alongside language work. Source
-formatting now has a shared `std.loom.format` implementation and `loom fmt`
-file, recursive, check-only, and stdin modes. The
-[VS Code development extension](editors/vscode/README.md) connects unsaved
-buffers to the same compiler for diagnostics, formatting, type hovers and checked
-definition navigation. An actual VS Code extension-host smoke passes on macOS.
-Name completion now reuses package bindings and lexical scopes, including partial
-identifiers in bodies with type errors and additive cursor/EOF syntax recovery
-confined to virtual completion snapshots. Receiver-type completion now offers
-fields, tuple indices, admitted concept methods and Task `.await`, sharing
-ordinary scope/type rules without claiming the incomplete body is verified.
-Qualified spelling completion now follows the same package/import visibility,
-including type positions and local receiver shadowing. Import-statement completion
-now discovers direct module edges, directory segments and public declarations
-through the same offline resolver, including unsaved overlays. A qualified-path
-Quick Fix verifies one public declaration in a direct offline package against
-the edited in-memory package; missing bare names are searched only through
-selected direct module edges and require one exact export. Checked local and
-unique package-private function rename cover narrow source cases; public/API
-rename remains open. A resident editor
-worker now reuses whole checked snapshots across diagnostics and navigation,
-revalidating the loaded source closure and observed build inputs before each
-reuse. See the [editor trial](editors/vscode/README.md)
-and its [import](editors/vscode/test/fixtures/import_project/library/defs.loom)
-and [rename](editors/vscode/test/fixtures/rename_project/helper.loom) fixtures.
-Unchanged ordinary abstract definitions also reuse successful checks after edits,
-reordering and moves between function-only files in the same package. Additions,
-removals and new overloads invalidate affected callers, not every unrelated
-definition. Concrete scalar/aggregate/List and generic bodies also reuse checked
-IR with current type, call and source-location mappings; unsupported forms
-recheck. CLI disk snapshots reuse the same evidence under the trusted-local
-frontend-cache option; editor workers retain their private in-memory cache.
-Native failing assertions now report their source location and current test,
-including helper assertions and standalone test executables. The first fault
-remains authoritative across cleanup; this does not add stack traces or recovery.
-
-Bounded [compile-time execution](compiler/README.md#compile-time-execution) now
-uses the same checked model and a Loom-written evaluator. Explicit blocks
-support pure calls, local loops/recursion, and value results; `comptime if`
-selects one branch, including equality/inequality of nested generic types.
-Boolean composition now combines those guards, concept queries, static Bool
-parameters and pure computations with compile-time short-circuiting. Evidence
-stays on the actual selected path; unknown choices and required proofs are not
-resolved by guessing later operands.
-Shared-container
-results preserve internal aliases and cycles while constructing a fresh graph
-on each runtime evaluation. Successful pure results can be reused within one
-check; persistent CTFE reuse and broader reflection
-remain incomplete.
-Source `std.reflect.describe[T]()` now supplies structural type metadata as a
-finite graph of ordinary records/enums/Lists. It handles inferred and recursive
-types, respects lexical visibility and reflects only the declared dynamic
-interface. Compile-time-only queries erase; runtime descriptors are fresh
-source data, without a type registry or newly live methods. Static iteration now
-exposes record/tuple field types, and `std.reflect.from_fields` reconstructs
-visible records from checked tuples using ordinary native operations. Source
-`std.json` uses these mechanisms for typed encoding and strict decoding, with
-refinement construction left explicit. Expression macros use typed schemas and
-accept Text or AST output; predicate reflection remains open. First-class type
-values are compile-time-only identities, separate from these mutable descriptors.
-Public parser fragment entry points now reuse the same expression/type/pattern/
-statement/declaration grammar, preserving original spans and rejecting trailing
-input. They run as ordinary pure Loom calls, including at compile time; syntax
-parsing is not hygienic expansion or semantic validation.
-`Int` type predicates can call pure helpers through the same bounded evaluator;
-known constants remove checks, while unknown results retain the runtime
-construction boundary. Execution never substitutes for a required proof:
-function contracts use the documented symbolic proof fragment, including bounded
-expansion of checked scalar helpers.
-`old(expr)` in `ensures` currently accepts immutable parameter scalars and
-inline record/tuple scalar paths, where the entry value cannot change. Shared-data
-snapshots and general entry-state expressions remain open and reject.
-Explicit Int refinement conversion now reuses that fragment to eliminate a
-destination check only when both truth and definedness follow from the source
-predicate. Exact call-free conjunction reuse also handles Float without
-arithmetic rewriting. Immutable local-flow facts and bounded direct scalar-helper
-expansion extend this optional proof as described above; mutable/alias facts,
-helper loops and recursive proof dependencies remain open.
-
-Typed expression macros, explicit source tools and in-compilation declaration
-generation use this infrastructure. The separate source
-change tool maintains explicit stable-ID sidecars, reads directory or Git
-snapshots, and applies an exact reviewed merge to a new directory. Same-file
-overloads use parameter-type locators, not declaration positions; move-plus-edit
-proposals preserve source trivia and recheck reference targets. This does not
-automatically track arbitrary edits or provide general semantic version control.
+Detailed current boundaries and runnable examples belong in the
+[compiler guide](compiler/README.md) and [status](docs/project/implementation-status.md),
+not repeated completion narratives here. Unsupported compiler cases must reject
+or conservatively recheck as appropriate; they must not redefine the target.
 
 ## N3 — Deliver semantic change and deployment workflows
 
-A bounded SQLite prototype now records assumed versus observed states and
-executes one offline orders upgrade, data-preserving downgrade and re-upgrade.
-The fixed executor binds its candidate basis to a local same-build receipt and
-rehashes the artifact. This does not prove the operator-declared storage mapping,
-authenticate a hostile build environment, or generalize to arbitrary schemas.
-The accepted workflows below remain open.
+**Bounded prototypes exist; the general workflows remain open.**
 
-Build the accepted tools on the compiler's identities, bindings, contracts,
-effects, and immutable build basis. Reuse an existing version engine; do not
-create a second authoritative source store.
+Build on compiler identities, bindings, contracts, effects and immutable build
+inputs. Reuse an existing version engine; keep ordinary files and editors, not a
+second authoritative source store or mandatory AST editor.
 
-Close the three stories in the change/deployment record: library evolution,
-ordinary-source semantic changes and feedback, and deployed-state recovery.
-Test move-plus-edit merging, changed overload bindings, incompatible tightening,
-unknown deployment outcomes, and preservation/restoration of downgrade data.
-Affected pure feedback updates must mark retained old results as stale and must
-not replay external effects.
-Reconciliation remains a library/system workflow with explicit effect safety,
-not a replacement execution model for every function or Task.
+Close the three [accepted stories](docs/rfcs/change-and-deployment.md):
+
+1. Evolve libraries across versions/forks without hiding changed bindings or
+   merging nominal identities merely because names match.
+2. Merge moves and edits using explicit identity and the actual baseline;
+   preserve unresolved intent and show stale feedback without replaying effects.
+3. Compare the effective deployed basis with the candidate artifact; require a
+   complete migration, predetermined failure policy and executable recovery.
+   Preserve downgrade data and include it in later re-upgrade compatibility.
+
+The current SQLite orders executor and single-package semantic merge trial are
+evidence for narrow cases, not arbitrary-schema migration or general semantic
+version control. Online coexistence, throttling, unknown outcomes and hotfix
+compatibility require their own complete evidence.
 
 ## Delivery discipline
 
-Use focused PRs and tests proportional to the changed boundary. Retain the
-passing macOS, Linux, and Windows bootstrap/test gates. Establish release and
-additional-target evidence before broader support claims. Do not
-recreate a large dual-backend differential suite.
+Use focused PRs, keep the three-platform native/bootstrap gates green, and remove
+replaced paths. Documentation must separate goals, current capabilities and
+limitations. No compatibility obligation exists for unpublished prototypes.
 
-Fast compiler feedback is a core user-experience goal. Measure startup, check,
-build, and test-compilation latency plus peak memory on representative growing
-packages. Separate frontend, LLVM, and host-linker costs. Report process and OS
-cache conditions; a warm rerun is not evidence of incremental compilation.
-Use a single rebuild with an installed Loom compiler for normal iteration;
-retain the full stage 1/2/3 comparison and test gate for bootstrap validation.
+Measure fresh-process check/build/test compilation and memory on representative
+growing packages. Separate source checking, LLVM, linking and cache conditions.
+An unchanged hit is not an edit benchmark. Measure native scalar, record and
+collection workloads too; inspect generated code before adding an optimization
+layer. No performance target permits weaker contracts, sharing or cleanup.
 
-Also measure native scalar, record, and collection workloads. Investigate
-generated code before introducing another optimization layer; no performance
-target permits weaker contracts or cleanup.
-
-Alternate backends, a stable FFI/plugin ABI, and cross-cutting/AOP composition
-are separate future work. They do not block self-hosting. The superseded
-compiler remains in Git history as reference material, not in the active tree
-as a compatibility target.
+Alternate backends, stable FFI/plugin ABI and cross-cutting/AOP composition are
+separate future work. Reconciliation belongs in libraries and systems, not a
+mandatory language operator runtime. These do not block the current self-hosting gate.
