@@ -49,11 +49,11 @@ test fn closed_float_record_literal_uses_the_compile_time_boundary() {
             "fn infinite() ValidPrice { ValidPrice(Price { details = Details { amount = 1e99999 } active = true }) }"))
 }
 
-test fn inline_record_refinement_rejects_mutable_aliases_and_unchecked_replacement() {
+test fn record_refinement_allows_unobserved_sharing_but_rejects_unchecked_replacement() {
     let imports = "import std.result.Result\nimport std.result.ConstraintError\n"
-    rejects(concat(imports, "record Unsafe { values List[Int] }\ntype Guard = Unsafe where true"))
-    rejects(concat(imports, "record Nested { name Text }\nrecord Unsafe { nested Nested }\ntype Guard = Unsafe where true"))
-    rejects(concat(imports, "record Unsafe { bytes Bytes }\ntype Guard = Unsafe where true"))
+    discard accepted_result(concat(imports, "record Shared { values List[Int] }\ntype Guard = Shared where true"))
+    discard accepted_result(concat(imports, "record Nested { name Text }\nrecord Shared { nested Nested }\ntype Guard = Shared where true"))
+    discard accepted_result(concat(imports, "record Shared { bytes Bytes }\ntype Guard = Shared where true"))
     let definitions = "record Snapshot { count Int }\ntype Valid = Snapshot where self.count > 0\n"
     rejects_result(concat(concat(imports, definitions),
             "fn replace(value Snapshot) Result[Valid, ConstraintError] { var valid = Valid(value)?\nvalid = value\nResult.Ok(valid) }"))

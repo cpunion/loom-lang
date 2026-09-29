@@ -1,0 +1,79 @@
+import std.list.push
+import std.list.length
+import std.text.length
+import std.bytes.new
+import std.bytes.push
+
+record SharedDetails {
+    count Int
+    values List[Int]
+}
+
+record SharedSnapshot {
+    details SharedDetails
+    name Text
+    bytes Bytes
+}
+
+fn positive_count(value Int) Bool {
+    value > 0
+}
+
+type NamedCount = SharedSnapshot where positive_count(self.details.count) && std.text.length(self.name) > 0
+
+fn shared_snapshot(value SharedSnapshot) Result[NamedCount, ConstraintError] {
+    NamedCount(value)
+}
+
+fn observed_count(value NamedCount) Int
+ensures result > 0
+{
+    value.details.count
+}
+
+fn update_unobserved(value NamedCount) Int {
+    value.details.values[0] = 9
+    push(value.details.values, 10)
+    value.bytes[0] = 65
+    observed_count(value)
+}
+
+fn shared_invariant_scope() Bool {
+    let list = [1]
+    let bytes = std.bytes.new()
+    std.bytes.push(bytes, 100)
+    let source = SharedSnapshot {
+        details = SharedDetails {
+            count = 3
+            values = list
+        }
+        name = "sample"
+        bytes = bytes
+    }
+    let valid = match shared_snapshot(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return false
+        }
+    }
+    assert update_unobserved(valid) == 3
+    assert list[0] == 9 && list[1] == 10 && bytes[0] == 65
+    list[0] = -7
+    push(list, 11)
+    let widened SharedSnapshot = valid
+    assert widened.details.values[0] == -7 && length(widened.details.values) == 3
+    assert valid.details.count == 3 && source.details.count == 3
+    let invalid = SharedSnapshot {
+        details = SharedDetails {
+            count = 0
+            values = list
+        }
+        ..source
+    }
+    assert match shared_snapshot(invalid) {
+        Result.Err(_) => true
+        _ => false
+    }
+    true
+}

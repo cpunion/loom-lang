@@ -522,20 +522,26 @@ those exact immutable values, without repeating construction checks or adding
 entry clauses. This includes record refinements and nested refined leaves.
 Bounded acyclic invariant helpers now expand on demand in a private checked
 closure; their preconditions and arithmetic bounds retain execution guards.
-Unsupported conjuncts, helper loops/recursion and shared contents remain
-outside this slice. See the
+Supported helper conjuncts now retain their evidence even when another conjunct
+is outside the prover's fragment; disjunctions are not split. Helper loops/recursion
+and shared contents remain outside this slice. See the
 [input invariant example](../../compiler/examples/invariant_contracts).
 In `ensures`, `old(expr)` currently denotes an immutable
 parameter scalar or inline record/tuple scalar path; shared-data snapshots, index and
 call expressions reject rather than treating a mutable alias as entry state.
-Record-backed refinements now admit only immutable inline scalar/record leaves.
+Record-backed refinements now check the predicate's observed fields, rather than
+rejecting every record containing shared storage. Immutable scalar/Text/record
+paths may coexist with unobserved shared List/Bytes siblings. Existing aliases
+retain normal sharing and mutation without invalidating the immutable predicate.
 Unknown construction checks once; copies and base-record widening do not recheck.
-Shared `List`/`Bytes`/`Text` fields and unchecked replacement are rejected.
+Shared arguments passed to predicate helpers, scoped/Task payloads and unchecked
+replacement still reject. Native O0/O2, compile-time and moving-GC tests exercise
+the [shared-field example](../../compiler/examples/record_refinement/shared.loom).
 Closed inline record literals with a prover-supported `Int`/`Bool` predicate
 produce the refined type directly. Closed pure record literals with `Float`
 leaves can do the same when compile-time evaluation establishes the predicate.
 Unknown inputs and unevaluated expressions retain the `Result` boundary.
-Shared-state invariants remain open.
+Invariants observing mutable List lengths or contents remain open.
 
 Record updates now accept one final `..base`, preserving missing fields from
 the same nominal record declaration. Explicit fields and the base evaluate once

@@ -1,6 +1,7 @@
 import std.loom.typed.Type
 import std.loom.typed.TypeKind
 import std.loom.typed.Expr
+import std.loom.typed.ExprKind
 import std.loom.typed.Function
 import std.loom.proof.invariant_predicates
 import std.list.new
@@ -45,6 +46,28 @@ fn input_invariant_types(env Environment, ty Int, seen List[Int], selected List[
     }
 }
 
+fn expanded_invariant_parts(program std.loom.typed.Program, base Int, predicate Expr, output List[Expr], depth Int) {
+    if depth >= 32 || length(output) >= 256 { return }
+    match invariant_predicates(program, base, predicate) {
+        Result.Ok(predicates) => {
+            var index = 0
+            while index < length(predicates) && length(output) < 256 {
+                push(output, get(predicates, index))
+                index = index + 1
+            }
+        }
+        Result.Err(_) => {
+            // Successful construction establishes both conjuncts. An opaque
+            // Text/shared-free helper on one side must not hide proved scalar
+            // facts on the other. Disjunctions cannot be split this way.
+            if predicate.kind == ExprKind.Binary && predicate.text == "&&" {
+                expanded_invariant_parts(program, base, get(predicate.children, 0), output, depth + 1)
+                expanded_invariant_parts(program, base, get(predicate.children, 1), output, depth + 1)
+            }
+        }
+    }
+}
+
 // Only a failed required proof pays for this private helper closure. Never put
 // its call indices in shared type metadata or the runtime reachability queue.
 fn expanded_input_types(context Context, function Function) Result[List[Type], Failure] {
@@ -80,22 +103,16 @@ fn expanded_input_types(context Context, function Function) Result[List[Type], F
     while index < length(selected) {
         let ty = get(selected, index)
         let shape = get(types, ty)
-        match invariant_predicates(program, get(shape.fields, 0).ty, get(predicates, index)) {
-            Result.Ok(predicates) => {
-                set(types, ty, Type {
-                        kind = shape.kind
-                        symbol = shape.symbol
-                        arguments = shape.arguments
-                        fields = shape.fields
-                        variants = shape.variants
-                        constraint = predicates
-                    })
-            }
-            // Unsupported loops, recursion and exhausted budgets contribute no
-            // new evidence. The original call-free conjuncts remain available.
-            Result.Err(_) => {
-            }
-        }
+        let expanded = std.list.clone(shape.constraint)
+        expanded_invariant_parts(program, get(shape.fields, 0).ty, get(predicates, index), expanded, 0)
+        set(types, ty, Type {
+                kind = shape.kind
+                symbol = shape.symbol
+                arguments = shape.arguments
+                fields = shape.fields
+                variants = shape.variants
+                constraint = expanded
+            })
         index = index + 1
     }
     Result.Ok(types)

@@ -1,0 +1,31 @@
+// A projection only reads the inline path to its selected value. Shared
+// siblings do not become predicate dependencies merely by being stored beside
+// that path. Passing an entire value to a helper observes that value's shape;
+// helpers over shared arguments need a future explicit read-footprint summary.
+fn invariant_observation(env Environment, value Expr, projection Bool) Bool {
+    let path = projection && (value.kind == ExprKind.Local || value.kind == ExprKind.Field || value.kind == ExprKind.Coerce)
+    if !path && value.ty != 0 && !inline_constraint_base(env, value.ty, 0) {
+        return false
+    }
+    var index = 0
+    while index < length(value.children) {
+        let projects = value.kind == ExprKind.Field || (path && value.kind == ExprKind.Coerce)
+        if !invariant_observation(env, get(value.children, index), projects) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var member = 0
+        while member < length(body) {
+            if !invariant_observation(env, get(body, member), false) {
+                return false
+            }
+            member = member + 1
+        }
+        index = index + 1
+    }
+    true
+}

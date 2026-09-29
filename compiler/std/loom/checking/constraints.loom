@@ -71,6 +71,13 @@ fn validate_refinement(env Environment, owner Int, base Int) Result[Bool, Failur
     let predicate = predicate_node(env, owner)
     let stage = staging(predicate_scope(env, owner, base), predicate)?
     let value = expr(stage, predicate, 2)?
+    if !inline_constraint_base(env, base, 0) && !invariant_observation(env, value, false) {
+        return Result.Err(failure(env, owner, predicate, "type constraints may observe immutable fields, not shared mutable contents"))
+    }
+    if must_scope(stage, base)? || task_value(env, base) ||
+        marker_type(env, owner, new[Requirement](), base, resource_concept(env, "NoSuspend"), new[Int]())? {
+        return Result.Err(failure(env, owner, predicate, "refinements cannot contain scoped resources or one-shot Tasks"))
+    }
     match std.loom.eval.validate(prepared(stage)?, value) {
         Result.Ok(_) => {}
         Result.Err(failed) => { return Result.Err(failure(env, owner, predicate, concat("type constraint: ", failed.message))) }
