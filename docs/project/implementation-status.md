@@ -842,7 +842,12 @@ successful construction. Nested record fields also register each completed
 resource's cleanup before a later field is evaluated. Generic and associated
 resource fields now use their declared Dispose/MustScope bounds, rebuilding all
 descendant guards in each concrete instance. Native and compile-time examples
-cover normal transfer and nested cleanup faults. Resource Lists, enum payloads
+cover normal transfer and nested cleanup faults. Enum constructors now protect
+completed payloads before later arguments execute. Scope cleanup selects the
+active variant, with independent callbacks so an outer or child fault cannot skip
+remaining payloads. Flat, nested and guarded scoped matches borrow payloads without
+transferring cleanup ownership. Native O0/O2, compile-time, forced-GC, suspension
+and cancellation tests cover this path. Resource Lists, recursive resource cleanup
 and transfer into Tasks remain unsupported.
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises

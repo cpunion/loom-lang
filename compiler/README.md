@@ -932,7 +932,9 @@ the same case, including `0.0` and `-0.0`; Float NaN reaches the fallback. Text
 patterns compare decoded UTF-8 contents. Records use named patterns such as
 `Packet { value = item, ready = true }`. Fields may reorder; separate them with
 commas or newlines. Omission requires explicit `..` and cannot discard live Tasks
-or scoped resources. Generic record arguments follow the matched type.
+or unadopted resources. Matching a scoped receiver borrows its payloads instead;
+omitted resources remain owned by the enclosing scope. Generic record arguments
+follow the matched type.
 
 Use `pattern if condition => body` for a Boolean guard. Pattern bindings are
 visible in the guard and body. Only a matching pattern evaluates its guard;
@@ -941,8 +943,9 @@ never count toward exhaustiveness, including constant `true`; provide unguarded
 coverage. The body can use proven immutable scalar facts from its guard.
 Candidate Tasks stay available on a false guard; consuming them before a retry
 or transferring them twice is rejected. Guards may await unrelated Tasks and
-use ordinary block cleanup. Guarded matches containing MustScope resources
-currently reject because adoption cannot be delayed until after a guard.
+use ordinary block cleanup. Guarded matches on fresh MustScope resources reject
+because adoption cannot be delayed until after a guard. Already-scoped resources
+may be inspected with guards; unsuccessful guards do not transfer their payloads.
 
 Expansion has a bounded decision budget; normal flat matches
 retain their direct path. No runtime pattern engine or checked-artifact change is
@@ -2115,7 +2118,15 @@ and a local loop's break/continue do not escape aggregate construction. Discarde
 `comptime if` branches do not participate in this check. Actual
 enclosing returns, propagation, loop exits and awaits still reject while a
 resource field is pending.
-Resource lists, enum payloads, and matching a resource itself remain unsupported.
+Enum payloads use the same pending transfer and LIFO cleanup, selecting only the
+active variant. An enum used with `scoped` must implement Dispose; its MustScope
+payloads are cleaned automatically after the enum's own Dispose method. Matching
+that scoped enum or a borrowed receiver borrows payloads, including nested and
+guarded patterns. It does not permit copying, returning, manually disposing, or
+putting those payloads into another `scoped` binding. See the
+[enum cleanup tests](examples/cleanup/resource_enum_test.loom).
+Resource Lists and recursive resource cleanup remain unsupported; static cleanup
+expansion retains its finite depth bound.
 Lexical cleanup across suspension is
 supported as described in [Source Tasks](#source-tasks).
 

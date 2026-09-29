@@ -1,0 +1,263 @@
+import std.resource.Dispose
+import std.resource.MustScope
+import std.list.push
+import std.list.length
+import std.task.Outcome
+import std.task.outcome
+import std.task.cancel
+import std.time.sleep_ms
+
+enum Resources {
+    Empty(List[Int])
+    One(Leaf)
+    Pair(Leaf, Leaf, Bool)
+}
+
+impl Dispose for Resources {
+    fn dispose(self Resources) {
+        match self {
+            Resources.Empty(trace) => {
+                push(trace, 3)
+            }
+            Resources.One(value) => {
+                push(value.trace, 3)
+            }
+            Resources.Pair(first, _, fail) => {
+                push(first.trace, 3)
+                assert !fail
+            }
+        }
+    }
+}
+
+fn resource_pair(trace List[Int], fail_second Bool, fail_dispose Bool) Resources {
+    Resources.Pair(acquire(1, trace), maybe_acquire(2, trace, fail_second), fail_dispose)
+}
+
+fn enum_scopes() Int {
+    let trace List[Int] = []
+    {
+        scoped empty = Resources.Empty(trace)
+    }
+    {
+        scoped one = Resources.One(acquire(1, trace))
+        match one {
+            Resources.One(value) => {
+                value.touch()
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    {
+        scoped pair = resource_pair(trace, false, false)
+        match pair {
+            Resources.Pair(first, second, _) => {
+                first.touch()
+                second.touch()
+            }
+            _ => {
+                assert false
+            }
+        }
+    }
+    assert length(trace) == 12
+    assert trace[0] == 3
+    assert trace[1] == 10 && trace[2] == 10 && trace[3] == 3 && trace[4] == 1
+    assert trace[5] == 10 && trace[6] == 20 && trace[7] == 10 && trace[8] == 10
+    assert trace[9] == 3 && trace[10] == 2 && trace[11] == 1
+    length(trace)
+}
+
+test fn enum_scopes_run_natively_and_at_compile_time() {
+    assert enum_scopes() == 12
+    assert comptime {
+        enum_scopes()
+    } == 12
+}
+
+async fn enum_factory_fault(trace List[Int]) {
+    scoped value = resource_pair(trace, true, false)
+}
+
+async fn enum_dispose_fault(trace List[Int]) {
+    scoped value = resource_pair(trace, false, true)
+}
+
+test async fn enum_construction_and_cleanup_faults_drain_completed_payloads() {
+    let first List[Int] = []
+    match outcome(enum_factory_fault(first)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(first) == 2 && first[0] == 10 && first[1] == 1
+    let second List[Int] = []
+    match outcome(enum_dispose_fault(second)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(second) == 5
+    assert second[0] == 10 && second[1] == 20 && second[2] == 3
+    assert second[3] == 2 && second[4] == 1
+}
+
+enum NestedResources {
+    Present(Resources)
+    Absent
+}
+
+fn nested_enum_borrow() Int {
+    let trace List[Int] = []
+    {
+        scoped value = NestedResources.Present(resource_pair(trace, false, false))
+        match value {
+            NestedResources.Present(Resources.Pair(first, second, _)) if first.id == 9 => {
+                assert false
+            }
+            NestedResources.Present(Resources.Pair(first, second, _)) => {
+                first.touch()
+                second.touch()
+            }
+            whole => {
+                match whole {
+                    NestedResources.Absent => {
+                    }
+                    _ => {
+                        assert false
+                    }
+                }
+            }
+        }
+    }
+    assert length(trace) == 7
+    assert trace[4] == 3 && trace[5] == 2 && trace[6] == 1
+    length(trace)
+}
+
+test fn nested_borrowed_patterns_keep_one_cleanup_owner() {
+    assert nested_enum_borrow() == 7
+    assert comptime {
+        nested_enum_borrow()
+    } == 7
+}
+
+async fn suspended_enum_scope(trace List[Int], delay Int) {
+    scoped value = NestedResources.Present(resource_pair(trace, false, false))
+    sleep_ms(delay).await
+    match value {
+        NestedResources.Present(Resources.Pair(first, second, _)) => {
+            first.touch()
+            second.touch()
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+test async fn enum_cleanup_captures_survive_suspension() {
+    let trace List[Int] = []
+    suspended_enum_scope(trace, 1).await
+    assert length(trace) == 7
+    assert trace[4] == 3 && trace[5] == 2 && trace[6] == 1
+    let cancelled List[Int] = []
+    let pending = suspended_enum_scope(cancelled, 10000)
+    while length(cancelled) == 0 {
+        sleep_ms(1).await
+    }
+    match cancel(pending) {
+        Outcome.Cancelled => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(cancelled) == 5
+    assert cancelled[2] == 3 && cancelled[3] == 2 && cancelled[4] == 1
+}
+
+enum GenericResources[T Dispose + MustScope] {
+    Pair(T, T)
+    Empty
+}
+
+impl[T Dispose + MustScope] Dispose for GenericResources[T] {
+    fn dispose(self GenericResources[T]) {
+    }
+}
+
+fn generic_enum[T Dispose + MustScope](factory fn(Int, List[Int], Bool) T,
+    trace List[Int]) GenericResources[T] {
+    GenericResources.Pair(factory(1, trace, false), factory(2, trace, false))
+}
+
+fn generic_enum_scope() Int {
+    let trace List[Int] = []
+    {
+        scoped value = generic_enum(generic_child, trace)
+    }
+    assert length(trace) == 6
+    assert trace[2] == 200 && trace[3] == 2 && trace[4] == 100 && trace[5] == 1
+    length(trace)
+}
+
+test fn generic_enum_cleanup_expands_concrete_descendants() {
+    assert generic_enum_scope() == 6
+    assert comptime {
+        generic_enum_scope()
+    } == 6
+}
+
+impl Dispose for NestedResources {
+    fn dispose(self NestedResources) {
+    }
+}
+
+record EnumHolder {
+    inner NestedResources
+    tail Leaf
+}
+
+impl Dispose for EnumHolder {
+    fn dispose(self EnumHolder) {
+        push(self.tail.trace, 4)
+    }
+}
+
+async fn nested_enum_fault(trace List[Int], fail_factory Bool) {
+    scoped value = EnumHolder {
+        inner = NestedResources.Present(resource_pair(trace, false, true))
+        tail = maybe_acquire(5, trace, fail_factory)
+    }
+}
+
+test async fn enum_payload_cleanup_composes_with_record_pending_guards() {
+    let trace List[Int] = []
+    match outcome(nested_enum_fault(trace, true)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(trace) == 5
+    assert trace[2] == 3 && trace[3] == 2 && trace[4] == 1
+    let complete List[Int] = []
+    match outcome(nested_enum_fault(complete, false)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert length(complete) == 8
+    assert complete[2] == 50 && complete[3] == 4 && complete[4] == 5
+    assert complete[5] == 3 && complete[6] == 2 && complete[7] == 1
+}

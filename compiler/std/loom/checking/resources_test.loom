@@ -87,7 +87,7 @@ test fn scoped_resources_reject_copy_discard_erasure_and_pending_aggregate_leaks
     resource_reject(concat(resource_header(), "fn bad() { scoped value = make([0])\nlet erased dyn Use = value }"))
     resource_reject(concat(resource_header(), "fn bad() List[Handle] { [make([0]), make([1])] }"))
     resource_reject(concat(resource_header(), "record Pair { first Handle; second Handle }\nfn bad() { let pair = Pair { first = make([0]) second = make([1]) } }"))
-    resource_reject(concat(resource_header(), "enum Wrapped { Some(Handle) }\nimpl Dispose for Wrapped { fn dispose(self Wrapped) {} }\nfn bad() { scoped wrapped = Wrapped.Some(make([0])) }"))
+    resource_accept(concat(resource_header(), "enum Wrapped { Some(Handle) }\nimpl Dispose for Wrapped { fn dispose(self Wrapped) {} }\nfn run() { scoped wrapped = Wrapped.Some(make([0])) }"))
     resource_reject(concat(resource_header(), "import std.result.Result\nfn bad() { match Result.Ok[Handle, Text](make([0])) { Result.Ok(_) => {}, Result.Err(_) => {} } }"))
     resource_reject(concat(resource_header(), "import std.result.Result\nfn bad() { match Result.Ok[Handle, Text](make([0])) { Result.Ok(payload) => { assert true\nscoped value = payload }, Result.Err(_) => {} } }"))
 }

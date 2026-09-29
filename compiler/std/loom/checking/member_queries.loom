@@ -68,7 +68,8 @@ fn member_context(context Context, node Node, offset Int) Result[Context, Failur
             let arm = child(node, index)
             if query_inside(arm, offset) && !query_inside(child(arm, 0), offset) {
                 if nested_pattern(child(arm, 0)) || match_guarded(arm) {
-                    let scope = pattern_scope(context, child(arm, 0), value.ty, match_body(arm), context.head, 0)?
+                    let scope = pattern_scope(context, child(arm, 0), value.ty, match_body(arm), context.head, 0,
+                        resource_borrowed(context, value)?)?
                     var selected = scope.context
                     if match_guarded(arm) {
                         let guard = child(arm, 1)

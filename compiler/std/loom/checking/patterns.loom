@@ -70,7 +70,7 @@ fn nested_pattern(node Node) Bool {
     false
 }
 
-fn pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, depth Int) Result[PatternScope, Failure] {
+fn pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, depth Int, borrowed Bool) Result[PatternScope, Failure] {
     if depth >= 64 {
         return Result.Err(error(context, node, "pattern nesting limit exceeded"))
     }
@@ -79,7 +79,7 @@ fn pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, de
         return literal_pattern_scope(context, node, ty)
     }
     if node.kind == NodeKind.RecordPattern {
-        return record_pattern_scope(context, node, ty, body, boundary, depth)
+        return record_pattern_scope(context, node, ty, body, boundary, depth, borrowed)
     }
     var selected = -1
     if node.kind == NodeKind.Tuple {
@@ -96,15 +96,18 @@ fn pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, de
         var current = context
         var local = -1
         if node.kind == NodeKind.Wildcard {
-            if must_scope(context, ty)? {
+            if !borrowed && must_scope(context, ty)? {
                 return Result.Err(error(context, node, "a wildcard cannot discard a resource payload"))
             }
         } else {
-            if must_scope(context, ty)? {
+            if !borrowed && must_scope(context, ty)? {
                 discard resource_payload(context, node, body)?
             }
             local = length(current.locals)
             current = bind_local(current, node, node.value, ty, false, boundary)?
+            if borrowed && must_scope(context, ty)? {
+                resource_borrow_local(current, local)
+            }
         }
         return Result.Ok(PatternScope {
                 context = current
@@ -134,7 +137,7 @@ fn pattern_scope(context Context, node Node, ty Int, body Node, boundary Int, de
     var current = context
     var index = 0
     while index < length(fields) {
-        let nested = pattern_scope(current, get(patterns, index), get(fields, index), body, boundary, depth + 1)?
+        let nested = pattern_scope(current, get(patterns, index), get(fields, index), body, boundary, depth + 1, borrowed)?
         current = nested.context
         push(children, nested.pattern)
         index = index + 1
