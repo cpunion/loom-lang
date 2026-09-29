@@ -143,6 +143,7 @@ The compiler and ordinary Loom programs use the same source implementation:
 | `std.loom.lexer` | `lex`, `Token`, `Kind` |
 | `std.loom.ast` | `Node`, `NodeKind`, `has` (direct-child lookup), `same` (exact structural equality) |
 | `std.loom.parser` | `parse`, `parse_expression`, `parse_type`, `parse_pattern`, `parse_binding_pattern`, `parse_statement`, `parse_declaration`; editor-only `completion_source` / `CompletionSource`, lexical `import_cursor` / `ImportCursor` |
+| `std.loom.syntax` | `emit`, `expression`, `Fragment`: grammar-validated structural source emission from public ASTs |
 | `std.loom.format` | `format(Text) Result[Text, Diagnostic]` |
 
 `NodeKind.Spread` retains a postfix value/type expansion operand;

@@ -1,0 +1,29 @@
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+import std.text.byte
+
+fn quote(value Text) Text {
+    let output = std.bytes.new()
+    std.bytes.push(output, 34)
+    var index = 0
+    while index < std.text.length(value) {
+        let item = byte(value, index)
+        if item == 34 || item == 92 {
+            std.bytes.push(output, 92)
+            std.bytes.push(output, item)
+        } else if item < 32 {
+            std.bytes.push(output, 92)
+            std.bytes.push(output, 117)
+            std.bytes.push(output, 123)
+            std.bytes.push(output, byte("0123456789abcdef", item / 16))
+            std.bytes.push(output, byte("0123456789abcdef", item % 16))
+            std.bytes.push(output, 125)
+        } else {
+            std.bytes.push(output, item)
+        }
+        index = index + 1
+    }
+    std.bytes.push(output, 34)
+    to_text(output)
+}

@@ -218,11 +218,12 @@ Extend the self-hosted path with the remaining accepted capabilities:
   and incremental reuse tied to actual inputs.
 
 Typed expression macros now provide a native vertical slice: ordinary Loom
-generators receive inferred input schemas, generate hygienic expression source,
+generators receive inferred input schemas, generate hygienic expression Text or ASTs,
 and reuse the normal checker/evaluator. Definition-site visibility, once-only
 input evaluation, contracts, cleanup, formatting and editor navigation are
-covered by the [example](compiler/examples/typed_macros). Declaration/AST
-expansion and first-class type values remain separate work.
+covered by the [example](compiler/examples/typed_macros). `std.loom.syntax`
+also supports explicit [declaration generation tools](compiler/examples/ast_generation).
+In-compilation declaration expansion and first-class type values remain separate work.
 
 Fixed-shape shared List views now preserve element identities through removal,
 regrowth, moving GC, suspension and compile-time graph reification. Immutable
@@ -550,7 +551,7 @@ resolved by guessing later operands.
 Shared-container
 results preserve internal aliases and cycles while constructing a fresh graph
 on each runtime evaluation. Successful pure results can be reused within one
-check; persistent CTFE reuse, AST/declaration macros, and broader reflection
+check; persistent CTFE reuse, in-compilation declaration macros, and broader reflection
 remain incomplete.
 Source `std.reflect.describe[T]()` now supplies structural type metadata as a
 finite graph of ordinary records/enums/Lists. It handles inferred and recursive
@@ -560,8 +561,8 @@ source data, without a type registry or newly live methods. Static iteration now
 exposes record/tuple field types, and `std.reflect.from_fields` reconstructs
 visible records from checked tuples using ordinary native operations. Source
 `std.json` uses these mechanisms for typed encoding and strict decoding, with
-refinement construction left explicit. General typed macros, first-class type
-values and predicate reflection remain open.
+refinement construction left explicit. Expression macros use typed schemas and
+accept Text or AST output; first-class type values and predicate reflection remain open.
 Public parser fragment entry points now reuse the same expression/type/pattern/
 statement/declaration grammar, preserving original spans and rejecting trailing
 input. They run as ordinary pure Loom calls, including at compile time; syntax
@@ -581,8 +582,9 @@ arithmetic rewriting. Immutable local-flow facts and bounded direct scalar-helpe
 expansion extend this optional proof as described above; mutable/alias facts,
 helper loops and recursive proof dependencies remain open.
 
-Typed expression macros use this infrastructure; AST/declaration generation
-and first-class type values remain open. The separate source
+Typed expression macros and explicit AST/declaration generation tools use this
+infrastructure; in-compilation declaration macros and first-class type values
+remain open. The separate source
 change tool maintains explicit stable-ID sidecars, reads directory or Git
 snapshots, and applies an exact reviewed merge to a new directory. Same-file
 overloads use parameter-type locators, not declaration positions; move-plus-edit

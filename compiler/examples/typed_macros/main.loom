@@ -178,6 +178,7 @@ async fn task() Int {
 
 async fn main() {
     exercise()
+    tree_macro_trial()
     assert wait!(task()) == 42
 }
 

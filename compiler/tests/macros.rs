@@ -183,3 +183,80 @@ fn main() {
         assert!(message.contains(diagnostic), "{message}");
     }
 }
+
+#[test]
+fn structured_macro_output_requires_valid_source_syntax() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("main.loom");
+    for (kind, value, message) in [
+        ("Name", "f()", "syntax tree"),
+        ("Binary", "+", "missing a child"),
+        ("ExpansionId", "fake", "internal macro syntax"),
+    ] {
+        fs::write(
+            &path,
+            format!(
+                r#"
+import std.reflect.Schema
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.source.Span
+import std.list.new
+
+fn generate(types List[Schema]) Node {{
+    discard types
+    Node {{
+        kind = NodeKind.{kind}
+        value = "{value}"
+        span = Span {{
+            start = 0
+            end = 0
+        }}
+        children = new[Node]()
+    }}
+}}
+
+fn main() {{
+    discard generate!()
+}}
+"#
+            ),
+        )
+        .unwrap();
+        let result = common::command(&["check"])
+            .arg(temporary.path())
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains(message),
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
+fn source_ast_tool_generates_a_normally_checked_package() {
+    let temporary = tempfile::tempdir().unwrap();
+    let generator = common::executable(temporary.path(), "generator");
+    success(
+        &common::command(&["build", "compiler/examples/ast_generation"])
+            .arg("--output")
+            .arg(&generator)
+            .output()
+            .unwrap(),
+    );
+    let generated = Command::new(generator).output().unwrap();
+    success(&generated);
+    let package = temporary.path().join("generated");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("main.loom"), generated.stdout).unwrap();
+    for operation in ["check", "test", "run"] {
+        success(
+            &common::command(&[operation])
+                .arg(&package)
+                .output()
+                .unwrap(),
+        );
+    }
+}

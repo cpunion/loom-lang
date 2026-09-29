@@ -7,7 +7,8 @@ target/loom run compiler/examples/typed_macros
 ```
 
 `generator!(arguments...)` runs an ordinary pure
-`fn(List[std.reflect.Schema]) Text` at compile time. Each descriptor describes
+`fn(List[std.reflect.Schema]) Text` or a function with the same parameters and
+`std.loom.ast.Node` result at compile time. Each descriptor describes
 one inferred input type. The result is parsed as one expression and checked in
 the generator's package. The generator may live beside its consumers; no
 separate macro package or host-language plugin is needed.
@@ -33,6 +34,10 @@ no proof evidence. Expansion cannot return or propagate `?` across its boundary;
 return a Result and apply `?` at the call site instead. Tasks and scoped resources
 retain ordinary one-shot and escape checks, not a macro exemption.
 
-This interface generates expression source, not arbitrary unchecked ASTs or
-top-level declarations. First-class type values and declaration macros are not
-implemented by this example.
+The [structured example](trees.loom) constructs and transforms public AST nodes.
+AST output must round-trip through the expression grammar before ordinary
+checking; malformed trees and internal compiler markers reject. It has the
+same hygiene and argument rules as Text output. Top-level declaration macros
+and first-class type values remain separate work; the
+[source generation tool](../ast_generation) demonstrates explicit AST-based
+declaration generation without a special compiler path.
