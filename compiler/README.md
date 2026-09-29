@@ -2034,7 +2034,8 @@ A tail or returned value is saved before cleanup, including managed aggregates.
 Cleanup must have no value result; ordinary `discard` remains explicit. Its
 body cannot contain `return`, `?`, `scoped`, or another `defer`, even in an unselected
 compile-time branch. Loop control is allowed only for loops inside the cleanup;
-it cannot leave the cleanup. Called functions have their own ordinary return scopes.
+it cannot leave the cleanup. Called functions, including closures defined inside
+the cleanup, have their own return, cleanup and loop scopes.
 Pure cleanup also executes during compile-time evaluation. Native lowering uses
 direct callbacks and stack registrations, not a general runtime executor. Callbacks
 read and update the owner's local storage, including moving-GC roots. Programs
@@ -2109,6 +2110,11 @@ for the same transfer. Concrete specialization registers every nested resource,
 not just the abstract field's outer Dispose method; completed fields still drain
 if a later initializer or a cleanup faults. See the
 [generic cleanup tests](examples/cleanup/generic_resource_test.loom).
+Later fields may create closures or use field-local loops: a closure's return
+and a local loop's break/continue do not escape aggregate construction. Discarded
+`comptime if` branches do not participate in this check. Actual
+enclosing returns, propagation, loop exits and awaits still reject while a
+resource field is pending.
 Resource lists, enum payloads, and matching a resource itself remain unsupported.
 Lexical cleanup across suspension is
 supported as described in [Source Tasks](#source-tasks).

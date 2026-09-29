@@ -1,0 +1,103 @@
+fn resource_exit_expression(kind ExprKind, children List[Expr]) Expr {
+    Expr {
+        kind = kind
+        ty = 0
+        span = std.loom.source.Span {
+            start = 0
+            end = 0
+        }
+        text = ""
+        index = -1
+        children = children
+        arms = new[Arm]()
+        falls = true
+    }
+}
+
+test fn pending_resource_exit_checks_preserve_enclosing_control_boundaries() {
+    let leaf = resource_exit_expression(ExprKind.Bool, new[Expr]())
+    let exit = resource_exit_expression(ExprKind.Break, new[Expr]())
+    let again = resource_exit_expression(ExprKind.Continue, new[Expr]())
+    let body = resource_exit_expression(ExprKind.Block, pair(exit, again))
+    let iteration = resource_exit_expression(ExprKind.While, pair(leaf, body))
+    assert !pending_resource_exit(iteration, 0)
+    assert pending_resource_exit(resource_exit_expression(ExprKind.Block, pair(iteration, exit)), 0)
+    assert pending_resource_exit(resource_exit_expression(ExprKind.While, pair(body, leaf)), 0)
+    assert pending_resource_exit(resource_exit_expression(ExprKind.Return, expressions(leaf)), 1)
+    assert pending_resource_exit(resource_exit_expression(ExprKind.Await, expressions(leaf)), 1)
+    assert pending_resource_exit(resource_exit_expression(ExprKind.Suspend, expressions(leaf)), 1)
+    let selected = resource_exit_expression(ExprKind.Match, expressions(leaf))
+    push(selected.arms, Arm {
+            variant = 0
+            bindings = new[Int]()
+            whole = -1
+            body = expressions(exit)
+        })
+    assert pending_resource_exit(selected, 0)
+    assert !pending_resource_exit(selected, 1)
+}
+
+test fn pending_resources_allow_control_flow_inside_local_execution_scopes() {
+    resource_accept(concat(resource_header(), """
+record Wrapped {
+    inner Handle
+    callback fn() Int
+    tag Int
+    selected Int
+}
+
+impl Dispose for Wrapped {
+    fn dispose(self Wrapped) {
+    }
+}
+
+fn wrap(log List[Int]) Wrapped {
+    Wrapped {
+        inner = make(log)
+        callback = fn() Int {
+            return 7
+        }
+        tag = {
+            var count = 0
+            while true {
+                count = count + 1
+                if count == 2 {
+                    break
+                }
+                continue
+            }
+            count
+        }
+        selected = comptime if true {
+            3
+        } else {
+            return wrap(log)
+        }
+    }
+}
+
+fn main() {
+    scoped value = wrap([0])
+    assert value.callback() == 7 && value.tag == 2 && value.selected == 3
+}
+"""))
+    resource_reject_reason(concat(resource_header(), """
+import std.result.Result
+
+record Wrapped {
+    inner Handle
+    tag Int
+}
+
+fn attempt() Result[Int, Text] {
+    Result.Ok(1)
+}
+
+fn wrap(log List[Int]) Result[Wrapped, Text] {
+    Result.Ok(Wrapped {
+        inner = make(log)
+        tag = attempt()?
+    })
+}
+"""), "a resource field cannot precede return, ?, loop exit or await during aggregate construction")
+}

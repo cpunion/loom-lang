@@ -1,0 +1,87 @@
+record CallbackResource {
+    inner Leaf
+    callback fn() Int
+    tag Int
+    selected Int
+}
+
+impl Dispose for CallbackResource {
+    fn dispose(self CallbackResource) {
+        push(self.inner.trace, 2)
+    }
+}
+
+fn callback_resource(trace List[Int]) CallbackResource {
+    CallbackResource {
+        inner = acquire(1, trace)
+        callback = fn() Int {
+            push(trace, 30)
+            return 7
+        }
+        tag = {
+            var count = 0
+            while true {
+                count = count + 1
+                if count == 2 {
+                    break
+                }
+                continue
+            }
+            push(trace, 20)
+            count
+        }
+        selected = comptime if true {
+            3
+        } else {
+            return callback_resource(trace)
+        }
+    }
+}
+
+fn exercise_resource_expressions() Bool {
+    let trace List[Int] = []
+    {
+        scoped value = callback_resource(trace)
+        // A closure body runs when called, not during construction.
+        assert length(trace) == 2 && trace[0] == 10 && trace[1] == 20
+        assert value.tag == 2 && value.selected == 3 && value.callback() == 7
+        assert length(trace) == 3 && trace[2] == 30
+    }
+    assert length(trace) == 5 && trace[3] == 2 && trace[4] == 1
+    true
+}
+
+test fn resource_fields_allow_delayed_callbacks_and_local_loop_exits() {
+    assert exercise_resource_expressions()
+    assert comptime {
+        exercise_resource_expressions()
+    }
+}
+
+fn deferred_callback(trace List[Int]) {
+    defer {
+        let callback = fn() Int {
+            scoped value = acquire(1, trace)
+            defer {
+                push(trace, 2)
+            }
+            return 7
+        }
+        assert callback() == 7
+    }
+}
+
+fn exercise_deferred_callback() Bool {
+    let trace List[Int] = []
+    deferred_callback(trace)
+    assert length(trace) == 3
+    assert trace[0] == 10 && trace[1] == 2 && trace[2] == 1
+    true
+}
+
+test fn deferred_callbacks_have_independent_cleanup_scopes() {
+    assert exercise_deferred_callback()
+    assert comptime {
+        exercise_deferred_callback()
+    }
+}
