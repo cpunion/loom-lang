@@ -453,6 +453,189 @@ fn pinned_git_instances_survive_native_commands_and_verified_offline_cache_repai
 }
 
 #[test]
+fn git_subdirectories_share_snapshots_but_keep_module_identities_and_locked_edges() {
+    let fixture = Fixture::new();
+    let root = fixture.root();
+    // Selecting a nested module neither requires nor parses a root module.
+    write(root, "remote/loom.toml", "not a module manifest");
+    for (directory, value) in [("one", 11), ("two", 29)] {
+        write(
+            root,
+            &format!("remote/packages/{directory}/loom.toml"),
+            "[module]\nname='seed'\n[dependencies.helper]\npath='../helper'\n",
+        );
+        write(
+            root,
+            &format!("remote/packages/{directory}/main.loom"),
+            format!(
+                r#"import helper.identity
+pub record Value {{
+    number Int
+}}
+pub fn make() Value {{
+    Value {{ number = identity({value}) }}
+}}
+pub fn take(value Value) Int {{
+    value.number
+}}
+test fn excluded() {{
+    assert false
+}}
+"#
+            ),
+        );
+        write(
+            root,
+            &format!("remote/packages/{directory}/poison_test.loom"),
+            "dependency tests must not be parsed !!!",
+        );
+    }
+    write(
+        root,
+        "remote/packages/helper/loom.toml",
+        "[module]\nname='helper'\n",
+    );
+    write(
+        root,
+        "remote/packages/helper/main.loom",
+        "pub fn identity(value Int) Int { value }\n",
+    );
+    fixture.git(&["-C", "remote", "add", "."]);
+    fixture.git(&["-C", "remote", "commit", "--quiet", "-m", "nested modules"]);
+    let revision = String::from_utf8(fixture.git(&["-C", "remote", "rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    for (name, subdir) in [("left", "one"), ("right", "two")] {
+        write(
+            root,
+            &format!("{name}/loom.toml"),
+            format!(
+                "[module]\nname='{name}'\n[dependencies.seed]\ngit='{URL}'\nrev='{revision}'\nsubdir='packages/{subdir}'\n"
+            ),
+        );
+        write(
+            root,
+            &format!("{name}/main.loom"),
+            r#"import seed.Value
+import seed.make
+import seed.take
+pub fn make() Value {
+    seed.make()
+}
+pub fn take(value Value) Int {
+    seed.take(value)
+}
+"#,
+        );
+    }
+    let manifest = |subdir: &str| {
+        format!(
+            "[module]\nname='app'\n[dependencies.left]\npath='../left'\n[dependencies.right]\npath='../right'\n[dependencies.seed]\ngit='{URL}'\nrev='{revision}'\nsubdir='{subdir}'\n"
+        )
+    };
+    let source = r#"import left.make
+import left.take
+import right.make
+import right.take
+import seed.make
+fn main() {
+    assert left.take(left.make()) == 11
+    assert right.take(right.make()) == 29
+    assert left.take(seed.make()) == 11
+}
+test fn nested_modules() {
+    main()
+}
+"#;
+    let app = root.join("app");
+    write(root, "app/loom.toml", manifest("packages/one"));
+    write(root, "app/main.loom", source);
+    success(&fixture.resolve(&app, true));
+    let fetched = fixture.log();
+    assert_eq!(
+        fetched
+            .lines()
+            .filter(|line| line.starts_with("fetch\t"))
+            .count(),
+        1
+    );
+    let lock_path = app.join("loom.lock");
+    let lock = fs::read_to_string(&lock_path).unwrap();
+    assert_eq!(
+        lock.lines()
+            .filter(|line| line.ends_with("\tpackages/one"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        lock.lines()
+            .filter(|line| line.ends_with("\tpackages/two"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        fs::read_dir(app.join("target/loom-deps")).unwrap().count(),
+        1
+    );
+    write(root, "offline", "Git must not run after resolution");
+    success(&fixture.command("check", &app).output().unwrap());
+    success(&fixture.command("run", &app).output().unwrap());
+    let tested = fixture.command("test", &app).output().unwrap();
+    success(&tested);
+    assert_eq!(tested.stdout, b"1 tests passed\n");
+
+    write(
+        root,
+        "app/main.loom",
+        source.replace("left.take(seed.make())", "left.take(right.make())"),
+    );
+    assert!(
+        !fixture
+            .command("check", &app)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "same named records in different source subdirectories must remain distinct"
+    );
+    write(root, "app/main.loom", source);
+    write(root, "app/loom.toml", manifest("packages/two"));
+    rejected(
+        &fixture.command("check", &app).output().unwrap(),
+        "changed from loom.lock",
+    );
+    assert_eq!(fs::read_to_string(&lock_path).unwrap(), lock);
+    write(
+        root,
+        "app/main.loom",
+        source.replace(
+            "left.take(seed.make()) == 11",
+            "right.take(seed.make()) == 29",
+        ),
+    );
+    success(&fixture.resolve(&app, true));
+    success(&fixture.command("run", &app).output().unwrap());
+    let updated = fs::read_to_string(&lock_path).unwrap();
+    assert_ne!(updated, lock);
+    for subdir in ["packages/missing", "Packages/two", "packages/two/main.loom"] {
+        write(root, "app/loom.toml", manifest(subdir));
+        rejected(
+            &fixture.resolve(&app, true),
+            "does not select an exact snapshot directory",
+        );
+        assert_eq!(fs::read_to_string(&lock_path).unwrap(), updated);
+    }
+    write(root, "app/loom.toml", manifest("packages/helper"));
+    rejected(
+        &fixture.resolve(&app, true),
+        "dependency name does not match module.name",
+    );
+    assert_eq!(fs::read_to_string(&lock_path).unwrap(), updated);
+    assert_eq!(fixture.log(), fetched);
+}
+
+#[test]
 fn failed_git_resolution_suppresses_echoed_remote_data_and_leaves_no_lock() {
     let fixture = Fixture::new();
     let root = fixture.root();

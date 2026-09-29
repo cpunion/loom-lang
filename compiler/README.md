@@ -1448,12 +1448,17 @@ A dependency may instead select a Git repository, including a fork, directly:
 [dependencies.codec]
 git = "https://github.com/example/codec-fork.git"
 rev = "0123456789012345678901234567890123456789"
+subdir = "packages/codec" # optional; omitted or empty selects the repository root
 ```
 
 The revision must be the full lowercase 40- or 64-digit ID of a commit, not
 a tag, branch or abbreviated hash. Replace the illustrative URL/revision above
-with a real module repository; its root must contain `loom.toml` with the matching
-module name. Sources use credential-free HTTPS URLs with ASCII host/path spelling
+with a real module repository. The selected directory must contain `loom.toml`
+with the matching module name; a monorepo need not have a root manifest.
+`subdir` is an exact repository-relative path with `/` separators. Absolute paths,
+dot segments, empty segments, trailing slashes and backslashes reject; spelling
+must match the snapshot, including case. It cannot be combined with `path`.
+Sources use credential-free HTTPS URLs with ASCII host/path spelling
 and an optional port. URL escapes, query strings, fragments and IPv6 literals
 are not supported in this first transport slice. `path` and `git` cannot mix.
 
@@ -1469,9 +1474,14 @@ package's test-only imports. Normal commands stay offline and fail if a selected
 Git edge is missing, changed, or lacks an intact cached snapshot. Unused manifest
 dependencies are not fetched. The lock preserves unrelated package edges, uses
 location-independent owner identities, and anchors exact source identities to
-SHA-256 snapshots. Local path inputs remain editable. Different Git URLs/commits
-remain different nominal instances; identical sources reuse one snapshot.
-Path dependencies declared inside a Git source cannot escape that snapshot.
+SHA-256 snapshots, including each edge's selected subdirectory. Changing `subdir`
+requires resolution even when the commit is unchanged. Local path inputs remain
+editable. Different Git URLs/commits/module directories remain different nominal
+instances; identical module sources reuse an instance. Modules from one URL/commit
+share a single verified whole-repository snapshot and content digest.
+Path dependencies inside a Git source may select sibling modules but cannot
+escape that snapshot. Selecting a subdirectory does not bypass validation of
+other repository paths or import dependency tests.
 
 Snapshots live under the root module's `target/loom-deps`. Every selected snapshot
 is checked against actual regular-file contents and exact directory membership,
@@ -1489,8 +1499,8 @@ a trusted executable; Git and host executable/DLL lookup paths must be trusted.
 Git-facing Windows drive/UNC paths use forward slashes without verbatim prefixes;
 Loom's canonical paths and native cwd remain unchanged. Windows Git sessions
 enable its builtin long-path support, not a promise about arbitrary external tools.
-Private-repository authentication, version ranges, graph-wide fork overrides,
-and source-subdirectory selection remain open. Native object and frontend caches
+Private-repository authentication, version ranges and graph-wide fork overrides
+remain open. Native object and frontend caches
 are separate, opt-in trusted-local facilities described above.
 Resolution currently assumes a single writer and trusted filesystem ancestors;
 atomic lock replacement is not crash durability or protection from concurrent

@@ -1,8 +1,14 @@
 fn parsed(text Text) Module {
     match parse(text) {
         Result.Ok(module) => module
-        Result.Err(_) => { assert false
-            Module { name = "" version = "" dependencies = std.list.new[Dependency]() } }
+        Result.Err(_) => {
+            assert false
+            Module {
+                name = ""
+                version = ""
+                dependencies = std.list.new[Dependency]()
+            }
+        }
     }
 }
 
@@ -17,11 +23,20 @@ test fn path_dependencies_decode_strings_and_keep_declaration_order() {
     let module = parsed("[module]\nname='app'\n[dependencies.codec]\npath = \"../codec\"\n[dependencies]\n[dependencies.json]\npath = '../json#fork' # a literal hash\n")
     assert length(module.dependencies) == 2
     assert get(module.dependencies, 0).name == "codec"
-    assert match get(module.dependencies, 0).source { DependencySource.Path(path) => path == "../codec", _ => false }
+    assert match get(module.dependencies, 0).source {
+        DependencySource.Path(path) => path == "../codec",
+        _ => false
+    }
     assert get(module.dependencies, 1).name == "json"
-    assert match get(module.dependencies, 1).source { DependencySource.Path(path) => path == "../json#fork", _ => false }
+    assert match get(module.dependencies, 1).source {
+        DependencySource.Path(path) => path == "../json#fork",
+        _ => false
+    }
     let escaped = parsed("[module]\nname='app'\n[dependencies.codec]\npath=\"../codec\\u0020fork\"")
-    assert match get(escaped.dependencies, 0).source { DependencySource.Path(path) => path == "../codec fork", _ => false }
+    assert match get(escaped.dependencies, 0).source {
+        DependencySource.Path(path) => path == "../codec fork",
+        _ => false
+    }
 }
 
 test fn incomplete_duplicate_and_unsupported_dependencies_reject() {
@@ -39,11 +54,17 @@ test fn incomplete_duplicate_and_unsupported_dependencies_reject() {
     rejects("dependencies={}\n[module]\nname='app'\n[dependencies.codec]\npath='../codec'")
 }
 
-fn revision() Text { "0123456789abcdef0123456789abcdef01234567" }
+fn revision() Text {
+    "0123456789abcdef0123456789abcdef01234567"
+}
+
 fn git_manifest(url Text, rev Text) Text {
     concat("[module]\nname='app'\n[dependencies.codec]\ngit=\"", concat(url, concat("\"\nrev='", concat(rev, "'"))))
 }
-fn rejects_git_url(url Text) { rejects(git_manifest(url, revision())) }
+
+fn rejects_git_url(url Text) {
+    rejects(git_manifest(url, revision()))
+}
 
 test fn git_sources_keep_urls_full_revisions_and_declaration_order() {
     let url = "https://Git.Example.com:8443/team/codec.git"
@@ -52,19 +73,67 @@ test fn git_sources_keep_urls_full_revisions_and_declaration_order() {
     assert length(module.dependencies) == 2
     assert get(module.dependencies, 0).name == "codec"
     assert match get(module.dependencies, 0).source {
-        DependencySource.Git(source, rev) => source == url && rev == revision()
+        DependencySource.Git(source, rev, subdir) => source == url && rev == revision() && subdir == ""
         _ => false
     }
     assert get(module.dependencies, 1).name == "local"
-    assert match get(module.dependencies, 1).source { DependencySource.Path(path) => path == "../local", _ => false }
+    assert match get(module.dependencies, 1).source {
+        DependencySource.Path(path) => path == "../local",
+        _ => false
+    }
     let sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     let reverse = parsed(concat("[module]\nname='app'\n[dependencies.codec]\nrev='", concat(sha256, "'\ngit='https://127.0.0.1:443/codec/'")))
     assert match get(reverse.dependencies, 0).source {
-        DependencySource.Git(source, rev) => source == "https://127.0.0.1:443/codec/" && rev == sha256
+        DependencySource.Git(source, rev, subdir) => source == "https://127.0.0.1:443/codec/" && rev == sha256 && subdir == ""
         _ => false
     }
     assert length(parsed(git_manifest("https://localhost/codec", revision())).dependencies) == 1
     assert length(parsed(git_manifest("https://example.com/co\\u0064ec", revision())).dependencies) == 1
+}
+
+test fn git_subdirectories_are_exact_relative_module_selectors() {
+    let prefix = """
+[module]
+name = 'app'
+[dependencies.codec]
+subdir = 'packages/编解码'
+git = 'https://example.com/mono'
+rev = '0123456789abcdef0123456789abcdef01234567'
+"""
+    let module = parsed(prefix)
+    assert match get(module.dependencies, 0).source {
+        DependencySource.Git(url, rev, subdir) =>
+        url == "https://example.com/mono" && rev == revision() && subdir == "packages/编解码"
+        _ => false
+    }
+    let valid = git_manifest("https://example.com/mono", revision())
+    let rooted = parsed(concat(valid, "\nsubdir=''"))
+    assert match get(rooted.dependencies, 0).source {
+        DependencySource.Git(_, _, subdir) => subdir == ""
+        _ => false
+    }
+    let invalid = ["/absolute", ".", "..", "a/../b", "a/./b", "a//b", "a/", "a\\b", "C:/a", "a\tb", "a\nb"]
+    var index = 0
+    while index < length(invalid) {
+        assert !valid_git_subdir(get(invalid, index))
+        index = index + 1
+    }
+    rejects(concat(valid, "\nsubdir='../outside'"))
+    rejects(concat(prefix, "subdir='other'"))
+    rejects("""
+[module]
+name = 'app'
+[dependencies.codec]
+path = '../codec'
+subdir = 'src'
+""")
+    rejects("""
+[module]
+name = 'app'
+[dependencies.codec]
+subdir = 'src'
+path = '../codec'
+""")
 }
 
 test fn git_sources_require_one_source_and_an_unambiguous_commit() {
@@ -159,7 +228,10 @@ test fn git_urls_reject_unicode_and_decoded_controls_without_echoing_secrets() {
 }
 
 fn rejects(text Text) {
-    assert match parse(text) { Result.Ok(_) => false, Result.Err(_) => true }
+    assert match parse(text) {
+        Result.Ok(_) => false,
+        Result.Err(_) => true
+    }
 }
 
 test fn unsupported_and_ambiguous_manifests_reject() {

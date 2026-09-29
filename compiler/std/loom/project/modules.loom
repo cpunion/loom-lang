@@ -11,12 +11,20 @@ import std.text.length
 
 fn read_module(directory Text) Result[ModuleRoot, Text] {
     let path = join_path(directory, "loom.toml")
-    if !is_file(path) { return Result.Err(concat(path, ": dependency root requires loom.toml")) }
+    if !is_file(path) {
+        return Result.Err(concat(path, ": dependency root requires loom.toml"))
+    }
     let module = match std.loom.manifest.parse(read(path)?) {
         Result.Ok(value) => value
-        Result.Err(error) => { return Result.Err(concat(path, concat(": ", error))) }
+        Result.Err(error) => {
+            return Result.Err(concat(path, concat(": ", error)))
+        }
     }
-    Result.Ok(ModuleRoot { name = module.name base = directory dependencies = module.dependencies })
+    Result.Ok(ModuleRoot {
+            name = module.name
+            base = directory
+            dependencies = module.dependencies
+        })
 }
 
 fn register_module(loader Loader, module ModuleRoot) Result[Int, Text] {
@@ -24,7 +32,9 @@ fn register_module(loader Loader, module ModuleRoot) Result[Int, Text] {
     while index < length(loader.modules) {
         let previous = get(loader.modules, index)
         if previous.base == module.base {
-            if previous.name != module.name { return Result.Err("one source root cannot have different module names") }
+            if previous.name != module.name {
+                return Result.Err("one source root cannot have different module names")
+            }
             return Result.Ok(index)
         }
         index = index + 1
@@ -35,11 +45,17 @@ fn register_module(loader Loader, module ModuleRoot) Result[Int, Text] {
 
 fn dependency_directory(base Text, path Text) Result[Text, Text] {
     if !is_windows_path(base) {
-        return canonical(if starts_with(path, "/") { path } else { join_path(base, path) })
+        return canonical(if starts_with(path, "/") {
+                path
+            } else {
+                join_path(base, path)
+            })
     }
     // Canonical Windows roots use verbatim paths. Resolve relative dot segments
     // explicitly, retaining native separators and canonicalizing symlink steps.
-    if is_windows_path(path) || starts_with(path, "//") { return canonical(path) }
+    if is_windows_path(path) || starts_with(path, "//") {
+        return canonical(path)
+    }
     if starts_with(path, "/") || starts_with(path, "\\") || (length(path) >= 2 && byte(path, 1) == 58) {
         return Result.Err("dependency paths must be relative or fully absolute, not drive-relative or rooted on an implicit drive")
     }
@@ -51,8 +67,12 @@ fn dependency_directory(base Text, path Text) Result[Text, Text] {
         var item = 0
         while item < length(native) {
             let part = get(native, item)
-            if part == ".." { directory = parent(directory) } else {
-                if part != "" && part != "." { directory = canonical(join_path(directory, part))? }
+            if part == ".." {
+                directory = parent(directory)
+            } else {
+                if part != "" && part != "." {
+                    directory = canonical(join_path(directory, part))?
+                }
             }
             item = item + 1
         }
@@ -64,9 +84,13 @@ fn dependency_directory(base Text, path Text) Result[Text, Text] {
 fn imported_module(loader Loader, owner Int, name Text, comptime fetch Bool) Result[Int, Text] {
     // The standard library is registered first and cannot be replaced by a
     // dependency. Other modules are visible only through the importer's edges.
-    if name == "std" { return Result.Ok(0) }
+    if name == "std" {
+        return Result.Ok(0)
+    }
     let source = get(loader.modules, owner)
-    if name == source.name && name != "" { return Result.Ok(owner) }
+    if name == source.name && name != "" {
+        return Result.Ok(owner)
+    }
     var index = 0
     while index < length(source.dependencies) {
         let dependency = get(source.dependencies, index)
@@ -77,19 +101,23 @@ fn imported_module(loader Loader, owner Int, name Text, comptime fetch Bool) Res
                     discard source_boundary(loader.resolution, source.base, base)?
                     base
                 }
-                DependencySource.Git(git, rev) => git_dependency(loader.resolution, source.base, name, git, rev, fetch)?
+                DependencySource.Git(git, rev, subdir) => git_dependency(loader.resolution, source.base, name, git, rev, subdir, fetch)?
             }
             var existing = 0
             while existing < length(loader.modules) {
                 let module = get(loader.modules, existing)
                 if module.base == base {
-                    if module.name != name { return Result.Err(concat("dependency name does not match module.name: ", name)) }
+                    if module.name != name {
+                        return Result.Err(concat("dependency name does not match module.name: ", name))
+                    }
                     return Result.Ok(existing)
                 }
                 existing = existing + 1
             }
             let module = read_module(base)?
-            if module.name != name { return Result.Err(concat("dependency name does not match module.name: ", name)) }
+            if module.name != name {
+                return Result.Err(concat("dependency name does not match module.name: ", name))
+            }
             return register_module(loader, module)
         }
         index = index + 1
