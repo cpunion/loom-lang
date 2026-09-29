@@ -500,6 +500,14 @@ content or alias stability is inferred from their presence. Record updates and
 tuple projections reuse the same proof path, including eager evaluation of unused
 initializer fields. See the
 [aggregate contract example](../../compiler/examples/aggregate_contracts/main.loom).
+Required postconditions also reuse the bounded integer difference propagation
+used by refinement construction. It derives bounds across actual symbolic values,
+including inline fields and fresh callee results, not local-slot numbers.
+Postcondition short-circuit guards participate in both truth and definedness
+proofs. Propagation scans at most 256 facts and 32 numeric identities per boundary;
+it is interval propagation, not a complete relational solver. Original entry
+checks and body faults remain; see the
+[relational contract example](../../compiler/examples/relational_contracts).
 Recursive proof dependencies, helper loops/mutation, returns inside helper operands,
 indirect calls and dyn calls without a usable contract remain unsupported; required proofs never
 fall back to runtime checks or sampled evaluation.

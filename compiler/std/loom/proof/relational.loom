@@ -108,24 +108,53 @@ fn connected_fact(value Expr, locals List[FactLocal], budget List[Int], depth In
 
 // Each edge is x - y <= limit. Missing variables denote the constant zero.
 // Only unit coefficients qualify; all arithmetic here uses mathematical Ints.
-fn difference_edges(edges List[Difference], relation Text, value Linear, zero Int) {
-    if relation != "==" && relation != "<=" && relation != "<" && relation != ">=" && relation != ">" {
-        return
+fn difference_identity(identities List[Int], id Int) Result[Int, Text] {
+    var index = 0
+    while index < length(identities) {
+        if get(identities, index) == id {
+            return Result.Ok(index + 1)
+        }
+        index = index + 1
     }
-    var left = zero
-    var right = zero
+    if id < 0 || length(identities) >= 32 {
+        return Result.Err("difference identity budget exhausted")
+    }
+    push(identities, id)
+    Result.Ok(length(identities))
+}
+
+fn difference_edges(edges List[Difference], identities List[Int], relation Text, value Linear) Result[Bool, Text] {
+    if relation != "==" && relation != "<=" && relation != "<" && relation != ">=" && relation != ">" {
+        return Result.Ok(false)
+    }
+    // Validate the shape before allocating identities for an unsupported term.
+    var positive = -1
+    var negative = -1
     var index = 0
     while index < length(value.terms) {
         let term = get(value.terms, index)
-        if compare(term.factor, integer(1)) == 0 && left == zero {
-            left = term.id
+        if term.id < 0 {
+            return Result.Err("invalid difference identity")
+        }
+        if compare(term.factor, integer(1)) == 0 && positive == -1 {
+            positive = term.id
         } else {
-            if compare(term.factor, integer(-1)) != 0 || right != zero {
-                return
+            if compare(term.factor, integer(-1)) != 0 || negative != -1 {
+                return Result.Ok(false)
             }
-            right = term.id
+            negative = term.id
         }
         index = index + 1
+    }
+    let left = if positive == -1 {
+        0
+    } else {
+        difference_identity(identities, positive)?
+    }
+    let right = if negative == -1 {
+        0
+    } else {
+        difference_identity(identities, negative)?
     }
     let reverse = relation == ">" || relation == ">="
     let limit = if reverse {
@@ -157,21 +186,58 @@ fn difference_edges(edges List[Difference], relation Text, value Linear, zero In
                 limit = value.constant
             })
     }
+    Result.Ok(true)
 }
 
 fn difference_facts(state State) State {
-    let count = length(state.locals)
-    let edges = new[Difference]()
+    // Symbol identities are not local slots: a local may contain an affine
+    // expression, and record leaves / call results have fresh identities beyond
+    // locals. Compact the actual terms; slot zero denotes mathematical zero.
+    // Independent bounds already belong to range(). Avoid rebuilding them for
+    // the common single-symbol proof, including nested short-circuit clauses.
+    var coupled = false
     var index = 0
-    while index < length(state.facts) {
+    while index < length(state.facts) && index < 256 && !coupled {
         match get(state.facts, index) {
-            Predicate.Compare(relation, value) => difference_edges(edges, relation, value, count)
+            Predicate.Compare(_, value) => {
+                coupled = length(value.terms) == 2
+            }
             _ => {
             }
         }
         index = index + 1
     }
+    if !coupled {
+        return state
+    }
+    let identities = new[Int]()
+    let edges = new[Difference]()
+    index = 0
+    while index < length(state.facts) && index < 256 {
+        match get(state.facts, index) {
+            Predicate.Compare(relation, value) => {
+                match difference_edges(edges, identities, relation, value) {
+                    Result.Ok(_) => {
+                    }
+                    Result.Err(_) => {
+                        return state
+                    }
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    let count = length(identities)
+    if count == 0 {
+        return state
+    }
     let bounds = new[Bounds]()
+    push(bounds, Bounds {
+            low = integer(0)
+            high = integer(0)
+        })
     index = 0
     while index < count {
         push(bounds, Bounds {
@@ -180,10 +246,6 @@ fn difference_facts(state State) State {
             })
         index = index + 1
     }
-    push(bounds, Bounds {
-            low = integer(0)
-            high = integer(0)
-        })
     // Monotone interval propagation, not a complete solver. Stopping early
     // only loses proofs; every retained bound follows from an actual edge.
     var round = 0
@@ -223,20 +285,16 @@ fn difference_facts(state State) State {
         if compare(bound.low, bound.high) > 0 {
             return assume(state, Predicate.Constant(false))
         }
-        if index < count {
-            match get(state.locals, index) {
-                Value.Number(value) => {
-                    // range() already starts at machine bounds. Retain only
-                    // improvements, not duplicate bounds for every identity.
-                    if compare(bound.low, integer(-9223372036854775808)) > 0 {
-                        output = assume(output, Predicate.Compare(">=", add(value, constant(negate(bound.low)))))
-                    }
-                    if compare(bound.high, integer(9223372036854775807)) < 0 {
-                        output = assume(output, Predicate.Compare("<=", add(value, constant(negate(bound.high)))))
-                    }
-                }
-                _ => {
-                }
+        if index > 0 {
+            let value = variable(get(identities, index - 1))
+            // range() already starts at machine bounds. Retain only improved
+            // bounds on the symbol itself, never on a substituted local value.
+            let known = range(value, state.facts)
+            if compare(bound.low, known.low) > 0 {
+                output = assume(output, Predicate.Compare(">=", add(value, constant(negate(bound.low)))))
+            }
+            if compare(bound.high, known.high) < 0 {
+                output = assume(output, Predicate.Compare("<=", add(value, constant(negate(bound.high)))))
             }
         }
         index = index + 1

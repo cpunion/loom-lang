@@ -1640,6 +1640,17 @@ entry record/tuple parameters; shared-data snapshots and arbitrary entry
 expressions remain unsupported.
 See the [aggregate contract example](examples/aggregate_contracts/main.loom).
 
+Required postconditions reuse the integer difference propagation used at
+refinement boundaries: `requires value > lower && lower >= 0` can establish
+`ensures result > 0` for a body returning `value`. Inline record/tuple leaves and
+fresh results with verified callee bounds retain distinct symbolic identities,
+including through scalar assignment and snapshots. Short-circuit postconditions
+use their branch guards without assuming unevaluated arithmetic succeeded.
+Propagation is bounded to 256 facts and 32 numeric identities at a boundary;
+unknown required proofs still block compilation. This is interval propagation,
+not general relational solving, and adds no runtime mechanism.
+See the [relational contract example](examples/relational_contracts).
+
 The current proof fragment supports scalar linear arithmetic, comparisons,
 Boolean facts, local assignments, and acyclic branches/returns. It reasons from
 preconditions and successful checked operations. A source-written `assert`

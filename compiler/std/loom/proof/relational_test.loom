@@ -1,5 +1,35 @@
 import std.int.to_text
 
+test fn symbolic_difference_bounds_do_not_use_local_slots_as_identities() {
+    let x = variable(1000000)
+    let y = variable(7)
+    let facts = predicates(Predicate.Compare(">", add(x, scale(y, integer(-1)))), Predicate.Compare(">=", y))
+    let locals = new[Value]()
+    push(locals, Value.Number(add(x, constant(integer(-100)))))
+    push(locals, Value.Record(new[Value]()))
+    let state = difference_facts(State {
+            locals = locals
+            facts = facts
+        })
+    assert holds(Predicate.Compare(">", x), state.facts)
+    assert !holds(Predicate.Compare(">", y), state.facts)
+    assert !holds(Predicate.Compare(">", add(x, constant(integer(-100)))), state.facts)
+    assert !holds(Predicate.Compare(">", variable(0)), state.facts)
+    // A repeated query keeps the same small fact set, not duplicate bounds.
+    assert length(difference_facts(state).facts) == length(state.facts)
+    var index = 10
+    while index < 43 {
+        push(facts, Predicate.Compare(">=", variable(index)))
+        index = index + 1
+    }
+    let exhausted = difference_facts(State {
+            locals = locals
+            facts = facts
+        })
+    assert length(exhausted.facts) == length(facts)
+    assert !holds(Predicate.Compare(">", x), exhausted.facts)
+}
+
 test fn difference_propagation_preserves_direction_strictness_and_identity() {
     let x = local(19)
     let y = local(1000000)

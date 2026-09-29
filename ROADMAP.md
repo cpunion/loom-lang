@@ -306,6 +306,14 @@ use only the exact method's verified scalar contract, not hidden witnesses.
 Recursive proof dependencies, helper loops/mutation, indirect calls and required
 Float reasoning remain open. See the [example](compiler/examples/aggregate_contracts/main.loom).
 
+Required postconditions now share bounded integer difference propagation with
+refinement construction. Preconditions, successful assertions and verified
+callee summaries can propagate bounds across scalar parameters, inline aggregate
+leaves and fresh call results. Symbol identities survive local substitution and
+reassignment; short-circuit clauses retain their own guards and definedness
+obligations. This remains interval propagation, not general relational solving.
+See the [contract example](compiler/examples/relational_contracts).
+
 Structural tuples, numeric projection, and nested let/var destructuring use the
 native aggregate path, including generics, shared containers, and compile-time
 results. Nested enum/tuple patterns in `match` now use typed decisions with

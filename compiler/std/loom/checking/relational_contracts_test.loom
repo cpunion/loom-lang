@@ -1,0 +1,166 @@
+test fn required_contracts_propagate_scalar_record_and_call_bounds() {
+    discard accepted("""
+record Bounds {
+    lower Int
+    upper Int
+}
+
+pub fn related(value Int, lower Int) Int
+requires value > lower && lower >= 0
+ensures result == value
+ensures result > 0
+{
+    value
+}
+
+pub fn projected(value Bounds) Int
+requires value.upper > value.lower && value.lower >= 0
+ensures result > 0
+{
+    value.upper
+}
+
+fn at_least(value Int) Int
+ensures result >= value
+{
+    value
+}
+
+pub fn forwarded(value Int) Int
+requires value > 0
+ensures result > 0
+{
+    at_least(at_least(value))
+}
+
+pub fn affine(value Int, lower Int) Int
+requires value >= lower && lower >= 0
+ensures result > 0
+{
+    let next = value + 1
+    next
+}
+
+pub fn snapshot(value Int, lower Int) Int
+requires value > lower && lower >= 0
+ensures result > 0
+{
+    var current = value
+    let saved = current
+    current = -1
+    saved
+}
+""")
+}
+
+test fn required_relations_keep_short_circuit_definedness_and_branch_facts() {
+    discard accepted("""
+pub fn incrementable(value Int, upper Int) Int
+requires value <= upper && upper < 9223372036854775807
+ensures result + 1 > result
+{
+    value
+}
+
+pub fn guarded(value Int, upper Int) Int
+requires upper < 9223372036854775807
+ensures result > upper || result + 1 > result
+{
+    value
+}
+
+pub fn branch(value Int, lower Int) Int
+ensures result > 0
+{
+    if value <= lower || lower < 0 {
+        return 1
+    }
+    value
+}
+
+fn positive(value Int) Bool {
+    value > 0
+}
+
+pub fn helper(value Int, lower Int) Int
+requires value > lower && lower >= 0
+ensures positive(result)
+{
+    value
+}
+""")
+    rejects("""
+fn overflow(value Int, lower Int) Int
+requires value >= lower && lower >= 0
+ensures result + 1 > result
+{
+    value
+}
+""")
+    rejects("""
+fn joined(value Int, other Int) Int
+ensures result > 0
+{
+    if value > other {
+        assert other >= 0
+    }
+    value
+}
+""")
+    rejects("""
+fn either(value Int, other Int) Int
+requires value > 0 || other > 0
+ensures result > 0
+{
+    value
+}
+""")
+}
+
+test fn required_relations_do_not_confuse_current_saved_or_independent_values() {
+    rejects("""
+fn changed(value Int, lower Int) Int
+requires value > lower && lower >= 0
+ensures result > 0
+{
+    var current = value
+    current = -1
+    current
+}
+""")
+    rejects("""
+fn shifted(value Int, lower Int) Int
+requires value > lower && lower >= 0
+ensures result > 0
+{
+    value - 100
+}
+""")
+    rejects("""
+fn at_least(value Int) Int
+ensures result >= value
+{
+    value
+}
+
+fn independent(value Int) Int
+requires value > 0
+ensures result == 0
+{
+    at_least(value) - at_least(value)
+}
+""")
+    rejects("""
+record Pair {
+    first Int
+    second Int
+}
+
+fn unrelated(value Pair, lower Int) Int
+requires value.first > lower && lower >= 0
+ensures result > 0
+{
+    value.second
+}
+""")
+}
