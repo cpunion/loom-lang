@@ -613,6 +613,7 @@ fn main() {
     await autoImportSmoke(executable, stdRoot);
     await directDependencyAutoImportSmoke(executable, stdRoot);
     await privateRenameSmoke(executable, stdRoot);
+    await require('./binding-rename').bindingRenameSmoke(executable, stdRoot);
     await buildInputSmoke(executable, stdRoot);
     await buildOptionSmoke(executable, stdRoot);
     await require('./resident').residentSmoke(executable, stdRoot);

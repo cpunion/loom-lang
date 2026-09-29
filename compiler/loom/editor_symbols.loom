@@ -167,7 +167,8 @@ fn editor_unsafe_body(node Node) Bool {
 }
 
 fn editor_local(node Node, tokens List[Token], target Span) Bool {
-    if node.kind == NodeKind.Let || node.kind == NodeKind.Var {
+    if node.kind == NodeKind.Let || node.kind == NodeKind.Var || node.kind == NodeKind.Scoped ||
+    node.kind == NodeKind.Parameter {
         match editor_name(tokens, node) {
             Option.Some(span) => {
                 if editor_same_span(span, target) {
@@ -178,9 +179,34 @@ fn editor_local(node Node, tokens List[Token], target Span) Bool {
             }
         }
     }
+    if (node.kind == NodeKind.Destructure || node.kind == NodeKind.Arm) && length(node.children) > 0 {
+        if editor_pattern_local(get(node.children, 0), tokens, target) {
+            return true
+        }
+    }
     var index = 0
     while index < length(node.children) {
         if editor_local(get(node.children, index), tokens, target) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn editor_pattern_local(node Node, tokens List[Token], target Span) Bool {
+    if node.kind == NodeKind.Name || (node.kind == NodeKind.Pattern && length(node.children) == 0) {
+        match editor_name(tokens, node) {
+            Option.Some(span) => {
+                return editor_same_span(span, target)
+            }
+            Option.None => {
+            }
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        if editor_pattern_local(get(node.children, index), tokens, target) {
             return true
         }
         index = index + 1
@@ -199,12 +225,22 @@ fn editor_local_scope(analysis Analysis, target Location) Option[Span] {
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let symbol = get(analysis.bindings.symbols, index)
-        if symbol.file == target.file && symbol.owner < 0 && symbol.node.kind == NodeKind.Function &&
+        if symbol.file == target.file && symbol.node.value != "" && symbol.node.kind == NodeKind.Function &&
         !editor_unsafe_body(symbol.node) && editor_local(symbol.node, tokens, target.span) {
             var checked = 0
             while checked < length(analysis.program.functions) {
                 if get(analysis.program.functions, checked).symbol == index {
-                    return Option.Some(symbol.node.span)
+                    // A bare match pattern can be a variant, not a binding.
+                    // Require declaration evidence from the checked local ID.
+                    match inspect_at(analysis, target.file, target.span.start) {
+                        Option.Some(found) => {
+                            if length(found.definitions) == 1 && editor_same_location(get(found.definitions, 0), target) {
+                                return Option.Some(symbol.node.span)
+                            }
+                        }
+                        Option.None => {
+                        }
+                    }
                 }
                 checked = checked + 1
             }
@@ -550,13 +586,13 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
                 if new_name != token.value && editor_name_conflict(analysis, target.file, scope, new_name) {
                     return editor_error("Rename would conflict with a name in this function")
                 }
-                return editor_rename_output(bindings, references)
+                return editor_checked_rename(options, bindings, references, new_name)
             }
             Option.None => {
             }
         }
         if !editor_private_function(analysis, target, token.value) {
-            return editor_error("Rename supports checked local let/var bindings or one package-private top-level function")
+            return editor_error("Rename supports checked local bindings and parameters, or one package-private top-level function")
         }
         if !options.tests {
             return editor_error("Private function rename requires --tests to account for test-file uses")
@@ -567,16 +603,7 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
         if new_name != token.value && editor_private_conflict(analysis, new_name) {
             return editor_error("Rename would conflict with a name in the package or import closure")
         }
-        let overlays = match editor_private_overlays(options, bindings, references, new_name) {
-            Option.Some(value) => value
-            Option.None => {
-                return editor_error("Rename could not build an in-memory edit for this package")
-            }
-        }
-        if !editor_overlay_checks(options, overlays) {
-            return editor_error("Rename would invalidate the checked package")
-        }
-        return editor_rename_output(bindings, references)
+        return editor_checked_rename(options, bindings, references, new_name)
     }
     let declaration = editor_location_json(bindings, target)
     EditorOutput {
@@ -584,4 +611,18 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
                 concat(",\"references\":", concat(editor_locations_json(bindings, references), "}\n"))))
         failed = false
     }
+}
+
+fn editor_checked_rename(options EditorOptions, bindings std.loom.binding.Program,
+    references List[Location], new_name Text) EditorOutput {
+    let overlays = match editor_private_overlays(options, bindings, references, new_name) {
+        Option.Some(value) => value
+        Option.None => {
+            return editor_error("Rename could not build an in-memory edit for this package")
+        }
+    }
+    if !editor_overlay_checks(options, overlays) {
+        return editor_error("Rename would invalidate the checked package")
+    }
+    editor_rename_output(bindings, references)
 }

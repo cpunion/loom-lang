@@ -137,19 +137,23 @@ ambiguous targets. A package error suppresses references and rename until the
 whole package checks; hover and definition retain their independent-function
 fallback.
 
-Rename edits checked `let`/`var` bindings in ordinary functions. It also renames
+Rename edits checked runtime parameters and local `let`/`var`/`scoped`, tuple,
+record and match bindings in ordinary named functions and methods. Contracts
+and guarded arms use the same local identities as bodies; field labels and
+enum variants are not local bindings. Every local edit is checked again in an
+in-memory package before it is offered. It also renames
 one production package-private top-level function across files in the selected package when
 every same-spelled token is an exact checked reference and the virtual edits pass
 a full in-memory package check with test files included. It refuses overloads, public functions/import
 rewrites, unresolved occurrences, name collisions, and invalid identifiers;
 local rename additionally refuses nested closures and compile-time branches.
-Parameter, field, type, and public function rename are not yet available. The server
+Field, type, compile-time parameter and public function rename are not yet available. The server
 returns a workspace edit for the
 client to apply; it never writes source files directly.
 
-Signatures, type
-annotations, uninstantiated bodies, and folded code without source identity have
-no result. Some names, such as match-bound locals, have hover but no definition.
+Checked runtime parameter and match-binding declarations have hover and
+definition evidence even when unused. Type annotations, uninstantiated bodies,
+and folded code without source identity still have no result.
 Dynamic calls navigate to concept declarations, not a guessed runtime
 implementation; ambiguous concept overloads omit the definition.
 Closure parameters and captured bindings navigate through checked source

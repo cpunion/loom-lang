@@ -52,11 +52,14 @@ explicitly discarded, and Task/MustScope obligations cannot be discarded.
 
 The [VS Code extension](../../editors/vscode/README.md) uses the real compiler
 for unsaved diagnostics, formatting, hover/navigation, name/member/import
-completion, checked import fixes, local rename and narrow private-function
+completion, checked import fixes, parameter/local-pattern rename and narrow private-function
 rename. Resident workers reuse valid analyses and definition checks while
 revalidating loaded source and observed inputs. Completion recovery is virtual;
-it supplies neither build success nor proof evidence. Public/API rename and
-broader recovery/query support are unfinished.
+it supplies neither build success nor proof evidence.
+Runtime parameter declarations and match payload/whole bindings retain exact
+checked definition locations. Renames include contracts, preserve shadowing and
+recheck the virtual package. Public API/compile-time parameter rename and broader
+recovery/query support remain open.
 
 Public `std.loom` syntax, fragment parsing, project/binding and typed-analysis
 libraries are the same implementation used by the compiler. In-memory syntax

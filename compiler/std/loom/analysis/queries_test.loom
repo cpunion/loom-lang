@@ -79,6 +79,61 @@ fn only_definition(found Inspection, start Int, end Int) {
     assert location.file == 0 && location.span.start == start && location.span.end == end
 }
 
+test fn checked_declarations_and_match_arms_retain_exact_local_identities() {
+    let text = """
+        enum Choice {
+            Value(Int)
+            Empty
+        }
+
+        fn choose(option Choice) Int {
+            match option {
+                Choice.Value(payload) => payload
+                whole => 0
+            }
+        }
+
+        fn main() {
+            assert choose(Choice.Value(3)) == 3
+        }
+        """
+    let analysis = accepted(input(text))
+    let parameter = query_offset(text, "option Choice")
+    only_type(inspection(analysis, text, "option Choice"), "app.Choice")
+    only_definition(inspection(analysis, text, "option Choice"), parameter, parameter + 6)
+    let binding = query_offset(text, "payload)")
+    only_definition(inspection(analysis, text, "payload)"), binding, binding + 7)
+    only_definition(inspection(analysis, text, "payload\n"), binding, binding + 7)
+    let whole = query_offset(text, "whole =>")
+    only_definition(inspection(analysis, text, "whole =>"), whole, whole + 5)
+    only_type(inspection(analysis, text, "whole =>"), "app.Choice")
+}
+
+test fn a_variant_pattern_is_not_a_same_spelled_local_declaration() {
+    let text = """
+        enum Choice {
+            Red
+            Blue
+        }
+
+        fn choose(option Choice) Int {
+            let Red = 3
+            match option {
+                Red => Red + 0
+                Blue => 0
+            }
+        }
+
+        fn main() {
+            assert choose(Choice.Red) == 3
+        }
+        """
+    let analysis = accepted(input(text))
+    absent(analysis, query_offset(text, "Red =>"))
+    let binding = query_offset(text, "Red =")
+    only_definition(inspection(analysis, text, "Red + 0"), binding, binding + 3)
+}
+
 fn absent(analysis Analysis, position Int) {
     match inspect_at(analysis, 0, position) {
         Option.None => {
