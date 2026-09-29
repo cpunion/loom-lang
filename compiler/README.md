@@ -453,8 +453,13 @@ found that snapshot overhead still outweighed reuse on these workloads:
 
 The compiler case reused 1,588 definition checks and 2,582 bodies, but peak RSS
 grew from 822 MiB to 2,485 MiB. These are three-sample macOS arm64 medians with
-warm OS caches, not a claim that disk reuse improves edit latency. The default
-uncached path is unaffected; snapshot overhead remains an optimization target.
+warm OS caches. After removing temporary numeric Texts and redundant private AST
+copies, the [same edit benchmark](../benchmarks/compiler/results/2026-09-30-macos-arm64-snapshot-allocation.json)
+measured 1,543 ms and 1,448 MiB for the compiler's incremental check, versus
+1,953 ms uncached in that run. Relative to the earlier cached baseline, latency
+fell 37% and peak RSS 42%; source changes add four reusable definitions/bodies.
+Small examples still favor the default uncached path. These are local-edit
+measurements, not arbitrary dependency changes or native build speedups.
 Tracked files, explicit options and observed target properties bind both levels
 of reuse. Backend objects are still whole-closure, not per-definition. Ordinary
 compile-time execution cannot read arbitrary I/O.
