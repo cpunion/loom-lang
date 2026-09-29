@@ -1,0 +1,66 @@
+test fn dynamic_bodies_restore_current_interfaces_slots_and_sparse_witnesses() {
+    let source = """
+        concept Other {
+            fn other(self Self) Int
+        }
+        concept Convert {
+            type Item
+            fn stored(self Self, item Self.Item) Self.Item
+            fn echo[T](self Self, item T) T {
+                item
+            }
+            fn selected(self Self, comptime enabled Bool, item Int) Int {
+                comptime if enabled {
+                    item + 1
+                } else {
+                    item
+                }
+            }
+            async fn fetch(self Self, item Int) Int {
+                item
+            }
+            fn unused(self Self) Int {
+                123
+            }
+        }
+        impl Convert for Int {
+            type Item = Text
+            fn stored(receiver Int, item Text) Text {
+                item
+            }
+        }
+        async fn main() {
+            let erased dyn Convert[Item = Text] = 7
+            assert erased.stored("kept") == "kept"
+            assert erased.echo(true) && erased.echo(9) == 9
+            assert erased.selected(true, 6) + erased.selected(false, 10) == 17
+            assert erased.fetch(8).await == 8
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let cache = restored_definition_cache(initial)
+    let changed = concat("fn unrelated(item dyn Other) dyn Other { item }\n\n", source)
+    let checked = match cached_source(cache, changed) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            assert false
+            return
+        }
+    }
+    assert bodies_reused(cache) >= 7
+    var index = 0
+    while index < length(checked.program.functions) {
+        let owner = get(checked.program.functions, index).symbol
+        assert get(checked.bindings.symbols, owner).name != "unused"
+        index = index + 1
+    }
+    discard restored_definition_cache(cache)
+}

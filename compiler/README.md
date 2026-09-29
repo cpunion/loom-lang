@@ -387,6 +387,8 @@ offset, separately from the implementation.
 Async/Task bodies reuse checked flow before fresh coroutine lowering; task call
 targets and creation labels use current bindings and source locations. Captured
 frame/resource bodies still recheck.
+Dynamic calls and boxes rebuild current interface/witness identities and used
+method slots; cached bodies do not restore an old runtime dispatch table.
 Build receipts use the freshly loaded project and actual artifact; requested IR,
 linking and test execution still run.
 Only successful checks are published. Each `checked-v2` entry contains metadata

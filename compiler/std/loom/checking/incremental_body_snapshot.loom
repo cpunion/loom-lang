@@ -119,6 +119,7 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
         types = types
         targets = targets
         functions = functions
+        interfaces = body_copy_interfaces(env)
     }
     if length(cache.state.bodies) == 0 {
         push(cache.state.bodies, saved)
