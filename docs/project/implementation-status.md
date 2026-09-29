@@ -871,8 +871,10 @@ AST through pure functions in the original source universe, without implicit
 iteration or generated imports. Generated symbols retain package visibility,
 required proofs, test isolation and distinct closure/macro identities. Editor
 queries retain the raw source basis, navigate to the generating block, and
-revalidate tracked inputs. These stages conservatively disable per-definition
-check reuse, not whole-snapshot reuse. See the
+revalidate tracked inputs. Declaration expansion reruns before per-definition
+matching, so unchanged generated bodies can reuse resident checks while changed
+output invalidates its consumers. Generated projects do not yet export the
+source-backed persistent definition snapshot. See the
 [in-compilation example](../../compiler/examples/declaration_generation).
 `std.reflect.predicates.describe` now returns visible direct refinement predicates
 as canonical source and public AST data, including generated declarations. It
