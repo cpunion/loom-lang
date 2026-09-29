@@ -289,7 +289,9 @@ key the original declaration and arity, rebuilding signatures and arity validati
 before reusing concrete bodies. Concrete methods keep current conformance checks
 and independent inherited-contract source mapping. Async/Task body reuse precedes
 fresh coroutine lowering and refreshes task-creation labels. Dynamic bodies
-rebuild current interfaces, specialized slots and sparse witness uses. Unsupported cases recheck;
+rebuild current interfaces, specialized slots and sparse witness uses. Scoped
+cleanup bodies retain current resource-flow validation and implicit Dispose
+dependency invalidation. Unsupported cases recheck;
 per-package native objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic

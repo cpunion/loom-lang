@@ -319,7 +319,7 @@ and a checked `program`; `definitions_reused(cache)` counts reused abstract
 function checks and `bodies_reused(cache)` counts reused concrete bodies.
 Body edits invalidate transitive callers; declaration/import
 changes and changed invariant helpers recheck conservatively. Syntax-producing
-macros, resource and closure definitions are not reused. Only successful checks
+macros and closure definitions are not reused. Only successful checks
 replace the saved basis. Concrete reuse covers ordinary scalar, aggregate,
 List, generic and compile-time-specialized bodies with unchanged source text.
 Static instance keys retain detached immutable values; types, named callbacks and
@@ -343,6 +343,9 @@ from current source, like assertions; captured-frame bodies still recheck.
 Dynamic reuse records source concept/method recipes, not old interface/witness
 numbers. Current boxing/calls rebuild associated bindings, specialized slots and
 sparse witness uses, including asynchronous methods; unused methods stay absent.
+Scoped/aggregate cleanup bodies also reuse typed IR. Current transitive resource
+flow still runs, and implicit Dispose targets participate in invalidation. Fresh
+lowering registers/drains the current cleanups; no live resource state is cached.
 The resident editor uses this path automatically after a snapshot changes.
 Top-level declaration generation reruns with current build inputs before matching
 its expanded definitions. Unchanged generated bodies can therefore participate in

@@ -1044,9 +1044,12 @@ maps inherited clauses to their current concept declaration. Declaration and
 conformance validation still run.
 Async/Task bodies reuse one-shot flow evidence before fresh coroutine lowering,
 with current direct/indirect task-creation labels. Private waits keep the same
-runtime path; captured-frame and resource bodies still recheck.
+runtime path; captured-frame bodies still recheck.
 Dynamic bodies rebuild current concept/associated-binding interfaces, specialized
 method slots and sparse witness uses from source recipes, not cached table IDs.
+Scoped/aggregate cleanup bodies reuse typed IR with current transitive resource
+flow validation and implicit Dispose dependency invalidation. Live resources or
+cleanup registrations never enter a compiler cache.
 Compiler bytes, mode/options, module/import identities and observed inputs bind the complete
 checksummed snapshot. Declaration expansion reruns before matching; its raw
 source and expanded trees have separate private snapshots. Unsupported snapshots

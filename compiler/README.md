@@ -375,7 +375,7 @@ and generic/compile-time-specialized bodies, including variadic instances.
 Fresh bindings rekey types, static
 arguments, calls and source locations;
 changed definitions and overloads invalidate transitive consumers. Nominal/import
-changes and syntax-producing macro, resource or unsupported bodies recheck conservatively.
+changes and syntax-producing macro or unsupported bodies recheck conservatively.
 Declaration generation reruns before matching, using current build inputs.
 Snapshots retain raw source and private expanded trees separately; unchanged
 generated bodies use the current generating block's location and extent.
@@ -386,9 +386,11 @@ validation. Inherited contract locations track the concept's current file and
 offset, separately from the implementation.
 Async/Task bodies reuse checked flow before fresh coroutine lowering; task call
 targets and creation labels use current bindings and source locations. Captured
-frame/resource bodies still recheck.
+frame bodies still recheck.
 Dynamic calls and boxes rebuild current interface/witness identities and used
 method slots; cached bodies do not restore an old runtime dispatch table.
+Scoped bodies reuse typed cleanup, while current transitive resource flow checks
+still run. Implicit Dispose dependencies invalidate reuse just like explicit calls.
 Build receipts use the freshly loaded project and actual artifact; requested IR,
 linking and test execution still run.
 Only successful checks are published. Each `checked-v2` entry contains metadata
