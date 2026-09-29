@@ -1,0 +1,147 @@
+// Interface/slot numbers belong to one check. Save only the source concept and
+// method instance recipes; current calls recreate uses and sparse witnesses.
+record BodyInterface {
+    symbol Int
+    slots List[BodyTarget]
+}
+
+fn body_copy_interfaces(env Environment) List[BodyInterface] {
+    let saved = new[BodyInterface]()
+    var index = 0
+    while index < length(env.interfaces) {
+        let slots = new[BodyTarget]()
+        let current = get(env.dynamic_interfaces, index).slots
+        var slot = 0
+        while slot < length(current) {
+            let value = get(current, slot)
+            push(slots, BodyTarget {
+                    symbol = get(env.signatures, value.signature).symbol
+                    arity = -1
+                    prototype = -1
+                    arguments = copy_indices(value.arguments)
+                    constants = body_copy_constants(env, value.constants)
+                })
+            slot = slot + 1
+        }
+        push(saved, BodyInterface {
+                symbol = get(env.interfaces, index).symbol
+                slots = slots
+            })
+        index = index + 1
+    }
+    saved
+}
+
+fn body_dynamic_slot(reuse BodyReuse, value Expr) BodyTarget {
+    let prior = get(reuse.prior, 0)
+    let receiver = get(prior.types, get(value.children, 0).ty)
+    get(get(prior.interfaces, receiver.symbol).slots, value.index)
+}
+
+// Reused expressions already have concrete types and checked lexical access.
+// This context supplies current source identity to normal witness/slot building;
+// it neither invents generic assumptions nor restores previous witness indices.
+fn body_dynamic_context(env Environment, owner Int) Context {
+    Context {
+        lexical = new_lexical()
+        env = env
+        signature = Signature {
+            symbol = owner
+            parameters = 0
+            params = new[Int]()
+            compile_time = new[Int]()
+            result = 0
+            requirements = new[Requirement]()
+        }
+        arguments = new[Int]()
+        constants = new[StaticValue]()
+        locals = new[Local]()
+        bindings = new[Binding]()
+        head = -1
+        cleanups = new[Cleanup]()
+        cleanup_head = -1
+        loop_boundary = -2
+        facts = new[Fact]()
+        fact_head = -1
+        emit = true
+    }
+}
+
+fn body_dynamic_expression(env Environment, reuse BodyReuse, value Expr, owner Int, span Span, children List[Expr]) Result[Expr, Failure] {
+    let node = Node {
+        kind = NodeKind.Call
+        value = ""
+        span = span
+        children = new[Node]()
+    }
+    let context = body_dynamic_context(env, owner)
+    let ty = body_type(env, reuse, value.ty)?
+    if value.kind == ExprKind.DynBox {
+        return witness_box(context, node, get(children, 0), ty)
+    }
+    let slot = body_dynamic_slot(reuse, value)
+    let method = body_symbol(reuse, slot.symbol)
+    var signature = 0
+    while signature < length(env.signatures) && get(env.signatures, signature).symbol != method {
+        signature = signature + 1
+    }
+    if signature == length(env.signatures) {
+        return Result.Err(failure(env, owner, node, "cached dynamic call has no current signature"))
+    }
+    let arguments = ints(get(children, 0).ty)
+    let local = body_types(env, reuse, slot.arguments)?
+    var index = 0
+    while index < length(local) {
+        push(arguments, get(local, index))
+        index = index + 1
+    }
+    dynamic_call(context, node, signature, arguments, body_constants(env, reuse, slot.constants, owner)?, ty, children)
+}
+
+fn cache_interfaces(output Bytes, values List[BodyInterface]) Result[Bool, Text] {
+    cache_int(output, length(values))
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        cache_int(output, value.symbol)
+        cache_int(output, length(value.slots))
+        var slot = 0
+        while slot < length(value.slots) {
+            let target = get(value.slots, slot)
+            cache_int(output, target.symbol)
+            cache_ints(output, target.arguments)
+            discard cache_constants(output, target.constants)?
+            slot = slot + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn cache_read_interfaces(reader CacheReader) Result[List[BodyInterface], Text] {
+    let values = new[BodyInterface]()
+    let count = cache_read_count(reader)?
+    var index = 0
+    while index < count {
+        let symbol = cache_read_int(reader)?
+        let slot_count = cache_read_count(reader)?
+        let slots = new[BodyTarget]()
+        var slot = 0
+        while slot < slot_count {
+            push(slots, BodyTarget {
+                    symbol = cache_read_int(reader)?
+                    arity = -1
+                    prototype = -1
+                    arguments = cache_read_ints(reader)?
+                    constants = cache_read_constants(reader)?
+                })
+            slot = slot + 1
+        }
+        push(values, BodyInterface {
+                symbol = symbol
+                slots = slots
+            })
+        index = index + 1
+    }
+    Result.Ok(values)
+}

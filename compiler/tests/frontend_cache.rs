@@ -30,6 +30,88 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn dynamic_instances_rebuild_witnesses_slots_and_async_dispatch() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+concept Other {
+    fn other(self Self) Int
+}
+concept Convert {
+    type Item
+    fn stored(self Self, item Self.Item) Self.Item
+    fn echo[T](self Self, item T) T {
+        item
+    }
+    fn selected(self Self, comptime enabled Bool, item Int) Int {
+        comptime if enabled {
+            item + 1
+        } else {
+            item
+        }
+    }
+    async fn fetch(self Self, item Int) Int {
+        item
+    }
+    fn unused(self Self) Int {
+        123
+    }
+}
+record Box {
+    label Text
+}
+impl Convert for Box {
+    type Item = Text
+    fn stored(receiver Box, item Text) Text {
+        assert receiver.label == "live"
+        item
+    }
+}
+async fn main() {
+    let erased dyn Convert[Item = Text] = Box { label = "live" }
+    assert erased.stored("kept") == "kept"
+    assert erased.echo(true) && erased.echo(9) == 9
+    assert erased.selected(true, 6) + erased.selected(false, 10) == 17
+    assert erased.fetch(8).await == 8
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(
+        &path,
+        format!("fn unrelated(item dyn Other) dyn Other {{ item }}\n\n{source}"),
+    )
+    .unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(trace.contains(", bodies reused 7"), "{trace}");
+    let executed = common::command(&["run"])
+        .arg(&package)
+        .arg("--frontend-cache")
+        .arg(&cache)
+        .env("LOOM_GC_STRESS", "1")
+        .env("LOOM_NATIVE_TIMINGS", "1")
+        .output()
+        .unwrap();
+    checked(&executed, true);
+    success(&common::loom(&["run", package.to_str().unwrap()]));
+    // Changing the selected default must rebuild uses, not keep the old slot's
+    // implementation just because its receiver type is unchanged.
+    fs::write(
+        &path,
+        source
+            .replace("item + 1", "item + 2")
+            .replace("== 17", "== 18"),
+    )
+    .unwrap();
+    checked(&cached("run", &package, &cache, &[]), false);
+}
+
+#[test]
 fn async_instances_reuse_before_lowering_with_real_waits_and_current_labels() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

@@ -141,7 +141,7 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
     }
     let saved = get(cache.state.bodies, 0)
     let output = std.bytes.new()
-    cache_text(output, "loom-definition-snapshot 5")
+    cache_text(output, "loom-definition-snapshot 6")
     cache_bool(output, saved.definitions.tests)
     discard cache_definition_source(output, saved.definitions)?
     cache_int(output, length(saved.definitions.reusable))
@@ -168,6 +168,7 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
         discard cache_function(output, get(saved.functions, index))?
         index = index + 1
     }
+    discard cache_interfaces(output, saved.interfaces)?
     Result.Ok(std.bytes.to_text(output))
 }
 
@@ -180,7 +181,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
         text = text
         cursor = ints(0)
     }
-    if cache_read_text(reader)? != "loom-definition-snapshot 5" {
+    if cache_read_text(reader)? != "loom-definition-snapshot 6" {
         return Result.Err("invalid definition snapshot")
     }
     let tests = cache_read_bool(reader)?
@@ -232,6 +233,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
         push(functions, cache_read_function(reader)?)
         index = index + 1
     }
+    let interfaces = cache_read_interfaces(reader)?
     if get(reader.cursor, 0) != std.text.length(text) {
         return Result.Err("trailing definition snapshot data")
     }
@@ -242,6 +244,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
             types = types
             targets = targets
             functions = functions
+            interfaces = interfaces
         })
     Result.Ok(cache)
 }

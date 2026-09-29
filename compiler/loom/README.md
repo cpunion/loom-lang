@@ -340,6 +340,9 @@ declaration/file mapping, independent of the implementation's location.
 Async/Task bodies can reuse checked one-shot flow before fresh coroutine lowering,
 including private waits and named Task callbacks. Task-creation labels are rebuilt
 from current source, like assertions; captured-frame bodies still recheck.
+Dynamic reuse records source concept/method recipes, not old interface/witness
+numbers. Current boxing/calls rebuild associated bindings, specialized slots and
+sparse witness uses, including asynchronous methods; unused methods stay absent.
 The resident editor uses this path automatically after a snapshot changes.
 Top-level declaration generation reruns with current build inputs before matching
 its expanded definitions. Unchanged generated bodies can therefore participate in

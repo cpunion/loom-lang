@@ -18,6 +18,7 @@ record BodyBasis {
     types List[Type]
     targets List[BodyTarget]
     functions List[Function]
+    interfaces List[BodyInterface]
 }
 
 record BodyReuse {
@@ -80,7 +81,7 @@ fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) 
     index = 0
     while index < length(basis.entries) {
         let entry = get(basis.entries, index)
-        if nominal_data(entry.node.kind) {
+        if nominal_data(entry.node.kind) || entry.node.kind == NodeKind.Concept {
             discard std.map.insert(nominals, definition_bucket(entry), index)
         }
         index = index + 1
@@ -88,7 +89,7 @@ fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) 
     index = 0
     while index < length(prior.definitions.entries) {
         let entry = get(prior.definitions.entries, index)
-        if nominal_data(entry.node.kind) {
+        if nominal_data(entry.node.kind) || entry.node.kind == NodeKind.Concept {
             match std.map.get(nominals, definition_bucket(entry)) {
                 Option.Some(value) => {
                     set(symbols, index, value)
@@ -154,10 +155,13 @@ fn body_type_shape_supported(reuse BodyReuse, ty Int, seen List[Int], stored Boo
     let shape = get(get(reuse.prior, 0).types, ty)
     let kind = shape.kind
     if kind == TypeKind.Parameter || kind == TypeKind.Associated || (kind == TypeKind.Meta && !stored) ||
-    kind == TypeKind.Dyn || kind == TypeKind.Frame {
+    kind == TypeKind.Frame {
         return false
     }
     if (kind == TypeKind.Record || kind == TypeKind.Enum || kind == TypeKind.Refined) && body_symbol(reuse, shape.symbol) < 0 {
+        return false
+    }
+    if kind == TypeKind.Dyn && body_symbol(reuse, get(get(reuse.prior, 0).interfaces, shape.symbol).symbol) < 0 {
         return false
     }
     var index = 0
@@ -215,6 +219,10 @@ fn body_target_supported(reuse BodyReuse, target Int, seen List[Int]) Bool {
         return false
     }
     let instance = get(targets, target)
+    body_instance_supported(reuse, instance, seen)
+}
+
+fn body_instance_supported(reuse BodyReuse, instance BodyTarget, seen List[Int]) Bool {
     if !body_source_supported(reuse, instance.symbol) {
         return false
     }
@@ -230,7 +238,7 @@ fn body_target_supported(reuse BodyReuse, target Int, seen List[Int]) Bool {
 
 fn body_expression_supported(reuse BodyReuse, value Expr, span Span, seen List[Int]) Bool {
     let kind = value.kind
-    if kind == ExprKind.Deferred || kind == ExprKind.DynBox || kind == ExprKind.DynCall ||
+    if kind == ExprKind.Deferred ||
     kind == ExprKind.FrameNew || kind == ExprKind.FrameStore ||
     kind == ExprKind.ResourceDrain || kind == ExprKind.TypeValue {
         return false
@@ -239,6 +247,9 @@ fn body_expression_supported(reuse BodyReuse, value Expr, span Span, seen List[I
         return false
     }
     if (kind == ExprKind.Call || kind == ExprKind.TaskCall || kind == ExprKind.FunctionRef) && !body_target_supported(reuse, value.index, seen) {
+        return false
+    }
+    if kind == ExprKind.DynCall && !body_instance_supported(reuse, body_dynamic_slot(reuse, value), seen) {
         return false
     }
     var index = 0
@@ -317,6 +328,11 @@ fn body_type(env Environment, reuse BodyReuse, ty Int) Result[Int, Failure] {
     }
     let mapped = if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
         data_type(env, body_symbol(reuse, shape.symbol), arguments, 0)?
+    } else if shape.kind == TypeKind.Dyn {
+        let capability = body_symbol(reuse, get(get(reuse.prior, 0).interfaces, shape.symbol).symbol)
+        let dynamic = dynamic_instance(env, capability, capability, arguments, symbol(env, capability).node)?
+        discard fill_interface(env, dynamic)?
+        dynamic
     } else {
         intern(env, shape.kind, -1, arguments)
     }
@@ -378,6 +394,9 @@ fn body_expression(env Environment, reuse BodyReuse, value Expr, owner Int, offs
         }
     }
     let file = get(env.source.files, symbol(env, owner).file)
+    if value.kind == ExprKind.DynBox || value.kind == ExprKind.DynCall {
+        return body_dynamic_expression(env, reuse, value, owner, span, children)
+    }
     Result.Ok(Expr {
             kind = value.kind
             ty = body_type(env, reuse, value.ty)?
