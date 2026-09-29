@@ -1,0 +1,131 @@
+fn predicate_intrinsic(env Environment, owner Int) Bool {
+    let item = symbol(env, owner)
+    let file = get(env.source.files, item.file)
+    item.name == "describe" && has(item.node, NodeKind.Intrinsic) && file.trusted_std &&
+    package_label(env.source.modules, env.source.packages, file.package) == "std.reflect.predicates"
+}
+
+// Expansion identities select compiler instances, not source syntax. Generated
+// declarations may contain them, but public descriptors never serialize them.
+fn predicate_syntax(node Node) Node {
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        let member = child(node, index)
+        if member.kind != NodeKind.ExpansionId {
+            push(children, predicate_syntax(member))
+        }
+        index = index + 1
+    }
+    pack_node(node, node.kind, node.value, children)
+}
+
+fn predicate_model(env Environment, owner Int, output Int, node Node) Result[Int, Failure] {
+    let failed = failure(env, owner, node, "predicate reflection requires Option[std.reflect.predicates.Predicate]")
+    let shape = get(env.types, output)
+    if shape.kind != TypeKind.Enum || length(shape.arguments) != 1 || length(shape.variants) != 2 {
+        return Result.Err(failed)
+    }
+    let option = symbol(env, shape.symbol)
+    let file = get(env.source.files, option.file)
+    let some = get(shape.variants, 0)
+    let none = get(shape.variants, 1)
+    let descriptor = get(shape.arguments, 0)
+    if !file.trusted_std || option.name != "Option" ||
+    package_label(env.source.modules, env.source.packages, file.package) != "std.option" ||
+    some.name != "Some" || !same(some.fields, ints(descriptor)) || none.name != "None" || length(none.fields) != 0 {
+        return Result.Err(failed)
+    }
+    let item = get(env.types, descriptor)
+    if item.kind != TypeKind.Record || length(item.arguments) != 0 || length(item.fields) != 3 {
+        return Result.Err(failed)
+    }
+    let declaration = symbol(env, item.symbol)
+    let source = get(env.source.files, declaration.file)
+    let ast = get(item.fields, 2).ty
+    if !source.trusted_std || !declaration.public || declaration.name != "Predicate" ||
+    package_label(env.source.modules, env.source.packages, source.package) != "std.reflect.predicates" ||
+    !reflection_field(env, descriptor, 0, "owner", 3) || !reflection_field(env, descriptor, 1, "source", 3) ||
+    get(item.fields, 2).name != "expression" || !macro_tree_type(env, ast) {
+        return Result.Err(failed)
+    }
+    let span = get(get(env.types, ast).fields, 2).ty
+    let position = get(env.types, span)
+    if position.kind != TypeKind.Record || length(position.fields) != 2 ||
+    !reflection_field(env, span, 0, "start", 1) || !reflection_field(env, span, 1, "end", 1) {
+        return Result.Err(failed)
+    }
+    Result.Ok(descriptor)
+}
+
+fn predicate_tree(context Context, call Node, source Node, ty Int, depth Int, budget List[Int]) Result[Expr, Failure] {
+    if depth >= 128 || get(budget, 0) <= 0 {
+        return Result.Err(error(context, call, "predicate syntax tree budget exhausted"))
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    let fields = get(context.env.types, ty).fields
+    let kind = get(fields, 0).ty
+    let variants = get(context.env.types, kind).variants
+    var selected = -1
+    var index = 0
+    while selected < 0 && index < length(variants) {
+        match macro_node_kind(get(variants, index).name) {
+            Result.Ok(value) => {
+                if value == source.kind {
+                    selected = index
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+        index = index + 1
+    }
+    if selected < 0 {
+        return Result.Err(error(context, call, "unsupported predicate syntax kind"))
+    }
+    let position = expressions(reflection_int(call, source.span.start))
+    push(position, reflection_int(call, source.span.end))
+    let members = new[Expr]()
+    index = 0
+    while index < length(source.children) {
+        push(members, predicate_tree(context, call, child(source, index), ty, depth + 1, budget)?)
+        index = index + 1
+    }
+    let values = expressions(expression(ExprKind.Variant, kind, call, "", selected, new[Expr](), true))
+    push(values, reflection_text(call, source.value))
+    push(values, reflection_record(call, get(fields, 2).ty, position))
+    push(values, expression(ExprKind.List, get(fields, 3).ty, call, "", -1, members, true))
+    Result.Ok(reflection_record(call, ty, values))
+}
+
+fn predicate_description(context Context, node Node, ty Int, output Int) Result[Expr, Failure] {
+    if !concrete(context.env, ty) {
+        return deferred(context, node, output)
+    }
+    let descriptor = predicate_model(context.env, context.signature.symbol, output, node)?
+    let shape = get(context.env.types, ty)
+    if shape.kind != TypeKind.Refined || !reflection_visible(context, shape.symbol) {
+        return Result.Ok(expression(ExprKind.Variant, output, node, "", 1, new[Expr](), true))
+    }
+    let item = symbol(context.env, shape.symbol)
+    let owner = std.loom.project.qualify(package_label(context.env.source.modules, context.env.source.packages,
+            get(context.env.source.files, item.file).package), item.name)
+    let source = match std.loom.syntax.emit(predicate_syntax(predicate_node(context.env, shape.symbol)),
+        std.loom.syntax.Fragment.Expression) {
+        Result.Ok(value) => value
+        Result.Err(message) => {
+            return Result.Err(error(context, node, concat("cannot reflect predicate syntax: ", message)))
+        }
+    }
+    let parsed = match parse_expression(source) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(error(context, node, concat("cannot reflect predicate syntax: ", failed.message)))
+        }
+    }
+    let values = expressions(reflection_text(node, owner))
+    push(values, reflection_text(node, source))
+    push(values, predicate_tree(context, node, parsed, get(get(context.env.types, descriptor).fields, 2).ty, 0, ints(100000))?)
+    Result.Ok(expression(ExprKind.Variant, output, node, "", 0,
+            expressions(reflection_record(node, descriptor, values)), true))
+}

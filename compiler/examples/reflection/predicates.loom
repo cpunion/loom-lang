@@ -1,0 +1,75 @@
+import std.reflect.predicates.describe
+import std.reflect.predicates.Predicate
+import std.loom.ast.NodeKind
+import std.loom.ast.same
+import std.loom.parser.parse_expression
+import std.option.Option
+import std.result.Result
+import reflection.hidden.Guarded
+import reflection.hidden.private_refinement
+import reflection.hidden.predicate_here
+
+comptime {
+    "type GeneratedPositive = Int where self > 0"
+}
+
+fn predicate_of[T](value T) Option[Predicate] {
+    discard value
+    std.reflect.predicates.describe[T]()
+}
+
+fn predicate_is_binary(description Option[Predicate]) Bool {
+    match description {
+        Option.Some(value) => value.expression.kind == NodeKind.Binary
+        Option.None => false
+    }
+}
+
+fn predicate_trial() {
+    assert predicate_is_binary(std.reflect.predicates.describe[GeneratedPositive]())
+    assert match std.reflect.predicates.describe[Positive]() {
+        Option.Some(value) => {
+            assert value.owner == "reflection.Positive"
+            assert value.expression.kind == NodeKind.Binary && value.expression.value == ">"
+            assert value.expression.children[0].value == "self"
+            assert value.expression.children[1].value == "0"
+            true
+        }
+        Option.None => false
+    }
+    assert comptime {
+        match std.reflect.predicates.describe[Positive]() {
+            Option.Some(value) => match parse_expression(value.source) {
+                Result.Ok(parsed) => same(value.expression, parsed)
+                Result.Err(_) => false
+            }
+            Option.None => false
+        }
+    }
+    assert !predicate_is_binary(std.reflect.predicates.describe[Int]())
+    assert !predicate_is_binary(predicate_of(private_refinement()))
+    assert !predicate_is_binary(predicate_here(Positive(1)))
+
+    // A visible predicate may name a private helper; syntax does not grant
+    // permission to invoke it or cause its implementation to be emitted.
+    assert match std.reflect.predicates.describe[Guarded]() {
+        Option.Some(value) => value.expression.kind == NodeKind.Call &&
+        value.expression.value == "private_constraint"
+        Option.None => false
+    }
+    let first = std.reflect.predicates.describe[Positive]()
+    let second = std.reflect.predicates.describe[Positive]()
+    match first {
+        Option.Some(value) => {
+            value.expression.children[1] = value.expression.children[0]
+        }
+        Option.None => {
+            assert false
+        }
+    }
+    assert match second {
+        Option.Some(value) => value.expression.children[1].value == "0"
+        Option.None => false
+    }
+    assert predicate_is_binary(predicate_of(Positive(2)))
+}

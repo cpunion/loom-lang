@@ -54,6 +54,7 @@ fn reflection_is_typed_source_data_without_runtime_discovery() {
         );
         let lowered = fs::read_to_string(&ir).unwrap();
         assert!(!lowered.contains("reflection_method_should_stay_dead"));
+        assert!(!lowered.contains("predicate_helper_should_stay_dead"));
         assert!(!lowered.contains("loom_rt_reflect"));
     }
 

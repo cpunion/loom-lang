@@ -1,0 +1,16 @@
+import std.option.Option
+import std.loom.ast.Node
+
+// Syntax data, not a proof or a callable in the declaration's private scope.
+// Names in expression retain their declaration-site spelling; self is the
+// constrained value. Spans address source, not the original project file.
+pub record Predicate {
+    owner Text
+    source Text
+    expression Node
+}
+
+// Visibility follows this call's lexical package. Non-refined and inaccessible
+// types return None. Only the direct predicate is described, not helper bodies
+// or inherited/base constraints; use std.reflect.describe for the base shape.
+pub intrinsic fn describe[T]() Option[Predicate]
