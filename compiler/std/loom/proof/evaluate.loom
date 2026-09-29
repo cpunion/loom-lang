@@ -130,6 +130,11 @@ fn bounded(value Value, state State) State {
 // Postcondition arithmetic has not executed. Establish definedness from facts;
 // unlike body arithmetic, never assume a hypothetical overflow check passed.
 fn defined(expr Expr, state State) Result[Bool, Text] {
+    // Checked literals and stable scalar reads cannot fault. Do not rescan
+    // the entire fact set for contradictions at every leaf of a predicate.
+    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Local {
+        return Result.Ok(true)
+    }
     if holds(Predicate.Constant(false), state.facts) { return Result.Ok(true) }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || expr.kind == ExprKind.Field {
         discard defined(get(expr.children, 0), state)?

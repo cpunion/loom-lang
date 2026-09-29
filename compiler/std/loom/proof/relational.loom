@@ -226,8 +226,14 @@ fn difference_facts(state State) State {
         if index < count {
             match get(state.locals, index) {
                 Value.Number(value) => {
-                    output = assume(output, Predicate.Compare(">=", add(value, constant(negate(bound.low)))))
-                    output = assume(output, Predicate.Compare("<=", add(value, constant(negate(bound.high)))))
+                    // range() already starts at machine bounds. Retain only
+                    // improvements, not duplicate bounds for every identity.
+                    if compare(bound.low, integer(-9223372036854775808)) > 0 {
+                        output = assume(output, Predicate.Compare(">=", add(value, constant(negate(bound.low)))))
+                    }
+                    if compare(bound.high, integer(9223372036854775807)) < 0 {
+                        output = assume(output, Predicate.Compare("<=", add(value, constant(negate(bound.high)))))
+                    }
                 }
                 _ => {
                 }
@@ -309,11 +315,6 @@ fn scalar_facts_imply(premises List[Expr], conclusion Expr) Result[Bool, Text] {
     var state = State {
         locals = values
         facts = new[Predicate]()
-    }
-    index = 0
-    while index < length(values) {
-        state = bounded(get(values, index), state)
-        index = index + 1
     }
     index = 0
     while index < length(known) {
