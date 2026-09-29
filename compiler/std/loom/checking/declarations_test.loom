@@ -1,0 +1,98 @@
+fn generated_source(text Text, tests Bool) Result[std.loom.typed.Program, Failure] {
+    let project = fixture_project(source_files(text))
+    let inputs = build_inputs(no_input_reader)
+    let expanded = expand_project(project, tests, inputs)?
+    check_with_inputs(bind(expanded, tests)?, inputs)
+}
+
+test fn declarations_are_generated_before_consumer_binding_and_checked_normally() {
+    let source = """"
+        fn api() Text {
+            """
+            pub record Item {
+                value Int
+            }
+            fn read(value Item) Int
+            ensures result == value.value
+            {
+                value.value
+            }
+            test fn generated() {
+                assert read(Item { value = 7 }) == 7
+            }
+            """
+        }
+        comptime {
+            api()
+        }
+        fn main() {
+            assert read(Item { value = 42 }) == 42
+        }
+        """"
+    let library = match generated_source(source, false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(library.tests) == 0
+    let tested = match generated_source(source, true) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(tested.tests) == 1
+}
+
+test fn generation_cannot_bypass_proofs_or_hide_another_stage() {
+    assert match generated_source(""""
+        comptime {
+            """
+            fn wrong() Int
+            ensures result == 1
+            {
+                2
+            }
+            """
+        }
+        fn main() {
+        }
+        """", false) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match generated_source("""
+        comptime {
+            "import missing.value"
+        }
+        """, false) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match generated_source("""
+        comptime {
+            "comptime { future() }"
+        }
+        """, false) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match generated_source(""""
+        comptime {
+            """
+            fn later() Text {
+                ""
+            }
+            """
+        }
+        comptime {
+            later()
+        }
+        """", false) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

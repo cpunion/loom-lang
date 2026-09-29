@@ -284,7 +284,14 @@ fn editor_execute(args List[Text], cache EditorCache) EditorOutput {
             Option.None => {}
         }
     }
-    let bound = match bind(project, options.tests) {
+    let staging = std.loom.checking.has_declaration_stages(project, options.tests)
+    let completion_project = if staging && get(args, 1) == "editor-complete" {
+        match expand_project(project, options.tests, inputs) {
+            Result.Ok(value) => value
+            Result.Err(_) => project
+        }
+    } else { project }
+    let bound = match (if staging { std.loom.binding.bind_headers(completion_project, options.tests) } else { bind(project, options.tests) }) {
         Result.Ok(value) => value
         Result.Err(failed) => {
             if recovery.changed {
@@ -334,7 +341,7 @@ fn editor_analyzed(args List[Text], options EditorOptions, project Project, anal
             return editor_error("query byte offset is outside the source")
         }
         let output = if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
-            editor_symbols(options, analysis.bindings, analysis.program, index, options.offset, inputs)
+            editor_symbols(options, analysis, index, options.offset, inputs)
         } else {
             editor_inspection(analysis.bindings, inspect_at(analysis, index, options.offset), "")
         }

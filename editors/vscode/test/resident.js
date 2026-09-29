@@ -102,6 +102,30 @@ fn main() {
     assert.ok(updated.references.some(reference => reference.start === edited.indexOf('middle(value')));
     await fs.writeFile(file, edited.replace('value + 12', 'true'));
     assert.ok((await compiler.check(settings, folder, [])).diagnostics.length);
+
+    const generated = `import std.build.input_file
+comptime {
+    input_file("gate.txt")
+}
+fn main() {
+    assert generated() == 42
+}
+`;
+    await fs.writeFile(file, generated);
+    await fs.writeFile(input, 'fn generated() Int {\n    42\n}\n');
+    assert.deepEqual((await compiler.check(settings, folder, [])).diagnostics, []);
+    const generatedOffset = generated.lastIndexOf('generated()');
+    const generatedHover = await compiler.query(settings, folder, file, generatedOffset, []);
+    assert.equal(generatedHover.analysisReused, true);
+    assert.ok(generatedHover.hover.types.includes('fn() Int'));
+    assert.equal(generatedHover.definitions[0].start, generated.indexOf('comptime'));
+    const generatedRename = await compiler.symbols(settings, folder, file, generatedOffset, [], undefined, 'renamed');
+    assert.ok(!generatedRename.edits?.length);
+    await fs.writeFile(input, 'fn generated() Bool {\n    true\n}\n');
+    const regenerated = await compiler.check(settings, folder, []);
+    assert.equal(regenerated.analysisReused, false);
+    assert.equal(regenerated.definitionsReused, 0);
+    assert.ok(regenerated.diagnostics.length);
     console.log('Resident editor smoke passed: snapshot/definition reuse, dependency invalidation, current source spans, unsaved type changes.');
   } finally {
     compiler.close();

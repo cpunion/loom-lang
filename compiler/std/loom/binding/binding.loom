@@ -132,7 +132,7 @@ fn scope(project Project, symbols List[Symbol], package_id Int, testing Bool) Sc
     while index < length(symbols) {
         let symbol = get(symbols, index)
         let target = get(files, symbol.file).package
-        if symbol.owner < 0 && symbol.node.kind != NodeKind.Impl && (target == package_id || symbol.public) {
+        if symbol.owner < 0 && symbol.node.kind != NodeKind.Impl && symbol.node.kind != NodeKind.Comptime && (target == package_id || symbol.public) {
             let imported = imported_name(production_imports, target, symbol.name)
             let test_imported = imported_name(test_imports, target, symbol.name)
             let path = if target == package_id { qualify(package_label(project.modules, project.packages, target), symbol.name) } else { imported }
@@ -283,6 +283,16 @@ fn imports(program Program) Result[Bool, Failure] {
 
 // Tests extend only the selected root package; production scopes stay separate.
 pub fn bind(project Project, tests Bool) Result[Program, Failure] {
+    bind_mode(project, tests, true)
+}
+
+// A pre-expansion index, not a checked program. Generated imports are not yet
+// available; the full bind after expansion still validates every import.
+pub fn bind_headers(project Project, tests Bool) Result[Program, Failure] {
+    bind_mode(project, tests, false)
+}
+
+fn bind_mode(project Project, tests Bool, strict Bool) Result[Program, Failure] {
     let files = project.files
     let root = project.root
     let symbols = new[Symbol]()
@@ -353,6 +363,6 @@ pub fn bind(project Project, tests Bool) Result[Program, Failure] {
     }
     let program = Program { files = files modules = project.modules packages = project.packages symbols = symbols root = root tests = tests
         scopes = scopes file_scopes = file_scopes }
-    discard imports(program)?
+    if strict { discard imports(program)? }
     Result.Ok(program)
 }

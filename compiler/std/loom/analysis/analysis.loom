@@ -13,6 +13,7 @@ import std.loom.binding.Program
 import std.loom.binding.Failure
 import std.loom.binding.bind
 import std.loom.checking.check_with_inputs
+import std.loom.checking.expand_project
 import std.loom.checking.BuildInputs
 import std.loom.checking.build_inputs
 import std.loom.checking.no_input_reader
@@ -38,6 +39,7 @@ import std.result.Result
 // Results own a detached project/AST snapshot. Treat all result lists as read-only;
 // IDs belong to this analysis, not to later analyses or persistent declarations.
 pub record Analysis {
+    source Project
     bindings std.loom.binding.Program
     program std.loom.typed.Program
     inputs List[BuildInput]
@@ -54,7 +56,7 @@ pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
     analyze_with_inputs(project, tests, build_inputs(no_input_reader))
 }
 pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Result[Analysis, Failure] {
-    let bindings = bind(snapshot(project), tests)?
+    let source = snapshot(project)
     let detached = build_inputs(inputs.read, new[BuildOption](), inputs.read_target, inputs.target_context)
     var option = 0
     while option < length(inputs.options) {
@@ -76,8 +78,10 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
             })
         index = index + 1
     }
+    let bindings = bind(expand_project(source, tests, detached)?, tests)?
     let program = check_with_inputs(bindings, detached)?
     Result.Ok(Analysis {
+            source = source
             bindings = bindings
             program = program
             inputs = files
@@ -112,8 +116,8 @@ pub fn is_current_with_inputs(analysis Analysis, project Project, tests Bool, in
         if !same_request(left.request, right.request) || !std.loom.project.same_input(left.file, right.file) { return false }
         input = input + 1
     }
-    let saved = analysis.bindings
-    if saved.root != project.root || saved.tests != tests ||
+    let saved = analysis.source
+    if saved.root != project.root || analysis.bindings.tests != tests ||
         length(saved.modules) != length(project.modules) ||
         length(saved.packages) != length(project.packages) ||
         length(saved.files) != length(project.files) { return false }

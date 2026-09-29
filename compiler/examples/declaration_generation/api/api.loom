@@ -1,0 +1,9 @@
+comptime {
+    """
+    pub fn answer() Int
+    ensures result == 42
+    {
+        42
+    }
+    """
+}

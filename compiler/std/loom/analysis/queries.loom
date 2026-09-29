@@ -180,6 +180,15 @@ fn add_location(report Inspection, file Int, span Span) {
 }
 
 fn declaration(analysis SemanticView, report Inspection, file Int, node Node) {
+    var index = 0
+    while index < length(node.children) {
+        let marker = get(node.children, index)
+        if marker.kind == NodeKind.ExpansionId && std.text.starts_with(marker.value, "declaration/") {
+            add_location(report, file, node.span)
+            return
+        }
+        index = index + 1
+    }
     match lex(get(analysis.bindings.files, file).text) {
         Result.Ok(tokens) => {
             match name_span(tokens, node, if node.kind == NodeKind.Function && node.value == "" { "fn" } else { node.value }) {
@@ -553,6 +562,13 @@ fn inspect_tree(analysis SemanticView, report Inspection, function Function, tar
 // navigate to a unique concept signature, never a speculative implementation;
 // overloaded signatures not distinguished by name/arity omit the location.
 pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
+    let declarations = get(analysis.source.files, file).tree.children
+    var index = 0
+    while index < length(declarations) {
+        let node = get(declarations, index)
+        if node.kind == NodeKind.Comptime && inside(node.span, offset) { return Option.None }
+        index = index + 1
+    }
     inspect_view(SemanticView {
             bindings = analysis.bindings
             data = CheckedQuery {

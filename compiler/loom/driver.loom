@@ -8,6 +8,7 @@ import std.loom.binding.Failure
 import std.loom.project.SourceFile
 import std.loom.project.Project
 import std.loom.checking.check_with_inputs
+import std.loom.checking.expand_project
 import std.loom.checking.build_inputs
 import std.loom.project.read_input
 import std.loom.project.BuildInput
@@ -243,7 +244,11 @@ fn prepared(options Options) Result[Prepared, Text] {
 }
 
 fn prepare_loaded(options Options, loaded Project, inputs BuildInputs) Result[Prepared, Text] {
-    let bound = match bind(loaded, options.command == "test") {
+    let expanded = match expand_project(loaded, options.command == "test", inputs) {
+        Result.Ok(value) => value
+        Result.Err(failure) => { return Result.Err(diagnostic(loaded.files, failure)) }
+    }
+    let bound = match bind(expanded, options.command == "test") {
         Result.Ok(value) => value
         Result.Err(failure) => {
             return Result.Err(diagnostic(loaded.files, failure))

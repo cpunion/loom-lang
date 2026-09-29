@@ -1,0 +1,10 @@
+comptime {
+    """
+    test fn generated_from_a_test_file() {
+        assert sum(Pair {
+            left = 1
+            right = 2
+        }) == 3
+    }
+    """
+}

@@ -16,6 +16,16 @@ fn import_decl(cursor Cursor) Result[Step, Diagnostic] {
 }
 
 fn declaration(cursor Cursor) Result[Step, Diagnostic] {
+    if word(cursor, "comptime") {
+        let stage = comptime_expr(cursor)?
+        if get(stage.node.children, 0).kind != NodeKind.Block {
+            return Result.Err(error(cursor, "declaration generation requires comptime { ... }"))
+        }
+        if !at(stage.rest, Kind.Newline) && !at(stage.rest, Kind.Eof) {
+            return Result.Err(error(stage.rest, "expected a newline after declaration generation"))
+        }
+        return Result.Ok(stage)
+    }
     let public = word(cursor, "pub")
     let rest = if public {
         next(cursor)
