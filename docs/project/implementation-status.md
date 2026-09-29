@@ -595,7 +595,9 @@ added. Source `std.bytes.decode_utf8` now exposes that strict validation as
 `std.file.read_text` reuses it and maps errors, without a second private decoding
 path. These file writes truncate their destination, not atomically publish it.
 Source `std.io` also exposes binary stdin/stdout/stderr without new runtime APIs.
-Reads buffer to EOF; writes handle partial counts without closing standard streams.
+Whole-input reads buffer to EOF; `read_chunk(buffer, limit)` appends a bounded
+chunk without waiting for EOF. Writes handle partial counts without closing
+standard streams. The resident editor uses chunked stdin through this source API.
 Native O0/O2 and forced-GC tests cover empty/multichunk inputs, all byte values,
 continued stream access, and strict text decoding. See the
 [binary filter](../../compiler/examples/binary_streams/main.loom).
