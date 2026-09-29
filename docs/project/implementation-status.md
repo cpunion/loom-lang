@@ -534,8 +534,12 @@ rejecting every record containing shared storage. Immutable scalar/Text/record
 paths may coexist with unobserved shared List/Bytes siblings. Existing aliases
 retain normal sharing and mutation without invalidating the immutable predicate.
 Unknown construction checks once; copies and base-record widening do not recheck.
-Shared arguments passed to predicate helpers, scoped/Task payloads and unchecked
-replacement still reject. Native O0/O2, compile-time and moving-GC tests exercise
+Direct predicate helpers may copy and forward the whole record. Transitive read
+analysis includes recursive helpers and preconditions, and rejects shared reads
+or writes hidden behind calls. Indirect shared-input calls, scoped/Task payloads
+and unchecked replacement still reject. This is separate from the bounded proof
+fragment; recursive predicates do not provide automatic proof evidence.
+Native O0/O2, compile-time and moving-GC tests exercise
 the [shared-field example](../../compiler/examples/record_refinement/shared.loom).
 Closed inline record literals with a prover-supported `Int`/`Bool` predicate
 produce the refined type directly. Closed pure record literals with `Float`

@@ -19,7 +19,12 @@ fn positive_count(value Int) Bool {
     value > 0
 }
 
-type NamedCount = SharedSnapshot where positive_count(self.details.count) && std.text.length(self.name) > 0
+fn positive_snapshot(value SharedSnapshot) Bool {
+    let copy = value
+    positive_count(copy.details.count)
+}
+
+type NamedCount = SharedSnapshot where positive_snapshot(self) && std.text.length(self.name) > 0
 
 fn shared_snapshot(value SharedSnapshot) Result[NamedCount, ConstraintError] {
     NamedCount(value)
