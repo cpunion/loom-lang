@@ -324,7 +324,10 @@ evidence about another value. Supported conjuncts can establish facts without a
 duplicate `requires` clause or native check. When needed, a private checked helper
 closure supplies bounded symbolic expansion of input invariants, retaining
 guarded preconditions and successful arithmetic without new runtime roots.
-Helper loops/recursion and shared-state reasoning remain open.
+Immutable predicate fields now coexist with unobserved shared siblings in a
+record refinement; aliases can mutate those siblings without invalidating the
+constraint. Supported helper conjuncts retain facts beside unsupported clauses.
+Helper loops/recursion and predicates over mutable contents remain open.
 See the [example](compiler/examples/invariant_contracts).
 
 Structural tuples, numeric projection, and nested let/var destructuring use the

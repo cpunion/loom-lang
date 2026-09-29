@@ -1486,19 +1486,34 @@ arithmetic returns `Int`, while generic inference retains nominal identity.
 Float needs no check. Money never implicitly converts to Int. Finiteness is a
 predicate choice, not an extra hidden restriction on Float constraints.
 
-A record with only inline `Int`, `Bool`, `Float`, or nested inline
-record/refined fields can also have a `where` predicate over `self.field` paths.
+A record can have a `where` predicate over immutable `Int`, `Bool`, `Float`,
+`Text`, or nested inline record/refined fields. Shared siblings are allowed when
+the predicate does not observe them:
+
+```loom
+record Entry {
+    count Int
+    notes List[Text]
+}
+type PositiveEntry = Entry where self.count > 0
+```
+
+`notes` keeps ordinary sharing and mutation, including through existing aliases.
+The predicate's `count` is an inline value, so those mutations cannot invalidate
+it. Pure helpers can receive the observed immutable fields. A predicate that
+passes shared contents (or a whole record containing them) to a helper still
+rejects; it needs a finer read-footprint analysis, not a one-time truth check.
+Scoped resources and one-shot Tasks cannot be wrapped in a refinement.
 Its constructor checks an unknown value once and returns `Result`; copying the
-refined value or widening it to the base record adds no check. Records with
-`List`, `Bytes`, `Text`, or other shared/reference-like fields are rejected as
-refinement bases, and fields cannot be assigned in place. A closed record
+refined value or widening it to the base record adds no check. Fields cannot be
+assigned in place. A closed record
 literal whose `Int`/`Bool` predicate is proved by the bounded verifier returns
 the refined type directly. A closed, pure literal with `Float` fields can also
 return directly when compile-time evaluation establishes its predicate; a false
 constant is a diagnostic. Unknown inputs, calls, and failed optional evaluation
 retain the `Result` boundary.
 See the [record refinement example](examples/record_refinement/main.loom).
-This is not a general invariant over mutable shared data.
+This does not yet establish invariants over mutable List lengths or contents.
 
 An explicit conversion between Int refinements can also return the destination
 directly when the source predicate proves the destination predicate, including

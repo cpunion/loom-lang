@@ -21,12 +21,12 @@ fn base_type(env Environment, ty Int) Int {
     let shape = get(env.types, ty)
     if shape.kind == TypeKind.Refined { get(shape.fields, 0).ty } else { ty }
 }
-// A record refinement may be copied or widened without a second check only
-// when no field can observe shared mutable state after construction.
+// Values wholly composed of immutable leaves can be observed by a persistent
+// predicate. A record may also carry shared siblings that it never observes.
 fn inline_constraint_base(env Environment, ty Int, depth Int) Bool {
     if depth >= 64 { return false }
     let shape = get(env.types, ty)
-    if shape.kind == TypeKind.Int || shape.kind == TypeKind.Bool || shape.kind == TypeKind.Float { return true }
+    if shape.kind == TypeKind.Int || shape.kind == TypeKind.Bool || shape.kind == TypeKind.Float || shape.kind == TypeKind.Text { return true }
     if shape.kind == TypeKind.Refined {
         return get(env.type_states, ty).phase == 2 && inline_constraint_base(env, get(shape.fields, 0).ty, depth + 1)
     }
@@ -259,10 +259,9 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     if kind == TypeKind.Refined {
         let base = resolve_bound(env, declaration, child(item.node, type_part(item.node)), arguments, obligations, depth + 1)?
         let base_kind = get(env.types, base).kind
-        if length(arguments) != 0 || (base != 1 && base != 5 &&
-            (base_kind != TypeKind.Record || !inline_constraint_base(env, base, 0))) {
+        if length(arguments) != 0 || (base != 1 && base != 5 && base_kind != TypeKind.Record) {
             return Result.Err(failure(env, declaration, item.node,
-                "constraints require Int, Float or a record with only immutable inline scalar fields"))
+                "constraints require Int, Float or a record base"))
         }
         push(fields, Field { name = "self" ty = base })
         // Predicates are validated after every function signature is available.

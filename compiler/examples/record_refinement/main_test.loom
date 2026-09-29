@@ -1,3 +1,10 @@
+test fn persistent_constraints_preserve_unobserved_shared_data() {
+    assert shared_invariant_scope()
+    assert comptime {
+        shared_invariant_scope()
+    }
+}
+
 test fn checked_record_refinement_survives_copy_and_weakening() {
     assert match checked(Snapshot {
             inner = Inner {
