@@ -82,6 +82,9 @@ fn static_expression(context Context, node Node, index Int) Result[Expr, Failure
     if value.storage < -1 {
         return materialize(context, node, get(context.env.computations, -2 - value.storage).value)
     }
+    if get(context.env.types, value.ty).kind == TypeKind.Meta {
+        return meta_literal(context, node, value.number)
+    }
     if get(context.env.types, value.ty).kind == TypeKind.Function {
         let reference = reify_function(context, node, value.ty, value.number, value.arguments)?
         if value.storage >= 0 {
@@ -108,7 +111,7 @@ fn static_expression(context Context, node Node, index Int) Result[Expr, Failure
 }
 fn unknown_static(context Context, node Node) Bool {
     // A direct call stores its callee spelling on Call, not a child Name.
-    if node.kind == NodeKind.Name || node.kind == NodeKind.Call {
+    if node.kind == NodeKind.Name || node.kind == NodeKind.Type || node.kind == NodeKind.Call {
         let index = lookup(context, slice(node.value, 0, first_dot(node.value)))
         if index >= 0 {
             let binding = get(context.bindings, index)

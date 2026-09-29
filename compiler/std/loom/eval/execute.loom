@@ -187,6 +187,7 @@ fn matched(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     Result.Err(failure(expr, "compile-time match has no matching arm"))
 }
 fn atomic(state State, expr Expr, frame Frame) Result[Step, Failure] {
+    if expr.kind == ExprKind.TypeValue { return Result.Ok(step(aggregate(expr.ty, expr.index, new[Value]()))) }
     if expr.kind == ExprKind.Bytes {
         discard spend(state, expr, 0, length(expr.text))?
         discard spend(state, expr, 1, length(expr.text) / 2)?
@@ -328,7 +329,7 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
         set(target.items, expr.index, get(values.value.items, 1))
         return Result.Ok(step(unit()))
     }
-    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text || expr.kind == ExprKind.Bytes || expr.kind == ExprKind.Local {
+    if expr.kind == ExprKind.TypeValue || expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text || expr.kind == ExprKind.Bytes || expr.kind == ExprKind.Local {
         return atomic(state, expr, frame)
     }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary { return operation(state, expr, frame, depth) }

@@ -12,7 +12,7 @@ fn static_storage_budget(env Environment, ty Int, depth Int, budget Int) Int {
         return budget - 1
     }
     let shape = get(env.types, ty)
-    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
+    if shape.kind == TypeKind.Meta || shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated {
         return budget - 1
     }
     if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple &&
@@ -65,7 +65,7 @@ fn static_key_value(context Context, node Node, value Value, parts List[Text], b
     set(budget, 0, get(budget, 0) - 1)
     let kind = get(context.env.types, value.ty).kind
     let base = base_type(context.env, value.ty)
-    let scalar = if base == 1 || base == 2 {
+    let scalar = if base == 1 || base == 2 || kind == TypeKind.Meta {
         std.int.to_text(value.number)
     } else if base == 5 {
         std.float.to_text(value.floating)

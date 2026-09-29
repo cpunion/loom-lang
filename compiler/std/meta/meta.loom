@@ -1,0 +1,13 @@
+// A value of `type` has identity only during compile-time execution.
+// Use of[(Int, Text)]() or of[fn(Int) Bool]() for compound type syntax.
+pub fn of[T]() type {
+    T
+}
+
+pub fn same(first type, second type) Bool {
+    first == second
+}
+
+pub fn list(comptime element type) type {
+    List[element]
+}

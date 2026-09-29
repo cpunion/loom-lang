@@ -251,6 +251,7 @@ pub fn complete_names(bindings std.loom.binding.Program, file Int, offset Int) O
     completion_builtin(items, locals, prefix, "Bytes")
     completion_builtin(items, locals, prefix, "List")
     completion_builtin(items, locals, prefix, "Task")
+    completion_builtin(items, locals, prefix, "type")
     let names = visible_names(bindings, file, testing)
     index = 0
     while index < length(names) {

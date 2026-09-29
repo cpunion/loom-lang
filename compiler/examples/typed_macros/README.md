@@ -38,6 +38,7 @@ The [structured example](trees.loom) constructs and transforms public AST nodes.
 AST output must round-trip through the expression grammar before ordinary
 checking; malformed trees and internal compiler markers reject. It has the
 same hygiene and argument rules as Text output. Top-level declaration macros
-and first-class type values remain separate work; the
+remain separate work; [compile-time type values](../type_values) use a distinct
+checked path. The
 [source generation tool](../ast_generation) demonstrates explicit AST-based
 declaration generation without a special compiler path.

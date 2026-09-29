@@ -36,6 +36,7 @@ pub fn type_name(bindings std.loom.binding.Program, types List[Type], interfaces
     if value.kind == TypeKind.Text { return "Text" }
     if value.kind == TypeKind.Bytes { return "Bytes" }
     if value.kind == TypeKind.Float { return "Float" }
+    if value.kind == TypeKind.Meta { return "type" }
     if value.kind == TypeKind.Dyn {
         let interface = get(interfaces, value.symbol)
         let symbol = get(bindings.symbols, interface.symbol)

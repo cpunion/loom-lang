@@ -223,7 +223,9 @@ and reuse the normal checker/evaluator. Definition-site visibility, once-only
 input evaluation, contracts, cleanup, formatting and editor navigation are
 covered by the [example](compiler/examples/typed_macros). `std.loom.syntax`
 also supports explicit [declaration generation tools](compiler/examples/ast_generation).
-In-compilation declaration expansion and first-class type values remain separate work.
+First-class compile-time type identities now flow through pure functions and
+compile-time data into local types and generic arguments, with no runtime type
+registry. In-compilation declaration expansion remains separate work.
 
 Fixed-shape shared List views now preserve element identities through removal,
 regrowth, moving GC, suspension and compile-time graph reification. Immutable
@@ -565,7 +567,8 @@ exposes record/tuple field types, and `std.reflect.from_fields` reconstructs
 visible records from checked tuples using ordinary native operations. Source
 `std.json` uses these mechanisms for typed encoding and strict decoding, with
 refinement construction left explicit. Expression macros use typed schemas and
-accept Text or AST output; first-class type values and predicate reflection remain open.
+accept Text or AST output; predicate reflection remains open. First-class type
+values are compile-time-only identities, separate from these mutable descriptors.
 Public parser fragment entry points now reuse the same expression/type/pattern/
 statement/declaration grammar, preserving original spans and rejecting trailing
 input. They run as ordinary pure Loom calls, including at compile time; syntax
@@ -586,8 +589,7 @@ expansion extend this optional proof as described above; mutable/alias facts,
 helper loops and recursive proof dependencies remain open.
 
 Typed expression macros and explicit AST/declaration generation tools use this
-infrastructure; in-compilation declaration macros and first-class type values
-remain open. The separate source
+infrastructure; in-compilation declaration macros remain open. The separate source
 change tool maintains explicit stable-ID sidecars, reads directory or Git
 snapshots, and applies an exact reviewed merge to a new directory. Same-file
 overloads use parameter-type locators, not declaration positions; move-plus-edit

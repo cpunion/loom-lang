@@ -1,0 +1,119 @@
+import std.list.length
+import std.meta.of
+import std.meta.list
+
+fn choose(flag Bool, first type, second type) type {
+    if flag {
+        first
+    } else {
+        second
+    }
+}
+
+fn select(types List[type], wanted type) type {
+    var index = 0
+    while index < length(types) {
+        if types[index] == wanted {
+            return types[index]
+        }
+        index = index + 1
+    }
+    Int
+}
+
+fn list_type[T]() type {
+    List[T]
+}
+
+fn identity[T](value T) T {
+    value
+}
+
+record Choice {
+    ty type
+}
+
+record Box[T] {
+    value T
+}
+
+enum Maybe[T] {
+    Some(T)
+    None
+}
+
+type Positive = Int where self > 0
+
+fn is_integer(comptime choice Choice) Bool {
+    comptime {
+        choice.ty == Int
+    }
+}
+
+fn exercise() {
+    let Number = comptime {
+        choose(true, Int, Float)
+    }
+    let value Number = 42
+    assert identity[Number](value) == 42
+    let Selected = comptime {
+        select([Float, list_type[Int](), Text], List[Int])
+    }
+    let items Selected = [1, 2, 3]
+    assert length(items) == 3
+    assert comptime {
+        list(Int) == List[Int]
+    }
+    let text = identity[comptime {
+            choose(false, Int, Text)
+        }]("chosen")
+    assert text == "chosen"
+    assert comptime {
+        choose(true, Text, Int) == Text
+    }
+    let Pair = comptime {
+        of[(Int, Text)]()
+    }
+    let pair Pair = (7, "seven")
+    assert pair.0 == 7 && pair.1 == "seven"
+    assert is_integer(Choice {
+            ty = Int
+        })
+    assert !is_integer(Choice {
+            ty = Text
+        })
+    let B = comptime {
+        of[Box[Text]]()
+    }
+    let boxed = B {
+        value = "boxed"
+    }
+    assert boxed.value == "boxed"
+    let M = comptime {
+        of[Maybe[Int]]()
+    }
+    let maybe = M.Some(7)
+    assert match maybe {
+        Maybe.Some(value) => value == 7
+        Maybe.None => false
+    }
+    let empty = M.None
+    assert match empty {
+        Maybe.None => true
+        _ => false
+    }
+    let P = comptime {
+        Positive
+    }
+    let positive = P(1)
+    let widened Int = positive
+    assert widened == 1
+}
+
+test fn type_values_are_computed_not_runtime_tags() {
+    exercise()
+}
+
+fn main() {
+    exercise()
+}

@@ -21,6 +21,8 @@ pub enum TypeKind {
     Function
     Task
     Frame
+    // Compile-time type identity, with no runtime representation.
+    Meta
 }
 
 pub record Field {
@@ -101,6 +103,8 @@ pub enum ExprKind {
     // A receiver-only drain refers to an enclosing traversal with the same
     // element-local index, keeping recursive layouts finite.
     ResourceDrain
+    // index identifies a type in this checking session, never a runtime ID.
+    TypeValue
 }
 
 // FunctionRef.index is a concrete scheduled function ID; an optional child is
