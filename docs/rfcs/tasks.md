@@ -230,6 +230,16 @@ single-argument connect path does not resolve. There is no built-in DNS cache,
 connection timeout, or parallel address racing. Running OS resolution cannot be
 interrupted and may delay cancellation drain.
 
+`std.process.tasks.capture` / `capture_input` submit copied native commands and
+binary input to the same bounded pool. Their source result and configuration
+match `std.process`; pipe draining, spawning and reaping share its native
+implementation. Workers return owned native output, and the owner copies both
+streams into rooted Bytes. Queued cancellation drops the job; running
+cancellation waits for capture and reaping, with no process-tree termination.
+Extra pipe threads are bounded by active capture jobs, not the pool's four-thread
+limit. Output is buffered without a size limit; streaming and hard process
+timeouts are not implemented.
+
 Private async intrinsics must be awaited directly: Loom lowers them to suspension
 of the caller's frame, not separately queued Tasks. Public async function calls
 still create hot child Tasks, including the source timer, file and DNS wrappers.

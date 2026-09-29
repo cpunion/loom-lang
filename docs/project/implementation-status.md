@@ -162,9 +162,11 @@ preserving completed results and draining both work and timer subtrees. It
 requests cancellation, not a hard return-time guarantee for blocking OS calls.
 
 Real timer/readiness/completion registration wakes the owner without per-Task
-threads or busy polling. Nonblocking TCP, OS DNS and asynchronous files are
-implemented; blocking I/O uses bounded native workers with copied native data,
+threads or busy polling. Nonblocking TCP, OS DNS, asynchronous files and process
+capture are implemented; blocking I/O uses bounded native workers with copied native data,
 not managed pointers. Cancellation of a running OS call waits for completion.
+Process capture adds native pipe-drain threads and unbounded output buffering;
+cancellation reaps the direct child without terminating process trees.
 TLS, general workers, broader socket policy and parallel Loom execution are not
 implemented. See [Tasks and I/O](../../compiler/README.md#source-tasks).
 

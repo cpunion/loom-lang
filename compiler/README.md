@@ -2552,6 +2552,16 @@ close still block the owner, and cancellation can wait for a stuck OS call.
 Private async intrinsics must be awaited directly and suspend the current frame,
 without creating another Task. The synchronous `std.file` API remains unchanged.
 
+`std.process.tasks.capture` and `capture_input` return Tasks with the same
+`Result[Output, SpawnError]` and optional child-local `Options` as synchronous
+capture. The native wait snapshots arguments, input and options once; both
+binary output streams are drained concurrently and copied back on the owner.
+Cancellation discards queued work or drains a running capture and reaps its
+direct child; it does not kill process trees or impose a hard timeout. The same
+four-worker pool bounds concurrent jobs, but active captures also use pipe
+threads. Output remains unbounded buffering, not streaming. See the
+[process example](examples/async_processes/README.md).
+
 `std.net.tcp` provides a narrow numeric-address TCP path: await `listen` to bind
 an IPv4 or IPv6 address, find an ephemeral bind's `local_port`, then await
 `accept` or `connect`, `read`, and `write_bytes`. `connect` starts a nonblocking

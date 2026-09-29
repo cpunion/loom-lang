@@ -710,6 +710,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskFileResult
             | Primitive::TaskBytesResult
             | Primitive::TaskWaitResolve
+            | Primitive::TaskWaitProcessCapture
+            | Primitive::TaskProcessCaptureResult
             | Primitive::TaskWaitFileOpen
             | Primitive::TaskWaitFileClose
             | Primitive::TaskFileOpenResult

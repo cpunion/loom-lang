@@ -57,11 +57,15 @@ fn main() {
         "--output",
         child.to_str().unwrap(),
     ]));
-    fs::write(
+    for (library, prefix, wait) in [
+        ("std.process", "", ""),
+        ("std.process.tasks", "async ", ".await"),
+    ] {
+        fs::write(
         parent_source.join("main.loom"),
         format!(
             r#"
-import std.process.capture
+import {library}.capture
 import std.process.Options
 import std.process.EnvChange
 import std.process.Output
@@ -88,11 +92,11 @@ fn check(output Result[Output, SpawnError]) {{
 fn has(name Text, expected Text) Bool {{
     match get(name) {{ Result.Ok(found) => match found {{ Option.Some(value) => value == expected, _ => false }}, _ => false }}
 }}
-fn main() {{
+{prefix}fn main() {{
     let args = new[Text]()
     push(args, {child:?})
     push(args, "default")
-    check(capture(args))
+    check(capture(args){wait})
     let changes = new[EnvChange]()
     push(changes, EnvChange.Set("LOOM_CAPTURE_VALUE", "first"))
     push(changes, EnvChange.Remove("LOOM_CAPTURE_VALUE"))
@@ -108,9 +112,9 @@ fn main() {{
         _ => {{}}
     }}
     set(args, 1, "inherit")
-    check(capture(args, Options {{ directory = Option.Some({working:?}) clear_environment = false environment = changes }}))
+    check(capture(args, Options {{ directory = Option.Some({working:?}) clear_environment = false environment = changes }} ){wait})
     set(args, 1, "clear")
-    check(capture(args, Options {{ directory = Option.Some({working:?}) clear_environment = true environment = changes }}))
+    check(capture(args, Options {{ directory = Option.Some({working:?}) clear_environment = true environment = changes }} ){wait})
     assert has("LOOM_CAPTURE_PARENT", "inherited")
     assert has("LOOM_CAPTURE_REMOVE", "remove me")
     assert has("LOOM_CAPTURE_VALUE", "original")
@@ -122,21 +126,22 @@ fn main() {{
         ),
     )
     .unwrap();
-    let parent = common::executable(directory.path(), "capture parent");
-    success(&loom(&[
-        "build",
-        parent_source.to_str().unwrap(),
-        "--output",
-        parent.to_str().unwrap(),
-    ]));
-    let output = Command::new(parent)
-        .current_dir(directory.path())
-        .env("LOOM_GC_STRESS", "1")
-        .env("LOOM_CAPTURE_PARENT", "inherited")
-        .env("LOOM_CAPTURE_REMOVE", "remove me")
-        .env("LOOM_CAPTURE_VALUE", "original")
-        .output()
-        .unwrap();
-    success(&output);
-    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        let parent = common::executable(directory.path(), "capture parent");
+        success(&loom(&[
+            "build",
+            parent_source.to_str().unwrap(),
+            "--output",
+            parent.to_str().unwrap(),
+        ]));
+        let output = Command::new(parent)
+            .current_dir(directory.path())
+            .env("LOOM_GC_STRESS", "1")
+            .env("LOOM_CAPTURE_PARENT", "inherited")
+            .env("LOOM_CAPTURE_REMOVE", "remove me")
+            .env("LOOM_CAPTURE_VALUE", "original")
+            .output()
+            .unwrap();
+        success(&output);
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    }
 }

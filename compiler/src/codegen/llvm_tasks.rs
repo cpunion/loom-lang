@@ -147,6 +147,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskWaitSocket
             | Primitive::TaskWaitFileRead
             | Primitive::TaskWaitResolve
+            | Primitive::TaskWaitProcessCapture
             | Primitive::TaskWaitFileWrite
             | Primitive::TaskWaitFileWriteBytes
             | Primitive::TaskWaitFileClose => self.task_ready(operation, values),
@@ -227,15 +228,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 Some(self.context.i64_type().into()),
                 values,
             ),
-            Primitive::TaskFileResult | Primitive::TaskBytesResult => {
-                let name = if operation == Primitive::TaskFileResult {
-                    "task_file_result"
-                } else {
-                    "task_bytes_result"
+            Primitive::TaskFileResult
+            | Primitive::TaskBytesResult
+            | Primitive::TaskProcessCaptureResult => {
+                let name = match operation {
+                    Primitive::TaskFileResult => "task_file_result",
+                    Primitive::TaskBytesResult => "task_bytes_result",
+                    _ => "task_process_capture_result",
                 };
                 let output =
                     self.runtime_call(name, Some(self.context.i64_type().into()), values)?;
-                if operation == Primitive::TaskBytesResult {
+                if operation != Primitive::TaskFileResult {
                     self.restore_locals()?;
                 }
                 Ok(output)
@@ -266,6 +269,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::TaskWaitSocket => "task_wait_socket",
             Primitive::TaskWaitFileRead => "task_wait_file_read",
             Primitive::TaskWaitResolve => "task_wait_resolve",
+            Primitive::TaskWaitProcessCapture => "task_wait_process_capture",
             Primitive::TaskWaitFileWrite => "task_wait_file_write",
             Primitive::TaskWaitFileWriteBytes => "task_wait_file_write_bytes",
             Primitive::TaskWaitFileOpen => "task_wait_file_open",

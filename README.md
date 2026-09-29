@@ -44,6 +44,7 @@ same-directory tests, and format/check/build/test/run tasks. See the
 - [Suspend tasks with real timers](compiler/examples/timers/README.md)
 - [Keep scoped cleanup across await](compiler/examples/async_cleanup/README.md)
 - [Copy files with source Task APIs](compiler/examples/async_files/README.md)
+- [Capture child processes without blocking Tasks](compiler/examples/async_processes/README.md)
 - [Resolve a hostname and connect over TCP](compiler/examples/hostname_connect/README.md)
 - [Use async methods through concepts and dyn](compiler/examples/async_methods/README.md)
 - [Pass and store Task callbacks](compiler/examples/task_callbacks/README.md)

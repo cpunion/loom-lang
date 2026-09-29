@@ -1,0 +1,26 @@
+test async fn capture_errors_preserve_the_synchronous_contract() {
+    assert match capture(new[Text]()).await {
+        Result.Err(error) => error == SpawnError.EmptyArguments
+        Result.Ok(_) => false
+    }
+    assert match capture(["invalid\0executable"]).await {
+        Result.Err(error) => error == SpawnError.Failed
+        Result.Ok(_) => false
+    }
+    assert match capture(new[Text](), Options {
+            directory = Option.Some("")
+            clear_environment = false
+            environment = new[EnvChange]()
+        }).await {
+        Result.Err(error) => error == SpawnError.InvalidOptions
+        Result.Ok(_) => false
+    }
+    assert match capture_input(new[Text](), std.bytes.new(), Options {
+            directory = Option.None
+            clear_environment = false
+            environment = [EnvChange.Set("NAME=INVALID", "value")]
+        }).await {
+        Result.Err(error) => error == SpawnError.InvalidOptions
+        Result.Ok(_) => false
+    }
+}

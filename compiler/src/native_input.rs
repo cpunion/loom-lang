@@ -606,6 +606,26 @@ impl Converter<'_> {
                     return Err("checked resolve wait signature mismatch".into());
                 }
             }
+            Primitive::TaskWaitProcessCapture => {
+                let texts =
+                    |ty| matches!(ty, Type::List(id) if self.program.lists[id] == Type::Text);
+                if !texts(arguments[0].ty)
+                    || arguments[1].ty != Type::Bytes
+                    || arguments[2].ty != Type::Text
+                    || arguments[3].ty != Type::Int
+                    || !texts(arguments[4].ty)
+                    || result != Type::Bool
+                {
+                    return Err("checked process wait signature mismatch".into());
+                }
+            }
+            Primitive::TaskProcessCaptureResult => {
+                if arguments.iter().any(|argument| argument.ty != Type::Bytes)
+                    || result != Type::Int
+                {
+                    return Err("checked process result signature mismatch".into());
+                }
+            }
             Primitive::TaskWaitFileOpen => {
                 if arguments[0].ty != Type::Text
                     || arguments[1].ty != Type::Bool
@@ -1435,6 +1455,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_file_result" => P::TaskFileResult,
         "task_bytes_result" => P::TaskBytesResult,
         "task_wait_resolve" => P::TaskWaitResolve,
+        "task_wait_process_capture" => P::TaskWaitProcessCapture,
+        "task_process_capture_result" => P::TaskProcessCaptureResult,
         "task_wait_file_open" => P::TaskWaitFileOpen,
         "task_wait_file_close" => P::TaskWaitFileClose,
         "task_file_open_result" => P::TaskFileOpenResult,
@@ -1517,6 +1539,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskCleanupPush
         | P::TaskWaitFileRead
         | P::TaskWaitResolve
+        | P::TaskProcessCaptureResult
         | P::TaskWaitFileOpen
         | P::TaskWaitSocket
         | P::PathRename => 2,
@@ -1533,6 +1556,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskCreate
         | P::CleanupEach => 3,
         P::ListRetainRange => 4,
+        P::TaskWaitProcessCapture => 5,
         P::ProcessCaptureConfigured => 6,
         P::ProcessCaptureInputConfigured => 7,
     }
