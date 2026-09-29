@@ -36,12 +36,12 @@ impl Label for Point {
 
 fn describe_value[T](value T) Schema {
     discard value
-    describe[T]()
+    std.reflect.describe[T]()
 }
 
 fn is_integer[T](value T) Bool {
     discard value
-    comptime if describe[T]().types[0].kind == Kind.Int {
+    comptime if std.reflect.describe[T]().types[0].kind == Kind.Int {
         true
     } else {
         false
@@ -62,6 +62,7 @@ fn check_tree(schema Schema) {
 }
 
 fn exercise() {
+    predicate_trial()
     let point = describe_value(Point {
             x = 1,
             y = 2
@@ -72,33 +73,33 @@ fn exercise() {
     assert point.types[fields[0].ty].kind == Kind.Int
     assert is_integer(1) && !is_integer(true)
 
-    check_tree(describe[Tree[Int]]())
+    check_tree(std.reflect.describe[Tree[Int]]())
     check_tree(comptime {
-            describe[Tree[Int]]()
+            std.reflect.describe[Tree[Int]]()
         })
-    let first = describe[Tree[Int]]()
-    let second = describe[Tree[Int]]()
+    let first = std.reflect.describe[Tree[Int]]()
+    let second = std.reflect.describe[Tree[Int]]()
     let alias = first
-    first.types[0] = describe[Int]().types[0]
+    first.types[0] = std.reflect.describe[Int]().types[0]
     assert alias.types[0].kind == Kind.Int
     check_tree(second)
 
-    let tuple = describe[(Float, Bytes, Task[Text])]()
+    let tuple = std.reflect.describe[(Float, Bytes, Task[Text])]()
     let elements = tuple.types[0].arguments
     assert tuple.types[0].kind == Kind.Tuple
     assert tuple.types[elements[0]].kind == Kind.Float
     assert tuple.types[elements[1]].kind == Kind.Bytes
     let task = tuple.types[elements[2]]
     assert task.kind == Kind.Task && tuple.types[task.arguments[0]].kind == Kind.Text
-    let function = describe[fn(Int)]()
+    let function = std.reflect.describe[fn(Int)]()
     let parameters = function.types[0].arguments
     assert function.types[0].kind == Kind.Function
     assert function.types[parameters[1]].kind == Kind.NoResult
 
-    let refined = describe[Positive]()
+    let refined = std.reflect.describe[Positive]()
     assert refined.types[0].kind == Kind.Refined
     assert refined.types[refined.types[0].arguments[0]].kind == Kind.Int
-    let dynamic = describe[dyn Source[Item = Int]]()
+    let dynamic = std.reflect.describe[dyn Source[Item = Int]]()
     let binding = dynamic.types[0].fields[0]
     assert dynamic.types[0].kind == Kind.Dynamic && binding.name == "Item"
     assert dynamic.types[binding.ty].kind == Kind.Int

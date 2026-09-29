@@ -1,5 +1,21 @@
 import std.build.input_file
 
+test fn predicate_reflection_does_not_accept_a_forged_descriptor_signature() {
+    let files = source_files("""
+        import std.reflect.predicates.describe
+        fn main() {
+            discard describe[Int]()
+        }
+        """)
+    push(files, source_file("std.reflect.predicates", """
+        pub intrinsic fn describe[T]() Int
+        """, true))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "predicate reflection requires Option[std.reflect.predicates.Predicate]"
+        Result.Ok(_) => false
+    }
+}
+
 fn reflected(text Text) Result[std.loom.typed.Program, Failure] {
     let files = source_files(concat("""
         import std.reflect.describe

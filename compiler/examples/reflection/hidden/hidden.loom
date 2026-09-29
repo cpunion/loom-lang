@@ -1,5 +1,26 @@
 import std.reflect.describe
 import std.reflect.Schema
+import std.reflect.predicates.Predicate
+import std.reflect.predicates.describe
+import std.option.Option
+
+type PrivatePositive = Int where self > 0
+
+pub fn private_refinement() PrivatePositive {
+    PrivatePositive(1)
+}
+
+pub fn predicate_here[T](value T) Option[Predicate] {
+    discard value
+    std.reflect.predicates.describe[T]()
+}
+
+fn private_constraint(value Int) Bool {
+    discard "predicate_helper_should_stay_dead"
+    value > 0
+}
+
+pub type Guarded = Int where private_constraint(self)
 
 record Secret {
     password Text
@@ -24,9 +45,9 @@ pub fn envelope() Envelope {
 // Visibility follows the lexical call site, not the type argument's caller.
 pub fn describe_here[T](value T) Schema {
     discard value
-    describe[T]()
+    std.reflect.describe[T]()
 }
 
 pub fn disclosed() Schema {
-    describe[Secret]()
+    std.reflect.describe[Secret]()
 }

@@ -18,7 +18,7 @@ impl AssociatedSeed for Int {
 }
 
 fn associated_seed[T]() {
-    comptime if describe[T]().types[0].kind == Kind.Record {
+    comptime if std.reflect.describe[T]().types[0].kind == Kind.Record {
         comptime for Field in T {
             comptime if Field implements AssociatedSeed {
                 let value Field.Item[Field] = seed[Field.Item[Field]]()
@@ -38,12 +38,12 @@ fn seed[T]() T {
             comptime if T == Text {
                 "generated"
             } else {
-                comptime if describe[T]().types[0].kind == Kind.Tuple {
+                comptime if std.reflect.describe[T]().types[0].kind == Kind.Tuple {
                     comptime map Field in T {
                         seed[Field]()
                     }
                 } else {
-                    comptime if describe[T]().types[0].kind == Kind.Record {
+                    comptime if std.reflect.describe[T]().types[0].kind == Kind.Record {
                         let fields = comptime map Field in T {
                             seed[Field]()
                         }
@@ -99,7 +99,7 @@ async fn generated_tasks() {
 
 fn type_readers[T]() List[fn() Int] {
     let readers List[fn() Int] = []
-    comptime if describe[T]().types[0].kind == Kind.Record {
+    comptime if std.reflect.describe[T]().types[0].kind == Kind.Record {
         comptime for name, Field in T {
             discard name
             std.list.push(readers, fn() Int {

@@ -2111,8 +2111,16 @@ enums ordered `variants`, and `Dynamic` named associated bindings in `fields`.
 Private types outside the call's package become `Opaque` leaves with empty
 names and no exposed structure. A generic library helper retains its own
 lexical visibility, not its caller's. Dynamic reflection describes the declared
-interface, never the erased concrete receiver. Methods, predicates and values
-are not enumerated, and descriptors do not establish compatibility proofs.
+interface, never the erased concrete receiver. Methods and values are not
+enumerated, and descriptors do not establish compatibility proofs.
+
+The separate [`std.reflect.predicates.describe[T]()`](std/reflect/predicates/README.md)
+returns an optional direct refinement predicate: owner label, canonical source
+and public AST with spans into that source. It follows the same lexical visibility;
+ordinary and inaccessible types return `None`. Helper names retain their original
+scope, not new access permissions. Helper bodies and inherited predicates are not
+expanded, and syntax data is not proof evidence. Generated refinements use the
+same path. Mutating a returned AST cannot change a type's constraint.
 
 Descriptors have fresh mutable Lists on each runtime evaluation; ordinary
 copies share those Lists. `comptime` can consume or return them, and a fully

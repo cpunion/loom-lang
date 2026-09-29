@@ -843,7 +843,12 @@ queries retain the raw source basis, navigate to the generating block, and
 revalidate tracked inputs. These stages conservatively disable per-definition
 check reuse, not whole-snapshot reuse. See the
 [in-compilation example](../../compiler/examples/declaration_generation).
-Predicate reflection remains open.
+`std.reflect.predicates.describe` now returns visible direct refinement predicates
+as canonical source and public AST data, including generated declarations. It
+retains lexical privacy, declaration-site names and fresh mutable descriptor
+storage. It does not expand helper bodies, grant private access, retain native
+helper roots or supply proof evidence. See the
+[predicate example](../../compiler/examples/reflection/predicates.loom).
 First-class compile-time type values now use the keyword `type`. Pure functions
 can pass, return, compare and select identities, including through compile-time
 data and loops. Known type bindings supply local annotations, generic arguments
