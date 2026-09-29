@@ -32,12 +32,13 @@ fn direct_task(env Environment, ty Int) Bool {
 // A synchronous helper exposes its owner requirement through its Task-bearing inputs
 // or output. No hidden effect or source ownership annotation is introduced.
 fn task_owner(context Context) Bool {
-    if async_signature(context.env, context.signature) || task_value(context.env, context.signature.result) {
+    let current = execution_signature(context)
+    if async_signature(context.env, current) || task_value(context.env, current.result) {
         return true
     }
     var index = 0
-    while index < length(context.signature.params) {
-        if !is_static(context.signature, index) && task_value(context.env, get(context.signature.params, index)) {
+    while index < length(current.params) {
+        if !is_static(current, index) && task_value(context.env, get(current.params, index)) {
             return true
         }
         index = index + 1
@@ -49,7 +50,7 @@ fn task_creation_message(context Context, node Node) Text {
     if !context.emit {
         return ""
     }
-    let source = get(context.env.source.files, symbol(context.env, context.signature.symbol).file)
+    let source = get(context.env.source.files, symbol(context.env, execution_signature(context).symbol).file)
     render(source.path, source.text, Diagnostic {
             span = node.span
             message = "task created here"
@@ -79,7 +80,7 @@ fn tuple_await_signature(context Context, node Node, arity Int) Result[Int, Fail
 }
 
 fn awaited(context Context, node Node, expected Int) Result[Expr, Failure] {
-    if !async_signature(context.env, context.signature) {
+    if !async_signature(context.env, execution_signature(context)) {
         return Result.Err(error(context, node, "await requires an async function"))
     }
     discard suspension_bindings(context, node)?

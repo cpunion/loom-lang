@@ -38,8 +38,19 @@ fn macro_generator(context Context, node Node) Result[Int, Failure] {
 }
 
 fn macro_context(context Context, current Signature, env Environment) Context {
+    let scopes = new_lexical()
+    let outer = new[Context]()
+    push(outer, context)
+    push(scopes, Lexical {
+            cells = new[Cell]()
+            outer = outer
+            captures = new[Capture]()
+            known = new[Capture]()
+            environment = -2
+            local = -1
+        })
     Context {
-        lexical = new_lexical()
+        lexical = scopes
         env = env
         signature = current
         arguments = new[Int]()
@@ -47,7 +58,7 @@ fn macro_context(context Context, current Signature, env Environment) Context {
         locals = context.locals
         bindings = new[Binding]()
         head = -1
-        cleanups = new[Cleanup]()
+        cleanups = context.cleanups
         cleanup_head = -1
         loop_boundary = -2
         facts = new[Fact]()
@@ -144,13 +155,13 @@ fn macro_call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let definition = macro_context(context, current, stage.env)
     let values = new[Expr]()
     let descriptors = new[Expr]()
-    let inputs = child(node, 0).children
+    let inputs = call_inputs(context, child(node, 0).children)?
     let schema = reflection_element(context.env, get(current.params, 0))
     var known = true
     var identity = concat("macro/", concat(to_text(context.signature.symbol), concat("/", to_text(node.span.start))))
     var index = 0
-    while index < length(inputs) {
-        let value = expr(context, get(inputs, index), -1)?
+    while index < length(inputs.nodes) {
+        let value = input_value(context, inputs, index, -1, false)?
         push(values, value)
         known = known && concrete(context.env, value.ty)
         identity = concat(identity, concat("/", to_text(value.ty)))
@@ -194,7 +205,10 @@ fn macro_call(context Context, node Node, expected Int) Result[Expr, Failure] {
                 mutable = false
                 is_scoped = false
             })
-        push(body, expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls))
+        if must_scope(context, value.ty)? || resource_borrowed(context, value)? {
+            resource_borrow_local(expansion, local)
+        }
+        push(body, expression(ExprKind.Let, 0, node, "macro-input", local, expressions(value), value.falls))
         let binding = length(expansion.bindings)
         push(expansion.bindings, Binding {
                 name = name
@@ -223,5 +237,6 @@ fn macro_call(context Context, node Node, expected Int) Result[Expr, Failure] {
         }
     }
     push(body, expanded)
-    Result.Ok(expression(ExprKind.Block, expanded.ty, node, "macro", current.symbol, body, all_fall(body)))
+    Result.Ok(empty_inputs(context, inputs, node,
+            expression(ExprKind.Block, expanded.ty, node, "macro", current.symbol, body, all_fall(body))))
 }

@@ -3,6 +3,8 @@ import std.reflect.Kind
 import std.list.length
 import std.list.push
 import std.result.Result
+import std.resource.MustScope
+import std.resource.Dispose
 import typed_macros.generators.helper_call
 import typed_macros.generators.private_type
 
@@ -93,6 +95,34 @@ record Secret {
     value Int
 }
 
+record Guard {
+    value Int
+    trace List[Int]
+}
+
+impl MustScope for Guard {
+}
+
+impl Dispose for Guard {
+    fn dispose(self Guard) {
+        push(self.trace, 9)
+    }
+}
+
+fn borrow(types List[Schema]) Text {
+    discard types
+    "$0.value"
+}
+
+fn borrowed_twice(types List[Schema]) Text {
+    discard types
+    "twice!(borrow!($0))"
+}
+
+fn guarded(guard Guard) Int {
+    borrowed_twice!(guard)
+}
+
 fn exercise() {
     let values = [0]
     assert twice!(next(values)) == 42 && length(values) == 2
@@ -101,6 +131,9 @@ fn exercise() {
     assert checked(1) && !checked(0)
     let number, text = pair!(42, "answer")
     assert number == 42 && text == "answer"
+    let tuple = (41, "spread")
+    let spread_number, spread_text = pair!(tuple...)
+    assert spread_number == 41 && spread_text == "spread"
     assert selected(41) == 42 && selected("text") == "text"
     let saved = 900
     let first = counter!(10)
@@ -112,10 +145,40 @@ fn exercise() {
         })
     cleanup!(values)
     assert values[2] == 1 && values[3] == 2
+    {
+        scoped guard = Guard {
+            value = 21
+            trace = values
+        }
+        assert guarded(guard) == 42
+    }
+    assert values[4] == 9 && length(values) == 5
 }
 
-fn main() {
+fn wait(types List[Schema]) Text {
+    discard types
+    "$0.await"
+}
+
+fn wait_traced(types List[Schema]) Text {
+    discard types
+    """
+    {
+        defer {
+            push($1, 3)
+        }
+        $0.await
+    }
+    """
+}
+
+async fn task() Int {
+    42
+}
+
+async fn main() {
     exercise()
+    assert wait!(task()) == 42
 }
 
 test fn typed_generators_preserve_evaluation_and_hygiene() {
@@ -123,4 +186,11 @@ test fn typed_generators_preserve_evaluation_and_hygiene() {
     comptime {
         exercise()
     }
+}
+
+test async fn generated_await_uses_the_callers_execution_scope() {
+    assert wait!(task()) == 42
+    let trace = [0]
+    assert wait_traced!(task(), trace) == 42
+    assert trace[1] == 3
 }

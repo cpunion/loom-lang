@@ -61,6 +61,63 @@ fn generated_code_keeps_proof_and_one_shot_obligations() {
         (
             r#"
 import std.reflect.Schema
+import std.resource.MustScope
+import std.resource.Dispose
+
+record Guard {
+    value Int
+}
+
+impl MustScope for Guard {}
+
+impl Dispose for Guard {
+    fn dispose(self Guard) {
+        discard self.value
+    }
+}
+
+fn ignore(types List[Schema]) Text {
+    discard types
+    "true"
+}
+
+fn main() {
+    discard ignore!(Guard { value = 1 })
+}
+"#,
+            "macro resource input must enter scoped",
+        ),
+        (
+            r#"
+import std.reflect.Schema
+import std.resource.NoSuspend
+
+record Guard {
+    value Int
+}
+
+impl NoSuspend for Guard {}
+
+fn wait(types List[Schema]) Text {
+    discard types
+    "$0.await"
+}
+
+async fn task() Int {
+    1
+}
+
+async fn main() {
+    let guard = Guard { value = 0 }
+    discard wait!(task())
+    discard guard
+}
+"#,
+            "NoSuspend value is still in scope",
+        ),
+        (
+            r#"
+import std.reflect.Schema
 
 fn generate(types List[Schema]) Text {
     discard types

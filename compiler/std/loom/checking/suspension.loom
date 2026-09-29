@@ -10,6 +10,12 @@ fn no_suspend(context Context, ty Int, marker Int) Result[Bool, Failure] {
 // Bindings are lexical, including shadowed outer bindings and defer captures.
 // The whole locals table also contains completed scopes and cleanup-only locals.
 fn suspension_bindings(context Context, node Node) Result[Bool, Failure] {
+    if length(context.lexical) != 0 {
+        let scope = get(context.lexical, 0)
+        if scope.environment == -2 {
+            discard suspension_bindings(get(scope.outer, 0), node)?
+        }
+    }
     let marker = resource_concept(context.env, "NoSuspend")
     if marker < 0 {
         return Result.Ok(true)
