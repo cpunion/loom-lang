@@ -8,6 +8,7 @@ record InvariantReads {
     env Environment
     functions List[Function]
     references List[Expr]
+    contents Bool
     calls List[InvariantCall]
     valid List[Bool]
 }
@@ -83,7 +84,7 @@ fn invariant_call(reads InvariantReads, target Int, inputs List[InputOrigin], de
             inputs = inputs
             origin = origin_input()
         })
-    if function.runtime_name != "" {
+    if function.runtime_name != "" && !(reads.contents && invariant_read_intrinsic(function.runtime_name)) {
         set(reads.valid, 0, false)
         return origin_input()
     }
@@ -168,7 +169,7 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     if kind == ExprKind.IndirectCall && origin_shared(borrowed) {
         borrowed = invariant_indirect(reads, value, inputs, depth + 1)
     }
-    if (kind == ExprKind.Intrinsic || kind == ExprKind.DynCall ||
+    if ((kind == ExprKind.Intrinsic && !(reads.contents && invariant_read_intrinsic(value.text))) || kind == ExprKind.DynCall ||
         kind == ExprKind.FrameStore) && origin_shared(borrowed) {
         set(reads.valid, 0, false)
     }
@@ -217,12 +218,12 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     borrowed
 }
 
-fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int) Bool {
+fn invariant_reads(env Environment, functions List[Function], value Expr, contents Bool) InvariantReads {
     let references = new[Expr]()
     invariant_references(value, references)
     var function = 0
-    while function < length(program.functions) {
-        let body = get(program.functions, function)
+    while function < length(functions) {
+        let body = get(functions, function)
         invariant_references(body.body, references)
         var clause = 0
         while clause < length(body.preconditions) {
@@ -231,13 +232,18 @@ fn invariant_observation(env Environment, program std.loom.typed.Program, value 
         }
         function = function + 1
     }
-    let reads = InvariantReads {
+    InvariantReads {
         env = env
-        functions = program.functions
+        functions = functions
         references = references
+        contents = contents
         calls = new[InvariantCall]()
         valid = invariant_flag(true)
     }
+}
+
+fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int, contents Bool) Bool {
+    let reads = invariant_reads(env, program.functions, value, contents)
     let inputs = new[InputOrigin]()
     push(inputs, origin_input())
     let frame = invariant_frame(count, inputs)
@@ -248,4 +254,12 @@ fn invariant_observation(env Environment, program std.loom.typed.Program, value 
         more = get(frame.changed, 0)
     }
     get(reads.valid, 0)
+}
+
+// Reads may inspect protected contents but must not mutate or publish an alias.
+// This is logical storage behavior, not the CTFE purity classification (which
+// also admits mutations of fresh local scratch).
+fn invariant_read_intrinsic(name Text) Bool {
+    name == "list_len" || name == "list_get" || name == "list_retain_range" ||
+    name == "bytes_len" || name == "bytes_get" || name == "bytes_utf8" || name == "bytes_text_copy"
 }

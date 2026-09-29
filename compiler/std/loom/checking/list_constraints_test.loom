@@ -1,0 +1,186 @@
+fn list_constraint_checked(source Text) Result[std.loom.typed.Program, Failure] {
+    let files = source_files(source)
+    push(files, source_file("std.result", """
+        pub enum Result[T, E] {
+            Ok(T)
+            Err(E)
+        }
+        pub enum ConstraintError {
+            Rejected
+        }
+        """, true))
+    push(files, source_file("std.list", """
+        intrinsic fn list_len[T](values List[T]) Int
+        intrinsic fn list_push[T](values List[T], value T)
+        pub fn length[T](values List[T]) Int {
+            list_len(values)
+        }
+        pub fn push[T](values List[T], value T) {
+            list_push(values, value)
+        }
+        pub fn clone[T](values List[T]) List[T] {
+            let output List[T] = []
+            var index = 0
+            while index < length(values) {
+                push(output, values[index])
+                index = index + 1
+            }
+            output
+        }
+        """, true))
+    checked(files)
+}
+
+fn list_constraint_accept(source Text) {
+    match list_constraint_checked(source) {
+        Result.Ok(_) => {
+        }
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            assert false
+        }
+    }
+}
+
+fn list_constraint_reject(source Text) {
+    assert match list_constraint_checked(source) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+fn list_constraint_source() Text {
+    """
+    import std.list.length
+    import std.list.clone
+    import std.list.push
+    import std.result.Result
+    import std.result.ConstraintError
+    fn positive(values List[Int]) Bool {
+        var index = 0
+        while index < length(values) {
+            if values[index] <= 0 {
+                return false
+            }
+            index = index + 1
+        }
+        length(values) > 0
+    }
+    type Positive = List[Int] where positive(self)
+    fn sum(values List[Int]) Int {
+        var total = 0
+        var index = 0
+        while index < length(values) {
+            total = total + values[index]
+            index = index + 1
+        }
+        total
+    }
+    """
+}
+
+test fn list_constraints_accept_fresh_storage_and_non_escaping_reads() {
+    list_constraint_accept(concat(list_constraint_source(), """
+        fn copied(input List[Int]) Result[Positive, ConstraintError] {
+            Positive(clone(input))
+        }
+        fn constructed(value Int) Result[Positive, ConstraintError] {
+            Positive([value, 2])
+        }
+        fn literal() Positive {
+            Positive([1, 2, 3])
+        }
+        fn read(value Positive) Int {
+            sum(value) + value[0]
+        }
+        fn main() {
+            let strict = literal()
+            let alias = strict
+            assert read(alias) == 7
+            let loose = clone(strict)
+            loose[0] = -1
+            assert strict[0] == 1
+        }
+        """))
+}
+
+test fn list_constraints_reject_old_aliases_mutation_and_unrestricted_escapes() {
+    let header = list_constraint_source()
+    list_constraint_reject(concat(header, """
+        fn invalid(input List[Int]) Result[Positive, ConstraintError] {
+            Positive(input)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn invalid(value Positive) {
+            value[0] = -1
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn write(values List[Int]) {
+            push(values, -1)
+        }
+        fn invalid(value Positive) {
+            write(value)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn identity[T](value T) T {
+            value
+        }
+        fn invalid(value Positive) List[Int] {
+            identity(value)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        record Box {
+            values List[Int]
+        }
+        fn invalid(value Positive) Box {
+            Box { values = value }
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn alias(value List[Int]) List[Int] {
+            value
+        }
+        fn invalid(value Positive) List[Int] {
+            alias(value)
+        }
+        """))
+}
+
+test fn list_constraint_factories_must_not_publish_or_return_input_aliases() {
+    let header = list_constraint_source()
+    list_constraint_reject(concat(header, """
+        fn fake_clone(value List[Int]) List[Int] {
+            value
+        }
+        fn invalid(input List[Int]) Result[Positive, ConstraintError] {
+            Positive(fake_clone(input))
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn publish(output List[List[Int]]) List[Int] {
+            let values = [1, 2]
+            push(output, values)
+            values
+        }
+        fn invalid(output List[List[Int]]) Result[Positive, ConstraintError] {
+            Positive(publish(output))
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn invalid() Positive {
+            Positive([0])
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn invalid() Positive {
+            Positive([])
+        }
+        """))
+    list_constraint_reject("""
+        type Invalid = List[List[Int]] where true
+        """)
+}

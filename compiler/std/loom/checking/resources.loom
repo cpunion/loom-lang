@@ -215,8 +215,8 @@ fn resource_receiver(context Context, node Node, value Expr) Result[Bool, Failur
     Result.Err(error(context, node, "a resource must enter scoped before a method call"))
 }
 
-fn resource_unreached(env Environment, roots List[Int]) Result[Bool, Failure] {
-    if resource_concept(env, "Dispose") < 0 && resource_concept(env, "MustScope") < 0 { return Result.Ok(true) }
+fn check_unreached(env Environment, roots List[Int]) Result[Bool, Failure] {
+    if length(roots) == 0 { return Result.Ok(true) }
     // Keep diagnostic-only instances out of native reachability. Generic
     // bodies retain obligations until a concrete specialization is selected.
     let analysis = Environment { inputs = env.inputs static_aliases = env.static_aliases packs = env.packs closures = env.closures source = env.source types = env.types type_states = env.type_states expand_data = true
@@ -239,7 +239,8 @@ fn resource_unreached(env Environment, roots List[Int]) Result[Bool, Failure] {
     Result.Ok(true)
 }
 
-fn resource_computation(context Context, functions List[Function], value Function) Result[Bool, Failure] {
+fn check_computation_effects(context Context, functions List[Function], value Function) Result[Bool, Failure] {
+    discard list_constraint_function(context.env, functions, value)?
     if resource_concept(context.env, "Dispose") < 0 && resource_concept(context.env, "MustScope") < 0 { return Result.Ok(true) }
     let closure = new[Function]()
     var index = 0

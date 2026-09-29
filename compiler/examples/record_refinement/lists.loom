@@ -1,0 +1,72 @@
+import std.list.clone
+
+fn all_positive(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        if values[index] <= 0 {
+            return false
+        }
+        index = index + 1
+    }
+    length(values) > 0
+}
+
+type PositiveValues = List[Int] where all_positive(self)
+
+fn positive_copy(values List[Int]) Result[PositiveValues, ConstraintError] {
+    PositiveValues(clone(values))
+}
+
+fn positive_pair(first Int, second Int) Result[PositiveValues, ConstraintError] {
+    PositiveValues([first, second])
+}
+
+fn values_sum(values List[Int]) Int {
+    var total = 0
+    var index = 0
+    while index < length(values) {
+        total = total + values[index]
+        index = index + 1
+    }
+    total
+}
+
+fn list_constraint_scope() Bool {
+    let source = [1, 2, 3]
+    let valid = match positive_copy(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return false
+        }
+    }
+    let alias = valid
+    source[0] = -1
+    push(source, 0)
+    assert alias[0] == 1 && values_sum(alias) == 6
+    assert length(valid) == 3
+    let copy = clone(valid)
+    copy[0] = -9
+    assert valid[0] == 1
+    assert match positive_pair(1, -1) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    let literal = PositiveValues([2, 3])
+    assert values_sum(literal) == 5
+    true
+}
+
+async fn retain_positive_values(values PositiveValues) PositiveValues {
+    values
+}
+
+test async fn list_constraints_survive_task_handoff_and_moving_collection() {
+    let original = PositiveValues([3, 4])
+    let child = retain_positive_values(original)
+    let alias = original
+    let copied = clone(original)
+    copied[0] = -3
+    let returned = child.await
+    assert returned[0] == 3 && values_sum(alias) == 7
+}

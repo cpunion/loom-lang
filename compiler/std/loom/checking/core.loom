@@ -380,7 +380,7 @@ fn checked_program(env Environment, reuse List[Bool], reusable List[Bool], hits 
 
 fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool], hits List[Int], bodies BodyReuse) Result[std.loom.typed.Program, Failure] {
     let source = env.source
-    let resource_roots = new[Int]()
+    let deferred_roots = new[Int]()
     var index = 0
     while index < length(env.signatures) {
         let signature = get(env.signatures, index)
@@ -391,9 +391,9 @@ fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool
                 set(reusable, signature.symbol, true)
             } else {
                 let checked = function(env, index, abstract_arguments(env, signature.parameters), unknown_constants(signature), false)?
-                let resource = resource_analysis_root(env, signature, checked.body)?
-                if resource { push(resource_roots, index) }
-                if signature.symbol < length(reusable) && symbol(env, signature.symbol).owner < 0 && !resource {
+                let deferred = resource_analysis_root(env, signature, checked.body)? || list_constraint_required(env, checked.body)
+                if deferred { push(deferred_roots, index) }
+                if signature.symbol < length(reusable) && symbol(env, signature.symbol).owner < 0 && !deferred {
                     set(reusable, signature.symbol, true)
                 }
             }
@@ -422,7 +422,7 @@ fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool
     }
     let functions = emit_functions_reusing(env, entry < 0 || length(exports) != 0, bodies)?
     discard runtime_meta(env, functions)?
-    discard resource_unreached(env, resource_roots)?
+    discard check_unreached(env, deferred_roots)?
     discard layouts(env)?
     Result.Ok(std.loom.typed.Program { types = env.types functions = functions entry = entry tests = tests test_names = test_names exports = exports
         interfaces = env.interfaces witnesses = env.witnesses })

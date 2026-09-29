@@ -1,0 +1,237 @@
+// A content-constrained List has no pre-existing writable aliases. Its element
+// values are immutable; copies retain the constrained type and ordinary sharing.
+// Borrowing as a plain List is allowed only for a non-escaping read operation.
+fn constrained_list(env Environment, ty Int) Bool {
+    let shape = get(env.types, ty)
+    shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
+    get(env.types, get(shape.fields, 0).ty).kind == TypeKind.List
+}
+
+fn closed_list_value(value Expr) Bool {
+    if value.kind != ExprKind.List {
+        return false
+    }
+    var index = 0
+    while index < length(value.children) {
+        let child = get(value.children, index)
+        if child.kind != ExprKind.Text && !closed_record_value(child, 0) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn list_constraint_required(env Environment, value Expr) Bool {
+    if !env.has_refinements {
+        return false
+    }
+    if value.text == "checked list" || constrained_list(env, value.ty) {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if list_constraint_required(env, get(value.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var item = 0
+        while item < length(arm.body) {
+            if list_constraint_required(env, get(arm.body, item)) {
+                return true
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn list_constraint_error(env Environment, owner Int, value Expr, message Text) Failure {
+    Failure {
+        source = symbol(env, owner).file
+        diagnostic = Diagnostic {
+            span = value.span
+            message = message
+        }
+    }
+}
+
+fn constraint_weakened(env Environment, value Expr) Bool {
+    value.kind == ExprKind.Coerce && length(value.children) == 1 &&
+    constrained_list(env, get(value.children, 0).ty) &&
+    value.ty == base_type(env, get(value.children, 0).ty)
+}
+
+fn constraint_fresh(env Environment, functions List[Function], value Expr) Bool {
+    if value.kind == ExprKind.List {
+        return true
+    }
+    if value.kind != ExprKind.Call || value.index < 0 || value.index >= length(functions) {
+        return false
+    }
+    // A pure, non-publishing factory may read its arguments, but cannot retain
+    // an alias to its result outside this call. No library-name shortcut.
+    let program = std.loom.typed.Program {
+        types = env.types
+        functions = functions
+        entry = -1
+        tests = new[Int]()
+        test_names = new[Text]()
+        exports = new[Int]()
+        interfaces = env.interfaces
+        witnesses = env.witnesses
+    }
+    // Argument expressions run before the factory creates its result. Validate
+    // the callee's purity, not unrelated I/O/awaits used to obtain those inputs.
+    let parameters = new[Expr]()
+    var parameter = 0
+    while parameter < length(value.children) {
+        let argument = get(value.children, parameter)
+        push(parameters, Expr {
+                kind = ExprKind.Local
+                ty = argument.ty
+                span = argument.span
+                text = ""
+                index = parameter
+                children = new[Expr]()
+                arms = new[Arm]()
+                falls = true
+            })
+        parameter = parameter + 1
+    }
+    let probe = Expr {
+        kind = value.kind
+        ty = value.ty
+        span = value.span
+        text = value.text
+        index = value.index
+        children = parameters
+        arms = new[Arm]()
+        falls = true
+    }
+    if match std.loom.eval.validate(program, probe) {
+        Result.Ok(_) => false,
+        Result.Err(_) => true
+    } {
+        return false
+    }
+    let reads = invariant_reads(env, functions, value, true)
+    let inputs = new[InputOrigin]()
+    var index = 0
+    while index < length(value.children) {
+        push(inputs, origin_input())
+        index = index + 1
+    }
+    let output = invariant_call(reads, value.index, inputs, 0)
+    get(reads.valid, 0) && !origin_shared(output)
+}
+
+fn constraint_read(env Environment, functions List[Function], value Expr) Bool {
+    let inputs = new[InputOrigin]()
+    var index = 0
+    while index < length(value.children) {
+        push(inputs, if constraint_weakened(env, get(value.children, index)) {
+                origin_input()
+            } else {
+                origin_empty()
+            })
+        index = index + 1
+    }
+    if value.kind == ExprKind.Intrinsic {
+        return invariant_read_intrinsic(value.text) && inline_constraint_base(env, value.ty, 0)
+    }
+    if value.kind != ExprKind.Call {
+        return false
+    }
+    let reads = invariant_reads(env, functions, value, true)
+    let output = invariant_call(reads, value.index, inputs, 0)
+    get(reads.valid, 0) && !origin_shared(output)
+}
+
+fn list_constraint_expression(env Environment, functions List[Function], owner Int, value Expr) Result[Bool, Failure] {
+    // Compiler-emitted checked construction: the private raw temporary is used
+    // only by the validated predicate and the successful refined result.
+    if value.kind == ExprKind.Block && value.text == "checked list" {
+        let input = get(get(value.children, 0).children, 0)
+        if !constraint_fresh(env, functions, input) {
+            return Result.Err(list_constraint_error(env, owner, input,
+                    "a List constraint requires a fresh literal or a proved non-publishing factory; explicitly copy existing storage"))
+        }
+        discard list_constraint_expression(env, functions, owner, input)?
+        discard list_constraint_expression(env, functions, owner, get(get(value.children, 1).children, 0))?
+        return Result.Ok(true)
+    }
+    if value.kind == ExprKind.Coerce && constrained_list(env, value.ty) &&
+    !constraint_fresh(env, functions, get(value.children, 0)) {
+        return Result.Err(list_constraint_error(env, owner, value,
+                "a List constraint requires a fresh literal or a proved non-publishing factory; explicitly copy existing storage"))
+    }
+    var borrowed = false
+    var index = 0
+    while index < length(value.children) {
+        if constraint_weakened(env, get(value.children, index)) {
+            borrowed = true
+        }
+        index = index + 1
+    }
+    if borrowed && !constraint_read(env, functions, value) {
+        return Result.Err(list_constraint_error(env, owner, value,
+                "this operation may mutate or expose constrained List storage; use a non-escaping read or an explicit copy"))
+    }
+    if constraint_weakened(env, value) {
+        return Result.Err(list_constraint_error(env, owner, value,
+                "constrained List storage cannot escape as an unrestricted List"))
+    }
+    index = 0
+    while index < length(value.children) {
+        let child = get(value.children, index)
+        discard list_constraint_expression(env, functions, owner,
+            if constraint_weakened(env, child) {
+                get(child.children, 0)
+            } else {
+                child
+            })?
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var item = 0
+        while item < length(arm.body) {
+            discard list_constraint_expression(env, functions, owner, get(arm.body, item))?
+            item = item + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn list_constraint_function(env Environment, functions List[Function], current Function) Result[Bool, Failure] {
+    if !env.has_refinements {
+        return Result.Ok(true)
+    }
+    discard list_constraint_expression(env, functions, current.symbol, current.body)?
+    var index = 0
+    while index < length(current.preconditions) {
+        discard list_constraint_expression(env, functions, current.symbol, get(current.preconditions, index))?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn list_constraint_functions(env Environment, functions List[Function]) Result[Bool, Failure] {
+    if !env.has_refinements {
+        return Result.Ok(true)
+    }
+    var index = 0
+    while index < length(functions) {
+        discard list_constraint_function(env, functions, get(functions, index))?
+        index = index + 1
+    }
+    Result.Ok(true)
+}

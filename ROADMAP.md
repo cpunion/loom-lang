@@ -236,8 +236,12 @@ range metadata supports persistent length constraints without isolating the
 source. Predicate effect analysis now distinguishes input aliases from fresh
 scratch through direct calls, known named callback targets, returns and loop/branch assignments. It also
 recognizes stable enum tags and inline payloads. General mutable-content
-invariants still need a preservation proof over all reachable writes; neither
-views nor fresh-scratch analysis claim to supply that proof.
+invariants still need a preservation proof over all reachable writes. An explicit
+isolation route now works for List-backed constraints with immutable elements:
+fresh literals or proved non-publishing factories establish the boundary, and
+inferred non-escaping reads/copies preserve it. Copies of constrained values share;
+unrestricted weakening and mutation reject. This read-only slice adds no implicit
+copy or runtime monitor and does not establish general write-preservation proofs.
 
 Each addition must work through the native CLI and its `std` tests. Required
 proofs remain mandatory even while the supported prover fragment grows. Exact
@@ -357,7 +361,7 @@ record refinement; aliases can mutate those siblings without invalidating the
 constraint. Whole-record predicate helpers can copy and forward shared handles;
 transitive read analysis checks their bodies and preconditions, including cycles.
 Supported helper conjuncts retain facts beside unsupported clauses. Proofs of
-helper loops/recursion and predicates over mutable contents remain open.
+helper loops/recursion and general mutation-preservation proofs remain open.
 See the [example](compiler/examples/invariant_contracts).
 
 Structural tuples, numeric projection, and nested let/var destructuring use the

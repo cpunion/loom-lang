@@ -80,7 +80,7 @@ test fn constrained_construction_and_propagation_have_explicit_ir() {
     let fixed = get(program.functions, 1)
     assert get(fixed.body.children, 0).kind == ExprKind.Coerce
     rejects_result("type Positive = Int where self > 0\nfn main() { discard Positive(0) }")
-    rejects_result("type Fixed = List[Int] where true\n")
+    rejects_result("type Fixed = List[List[Int]] where true\n")
     rejects_result("import std.result.Result\nfn wrong(input Result[Int, Int]) Result[Int, Text] { Result.Ok(input?) }")
     rejects_result("import std.result.Result\nfn wrong() Result[Int, Text] { Result.Ok(1?) }")
     rejects_result("import std.result.Result\nfn main() { discard Result.Ok[Int, Text](1)? }")

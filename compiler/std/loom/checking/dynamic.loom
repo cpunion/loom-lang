@@ -346,5 +346,6 @@ fn emit_functions_reusing(env Environment, retain Bool, bodies BodyReuse) Result
         more = activate_witnesses(env, retain)?
     }
     discard resource_functions(env, functions)?
+    discard list_constraint_functions(env, functions)?
     Result.Ok(functions)
 }

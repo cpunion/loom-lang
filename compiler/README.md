@@ -1525,7 +1525,7 @@ arguments retain these origins: every reachable target of the checked function
 shape is analyzed, including its preconditions and returned aliases. Input-supplied
 or captured callbacks stay opaque; their indirect calls involving input storage,
 and mutation that stores such aliases into scratch, conservatively reject. This analysis does
-not prove predicate truth or permit mutable-content invariants. See the
+not prove predicate truth or protect arbitrary existing mutable aliases. See the
 [effect example](examples/record_refinement/effects.loom).
 The [callback example](examples/record_refinement/callbacks.loom) uses ordinary
 higher-order helpers at the same checked construction boundary.
@@ -1539,7 +1539,36 @@ return directly when compile-time evaluation establishes its predicate; a false
 constant is a diagnostic. Unknown inputs, calls, and failed optional evaluation
 retain the `Result` boundary.
 See the [record refinement example](examples/record_refinement/main.loom).
-This does not yet establish invariants over mutable List lengths or contents.
+
+List-backed constraints can observe lengths and contents when their element
+values are immutable scalars, Text, or inline records/tuples/enums. Construction
+must use a fresh List literal or a pure factory proved not to return or publish
+input aliases. Explicit source `std.list.clone` is one such factory, not a
+compiler-recognized public name:
+
+```loom
+type PositiveValues = List[Int] where all_positive(self)
+
+fn checked_copy(values List[Int]) Result[PositiveValues, ConstraintError] {
+    PositiveValues(clone(values))
+}
+```
+
+Here `all_positive` is an ordinary pure function; see the complete
+[List constraint example](examples/record_refinement/lists.loom). A proved
+literal returns `PositiveValues` directly; other inputs keep the checked Result
+boundary. `PositiveValues(existing_list)` rejects: construction cannot silently
+change that List's existing writable aliases. No automatic copy or runtime
+monitor is installed. Copies of a constrained value keep sharing its storage.
+
+The current capability is read-only. Indexing, ordinary non-escaping read helpers
+and explicit copies are allowed; mutation, returning a raw List alias, publishing
+it in another aggregate and unknown effects reject at compile time. Factories
+and borrows are checked through helper bodies, not trusted annotations. These
+rules also run for compile-time code and unused concrete functions. The constrained
+List has the ordinary native List layout and survives moving GC and Task handoff.
+Automatically proving that selected writes preserve an arbitrary predicate,
+and strengthening pre-existing writable aliases, remain later analysis work.
 
 An explicit conversion between Int refinements can also return the destination
 directly when the source predicate proves the destination predicate, including

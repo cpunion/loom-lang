@@ -30,10 +30,21 @@ fn inline_constraint_base(env Environment, ty Int, depth Int) Bool {
     if shape.kind == TypeKind.Refined {
         return get(env.type_states, ty).phase == 2 && inline_constraint_base(env, get(shape.fields, 0).ty, depth + 1)
     }
-    if shape.kind != TypeKind.Record || get(env.type_states, ty).phase != 2 { return false }
+    if (shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple && shape.kind != TypeKind.Enum) ||
+        get(env.type_states, ty).phase != 2 { return false }
     var index = 0
     while index < length(shape.fields) {
         if !inline_constraint_base(env, get(shape.fields, index).ty, depth + 1) { return false }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if !inline_constraint_base(env, get(fields, field), depth + 1) { return false }
+            field = field + 1
+        }
         index = index + 1
     }
     true
@@ -260,9 +271,12 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     if kind == TypeKind.Refined {
         let base = resolve_bound(env, declaration, child(item.node, type_part(item.node)), arguments, obligations, depth + 1)?
         let base_kind = get(env.types, base).kind
-        if length(arguments) != 0 || (base != 1 && base != 5 && base_kind != TypeKind.Record) {
+        if length(arguments) != 0 || (base != 1 && base != 5 && base_kind != TypeKind.Record && base_kind != TypeKind.List) {
             return Result.Err(failure(env, declaration, item.node,
-                "constraints require Int, Float or a record base"))
+                "constraints require Int, Float, a record or a List base"))
+        }
+        if base_kind == TypeKind.List && !inline_constraint_base(env, get(get(env.types, base).arguments, 0), 0) {
+            return Result.Err(failure(env, declaration, item.node, "List constraints require immutable inline elements"))
         }
         push(fields, Field { name = "self" ty = base })
         // Predicates are validated after every function signature is available.
