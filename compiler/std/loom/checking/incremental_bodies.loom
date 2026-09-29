@@ -3,7 +3,12 @@
 record BodyTarget {
     symbol Int
     arguments List[Int]
-    ordinary Bool
+    constants List[BodyConstant]
+}
+
+record BodyConstant {
+    value StaticValue
+    stored List[Value]
 }
 
 record BodyBasis {
@@ -136,13 +141,17 @@ fn body_symbol(reuse BodyReuse, previous Int) Int {
 }
 
 fn body_type_supported(reuse BodyReuse, ty Int, seen List[Int]) Bool {
+    body_type_shape_supported(reuse, ty, seen, false)
+}
+
+fn body_type_shape_supported(reuse BodyReuse, ty Int, seen List[Int], stored Bool) Bool {
     if resource_seen(seen, ty) {
         return true
     }
     push(seen, ty)
     let shape = get(get(reuse.prior, 0).types, ty)
     let kind = shape.kind
-    if kind == TypeKind.Parameter || kind == TypeKind.Associated || kind == TypeKind.Meta ||
+    if kind == TypeKind.Parameter || kind == TypeKind.Associated || (kind == TypeKind.Meta && !stored) ||
     kind == TypeKind.Dyn || kind == TypeKind.Task || kind == TypeKind.Frame {
         return false
     }
@@ -151,14 +160,14 @@ fn body_type_supported(reuse BodyReuse, ty Int, seen List[Int]) Bool {
     }
     var index = 0
     while index < length(shape.arguments) {
-        if !body_type_supported(reuse, get(shape.arguments, index), seen) {
+        if !body_type_shape_supported(reuse, get(shape.arguments, index), seen, stored) {
             return false
         }
         index = index + 1
     }
     index = 0
     while index < length(shape.fields) {
-        if !body_type_supported(reuse, get(shape.fields, index).ty, seen) {
+        if !body_type_shape_supported(reuse, get(shape.fields, index).ty, seen, stored) {
             return false
         }
         index = index + 1
@@ -168,7 +177,7 @@ fn body_type_supported(reuse BodyReuse, ty Int, seen List[Int]) Bool {
         let fields = get(shape.variants, index).fields
         var field = 0
         while field < length(fields) {
-            if !body_type_supported(reuse, get(fields, field), seen) {
+            if !body_type_shape_supported(reuse, get(fields, field), seen, stored) {
                 return false
             }
             field = field + 1
@@ -178,16 +187,11 @@ fn body_type_supported(reuse BodyReuse, ty Int, seen List[Int]) Bool {
     true
 }
 
-fn body_target_supported(reuse BodyReuse, target Int, seen List[Int]) Bool {
-    let targets = get(reuse.prior, 0).targets
-    if target < 0 || target >= length(targets) {
+fn body_source_supported(reuse BodyReuse, previous Int) Bool {
+    let owner = body_symbol(reuse, previous)
+    if owner < 0 {
         return false
     }
-    let instance = get(targets, target)
-    if !instance.ordinary || body_symbol(reuse, instance.symbol) < 0 {
-        return false
-    }
-    let owner = body_symbol(reuse, instance.symbol)
     // Include elaboration-introduced edges (indexing, implicit constructors,
     // function references), not only names visible in the original AST.
     if owner >= length(reuse.allowed) || !get(reuse.allowed, owner) {
@@ -200,6 +204,18 @@ fn body_target_supported(reuse BodyReuse, target Int, seen List[Int]) Bool {
         Option.None => {
         }
     }
+    true
+}
+
+fn body_target_supported(reuse BodyReuse, target Int, seen List[Int]) Bool {
+    let targets = get(reuse.prior, 0).targets
+    if target < 0 || target >= length(targets) {
+        return false
+    }
+    let instance = get(targets, target)
+    if !body_source_supported(reuse, instance.symbol) {
+        return false
+    }
     var index = 0
     while index < length(instance.arguments) {
         if !body_type_supported(reuse, get(instance.arguments, index), seen) {
@@ -207,7 +223,7 @@ fn body_target_supported(reuse BodyReuse, target Int, seen List[Int]) Bool {
         }
         index = index + 1
     }
-    true
+    body_constants_supported(reuse, instance.constants, seen)
 }
 
 fn body_expression_supported(reuse BodyReuse, value Expr, span Span, seen List[Int]) Bool {
@@ -320,7 +336,7 @@ fn body_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure
     var index = 0
     while index < length(env.signatures) {
         if get(env.signatures, index).symbol == owner {
-            return schedule(env, index, body_types(env, reuse, prior.arguments)?, new[StaticValue](), symbol(env, owner).node)
+            return schedule(env, index, body_types(env, reuse, prior.arguments)?, body_constants(env, reuse, prior.constants, owner)?, symbol(env, owner).node)
         }
         index = index + 1
     }
@@ -387,7 +403,7 @@ fn body_expressions(env Environment, reuse BodyReuse, values List[Expr], owner I
 }
 
 fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option[Function], Failure] {
-    if length(reuse.prior) == 0 || instance.signature < 0 || length(instance.constants) != 0 {
+    if length(reuse.prior) == 0 || instance.signature < 0 {
         return Result.Ok(Option.None)
     }
     let owner = get(env.signatures, instance.signature).symbol
@@ -407,10 +423,12 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
         let candidate = get(candidates, index)
         let value = get(prior.functions, candidate)
         let target = get(prior.targets, candidate)
-        if value.symbol >= 0 && body_symbol(reuse, value.symbol) == owner && target.ordinary &&
+        if value.symbol >= 0 && body_symbol(reuse, value.symbol) == owner &&
         (std.loom.ast.has(current.node, NodeKind.ExpansionId) ||
             (current.text != "" && current.text == get(prior.definitions.entries, value.symbol).text)) && body_supported(reuse, value) &&
-        same(body_types(env, reuse, value.arguments)?, instance.arguments) {
+        same(body_types(env, reuse, value.arguments)?, instance.arguments) &&
+        body_constants_supported(reuse, target.constants, new[Int]()) &&
+        same_constants(body_constants(env, reuse, target.constants, owner)?, instance.constants) {
             let offset = current.span.start - value.span.start
             let locals = new[Local]()
             var local = 0

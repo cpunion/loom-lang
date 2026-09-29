@@ -30,6 +30,78 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn staged_instances_persist_with_current_types_targets_and_constant_values() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+record Setting {
+    delta Int
+    metadata (Text, type)
+}
+fn increment(item Int) Int {
+    item + 1
+}
+fn compute(comptime setting Setting, comptime op fn(Int) Int, item Int) Int {
+    op(item) + comptime {
+        setting.delta
+    }
+}
+fn choose(comptime enabled Bool, item Int) Int {
+    comptime if enabled {
+        item + 1
+    } else {
+        item
+    }
+}
+fn floating(comptime item Float) Float {
+    item
+}
+fn main() {
+    assert compute(Setting {
+            delta = 2
+            metadata = ("first", Int)
+        }, increment, 5) == 8
+    assert compute(Setting {
+            delta = 4
+            metadata = ("second", Text)
+        }, increment, 5) == 10
+    assert choose(true, 1) == 2 && choose(false, 1) == 1
+    assert 1.0 / floating(0.0) > 0.0
+    assert 1.0 / floating(-0.0) < 0.0
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(
+        &path,
+        format!("fn unused(item List[Bool]) List[Bool] {{ item }}\n{source}"),
+    )
+    .unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(trace.contains(", bodies reused 8"), "{trace}");
+    let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
+    success(&fresh);
+    assert_eq!(reused.stdout, fresh.stdout);
+    checked(&cached("run", &package, &cache, &[]), true);
+
+    // Same declaration, different instance key: the old specialized body must
+    // not survive a changed aggregate constant just because its source matches.
+    fs::write(
+        &path,
+        source
+            .replace("delta = 2", "delta = 7")
+            .replace("== 8", "== 13"),
+    )
+    .unwrap();
+    checked(&cached("run", &package, &cache, &[]), false);
+}
+
+#[test]
 fn generated_definitions_persist_across_processes_without_reusing_old_output() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

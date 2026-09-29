@@ -49,22 +49,25 @@ fn static_storage_budget(env Environment, ty Int, depth Int, budget Int) Int {
     remaining
 }
 
-fn static_key_part(context Context, node Node, parts List[Text], budget List[Int], text Text) Result[Bool, Failure] {
+fn static_key_part(parts List[Text], budget List[Int], text Text) Result[Bool, Text] {
     if std.text.length(text) > get(budget, 1) {
-        return Result.Err(error(context, node, "comptime argument key size exhausted"))
+        return Result.Err("comptime argument key size exhausted")
     }
     set(budget, 1, get(budget, 1) - std.text.length(text))
     push(parts, text)
     Result.Ok(true)
 }
 
-fn static_key_value(context Context, node Node, value Value, parts List[Text], budget List[Int], depth Int) Result[Bool, Failure] {
+fn static_key_value(types List[Type], value Value, parts List[Text], budget List[Int], depth Int) Result[Bool, Text] {
     if depth >= 256 || get(budget, 0) == 0 {
-        return Result.Err(error(context, node, "comptime argument key expansion exhausted"))
+        return Result.Err("comptime argument key expansion exhausted")
     }
     set(budget, 0, get(budget, 0) - 1)
-    let kind = get(context.env.types, value.ty).kind
-    let base = base_type(context.env, value.ty)
+    let kind = get(types, value.ty).kind
+    var base = value.ty
+    while get(types, base).kind == TypeKind.Refined {
+        base = get(get(types, base).fields, 0).ty
+    }
     let scalar = if base == 1 || base == 2 || kind == TypeKind.Meta {
         std.int.to_text(value.number)
     } else if base == 5 {
@@ -76,28 +79,35 @@ fn static_key_value(context Context, node Node, value Value, parts List[Text], b
     }
     // Type IDs belong only to this check. Tags distinguish enum variants;
     // length framing preserves arbitrary Text, including NUL and delimiters.
-    discard static_key_part(context, node, parts, budget, concat(std.int.to_text(value.ty), "/"))?
-    discard static_key_part(context, node, parts, budget, concat(std.int.to_text(if kind == TypeKind.Enum {
+    discard static_key_part(parts, budget, concat(std.int.to_text(value.ty), "/"))?
+    discard static_key_part(parts, budget, concat(std.int.to_text(if kind == TypeKind.Enum {
                     value.number
                 } else {
                     0
                 }), "/"))?
-    discard static_key_part(context, node, parts, budget, concat(std.int.to_text(std.text.length(scalar)), ":"))?
-    discard static_key_part(context, node, parts, budget, scalar)?
-    discard static_key_part(context, node, parts, budget, concat("/", concat(std.int.to_text(length(value.items)), ";")))?
+    discard static_key_part(parts, budget, concat(std.int.to_text(std.text.length(scalar)), ":"))?
+    discard static_key_part(parts, budget, scalar)?
+    discard static_key_part(parts, budget, concat("/", concat(std.int.to_text(length(value.items)), ";")))?
     var index = 0
     while index < length(value.items) {
-        discard static_key_value(context, node, get(value.items, index), parts, budget, depth + 1)?
+        discard static_key_value(types, get(value.items, index), parts, budget, depth + 1)?
         index = index + 1
     }
     Result.Ok(true)
 }
 
-fn static_value_key(context Context, node Node, value Value) Result[Text, Failure] {
+fn stored_value_key(types List[Type], value Value) Result[Text, Text] {
     let parts = new[Text]()
     let budget = new[Int]()
     push(budget, 100000)
     push(budget, 16777216)
-    discard static_key_value(context, node, value, parts, budget, 0)?
+    discard static_key_value(types, value, parts, budget, 0)?
     Result.Ok(std.text.join(parts, ""))
+}
+
+fn static_value_key(context Context, node Node, value Value) Result[Text, Failure] {
+    match stored_value_key(context.env.types, value) {
+        Result.Ok(key) => Result.Ok(key)
+        Result.Err(message) => Result.Err(error(context, node, message))
+    }
 }

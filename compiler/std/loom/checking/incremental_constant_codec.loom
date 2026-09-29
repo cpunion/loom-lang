@@ -1,0 +1,94 @@
+fn cache_value(output Bytes, value Value, depth Int) Result[Bool, Text] {
+    if depth >= 256 {
+        return Result.Err("cached constant is too deep")
+    }
+    cache_int(output, value.ty)
+    cache_int(output, value.number)
+    cache_text(output, std.float.to_text(value.floating))
+    cache_text(output, value.text)
+    cache_int(output, length(value.items))
+    var index = 0
+    while index < length(value.items) {
+        discard cache_value(output, get(value.items, index), depth + 1)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn cache_read_value(reader CacheReader, depth Int) Result[Value, Text] {
+    if depth >= 256 {
+        return Result.Err("cached constant is too deep")
+    }
+    let ty = cache_read_int(reader)?
+    let number = cache_read_int(reader)?
+    let floating = match std.float.parse(cache_read_text(reader)?) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("invalid cached floating value")
+        }
+    }
+    let text = cache_read_text(reader)?
+    let count = cache_read_count(reader)?
+    let items = new[Value]()
+    var index = 0
+    while index < count {
+        push(items, cache_read_value(reader, depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(Value {
+            ty = ty
+            number = number
+            floating = floating
+            text = text
+            items = items
+        })
+}
+
+fn cache_constants(output Bytes, values List[BodyConstant]) Result[Bool, Text] {
+    cache_int(output, length(values))
+    var index = 0
+    while index < length(values) {
+        let saved = get(values, index)
+        let value = saved.value
+        cache_int(output, value.ty)
+        cache_bool(output, value.known)
+        cache_int(output, value.number)
+        cache_text(output, value.text)
+        cache_ints(output, value.arguments)
+        cache_int(output, value.storage)
+        if value.storage == -2 {
+            discard cache_value(output, get(saved.stored, 0), 0)?
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn cache_read_constants(reader CacheReader) Result[List[BodyConstant], Text] {
+    let count = cache_read_count(reader)?
+    let values = new[BodyConstant]()
+    var index = 0
+    while index < count {
+        let value = StaticValue {
+            ty = cache_read_int(reader)?
+            known = cache_read_bool(reader)?
+            number = cache_read_int(reader)?
+            text = cache_read_text(reader)?
+            arguments = cache_read_ints(reader)?
+            storage = cache_read_int(reader)?
+        }
+        if value.storage < -2 || value.storage > 0 {
+            return Result.Err("invalid cached constant storage")
+        }
+        let stored = new[Value]()
+        if value.storage == -2 {
+            push(stored, cache_read_value(reader, 0)?)
+        }
+        push(values, BodyConstant {
+                value = value
+                stored = stored
+            })
+        index = index + 1
+    }
+    Result.Ok(values)
+}

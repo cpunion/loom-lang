@@ -318,10 +318,14 @@ in-memory validation evidence. Pass it to
 and a checked `program`; `definitions_reused(cache)` counts reused abstract
 function checks and `bodies_reused(cache)` counts reused concrete bodies.
 Body edits invalidate transitive callers; declaration/import
-changes and changed invariant helpers recheck conservatively. Staged, async,
-resource, closure and variadic definitions are not reused. Only successful checks
+changes and changed invariant helpers recheck conservatively. Syntax-producing
+macros, async, resource, closure and variadic definitions are not reused. Only successful checks
 replace the saved basis. Concrete reuse covers ordinary scalar, aggregate,
-List and generic bodies with unchanged source text. It rekeys nominal types,
+List, generic and compile-time-specialized bodies with unchanged source text.
+Static instance keys retain detached immutable values; types, named callbacks and
+aggregate keys are rebuilt in the current check. Pure compile-time expressions
+participate in dependency invalidation even when evaluation erases their calls.
+It rekeys nominal types,
 call/function-reference targets and source spans against fresh bindings; assertion
 messages use current paths and positions. Elaboration-introduced call edges also
 participate in invalidation. Unsupported bodies recheck normally. Evidence is

@@ -1,6 +1,100 @@
 import std.text.join
 import std.text.split
 
+test fn staged_instances_rekey_constants_and_keep_specializations_distinct() {
+    let source = """
+        record Plan {
+            enabled Bool
+            step Int
+            label Text
+            pair (Float, type)
+        }
+        fn increment(item Int) Int {
+            item + 1
+        }
+        fn choose(comptime plan Plan, comptime callback fn(Int) Int, item Int) Int {
+            comptime if plan.enabled {
+                callback(item) + comptime {
+                    plan.step
+                }
+            } else {
+                item
+            }
+        }
+        fn label(comptime text Text) Text {
+            text
+        }
+        fn zero(comptime value Float) Float {
+            value
+        }
+        pub fn answer() Int {
+            let a = choose(Plan {
+                    enabled = true
+                    step = 2
+                    label = "first"
+                    pair = (0.0, Int)
+                }, increment, 4)
+            let b = choose(Plan {
+                    enabled = false
+                    step = 9
+                    label = "second"
+                    pair = (-0.0, Text)
+                }, increment, 10)
+            assert label("a") != label("b")
+            assert zero(0.0) == zero(-0.0)
+            a + b
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let cache = restored_definition_cache(initial)
+    assert match cached_source(cache, concat("fn unused(value List[Bool]) List[Bool] { value }\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    assert bodies_reused(cache) >= 8
+    discard restored_definition_cache(cache)
+}
+
+test fn changed_erased_comptime_helpers_revoke_required_proofs() {
+    let source = """
+        fn value() Int {
+            7
+        }
+        pub fn answer() Int
+        ensures result == 7
+        {
+            comptime {
+                value()
+            }
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    assert match cached_source(cache, concat("fn unrelated() Bool { true }\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(cache) >= 1
+    assert match cached_source(cache, join(split(source, "\n    7\n"), "\n    8\n")) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
 fn restored_definition_cache(cache DefinitionCache) DefinitionCache {
     let text = match export_definition_cache(cache) {
         Result.Ok(value) => value
