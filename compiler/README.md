@@ -441,6 +441,20 @@ bodies. Initial misses, alternating sample order, time, peak RSS and reuse count
 are recorded separately. This isolates a local edit; it does not represent a
 public API change. Snapshot I/O and copying can outweigh saved checking, especially
 for small programs; a positive reuse count alone is not evidence of a speedup.
+
+The [2026-09-30 edit baseline](../benchmarks/compiler/results/2026-09-30-macos-arm64-source-edits.json)
+found that snapshot overhead still outweighed reuse on these workloads:
+
+| Edited package | Uncached check | Incremental check |
+| --- | ---: | ---: |
+| Scalar example | 8.56 ms | 32.51 ms |
+| Compiler | 1,850.45 ms | 2,462.01 ms |
+| 200 generated helpers | 32.32 ms | 85.50 ms |
+
+The compiler case reused 1,588 definition checks and 2,582 bodies, but peak RSS
+grew from 822 MiB to 2,485 MiB. These are three-sample macOS arm64 medians with
+warm OS caches, not a claim that disk reuse improves edit latency. The default
+uncached path is unaffected; snapshot overhead remains an optimization target.
 Tracked files, explicit options and observed target properties bind both levels
 of reuse. Backend objects are still whole-closure, not per-definition. Ordinary
 compile-time execution cannot read arbitrary I/O.
