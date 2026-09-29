@@ -6,7 +6,9 @@ conservative local/private-function rename, import quick fixes, and document
 formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
 Loom. A resident compiler reuses unchanged checked snapshots for diagnostics,
-hover and navigation, and unchanged ordinary definition checks after edits.
+hover and navigation, and unchanged ordinary checks and concrete bodies after edits.
+Replacing or rebuilding the compiler restarts its worker on the next request;
+queued requests remain serialized and cancellation still retires only that worker.
 Public/API rename and persistent per-definition IR reuse are not implemented.
 
 ## Try it
