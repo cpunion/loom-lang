@@ -104,7 +104,7 @@ async fn main() {
     let column = text.find("callback(-7)").unwrap() + 1;
     let diagnostic = format!(
         "{}:{}:{column}: task created here",
-        path.display(),
+        path.canonicalize().unwrap().display(),
         line + 1
     );
     let stderr = String::from_utf8_lossy(&failed.stderr);
