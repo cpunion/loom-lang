@@ -1,0 +1,110 @@
+import std.net.tcp.Stream
+import std.net.tcp.TcpError
+import std.net.tcp.listen
+import std.net.tcp.accept
+import std.net.tcp.connect
+import std.net.tcp.local_address
+import std.net.tcp.peer_address
+import std.net.tcp.local_port
+import std.net.tcp.set_nodelay
+import std.net.tcp.shutdown_write
+import std.net.tcp.close_listener
+import std.net.tcp.close_stream
+import std.net.tcp.read
+import std.net.tcp.write_bytes
+import std.bytes.new
+import std.bytes.to_text
+import std.text.to_bytes
+import std.result.Result
+import std.io.write_text
+
+async fn read_to_end(stream Stream) Result[Bytes, TcpError] {
+    let bytes = new()
+    while read(stream, bytes, 1024).await? > 0 {
+    }
+    Result.Ok(bytes)
+}
+
+async fn respond(stream Stream) Result[Int, TcpError] {
+    let request = read_to_end(stream).await?
+    assert to_text(request) == "request"
+    let count = write_bytes(stream, to_bytes("response")).await?
+    discard shutdown_write(stream)?
+    Result.Ok(count)
+}
+
+async fn exchange() Result[Int, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let listening = local_address(listener)?
+    let client = connect(listening).await?
+    defer {
+        discard close_stream(client)
+    }
+    let server = accept(listener).await?
+    defer {
+        discard close_stream(server)
+    }
+    assert local_address(server)? == listening
+    assert peer_address(client)? == listening
+    assert peer_address(server)? == local_address(client)?
+    assert local_port(server)? == local_port(listener)?
+    discard set_nodelay(client, true)?
+    discard set_nodelay(client, false)?
+    discard set_nodelay(server, true)?
+
+    let serving = respond(server)
+    let response = read_to_end(client)
+    assert match write_bytes(client, to_bytes("request")).await {
+        Result.Ok(count) => count == 7
+        Result.Err(_) => false
+    }
+    // The response reader may already be waiting. Signal request EOF without
+    // revoking the socket or any read lease.
+    assert match shutdown_write(client) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let received = response.await
+    let sent = serving.await
+    assert to_text(received?) == "response"
+    discard sent?
+
+    // Revocation still invalidates all copied wrappers after both waits drain.
+    let alias = client
+    discard close_stream(client)?
+    assert match local_address(alias) {
+        Result.Err(error) => error == TcpError.Address
+        Result.Ok(_) => false
+    }
+    assert match peer_address(alias) {
+        Result.Err(error) => error == TcpError.Address
+        Result.Ok(_) => false
+    }
+    assert match set_nodelay(alias, true) {
+        Result.Err(error) => error == TcpError.Option
+        Result.Ok(_) => false
+    }
+    assert match shutdown_write(alias) {
+        Result.Err(error) => error == TcpError.Shutdown
+        Result.Ok(_) => false
+    }
+    Result.Ok(8)
+}
+
+async fn main() {
+    assert match exchange().await {
+        Result.Ok(count) => count == 8
+        Result.Err(_) => false
+    }
+    discard write_text("half-close roundtrip\n")
+}
+
+test async fn eof_delimits_a_request_without_closing_its_response_channel() {
+    assert match exchange().await {
+        Result.Ok(count) => count == 8
+        Result.Err(_) => false
+    }
+}

@@ -28,6 +28,9 @@ pub enum TcpError {
     Read
     Write
     Close
+    Address
+    Option
+    Shutdown
 }
 
 intrinsic fn socket_listen(address Text) Int
@@ -38,11 +41,17 @@ intrinsic fn socket_connect_status(token Int) Int
 
 intrinsic fn socket_local_port(token Int) Int
 
+intrinsic fn socket_address(token Int, peer Int) Text
+
+intrinsic fn socket_set_nodelay(token Int, enabled Int) Int
+
+intrinsic fn socket_shutdown_write(token Int) Int
+
 intrinsic fn socket_accept(token Int) Int
 
 intrinsic fn socket_read(token Int, buffer Bytes, limit Int) Int
 
-intrinsic fn socket_write_bytes(token Int, value Bytes, offset Int) Int
+intrinsic fn socket_write_bytes(token Int, value Bytes, offset Int, end Int) Int
 
 intrinsic fn socket_close(token Int) Int
 
@@ -123,6 +132,56 @@ pub fn local_port(listener Listener) Result[Int, TcpError] {
     Result.Ok(port)
 }
 
+pub fn local_port(stream Stream) Result[Int, TcpError] {
+    let port = socket_local_port(stream.state.token)
+    if port < 0 {
+        return Result.Err(TcpError.Port)
+    }
+    Result.Ok(port)
+}
+
+fn address(token Int, peer Int) Result[Text, TcpError] {
+    let value = socket_address(token, peer)
+    if value == "" {
+        return Result.Err(TcpError.Address)
+    }
+    Result.Ok(value)
+}
+
+// Numeric endpoints: IPv4 host:port or bracketed IPv6 [host]:port. No DNS.
+pub fn local_address(listener Listener) Result[Text, TcpError] {
+    address(listener.state.token, 0)
+}
+
+pub fn local_address(stream Stream) Result[Text, TcpError] {
+    address(stream.state.token, 0)
+}
+
+pub fn peer_address(stream Stream) Result[Text, TcpError] {
+    address(stream.state.token, 1)
+}
+
+pub fn set_nodelay(stream Stream, enabled Bool) Result[Int, TcpError] {
+    if socket_set_nodelay(stream.state.token, if enabled {
+            1
+        } else {
+            0
+        }) < 0 {
+        return Result.Err(TcpError.Option)
+    }
+    Result.Ok(0)
+}
+
+// Ends only sending; reads and their registrations remain valid. Pending or
+// subsequent writes may fail, so finish intended writes before this operation.
+// This does not close/revoke the token. Close after all child waits have drained.
+pub fn shutdown_write(stream Stream) Result[Int, TcpError] {
+    if socket_shutdown_write(stream.state.token) < 0 {
+        return Result.Err(TcpError.Shutdown)
+    }
+    Result.Ok(0)
+}
+
 pub async fn accept(listener Listener) Result[Stream, TcpError] {
     while true {
         let token = socket_accept(listener.state.token)
@@ -164,7 +223,7 @@ pub async fn write_bytes(stream Stream, value Bytes) Result[Int, TcpError] {
     let size = length(value)
     var offset = 0
     while offset < size {
-        let count = socket_write_bytes(stream.state.token, value, offset)
+        let count = socket_write_bytes(stream.state.token, value, offset, size)
         if count == -2 {
             socket_wait(stream.state.token, 2).await
         } else {

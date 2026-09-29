@@ -170,8 +170,11 @@ capture are implemented; blocking I/O uses bounded native workers with copied na
 not managed pointers. Cancellation of a running OS call waits for completion.
 Process capture adds native pipe-drain threads and unbounded output buffering;
 cancellation reaps the direct child without terminating process trees.
-TLS, general workers, broader socket policy and parallel Loom execution are not
-implemented. See [Tasks and I/O](../../compiler/README.md#source-tasks).
+TCP exposes numeric local/peer endpoints, TCP_NODELAY and write half-close,
+preserving pending receive registrations for EOF-delimited exchanges. Text-to-Bytes
+encoding is source-library policy and returns an independent buffer.
+TLS, general workers, broader socket options/address racing and parallel Loom
+execution are not implemented. See [Tasks and I/O](../../compiler/README.md#source-tasks).
 
 ## Modules, caching and performance
 

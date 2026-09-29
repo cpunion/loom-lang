@@ -114,6 +114,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::CleanupEach
         | Primitive::Read
         | Primitive::SocketRead
+        | Primitive::SocketAddress
         | Primitive::DirectoryRead
         | Primitive::PathCanonical => true,
         Primitive::TaskFailure
@@ -180,6 +181,8 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::SocketWriteBytes
         | Primitive::SocketClose
         | Primitive::SocketLocalPort
+        | Primitive::SocketSetNodelay
+        | Primitive::SocketShutdownWrite
         | Primitive::PathKind
         | Primitive::DirectoryCreate
         | Primitive::PathRename

@@ -149,11 +149,22 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "socket_listen" || name == "socket_connect" {
         return runtime(0, ints(3), 1)
     }
-    if name == "socket_accept" || name == "socket_connect_status" || name == "socket_close" || name == "socket_local_port" {
+    if name == "socket_accept" || name == "socket_connect_status" || name == "socket_close" || name == "socket_local_port" || name == "socket_shutdown_write" {
         return runtime(0, ints(1), 1)
     }
-    if name == "socket_read" || name == "socket_write_bytes" {
+    if name == "socket_address" {
+        return runtime(0, two_types(1, 1), 3)
+    }
+    if name == "socket_set_nodelay" {
+        return runtime(0, two_types(1, 1), 1)
+    }
+    if name == "socket_read" {
         return runtime(0, three_types(1, 4, 1), 1)
+    }
+    if name == "socket_write_bytes" {
+        let arguments = three_types(1, 4, 1)
+        push(arguments, 1)
+        return runtime(0, arguments, 1)
     }
     if name == "task_next" {
         return runtime(0, new[Int](), 1)

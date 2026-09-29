@@ -1,0 +1,40 @@
+import std.bytes.push
+import std.bytes.new
+import std.bytes.length
+import std.bytes.to_text
+import std.text.to_bytes
+
+async fn bounded_write_fixture() Result[Int, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let client = connect(local_address(listener)?).await?
+    defer {
+        discard close_stream(client)
+    }
+    let server = accept(listener).await?
+    defer {
+        discard close_stream(server)
+    }
+    let bytes = to_bytes("abc")
+    let end = length(bytes)
+    push(bytes, 100)
+    assert socket_write_bytes(client.state.token, bytes, -1, end) == -1
+    assert socket_write_bytes(client.state.token, bytes, end, 0) == -1
+    assert socket_write_bytes(client.state.token, bytes, 0, 5) == -1
+    assert socket_write_bytes(client.state.token, bytes, 0, end) == 3
+    discard shutdown_write(client)?
+    let incoming = new()
+    while read(server, incoming, 16).await? > 0 {
+    }
+    assert to_text(incoming) == "abc"
+    Result.Ok(length(incoming))
+}
+
+test async fn retries_keep_the_initial_write_end_after_alias_append() {
+    assert match bounded_write_fixture().await {
+        Result.Ok(count) => count == 3
+        Result.Err(_) => false
+    }
+}

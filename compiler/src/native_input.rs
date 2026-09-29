@@ -1066,9 +1066,15 @@ impl Converter<'_> {
                     Primitive::SocketAccept
                     | Primitive::SocketConnectStatus
                     | Primitive::SocketClose
+                    | Primitive::SocketShutdownWrite
                     | Primitive::SocketLocalPort => Some((&[Type::Int], Type::Int)),
-                    Primitive::SocketRead | Primitive::SocketWriteBytes => {
+                    Primitive::SocketAddress => Some((&[Type::Int, Type::Int], Type::Text)),
+                    Primitive::SocketSetNodelay => Some((&[Type::Int, Type::Int], Type::Int)),
+                    Primitive::SocketRead => {
                         Some((&[Type::Int, Type::Bytes, Type::Int], Type::Int))
+                    }
+                    Primitive::SocketWriteBytes => {
+                        Some((&[Type::Int, Type::Bytes, Type::Int, Type::Int], Type::Int))
                     }
                     Primitive::DirectoryCreate
                     | Primitive::FileRemove
@@ -1420,6 +1426,9 @@ fn primitive(value: &str) -> Result<Primitive> {
         "socket_write_bytes" => P::SocketWriteBytes,
         "socket_close" => P::SocketClose,
         "socket_local_port" => P::SocketLocalPort,
+        "socket_address" => P::SocketAddress,
+        "socket_set_nodelay" => P::SocketSetNodelay,
+        "socket_shutdown_write" => P::SocketShutdownWrite,
         "directory_read" => P::DirectoryRead,
         "path_kind" => P::PathKind,
         "path_canonical" => P::PathCanonical,
@@ -1506,6 +1515,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::SocketAccept
         | P::SocketClose
         | P::SocketLocalPort
+        | P::SocketShutdownWrite
         | P::PathKind
         | P::DirectoryCreate
         | P::FileRemove
@@ -1543,6 +1553,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskWaitFileOpen
         | P::TaskWaitSocket
         | P::PathRename => 2,
+        P::SocketAddress | P::SocketSetNodelay => 2,
         P::TextSlice
         | P::BytesSet
         | P::ListSet
@@ -1550,12 +1561,11 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::Write
         | P::WriteBytes
         | P::SocketRead
-        | P::SocketWriteBytes
         | P::TaskWaitFileWrite
         | P::TaskWaitFileWriteBytes
         | P::TaskCreate
         | P::CleanupEach => 3,
-        P::ListRetainRange => 4,
+        P::ListRetainRange | P::SocketWriteBytes => 4,
         P::TaskWaitProcessCapture => 5,
         P::ProcessCaptureConfigured => 6,
         P::ProcessCaptureInputConfigured => 7,
