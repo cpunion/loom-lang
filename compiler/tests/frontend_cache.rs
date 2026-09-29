@@ -30,6 +30,70 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn generated_definitions_persist_across_processes_without_reusing_old_output() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let generation = package.join("generated.loom");
+    let generated = r#"
+comptime {
+    """
+    fn generated(item Int) Int {
+        item + 1
+    }
+    """
+}
+"#;
+    fs::write(&generation, generated).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+fn answer() Int
+ensures result == 8
+{
+    generated(7)
+}
+fn main() {
+    assert answer() == 8
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(&path, format!("fn unrelated() Int {{ 1 }}\n{source}")).unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(
+        trace.contains("definitions reused 3, bodies reused 3"),
+        "{trace}"
+    );
+    let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
+    success(&fresh);
+    assert_eq!(reused.stdout, fresh.stdout);
+    checked(&cached("run", &package, &cache, &[]), true);
+    // The generating block grows, but its first definition is unchanged. Reuse
+    // that body with the current block extent, not the old source-text interval.
+    let extended = generated.replace(
+        "item + 1\n    }",
+        "item + 1\n    }\n    fn extra_generated() Int { 1 }",
+    );
+    fs::write(&generation, &extended).unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(trace.contains(", bodies reused 3"), "{trace}");
+    let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
+    success(&fresh);
+    assert_eq!(reused.stdout, fresh.stdout);
+    fs::write(&generation, generated.replace("item + 1", "item + 2")).unwrap();
+    assert!(
+        !cached("emit-checked", &package, &cache, &[])
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn changed_sources_reuse_persisted_definitions_and_rekey_native_bodies() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

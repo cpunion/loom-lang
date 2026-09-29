@@ -26,6 +26,7 @@ record DefinitionCacheState {
 record DefinitionBasis {
     project Project
     source Project
+    original List[Project]
     tests Bool
     entries List[DefinitionEntry]
     reusable List[Bool]
@@ -163,6 +164,7 @@ fn definition_basis(source std.loom.binding.Program) DefinitionBasis {
     }
     DefinitionBasis {
         source = original
+        original = new[Project]()
         project = Project {
             files = files
             modules = original.modules
@@ -421,6 +423,11 @@ pub fn check_project_cached(project Project, tests Bool, inputs BuildInputs, cac
     let original = snapshot(project)
     let source = bind(expand_project(original, tests, inputs)?, tests)?
     let basis = definition_basis(source)
+    if has_declaration_stages(original, tests) {
+        // CachedCheck.source is public mutable data. Keep an independent raw
+        // source basis so generated snapshots cannot be minted from edited ASTs.
+        push(basis.original, snapshot(original))
+    }
     // Expansion always reruns with current tracked inputs before matching. The
     // resulting declarations, not a prior generator result, define reuse.
     let reuse = definition_reuse(source, basis, cache)
