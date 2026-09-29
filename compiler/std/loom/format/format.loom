@@ -24,6 +24,7 @@ record Layout {
     lines List[Int]
     spaces List[Bool]
     prefixes List[Bool]
+    attached List[Bool]
 }
 
 record Output {
@@ -53,6 +54,13 @@ fn marks(node Node, tokens List[Token], layout Layout) {
         opening = opening + 1
     }
     let actual_block = node.kind == NodeKind.Block && get(tokens, opening).kind == Kind.LBrace
+    if node.kind == NodeKind.MacroCall {
+        var marker = start
+        while get(tokens, marker).kind != Kind.Not {
+            marker = marker + 1
+        }
+        set(layout.attached, marker, true)
+    }
     if node.kind == NodeKind.List {
         set(layout.spaces, opening, true)
     }
@@ -173,6 +181,9 @@ fn spaced(previous Token, current Token, force Bool, prefix Bool) Bool {
     right == Kind.RBracket || right == Kind.Question {
         return false
     }
+    if left == Kind.Dollar {
+        return false
+    }
     if left == Kind.Dot || left == Kind.LParen || left == Kind.LBracket || prefix {
         return false
     }
@@ -193,7 +204,7 @@ fn spaced(previous Token, current Token, force Bool, prefix Bool) Bool {
         // match arrows separate their following grouped expression. Unary
         // prefixes and opening delimiters were handled above.
         return left != Kind.RParen && left != Kind.RBracket && left != Kind.RBrace &&
-        left != Kind.Question && left != Kind.Number && left != Kind.Float && left != Kind.Text
+        left != Kind.Question && left != Kind.Not && left != Kind.Number && left != Kind.Float && left != Kind.Text
     }
     true
 }
@@ -208,12 +219,14 @@ pub fn format(text Text) Result[Text, Diagnostic] {
         lines = new[Int]()
         spaces = new[Bool]()
         prefixes = new[Bool]()
+        attached = new[Bool]()
     }
     var index = 0
     while index < length(tokens) {
         push(layout.lines, 0)
         push(layout.spaces, false)
         push(layout.prefixes, false)
+        push(layout.attached, false)
         index = index + 1
     }
     marks(tree, tokens, layout)
@@ -281,7 +294,7 @@ pub fn format(text Text) Result[Text, Diagnostic] {
                         output = newline(output)
                     }
                 }
-                if !output.line && spaced(previous, current, get(layout.spaces, index), prefix) {
+                if !output.line && !get(layout.attached, index) && spaced(previous, current, get(layout.spaces, index), prefix) {
                     std.bytes.push(output.bytes, 32)
                 }
                 output = write(output, text, current.span.start, current.span.end)

@@ -1,0 +1,196 @@
+import std.reflect.Schema
+import std.reflect.Kind
+import std.list.length
+import std.list.push
+import std.result.Result
+import std.resource.MustScope
+import std.resource.Dispose
+import typed_macros.generators.helper_call
+import typed_macros.generators.private_type
+
+// Generators are ordinary pure Loom functions, in the consumer's package or
+// an imported one. Returned source is parsed and checked as one expression.
+fn twice(types List[Schema]) Text {
+    assert length(types) == 1
+    let input = types[0]
+    assert input.types[input.root].kind == Kind.Int
+    "$0 + $0"
+}
+
+fn select(types List[Schema]) Text {
+    assert length(types) == 1
+    let input = types[0]
+    if input.types[input.root].kind == Kind.Int {
+        "$0 + 1"
+    } else {
+        "$0"
+    }
+}
+
+fn selected[T](value T) T {
+    select!(value)
+}
+
+fn counter(types List[Schema]) Text {
+    discard types
+    """
+    {
+        var saved = $0
+        fn() Int {
+            saved = saved + 1
+            saved
+        }
+    }
+    """
+}
+
+fn nested(types List[Schema]) Text {
+    discard types
+    "twice!($0) + 1"
+}
+
+fn next(values List[Int]) Int {
+    push(values, 21)
+    values[length(values) - 1]
+}
+
+fn pair(types List[Schema]) Text {
+    assert length(types) == 2
+    "($0, $1)"
+}
+
+fn cleanup(types List[Schema]) Text {
+    discard types
+    """
+    {
+        defer {
+            push($0, 2)
+        }
+        push($0, 1)
+    }
+    """
+}
+
+fn proved(value Int) Int
+ensures result == value + value
+{
+    twice!(value)
+}
+
+fn positive(types List[Schema]) Text {
+    discard types
+    "$0 > 0"
+}
+
+type Positive = Int where positive!(self)
+
+fn checked(value Int) Bool {
+    match Positive(value) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
+
+record Secret {
+    value Int
+}
+
+record Guard {
+    value Int
+    trace List[Int]
+}
+
+impl MustScope for Guard {
+}
+
+impl Dispose for Guard {
+    fn dispose(self Guard) {
+        push(self.trace, 9)
+    }
+}
+
+fn borrow(types List[Schema]) Text {
+    discard types
+    "$0.value"
+}
+
+fn borrowed_twice(types List[Schema]) Text {
+    discard types
+    "twice!(borrow!($0))"
+}
+
+fn guarded(guard Guard) Int {
+    borrowed_twice!(guard)
+}
+
+fn exercise() {
+    let values = [0]
+    assert twice!(next(values)) == 42 && length(values) == 2
+    assert nested!(20) == 41
+    assert proved(21) == 42
+    assert checked(1) && !checked(0)
+    let number, text = pair!(42, "answer")
+    assert number == 42 && text == "answer"
+    let tuple = (41, "spread")
+    let spread_number, spread_text = pair!(tuple...)
+    assert spread_number == 41 && spread_text == "spread"
+    assert selected(41) == 42 && selected("text") == "text"
+    let saved = 900
+    let first = counter!(10)
+    let second = counter!(20)
+    assert first() == 11 && first() == 12 && second() == 21 && saved == 900
+    assert helper_call!(40) == 42
+    assert private_type!(Secret {
+            value = 7
+        })
+    cleanup!(values)
+    assert values[2] == 1 && values[3] == 2
+    {
+        scoped guard = Guard {
+            value = 21
+            trace = values
+        }
+        assert guarded(guard) == 42
+    }
+    assert values[4] == 9 && length(values) == 5
+}
+
+fn wait(types List[Schema]) Text {
+    discard types
+    "$0.await"
+}
+
+fn wait_traced(types List[Schema]) Text {
+    discard types
+    """
+    {
+        defer {
+            push($1, 3)
+        }
+        $0.await
+    }
+    """
+}
+
+async fn task() Int {
+    42
+}
+
+async fn main() {
+    exercise()
+    assert wait!(task()) == 42
+}
+
+test fn typed_generators_preserve_evaluation_and_hygiene() {
+    exercise()
+    comptime {
+        exercise()
+    }
+}
+
+test async fn generated_await_uses_the_callers_execution_scope() {
+    assert wait!(task()) == 42
+    let trace = [0]
+    assert wait_traced!(task(), trace) == 42
+    assert trace[1] == 3
+}

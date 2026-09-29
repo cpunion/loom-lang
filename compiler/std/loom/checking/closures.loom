@@ -34,6 +34,8 @@ record Lexical {
     outer List[Context]
     captures List[Capture]
     known List[Capture]
+    // -1: ordinary scope; -2: macro expansion, whose outer scope supplies
+    // execution permissions but never lexical name capture; >= 0: closure.
     environment Int
     local Int
 }
@@ -46,6 +48,13 @@ record ClosurePlan {
     checked Bool
 }
 fn new_lexical() List[Lexical] { new[Lexical]() }
+fn execution_signature(context Context) Signature {
+    if length(context.lexical) != 0 {
+        let scope = get(context.lexical, 0)
+        if scope.environment == -2 { return execution_signature(get(scope.outer, 0)) }
+    }
+    context.signature
+}
 fn lexical(context Context) Lexical {
     if length(context.lexical) == 0 {
         push(context.lexical, Lexical { cells = new[Cell]() outer = new[Context]() captures = new[Capture]() known = new[Capture]() environment = -1 local = -1 })

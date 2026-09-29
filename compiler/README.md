@@ -1979,12 +1979,27 @@ type and purity checks.
 The Loom-written evaluator consumes the same checked model as native lowering;
 constraint folding and pure-predicate validation use this engine too.
 Evaluation is not proof: helper calls in function contracts undergo symbolic
-expansion, and declared postconditions still require the prover. Richer pack iteration
-and typed macros remain later work.
+expansion, and declared postconditions still require the prover.
 Float compile-time operations and numeric codecs use the same IEEE behavior as
 native code, including NaN, infinity, signed zero and subnormals. Float/refined
 results may appear inside shared aggregates. Required Float proofs remain
 unsupported and reject; successful evaluation is not an algebraic proof.
+
+### Typed expression macros
+
+`generator!(values...)` runs an ordinary pure
+`fn(List[std.reflect.Schema]) Text` at compile time, with one descriptor per
+inferred argument type. The returned text is parsed as one expression, then
+checked in the generator's package. `$0`, `$1`, ... refer to arguments evaluated
+exactly once, left to right; other names cannot capture caller locals. Generators
+need no separate package. Normal contracts, visibility, cleanup and Task rules
+apply to expanded code. The generator itself adds no runtime call edge.
+
+See the runnable [typed macro example](examples/typed_macros), including generic
+selection, heterogeneous inputs, closures, cleanup and required proofs. `loom fmt`
+preserves macro punctuation; editor hover shows the expanded result type and
+definition navigation targets the source generator. This is expression-source
+generation, not unrestricted AST/declaration expansion or first-class type values.
 
 ### Type reflection
 

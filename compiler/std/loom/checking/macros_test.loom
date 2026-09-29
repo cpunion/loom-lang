@@ -1,0 +1,81 @@
+test fn typed_macros_expand_without_runtime_generator_roots() {
+    let program = match reflected("""
+        fn twice(types List[Schema]) Text {
+            discard types
+            "$0 + $0"
+        }
+        fn main() {
+            assert twice!(21) == 42
+        }
+        """) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            accepted("")
+        }
+    }
+    assert length(program.functions) == 1
+}
+
+test fn macro_errors_do_not_supply_values_or_capture_callers() {
+    let invalid = new[Text]()
+    push(invalid, """
+        fn generate(types List[Schema]) Text {
+            discard types
+            "secret"
+        }
+        fn main() {
+            let secret = 42
+            discard generate!()
+        }
+        """)
+    push(invalid, """
+        fn generate(types List[Schema]) Text {
+            discard types
+            "$1"
+        }
+        fn main() {
+            discard generate!(42)
+        }
+        """)
+    push(invalid, """
+        fn generate(types List[Schema]) Text {
+            discard types
+            "true + 1"
+        }
+        fn main() {
+            discard generate!()
+        }
+        """)
+    push(invalid, """
+        fn generate(types List[Schema]) Text {
+            discard types
+            "1 +"
+        }
+        fn main() {
+            discard generate!()
+        }
+        """)
+    push(invalid, """
+        fn generate(types List[Schema]) Text {
+            discard types
+            "generate!()"
+        }
+        fn main() {
+            discard generate!()
+        }
+        """)
+    push(invalid, """
+        fn main() {
+            discard $0
+        }
+        """)
+    var index = 0
+    while index < length(invalid) {
+        assert match reflected(get(invalid, index)) {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        index = index + 1
+    }
+}

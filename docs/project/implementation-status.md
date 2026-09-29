@@ -776,8 +776,16 @@ lowering to ordinary projections and construction. Input evaluation, sharing,
 Task transfer, visibility and resource checks retain their normal rules; refined
 targets cannot bypass constraint checks. The
 [generation example](../../compiler/examples/reflection/generation.loom) exercises
-native and compile-time generation and separately specialized closures. General
-typed macros, first-class type values and predicate reflection remain open.
+native and compile-time generation and separately specialized closures.
+
+Typed expression macros now invoke ordinary pure Loom generators with inferred,
+definition-site-visible input schemas. Returned source is parsed and checked as
+one expression; hygienic positional inputs evaluate once in source order.
+Generated closures, nested macros, cleanup and required proofs use the existing
+checker/evaluator/native path. Generator calls do not become runtime roots.
+Formatting and editor result-type/definition queries recognize macro calls. See
+the [macro example](../../compiler/examples/typed_macros). Arbitrary AST or
+declaration expansion, first-class type values and predicate reflection remain open.
 
 Public `std.loom.parser` now parses standalone expressions, types, match/binding
 patterns, statements and declarations through the existing grammar. Fragments
@@ -787,7 +795,7 @@ wrappers or compiler subprocesses. This supplies syntax data, not macro expansio
 or successful semantic checking; see the
 [fragment example](../../compiler/examples/syntax/fragments.loom).
 
-Stable schemas, lossless editing, richer pack iteration, typed macros, broader compile-time
+Stable schemas, lossless editing, richer pack iteration, declaration macros, broader compile-time
 reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 

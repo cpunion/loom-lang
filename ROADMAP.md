@@ -217,6 +217,13 @@ Extend the self-hosted path with the remaining accepted capabilities:
 - module resolution, multiversion normalization, scoped fork policies, lockfiles,
   and incremental reuse tied to actual inputs.
 
+Typed expression macros now provide a native vertical slice: ordinary Loom
+generators receive inferred input schemas, generate hygienic expression source,
+and reuse the normal checker/evaluator. Definition-site visibility, once-only
+input evaluation, contracts, cleanup, formatting and editor navigation are
+covered by the [example](compiler/examples/typed_macros). Declaration/AST
+expansion and first-class type values remain separate work.
+
 Each addition must work through the native CLI and its `std` tests. Required
 proofs remain mandatory even while the supported prover fragment grows. Exact
 overload ranking, macro spelling, solver choice, artifact encoding, and runtime

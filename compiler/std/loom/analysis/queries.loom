@@ -90,7 +90,7 @@ fn query(node Node, token Token, tokens List[Token]) Option[Query] {
         index = index + 1
     }
     let kind = node.kind
-    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.Construct || kind == NodeKind.Type {
+    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.Construct || kind == NodeKind.Type {
         var segment = -1
         var count = 0
         var active = false
@@ -506,6 +506,14 @@ fn inspect_tree(analysis SemanticView, report Inspection, function Function, tar
     if !inside(value.span, target.token.span.start) {
         return
     }
+    if target.node.kind == NodeKind.MacroCall && value.kind == ExprKind.Block &&
+    value.text == "macro" && same_span(value.span, target.node.span) {
+        if target.segment + 1 == target.segments {
+            add_type(report, query_type_name(analysis, value.ty))
+            symbol_location(analysis, report, value.index)
+        }
+        return
+    }
     // Checked constructors lower to a block whose generated predicate and
     // Result variants reuse the call span. Only that block's result is source
     // evidence; its synthetic children are not references written by the user.
@@ -603,7 +611,8 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
     var index = 0
     while index < length(analysis.data.functions) {
         let function = get(analysis.data.functions, index)
-        if get(analysis.bindings.symbols, function.symbol).file == file {
+        let declaration = get(analysis.bindings.symbols, function.symbol)
+        if declaration.file == file && !macro_generated(declaration.node) {
             inspect_tree(analysis, report, function, target, function.body, -1)
             var clause = 0
             while clause < length(function.preconditions) {
@@ -622,4 +631,16 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
         return Option.None
     }
     Option.Some(report)
+}
+
+fn macro_generated(node Node) Bool {
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.kind == NodeKind.ExpansionId && std.text.starts_with(child.value, "macro/") {
+            return true
+        }
+        index = index + 1
+    }
+    false
 }

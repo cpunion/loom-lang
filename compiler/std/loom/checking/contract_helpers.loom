@@ -14,7 +14,7 @@ import std.list.length
 import std.result.Result
 
 fn contract_call(node Node) Bool {
-    if node.kind == NodeKind.Call { return true }
+    if node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall { return true }
     var index = 0
     while index < length(node.children) {
         if contract_call(child(node, index)) { return true }

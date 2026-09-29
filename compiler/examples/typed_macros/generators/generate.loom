@@ -1,0 +1,17 @@
+import std.reflect.Schema
+import std.reflect.Kind
+
+fn helper(value Int) Int {
+    value + 2
+}
+
+pub fn helper_call(types List[Schema]) Text {
+    discard types
+    "helper($0)"
+}
+
+pub fn private_type(types List[Schema]) Text {
+    let input = types[0]
+    assert input.types[input.root].kind == Kind.Opaque
+    "true"
+}

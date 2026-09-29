@@ -15,6 +15,7 @@ pub enum NodeKind {
     Concept Impl Implements MethodCall DynType AssociatedType FunctionType Invoke
     Defer Bounds Break Continue List Apply Index IndexAssign Scoped Async Await
     RecordPattern RestPattern Spread TypePack ExpansionId PackError IterationKey
+    MacroCall MacroInput
 }
 
 // TupleType/Tuple/List children are ordered elements. Destructure stores "let" or
@@ -62,6 +63,8 @@ pub enum NodeKind {
 // same source span; it is never produced by the source parser.
 // PackError defers an invalid static iteration diagnostic until a selected
 // compile-time branch is checked.
+// MacroCall names a source generator and contains one Arguments child.
+// MacroInput is a positional `$0` expression, valid only in generated code.
 
 pub record Node {
     kind NodeKind

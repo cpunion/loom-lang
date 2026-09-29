@@ -208,6 +208,14 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
         return fields(cursor, match_expr(cursor)?)
     }
     let current = token(cursor)
+    if at(cursor, Kind.Dollar) {
+        let position = next(cursor)
+        if !at(position, Kind.Number) || token(cursor).span.end != token(position).span.start ||
+        !in_int_range(token(position).value, false) {
+            return Result.Err(error(cursor, "expected a positional macro input such as $0"))
+        }
+        return fields(cursor, done(cursor, next(position), NodeKind.MacroInput, token(position).value, new[Node]()))
+    }
     if at(cursor, Kind.Number) {
         if !in_int_range(current.value, false) {
             return Result.Err(error(cursor, "integer literal is outside the Int range"))
@@ -297,6 +305,13 @@ fn named_expr(cursor Cursor, records Bool) Result[Step, Diagnostic] {
     let named = path(cursor)?
     let types = expression_args(named.rest)?
     var rest = types.rest
+    if at(rest, Kind.Not) {
+        if length(types.node.children) != 0 {
+            return Result.Err(error(rest, "macro inputs infer their types; generators have no explicit type arguments"))
+        }
+        let args = sequence(next(rest), Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
+        return Result.Ok(done(cursor, args.rest, NodeKind.MacroCall, named.node.value, one(args.node)))
+    }
     if at(rest, Kind.LParen) {
         let args = sequence(rest, Kind.LParen, Kind.RParen, NodeKind.Arguments, Items.Arguments, false)?
         return Result.Ok(done(cursor, args.rest, NodeKind.Call, named.node.value, two(types.node, args.node)))

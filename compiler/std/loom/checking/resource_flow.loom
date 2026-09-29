@@ -255,7 +255,10 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         let value = resource_expression(flow, get(expr.children, 0), false)?
         let local = get(current.locals, expr.index)
-        if kind == ExprKind.Let && expr.text == "pattern-binding" && value.protected {
+        if kind == ExprKind.Let && expr.text == "macro-input" && flow_resource(flow, local.ty)? && !value.protected {
+            return Result.Err(resource_error(flow, expr, "a macro resource input must enter scoped before invocation"))
+        }
+        if kind == ExprKind.Let && (expr.text == "pattern-binding" || expr.text == "macro-input") && value.protected {
             set(flow.locals, expr.index, resource_value(true, false, -1))
             return Result.Ok(resource_value(false, false, -1))
         }
