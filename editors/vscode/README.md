@@ -6,8 +6,8 @@ conservative local/private-function rename, import quick fixes, and document
 formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
 Loom. A resident compiler reuses unchanged checked snapshots for diagnostics,
-hover and navigation. Public/API rename and per-definition incremental checking
-are not implemented.
+hover and navigation, and unchanged ordinary definition checks after edits.
+Public/API rename and persistent per-definition IR reuse are not implemented.
 
 ## Try it
 
@@ -233,7 +233,12 @@ Completion still performs its focused receiver check. Canceling an active reques
 restarts that worker; closing a package's last buffer or shutting down releases
 its worker. Restart the language
 server after replacing the compiler executable; configuration changes also restart
-workers. This is whole-snapshot reuse, not per-definition incremental compilation.
+workers. After an edit, unchanged ordinary definitions can reuse abstract checks
+while bindings, concrete instances and source locations are rebuilt. Reordering
+or moving functions between same-package function-only files preserves reuse;
+new/removed overloads invalidate affected callers. Nominal/import changes and
+staged or resource-sensitive code conservatively recheck. This is in-memory
+semantic-check reuse, not persistent per-definition native artifacts.
 Failure to start a package check is reported for that package and does not clear
 diagnostics from other successfully checked packages.
 
