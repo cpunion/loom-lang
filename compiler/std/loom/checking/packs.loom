@@ -371,13 +371,30 @@ fn expand_pack_iteration(env Environment, owner Int, node Node, values Text, mem
 // A selected type-pack iteration binds one already elaborated type parameter
 // per copy. Value bindings shadow its expression spelling, while type syntax
 // continues to refer to the type binding.
+fn bind_iteration_pattern(node Node, binding Text, selected Text, depth Int) Node {
+    if depth >= 64 {
+        return pack_node(node, NodeKind.PackError, "static type pattern expansion budget exceeded", new[Node]())
+    }
+    let refers = node.value == binding || (first_dot(node.value) == length(binding) && std.text.starts_with(node.value, binding))
+    let typed = node.kind == NodeKind.RecordPattern || (node.kind == NodeKind.Pattern && package(node.value) != "")
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, bind_iteration_pattern(child(node, index), binding, selected, depth + 1))
+        index = index + 1
+    }
+    pack_node(node, node.kind, if typed && refers {
+        concat(selected, slice(node.value, length(binding), length(node.value)))
+    } else { node.value }, children)
+}
+
 fn bind_type_iteration(node Node, binding Text, selected Text, shadowed Bool, type_shadowed Bool, depth Int) Node {
     if depth >= 64 {
         return pack_node(node, NodeKind.PackError, "static type iteration expansion budget exceeded", new[Node]())
     }
     let refers = node.value == binding || (first_dot(node.value) == length(binding) && std.text.starts_with(node.value, binding))
     var value = node.value
-    if refers && !type_shadowed && ((node.kind == NodeKind.Name && !shadowed) ||
+    if refers && !type_shadowed && (((node.kind == NodeKind.Name || node.kind == NodeKind.Call) && !shadowed) ||
         node.kind == NodeKind.Type || node.kind == NodeKind.Construct || node.kind == NodeKind.RecordPattern) {
         value = concat(selected, slice(node.value, length(binding), length(node.value)))
     }
@@ -397,7 +414,7 @@ fn bind_type_iteration(node Node, binding Text, selected Text, shadowed Bool, ty
         // Pattern names declare new values; their guards/bodies use the outer
         // type binding, and an identically named value shadows Name uses.
         if (node.kind == NodeKind.Arm || node.kind == NodeKind.Destructure) && index == 0 {
-            push(children, member)
+            push(children, if type_shadowed { member } else { bind_iteration_pattern(member, binding, selected, depth + 1) })
         } else {
             let member_shadow = if node.kind == NodeKind.Arm && index > 0 {
                 current_shadow || pack_pattern_binds(child(node, 0), binding)

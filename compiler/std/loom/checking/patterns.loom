@@ -35,8 +35,11 @@ fn pattern_variant(context Context, node Node, ty Int) Result[Int, Failure] {
         index = index + 1
     }
     if package(node.value) != "" {
-        let target = find_data(context.env, context.signature.symbol, node, package(node.value))?
-        if shape.kind != TypeKind.Enum || target != shape.symbol {
+        let chosen = meta_constructor_type(context, node, package(node.value))?
+        let target = if chosen >= 0 { get(context.env.types, chosen).symbol } else {
+            find_data(context.env, context.signature.symbol, node, package(node.value))?
+        }
+        if shape.kind != TypeKind.Enum || target != shape.symbol || (chosen >= 0 && chosen != ty) {
             return Result.Err(error(context, node, "pattern belongs to a different nominal enum"))
         }
     }

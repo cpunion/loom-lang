@@ -824,9 +824,12 @@ the helper does not bypass construction constraints or cleanup. It must be
 called directly, not captured as a callback. Both this helper and type iteration
 lower to ordinary typed operations with no runtime schema dispatch. See
 [type generation](examples/reflection/generation.loom) and source
-[`std.json.decode`](std/json/README.md). General hygienic macros, direct
-construction/patterns through a loop-bound type, and first-class type values
-remain outside this facility.
+[`std.json.decode`](std/json/README.md). Selected field and pack types also support
+ordinary nominal constructors and record/enum patterns. The selected shape must
+be known, possibly through `comptime if`; visibility, exact type arguments,
+resources and constraints still apply. See the
+[static nominal example](examples/type_values/static_nominal.loom). Macros and
+first-class type values are separate facilities.
 
 A structural parameter takes one tuple argument and one runtime tuple
 parameter. It may have fixed fields around one expanded pattern, such as
@@ -2064,7 +2067,9 @@ fn main() {
 Pure functions can pass, return, compare and store types in compile-time data.
 `std.meta.of[(Int, Text)]()` and `of[fn(Int) Bool]()` provide compound types.
 Known immutable type bindings supply local annotations, generic arguments and
-visible record/enum/refinement constructors. A `comptime { ... }` block can also
+visible record/enum/refinement constructors and record/enum patterns. A selected
+pattern must match the exact instantiated type, not just its nominal declaration.
+A `comptime { ... }` block can also
 supply a type directly in a local annotation or explicit generic argument.
 Nominal identity, visibility, bounds and construction checks are unchanged.
 Type-bearing data cannot escape into runtime locals, parameters or results;

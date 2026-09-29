@@ -10,8 +10,11 @@ fn record_pattern_fields(context Context, node Node, ty Int) Result[List[RecordP
     if shape.kind != TypeKind.Record {
         return Result.Err(error(context, node, "record pattern requires a record value"))
     }
-    let target = find_data(context.env, context.signature.symbol, node, node.value)?
-    if target < 0 || target != shape.symbol {
+    let chosen = meta_constructor_type(context, node, node.value)?
+    let target = if chosen >= 0 { get(context.env.types, chosen).symbol } else {
+        find_data(context.env, context.signature.symbol, node, node.value)?
+    }
+    if target < 0 || target != shape.symbol || (chosen >= 0 && chosen != ty) {
         return Result.Err(error(context, node, "pattern belongs to a different nominal record"))
     }
     let declaration = symbol(context.env, shape.symbol)

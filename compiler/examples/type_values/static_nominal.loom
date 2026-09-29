@@ -1,0 +1,72 @@
+record FieldTypes {
+    integer Box[Int]
+    text Box[Text]
+    optional Maybe[Int]
+    positive Positive
+}
+
+fn pack_boxes[Ts...](values (Ts...)) Bool {
+    discard values
+    var valid = true
+    comptime for T in Ts {
+        comptime if T == Box[Int] {
+            let T {
+                value = item
+            } = T {
+                value = 42
+            }
+            valid = valid && item == 42
+        } else {
+            valid = false
+        }
+    }
+    valid
+}
+
+fn static_nominal_scope() {
+    assert pack_boxes((Box {
+                value = 1
+            }, Box {
+                value = 2
+            }))
+    let checks = comptime map T in FieldTypes {
+        comptime if T == Box[Int] {
+            let value = T {
+                value = 42
+            }
+            match value {
+                T {
+                    value = item
+                } => item == 42
+            }
+        } else {
+            comptime if T == Box[Text] {
+                let value = T {
+                    value = "selected"
+                }
+                match value {
+                    T {
+                        value = T
+                    } => T == "selected"
+                }
+            } else {
+                comptime if T == Maybe[Int] {
+                    let full = T.Some(42)
+                    let empty = T.None
+                    let absent = match empty {
+                        T.None => true
+                        T.Some(_) => false
+                    }
+                    absent && match full {
+                        T.Some(value) => value == 42
+                        T.None => false
+                    }
+                } else {
+                    let positive = T(1)
+                    positive == 1
+                }
+            }
+        }
+    }
+    assert checks.0 && checks.1 && checks.2 && checks.3
+}
