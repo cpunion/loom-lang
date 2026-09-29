@@ -239,17 +239,16 @@ fn definition_context(first DefinitionBasis, second DefinitionBasis) Bool {
     true
 }
 
-// Syntax-producing macros and hidden capture operations need richer dependency
-// summaries. Recheck them and their callers, rather than treating unknown edges
-// as independence. Methods and expanded signatures are still rebuilt.
-fn definition_opaque(node Node, root Bool) Bool {
-    let kind = node.kind
-    if kind == NodeKind.MacroCall || (kind == NodeKind.Function && !root) {
+// Expression macros can introduce dependencies absent from this tree. Closure
+// bodies and captures are visible source dependencies; their private concrete
+// frames recheck without invalidating every ordinary caller.
+fn definition_opaque(node Node) Bool {
+    if node.kind == NodeKind.MacroCall {
         return true
     }
     var index = 0
     while index < length(node.children) {
-        if definition_opaque(get(node.children, index), false) {
+        if definition_opaque(get(node.children, index)) {
             return true
         }
         index = index + 1
@@ -381,7 +380,7 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
     index = 0
     while index < length(basis.entries) {
         let node = get(basis.entries, index).node
-        if node.kind == NodeKind.Refined && definition_opaque(node, true) {
+        if node.kind == NodeKind.Refined && definition_opaque(node) {
             return reuse
         }
         index = index + 1
@@ -392,7 +391,7 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
         let body = get(basis.entries, index).node
         let build = package_label(source.modules, source.packages, get(source.files, item.file).package) == "std.build"
         let matched = get(matches, index)
-        let stable = matched >= 0 && !definition_opaque(body, true) && !build
+        let stable = matched >= 0 && !definition_opaque(body) && !build
         if item.node.kind == NodeKind.Function && !stable {
             discard std.map.insert(changed, item.name, true)
         }

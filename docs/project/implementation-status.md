@@ -1045,7 +1045,9 @@ maps inherited clauses to their current concept declaration. Declaration and
 conformance validation still run.
 Async/Task bodies reuse one-shot flow evidence before fresh coroutine lowering,
 with current direct/indirect task-creation labels. Private waits keep the same
-runtime path; captured-frame bodies still recheck.
+runtime path. Captured-frame bodies rebuild current closure plans; enclosing
+abstract checks and ordinary callers can reuse, with nested source dependencies
+still invalidating their consumers. Runtime capture environments are never saved.
 Dynamic bodies rebuild current concept/associated-binding interfaces, specialized
 method slots and sparse witness uses from source recipes, not cached table IDs.
 Scoped/aggregate cleanup bodies reuse typed IR with current transitive resource
