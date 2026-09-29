@@ -1,0 +1,250 @@
+// Private same-compiler snapshot tags, not a public wire or AST representation.
+fn cache_type_tag(value TypeKind) Int {
+    match value {
+        TypeKind.Unit => 0
+        TypeKind.Int => 1
+        TypeKind.Bool => 2
+        TypeKind.Text => 3
+        TypeKind.Bytes => 4
+        TypeKind.Parameter => 5
+        TypeKind.List => 6
+        TypeKind.Record => 7
+        TypeKind.Enum => 8
+        TypeKind.Refined => 9
+        TypeKind.Tuple => 10
+        TypeKind.Float => 11
+        TypeKind.Dyn => 12
+        TypeKind.Associated => 13
+        TypeKind.Function => 14
+        TypeKind.Task => 15
+        TypeKind.Frame => 16
+        TypeKind.Meta => 17
+    }
+}
+
+fn cache_type_kind(value Int) Result[TypeKind, Text] {
+    if value == 0 {
+        return Result.Ok(TypeKind.Unit)
+    }
+    if value == 1 {
+        return Result.Ok(TypeKind.Int)
+    }
+    if value == 2 {
+        return Result.Ok(TypeKind.Bool)
+    }
+    if value == 3 {
+        return Result.Ok(TypeKind.Text)
+    }
+    if value == 4 {
+        return Result.Ok(TypeKind.Bytes)
+    }
+    if value == 5 {
+        return Result.Ok(TypeKind.Parameter)
+    }
+    if value == 6 {
+        return Result.Ok(TypeKind.List)
+    }
+    if value == 7 {
+        return Result.Ok(TypeKind.Record)
+    }
+    if value == 8 {
+        return Result.Ok(TypeKind.Enum)
+    }
+    if value == 9 {
+        return Result.Ok(TypeKind.Refined)
+    }
+    if value == 10 {
+        return Result.Ok(TypeKind.Tuple)
+    }
+    if value == 11 {
+        return Result.Ok(TypeKind.Float)
+    }
+    if value == 12 {
+        return Result.Ok(TypeKind.Dyn)
+    }
+    if value == 13 {
+        return Result.Ok(TypeKind.Associated)
+    }
+    if value == 14 {
+        return Result.Ok(TypeKind.Function)
+    }
+    if value == 15 {
+        return Result.Ok(TypeKind.Task)
+    }
+    if value == 16 {
+        return Result.Ok(TypeKind.Frame)
+    }
+    if value == 17 {
+        return Result.Ok(TypeKind.Meta)
+    }
+    Result.Err("unknown cached type kind")
+}
+
+fn cache_expression_tag(value ExprKind) Int {
+    match value {
+        ExprKind.Integer => 0
+        ExprKind.Bool => 1
+        ExprKind.Text => 2
+        ExprKind.Local => 3
+        ExprKind.Unary => 4
+        ExprKind.Binary => 5
+        ExprKind.Call => 6
+        ExprKind.Intrinsic => 7
+        ExprKind.Record => 8
+        ExprKind.Field => 9
+        ExprKind.Variant => 10
+        ExprKind.Block => 11
+        ExprKind.Let => 12
+        ExprKind.Assign => 13
+        ExprKind.Return => 14
+        ExprKind.Assert => 15
+        ExprKind.Discard => 16
+        ExprKind.While => 17
+        ExprKind.If => 18
+        ExprKind.Match => 19
+        ExprKind.Coerce => 20
+        ExprKind.Deferred => 21
+        ExprKind.Float => 22
+        ExprKind.DynBox => 23
+        ExprKind.DynCall => 24
+        ExprKind.FunctionRef => 25
+        ExprKind.IndirectCall => 26
+        ExprKind.Break => 27
+        ExprKind.Continue => 28
+        ExprKind.List => 29
+        ExprKind.Defer => 30
+        ExprKind.Cleanup => 31
+        ExprKind.TaskCall => 32
+        ExprKind.Await => 33
+        ExprKind.FrameNew => 34
+        ExprKind.FrameStore => 35
+        ExprKind.Suspend => 36
+        ExprKind.Bytes => 37
+        ExprKind.ResourceDrain => 38
+        ExprKind.TypeValue => 39
+    }
+}
+
+fn cache_expression_kind(value Int) Result[ExprKind, Text] {
+    if value == 0 {
+        return Result.Ok(ExprKind.Integer)
+    }
+    if value == 1 {
+        return Result.Ok(ExprKind.Bool)
+    }
+    if value == 2 {
+        return Result.Ok(ExprKind.Text)
+    }
+    if value == 3 {
+        return Result.Ok(ExprKind.Local)
+    }
+    if value == 4 {
+        return Result.Ok(ExprKind.Unary)
+    }
+    if value == 5 {
+        return Result.Ok(ExprKind.Binary)
+    }
+    if value == 6 {
+        return Result.Ok(ExprKind.Call)
+    }
+    if value == 7 {
+        return Result.Ok(ExprKind.Intrinsic)
+    }
+    if value == 8 {
+        return Result.Ok(ExprKind.Record)
+    }
+    if value == 9 {
+        return Result.Ok(ExprKind.Field)
+    }
+    if value == 10 {
+        return Result.Ok(ExprKind.Variant)
+    }
+    if value == 11 {
+        return Result.Ok(ExprKind.Block)
+    }
+    if value == 12 {
+        return Result.Ok(ExprKind.Let)
+    }
+    if value == 13 {
+        return Result.Ok(ExprKind.Assign)
+    }
+    if value == 14 {
+        return Result.Ok(ExprKind.Return)
+    }
+    if value == 15 {
+        return Result.Ok(ExprKind.Assert)
+    }
+    if value == 16 {
+        return Result.Ok(ExprKind.Discard)
+    }
+    if value == 17 {
+        return Result.Ok(ExprKind.While)
+    }
+    if value == 18 {
+        return Result.Ok(ExprKind.If)
+    }
+    if value == 19 {
+        return Result.Ok(ExprKind.Match)
+    }
+    if value == 20 {
+        return Result.Ok(ExprKind.Coerce)
+    }
+    if value == 21 {
+        return Result.Ok(ExprKind.Deferred)
+    }
+    if value == 22 {
+        return Result.Ok(ExprKind.Float)
+    }
+    if value == 23 {
+        return Result.Ok(ExprKind.DynBox)
+    }
+    if value == 24 {
+        return Result.Ok(ExprKind.DynCall)
+    }
+    if value == 25 {
+        return Result.Ok(ExprKind.FunctionRef)
+    }
+    if value == 26 {
+        return Result.Ok(ExprKind.IndirectCall)
+    }
+    if value == 27 {
+        return Result.Ok(ExprKind.Break)
+    }
+    if value == 28 {
+        return Result.Ok(ExprKind.Continue)
+    }
+    if value == 29 {
+        return Result.Ok(ExprKind.List)
+    }
+    if value == 30 {
+        return Result.Ok(ExprKind.Defer)
+    }
+    if value == 31 {
+        return Result.Ok(ExprKind.Cleanup)
+    }
+    if value == 32 {
+        return Result.Ok(ExprKind.TaskCall)
+    }
+    if value == 33 {
+        return Result.Ok(ExprKind.Await)
+    }
+    if value == 34 {
+        return Result.Ok(ExprKind.FrameNew)
+    }
+    if value == 35 {
+        return Result.Ok(ExprKind.FrameStore)
+    }
+    if value == 36 {
+        return Result.Ok(ExprKind.Suspend)
+    }
+    if value == 37 {
+        return Result.Ok(ExprKind.Bytes)
+    }
+    if value == 38 {
+        return Result.Ok(ExprKind.ResourceDrain)
+    }
+    if value == 39 {
+        return Result.Ok(ExprKind.TypeValue)
+    }
+    Result.Err("unknown cached expression kind")
+}

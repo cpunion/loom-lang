@@ -54,7 +54,7 @@ a lowercase package identifier; an existing directory is never overwritten.
 for native commands. The Loom driver owns cache policy; the Rust bridge only
 identifies its implementation, emits objects and links/publishes requested files.
 Without `--frontend-cache`, source checking always runs; executables always relink.
-`--frontend-cache` enables [checked-closure reuse](../README.md#frontend-cache)
+`--frontend-cache` enables [closure and definition reuse](../README.md#frontend-cache)
 after loading and parsing the selected sources. It also works for `check` and
 `emit-checked`, independently of the object cache.
 The private `emit-checked` command performs normal source/type/proof checks but
@@ -109,7 +109,8 @@ direct package when the revised in-memory package checks. Bare-name import
 search is limited to unique exports of direct dependencies. A resident editor
 session reuses an unchanged checked snapshot across diagnostics, hover and
 navigation after reloading sources and verifying build inputs/options/targets.
-Public/API rename and per-definition incremental checking remain open. Completion
+Unchanged ordinary definitions and concrete bodies also reuse checks after edits.
+Public/API rename remains open. Completion
 can recover a missing cursor name/value or unmatched EOF delimiters
 without modifying the source or making normal builds accept it. Other semantic
 queries use concrete body instances. If package checking fails, an independently
@@ -324,9 +325,17 @@ List and generic bodies with unchanged source text. It rekeys nominal types,
 call/function-reference targets and source spans against fresh bindings; assertion
 messages use current paths and positions. Elaboration-introduced call edges also
 participate in invalidation. Unsupported bodies recheck normally. Evidence is
-detached from returned mutable programs. This is in-memory frontend reuse, not
-persistent IR or native object reuse. Use fresh build inputs as above.
+detached from returned mutable programs. Use fresh build inputs as above.
 The resident editor uses this path automatically after a snapshot changes.
+
+Compiler hosts may export a same-compiler snapshot with
+`export_definition_cache(cache)`. `import_trusted_definition_cache(text)` is an
+explicit trusted-host boundary, **not a proof checker**: the host must verify
+compiler byte identity, complete bundle integrity and observed build inputs
+before import. Do not pass downloaded or user-supplied snapshots to it. The CLI
+does this only under `--frontend-cache`; the default checker stays filesystem-free.
+Snapshots retain successful evidence, not public mutable returned programs, and
+are not a stable wire format. Native object reuse remains whole-closure.
 
 Query offsets are half-open UTF-8 byte offsets. Equal spans prefer the outer
 resolved expression, including field selections and coercions. A call's index

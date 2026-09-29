@@ -25,6 +25,7 @@ record DefinitionCacheState {
 
 record DefinitionBasis {
     project Project
+    source Project
     tests Bool
     entries List[DefinitionEntry]
     reusable List[Bool]
@@ -161,6 +162,7 @@ fn definition_basis(source std.loom.binding.Program) DefinitionBasis {
         index = index + 1
     }
     DefinitionBasis {
+        source = original
         project = Project {
             files = files
             modules = original.modules

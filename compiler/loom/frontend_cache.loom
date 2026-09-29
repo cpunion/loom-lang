@@ -130,6 +130,14 @@ fn frontend_bundle(prefix Text, value Prepared) Bytes {
 }
 
 fn frontend_decode(bytes Bytes, prefix Text, project Project, checking Bool, inputs BuildInputs) Option[Prepared] {
+    frontend_decode_kind(bytes, prefix, project, if checking {
+            "check"
+        } else {
+            "native"
+        }, inputs)
+}
+
+fn frontend_decode_kind(bytes Bytes, prefix Text, project Project, format Text, inputs BuildInputs) Option[Prepared] {
     let body = match cache_unseal(bytes, prefix) {
         Option.Some(value) => value,
         Option.None => {
@@ -142,7 +150,7 @@ fn frontend_decode(bytes Bytes, prefix Text, project Project, checking Bool, inp
             return Option.None
         }
     }
-    match frontend_payload(text, length(prefix), project, checking, inputs) {
+    match frontend_payload(text, length(prefix), project, format, inputs) {
         Result.Ok(value) => Option.Some(value)
         Result.Err(_) => Option.None
     }
@@ -152,13 +160,18 @@ record FrontendReader {
     text Text
     cursor List[Int]
 }
+
 fn frontend_read(reader FrontendReader) Result[Text, Text] {
     let start = get(reader.cursor, 0)
     var end = start
-    while end < length(reader.text) && byte(reader.text, end) != 10 { end = end + 1 }
+    while end < length(reader.text) && byte(reader.text, end) != 10 {
+        end = end + 1
+    }
     let size = match std.int.parse(slice(reader.text, start, end)) {
         Result.Ok(value) => value
-        Result.Err(_) => { return Result.Err("invalid cache field size") }
+        Result.Err(_) => {
+            return Result.Err("invalid cache field size")
+        }
     }
     if size < 0 || end >= length(reader.text) || size > length(reader.text) - end - 1 {
         return Result.Err("truncated cache field")
@@ -166,16 +179,21 @@ fn frontend_read(reader FrontendReader) Result[Text, Text] {
     std.list.set(reader.cursor, 0, end + 1 + size)
     Result.Ok(slice(reader.text, end + 1, end + 1 + size))
 }
+
 fn frontend_read_number(reader FrontendReader) Result[Int, Text] {
     match std.int.parse(frontend_read(reader)?) {
         Result.Ok(value) => Result.Ok(value)
         Result.Err(_) => Result.Err("invalid cache number")
     }
 }
-fn frontend_payload(text Text, start Int, project Project, checking Bool, context BuildInputs) Result[Prepared, Text] {
+
+fn frontend_payload(text Text, start Int, project Project, format Text, context BuildInputs) Result[Prepared, Text] {
     let cursor = new[Int]()
     push(cursor, start)
-    let reader = FrontendReader { text = text cursor = cursor }
+    let reader = FrontendReader {
+        text = text
+        cursor = cursor
+    }
     let entry = frontend_read_number(reader)?
     let tests = frontend_read_number(reader)?
     let target_count = frontend_read_number(reader)?
@@ -198,26 +216,43 @@ fn frontend_payload(text Text, start Int, project Project, checking Bool, contex
     }
     discard build_option_snapshot(targets)?
     let count = frontend_read_number(reader)?
-    if count < 0 || count > length(text) { return Result.Err("invalid cache input count") }
+    if count < 0 || count > length(text) {
+        return Result.Err("invalid cache input count")
+    }
     let inputs = new[BuildInput]()
     var index = 0
     while index < count {
-        let request = std.loom.project.InputRequest { root = frontend_read(reader)?
-            source = frontend_read(reader)? path = frontend_read(reader)? }
+        let request = std.loom.project.InputRequest {
+            root = frontend_read(reader)?
+            source = frontend_read(reader)?
+            path = frontend_read(reader)?
+        }
         let path = frontend_read(reader)?
         let digest = frontend_read(reader)?
         var source = 0
-        while source < length(project.files) && get(project.files, source).path != request.source { source = source + 1 }
-        if source == length(project.files) { return Result.Err("cached input source changed") }
+        while source < length(project.files) && get(project.files, source).path != request.source {
+            source = source + 1
+        }
+        if source == length(project.files) {
+            return Result.Err("cached input source changed")
+        }
         let owner = get(project.packages, get(project.files, source).package).instance
-        if get(project.modules, owner).source != request.root { return Result.Err("cached input module changed") }
+        if get(project.modules, owner).source != request.root {
+            return Result.Err("cached input module changed")
+        }
         let file = read_input(request)?
-        if file.path != path || hex(file.bytes) != digest { return Result.Err("cached input changed") }
-        push(inputs, BuildInput { request = request file = file })
+        if file.path != path || hex(file.bytes) != digest {
+            return Result.Err("cached input changed")
+        }
+        push(inputs, BuildInput {
+                request = request
+                file = file
+            })
         index = index + 1
     }
     let input = slice(text, get(cursor, 0), length(text))
-    if entry < -1 || tests < 0 || (checking && input != "") || (!checking && !std.text.starts_with(input, "loom-checked-1\n")) {
+    if entry < -1 || tests < 0 || (format == "check" && input != "") ||
+    (format == "native" && !std.text.starts_with(input, "loom-checked-1\n")) {
         return Result.Err("invalid cached artifact")
     }
     Result.Ok(Prepared {
@@ -264,10 +299,20 @@ fn frontend_cached(options Options, project Project, inputs BuildInputs) Result[
         }
     }
     cache_trace("frontend miss")
-    let checked = prepare_loaded(options, project, inputs)?
+    let checked = prepare_incremental(options, project, inputs, identity)?
     // Publish only successful checks. Readers see one complete, content-checked
     // bundle; concurrent producers own separate staging directories.
-    let stage = cache_staging(root)?
+    frontend_publish(root, path, prefix, checked)
+    Result.Ok(checked)
+}
+
+fn frontend_publish(root Text, path Text, prefix Text, checked Prepared) {
+    let stage = match cache_staging(root) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return
+        }
+    }
     defer {
         cache_cleanup(stage)
     }
@@ -283,5 +328,4 @@ fn frontend_cached(options Options, project Project, inputs BuildInputs) Result[
             discard rename(bundle, path)
         }
     }
-    Result.Ok(checked)
 }

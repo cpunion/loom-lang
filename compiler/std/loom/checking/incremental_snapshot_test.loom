@@ -1,0 +1,115 @@
+import std.text.join
+import std.text.split
+
+fn restored_definition_cache(cache DefinitionCache) DefinitionCache {
+    let text = match export_definition_cache(cache) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return definition_cache()
+        }
+    }
+    match import_trusted_definition_cache(text) {
+        Result.Ok(value) => {
+            assert match export_definition_cache(value) {
+                Result.Ok(roundtrip) => roundtrip == text
+                Result.Err(_) => false
+            }
+            value
+        }
+        Result.Err(_) => {
+            assert false
+            definition_cache()
+        }
+    }
+}
+
+test fn definition_snapshots_restore_bodies_and_invalidate_changed_proofs() {
+    let source = """
+        record Box[T] {
+            value T
+        }
+        pub fn leaf(value Int) Int {
+            value + 1
+        }
+        pub fn identity[T](value T) T {
+            value
+        }
+        pub fn answer() Int
+        ensures result == 7
+        {
+            leaf(6)
+        }
+        pub fn boxed() Box[Int] {
+            identity(Box { value = 7 })
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    assert definitions_reused(cache) == 0 && bodies_reused(cache) == 0
+    let added = """
+        fn unused(value List[Bool]) List[Bool] {
+            value
+        }
+
+        """
+    assert match cached_source(cache, concat(added, source)) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert definitions_reused(cache) == 4 && bodies_reused(cache) == 4
+    let restored = restored_definition_cache(cache)
+    assert match cached_source(restored, std.text.join(std.text.split(source, "value + 1"), "value + 2")) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match cached_source(restored, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
+
+test fn definition_snapshots_require_source_backed_syntax_and_complete_encoding() {
+    let cache = definition_cache()
+    let source = fixture_project(source_files("fn value() Int { 1 }"))
+    let file = get(source.files, 0)
+    set(source.files, 0, SourceFile {
+            package = file.package
+            path = file.path
+            text = "fn value() Int { 2 }"
+            tree = file.tree
+            test_only = file.test_only
+            trusted_std = file.trusted_std
+        })
+    assert match check_project_cached(source, false, build_inputs(no_input_reader), cache) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match export_definition_cache(cache) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match cached_source(cache, "fn value() Int { 3 }") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let text = match export_definition_cache(cache) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert match import_trusted_definition_cache(std.text.slice(text, 0, std.text.length(text) - 1)) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match import_trusted_definition_cache(concat(text, "extra")) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

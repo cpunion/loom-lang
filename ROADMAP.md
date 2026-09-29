@@ -271,8 +271,10 @@ and preserved aliases inside computed graphs. The resident editor also reuses
 successful abstract checks of unchanged ordinary definitions, invalidating
 transitive callers and rechecking opaque dependencies. Current bindings, type
 IDs are rebuilt; eligible concrete bodies now rekey types, calls and source
-locations against those bindings instead of rechecking. Fine-grained persistent proof/effect
-reuse and per-package objects remain open.
+locations against those bindings instead of rechecking. The opt-in frontend cache
+also persists this last-successful definition basis across CLI processes, with
+compiler identity, source and observed-input validation. Unsupported cases recheck;
+per-package native objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic
 method calls into the existing direct-call path. Conditional conformance queries,
@@ -553,7 +555,8 @@ reordering and moves between function-only files in the same package. Additions,
 removals and new overloads invalidate affected callers, not every unrelated
 definition. Concrete scalar/aggregate/List and generic bodies also reuse checked
 IR with current type, call and source-location mappings; unsupported forms
-recheck. Persistent per-definition IR remains open.
+recheck. CLI disk snapshots reuse the same evidence under the trusted-local
+frontend-cache option; editor workers retain their private in-memory cache.
 Native failing assertions now report their source location and current test,
 including helper assertions and standalone test executables. The first fault
 remains authoritative across cleanup; this does not add stack traces or recovery.

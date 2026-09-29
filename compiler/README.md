@@ -368,12 +368,17 @@ entries. Manifest edits that leave this validated semantic input unchanged need
 not invalidate reuse. Source moves, changed dependencies, and new selected files
 do invalidate it. Omitted dependency/test files do not become build inputs.
 
-A hit skips binding, type/effect/contract checking, compile-time evaluation and
-lowering for that exact closure. It is not a serialized mutable checker session
-or per-definition incremental engine. Build receipts use the freshly loaded
-project and actual artifact; requested IR, linking and test execution still run.
+A whole-closure hit skips binding, type/effect/contract checking, compile-time
+evaluation and lowering. After an edit, a separate last-successful definition
+snapshot can reuse ordinary abstract checks and concrete scalar/aggregate/List
+and generic bodies. Fresh bindings rekey types, calls and source locations;
+changed definitions and overloads invalidate transitive consumers. Nominal/import
+changes and staged, resource or unsupported bodies recheck conservatively.
+Build receipts use the freshly loaded project and actual artifact; requested IR,
+linking and test execution still run.
 Only successful checks are published. Each `checked-v2` entry contains metadata
-and checked bytes under one SHA-256 checksum; damage causes a fresh check.
+and checked bytes under one SHA-256 checksum; `definitions-v1` binds its source,
+private checked bodies and input metadata the same way. Damage causes a miss.
 Recorded `std.build.input_file` requests are resolved and their actual content
 digests checked on every hit. Missing, changed or redirected inputs force a
 fresh check. The receipt binds the snapshots used by that check or cache hit.
@@ -383,7 +388,8 @@ by its real executable path, and keep the toolchain/filesystem stable during a
 build. An unidentifiable executable disables reuse; a checksum is not an
 attestation against a malicious cache writer. No old cache-format compatibility
 or automatic eviction is promised. `LOOM_NATIVE_TIMINGS` reports
-`loom cache: frontend hit`, `miss`, or `unavailable`.
+`loom cache: frontend hit`, `miss`, or `unavailable`, and definition/body reuse
+counts after whole-closure misses. This is not a remote proof/artifact exchange.
 
 Hashing has a fixed cost, so this remains opt-in. Measure a project with
 `node scripts/benchmark-compiler.mjs --compare-frontend --check-only`; the harness
@@ -403,9 +409,9 @@ runtime performance. Tiny packages regress because hashing exceeds saved work.
 retain the measurement basis; these are local observations, not platform targets.
 
 Bootstrap generation comparisons and editor queries do not enable this cache.
-Tracked files, explicit options and observed target properties bind reuse;
-finer-grained persistent summaries remain future work. Ordinary compile-time
-execution cannot read arbitrary I/O.
+Tracked files, explicit options and observed target properties bind both levels
+of reuse. Backend objects are still whole-closure, not per-definition. Ordinary
+compile-time execution cannot read arbitrary I/O.
 
 ### Earlier uncached measurements
 
@@ -2556,9 +2562,9 @@ written, not what language features the resulting compiler can offer users.
 Mutable record fields, broader proofs,
 nested resource transfers, complete Task/I/O composition, complete compile-time programming,
 version normalization, authenticated Git sources, graph-wide fork policies,
-fine-grained persistent frontend/proof reuse, deployment and semantic-change tools remain
+complete incremental coverage, deployment and semantic-change tools remain
 outside this slice. Exact HTTPS Git/fork resolution, verified source locks and
-trusted-local object and checked-closure reuse are implemented. No complete
+trusted-local object, checked-closure and ordinary-definition reuse are implemented. No complete
 language or `std` claim is made.
 
 Unsupported syntax and manifest features reject explicitly. In particular,

@@ -773,8 +773,9 @@ remapping; assertion diagnostics follow moved files. Changed overloads and
 elaboration-introduced calls invalidate affected bodies. Unsupported forms still
 recheck, and all cached IR is detached from mutable public results. The same
 in-memory facility is available as `std.loom.checking.check_project_cached`;
-failed checks never replace its private evidence. Persistent per-definition IR
-and public/API rename remain open.
+failed checks never replace its private evidence. The CLI can persist the same
+ordinary definition/body evidence through its trusted-local frontend cache;
+public/API rename remains open.
 Qualified paths now enumerate existing package/import spellings, preserving
 overloads and source-instance/test identity. Local receiver bindings take priority;
 type and dyn positions filter declarations without claiming valid instantiation.
@@ -999,9 +1000,15 @@ persists successful whole-closure checks/lowered inputs. Every use reloads and
 parses source and verifies dependency snapshots; keys include compiler bytes,
 source membership/content/trust, module/import identity and test/check mode.
 Checksummed metadata and artifacts publish together; damaged entries recheck.
-Hits skip type/proof/effect analysis and lowering, not actual test execution,
-IR emission or final linking. This is opt-in trusted-local reuse, not typed
-incremental editor state or reusable per-definition summaries.
+Whole-closure hits skip type/proof/effect analysis and lowering, not actual test
+execution, IR emission or final linking. On misses, a last-successful definition
+snapshot can reuse ordinary abstract checks and concrete bodies across processes.
+It rebuilds bindings, invalidates changed/transitive consumers and remaps types,
+calls and locations through the same resident-cache machinery. Compiler bytes,
+mode/options, module/import identities and observed inputs bind the complete
+checksummed snapshot. Unsupported/generated source snapshots and damaged bundles
+miss; failed checks never publish. This is opt-in trusted-local evidence, not a
+portable proof or authenticated remote cache. Native objects remain whole-closure.
 `std.build.input_file(comptime path Text) Text` now embeds tracked UTF-8 snapshots
 relative to the declaring package, confined to its module. Reads happen during
 checking and lower to ordinary Text constants, with no new runtime/backend ABI.
@@ -1031,7 +1038,7 @@ when observed; public analysis can supply a snapshot without a backend process.
 Observed properties survive into checked artifacts, cache revalidation and the
 receipt's checked-input digest. Emission rejects a mismatched target. This adds
 optional backend-neutral metadata, not runtime platform dispatch, cross-compilation
-or a new bootstrap checkpoint. Fine-grained persistent reuse remains open.
+or a new bootstrap checkpoint. Unsupported definition forms still recheck.
 The [native basic benchmark](../../benchmarks/basic/README.md#managed-memory-lowering-repair)
 also records the managed-memory lowering repair, including same-session baseline
 comparisons for native kernels and whole compiler checks. Those measurements

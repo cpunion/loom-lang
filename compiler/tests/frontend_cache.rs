@@ -30,6 +30,109 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn changed_sources_reuse_persisted_definitions_and_rekey_native_bodies() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+record Box[T] {
+    value T
+}
+fn identity[T](value T) T {
+    value
+}
+fn answer() Int
+ensures result == 7
+{
+    identity(Box { value = 7 }).value
+}
+fn main() {
+    assert answer() == 7
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(
+        &path,
+        format!("fn unrelated(value List[Bool]) List[Bool] {{ value }}\n{source}"),
+    )
+    .unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(
+        trace.contains("definitions reused 3, bodies reused 3"),
+        "{trace}"
+    );
+    let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
+    success(&fresh);
+    assert_eq!(reused.stdout, fresh.stdout);
+    checked(&cached("run", &package, &cache, &[]), true);
+
+    let snapshot = fs::read_dir(cache.join("definitions-v1"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "ldef")
+        })
+        .unwrap();
+    let successful = fs::read(&snapshot).unwrap();
+    fs::write(&path, source.replace("value = 7", "value = 8")).unwrap();
+    let rejected = cached("emit-checked", &package, &cache, &[]);
+    assert!(!rejected.status.success());
+    assert_eq!(fs::read(&snapshot).unwrap(), successful);
+
+    // A damaged definition bundle is a miss, not partially accepted evidence.
+    fs::write(&snapshot, &successful[..successful.len() - 1]).unwrap();
+    fs::write(&path, format!("fn added() Int {{ 9 }}\n{source}")).unwrap();
+    let recovered = cached("emit-checked", &package, &cache, &[]);
+    checked(&recovered, false);
+    assert!(
+        String::from_utf8_lossy(&recovered.stderr)
+            .contains("definitions reused 0, bodies reused 0")
+    );
+    let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
+    success(&fresh);
+    assert_eq!(recovered.stdout, fresh.stdout);
+}
+
+#[test]
+fn persisted_definitions_revalidate_observed_build_inputs() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let source = r#"
+import std.build.input_file
+fn stable() Int {
+    7
+}
+fn main() {
+    assert stable() == 7
+    assert input_file("message.txt") == "yes"
+}
+"#;
+    let path = package.join("main.loom");
+    fs::write(&path, source).unwrap();
+    fs::write(package.join("message.txt"), "yes").unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(&path, format!("fn added() Int {{ 1 }}\n{source}")).unwrap();
+    fs::write(package.join("message.txt"), "no!").unwrap();
+    let changed = cached("emit-checked", &package, &cache, &[]);
+    checked(&changed, false);
+    assert!(
+        String::from_utf8_lossy(&changed.stderr).contains("definitions reused 0, bodies reused 0")
+    );
+    let fresh = common::loom(&["emit-checked", package.to_str().unwrap()]);
+    success(&fresh);
+    assert_eq!(changed.stdout, fresh.stdout);
+    assert!(!cached("run", &package, &cache, &[]).status.success());
+}
+
+#[test]
 fn frontend_reuses_checked_artifacts_without_skipping_outputs_tests_or_receipts() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("source 雪");

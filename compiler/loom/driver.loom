@@ -246,7 +246,9 @@ fn prepared(options Options) Result[Prepared, Text] {
 fn prepare_loaded(options Options, loaded Project, inputs BuildInputs) Result[Prepared, Text] {
     let expanded = match expand_project(loaded, options.command == "test", inputs) {
         Result.Ok(value) => value
-        Result.Err(failure) => { return Result.Err(diagnostic(loaded.files, failure)) }
+        Result.Err(failure) => {
+            return Result.Err(diagnostic(loaded.files, failure))
+        }
     }
     let bound = match bind(expanded, options.command == "test") {
         Result.Ok(value) => value
@@ -255,19 +257,23 @@ fn prepare_loaded(options Options, loaded Project, inputs BuildInputs) Result[Pr
         }
     }
     match check_with_inputs(bound, inputs) {
-        Result.Ok(value) => Result.Ok(Prepared {
-                inputs = inputs.files
-                targets = inputs.targets
-                input = if options.command == "check" {
-                    ""
-                } else {
-                    encode(lower(value), inputs.targets)
-                }
-                entry = value.entry
-                tests = length(value.tests)
-                project = loaded
-            })
+        Result.Ok(value) => Result.Ok(prepare_checked(options, loaded, inputs, value))
         Result.Err(failure) => Result.Err(diagnostic(loaded.files, failure))
+    }
+}
+
+fn prepare_checked(options Options, project Project, inputs BuildInputs, value std.loom.typed.Program) Prepared {
+    Prepared {
+        inputs = inputs.files
+        targets = inputs.targets
+        input = if options.command == "check" {
+            ""
+        } else {
+            encode(lower(value), inputs.targets)
+        }
+        entry = value.entry
+        tests = length(value.tests)
+        project = project
     }
 }
 

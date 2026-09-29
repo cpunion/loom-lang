@@ -1,0 +1,315 @@
+import std.bytes.to_text
+
+// Counted UTF-8 fields keep the private snapshot independent of JSON policy and
+// the native backend format. The host authenticates its compiler/cache boundary.
+record CacheReader {
+    text Text
+    cursor List[Int]
+}
+
+fn cache_text(output Bytes, value Text) {
+    let size = std.int.to_text(std.text.length(value))
+    var index = 0
+    while index < std.text.length(size) {
+        std.bytes.push(output, std.text.byte(size, index))
+        index = index + 1
+    }
+    std.bytes.push(output, 10)
+    index = 0
+    while index < std.text.length(value) {
+        std.bytes.push(output, std.text.byte(value, index))
+        index = index + 1
+    }
+}
+
+fn cache_int(output Bytes, value Int) {
+    cache_text(output, std.int.to_text(value))
+}
+
+fn cache_bool(output Bytes, value Bool) {
+    cache_int(output, if value {
+            1
+        } else {
+            0
+        })
+}
+
+fn cache_span(output Bytes, value Span) {
+    cache_int(output, value.start)
+    cache_int(output, value.end)
+}
+
+fn cache_ints(output Bytes, values List[Int]) {
+    cache_int(output, length(values))
+    var index = 0
+    while index < length(values) {
+        cache_int(output, get(values, index))
+        index = index + 1
+    }
+}
+
+fn cache_read_text(reader CacheReader) Result[Text, Text] {
+    let start = get(reader.cursor, 0)
+    var end = start
+    while end < std.text.length(reader.text) && std.text.byte(reader.text, end) != 10 {
+        end = end + 1
+    }
+    let size = match std.int.parse(std.text.slice(reader.text, start, end)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("invalid cache field size")
+        }
+    }
+    if size < 0 || end >= std.text.length(reader.text) || size > std.text.length(reader.text) - end - 1 {
+        return Result.Err("truncated cache field")
+    }
+    set(reader.cursor, 0, end + 1 + size)
+    Result.Ok(std.text.slice(reader.text, end + 1, end + 1 + size))
+}
+
+fn cache_read_int(reader CacheReader) Result[Int, Text] {
+    match std.int.parse(cache_read_text(reader)?) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(_) => Result.Err("invalid cache number")
+    }
+}
+
+fn cache_read_count(reader CacheReader) Result[Int, Text] {
+    let count = cache_read_int(reader)?
+    if count < 0 || count > std.text.length(reader.text) - get(reader.cursor, 0) {
+        return Result.Err("invalid cache count")
+    }
+    Result.Ok(count)
+}
+
+fn cache_read_bool(reader CacheReader) Result[Bool, Text] {
+    let value = cache_read_int(reader)?
+    if value < 0 || value > 1 {
+        return Result.Err("invalid cache flag")
+    }
+    Result.Ok(value == 1)
+}
+
+fn cache_read_span(reader CacheReader) Result[Span, Text] {
+    let start = cache_read_int(reader)?
+    let end = cache_read_int(reader)?
+    Result.Ok(Span {
+            start = start
+            end = end
+        })
+}
+
+fn cache_read_ints(reader CacheReader) Result[List[Int], Text] {
+    let count = cache_read_count(reader)?
+    let values = new[Int]()
+    var index = 0
+    while index < count {
+        push(values, cache_read_int(reader)?)
+        index = index + 1
+    }
+    Result.Ok(values)
+}
+
+fn cache_type(output Bytes, value Type) {
+    cache_int(output, cache_type_tag(value.kind))
+    cache_int(output, value.symbol)
+    cache_ints(output, value.arguments)
+    cache_int(output, length(value.fields))
+    var index = 0
+    while index < length(value.fields) {
+        let field = get(value.fields, index)
+        cache_text(output, field.name)
+        cache_int(output, field.ty)
+        index = index + 1
+    }
+    cache_int(output, length(value.variants))
+    index = 0
+    while index < length(value.variants) {
+        let variant = get(value.variants, index)
+        cache_text(output, variant.name)
+        cache_ints(output, variant.fields)
+        index = index + 1
+    }
+}
+
+fn cache_read_type(reader CacheReader) Result[Type, Text] {
+    let kind = cache_type_kind(cache_read_int(reader)?)?
+    let symbol = cache_read_int(reader)?
+    let arguments = cache_read_ints(reader)?
+    let fields = new[Field]()
+    let count = cache_read_count(reader)?
+    var index = 0
+    while index < count {
+        push(fields, Field {
+                name = cache_read_text(reader)?
+                ty = cache_read_int(reader)?
+            })
+        index = index + 1
+    }
+    let variants = new[Variant]()
+    let variant_count = cache_read_count(reader)?
+    index = 0
+    while index < variant_count {
+        push(variants, Variant {
+                name = cache_read_text(reader)?
+                fields = cache_read_ints(reader)?
+            })
+        index = index + 1
+    }
+    Result.Ok(Type {
+            kind = kind
+            symbol = symbol
+            arguments = arguments
+            fields = fields
+            variants = variants
+            constraint = new[Expr]()
+        })
+}
+
+fn cache_expressions(output Bytes, values List[Expr], depth Int) Result[Bool, Text] {
+    cache_int(output, length(values))
+    var index = 0
+    while index < length(values) {
+        discard cache_expression(output, get(values, index), depth)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn cache_expression(output Bytes, value Expr, depth Int) Result[Bool, Text] {
+    if depth > 256 {
+        return Result.Err("cache expression depth exceeded")
+    }
+    cache_int(output, cache_expression_tag(value.kind))
+    cache_int(output, value.ty)
+    cache_span(output, value.span)
+    cache_text(output, value.text)
+    cache_int(output, value.index)
+    cache_bool(output, value.falls)
+    discard cache_expressions(output, value.children, depth + 1)?
+    cache_int(output, length(value.arms))
+    var index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        cache_int(output, arm.variant)
+        cache_ints(output, arm.bindings)
+        cache_int(output, arm.whole)
+        discard cache_expressions(output, arm.body, depth + 1)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn cache_read_expressions(reader CacheReader, depth Int) Result[List[Expr], Text] {
+    let count = cache_read_count(reader)?
+    let values = new[Expr]()
+    var index = 0
+    while index < count {
+        push(values, cache_read_expression(reader, depth)?)
+        index = index + 1
+    }
+    Result.Ok(values)
+}
+
+fn cache_read_expression(reader CacheReader, depth Int) Result[Expr, Text] {
+    if depth > 256 {
+        return Result.Err("cache expression depth exceeded")
+    }
+    let kind = cache_expression_kind(cache_read_int(reader)?)?
+    let ty = cache_read_int(reader)?
+    let span = cache_read_span(reader)?
+    let text = cache_read_text(reader)?
+    let slot = cache_read_int(reader)?
+    let falls = cache_read_bool(reader)?
+    let children = cache_read_expressions(reader, depth + 1)?
+    let count = cache_read_count(reader)?
+    let arms = new[Arm]()
+    var index = 0
+    while index < count {
+        let variant = cache_read_int(reader)?
+        let bindings = cache_read_ints(reader)?
+        let whole = cache_read_int(reader)?
+        push(arms, Arm {
+                variant = variant
+                bindings = bindings
+                whole = whole
+                body = cache_read_expressions(reader, depth + 1)?
+            })
+        index = index + 1
+    }
+    Result.Ok(Expr {
+            kind = kind
+            ty = ty
+            span = span
+            text = text
+            index = slot
+            children = children
+            arms = arms
+            falls = falls
+        })
+}
+
+fn cache_function(output Bytes, value Function) Result[Bool, Text] {
+    cache_bool(output, value.is_async)
+    cache_int(output, value.symbol)
+    cache_ints(output, value.arguments)
+    cache_ints(output, value.params)
+    cache_int(output, value.result)
+    cache_int(output, length(value.locals))
+    var index = 0
+    while index < length(value.locals) {
+        let local = get(value.locals, index)
+        cache_text(output, local.name)
+        cache_int(output, local.ty)
+        cache_bool(output, local.mutable)
+        cache_bool(output, local.is_scoped)
+        index = index + 1
+    }
+    discard cache_expressions(output, value.preconditions, 0)?
+    discard cache_expressions(output, value.postconditions, 0)?
+    cache_int(output, value.result_local)
+    discard cache_expression(output, value.body, 0)?
+    cache_text(output, value.runtime_name)
+    cache_span(output, value.span)
+    Result.Ok(true)
+}
+
+fn cache_read_function(reader CacheReader) Result[Function, Text] {
+    let is_async = cache_read_bool(reader)?
+    let symbol = cache_read_int(reader)?
+    let arguments = cache_read_ints(reader)?
+    let params = cache_read_ints(reader)?
+    let return_type = cache_read_int(reader)?
+    let count = cache_read_count(reader)?
+    let locals = new[Local]()
+    var index = 0
+    while index < count {
+        push(locals, Local {
+                name = cache_read_text(reader)?
+                ty = cache_read_int(reader)?
+                mutable = cache_read_bool(reader)?
+                is_scoped = cache_read_bool(reader)?
+            })
+        index = index + 1
+    }
+    let preconditions = cache_read_expressions(reader, 0)?
+    let postconditions = cache_read_expressions(reader, 0)?
+    let result_local = cache_read_int(reader)?
+    let body = cache_read_expression(reader, 0)?
+    let runtime_name = cache_read_text(reader)?
+    let span = cache_read_span(reader)?
+    Result.Ok(Function {
+            is_async = is_async
+            symbol = symbol
+            arguments = arguments
+            params = params
+            result = return_type
+            locals = locals
+            preconditions = preconditions
+            postconditions = postconditions
+            result_local = result_local
+            body = body
+            runtime_name = runtime_name
+            span = span
+        })
+}
