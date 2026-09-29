@@ -86,7 +86,7 @@ fn invariant_call(reads InvariantReads, target Int, inputs List[InputOrigin], de
             inputs = inputs
             origin = origin_input()
         })
-    if function.runtime_name != "" && !invariant_intrinsic_allowed(reads, function.runtime_name, inputs) {
+    if function.runtime_name != "" && !invariant_intrinsic_allowed(reads.contents, reads.element_writes, function.runtime_name, inputs) {
         set(reads.valid, 0, false)
         return origin_input()
     }
@@ -140,11 +140,9 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
             aggregate = origin_union(aggregate, origin_field(origin, initializer.index))
             field = field + 1
         }
-        return if kind == ExprKind.FrameNew && origin_shared(aggregate) {
-            origin_input()
-        } else {
-            aggregate
-        }
+        // A freshly allocated closure environment/cell retains field paths.
+        // Stores that could later publish input aliases remain rejected below.
+        return aggregate
     }
     let inputs = new[InputOrigin]()
     var borrowed = origin_empty()
@@ -174,12 +172,12 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     if kind == ExprKind.Intrinsic && origin_shared(borrowed) && value.text != "list_len" {
         set(reads.element_reads, 0, true)
     }
-    if ((kind == ExprKind.Intrinsic && !invariant_intrinsic_allowed(reads, value.text, inputs)) || kind == ExprKind.DynCall ||
+    if ((kind == ExprKind.Intrinsic && !invariant_intrinsic_allowed(reads.contents, reads.element_writes, value.text, inputs)) || kind == ExprKind.DynCall ||
         kind == ExprKind.FrameStore) && origin_shared(borrowed) {
         set(reads.valid, 0, false)
     }
     if kind == ExprKind.Field && length(value.children) == 1 {
-        if origin_shared(get(inputs, 0)) && get(reads.env.types, get(value.children, 0).ty).kind == TypeKind.Frame {
+        if origin_entire(get(inputs, 0)) && get(reads.env.types, get(value.children, 0).ty).kind == TypeKind.Frame {
             set(reads.valid, 0, false)
         }
         borrowed = origin_project(get(inputs, 0), value.index)
@@ -217,7 +215,14 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     if kind == ExprKind.Block && length(inputs) != 0 {
         return get(inputs, length(inputs) - 1)
     }
-    if (kind == ExprKind.List || kind == ExprKind.FunctionRef || kind == ExprKind.DynBox) && origin_shared(borrowed) {
+    if kind == ExprKind.FunctionRef && origin_shared(borrowed) {
+        return if value.index >= 0 && length(value.children) == 1 {
+            origin_field(borrowed, -1 - value.index)
+        } else {
+            origin_input()
+        }
+    }
+    if (kind == ExprKind.List || kind == ExprKind.DynBox) && origin_shared(borrowed) {
         return origin_input()
     }
     borrowed
@@ -263,13 +268,13 @@ fn invariant_observation(env Environment, program std.loom.typed.Program, value 
     reads
 }
 
-fn invariant_intrinsic_allowed(reads InvariantReads, name Text, inputs List[InputOrigin]) Bool {
-    if reads.contents && invariant_read_intrinsic(name) {
+fn invariant_intrinsic_allowed(contents Bool, element_writes Bool, name Text, inputs List[InputOrigin]) Bool {
+    if contents && invariant_read_intrinsic(name) {
         return true
     }
     // Element replacement cannot change length. Neither the index nor the
     // stored value may transport protected storage to another alias graph.
-    reads.element_writes && name == "list_set" && length(inputs) == 3 &&
+    element_writes && name == "list_set" && length(inputs) == 3 &&
     !origin_shared(get(inputs, 1)) && !origin_shared(get(inputs, 2))
 }
 

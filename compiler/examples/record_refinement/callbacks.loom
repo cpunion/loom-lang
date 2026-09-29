@@ -20,6 +20,19 @@ fn snapshot_predicate(positive Bool) fn(SharedSnapshot) Bool {
 
 type CallbackSnapshot = SharedSnapshot where callback_apply(self, snapshot_predicate(self.details.count > 0))
 
+fn captured_snapshot_check(value SharedSnapshot) fn() Bool {
+    fn() Bool {
+        value.details.count > 0 && std.text.length(value.name) > 0
+    }
+}
+
+fn captured_snapshot_valid(value SharedSnapshot) Bool {
+    let check = captured_snapshot_check(value)
+    check()
+}
+
+type CapturedSnapshot = SharedSnapshot where captured_snapshot_valid(self)
+
 fn callback_snapshot(value SharedSnapshot) Result[CallbackSnapshot, ConstraintError] {
     CallbackSnapshot(value)
 }
@@ -41,9 +54,17 @@ fn invariant_callback_scope() Bool {
             return false
         }
     }
+    let captured = match CapturedSnapshot(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return false
+        }
+    }
     push(values, -1)
     values[0] = 42
     assert valid.details.values[0] == 42 && length(valid.details.values) == 2
+    assert captured.details.values[0] == 42 && captured.details.count == 3
     let widened SharedSnapshot = valid
     assert widened.name == "callback" && source.details.count == 3
     let bad = SharedSnapshot {

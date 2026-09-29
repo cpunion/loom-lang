@@ -553,10 +553,11 @@ helper arguments, recursive calls, returned aliases and preconditions. Monotone
 local origins cover branch/loop assignments and match payloads. Field paths keep
 input and fresh scratch separate through mixed records, tuples, enum payloads,
 record updates and helper returns. Budget exhaustion widens to unknown input
-reachability, never freshness. Named callbacks now propagate these origins through
+reachability, never freshness. Named callbacks and locally created closures propagate these origins through
 every reachable target of their checked function shape, including returned
-aliases and preconditions. Closed function references can be predicate arguments;
-input-supplied or captured callbacks remain opaque. Reads/writes of input storage,
+aliases and preconditions. Captured environments retain field paths through
+returns, nested callbacks and inline aggregate storage; closed references can be
+predicate arguments. Input-supplied callbacks remain opaque. Reads/writes of input storage,
 opaque indirect shared-input calls and mutations storing input aliases reject;
 fresh scratch and immutable enum tags/payloads are allowed. Scoped/Task
 payloads and unchecked replacement still reject. This is separate from the bounded proof

@@ -109,3 +109,114 @@ test fn invariant_callbacks_do_not_infer_targets_for_input_supplied_functions() 
         type Invalid = Envelope where valid(self)
         """, "type constraints may observe immutable fields, not shared mutable contents")
 }
+
+test fn invariant_closures_keep_captured_field_origins_through_returns() {
+    resource_accept("""
+        record Input {
+            count Int
+            values List[Int]
+        }
+        record Check {
+            action fn() Bool
+        }
+        fn make(value Input) Check {
+            Check {
+                action = fn() Bool {
+                    value.count > 0
+                }
+            }
+        }
+        fn invoke(callback fn() Bool) Bool {
+            callback()
+        }
+        fn forward(callback fn() Bool) fn() Bool {
+            fn() Bool {
+                callback()
+            }
+        }
+        fn valid(value Input) Bool {
+            let check = make(value)
+            invoke(forward(check.action))
+        }
+        type Valid = Input where valid(self)
+        """)
+    list_constraint_accept(concat(list_constraint_source(), """
+        fn make(values List[Int]) fn() Bool {
+            fn() Bool {
+                length(values) == 2
+            }
+        }
+        fn sized(values List[Int]) Bool {
+            let callback = make(values)
+            callback()
+        }
+        type Pair = List[Int] where sized(self)
+        fn replace(values Pair) {
+            values[0] = -1
+        }
+        """))
+}
+
+test fn invariant_closures_cannot_hide_reads_writes_or_returned_aliases() {
+    let header = """
+        record Input {
+            count Int
+            values List[Int]
+        }
+        """
+    resource_reject_reason(concat(header, """
+        fn valid(value Input) Bool {
+            let inspect = fn() Bool {
+                value.values[0] > 0
+            }
+            inspect()
+        }
+        type Invalid = Input where valid(self)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+    resource_reject_reason(concat(header, """
+        fn valid(value Input) Bool {
+            let modify = fn() Bool {
+                value.values[0] = 0
+                value.count > 0
+            }
+            modify()
+        }
+        type Invalid = Input where valid(self)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+    resource_reject_reason(concat(header, """
+        fn make(value Input) fn() List[Int] {
+            fn() List[Int] {
+                value.values
+            }
+        }
+        fn valid(value Input) Bool {
+            let callback = make(value)
+            callback()[0] > 0
+        }
+        type Invalid = Input where valid(self)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+    resource_reject_reason(concat(header, """
+        fn valid(value Input) Bool {
+            let values List[Int] = []
+            var alias = values
+            let inspect = fn() Bool {
+                alias[0] > 0
+            }
+            alias = value.values
+            inspect()
+        }
+        type Invalid = Input where valid(self)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+    list_constraint_reject(concat(list_constraint_source(), """
+        fn observed(values List[Int]) Bool {
+            let inspect = fn() Bool {
+                values[0] > 0
+            }
+            inspect()
+        }
+        type Observed = List[Int] where observed(self)
+        fn invalid(values Observed) {
+            values[0] = -1
+        }
+        """))
+}
