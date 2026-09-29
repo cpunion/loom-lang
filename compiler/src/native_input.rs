@@ -989,6 +989,33 @@ impl Converter<'_> {
                     .map(|child| self.expr(child))
                     .collect::<Result<Vec<_>>>()?;
                 self.task_operation(operation, &arguments, ty)?;
+                if operation == Primitive::CleanupEach {
+                    if ty != Type::Unit
+                        || !matches!(arguments[0].ty, Type::List(_))
+                        || arguments[2].ty != Type::Int
+                    {
+                        return Err(
+                            "collection cleanup requires List, callback and step count".into()
+                        );
+                    }
+                    let E::FunctionRef(target) = arguments[1].kind else {
+                        return Err("collection cleanup requires a direct checked callback".into());
+                    };
+                    let callback = at(self.functions, target)?;
+                    if callback.params.len() != 3
+                        || self.ty(callback.params[0])? != arguments[0].ty
+                        || self.ty(callback.params[1])? != Type::Int
+                        || self.ty(callback.params[2])? != Type::Int
+                        || self.ty(callback.result)? != Type::Unit
+                    {
+                        return Err("collection cleanup callback signature mismatch".into());
+                    }
+                }
+                if operation == Primitive::ListNewCapacity
+                    && (!matches!(ty, Type::List(_)) || arguments[0].ty != Type::Int)
+                {
+                    return Err("list capacity allocation requires Int and returns List".into());
+                }
                 if operation == Primitive::ListPop {
                     match arguments[0].ty {
                         Type::List(id) if self.program.lists[id] == ty => {}
@@ -1359,6 +1386,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "bytes_utf8" => P::BytesUtf8,
         "bytes_text_copy" => P::BytesTextCopy,
         "list_new" => P::ListNew,
+        "list_new_capacity" => P::ListNewCapacity,
         "list_len" => P::ListLen,
         "list_get" => P::ListGet,
         "list_push" => P::ListPush,
@@ -1418,6 +1446,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_file_open_result" => P::TaskFileOpenResult,
         "file_abort" => P::FileAbort,
         "clock_monotonic_ns" => P::MonotonicNs,
+        "cleanup_each" => P::CleanupEach,
         _ => return Err("unknown private checked runtime operation".into()),
     })
 }
@@ -1450,6 +1479,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::BytesUtf8
         | P::BytesTextCopy
         | P::ListLen
+        | P::ListNewCapacity
         | P::ListPop
         | P::Open
         | P::Create
@@ -1506,7 +1536,8 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::SocketWriteBytes
         | P::TaskWaitFileWrite
         | P::TaskWaitFileWriteBytes
-        | P::TaskCreate => 3,
+        | P::TaskCreate
+        | P::CleanupEach => 3,
         P::ProcessCaptureConfigured => 6,
         P::ProcessCaptureInputConfigured => 7,
     }

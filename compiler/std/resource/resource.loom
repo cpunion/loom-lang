@@ -8,3 +8,20 @@ pub concept MustScope {}
 
 // Independent of disposal: values carrying this marker cannot cross suspension.
 pub concept NoSuspend {}
+
+// As with record fields, the compiler disposes stored MustScope elements after
+// the container hook. Ordinary discardable elements retain shared semantics.
+impl[T Dispose] Dispose for List[T] {
+    fn dispose(self List[T]) {
+    }
+}
+
+intrinsic fn resource_generate[T Dispose + MustScope](count Int, factory fn(Int) T) List[T]
+
+// Factories run in increasing index order. Failure cleans every completed
+// element; successful construction transfers the whole List into its scope.
+pub fn generate[T Dispose + MustScope](count Int, factory fn(Int) T) List[T]
+    requires count >= 0
+{
+    resource_generate(count, factory)
+}

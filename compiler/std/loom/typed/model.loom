@@ -96,6 +96,7 @@ pub enum ExprKind {
     FrameStore
     Suspend
     Bytes
+    ResourceDrain
 }
 
 // FunctionRef.index is a concrete scheduled function ID; an optional child is
@@ -107,6 +108,8 @@ pub enum ExprKind {
 // their checked runtime arguments. Neither form supplies proof evidence.
 // List children are ordered, same-typed elements of a fresh shared container.
 // Bytes.text is canonical lowercase hex for a fresh mutable byte buffer.
+// ResourceDrain exists only before lowering: child 0 is a scoped List, index
+// binds one element, and the remaining children are independent cleanup steps.
 // Defer/Cleanup index a function-local cleanup registration and retain its one
 // body child with the owner's Local IDs. Only Cleanup executes that body.
 // Assert.text is a static source diagnostic, or empty for source-less IR.

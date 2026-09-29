@@ -170,6 +170,49 @@ unsafe extern "C" fn loom_rt_cleanup_pop(record: *mut Cleanup) {
     HEAD.set(unsafe { (*record).previous });
 }
 
+// A compiler-generated callback handles one statically typed disposal step.
+// The runtime knows only the progress counters and a live authoritative root.
+// One fault boundary covers the normal traversal, not one boundary per element.
+#[unsafe(no_mangle)]
+unsafe extern "C-unwind" fn loom_rt_cleanup_each(
+    root: *const *mut u8,
+    count: i64,
+    steps: i64,
+    callback: unsafe extern "C-unwind" fn(*mut u8, i64, i64),
+) {
+    if count < 0 || steps <= 0 {
+        super::fatal("invalid collection cleanup bounds");
+    }
+    let mut element = count;
+    let mut step = 0;
+    let mut first = None;
+    while element > 0 || step > 0 {
+        // SAFETY: Generated code retains the root slot until this call returns.
+        // Each callback roots its typed arguments and obeys the fault ABI.
+        let outcome = unsafe {
+            catch_fault(|| {
+                while element > 0 || step > 0 {
+                    if step == 0 {
+                        element -= 1;
+                        step = steps;
+                    }
+                    step -= 1;
+                    // A previous callback may have relocated the container.
+                    callback(root.read(), element, step);
+                }
+            })
+        };
+        if let Err(failure) = outcome {
+            if first.is_none() {
+                first = Some(failure);
+            }
+        }
+    }
+    if let Some(failure) = first {
+        raise_owned(failure);
+    }
+}
+
 fn write(mut bytes: &[u8]) {
     while !bytes.is_empty() {
         let count = bytes.len().min(i32::MAX as usize);
@@ -307,6 +350,29 @@ unsafe extern "C-unwind" fn loom_rt_fault(message: *const u8, length: usize) -> 
 mod tests {
     use super::*;
     use std::mem::MaybeUninit;
+
+    #[test]
+    fn collection_cleanup_drains_reverse_steps_and_retains_the_first_fault() {
+        unsafe extern "C-unwind" fn dispose(data: *mut u8, element: i64, step: i64) {
+            let trace = unsafe { &mut *data.cast::<Vec<(i64, i64)>>() };
+            trace.push((element, step));
+            if step == 1 {
+                fault(if element == 2 {
+                    b"first element fault"
+                } else {
+                    b"later element fault"
+                });
+            }
+        }
+        let mut trace = Vec::<(i64, i64)>::new();
+        let data = ptr::from_mut(&mut trace).cast();
+        let failure =
+            unsafe { catch_fault(|| loom_rt_cleanup_each(&data, 3, 2, dispose)) }.unwrap_err();
+        assert_eq!(failure.message, b"first element fault");
+        assert_eq!(trace, [(2, 1), (2, 0), (1, 1), (1, 0), (0, 1), (0, 0)]);
+        unsafe { loom_rt_cleanup_each(&data, 0, 2, dispose) };
+        assert_eq!(trace.len(), 6);
+    }
 
     unsafe fn before_drain_order(data: *mut u8) {
         unsafe { (*data.cast::<Vec<u8>>()).push(1) };

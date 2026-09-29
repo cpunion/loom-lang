@@ -367,7 +367,8 @@ fn native_interfaces(interfaces List[Interface]) List[Interface] {
 
 // Checking exposes high-level async IR. Only the native artifact boundary calls
 // this lowering; ordinary programs retain their existing representation.
-pub fn lower(source Program) Program {
+pub fn lower(original Program) Program {
+    let source = resource_cleanup_program(original)
     var any = false
     var index = 0
     while index < length(source.functions) {

@@ -1,0 +1,163 @@
+// Resource traversal is typed Loom IR. The runtime only resumes this callback
+// after a fault; it knows neither List layout nor the element's Dispose methods.
+fn resource_drain_call(program Program, value Expr, receiver Expr, target Int) Expr {
+    let function = get(program.functions, target)
+    let arguments = pair(receiver,
+        node(ExprKind.FunctionRef, function_type(program.types, function.params, 0), value.span, target, new[Expr]()))
+    push(arguments, integer(length(value.children) - 1, value.span))
+    operation("cleanup_each", 0, value.span, arguments)
+}
+
+fn resource_drain(program Program, source Function, value Expr, children List[Expr], callbacks List[Int]) Expr {
+    let receiver = get(children, 0)
+    let used = flags(length(source.locals))
+    let declared = flags(length(source.locals))
+    set(declared, value.index, true)
+    var index = 1
+    while index < length(children) {
+        cleanup_bindings(get(children, index), used, declared)
+        index = index + 1
+    }
+    let params = ints(receiver.ty)
+    push(params, 1)
+    push(params, 1)
+    let locals = new[Local]()
+    index = 0
+    while index < length(params) {
+        push(locals, Local {
+                name = ""
+                ty = get(params, index)
+                mutable = false
+                is_scoped = false
+            })
+        index = index + 1
+    }
+    let mapping = new[Int]()
+    index = 0
+    while index < length(source.locals) {
+        push(mapping, if get(used, index) || get(declared, index) {
+                length(locals)
+            } else {
+                -1
+            })
+        if get(mapping, index) >= 0 {
+            push(locals, get(source.locals, index))
+        }
+        index = index + 1
+    }
+    let rewrite = CleanupRewrite {
+        frame = -1
+        callback_type = -1
+        fields = new[Int]()
+        captures = new[Bool]()
+        source_locals = source.locals
+        locals = mapping
+        plans = new[CleanupPlan]()
+        callbacks = new[Int]()
+    }
+    var dispatch = empty(value.span)
+    index = length(children)
+    while index > 1 {
+        index = index - 1
+        let condition = labeled(node(ExprKind.Binary, 2, value.span, -1,
+                pair(node(ExprKind.Local, 1, value.span, 2, new[Expr]()), integer(index - 1, value.span))), "==")
+        let yes = block(one(cleanup_rewrite(rewrite, get(children, index))), 0, value.span, true)
+        let branches = pair(condition, yes)
+        push(branches, block(one(dispatch), 0, value.span, true))
+        dispatch = node(ExprKind.If, 0, value.span, -1, branches)
+    }
+    let element = get(source.locals, value.index).ty
+    let selected = operation("list_get", element, value.span,
+        pair(node(ExprKind.Local, receiver.ty, value.span, 0, new[Expr]()),
+            node(ExprKind.Local, 1, value.span, 1, new[Expr]())))
+    let body = pair(node(ExprKind.Let, 0, value.span, get(mapping, value.index), one(selected)), dispatch)
+    let target = length(program.functions)
+    push(program.functions, generated(source, params, 0, locals, block(body, 0, value.span, true)))
+    set(callbacks, value.index, target)
+    resource_drain_call(program, value, receiver, target)
+}
+
+fn resource_cleanup_expression(program Program, source Function, value Expr, callbacks List[Int]) Expr {
+    // Defer and every normal exit share the same typed traversal. Its anonymous
+    // element binding is unique within the source function.
+    if value.kind == ExprKind.ResourceDrain && get(callbacks, value.index) >= 0 {
+        return resource_drain_call(program, value,
+            resource_cleanup_expression(program, source, get(value.children, 0), callbacks), get(callbacks, value.index))
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, resource_cleanup_expression(program, source, get(value.children, index), callbacks))
+        index = index + 1
+    }
+    if value.kind == ExprKind.ResourceDrain {
+        return resource_drain(program, source, value, children, callbacks)
+    }
+    let arms = new[Arm]()
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let body = new[Expr]()
+        var member = 0
+        while member < length(arm.body) {
+            push(body, resource_cleanup_expression(program, source, get(arm.body, member), callbacks))
+            member = member + 1
+        }
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = arm.bindings
+                whole = arm.whole
+                body = body
+            })
+        index = index + 1
+    }
+    Expr {
+        kind = value.kind
+        ty = value.ty
+        span = value.span
+        text = value.text
+        index = value.index
+        children = children
+        arms = arms
+        falls = value.falls
+    }
+}
+
+fn resource_cleanup_program(source Program) Program {
+    let program = Program {
+        types = clone(source.types)
+        functions = clone(source.functions)
+        entry = source.entry
+        tests = source.tests
+        test_names = source.test_names
+        exports = source.exports
+        interfaces = source.interfaces
+        witnesses = source.witnesses
+    }
+    var index = 0
+    while index < length(source.functions) {
+        let function = get(source.functions, index)
+        var has_scope = false
+        var local = 0
+        while !has_scope && local < length(function.locals) {
+            has_scope = get(function.locals, local).is_scoped
+            local = local + 1
+        }
+        if has_scope {
+            let callbacks = new[Int]()
+            local = 0
+            while local < length(function.locals) {
+                push(callbacks, -1)
+                local = local + 1
+            }
+            set(program.functions, index, function_body(function,
+                    resource_cleanup_expression(program, function, function.body, callbacks)))
+        }
+        index = index + 1
+    }
+    if length(program.functions) == length(source.functions) {
+        source
+    } else {
+        program
+    }
+}

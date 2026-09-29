@@ -76,7 +76,7 @@ fn close_expression(scope Lexical, value Expr, captured Bool) Expr {
         index = index + 1
     }
     let local = value.kind == ExprKind.Local || value.kind == ExprKind.Let || value.kind == ExprKind.Assign
-    let mapped = if local { closure_local(scope, value.index, captured) } else { value.index }
+    let mapped = if local || value.kind == ExprKind.ResourceDrain { closure_local(scope, value.index, captured) } else { value.index }
     let cell = if local { captured_storage(scope, value.index) } else { -1 }
     if cell >= 0 {
         let reference = storage_node(value, ExprKind.Local, cell, mapped, new[Expr]())

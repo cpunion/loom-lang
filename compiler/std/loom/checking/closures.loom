@@ -253,12 +253,15 @@ fn closure_body(env Environment, plan Int, outer List[Context], emit Bool) Resul
     var context = Context { lexical = scopes env = env signature = saved.signature arguments = saved.arguments constants = saved.constants
         locals = new[Local]() bindings = new[Binding]() head = -1 cleanups = new[Cleanup]() cleanup_head = -1 loop_boundary = -2
         facts = new[Fact]() fact_head = -1 emit = emit }
-    discard resource_parameters(context)?
     let parameters = group(node, NodeKind.Parameters)
+    let resources = resource_concept(env, "MustScope") >= 0
     var index = 0
     while index < length(parameters) {
         let parameter = get(parameters, index)
         context = bind_local(context, parameter, parameter.value, get(saved.signature.params, index), false, -1)?
+        if resources && must_scope(context, get(saved.signature.params, index))? {
+            resource_borrow_local(context, length(context.locals) - 1)
+        }
         index = index + 1
     }
     push(context.locals, Local { name = "" ty = saved.environment mutable = false is_scoped = false })

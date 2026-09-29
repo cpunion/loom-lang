@@ -120,26 +120,7 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
                 expression(ExprKind.Field, field.ty, source, "", field.index, expressions(reference), true)
             } else { reference })
         if resource {
-            let disposals = new[Expr]()
-            discard resource_cleanups(context, source, reference, disposals, 0)?
-            var child = 0
-            while child < length(disposals) {
-                let flag = length(context.locals)
-                push(context.locals, Local { name = "" ty = 2 mutable = true is_scoped = false })
-                push(body, expression(ExprKind.Let, 0, source, "", flag,
-                    expressions(expression(ExprKind.Bool, 2, source, "true", -1, new[Expr](), true)), true))
-                let dispose = get(disposals, child)
-                let dispose_body = expression(ExprKind.Block, 0, source, "", -1, expressions(dispose), true)
-                let guarded = expression(ExprKind.If, 0, source, "", -1,
-                    pair(atom(ExprKind.Local, 2, source, flag), dispose_body), true)
-                let cleanup = expression(ExprKind.Block, 0, source, "", -1, expressions(guarded), true)
-                let head = length(context.cleanups)
-                push(context.cleanups, Cleanup { body = cleanup previous = if length(cleanups) == 0 { context.cleanup_head } else { get(cleanups, length(cleanups) - 1) } })
-                push(body, expression(ExprKind.Defer, 0, source, "resource-pending", head, expressions(cleanup), true))
-                push(flags, flag)
-                push(cleanups, head)
-                child = child + 1
-            }
+            discard pending_scope(context, source, reference, body, flags, cleanups)?
             active = true
         }
         index = index + 1
@@ -148,19 +129,7 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
     push(context.locals, Local { name = "" ty = ty mutable = false is_scoped = false })
     let assembled = expression(kind, ty, node, "resource-pending-transfer", selected, rebuilt, true)
     push(body, expression(ExprKind.Let, 0, node, "", aggregate_local, expressions(assembled), true))
-    index = 0
-    while index < length(flags) {
-        push(body, expression(ExprKind.Assign, 0, node, "", get(flags, index),
-            expressions(expression(ExprKind.Bool, 2, node, "false", -1, new[Expr](), true)), true))
-        index = index + 1
-    }
-    index = length(cleanups)
-    while index > 0 {
-        index = index - 1
-        let head = get(cleanups, index)
-        push(body, expression(ExprKind.Cleanup, 0, node, "resource-disarm", head,
-            expressions(get(context.cleanups, head).body), true))
-    }
+    pending_disarm(context, node, body, flags, cleanups)
     push(body, atom(ExprKind.Local, ty, node, aggregate_local))
     Result.Ok(expression(ExprKind.Block, ty, node, "", -1, body, all_fall(body)))
 }
@@ -577,12 +546,7 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
     } else { discard validate_static(context.env, instance.signature, constants, node)? }
     var resource_argument = 0
     while resource_argument < length(runtime_values) {
-        if resource_argument == 0 && method_declaration(context.env, signature.symbol) >= 0 {
-            discard resource_receiver(context, node, get(runtime_values, resource_argument))?
-        }
-        if !(resource_argument == 0 && method_declaration(context.env, signature.symbol) >= 0) && must_scope(context, get(runtime_values, resource_argument).ty)? {
-            return Result.Err(error(context, node, "MustScope values cannot be passed as ordinary arguments"))
-        }
+        discard resource_receiver(context, node, get(runtime_values, resource_argument))?
         resource_argument = resource_argument + 1
     }
     let logical_output = substitute(context.env, context.signature.symbol, signature.result, instance.arguments, node)?

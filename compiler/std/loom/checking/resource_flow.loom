@@ -18,7 +18,7 @@ record ResourceValue {
 }
 record ResourceSummary {
     function Int
-    borrowed Int
+    borrowed List[Int]
     visiting Bool
     fresh Bool
 }
@@ -26,10 +26,12 @@ record ResourceAnalysis {
     env Environment
     functions List[Function]
     summaries List[ResourceSummary]
+    computation_requirements List[Requirement]
 }
 record ResourceFlow {
     analysis ResourceAnalysis
     function Int
+    requirements List[Requirement]
     locals List[ResourceValue]
     automatic List[Int]
     returns List[Bool]
@@ -43,7 +45,17 @@ fn resource_error(flow ResourceFlow, expr Expr, message Text) Failure {
     Failure { source = symbol(flow.analysis.env, current.symbol).file diagnostic = Diagnostic { span = expr.span message = message } }
 }
 fn flow_resource(flow ResourceFlow, ty Int) Result[Bool, Failure] {
-    resource_type(flow.analysis.env, get(flow.analysis.functions, flow.function).symbol, new[Requirement](), ty, new[Int]())
+    resource_type(flow.analysis.env, get(flow.analysis.functions, flow.function).symbol, flow.requirements, ty, new[Int]())
+}
+fn resource_requirements(analysis ResourceAnalysis, id Int) Result[List[Requirement], Failure] {
+    if id >= length(analysis.env.pending) { return Result.Ok(analysis.computation_requirements) }
+    let instance = get(analysis.env.pending, id)
+    if instance.signature < 0 {
+        return Result.Ok(get(analysis.env.closures, -1 - instance.signature).signature.requirements)
+    }
+    let owner = get(analysis.env.signatures, instance.signature).symbol
+    Result.Ok(signature(analysis.env, instance.signature, instance.arguments,
+            symbol(analysis.env, owner).node)?.requirements)
 }
 fn resource_automatic(expr Expr, output List[Int]) {
     if expr.kind == ExprKind.Defer && (expr.text == "scoped" || expr.text == "resource-pending") { push(output, expr.index) }
@@ -64,7 +76,7 @@ fn resource_branch(flow ResourceFlow) ResourceFlow {
     var index = 0
     while index < length(flow.locals) { push(locals, get(flow.locals, index))
         index = index + 1 }
-    ResourceFlow { analysis = flow.analysis function = flow.function locals = locals automatic = flow.automatic returns = flow.returns }
+    ResourceFlow { analysis = flow.analysis function = flow.function requirements = flow.requirements locals = locals automatic = flow.automatic returns = flow.returns }
 }
 fn resource_join(flow ResourceFlow, branch ResourceFlow) {
     var index = 0
@@ -90,13 +102,13 @@ fn resource_consume(flow ResourceFlow, value ResourceValue) {
     }
 }
 
-// A summary is for one concrete function and one borrowed receiver. Recursive
+// A summary is for one concrete function and its borrowed arguments. Recursive
 // edges may share the no-escape obligation, but never establish freshness.
-fn resource_function(analysis ResourceAnalysis, id Int, borrowed Int) Result[Bool, Failure] {
+fn resource_function(analysis ResourceAnalysis, id Int, borrowed List[Int]) Result[Bool, Failure] {
     var index = 0
     while index < length(analysis.summaries) {
         let previous = get(analysis.summaries, index)
-        if previous.function == id && previous.borrowed == borrowed {
+        if previous.function == id && same(previous.borrowed, borrowed) {
             return Result.Ok(!previous.visiting && previous.fresh)
         }
         index = index + 1
@@ -107,12 +119,12 @@ fn resource_function(analysis ResourceAnalysis, id Int, borrowed Int) Result[Boo
     let locals = new[ResourceValue]()
     index = 0
     while index < length(current.locals) {
-        push(locals, resource_value(index == borrowed || get(current.locals, index).is_scoped, false, -1))
+        push(locals, resource_value(resource_seen(borrowed, index) || get(current.locals, index).is_scoped, false, -1))
         index = index + 1
     }
     let automatic = new[Int]()
     resource_automatic(current.body, automatic)
-    let flow = ResourceFlow { analysis = analysis function = id locals = locals automatic = automatic returns = new[Bool]() }
+    let flow = ResourceFlow { analysis = analysis function = id requirements = resource_requirements(analysis, id)? locals = locals automatic = automatic returns = new[Bool]() }
     let value = resource_expression(flow, current.body, false)?
     if value.protected { return Result.Err(resource_error(flow, current.body, "a scoped value or borrowed receiver cannot escape through a return")) }
     if flow_resource(flow, current.result)? && current.body.falls && !value.fresh {
@@ -128,16 +140,16 @@ fn resource_function(analysis ResourceAnalysis, id Int, borrowed Int) Result[Boo
 }
 
 fn resource_call(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
-    var borrowed = -1
+    let borrowed = new[Int]()
     var index = 0
     while index < length(expr.children) {
         let child = get(expr.children, index)
         let value = resource_expression(flow, child, false)?
         if value.protected {
-            if expr.kind != ExprKind.Call || expr.index < 0 || index != 0 || method_declaration(flow.analysis.env, get(flow.analysis.functions, expr.index).symbol) < 0 {
-                return Result.Err(resource_error(flow, child, "a scoped value may only be borrowed as a checked method receiver"))
+            if (expr.kind != ExprKind.Call || expr.index < 0) && !flow_resource(flow, child.ty)? {
+                return Result.Err(resource_error(flow, child, "indirect borrowing requires a MustScope parameter"))
             }
-            borrowed = index
+            push(borrowed, index)
         } else {
             if flow_resource(flow, child.ty)? { return Result.Err(resource_error(flow, child, "a resource must enter scoped before a method call")) }
         }
@@ -154,7 +166,7 @@ fn resource_call(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceVa
         return Result.Ok(resource_value(false, resource, -1))
     }
     let target = get(flow.analysis.functions, expr.index)
-    if borrowed >= 0 {
+    if length(borrowed) != 0 {
         let declaration = method_declaration(flow.analysis.env, target.symbol)
         if declaration >= 0 && symbol(flow.analysis.env, declaration).owner == resource_concept(flow.analysis.env, "Dispose") && !automatic {
             return Result.Err(resource_error(flow, expr, "a scoped value is disposed automatically; manual Dispose calls are forbidden"))
@@ -175,6 +187,57 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         let value = get(flow.locals, expr.index)
         if value.pending == -2 { return Result.Err(resource_error(flow, expr, "a transferred resource payload cannot be used again")) }
         return Result.Ok(value)
+    }
+    if kind == ExprKind.ResourceDrain {
+        if !automatic {
+            return Result.Err(resource_error(flow, expr, "collection disposal requires an automatic cleanup"))
+        }
+        let value = resource_expression(flow, get(expr.children, 0), false)?
+        if !value.protected {
+            return Result.Err(resource_error(flow, expr, "collection disposal requires a scoped container"))
+        }
+        var index = 1
+        while index < length(expr.children) {
+            let step = resource_branch(flow)
+            set(step.locals, expr.index, resource_value(true, false, -1))
+            discard resource_expression(step, get(expr.children, index), true)?
+            index = index + 1
+        }
+        return Result.Ok(resource_value(false, false, -1))
+    }
+    if kind == ExprKind.Intrinsic && (expr.text == "list_new" || expr.text == "list_new_capacity") {
+        return Result.Ok(resource_value(false, true, -1))
+    }
+    if kind == ExprKind.Intrinsic && expr.text == "list_push" && expr.index >= 0 {
+        let container = get(expr.children, 0)
+        let held = resource_expression(flow, container, false)?
+        let value = resource_expression(flow, get(expr.children, 1), false)?
+        if container.kind != ExprKind.Local || container.index != expr.index ||
+            !held.protected || get(current.locals, expr.index).name != "" {
+            return Result.Err(resource_error(flow, expr, "resource construction requires its private scoped container"))
+        }
+        if !value.fresh || value.protected {
+            return Result.Err(resource_error(flow, expr, "resource construction requires a fresh factory result"))
+        }
+        resource_consume(flow, value)
+        return Result.Ok(resource_value(false, false, -1))
+    }
+    if kind == ExprKind.Coerce && expr.text == "resource-pending-transfer" {
+        let input = get(expr.children, 0)
+        let value = resource_expression(flow, input, false)?
+        if input.kind != ExprKind.Local || !value.protected ||
+            !get(current.locals, input.index).is_scoped || get(current.locals, input.index).name != "" {
+            return Result.Err(resource_error(flow, expr, "resource construction must transfer its private container"))
+        }
+        set(flow.locals, input.index, resource_value(false, false, -2))
+        return Result.Ok(resource_value(false, true, -1))
+    }
+    if kind == ExprKind.Intrinsic && (expr.text == "list_len" || expr.text == "list_get") {
+        let value = resource_expression(flow, get(expr.children, 0), false)?
+        if length(expr.children) > 1 {
+            discard resource_expression(flow, get(expr.children, 1), false)?
+        }
+        return Result.Ok(resource_value(value.protected && flow_resource(flow, expr.ty)?, false, -1))
     }
     if kind == ExprKind.Cleanup && expr.text == "resource-disarm" {
         return Result.Ok(resource_value(false, false, -1))
@@ -254,7 +317,7 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         // wrapper does not acquire exclusive ownership of its reachable data.
         return Result.Ok(resource_value(value.protected && flow_resource(flow, expr.ty)?, false, -1))
     }
-    if (kind == ExprKind.Record || kind == ExprKind.Variant) && expr.text == "resource-pending-transfer" {
+    if (kind == ExprKind.Record || kind == ExprKind.Variant || kind == ExprKind.List) && expr.text == "resource-pending-transfer" {
         var field = 0
         while field < length(expr.children) {
             let child = get(expr.children, field)
@@ -354,13 +417,11 @@ fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceV
 
 fn resource_functions(env Environment, functions List[Function]) Result[Bool, Failure] {
     if resource_concept(env, "Dispose") < 0 && resource_concept(env, "MustScope") < 0 { return Result.Ok(true) }
-    let analysis = ResourceAnalysis { env = env functions = functions summaries = new[ResourceSummary]() }
+    let analysis = ResourceAnalysis { env = env functions = functions summaries = new[ResourceSummary]() computation_requirements = new[Requirement]() }
     var index = 0
     while index < length(functions) {
         let current = get(functions, index)
-        let borrowed = if length(current.params) != 0 && method_declaration(env, current.symbol) >= 0 &&
-            resource_type(env, current.symbol, new[Requirement](), get(current.params, 0), new[Int]())? { 0 } else { -1 }
-        discard resource_function(analysis, index, borrowed)?
+        discard resource_function(analysis, index, new[Int]())?
         index = index + 1
     }
     Result.Ok(true)

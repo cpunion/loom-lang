@@ -107,7 +107,9 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::BytesPush
         | Primitive::BytesTextCopy
         | Primitive::ListNew
+        | Primitive::ListNewCapacity
         | Primitive::ListPush
+        | Primitive::CleanupEach
         | Primitive::Read
         | Primitive::SocketRead
         | Primitive::DirectoryRead

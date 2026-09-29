@@ -651,7 +651,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         // Runtime coroutine callbacks are compiler-generated direct targets,
         // not source function values with a separately captured environment.
         let callback = match operation {
-            Primitive::TaskCreate | Primitive::TaskCleanupPush => Some(1),
+            Primitive::TaskCreate | Primitive::TaskCleanupPush | Primitive::CleanupEach => Some(1),
             Primitive::TaskRun => Some(0),
             _ => None,
         };
@@ -668,6 +668,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let pointer = self.context.ptr_type(AddressSpace::default());
         let i64_type = self.context.i64_type();
         let (name, result_type) = match operation {
+            Primitive::CleanupEach => {
+                let root = *self
+                    .roots
+                    .expressions
+                    .get(&(&args[0] as *const checked::Expr))
+                    .ok_or("collection cleanup needs a rooted container snapshot")?;
+                let count = self.memory_len(values[0].into_pointer_value())?;
+                self.runtime_call(
+                    "cleanup_each",
+                    None,
+                    &[root.into(), count.into(), values[2], values[1]],
+                )?;
+                self.restore_locals()?;
+                return Ok(None);
+            }
             Primitive::TaskCreate
             | Primitive::TaskAdopt
             | Primitive::TaskReturn
@@ -793,6 +808,28 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::BytesTextCopy => ("bytes_text_copy", Some(pointer.into())),
             Primitive::ListNew => {
                 return Ok(Some(self.list_new(result, 0)?.into()));
+            }
+            Primitive::ListNewCapacity => {
+                let capacity = values[0].into_int_value();
+                let limit = self.context.i64_type().const_int(
+                    if self.size_type.get_bit_width() < 64 {
+                        u32::MAX as u64
+                    } else {
+                        i64::MAX as u64
+                    },
+                    false,
+                );
+                let valid = self.builder.build_int_compare(
+                    IntPredicate::ULE,
+                    capacity,
+                    limit,
+                    "capacity.valid",
+                )?;
+                self.guard(valid, "invalid list capacity")?;
+                let native =
+                    self.builder
+                        .build_int_cast(capacity, self.size_type, "list.capacity")?;
+                return Ok(Some(self.list_with_capacity(result, native)?.into()));
             }
             Primitive::ListPop => {
                 return Ok(Some(self.list_pop(values[0].into_pointer_value(), result)?));

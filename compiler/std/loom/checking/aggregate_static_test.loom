@@ -140,7 +140,7 @@ test fn aggregate_static_parameters_keep_constraints_and_resource_obligations() 
         """
     resource_reject_reason(concat(resource, """
         fn erased(comptime token Token) {}
-        """), "MustScope values cannot be ordinary parameters; use a scoped receiver method")
+        """), "comptime parameters cannot contain MustScope resources")
     resource_reject(concat(resource, """
         fn erased[T](comptime value T) {}
         fn main() {

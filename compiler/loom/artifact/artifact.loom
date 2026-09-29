@@ -171,6 +171,10 @@ fn expression_tag(kind ExprKind) Int {
         ExprKind.FrameNew => 31,
         ExprKind.FrameStore => 32
         ExprKind.Bytes => 33
+        ExprKind.ResourceDrain => {
+            assert false
+            -1
+        }
         // A deferred generic branch is check-only and must be instantiated.
         ExprKind.Deferred => {
             assert false
