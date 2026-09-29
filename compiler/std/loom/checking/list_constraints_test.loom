@@ -301,3 +301,50 @@ test fn cached_predicate_edits_revoke_element_write_permissions() {
         Result.Ok(_) => false
     }
 }
+
+test fn list_append_requires_a_preservation_proof_not_just_length_only_reads() {
+    let header = list_constraint_source()
+    list_constraint_accept(concat(header, """
+        fn enough(values List[Int]) Bool {
+            let count = length(values)
+            count >= 2
+        }
+        type Enough = List[Int] where enough(self)
+        fn append_twice(values List[Int], value Int) {
+            push(values, value)
+            push(values, value)
+        }
+        fn main() {
+            let values = Enough([1, 2])
+            let alias = values
+            append_twice(values, 3)
+            assert length(alias) == 4
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        type Bounded = List[Int] where length(self) > 0 && length(self) < 4
+        fn invalid(values Bounded) {
+            push(values, 1)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn valid(values List[Int]) Bool {
+            length(values) + 1 > 0
+        }
+        type Overflow = List[Int] where valid(self)
+        fn invalid(values Overflow) {
+            push(values, 1)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn required(count Int) Bool
+        requires count < 4
+        {
+            count > 0
+        }
+        type Limited = List[Int] where required(length(self))
+        fn invalid(values Limited) {
+            push(values, 1)
+        }
+        """))
+}

@@ -1,0 +1,45 @@
+// A proof-only abstraction: each List argument denotes its length. Only the
+// trusted length intrinsic consumes it; element access and mutation stay outside
+// the helper grammar. Ordinary contract proofs do not enable this abstraction.
+fn proof_list_type(program Program, ty Int) Bool {
+    ty >= 0 && ty < length(program.types) && get(program.types, ty).kind == TypeKind.List
+}
+
+fn appended_self(value Expr, next Expr, depth Int) Result[Expr, Text] {
+    if depth >= 64 || length(value.arms) != 0 {
+        return Result.Err("unsupported List predicate")
+    }
+    if value.kind == ExprKind.Local && value.index == 0 {
+        return Result.Ok(next)
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, appended_self(get(value.children, index), next, depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(proof_expr(value, value.kind, value.ty, value.text, value.index, children))
+}
+
+// The caller separately proves input effects depend only on length and keeps
+// writable aliases from escaping. Successful append changes n to n+1; capacity
+// and Int-length overflow fault before mutation. Failure to prove is not permission.
+pub fn preserves_list_append(program Program, predicate Expr) Bool {
+    let current = proof_expr(predicate, ExprKind.Local, 1, "self", 0, new[Expr]())
+    let zero = proof_expr(predicate, ExprKind.Integer, 1, "0", -1, new[Expr]())
+    let one = proof_expr(predicate, ExprKind.Integer, 1, "1", -1, new[Expr]())
+    let maximum = proof_expr(predicate, ExprKind.Integer, 1, "9223372036854775807", -1, new[Expr]())
+    let nonnegative = proof_expr(predicate, ExprKind.Binary, 2, ">=", -1, proof_children(current, zero))
+    let capacity = proof_expr(predicate, ExprKind.Binary, 2, "<", -1, proof_children(current, maximum))
+    let next = proof_expr(predicate, ExprKind.Binary, 1, "+", -1, proof_children(current, one))
+    let conclusion = match appended_self(predicate, next, 0) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    match helper_implication(program, proof_and(proof_and(nonnegative, capacity), predicate), conclusion, true) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+}

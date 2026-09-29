@@ -22,6 +22,7 @@ import std.loom.eval.validate
 import std.loom.eval.evaluate
 import std.loom.proof.implies
 import std.loom.proof.verify_with_types
+import std.loom.proof.preserves_list_append
 
 fn predicate_form(node Node, calls Bool) Bool {
     if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool || node.kind == NodeKind.Text { return true }
@@ -70,7 +71,7 @@ fn refinement(env Environment, owner Int, base Int) Result[Expr, Failure] {
     // Templates are fully typed, but hold no executable call indices.
     expr(predicate_scope(env, owner, base), predicate, 2)
 }
-fn validate_refinement(env Environment, owner Int, base Int) Result[Bool, Failure] {
+fn validate_refinement(env Environment, owner Int, base Int) Result[Int, Failure] {
     let predicate = predicate_node(env, owner)
     let stage = staging(predicate_scope(env, owner, base), predicate)?
     let value = expr(stage, predicate, 2)?
@@ -80,20 +81,22 @@ fn validate_refinement(env Environment, owner Int, base Int) Result[Bool, Failur
     }
     let program = prepared(stage)?
     discard list_constraint_expression(env, program.functions, owner, value)?
-    var element_writes = false
+    var writes = 0
     if !inline_constraint_base(env, base, 0) {
         let list = get(env.types, base).kind == TypeKind.List
         let reads = invariant_observation(env, program, value, length(stage.locals), list)
         if !get(reads.valid, 0) {
             return Result.Err(failure(env, owner, predicate, "type constraints may observe immutable fields, not shared mutable contents"))
         }
-        element_writes = list && !get(reads.element_reads, 0)
+        if list && !get(reads.element_reads, 0) {
+            writes = if std.loom.proof.preserves_list_append(program, value) { 2 } else { 1 }
+        }
     }
     match std.loom.eval.validate(program, value) {
         Result.Ok(_) => {}
         Result.Err(failed) => { return Result.Err(failure(env, owner, predicate, concat("type constraint: ", failed.message))) }
     }
-    Result.Ok(element_writes)
+    Result.Ok(writes)
 }
 fn refinements(env Environment) Result[Bool, Failure] {
     // Make every proof-eligible template available before typing predicates
@@ -117,12 +120,12 @@ fn refinements(env Environment) Result[Bool, Failure] {
     while index < length(env.types) {
         let ty = get(env.types, index)
         if ty.kind == TypeKind.Refined {
-            let element_writes = validate_refinement(env, ty.symbol, get(ty.fields, 0).ty)?
+            let writes = validate_refinement(env, ty.symbol, get(ty.fields, 0).ty)?
             let state = get(env.type_states, index)
             set(env.type_states, index, TypeState {
                     phase = state.phase
                     task_width = state.task_width
-                    list_element_writes = element_writes
+                    list_writes = writes
                 })
         }
         index = index + 1

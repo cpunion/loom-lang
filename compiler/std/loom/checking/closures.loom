@@ -218,7 +218,7 @@ fn closure_literal(context Context, node Node) Result[Expr, Failure] {
         plan = length(context.env.closures)
         let environment = length(context.env.types)
         push(context.env.types, simple_type(TypeKind.Frame, owner, context.arguments))
-        push(context.env.type_states, TypeState { phase = 2 task_width = -1 list_element_writes = false })
+        push(context.env.type_states, TypeState { phase = 2 task_width = -1 list_writes = 0 })
         push(context.env.closures, ClosurePlan { signature = signature arguments = context.arguments constants = context.constants
             captures = new[Capture]() environment = environment checked = false })
         push(outer, context)

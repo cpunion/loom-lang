@@ -241,9 +241,11 @@ isolation route now works for List-backed constraints with immutable elements:
 fresh literals or proved non-publishing factories establish the boundary, and
 inferred non-escaping operations preserve it. Copies of constrained values share.
 Length-only predicates admit element replacement and source `set`/`reverse`;
-content-dependent predicates retain read-only storage. Length changes and raw
-alias escape reject. These disjoint-effect proofs add no implicit copy or runtime
-monitor; arbitrary predicate-preserving writes remain open.
+content-dependent predicates retain read-only storage. Appends require a bounded
+proof from the current length predicate to its next-length predicate; nonempty
+and lower-bound constraints work, while fixed lengths and upper bounds reject.
+Unproved length changes and raw alias escape reject. These preservation proofs
+add no implicit copy or runtime monitor; arbitrary predicates remain open.
 
 Each addition must work through the native CLI and its `std` tests. Required
 proofs remain mandatory even while the supported prover fragment grows. Exact

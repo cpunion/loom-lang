@@ -1013,11 +1013,17 @@ unsafe fn reserve(owner: *mut u8, additional: usize, stride: usize) -> *mut Buff
     let required = old
         .len
         .checked_add(additional)
+        .filter(|length| *length <= i64::MAX as usize)
         .unwrap_or_else(|| fault("buffer size overflow"));
     if required <= old.cap {
         return owner.cast();
     }
-    let capacity = required.max(old.cap.saturating_mul(2)).max(8);
+    // List/Bytes lengths are source Int values, including zero-sized elements.
+    // Keep the spare-capacity fast path inside that same representable range.
+    let capacity = required
+        .max(old.cap.saturating_mul(2))
+        .max(8)
+        .min(i64::MAX as usize);
     let size = capacity
         .checked_mul(stride)
         .unwrap_or_else(|| fault("buffer size overflow"));
@@ -1401,6 +1407,23 @@ mod tests {
 
     fn live() -> usize {
         HEAP.with(|heap| heap.borrow().objects.len())
+    }
+
+    #[test]
+    fn list_growth_faults_before_length_leaves_source_int_range() {
+        let mut buffer = Buffer {
+            len: i64::MAX as usize,
+            cap: i64::MAX as usize,
+            data: ptr::null_mut(),
+        };
+        // SAFETY: Overflow must be detected before touching backing storage or
+        // registering roots. Even a zero-stride List cannot exceed source Int.
+        let failure =
+            unsafe { cleanup::catch_fault(|| reserve(ptr::from_mut(&mut buffer).cast(), 1, 0)) }
+                .unwrap_err();
+        assert_eq!(failure.message, b"buffer size overflow");
+        assert_eq!(buffer.len, i64::MAX as usize);
+        assert!(buffer.data.is_null());
     }
 
     struct TestRoot(Box<(RootFrame, Root)>);

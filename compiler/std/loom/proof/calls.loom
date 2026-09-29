@@ -233,7 +233,7 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         push(bindings, ExpansionBinding { local = index value = reference })
         index = index + 1
     }
-    let context = Expansion { program = proof.program budget = proof.budget active = new[Int]() checks = new[Evaluation]() }
+    let context = Expansion { program = proof.program list_lengths = false budget = proof.budget active = new[Int]() checks = new[Evaluation]() }
     discard expansion_step(context, 0)?
     let summary = length(function.postconditions) != 0
     var value = proof_bool(call, false)

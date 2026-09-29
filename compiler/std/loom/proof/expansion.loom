@@ -22,6 +22,7 @@ record Evaluation {
 }
 record Expansion {
     program Program
+    list_lengths Bool
     budget List[Int]
     active List[Int]
     checks List[Evaluation]
@@ -121,6 +122,9 @@ fn scalar_operator(value Expr) Bool {
 fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int) Result[Expr, Text] {
     if value.index < 0 || value.index >= length(context.program.functions) || calls >= 32 { return Result.Err("helper has no bounded checked instance") }
     let function = get(context.program.functions, value.index)
+    if context.list_lengths && function.runtime_name == "list_len" && length(value.children) == 1 {
+        return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
+    }
     if function.runtime_name != "" || !helper_type(context.program, function.result, 0) || length(function.params) != length(value.children) {
         return Result.Err("helper proof needs a source scalar or inline aggregate function")
     }
@@ -134,7 +138,8 @@ fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[Expans
     // Call arguments execute eagerly, even when an unused parameter or the
     // helper's own short circuit would omit their substituted expressions.
     while index < length(function.params) {
-        if !helper_type(context.program, get(function.params, index), 0) {
+        let ty = get(function.params, index)
+        if !helper_type(context.program, ty, 0) && !(context.list_lengths && proof_list_type(context.program, ty)) {
             return Result.Err("helper parameters must be scalars or inline aggregates")
         }
         let argument = expanded(context, get(value.children, index), guard, bindings, locals, self, calls, depth + 1)?
@@ -200,11 +205,18 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
             let binding = get(bindings, index)
             if binding.local == value.index { return Result.Ok(binding.value) }
         }
-        if self && value.index == 0 { return Result.Ok(proof_expr(value, ExprKind.Local, value.ty, "self", 0, new[Expr]())) }
+        if self && value.index == 0 {
+            return Result.Ok(proof_expr(value, ExprKind.Local,
+                if context.list_lengths && proof_list_type(context.program, value.ty) { 1 } else { value.ty },
+                "self", 0, new[Expr]()))
+        }
         return Result.Err("helper expression has an unbound local")
     }
     if value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool { return Result.Ok(value) }
     if value.kind == ExprKind.Call { return expanded_call(context, value, guard, bindings, locals, self, calls, depth + 1) }
+    if context.list_lengths && value.kind == ExprKind.Intrinsic && value.text == "list_len" && length(value.children) == 1 {
+        return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
+    }
     if value.kind == ExprKind.Coerce { return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1) }
     if value.kind == ExprKind.Field {
         let receiver = expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?
@@ -298,12 +310,12 @@ fn evaluation_proved(premise Expr, guard Expr, value Expr, required Bool) Result
     discard defined(condition, state)?
     postcondition_holds(condition, state, 256)
 }
-fn helper_implication(program Program, premise Expr, conclusion Expr) Result[Bool, Text] {
+fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengths Bool) Result[Bool, Text] {
     let budget = new[Int]()
     push(budget, 1024)
-    let source = Expansion { program = program budget = budget active = new[Int]() checks = new[Evaluation]() }
+    let source = Expansion { program = program list_lengths = list_lengths budget = budget active = new[Int]() checks = new[Evaluation]() }
     let left = normalized_predicate(expanded(source, premise, proof_bool(premise, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
-    let target = Expansion { program = program budget = budget active = new[Int]() checks = new[Evaluation]() }
+    let target = Expansion { program = program list_lengths = list_lengths budget = budget active = new[Int]() checks = new[Evaluation]() }
     let right = normalized_predicate(expanded(target, conclusion, proof_bool(conclusion, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
     // Parameter substitution can share a small DAG whose unfolded tree is huge.
     // Bound every expression before unbudgeted symbolic/definedness traversal.
@@ -335,7 +347,7 @@ fn helper_implication(program Program, premise Expr, conclusion Expr) Result[Boo
 // Inputs belong to this prepared Program and use canonical self local 0. This
 // optional query never turns unsupported forms or failed preparation into facts.
 pub fn implies_with_helpers(program Program, premise Expr, conclusion Expr) Bool {
-    match helper_implication(program, premise, conclusion) { Result.Ok(proved) => proved, Result.Err(_) => false }
+    match helper_implication(program, premise, conclusion, false) { Result.Ok(proved) => proved, Result.Err(_) => false }
 }
 
 // Expansion validates the scalar grammar. This bounds its substituted trees
@@ -389,7 +401,7 @@ fn contract_predicates(program Program, locals List[Local], inputs List[Expr], e
     index = 0
     while index < length(inputs) {
         let input = get(inputs, index)
-        let context = Expansion { program = program budget = budget active = new[Int]() checks = new[Evaluation]() }
+        let context = Expansion { program = program list_lengths = false budget = budget active = new[Int]() checks = new[Evaluation]() }
         let predicate = expanded(context, input, proof_bool(input, true), bindings, locals, false, 0, 0)?
         var check_index = 0
         while check_index < length(context.checks) {
