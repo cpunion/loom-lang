@@ -13,6 +13,13 @@ ensures result > 0
     value
 }
 
+fn transitive(high Int, middle Int, low Int) Int
+requires high > middle && middle > low
+ensures result > low
+{
+    high
+}
+
 fn advance(value Int, upper Int) Int
 requires value <= upper && upper < 9223372036854775807
 ensures result + 1 > result
@@ -59,6 +66,7 @@ ensures result > 0
 
 fn exercise() {
     assert related(4, 2) == 4
+    assert transitive(-3, -4, -5) == -3
     assert advance(4, 9) == 4
     assert advance(9223372036854775806, 9223372036854775806) == 9223372036854775806
     assert grow(4, 0) == 5

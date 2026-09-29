@@ -311,7 +311,10 @@ refinement construction. Preconditions, successful assertions and verified
 callee summaries can propagate bounds across scalar parameters, inline aggregate
 leaves and fresh call results. Symbol identities survive local substitution and
 reassignment; short-circuit clauses retain their own guards and definedness
-obligations. This remains interval propagation, not general relational solving.
+obligations. A failed direct comparison can now query a bounded difference graph:
+transitive relative bounds and equality cycles do not need absolute anchors.
+Queries reuse the same unit-coefficient facts and mathematical arithmetic, without
+an all-pairs closure or a general nonlinear solver.
 See the [contract example](compiler/examples/relational_contracts).
 
 Required contracts also consume checked input-type invariants for immutable

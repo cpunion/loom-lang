@@ -47,8 +47,8 @@ fn relational_contracts_share_the_prover_and_preserve_real_faults() {
             let ir = fs::read_to_string(&ir_path).unwrap();
             assert_eq!(
                 ir.matches("icmp sgt i64").count(),
-                4,
-                "only the four source entry comparisons remain"
+                6,
+                "only the six source entry comparisons remain"
             );
             assert_eq!(
                 ir.matches("call { i64, i1 } @llvm.sadd.with.overflow.i64")

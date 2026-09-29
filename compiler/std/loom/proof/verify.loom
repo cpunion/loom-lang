@@ -164,7 +164,7 @@ fn postcondition_holds(condition Expr, state State, depth Int) Result[Bool, Text
     match pure(condition, state) {
         Result.Ok(value) => match value {
             Value.Boolean(fact) => {
-                if holds(fact, state.facts) {
+                if holds(fact, state.facts) || difference_holds(fact, state.facts) {
                     return Result.Ok(true)
                 }
             }

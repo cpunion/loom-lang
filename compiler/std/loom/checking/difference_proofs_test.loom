@@ -1,0 +1,70 @@
+test fn required_contracts_prove_transitive_relations_and_cycles() {
+    discard accepted("""
+pub fn transitive(high Int, middle Int, low Int) Int
+requires high > middle && middle > low
+ensures result > low
+{
+    high
+}
+
+record Chain {
+    high Int
+    middle Int
+    low Int
+}
+
+pub fn fields(value Chain) Int
+requires value.high >= value.middle && value.middle > value.low
+ensures result > value.low
+{
+    value.high
+}
+
+pub fn equal_cycle(x Int, y Int, z Int) Int
+requires x <= y && y <= z && z <= x
+ensures result == z
+{
+    x
+}
+
+pub fn lower_copy(high Int, middle Int, low Int) Int
+requires high > middle && middle > low
+ensures result > low
+{
+    let copied = high
+    copied
+}
+""")
+    rejects("""
+fn wrong(high Int, middle Int, low Int) Int
+requires high >= middle && middle >= low
+ensures result > low
+{
+    high
+}
+""")
+    rejects("""
+fn unrelated(high Int, middle Int, low Int, other Int) Int
+requires high > middle && middle > low
+ensures result > low
+{
+    other
+}
+""")
+    rejects("""
+fn alternatives(high Int, middle Int, low Int) Int
+requires high > middle || middle > low
+ensures result > low
+{
+    high
+}
+""")
+    rejects("""
+fn hypothetical_overflow(high Int, middle Int, low Int) Int
+requires high > middle && middle > low
+ensures result + 1 > result
+{
+    high
+}
+""")
+}
