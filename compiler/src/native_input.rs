@@ -1066,7 +1066,10 @@ impl Converter<'_> {
                     Primitive::SocketAccept
                     | Primitive::SocketConnectStatus
                     | Primitive::SocketClose
+                    | Primitive::SocketShutdownWrite
                     | Primitive::SocketLocalPort => Some((&[Type::Int], Type::Int)),
+                    Primitive::SocketAddress => Some((&[Type::Int, Type::Int], Type::Text)),
+                    Primitive::SocketSetNodelay => Some((&[Type::Int, Type::Int], Type::Int)),
                     Primitive::SocketRead | Primitive::SocketWriteBytes => {
                         Some((&[Type::Int, Type::Bytes, Type::Int], Type::Int))
                     }
@@ -1420,6 +1423,9 @@ fn primitive(value: &str) -> Result<Primitive> {
         "socket_write_bytes" => P::SocketWriteBytes,
         "socket_close" => P::SocketClose,
         "socket_local_port" => P::SocketLocalPort,
+        "socket_address" => P::SocketAddress,
+        "socket_set_nodelay" => P::SocketSetNodelay,
+        "socket_shutdown_write" => P::SocketShutdownWrite,
         "directory_read" => P::DirectoryRead,
         "path_kind" => P::PathKind,
         "path_canonical" => P::PathCanonical,
@@ -1506,6 +1512,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::SocketAccept
         | P::SocketClose
         | P::SocketLocalPort
+        | P::SocketShutdownWrite
         | P::PathKind
         | P::DirectoryCreate
         | P::FileRemove
@@ -1543,6 +1550,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskWaitFileOpen
         | P::TaskWaitSocket
         | P::PathRename => 2,
+        P::SocketAddress | P::SocketSetNodelay => 2,
         P::TextSlice
         | P::BytesSet
         | P::ListSet

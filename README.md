@@ -46,6 +46,7 @@ same-directory tests, and format/check/build/test/run tasks. See the
 - [Copy files with source Task APIs](compiler/examples/async_files/README.md)
 - [Capture child processes without blocking Tasks](compiler/examples/async_processes/README.md)
 - [Resolve a hostname and connect over TCP](compiler/examples/hostname_connect/README.md)
+- [Exchange EOF-delimited requests with TCP half-close](compiler/examples/tcp_half_close/README.md)
 - [Use async methods through concepts and dyn](compiler/examples/async_methods/README.md)
 - [Pass and store Task callbacks](compiler/examples/task_callbacks/README.md)
 - [Capture shared state in closures](compiler/examples/closures/README.md)

@@ -143,6 +143,42 @@ fn source_tcp_check_build_test_run_under_forced_gc() {
 }
 
 #[test]
+fn half_close_preserves_pending_reads_and_address_queries_under_moving_gc() {
+    const HALF_CLOSE: &str = "compiler/examples/tcp_half_close";
+    let directory = tempfile::tempdir().unwrap();
+    let executable = common::executable(directory.path(), "tcp-half-close");
+    let ir = directory.path().join("tcp-half-close.ll");
+    success(&common::loom(&["check", HALF_CLOSE]));
+    success(&common::loom(&["test", HALF_CLOSE]));
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                HALF_CLOSE,
+                "--output",
+                executable.to_str().unwrap(),
+                "--emit-ir",
+                ir.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        let output = common::run_tasks(&executable);
+        success(&output);
+        assert_eq!(output.stdout, b"half-close roundtrip\n");
+        let llvm = std::fs::read_to_string(&ir).unwrap();
+        for operation in [
+            "socket_address",
+            "socket_set_nodelay",
+            "socket_shutdown_write",
+        ] {
+            assert!(llvm.contains(&format!("loom_rt_{operation}")));
+        }
+    }
+}
+
+#[test]
 fn source_cannot_extract_native_token_from_public_wrapper() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(

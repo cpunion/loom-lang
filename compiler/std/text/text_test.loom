@@ -1,3 +1,6 @@
+import std.bytes.set
+import std.bytes.length
+
 test fn utf8_bytes_and_concatenation() {
     assert length("hé") == 3
     assert byte("hé", 0) == 104
@@ -26,4 +29,19 @@ test fn scalar_operations() {
     assert from_codepoint(0) == "\0"
     assert slice(text, 1, 6) == "é中"
     assert slice(text, 10, 10) == ""
+}
+
+test fn utf8_encoding_is_an_isolated_mutable_copy() {
+    let text = "Aé中😀\0"
+    let first = to_bytes(text)
+    let second = to_bytes(text)
+    assert std.bytes.to_text(first) == text
+    std.bytes.set(first, 0, 66)
+    assert text == "Aé中😀\0"
+    assert std.bytes.to_text(second) == text
+    assert std.bytes.to_text(first) == "Bé中😀\0"
+    assert std.bytes.length(to_bytes("")) == 0
+    assert std.bytes.to_text(comptime {
+            to_bytes("é\0")
+        }) == "é\0"
 }

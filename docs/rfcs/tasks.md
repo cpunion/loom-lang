@@ -230,6 +230,13 @@ single-argument connect path does not resolve. There is no built-in DNS cache,
 connection timeout, or parallel address racing. Running OS resolution cannot be
 interrupted and may delay cancellation drain.
 
+TCP local/peer endpoint queries return numeric Text. `set_nodelay` controls the
+native TCP_NODELAY option; `shutdown_write` ends sending without revoking the
+token or receive registrations. Finish intended writes before half-close, then
+close the stream after child waits drain. The
+[half-close example](../../compiler/examples/tcp_half_close/README.md) exercises
+EOF-delimited requests and responses with the ordinary source Task machinery.
+
 `std.process.tasks.capture` / `capture_input` submit copied native commands and
 binary input to the same bounded pool. Their source result and configuration
 match `std.process`; pipe draining, spawning and reaping share its native
