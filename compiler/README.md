@@ -370,10 +370,13 @@ do invalidate it. Omitted dependency/test files do not become build inputs.
 
 A whole-closure hit skips binding, type/effect/contract checking, compile-time
 evaluation and lowering. After an edit, a separate last-successful definition
-snapshot can reuse ordinary abstract checks and concrete scalar/aggregate/List
+snapshot can reuse ordinary/generated abstract checks and concrete scalar/aggregate/List
 and generic bodies. Fresh bindings rekey types, calls and source locations;
 changed definitions and overloads invalidate transitive consumers. Nominal/import
 changes and staged, resource or unsupported bodies recheck conservatively.
+Declaration generation reruns before matching, using current build inputs.
+Snapshots retain raw source and private expanded trees separately; unchanged
+generated bodies use the current generating block's location and extent.
 Build receipts use the freshly loaded project and actual artifact; requested IR,
 linking and test execution still run.
 Only successful checks are published. Each `checked-v2` entry contains metadata

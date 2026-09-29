@@ -872,9 +872,10 @@ iteration or generated imports. Generated symbols retain package visibility,
 required proofs, test isolation and distinct closure/macro identities. Editor
 queries retain the raw source basis, navigate to the generating block, and
 revalidate tracked inputs. Declaration expansion reruns before per-definition
-matching, so unchanged generated bodies can reuse resident checks while changed
-output invalidates its consumers. Generated projects do not yet export the
-source-backed persistent definition snapshot. See the
+matching, so unchanged generated bodies reuse resident or persistent checks while
+changed output invalidates consumers. Snapshots retain validated raw source and
+private expanded trees, including expansion identities; reused generated bodies
+use the current generating block's extent. See the
 [in-compilation example](../../compiler/examples/declaration_generation).
 `std.reflect.predicates.describe` now returns visible direct refinement predicates
 as canonical source and public AST data, including generated declarations. It
@@ -1030,12 +1031,13 @@ source membership/content/trust, module/import identity and test/check mode.
 Checksummed metadata and artifacts publish together; damaged entries recheck.
 Whole-closure hits skip type/proof/effect analysis and lowering, not actual test
 execution, IR emission or final linking. On misses, a last-successful definition
-snapshot can reuse ordinary abstract checks and concrete bodies across processes.
+snapshot can reuse ordinary/generated abstract checks and concrete bodies across processes.
 It rebuilds bindings, invalidates changed/transitive consumers and remaps types,
 calls and locations through the same resident-cache machinery. Compiler bytes,
 mode/options, module/import identities and observed inputs bind the complete
-checksummed snapshot. Unsupported/generated source snapshots and damaged bundles
-miss; failed checks never publish. This is opt-in trusted-local evidence, not a
+checksummed snapshot. Declaration expansion reruns before matching; its raw
+source and expanded trees have separate private snapshots. Unsupported snapshots
+and damaged bundles miss; failed checks never publish. This is opt-in trusted-local evidence, not a
 portable proof or authenticated remote cache. Native objects remain whole-closure.
 `std.build.input_file(comptime path Text) Text` now embeds tracked UTF-8 snapshots
 relative to the declaring package, confined to its module. Reads happen during

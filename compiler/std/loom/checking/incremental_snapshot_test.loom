@@ -113,3 +113,60 @@ test fn definition_snapshots_require_source_backed_syntax_and_complete_encoding(
         Result.Ok(_) => false
     }
 }
+
+test fn generated_snapshots_own_raw_and_expanded_source_separately() {
+    let text = """"
+        comptime {
+            """
+            pub fn generated() Int {
+                7
+            }
+            """
+        }
+        """"
+    let initial = definition_cache()
+    let checked = match cached_source(initial, text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let file = get(checked.source.files, 0)
+    set(checked.source.files, 0, SourceFile {
+            package = file.package
+            path = file.path
+            text = "not source"
+            tree = file.tree
+            test_only = file.test_only
+            trusted_std = file.trusted_std
+        })
+    let restored = restored_definition_cache(initial)
+    assert match cached_source(restored, concat(text, "\nfn extra() Int { 1 }")) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(restored) == 1
+    let extended = std.text.join(std.text.split(text, "7"), "7\n            // a longer generation source interval")
+    let refreshed = match cached_source(restored, extended) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert bodies_reused(restored) == 2
+    let generated = get(refreshed.program.functions, 0)
+    let current = get(refreshed.bindings.symbols, generated.symbol).node.span
+    assert generated.span.end == current.end && generated.body.span.end == current.end
+    // A caller-supplied tree still cannot claim different raw source bytes.
+    let forged = definition_cache()
+    assert match check_project_cached(checked.source, false, build_inputs(no_input_reader), forged) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match export_definition_cache(forged) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

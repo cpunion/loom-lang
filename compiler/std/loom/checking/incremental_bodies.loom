@@ -341,9 +341,16 @@ fn body_expression(env Environment, reuse BodyReuse, value Expr, owner Int, offs
             })
         index = index + 1
     }
-    let span = Span {
-        start = value.span.start + offset
-        end = value.span.end + offset
+    let declaration = symbol(env, owner).node
+    // Generated nodes all point to their generating block. Its extent can
+    // change while this one expanded definition remains structurally identical.
+    let span = if std.loom.ast.has(declaration, NodeKind.ExpansionId) {
+        declaration.span
+    } else {
+        Span {
+            start = value.span.start + offset
+            end = value.span.end + offset
+        }
     }
     let file = get(env.source.files, symbol(env, owner).file)
     Result.Ok(Expr {
@@ -401,7 +408,8 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
         let value = get(prior.functions, candidate)
         let target = get(prior.targets, candidate)
         if value.symbol >= 0 && body_symbol(reuse, value.symbol) == owner && target.ordinary &&
-        current.text != "" && current.text == get(prior.definitions.entries, value.symbol).text && body_supported(reuse, value) &&
+        (std.loom.ast.has(current.node, NodeKind.ExpansionId) ||
+            (current.text != "" && current.text == get(prior.definitions.entries, value.symbol).text)) && body_supported(reuse, value) &&
         same(body_types(env, reuse, value.arguments)?, instance.arguments) {
             let offset = current.span.start - value.span.start
             let locals = new[Local]()

@@ -20,11 +20,12 @@ test fn generated_definitions_reuse_only_after_current_expansion_is_checked() {
             generated(7)
         }
         """"
-    let cache = definition_cache()
-    assert match cached_source(cache, source) {
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
         Result.Ok(_) => true
         Result.Err(_) => false
     }
+    let cache = restored_definition_cache(initial)
     assert match cached_source(cache, concat(source, "\nfn unrelated() Int { 3 }\n")) {
         Result.Ok(_) => true
         Result.Err(_) => false
@@ -64,11 +65,12 @@ test fn generated_definition_reuse_observes_current_build_options() {
             name = "declaration"
             value = "pub fn generated(item Int) Int { item + 1 }"
         }]
-    let cache = definition_cache()
-    assert match check_project_cached(project, false, build_inputs(no_input_reader, options), cache) {
+    let initial = definition_cache()
+    assert match check_project_cached(project, false, build_inputs(no_input_reader, options), initial) {
         Result.Ok(_) => true
         Result.Err(_) => false
     }
+    let cache = restored_definition_cache(initial)
     assert match check_project_cached(project, false, build_inputs(no_input_reader, options), cache) {
         Result.Ok(_) => true
         Result.Err(_) => false

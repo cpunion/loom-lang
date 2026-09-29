@@ -329,7 +329,8 @@ detached from returned mutable programs. Use fresh build inputs as above.
 The resident editor uses this path automatically after a snapshot changes.
 Top-level declaration generation reruns with current build inputs before matching
 its expanded definitions. Unchanged generated bodies can therefore participate in
-resident reuse; changing generated output invalidates its consumers normally.
+reuse; changing generated output invalidates its consumers normally. Generated
+locations are rebound to the current generating block, including changed extents.
 
 Compiler hosts may export a same-compiler snapshot with
 `export_definition_cache(cache)`. `import_trusted_definition_cache(text)` is an
@@ -338,9 +339,9 @@ compiler byte identity, complete bundle integrity and observed build inputs
 before import. Do not pass downloaded or user-supplied snapshots to it. The CLI
 does this only under `--frontend-cache`; the default checker stays filesystem-free.
 Snapshots retain successful evidence, not public mutable returned programs, and
-are not a stable wire format. Expanded declaration projects currently retain
-their evidence only in memory, not in a source-backed disk snapshot. Native
-object reuse remains whole-closure.
+are not a stable wire format. Generated snapshots keep the validated original
+source separate from private expanded trees; editing a returned project cannot
+change either saved basis. Native object reuse remains whole-closure.
 
 Query offsets are half-open UTF-8 byte offsets. Equal spans prefer the outer
 resolved expression, including field selections and coercions. A call's index

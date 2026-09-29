@@ -1,0 +1,186 @@
+// Same-compiler AST snapshots retain generated locations and expansion identities.
+// The table is private; unfamiliar nodes make export miss instead of guessing.
+fn cache_node_kinds() List[NodeKind] {
+    let kinds = new[NodeKind]()
+    push(kinds, NodeKind.File)
+    push(kinds, NodeKind.Import)
+    push(kinds, NodeKind.Record)
+    push(kinds, NodeKind.Enum)
+    push(kinds, NodeKind.Refined)
+    push(kinds, NodeKind.Function)
+    push(kinds, NodeKind.Public)
+    push(kinds, NodeKind.Test)
+    push(kinds, NodeKind.Intrinsic)
+    push(kinds, NodeKind.TypeParameters)
+    push(kinds, NodeKind.Parameters)
+    push(kinds, NodeKind.Parameter)
+    push(kinds, NodeKind.Type)
+    push(kinds, NodeKind.TypeArguments)
+    push(kinds, NodeKind.Arguments)
+    push(kinds, NodeKind.ReturnType)
+    push(kinds, NodeKind.Field)
+    push(kinds, NodeKind.Variant)
+    push(kinds, NodeKind.Requires)
+    push(kinds, NodeKind.Ensures)
+    push(kinds, NodeKind.Block)
+    push(kinds, NodeKind.Let)
+    push(kinds, NodeKind.Var)
+    push(kinds, NodeKind.Assign)
+    push(kinds, NodeKind.Return)
+    push(kinds, NodeKind.Assert)
+    push(kinds, NodeKind.Discard)
+    push(kinds, NodeKind.While)
+    push(kinds, NodeKind.Integer)
+    push(kinds, NodeKind.Text)
+    push(kinds, NodeKind.Bool)
+    push(kinds, NodeKind.Name)
+    push(kinds, NodeKind.Call)
+    push(kinds, NodeKind.Old)
+    push(kinds, NodeKind.Construct)
+    push(kinds, NodeKind.Unary)
+    push(kinds, NodeKind.Binary)
+    push(kinds, NodeKind.Select)
+    push(kinds, NodeKind.Try)
+    push(kinds, NodeKind.Match)
+    push(kinds, NodeKind.Arm)
+    push(kinds, NodeKind.Pattern)
+    push(kinds, NodeKind.Bindings)
+    push(kinds, NodeKind.Wildcard)
+    push(kinds, NodeKind.If)
+    push(kinds, NodeKind.Comptime)
+    push(kinds, NodeKind.ComptimeFor)
+    push(kinds, NodeKind.ComptimeMap)
+    push(kinds, NodeKind.TupleType)
+    push(kinds, NodeKind.Tuple)
+    push(kinds, NodeKind.Destructure)
+    push(kinds, NodeKind.Float)
+    push(kinds, NodeKind.Concept)
+    push(kinds, NodeKind.Impl)
+    push(kinds, NodeKind.Implements)
+    push(kinds, NodeKind.MethodCall)
+    push(kinds, NodeKind.DynType)
+    push(kinds, NodeKind.AssociatedType)
+    push(kinds, NodeKind.FunctionType)
+    push(kinds, NodeKind.Invoke)
+    push(kinds, NodeKind.Defer)
+    push(kinds, NodeKind.Bounds)
+    push(kinds, NodeKind.Break)
+    push(kinds, NodeKind.Continue)
+    push(kinds, NodeKind.List)
+    push(kinds, NodeKind.Apply)
+    push(kinds, NodeKind.Index)
+    push(kinds, NodeKind.IndexAssign)
+    push(kinds, NodeKind.Scoped)
+    push(kinds, NodeKind.Async)
+    push(kinds, NodeKind.Await)
+    push(kinds, NodeKind.RecordPattern)
+    push(kinds, NodeKind.RestPattern)
+    push(kinds, NodeKind.Spread)
+    push(kinds, NodeKind.TypePack)
+    push(kinds, NodeKind.ExpansionId)
+    push(kinds, NodeKind.PackError)
+    push(kinds, NodeKind.IterationKey)
+    push(kinds, NodeKind.MacroCall)
+    push(kinds, NodeKind.MacroInput)
+    kinds
+}
+
+fn cache_node(output Bytes, value Node, kinds List[NodeKind], depth Int) Result[Bool, Text] {
+    if depth >= 256 {
+        return Result.Err("generated snapshot tree is too deep")
+    }
+    var tag = 0
+    while tag < length(kinds) && get(kinds, tag) != value.kind {
+        tag = tag + 1
+    }
+    if tag == length(kinds) {
+        return Result.Err("unsupported generated snapshot node")
+    }
+    cache_int(output, tag)
+    cache_text(output, value.value)
+    cache_span(output, value.span)
+    cache_int(output, length(value.children))
+    var index = 0
+    while index < length(value.children) {
+        discard cache_node(output, get(value.children, index), kinds, depth + 1)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn cache_read_node(reader CacheReader, kinds List[NodeKind], depth Int) Result[Node, Text] {
+    if depth >= 256 {
+        return Result.Err("generated snapshot tree is too deep")
+    }
+    let tag = cache_read_int(reader)?
+    if tag < 0 || tag >= length(kinds) {
+        return Result.Err("invalid generated snapshot node")
+    }
+    let value = cache_read_text(reader)?
+    let span = cache_read_span(reader)?
+    let count = cache_read_count(reader)?
+    let children = new[Node]()
+    var index = 0
+    while index < count {
+        push(children, cache_read_node(reader, kinds, depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(Node {
+            kind = get(kinds, tag)
+            value = value
+            span = span
+            children = children
+        })
+}
+
+fn cache_definition_source(output Bytes, basis DefinitionBasis) Result[Bool, Text] {
+    let generated = length(basis.original) != 0
+    cache_bool(output, generated)
+    if !generated {
+        return cache_project(output, basis.source)
+    }
+    let original = get(basis.original, 0)
+    // Validate the pre-expansion source, not a rendered replacement. Only the
+    // compiler's detached expanded trees can accompany this checked source.
+    discard cache_project(output, original)?
+    let kinds = cache_node_kinds()
+    var index = 0
+    while index < length(original.files) {
+        let tree = get(basis.source.files, index).tree
+        let changed = !std.loom.ast.same(get(original.files, index).tree, tree)
+        cache_bool(output, changed)
+        if changed {
+            discard cache_node(output, tree, kinds, 0)?
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn cache_read_expanded(reader CacheReader, original Project) Result[Project, Text] {
+    let kinds = cache_node_kinds()
+    let files = new[SourceFile]()
+    var index = 0
+    while index < length(original.files) {
+        let file = get(original.files, index)
+        push(files, SourceFile {
+                package = file.package
+                path = file.path
+                text = file.text
+                tree = if cache_read_bool(reader)? {
+                    cache_read_node(reader, kinds, 0)?
+                } else {
+                    file.tree
+                }
+                test_only = file.test_only
+                trusted_std = file.trusted_std
+            })
+        index = index + 1
+    }
+    Result.Ok(Project {
+            files = files
+            modules = original.modules
+            packages = original.packages
+            root = original.root
+        })
+}
