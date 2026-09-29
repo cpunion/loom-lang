@@ -39,6 +39,19 @@ fn round_trip(text Text) Text {
     output
 }
 
+test fn macro_punctuation_does_not_join_unary_negation_to_keywords() {
+    assert round_trip("""
+        fn main(){assert !false
+        discard tools.expand ! (1,2)}
+        """) == """
+        fn main() {
+            assert !false
+            discard tools.expand!(1, 2)
+        }
+
+        """
+}
+
 test fn record_update_bases_format_as_a_final_field() {
     assert round_trip("""
         fn f(value Pair) Pair{Pair{first=1,..value}}

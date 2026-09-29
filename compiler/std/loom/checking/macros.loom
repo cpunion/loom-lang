@@ -1,0 +1,227 @@
+import std.loom.parser.parse_expression
+import std.int.parse
+
+// A generator is an ordinary source function. Only its invocation is staged;
+// neither descriptor construction nor generator calls become runtime roots.
+fn macro_generator(context Context, node Node) Result[Int, Failure] {
+    if lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 {
+        return Result.Err(error(context, node, "macro invocation requires a named source generator, not a local value"))
+    }
+    let here = symbol(context.env, context.signature.symbol)
+    let choices = candidates(context.env.source, here.file, here.test_only, node.value)
+    var selected = -1
+    var index = 0
+    while index < length(choices) {
+        let owner = get(choices, index)
+        var signature = 0
+        while signature < length(context.env.signatures) {
+            let current = get(context.env.signatures, signature)
+            if current.symbol == owner && current.parameters == 0 && !has_static(current) &&
+            length(current.params) == 1 && current.result == 3 &&
+            !has(symbol(context.env, owner).node, NodeKind.Async) {
+                let element = reflection_element(context.env, get(current.params, 0))
+                if element >= 0 && reflection_nominal(context.env, element, "Schema", TypeKind.Record, 2) {
+                    if selected >= 0 {
+                        return Result.Err(error(context, node, "ambiguous macro generator"))
+                    }
+                    selected = signature
+                }
+            }
+            signature = signature + 1
+        }
+        index = index + 1
+    }
+    if selected < 0 {
+        return Result.Err(error(context, node, "a macro generator requires fn(List[std.reflect.Schema]) Text"))
+    }
+    Result.Ok(selected)
+}
+
+fn macro_context(context Context, current Signature, env Environment) Context {
+    Context {
+        lexical = new_lexical()
+        env = env
+        signature = current
+        arguments = new[Int]()
+        constants = new[StaticValue]()
+        locals = context.locals
+        bindings = new[Binding]()
+        head = -1
+        cleanups = new[Cleanup]()
+        cleanup_head = -1
+        loop_boundary = -2
+        facts = new[Fact]()
+        fact_head = -1
+        emit = context.emit
+    }
+}
+
+fn macro_environment(env Environment) Environment {
+    Environment {
+        inputs = env.inputs
+        static_aliases = env.static_aliases
+        packs = env.packs
+        closures = env.closures
+        source = env.source
+        types = env.types
+        type_states = env.type_states
+        expand_data = env.expand_data
+        has_refinements = env.has_refinements
+        expanding_helpers = env.expanding_helpers
+        signatures = env.signatures
+        pending = env.pending
+        stage_depth = env.stage_depth + 1
+        computations = env.computations
+        validations = env.validations
+        concepts = env.concepts
+        implementations = env.implementations
+        associations = env.associations
+        association_depth = env.association_depth
+        family_applications = env.family_applications
+        promise_path = env.promise_path
+        promise_depth = env.promise_depth
+        interfaces = env.interfaces
+        dynamic_interfaces = env.dynamic_interfaces
+        witnesses = env.witnesses
+        uses = env.uses
+    }
+}
+
+// Parsing the generated expression validates tree shape. Positional inputs are
+// rebound to unspellable names, not textual replacement. Ordinary identifiers
+// resolve in the generator's package and cannot capture a caller's locals.
+fn macro_syntax(context Context, call Node, node Node, count Int, identity Text, nested Bool, depth Int) Result[Node, Failure] {
+    if depth >= 128 {
+        return Result.Err(error(context, call, "macro expression nesting limit exceeded"))
+    }
+    if !nested && (node.kind == NodeKind.Return || node.kind == NodeKind.Try) {
+        return Result.Err(error(context, call, "return and ? cannot cross a macro expression boundary"))
+    }
+    if node.kind == NodeKind.MacroInput {
+        let position = match std.int.parse(node.value) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(error(context, call, "invalid macro input position"))
+            }
+        }
+        if position < 0 || position >= count {
+            return Result.Err(error(context, call, "macro input position is outside the supplied arguments"))
+        }
+        return Result.Ok(Node {
+                kind = NodeKind.Name
+                value = concat("$", to_text(position))
+                span = call.span
+                children = new[Node]()
+            })
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, macro_syntax(context, call, child(node, index), count,
+                concat(identity, concat("/", to_text(index))), nested || node.kind == NodeKind.Function, depth + 1)?)
+        index = index + 1
+    }
+    if node.kind == NodeKind.Function {
+        push(children, Node {
+                kind = NodeKind.ExpansionId
+                value = identity
+                span = call.span
+                children = new[Node]()
+            })
+    }
+    Result.Ok(Node {
+            kind = node.kind
+            value = node.value
+            span = call.span
+            children = children
+        })
+}
+
+fn macro_call(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let id = macro_generator(context, node)?
+    let current = get(context.env.signatures, id)
+    let stage = staging(context, node)?
+    let definition = macro_context(context, current, stage.env)
+    let values = new[Expr]()
+    let descriptors = new[Expr]()
+    let inputs = child(node, 0).children
+    let schema = reflection_element(context.env, get(current.params, 0))
+    var known = true
+    var identity = concat("macro/", concat(to_text(context.signature.symbol), concat("/", to_text(node.span.start))))
+    var index = 0
+    while index < length(inputs) {
+        let value = expr(context, get(inputs, index), -1)?
+        push(values, value)
+        known = known && concrete(context.env, value.ty)
+        identity = concat(identity, concat("/", to_text(value.ty)))
+        index = index + 1
+    }
+    if !known {
+        return deferred(context, node, expected)
+    }
+    index = 0
+    while index < length(values) {
+        push(descriptors, reflection_call(definition, node, get(values, index).ty, schema)?)
+        index = index + 1
+    }
+    let argument = expression(ExprKind.List, get(current.params, 0), node, "", -1, descriptors, true)
+    let target = schedule(stage.env, id, new[Int](), new[StaticValue](), node)?
+    let invocation = expression(ExprKind.Call, 3, node, "", target, expressions(argument), true)
+    let program = prepared(stage)?
+    let generated = match std.loom.eval.evaluate(program, invocation, 0) {
+        Result.Ok(value) => value.text
+        Result.Err(failed) => {
+            return Result.Err(error(context, node, concat("macro generator: ", failed.message)))
+        }
+    }
+    let parsed = match parse_expression(generated) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(error(context, node, concat("generated macro expression: ", failed.message)))
+        }
+    }
+    let syntax = macro_syntax(context, node, parsed, length(values), identity, false, 0)?
+    var expansion = macro_context(context, current, macro_environment(context.env))
+    let body = new[Expr]()
+    index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        let name = concat("$", to_text(index))
+        let local = length(context.locals)
+        push(context.locals, Local {
+                name = ""
+                ty = value.ty
+                mutable = false
+                is_scoped = false
+            })
+        push(body, expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls))
+        let binding = length(expansion.bindings)
+        push(expansion.bindings, Binding {
+                name = name
+                local = local
+                constant = -1
+                previous = expansion.head
+            })
+        expansion = context_at(expansion, binding)
+        index = index + 1
+    }
+    let expanded = match expr(expansion, syntax, expected) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(error(context, node, concat("expanded macro expression: ", failed.diagnostic.message)))
+        }
+    }
+    // Generated mutable captures belong to this runtime function, but lexical
+    // lookup never inherits its caller scope.
+    if length(expansion.lexical) != 0 {
+        let cells = get(expansion.lexical, 0).cells
+        let destination = lexical(context).cells
+        index = 0
+        while index < length(cells) {
+            push(destination, get(cells, index))
+            index = index + 1
+        }
+    }
+    push(body, expanded)
+    Result.Ok(expression(ExprKind.Block, expanded.ty, node, "macro", current.symbol, body, all_fall(body)))
+}

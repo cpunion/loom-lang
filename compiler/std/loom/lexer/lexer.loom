@@ -55,6 +55,7 @@ pub enum Kind {
     Shl
     Shr
     Semicolon
+    Dollar
 }
 
 // Spans are UTF-8 byte offsets. Names/numbers retain their spelling and strings
@@ -225,6 +226,9 @@ fn symbol(value Int) Kind {
     }
     if value == 63 {
         return Kind.Question
+    }
+    if value == 36 {
+        return Kind.Dollar
     }
     if value == 43 {
         return Kind.Plus

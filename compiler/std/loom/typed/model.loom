@@ -1,6 +1,8 @@
 import std.loom.source.Span
 
 // IDs address immutable entries in the checked program, never source names.
+// A Block with text "macro" retains its generator's source symbol in index
+// for navigation. It executes as an ordinary block; this is not a call edge.
 pub enum TypeKind {
     Unit
     Int

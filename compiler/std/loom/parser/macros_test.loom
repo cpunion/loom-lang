@@ -1,0 +1,11 @@
+test fn macro_calls_and_positional_inputs_keep_their_structure() {
+    let value = fragment_node(parse_expression("tools.expand!(next(), value).field"))
+    assert value.kind == NodeKind.Select
+    let call = child(value, 0)
+    assert call.kind == NodeKind.MacroCall && call.value == "tools.expand"
+    assert length(child(call, 0).children) == 2
+    let input = fragment_node(parse_expression("$0.field"))
+    assert input.kind == NodeKind.Select && child(input, 0).kind == NodeKind.MacroInput
+    discard fragment_error(parse_expression("tools.expand![Int](1)"))
+    discard fragment_error(parse_expression("$x"))
+}
