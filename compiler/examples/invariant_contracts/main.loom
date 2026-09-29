@@ -1,0 +1,99 @@
+import std.result.Result
+import std.result.ConstraintError
+
+type Positive = Int where self > 0
+
+record Pair {
+    lower Int
+    upper Int
+}
+
+type Ordered = Pair where self.upper > self.lower && self.lower >= 0
+
+record Holder {
+    amount Positive
+    interval Ordered
+    shared List[Int]
+}
+
+fn scalar(value Positive) Int
+ensures result > 0
+{
+    value
+}
+
+fn nested(value Holder) Int
+ensures result > 0
+{
+    value.interval.upper
+}
+
+fn amount(value Holder) Int
+ensures result > 0
+{
+    scalar(value.amount)
+}
+
+fn checked_amount(value Int) Result[Positive, ConstraintError] {
+    Positive(value)
+}
+
+fn checked_interval(value Pair) Result[Ordered, ConstraintError] {
+    Ordered(value)
+}
+
+fn exercise() {
+    match checked_amount(0) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+    match checked_interval(Pair {
+            lower = 4
+            upper = 2
+        }) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+    let positive = match checked_amount(3) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let ordered = match checked_interval(Pair {
+            lower = 0
+            upper = 7
+        }) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let shared = [1]
+    let holder = Holder {
+        amount = positive
+        interval = ordered
+        shared = shared
+    }
+    shared[0] = -100
+    assert scalar(positive) == 3
+    assert nested(holder) == 7
+    assert amount(holder) == 3
+    assert holder.shared[0] == -100
+}
+
+fn main() {
+    exercise()
+}
+
+test fn construction_establishes_facts_for_later_contracts() {
+    exercise()
+}

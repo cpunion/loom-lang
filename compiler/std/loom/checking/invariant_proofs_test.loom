@@ -1,0 +1,127 @@
+test fn required_contracts_use_immutable_input_invariants() {
+    discard accepted("""
+type Positive = Int where self > 0
+
+record Pair {
+    lower Int
+    upper Int
+}
+
+type Ordered = Pair where self.upper > self.lower && self.lower >= 0
+
+record Holder {
+    amount Positive
+    pair Ordered
+    shared List[Int]
+}
+
+pub fn scalar(other Int, value Positive) Int
+ensures result > 0
+{
+    value
+}
+
+pub fn record_value(value Ordered) Int
+ensures result > 0
+{
+    value.upper
+}
+
+pub fn nested(value Holder) Int
+ensures result > 0
+{
+    value.amount
+}
+
+pub fn nested_record(value Holder) Int
+ensures result > 0
+{
+    value.pair.upper
+}
+
+pub fn tuple_value(value (Int, Positive)) Int
+ensures result > 0
+{
+    value.1
+}
+
+fn consume(value Positive) Int
+ensures result > 0
+{
+    value
+}
+
+pub fn forwarded(value Positive) Int
+ensures result > 0
+{
+    consume(value)
+}
+
+fn selected(value Int) Bool {
+    value != 13
+}
+
+type Selection = Int where self > 0 && selected(self)
+
+pub fn supported_conjunct(value Selection) Int
+ensures result > 0
+{
+    value
+}
+""")
+}
+
+test fn invariant_facts_preserve_identity_and_disjunctions() {
+    rejects("""
+type Positive = Int where self > 0
+
+fn wrong(value Positive, other Int) Int
+ensures result > 0
+{
+    other
+}
+""")
+    rejects("""
+type Positive = Int where self > 0
+
+fn modified(value Positive) Int
+ensures result > 0
+{
+    var current Int = value
+    current = -1
+    current
+}
+""")
+    rejects("""
+type Nonzero = Int where self > 0 || self < 0
+
+fn either(value Nonzero) Int
+ensures result > 0
+{
+    value
+}
+""")
+    rejects("""
+type Positive = Int where self > 0
+
+fn unsafe(value Positive) Int
+ensures result + 1 > result
+{
+    value
+}
+""")
+    // An unexpanded helper predicate is not an arbitrary Boolean assumption.
+    rejects("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where positive(self)
+
+fn unsupported(value Positive) Int
+ensures result > 0
+{
+    value
+}
+""")
+}

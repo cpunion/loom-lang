@@ -98,8 +98,8 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
     }
     let shape = get(proof.program.types, ty)
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 1 {
-        // The nominal value has the same scalar representation. Its predicate
-        // is not assumed here; this only preserves exact value relationships.
+        // Keep one identity for the nominal scalar and its representation.
+        // Entry invariants are added separately after all parameters exist.
         return fresh_result(proof, 1)
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
@@ -446,6 +446,12 @@ fn verify_body(proof Verification) Result[Bool, Text] {
     while index < length(function.params) {
         let ty = get(function.params, index)
         state = assigned(state, index, parameter_value(proof, ty, index)?)
+        index = index + 1
+    }
+    index = 0
+    while index < length(function.params) {
+        state = invariant_facts(proof.program.types, get(function.params, index),
+            get(state.locals, index), state, 0)
         index = index + 1
     }
     index = 0

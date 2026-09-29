@@ -314,6 +314,13 @@ reassignment; short-circuit clauses retain their own guards and definedness
 obligations. This remains interval propagation, not general relational solving.
 See the [contract example](compiler/examples/relational_contracts).
 
+Required contracts also consume checked input-type invariants for immutable
+integer/Boolean and inline record values. Refined leaves retain their identities
+through nested records/tuples; no caller-local index or shared sibling becomes
+evidence about another value. Supported conjuncts can establish facts without a
+duplicate `requires` clause or native check. Invariant helper expansion and shared
+state reasoning remain open. See the [example](compiler/examples/invariant_contracts).
+
 Structural tuples, numeric projection, and nested let/var destructuring use the
 native aggregate path, including generics, shared containers, and compile-time
 results. Nested enum/tuple patterns in `match` now use typed decisions with

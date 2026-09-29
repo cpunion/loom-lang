@@ -1,0 +1,70 @@
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.list.new
+import std.list.push
+import std.list.get
+import std.list.length
+import std.result.Result
+
+// Construction has already established this predicate. Rebind only self to
+// the actual immutable value, never to the caller's local slot zero.
+fn invariant_predicate(predicate Expr, value Value, state State) State {
+    if predicate.kind == ExprKind.Binary && predicate.text == "&&" {
+        let left = invariant_predicate(get(predicate.children, 0), value, state)
+        return invariant_predicate(get(predicate.children, 1), value, left)
+    }
+    let locals = new[Value]()
+    push(locals, value)
+    match pure(predicate, State {
+            locals = locals
+            facts = state.facts
+        }) {
+        Result.Ok(known) => match known {
+            Value.Boolean(fact) => assume(state, fact)
+            _ => state
+        }
+        // Templates may contain unbound helper calls or arithmetic outside the
+        // scalar proof fragment. Unknown facts supply no evidence.
+        Result.Err(_) => state
+    }
+}
+
+fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int) State {
+    if depth >= 16 || ty < 0 || ty >= length(types) {
+        return state
+    }
+    let shape = get(types, ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        var known = invariant_facts(types, get(shape.fields, 0).ty, value, state, depth + 1)
+        var index = 0
+        while index < length(shape.constraint) {
+            let predicate = get(shape.constraint, index)
+            if bounded_contract(predicate) {
+                known = invariant_predicate(predicate, value, known)
+            }
+            index = index + 1
+        }
+        return known
+    }
+    if shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple {
+        match value {
+            Value.Record(fields) => {
+                var known = state
+                var index = 0
+                while index < length(fields) && index < length(shape.fields) {
+                    known = invariant_facts(types, get(shape.fields, index).ty,
+                        get(fields, index), known, depth + 1)
+                    index = index + 1
+                }
+                return known
+            }
+            _ => {
+            }
+        }
+    }
+    // Lists and other shared contents remain opaque. An inline sibling's
+    // invariant says nothing about shared aliases or future heap reads.
+    state
+}

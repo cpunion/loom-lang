@@ -23,7 +23,7 @@ test fn nested_record_scalar_leaves_remain_provable_beside_shared_data() {
             "pub fn broken(value Envelope) Envelope ensures result.details.count == value.details.count { Envelope { details = Details { count = 0 values = value.details.values } active = value.active } }"))
 }
 
-test fn int_refinement_leaves_keep_values_without_assuming_their_predicate() {
+test fn int_refinement_leaves_preserve_exact_value_identity() {
     let definitions = "type Count = Int where self >= 0\nrecord Box { count Count }\n"
     discard accepted(concat(definitions,
             "pub fn copied(value Box) Box ensures result.count == value.count { value }\nfn main() { assert copied(Box { count = Count(3) }).count == 3 }"))
