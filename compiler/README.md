@@ -1520,11 +1520,13 @@ that also receive the input record. Record/tuple fields and enum payloads retain
 separate origins: wrapping input and scratch together does not make the scratch
 an input alias. Branches, record updates and returns merge these paths; an
 analysis limit widens to unknown input storage, never to assumed freshness.
-Copying or forwarding an input handle does not itself observe it. Named callback
-arguments retain these origins: every reachable target of the checked function
-shape is analyzed, including its preconditions and returned aliases. Input-supplied
-or captured callbacks stay opaque; their indirect calls involving input storage,
-and mutation that stores such aliases into scratch, conservatively reject. This analysis does
+Copying or forwarding an input handle does not itself observe it. Named callbacks
+and locally created closures retain these origins: every reachable target of the
+checked function shape is analyzed, including its captures, preconditions and
+returned aliases. Capture paths survive returned closures, nested callbacks and
+inline field storage. Input-supplied callbacks stay opaque; their indirect calls
+involving input storage, and mutation that stores such aliases into scratch,
+conservatively reject. This analysis does
 not prove predicate truth or protect arbitrary existing mutable aliases. See the
 [effect example](examples/record_refinement/effects.loom).
 The [callback example](examples/record_refinement/callbacks.loom) uses ordinary

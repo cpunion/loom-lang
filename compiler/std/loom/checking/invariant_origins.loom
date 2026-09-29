@@ -1,5 +1,6 @@
 // Paths identify mutable input storage reachable through immutable aggregate
 // fields. An empty path means any reachable storage; no paths means fresh data.
+// Negative path entries tag a known closure target and its captured environment.
 record InputOrigin {
     paths List[List[Int]]
 }
@@ -20,6 +21,17 @@ fn origin_input() InputOrigin {
 
 fn origin_shared(origin InputOrigin) Bool {
     length(origin.paths) != 0
+}
+
+fn origin_entire(origin InputOrigin) Bool {
+    var index = 0
+    while index < length(origin.paths) {
+        if length(get(origin.paths, index)) == 0 {
+            return true
+        }
+        index = index + 1
+    }
+    false
 }
 
 fn origin_prefix(prefix List[Int], path List[Int]) Bool {

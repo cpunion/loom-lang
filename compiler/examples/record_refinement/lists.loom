@@ -16,7 +16,10 @@ fn all_positive(values List[Int]) Bool {
 type PositiveValues = List[Int] where all_positive(self)
 
 fn pair_length(values List[Int]) Bool {
-    length(values) == 2
+    let inspect = fn() Int {
+        length(values)
+    }
+    inspect() == 2
 }
 
 type IntPair = List[Int] where pair_length(self)

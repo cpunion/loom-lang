@@ -1,6 +1,7 @@
-// A predicate's checked closure is closed over named function references.
+// A predicate's checked closure is closed over named and captured references.
 // Analyze every matching target, not just one chosen by a sample execution.
-// A callback coming from self, or one carrying captures, is still opaque here.
+// A callback supplied by self is opaque. Locally created closures transport
+// tagged capture paths, including when returned or stored in an inline field.
 fn invariant_references(value Expr, references List[Expr]) {
     if value.kind == ExprKind.FunctionRef {
         var index = 0
@@ -33,27 +34,59 @@ fn invariant_references(value Expr, references List[Expr]) {
     }
 }
 
+fn invariant_known_callback(reads InvariantReads, shape Int, origin InputOrigin) Bool {
+    var index = 0
+    while index < length(origin.paths) {
+        let path = get(origin.paths, index)
+        if length(path) == 0 || get(path, 0) >= 0 {
+            return false
+        }
+        let target = -1 - get(path, 0)
+        var found = false
+        var reference = 0
+        while reference < length(reads.references) {
+            let candidate = get(reads.references, reference)
+            if candidate.ty == shape && candidate.index == target && length(candidate.children) == 1 {
+                found = true
+            }
+            reference = reference + 1
+        }
+        if !found {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
 fn invariant_indirect(reads InvariantReads, call Expr, inputs List[InputOrigin], depth Int) InputOrigin {
-    if origin_shared(get(inputs, 0)) {
+    let shape = get(call.children, 0).ty
+    let captures = get(inputs, 0)
+    if !invariant_known_callback(reads, shape, captures) {
         set(reads.valid, 0, false)
         return origin_input()
     }
-    let arguments = new[InputOrigin]()
-    var index = 1
-    while index < length(inputs) {
-        push(arguments, get(inputs, index))
-        index = index + 1
-    }
-    let shape = get(call.children, 0).ty
     var found = false
     var output = origin_empty()
-    index = 0
+    var index = 0
     while index < length(reads.references) && get(reads.valid, 0) {
         let reference = get(reads.references, index)
         if reference.ty == shape {
-            if length(reference.children) != 0 || reference.index < 0 ||
-            reference.index >= length(reads.functions) ||
-            length(get(reads.functions, reference.index).params) != length(arguments) {
+            if length(reference.children) > 1 || reference.index < 0 ||
+            reference.index >= length(reads.functions) {
+                set(reads.valid, 0, false)
+                return origin_input()
+            }
+            let arguments = new[InputOrigin]()
+            if length(reference.children) == 1 {
+                push(arguments, origin_project(captures, -1 - reference.index))
+            }
+            var argument = 1
+            while argument < length(inputs) {
+                push(arguments, get(inputs, argument))
+                argument = argument + 1
+            }
+            if length(get(reads.functions, reference.index).params) != length(arguments) {
                 set(reads.valid, 0, false)
                 return origin_input()
             }
