@@ -113,9 +113,12 @@ fn pending_record(context Context, node Node, ty Int, fields List[Expr]) Result[
         }
         if resource {
             let kind = get(context.env.types, field.ty).kind
-            if kind != TypeKind.Record && kind != TypeKind.Enum && kind != TypeKind.Refined {
-                return Result.Err(error(context, source, "pending cleanup requires a concrete resource field"))
+            if kind != TypeKind.Record && kind != TypeKind.Enum && kind != TypeKind.Refined &&
+                kind != TypeKind.Parameter && kind != TypeKind.Associated {
+                return Result.Err(error(context, source, "pending cleanup requires a nominal or constrained abstract resource field"))
             }
+            // Abstract checking uses the declared Dispose/MustScope evidence.
+            // Concrete instances rebuild the guards for every actual descendant.
             let descendants = new[Text]()
             discard scope_collect(context, source, field.ty, "", resource_concept(context.env, "Dispose"), descendants, 0)?
         }

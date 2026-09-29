@@ -311,7 +311,10 @@ refinement construction. Preconditions, successful assertions and verified
 callee summaries can propagate bounds across scalar parameters, inline aggregate
 leaves and fresh call results. Symbol identities survive local substitution and
 reassignment; short-circuit clauses retain their own guards and definedness
-obligations. This remains interval propagation, not general relational solving.
+obligations. A failed direct comparison can now query a bounded difference graph:
+transitive relative bounds and equality cycles do not need absolute anchors.
+Queries reuse the same unit-coefficient facts and mathematical arithmetic, without
+an all-pairs closure or a general nonlinear solver.
 See the [contract example](compiler/examples/relational_contracts).
 
 Required contracts also consume checked input-type invariants for immutable
@@ -436,8 +439,10 @@ transfer are supported. MustScope results retain their fresh-return obligation
 through runtime function values and dynamic factory methods; every selected
 implementation is checked. A Dispose-only callback result has no such guarantee.
 Multi-field MustScope aggregates now disarm per-field pending cleanup after
-successful construction. Nested record resources also receive pending cleanup;
-resource Lists, enum payloads and abstract resource fields remain open.
+successful construction. Nested record resources also receive pending cleanup.
+Generic parameters and associated fields use declared Dispose/MustScope bounds;
+selected concrete instances rebuild guards for all actual descendants, including
+fault exits. Resource Lists and enum payloads remain open.
 Suspended lexical cleanup is implemented as described above, not a
 general resource-transfer facility.
 

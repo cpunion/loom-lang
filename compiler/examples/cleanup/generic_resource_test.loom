@@ -1,0 +1,128 @@
+record GenericPair[T Dispose + MustScope] {
+    trace List[Int]
+    first T
+    second T
+}
+
+impl[T Dispose + MustScope] Dispose for GenericPair[T] {
+    fn dispose(self GenericPair[T]) {
+        push(self.trace, 50)
+    }
+}
+
+fn generic_pair[T Dispose + MustScope](factory fn(Int, List[Int], Bool) T,
+    trace List[Int], fail_second Bool) GenericPair[T] {
+    GenericPair[T] {
+        trace = trace
+        first = factory(1, trace, false)
+        second = factory(2, trace, fail_second)
+    }
+}
+
+record GenericChild {
+    trace List[Int]
+    fail_dispose Bool
+    inner Leaf
+}
+
+impl MustScope for GenericChild {
+}
+
+impl Dispose for GenericChild {
+    fn dispose(self GenericChild) {
+        push(self.trace, self.inner.id * 100)
+        if self.fail_dispose {
+            assert false
+        }
+    }
+}
+
+fn generic_child(id Int, trace List[Int], fail Bool) GenericChild {
+    GenericChild {
+        trace = trace
+        fail_dispose = fail
+        inner = acquire(id, trace)
+    }
+}
+
+fn maybe_generic_child(id Int, trace List[Int], fail Bool) GenericChild {
+    if fail {
+        assert false
+    }
+    generic_child(id, trace, true)
+}
+
+concept ResourceFactory {
+    type Item Dispose + MustScope
+    fn acquire(self Self, id Int, trace List[Int]) Self.Item
+}
+
+impl ResourceFactory for Bool {
+    type Item = GenericChild
+    fn acquire(self Bool, id Int, trace List[Int]) GenericChild {
+        generic_child(id, trace, self)
+    }
+}
+
+record AssociatedPair[S ResourceFactory] {
+    first S.Item
+    second S.Item
+}
+
+impl[S ResourceFactory] Dispose for AssociatedPair[S] {
+    fn dispose(self AssociatedPair[S]) {
+    }
+}
+
+fn associated_pair[S ResourceFactory](source S, trace List[Int]) AssociatedPair[S] {
+    AssociatedPair[S] {
+        first = source.acquire(1, trace)
+        second = source.acquire(2, trace)
+    }
+}
+
+fn generic_cleanup() Bool {
+    let trace List[Int] = []
+    {
+        scoped value = generic_pair(generic_child, trace, false)
+    }
+    assert length(trace) == 7
+    assert trace[0] == 10 && trace[1] == 20 && trace[2] == 50
+    assert trace[3] == 200 && trace[4] == 2
+    assert trace[5] == 100 && trace[6] == 1
+    let associated List[Int] = []
+    {
+        scoped value = associated_pair(false, associated)
+    }
+    assert length(associated) == 6
+    assert associated[0] == 10 && associated[1] == 20
+    assert associated[2] == 200 && associated[3] == 2
+    assert associated[4] == 100 && associated[5] == 1
+    true
+}
+
+test fn generic_and_associated_resource_fields_transfer_all_descendants() {
+    assert generic_cleanup()
+    assert comptime {
+        generic_cleanup()
+    }
+}
+
+async fn generic_pending_fault(trace List[Int]) {
+    scoped value = generic_pair(maybe_generic_child, trace, true)
+}
+
+test async fn generic_pending_cleanup_drains_nested_children_after_a_fault() {
+    let trace List[Int] = []
+    match outcome(generic_pending_fault(trace)).await {
+        Outcome.Faulted(_) => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    // The second factory failed. Disposing the pending first wrapper also
+    // faults, but its separately registered child must still close once.
+    assert length(trace) == 3
+    assert trace[0] == 10 && trace[1] == 100 && trace[2] == 1
+}

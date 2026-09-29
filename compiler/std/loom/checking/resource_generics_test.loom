@@ -1,0 +1,97 @@
+test fn generic_resource_fields_use_declared_dispose_and_freshness() {
+    resource_accept(concat(resource_header(), """
+record Pair[T Dispose + MustScope] {
+    first T
+    second Handle
+}
+
+impl[T Dispose + MustScope] Dispose for Pair[T] {
+    fn dispose(self Pair[T]) {
+    }
+}
+
+fn pair[T Dispose + MustScope](factory fn(List[Int]) T, log List[Int]) Pair[T] {
+    Pair[T] {
+        first = factory(log)
+        second = make(log)
+    }
+}
+
+fn main() {
+    scoped value = pair(make, [0])
+}
+"""))
+    resource_reject(concat(resource_header(), """
+record Pair[T MustScope] {
+    first T
+    second Handle
+}
+
+fn missing_dispose[T MustScope](factory fn(List[Int]) T, log List[Int]) Pair[T] {
+    Pair[T] {
+        first = factory(log)
+        second = make(log)
+    }
+}
+"""))
+    resource_reject(concat(resource_header(), """
+record Pair[T Dispose + MustScope] {
+    first T
+    second Handle
+}
+
+impl[T Dispose + MustScope] Dispose for Pair[T] {
+    fn dispose(self Pair[T]) {
+    }
+}
+
+fn copied[T Dispose + MustScope](factory fn(List[Int]) T, log List[Int]) Pair[T] {
+    scoped value = factory(log)
+    Pair[T] {
+        first = value
+        second = make(log)
+    }
+}
+
+fn main() {
+    scoped invalid = copied(make, [0])
+}
+"""))
+}
+
+test fn associated_resource_fields_follow_the_declared_item_bounds() {
+    resource_accept(concat(resource_header(), """
+concept Factory {
+    type Item Dispose + MustScope
+    fn make(self Self, log List[Int]) Self.Item
+}
+
+impl Factory for Int {
+    type Item = Handle
+    fn make(self Int, log List[Int]) Handle {
+        make(log)
+    }
+}
+
+record Pair[S Factory] {
+    first S.Item
+    second Handle
+}
+
+impl[S Factory] Dispose for Pair[S] {
+    fn dispose(self Pair[S]) {
+    }
+}
+
+fn pair[S Factory](source S, log List[Int]) Pair[S] {
+    Pair[S] {
+        first = source.make(log)
+        second = make(log)
+    }
+}
+
+fn main() {
+    scoped value = pair(1, [0])
+}
+"""))
+}

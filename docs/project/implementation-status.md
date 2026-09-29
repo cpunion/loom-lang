@@ -508,6 +508,11 @@ proofs. Propagation scans at most 256 facts and 32 numeric identities per bounda
 it is interval propagation, not a complete relational solver. Original entry
 checks and body faults remain; see the
 [relational contract example](../../compiler/examples/relational_contracts).
+After direct facts fail, bounded difference-graph queries now prove relative
+chains and equality cycles without absolute anchors. Negative cycles establish
+inconsistent premises using mathematical arithmetic, not machine overflow.
+This reuses the 32-identity/256-fact limits and adds no runtime checks or general
+nonlinear solver; postcondition arithmetic still needs its own definedness proof.
 Recursive proof dependencies, helper loops/mutation, returns inside helper operands,
 indirect calls and dyn calls without a usable contract remain unsupported; required proofs never
 fall back to runtime checks or sampled evaluation.
@@ -834,8 +839,11 @@ imply freshness. Unused concrete resource functions are checked without entering
 native reachability. Async functions use frame-backed registrations for suspended
 cleanup. Multi-field MustScope aggregates disarm pending field cleanup after
 successful construction. Nested record fields also register each completed
-resource's cleanup before a later field is evaluated. Resource Lists, enum
-payloads, abstract resource fields, and transfer into Tasks remain unsupported.
+resource's cleanup before a later field is evaluated. Generic and associated
+resource fields now use their declared Dispose/MustScope bounds, rebuilding all
+descendant guards in each concrete instance. Native and compile-time examples
+cover normal transfer and nested cleanup faults. Resource Lists, enum payloads
+and transfer into Tasks remain unsupported.
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
 same-directory tests, a separate library package, Unicode text and file I/O.

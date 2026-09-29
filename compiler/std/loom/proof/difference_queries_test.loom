@@ -1,0 +1,58 @@
+test fn difference_queries_prove_relative_bounds_without_absolute_ranges() {
+    let premises = nodes(operation(">", local(7), local(8)), operation(">", local(8), local(9)))
+    assert implies_facts(premises, operation(">", local(7), local(9)))
+    assert implies_facts(premises, operation("&&", operation(">", local(7), local(9)), operation(">", local(8), local(9))))
+    assert !implies_facts(premises, operation(">", operation("+", local(7), literal("1")), local(7)))
+    let x = variable(1000000)
+    let y = variable(3)
+    let z = variable(19)
+    let xy = add(x, scale(y, integer(-1)))
+    let yz = add(y, scale(z, integer(-1)))
+    let xz = add(x, scale(z, integer(-1)))
+    let strict = predicates(Predicate.Compare(">", xy), Predicate.Compare(">", yz))
+    assert difference_holds(Predicate.Compare(">", xz), strict)
+    assert difference_holds(Predicate.Compare("!=", xz), strict)
+    assert !difference_holds(Predicate.Compare("==", xz), strict)
+    assert !difference_holds(Predicate.Compare("<", xz), strict)
+    assert !difference_holds(Predicate.Compare(">", x), strict)
+    let weak = predicates(Predicate.Compare(">=", xy), Predicate.Compare(">=", yz))
+    assert difference_holds(Predicate.Compare(">=", xz), weak)
+    assert !difference_holds(Predicate.Compare(">", xz), weak)
+    push(weak, Predicate.Compare("<=", xz))
+    assert difference_holds(Predicate.Compare("==", xz), weak)
+    assert !difference_holds(Predicate.Compare("!=", xz), weak)
+    push(strict, Predicate.Compare("<=", xz))
+    // The established strict cycle is inconsistent, including for unrelated
+    // goals. A zero-weight cycle above is not inconsistent.
+    assert difference_holds(Predicate.Compare("==", variable(7)), strict)
+}
+
+test fn difference_query_offsets_use_mathematical_arithmetic_and_bounded_identities() {
+    let x = variable(0)
+    let y = variable(1)
+    let z = variable(2)
+    let xy = add(x, scale(y, integer(-1)))
+    let yz = add(y, scale(z, integer(-1)))
+    let xz = add(x, scale(z, integer(-1)))
+    var first = -2
+    while first <= 2 {
+        var second = -2
+        while second <= 2 {
+            let facts = predicates(
+                Predicate.Compare("<=", add(xy, constant(integer(-first)))),
+                Predicate.Compare("<=", add(yz, constant(integer(-second)))))
+            let limit = first + second
+            assert difference_holds(Predicate.Compare("<=", add(xz, constant(integer(-limit)))), facts)
+            assert !difference_holds(Predicate.Compare("<", add(xz, constant(integer(-limit)))), facts)
+            second = second + 1
+        }
+        first = first + 1
+    }
+    let facts = predicates(Predicate.Compare(">", xy), Predicate.Compare(">", yz))
+    var index = 3
+    while index < 33 {
+        push(facts, Predicate.Compare(">=", variable(index)))
+        index = index + 1
+    }
+    assert !difference_holds(Predicate.Compare(">", xz), facts)
+}

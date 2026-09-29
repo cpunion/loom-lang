@@ -1647,8 +1647,12 @@ fresh results with verified callee bounds retain distinct symbolic identities,
 including through scalar assignment and snapshots. Short-circuit postconditions
 use their branch guards without assuming unevaluated arithmetic succeeded.
 Propagation is bounded to 256 facts and 32 numeric identities at a boundary;
-unknown required proofs still block compilation. This is interval propagation,
-not general relational solving, and adds no runtime mechanism.
+unknown required proofs still block compilation. After direct facts fail, a
+bounded shortest-path query also proves relative chains such as `a > b` and
+`b > c` implying `a > c`, or equality from a zero-weight cycle. Negative cycles
+establish inconsistent premises. The graph uses mathematical arithmetic and
+unit-coefficient differences; it does not assume hypothetical source arithmetic
+is defined or solve general nonlinear constraints. It adds no runtime mechanism.
 See the [relational contract example](examples/relational_contracts).
 
 Immutable input refinements contribute their supported predicates to required
@@ -2100,8 +2104,13 @@ ordinary Dispose-only value may return a shared alias, so its function type alon
 cannot justify a scoped initializer. Direct calls still use checked body evidence.
 
 Nested record resources now receive pending cleanup during construction.
-Resource lists, enum payloads, abstract resource fields, and matching a resource
-itself remain unsupported. Lexical cleanup across suspension is
+Generic parameters and associated fields can use `Dispose + MustScope` bounds
+for the same transfer. Concrete specialization registers every nested resource,
+not just the abstract field's outer Dispose method; completed fields still drain
+if a later initializer or a cleanup faults. See the
+[generic cleanup tests](examples/cleanup/generic_resource_test.loom).
+Resource lists, enum payloads, and matching a resource itself remain unsupported.
+Lexical cleanup across suspension is
 supported as described in [Source Tasks](#source-tasks).
 
 `break` exits the nearest enclosing `while` body; `continue` reevaluates that

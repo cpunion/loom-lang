@@ -1,0 +1,126 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+record Distance {
+    known Bool
+    value Number
+}
+
+// x - y <= c is an edge y -> x of weight c. Each relaxation derives a
+// mathematical bound by addition. N passes suffice for N vertices: a change
+// on the last pass establishes an inconsistent (negative-cycle) premise.
+fn difference_path(edges List[Difference], goal Difference, count Int) Bool {
+    let distances = new[Distance]()
+    var index = 0
+    while index < count {
+        push(distances, Distance {
+                known = index == goal.right
+                value = integer(0)
+            })
+        index = index + 1
+    }
+    var round = 0
+    while round < count {
+        let bound = get(distances, goal.left)
+        if bound.known && compare(bound.value, goal.limit) <= 0 {
+            return true
+        }
+        var changed = false
+        index = 0
+        while index < length(edges) {
+            let edge = get(edges, index)
+            let source = get(distances, edge.right)
+            if source.known {
+                let candidate = sum(source.value, edge.limit)
+                let previous = get(distances, edge.left)
+                if !previous.known || compare(candidate, previous.value) < 0 {
+                    set(distances, edge.left, Distance {
+                            known = true
+                            value = candidate
+                        })
+                    changed = true
+                }
+            }
+            index = index + 1
+        }
+        if !changed {
+            return false
+        }
+        round = round + 1
+    }
+    // No machine wrapping or assumed overflow checks participate in this
+    // cycle argument. An inconsistent established premise has no valid input.
+    true
+}
+
+fn difference_query(relation Text, value Linear, facts List[Predicate]) Result[Bool, Text] {
+    let identities = new[Int]()
+    let goals = new[Difference]()
+    if !difference_edges(goals, identities, relation, value)? {
+        return Result.Ok(false)
+    }
+    let edges = new[Difference]()
+    var index = 0
+    while index < length(facts) && index < 256 {
+        match get(facts, index) {
+            Predicate.Compare(operator, term) => {
+                discard difference_edges(edges, identities, operator, term)?
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    // Symbol identities denote actual Int values. Zero is vertex 0; these
+    // bounds also make every vertex reachable for negative-cycle detection.
+    index = 1
+    while index <= length(identities) {
+        push(edges, Difference {
+                left = index
+                right = 0
+                limit = integer(9223372036854775807)
+            })
+        push(edges, Difference {
+                left = 0
+                right = index
+                limit = negate(integer(-9223372036854775808))
+            })
+        index = index + 1
+    }
+    index = 0
+    while index < length(goals) {
+        if !difference_path(edges, get(goals, index), length(identities) + 1) {
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+// Query only after direct facts/intervals fail. This keeps ordinary proofs on
+// their cheap path and avoids materializing an all-pairs transitive closure.
+fn difference_holds(predicate Predicate, facts List[Predicate]) Bool {
+    match predicate {
+        Predicate.Compare(relation, value) => {
+            if relation == "!=" {
+                return difference_holds(Predicate.Compare("<", value), facts) ||
+                difference_holds(Predicate.Compare(">", value), facts)
+            }
+            match difference_query(relation, value, facts) {
+                Result.Ok(proved) => proved
+                Result.Err(_) => false
+            }
+        }
+        Predicate.And(values) =>
+        (holds(get(values, 0), facts) || difference_holds(get(values, 0), facts)) &&
+        (holds(get(values, 1), facts) || difference_holds(get(values, 1), facts))
+        Predicate.Or(values) =>
+        holds(get(values, 0), facts) || difference_holds(get(values, 0), facts) ||
+        holds(get(values, 1), facts) || difference_holds(get(values, 1), facts)
+        _ => false
+    }
+}
