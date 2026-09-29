@@ -1,8 +1,24 @@
 //! Shared host linking and transactional output publication for native drivers.
 
+use object::{Object, ObjectSymbol};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+fn uses_tls(object: &Path) -> Result<bool, String> {
+    let bytes = std::fs::read(object).map_err(|error| error.to_string())?;
+    let file = object::File::parse(bytes.as_slice()).map_err(|error| error.to_string())?;
+    // Inspect emitted references, including cached objects. Unused source
+    // imports must not pull in a provider, nor require cache metadata changes.
+    Ok(file.symbols().any(|symbol| {
+        symbol.is_undefined()
+            && symbol.name().is_ok_and(|name| {
+                name.strip_prefix('_')
+                    .unwrap_or(name)
+                    .starts_with("loom_rt_tls_")
+            })
+    }))
+}
 
 pub fn link(
     object: &Path,
@@ -15,7 +31,7 @@ pub fn link(
     let default_linker = std::env::var_os("LOOM_CC")
         .unwrap_or_else(|| if windows { "clang-cl" } else { "clang" }.into());
     let runtime = if uses_runtime {
-        let runtime = runtime.map(Path::to_path_buf).unwrap_or_else(|| {
+        let mut runtime = runtime.map(Path::to_path_buf).unwrap_or_else(|| {
             std::env::var_os("LOOM_RUNTIME_LIBRARY")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| {
@@ -28,6 +44,13 @@ pub fn link(
                         })
                 })
         });
+        if uses_tls(object)? {
+            runtime.set_file_name(if windows {
+                "loom_tls.lib"
+            } else {
+                "libloom_tls.a"
+            });
+        }
         if !runtime.is_file() {
             return Err(format!(
                 "missing native runtime {}: run cargo build --workspace or set LOOM_RUNTIME_LIBRARY",
@@ -104,6 +127,7 @@ fn link_command(
                 "ntdll.lib",
                 "userenv.lib",
                 "ws2_32.lib",
+                "bcrypt.lib",
                 "dbghelp.lib",
             ]);
         }

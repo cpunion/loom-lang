@@ -1,0 +1,154 @@
+import std.net.tls.Connection
+import std.net.tls.ClientOptions
+import std.net.tls.ServerOptions
+import std.net.tls.Trust
+import std.net.tls.TlsError
+import std.net.tls.connect
+import std.net.tls.accept
+import std.net.tls.read
+import std.net.tls.write_bytes
+import std.net.tls.shutdown_write
+import std.net.tls.close
+import std.net.tls.protocol
+import std.net.tls.peer_address
+import std.net.tcp.Listener
+import std.net.tcp.listen
+import std.net.tcp.local_address
+import std.net.tcp.close_listener
+import std.bytes.new
+import std.bytes.length
+import std.bytes.get
+import std.list.length
+import std.file.read_bytes
+import std.process.arguments
+import std.result.Result
+import std.option.Option
+import std.io.write_text
+
+fn loaded(path Text) Bytes {
+    match read_bytes(path) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            new()
+        }
+    }
+}
+
+async fn receive_all(stream Connection) Result[Bytes, TlsError] {
+    let bytes = new()
+    while read(stream, bytes, 16384).await? > 0 {
+    }
+    Result.Ok(bytes)
+}
+
+async fn serve(listener Listener, options ServerOptions) Result[Int, TlsError] {
+    let stream = accept(listener, options).await?
+    defer {
+        discard close(stream)
+    }
+    assert match protocol(stream)? {
+        Option.Some(value) => value == "loom-echo"
+        Option.None => false
+    }
+    let request = receive_all(stream).await?
+    let count = write_bytes(stream, request).await?
+    discard shutdown_write(stream).await?
+    Result.Ok(count)
+}
+
+async fn request(address Text, name Text, options ClientOptions, payload Bytes) Result[Int, TlsError] {
+    let stream = connect(address, name, options).await?
+    defer {
+        discard close(stream)
+    }
+    assert peer_address(stream)? == address
+    assert match protocol(stream)? {
+        Option.Some(value) => value == "loom-echo"
+        Option.None => false
+    }
+    assert write_bytes(stream, payload).await? == length(payload)
+    discard shutdown_write(stream).await?
+    assert match write_bytes(stream, payload).await {
+        Result.Err(error) => error == TlsError.Closed
+        Result.Ok(_) => false
+    }
+    let response = receive_all(stream).await?
+    assert length(response) == length(payload)
+    var index = 0
+    while index < length(payload) {
+        assert get(response, index) == get(payload, index)
+        index = index + 1
+    }
+    let alias = stream
+    discard close(stream)?
+    assert match protocol(alias) {
+        Result.Err(error) => error == TlsError.Closed
+        Result.Ok(_) => false
+    }
+    Result.Ok(length(response))
+}
+
+async fn main() {
+    let args = arguments()
+    assert std.list.length(args) == 6
+    let mode = args[5]
+    let server_options = ServerOptions {
+        certificates = loaded(args[2])
+        private_key = loaded(args[3])
+        protocols = ["loom-echo"]
+    }
+    let client_options = ClientOptions {
+        trust = if mode == "untrusted" {
+            Trust.Builtin
+        } else {
+            Trust.Certificates(loaded(args[1]))
+        }
+        protocols = ["loom-echo"]
+    }
+    let listener = match listen("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard close_listener(listener)
+    }
+    let address = match std.net.tcp.local_address(listener) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let server = serve(listener, server_options)
+    let client = request(address, if mode == "wrong-name" {
+            "wrong.example"
+        } else {
+            "localhost"
+        }, client_options, loaded(args[4])).await
+    let served = server.await
+    if mode == "ok" {
+        assert match client {
+            Result.Ok(count) => count > 65536
+            Result.Err(_) => false
+        }
+        assert match served {
+            Result.Ok(count) => count > 65536
+            Result.Err(_) => false
+        }
+        discard write_text("TLS roundtrip\n")
+    } else {
+        assert match client {
+            Result.Err(error) => error == TlsError.Peer
+            Result.Ok(_) => false
+        }
+        assert match served {
+            Result.Err(_) => true
+            Result.Ok(_) => false
+        }
+        discard write_text("peer rejected\n")
+    }
+}

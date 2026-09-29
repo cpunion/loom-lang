@@ -22,8 +22,9 @@ if (existsSync(archive) || existsSync(checksum)) throw new Error("archive or che
 
 const suffix = process.platform === "win32" ? ".exe" : "";
 const runtimeName = process.platform === "win32" ? "loom_runtime.lib" : "libloom_runtime.a";
+const tlsName = process.platform === "win32" ? "loom_tls.lib" : "libloom_tls.a";
 for (const input of ["LICENSE", `bin/loom${suffix}`, `lib/loom/loom-native${suffix}`,
-  `lib/loom/${runtimeName}`, "lib/loom/std"]) {
+  `lib/loom/${runtimeName}`, `lib/loom/${tlsName}`, "lib/loom/std"]) {
   if (!existsSync(join(stage, input))) throw new Error(`incomplete staged toolchain: missing ${input}`);
 }
 
@@ -152,6 +153,7 @@ try {
   if (run(executable, ["sample.txt"], application, { ...environment, LOOM_GC_STRESS: "1" }) !== "2 4 23\n") {
     throw new Error("extracted archive produced incorrect native output");
   }
+  run(loom, ["test", join(installed, "lib/loom/std/net/tls")], application, environment);
 
   mkdirSync(dirname(archive), { recursive: true });
   copyFileSync(temporaryArchive, archive, constants.COPYFILE_EXCL);

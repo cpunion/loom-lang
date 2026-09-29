@@ -1,0 +1,78 @@
+import std.net.tls.ClientOptions
+import std.net.tls.Trust
+import std.net.tls.TlsError
+import std.net.tls.connect
+import std.net.tls.read
+import std.net.tls.write_bytes
+import std.net.tls.close
+import std.net.tls.peer_address
+import std.file.read_bytes
+import std.bytes.new
+import std.bytes.to_text
+import std.text.to_bytes
+import std.process.arguments
+import std.result.Result
+import std.task.cancel
+import std.task.Outcome
+
+async fn main() {
+    let args = arguments()
+    let roots = match read_bytes(args[1]) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let stream = match connect(args[2], "localhost", ClientOptions {
+            trust = Trust.Certificates(roots)
+            protocols = ["loom-echo"]
+        }).await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard close(stream)
+    }
+    assert match write_bytes(stream, to_bytes("ping")).await {
+        Result.Ok(count) => count == 4
+        Result.Err(_) => false
+    }
+    let output = new()
+    if args[3] == "busy" {
+        let pending = read(stream, output, 4)
+        assert match read(stream, new(), 4).await {
+            Result.Err(error) => error == TlsError.Busy
+            Result.Ok(_) => false
+        }
+        assert match cancel(pending) {
+            Outcome.Cancelled => true
+            _ => false
+        }
+        assert match peer_address(stream) {
+            Result.Err(error) => error == TlsError.Closed
+            Result.Ok(_) => false
+        }
+    } else {
+        assert match read(stream, output, 4).await {
+            Result.Ok(count) => count == 4
+            Result.Err(_) => false
+        }
+        assert to_text(output) == "pong"
+        let ending = read(stream, output, 4).await
+        if args[3] == "truncated" {
+            assert match ending {
+                Result.Err(error) => error == TlsError.Protocol
+                Result.Ok(_) => false
+            }
+        } else {
+            assert match ending {
+                Result.Ok(count) => count == 0
+                Result.Err(_) => false
+            }
+        }
+    }
+}

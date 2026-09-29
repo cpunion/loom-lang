@@ -13,6 +13,7 @@ use super::wait::{
     KIND_COMPLETION, KIND_TIMER, Reactor, ReadyNotification, Registration, WaitSource,
 };
 use super::{fatal, fault};
+use std::any::{Any, TypeId};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
@@ -108,6 +109,8 @@ struct Owner {
     reactor: OnceCell<Arc<Reactor>>,
     // Drop the reactor before the table's final socket handles.
     sockets: OnceCell<socket::Sockets>,
+    // Concrete native providers are linked only when referenced by the program.
+    extensions: RefCell<HashMap<TypeId, Box<dyn Any>>>,
     workers: OnceCell<workers::Workers>,
 }
 
@@ -559,6 +562,20 @@ pub(super) extern "C-unwind" fn loom_rt_task_wait_timer(deadline_ns: i64) -> i32
     i32::from(ready.is_some())
 }
 
+pub(crate) fn native_context<T: Default + 'static, R>(operation: impl FnOnce(&T) -> R) -> R {
+    let owner = OWNER.get();
+    if owner.is_null() {
+        fault("native context requires an async entry");
+    }
+    // SAFETY: task_run keeps its fixed owner alive for this entire call.
+    let owner = unsafe { &*owner };
+    let mut extensions = owner.extensions.borrow_mut();
+    let context = extensions
+        .entry(TypeId::of::<T>())
+        .or_insert_with(|| Box::<T>::default());
+    operation(context.downcast_ref().unwrap())
+}
+
 fn edit<R>(operation: impl FnOnce(&Owner, &mut Core) -> Result<R, &'static str>) -> R {
     let owner = OWNER.get();
     if owner.is_null() {
@@ -844,6 +861,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor
             core: RefCell::new(Core::default()),
             reactor: OnceCell::new(),
             sockets: OnceCell::new(),
+            extensions: RefCell::new(HashMap::new()),
             workers: OnceCell::new(),
         };
         OWNER.set(ptr::from_ref(&owner));
