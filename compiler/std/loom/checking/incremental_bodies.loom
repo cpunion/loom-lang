@@ -2,6 +2,7 @@
 // back from the mutable Program returned by the public checking API.
 record BodyTarget {
     symbol Int
+    arity Int
     arguments List[Int]
     constants List[BodyConstant]
 }
@@ -106,7 +107,7 @@ fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) 
     let functions = std.map.new[Int, List[Int]]()
     index = 0
     while index < length(prior.functions) {
-        let owner = get(prior.functions, index).symbol
+        let owner = get(prior.targets, index).symbol
         if owner >= 0 && owner < length(symbols) && get(symbols, owner) >= 0 {
             let mapped = get(symbols, owner)
             match std.map.get(functions, mapped) {
@@ -333,6 +334,11 @@ fn body_types(env Environment, reuse BodyReuse, types List[Int]) Result[List[Int
 fn body_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure] {
     let prior = get(get(reuse.prior, 0).targets, target)
     let owner = body_symbol(reuse, prior.symbol)
+    if prior.arity >= 0 {
+        let selected = pack_signature(env, owner, prior.arity)?
+        discard check_pack_arity(env, selected)?
+        return schedule(env, selected, body_types(env, reuse, prior.arguments)?, body_constants(env, reuse, prior.constants, owner)?, symbol(env, owner).node)
+    }
     var index = 0
     while index < length(env.signatures) {
         if get(env.signatures, index).symbol == owner {
@@ -406,7 +412,10 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
     if length(reuse.prior) == 0 || instance.signature < 0 {
         return Result.Ok(Option.None)
     }
-    let owner = get(env.signatures, instance.signature).symbol
+    let concrete_owner = get(env.signatures, instance.signature).symbol
+    let pack = pack_instance(env, instance.signature)
+    let owner = if pack >= 0 { get(env.packs, pack).source } else { concrete_owner }
+    let arity = if pack >= 0 { get(env.packs, pack).arity } else { -1 }
     if owner >= length(reuse.allowed) || !get(reuse.allowed, owner) {
         return Result.Ok(Option.None)
     }
@@ -423,12 +432,15 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
         let candidate = get(candidates, index)
         let value = get(prior.functions, candidate)
         let target = get(prior.targets, candidate)
-        if value.symbol >= 0 && body_symbol(reuse, value.symbol) == owner &&
+        if target.arity == arity && body_symbol(reuse, target.symbol) == owner &&
         (std.loom.ast.has(current.node, NodeKind.ExpansionId) ||
-            (current.text != "" && current.text == get(prior.definitions.entries, value.symbol).text)) && body_supported(reuse, value) &&
+            (current.text != "" && current.text == get(prior.definitions.entries, target.symbol).text)) && body_supported(reuse, value) &&
         same(body_types(env, reuse, value.arguments)?, instance.arguments) &&
         body_constants_supported(reuse, target.constants, new[Int]()) &&
         same_constants(body_constants(env, reuse, target.constants, owner)?, instance.constants) {
+            if arity >= 0 {
+                discard check_pack_arity(env, instance.signature)?
+            }
             let offset = current.span.start - value.span.start
             let locals = new[Local]()
             var local = 0
@@ -444,15 +456,15 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
             }
             let mapped = Function {
                 is_async = false
-                symbol = owner
+                symbol = concrete_owner
                 arguments = copy_indices(instance.arguments)
                 params = body_types(env, reuse, value.params)?
                 result = body_type(env, reuse, value.result)?
                 locals = locals
-                preconditions = body_expressions(env, reuse, value.preconditions, owner, offset)?
-                postconditions = body_expressions(env, reuse, value.postconditions, owner, offset)?
+                preconditions = body_expressions(env, reuse, value.preconditions, concrete_owner, offset)?
+                postconditions = body_expressions(env, reuse, value.postconditions, concrete_owner, offset)?
                 result_local = value.result_local
-                body = body_expression(env, reuse, value.body, owner, offset)?
+                body = body_expression(env, reuse, value.body, concrete_owner, offset)?
                 runtime_name = value.runtime_name
                 span = current.span
             }

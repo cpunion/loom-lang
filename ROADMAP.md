@@ -284,7 +284,9 @@ also persists this last-successful definition basis across CLI processes, with
 compiler identity, source and observed-input validation. Declaration generation
 reruns before matching; private snapshots retain both raw and expanded source.
 Compile-time-specialized bodies also reuse detached immutable constants, with
-current type/function identities and rebuilt aggregate keys. Unsupported cases recheck;
+current type/function identities and rebuilt aggregate keys. Variadic instances
+key the original declaration and arity, rebuilding signatures and arity validation
+before reusing concrete bodies. Unsupported cases recheck;
 per-package native objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic

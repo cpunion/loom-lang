@@ -1036,8 +1036,10 @@ It rebuilds bindings, invalidates changed/transitive consumers and remaps types,
 calls and locations through the same resident-cache machinery. Compile-time
 specializations retain detached immutable constants, including type values and
 named callbacks; current types rebuild aggregate keys. Erased compile-time calls
-still participate in source dependency invalidation. Compiler bytes,
-mode/options, module/import identities and observed inputs bind the complete
+still participate in source dependency invalidation.
+Variadic bodies are keyed by original declaration and arity; current signature
+expansion and arity validation precede reuse, including compile-time loops/maps.
+Compiler bytes, mode/options, module/import identities and observed inputs bind the complete
 checksummed snapshot. Declaration expansion reruns before matching; its raw
 source and expanded trees have separate private snapshots. Unsupported snapshots
 and damaged bundles miss; failed checks never publish. This is opt-in trusted-local evidence, not a

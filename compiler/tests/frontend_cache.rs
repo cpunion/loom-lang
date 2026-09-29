@@ -30,6 +30,66 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn variadic_instances_reuse_current_expanded_symbols_and_distinct_arities() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+fn bundle[Ts...](items Ts...) (Ts...) {
+    items
+}
+fn mapped[Ts...](items (Ts...)) (Ts...) {
+    comptime map item in items {
+        item
+    }
+}
+fn count[Ts...](items Ts...) Int {
+    var total = 0
+    comptime for item in items {
+        discard item
+        total = total + 1
+    }
+    total
+}
+fn main() {
+    let pair = mapped(bundle(3, true))
+    let triple = bundle(1, "two", false)
+    assert pair.1 && !triple.2
+    assert pair.0 + count(triple...) + count(1) == 7
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(
+        &path,
+        format!("fn unrelated(item List[Bool]) List[Bool] {{ item }}\n{source}"),
+    )
+    .unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(trace.contains(", bodies reused 6"), "{trace}");
+    // Fresh arity validation may intern abstract placeholders before the cached
+    // path recreates concrete types. Those private IDs need not be byte-equal;
+    // both native paths must execute every remapped call/layout correctly.
+    let fresh = common::loom(&["run", package.to_str().unwrap()]);
+    success(&fresh);
+    let executed = cached("run", &package, &cache, &[]);
+    checked(&executed, true);
+    assert_eq!(executed.stdout, fresh.stdout);
+    fs::write(
+        &path,
+        source.replace("bundle(3, true)", "bundle(3, true, 9)"),
+    )
+    .unwrap();
+    checked(&cached("run", &package, &cache, &[]), false);
+    fs::write(&path, source.replace("bundle(3, true)", "bundle(3, 4)")).unwrap();
+    assert!(!cached("check", &package, &cache, &[]).status.success());
+}
+
+#[test]
 fn staged_instances_persist_with_current_types_targets_and_constant_values() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");
