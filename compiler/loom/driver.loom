@@ -40,6 +40,7 @@ record Options {
     native_tool Text
     no_run Bool
     tests Bool
+    recursive Bool
     git_tool Text
     object_cache Text
     frontend_cache Text
@@ -67,6 +68,7 @@ fn options(args List[Text]) Result[Options, Text] {
     var tool = ""
     var no_run = false
     var tests = false
+    var recursive = false
     var git_tool = "git"
     var object_cache = ""
     var frontend_cache = ""
@@ -86,11 +88,21 @@ fn options(args List[Text]) Result[Options, Text] {
                 }
                 forwarding = true
             } else {
-                if arg == "--tests" {
-                    if tests {
-                        return Result.Err("duplicate --tests")
+                if arg == "--tests" || arg == "--recursive" {
+                    if arg == "--recursive" {
+                        if recursive {
+                            return Result.Err("duplicate --recursive")
+                        }
+                        if command != "test" {
+                            return Result.Err("--recursive is only available with test")
+                        }
+                        recursive = true
+                    } else {
+                        if tests {
+                            return Result.Err("duplicate --tests")
+                        }
+                        tests = true
                     }
-                    tests = true
                 } else {
                     if arg == "--no-run" {
                         if no_run {
@@ -192,6 +204,9 @@ fn options(args List[Text]) Result[Options, Text] {
     if tests && command != "resolve" {
         return Result.Err("--tests is only available with resolve")
     }
+    if recursive && (output != "" || ir != "") {
+        return Result.Err("test --recursive cannot use a shared --output or --emit-ir path")
+    }
     if command != "build" && !(command == "test" && no_run) && output != "" {
         return Result.Err("--output requires build or test --no-run")
     }
@@ -220,6 +235,7 @@ fn options(args List[Text]) Result[Options, Text] {
             native_tool = tools.native_tool
             no_run = no_run
             tests = tests
+            recursive = recursive
             git_tool = git_tool
             object_cache = object_cache
             frontend_cache = frontend_cache
@@ -316,6 +332,13 @@ fn compile(options Options, input Text, library Bool, output Text) Result[Bool, 
 
 fn execute(args List[Text]) Result[Text, Text] {
     let selected = options(args)?
+    if selected.recursive {
+        return test_recursive(selected)
+    }
+    execute_package(selected)
+}
+
+fn execute_package(selected Options) Result[Text, Text] {
     if selected.command == "resolve" {
         discard resolve(selected.path, selected.std_root, selected.tests, selected.git_tool)?
         return Result.Ok("resolved package dependencies\n")

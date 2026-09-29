@@ -1,0 +1,113 @@
+// Select directories, not an enlarged test root: every package keeps its own
+// private test scope and loads imported packages in production mode.
+fn test_packages(path Text, root Bool, packages List[Text]) Result[Bool, Text] {
+    if !root {
+        match std.fs.kind(join_path(path, "loom.toml")) {
+            Result.Ok(value) => {
+                if value == std.fs.FileKind.File {
+                    return Result.Ok(true)
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    let names = match std.fs.entries(path) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err(concat("cannot list test directory: ", path))
+        }
+    }
+    let children = new[Text]()
+    var source = false
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        let child = join_path(path, name)
+        let entry = match std.fs.entry_kind(child) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err(concat("cannot inspect test path: ", child))
+            }
+        }
+        if std.text.ends_with(name, ".loom") {
+            // Source-file links follow the ordinary package loader's policy;
+            // directory links never expand the recursive selection.
+            match std.fs.kind(child) {
+                Result.Ok(value) => {
+                    if value == std.fs.FileKind.File {
+                        source = true
+                    }
+                }
+                Result.Err(_) => {
+                }
+            }
+        }
+        if entry == std.fs.FileKind.Directory && byte(name, 0) != 46 && name != "target" && name != "node_modules" {
+            push(children, child)
+        }
+        index = index + 1
+    }
+    if source {
+        push(packages, path)
+    }
+    index = 0
+    while index < length(children) {
+        discard test_packages(get(children, index), false, packages)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn test_recursive(selected Options) Result[Text, Text] {
+    let packages = new[Text]()
+    discard test_packages(selected.path, true, packages)?
+    if length(packages) == 0 {
+        return Result.Err(concat("no Loom packages under ", selected.path))
+    }
+    var failed = 0
+    var index = 0
+    while index < length(packages) {
+        let current = Options {
+            command = selected.command
+            path = get(packages, index)
+            std_root = selected.std_root
+            output = selected.output
+            ir = selected.ir
+            native_tool = selected.native_tool
+            no_run = selected.no_run
+            tests = selected.tests
+            recursive = false
+            git_tool = selected.git_tool
+            object_cache = selected.object_cache
+            frontend_cache = selected.frontend_cache
+            receipt = selected.receipt
+            build_options = selected.build_options
+            program_args = selected.program_args
+        }
+        match execute_package(current) {
+            Result.Ok(message) => {
+                match std.io.write_text(concat(current.path, concat(": ", message))) {
+                    Result.Ok(_) => {
+                    }
+                    Result.Err(_) => {
+                        return Result.Err("cannot write test results")
+                    }
+                }
+            }
+            Result.Err(message) => {
+                report(concat("FAIL ", concat(current.path, concat("\n", message))))
+                failed = failed + 1
+            }
+        }
+        index = index + 1
+    }
+    if failed != 0 {
+        return Result.Err(concat(to_text(failed), concat(" of ", concat(to_text(length(packages)), " packages failed"))))
+    }
+    Result.Ok(concat(to_text(length(packages)), if selected.no_run {
+                " packages checked\n"
+            } else {
+                " packages tested\n"
+            }))
+}

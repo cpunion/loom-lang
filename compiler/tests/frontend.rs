@@ -143,44 +143,19 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
     // scripts/bootstrap.sh already builds and compares stage 2/3 once.
     let stage2 = common::executable(&common::root().join("target"), "loom-stage2");
     let stage3 = &artifact;
+    // New source packages join the same test gate without another hand-kept
+    // package list. Dependencies still load without their tests in each run.
+    for package in ["std", "loom"] {
+        success(&source_compiler(
+            stage3,
+            &[
+                "test",
+                compiler.join(package).to_str().unwrap(),
+                "--recursive",
+            ],
+        ));
+    }
     for package in [
-        "std/loom/source",
-        "std/loom/lexer",
-        "std/loom/parser",
-        "std/loom/format",
-        "std/loom/binding",
-        "std/loom/manifest",
-        "std/loom/project",
-        "std/loom/syntax",
-        "std/loom/proof",
-        "std/loom/checking",
-        "std/loom/lowering",
-        "std/loom/analysis",
-        "std/loom/eval",
-        "loom/artifact",
-        "loom",
-        "std/int",
-        "std/float",
-        "std/display",
-        "std/equal",
-        "std/hash",
-        "std/text",
-        "std/bytes",
-        "std/encoding/hex",
-        "std/hash/sha256",
-        "std/list",
-        "std/list/transfer",
-        "std/list/view",
-        "std/map",
-        "std/set",
-        "std/option",
-        "std/result",
-        "std/unicode",
-        "std/fs",
-        "std/env",
-        "std/time",
-        "std/task",
-        "std/process",
         "examples/scalar",
         "examples/contracts",
         "examples/receipt",

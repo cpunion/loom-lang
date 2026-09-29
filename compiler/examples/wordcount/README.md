@@ -11,6 +11,7 @@ After building the compiler, run from this directory:
 ../../../target/loom check
 ../../../target/loom test
 ../../../target/loom test stats
+../../../target/loom test --recursive
 ../../../target/loom run -- sample.txt
 ```
 
@@ -18,6 +19,8 @@ The tests report **1** and **2** passes. The program prints `2 4 23`: LF
 characters, Unicode-whitespace-separated words, and UTF-8 bytes. `loom test`
 selects one directory package; the application's command does not silently
 run its imported library's tests.
+The explicit recursive command runs both directory packages with isolated test
+roots, reporting **1** and **2** passes and **2 packages tested**.
 The library demonstrates both test locations: `empty_input` lives in
 `stats/stats.loom`, and the Unicode test lives in `stats/stats_test.loom`.
 Both run with `loom test stats`; neither is included when building the application
