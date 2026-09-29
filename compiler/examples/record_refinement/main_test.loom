@@ -1,7 +1,11 @@
 test fn persistent_constraints_preserve_unobserved_shared_data() {
     assert shared_invariant_scope()
+    assert invariant_effect_scope()
     assert comptime {
         shared_invariant_scope()
+    }
+    assert comptime {
+        invariant_effect_scope()
     }
 }
 

@@ -547,10 +547,13 @@ rejecting every record containing shared storage. Immutable scalar/Text/record
 paths may coexist with unobserved shared List/Bytes siblings. Existing aliases
 retain normal sharing and mutation without invalidating the immutable predicate.
 Unknown construction checks once; copies and base-record widening do not recheck.
-Direct predicate helpers may copy and forward the whole record. Transitive read
-analysis includes recursive helpers and preconditions, and rejects shared reads
-or writes hidden behind calls. Indirect shared-input calls, scoped/Task payloads
-and unchecked replacement still reject. This is separate from the bounded proof
+Direct predicate helpers may copy and forward the whole record. Input-origin
+summaries distinguish shared inputs from fresh local scratch, including mixed
+helper arguments, recursive calls, returned aliases and preconditions. Monotone
+local origins cover branch/loop assignments and match payloads. Reads/writes of
+input storage, indirect shared-input calls and mutable storage of input aliases
+reject; fresh scratch and immutable enum tags/payloads are allowed. Scoped/Task
+payloads and unchecked replacement still reject. This is separate from the bounded proof
 fragment; recursive predicates do not provide automatic proof evidence.
 Native O0/O2, compile-time and moving-GC tests exercise
 the [shared-field example](../../compiler/examples/record_refinement/shared.loom).

@@ -123,3 +123,84 @@ test fn partial_invariant_proofs_do_not_split_disjunctions() {
         }
     }
 }
+
+test fn invariant_helpers_may_compute_with_fresh_shared_storage() {
+    resource_accept("""
+        import std.list.push
+        record Input {
+            count Int
+            notes List[Text]
+        }
+        fn collect(input Input, values List[Int]) List[Int] {
+            push(values, input.count)
+            values
+        }
+        fn valid(input Input) Bool {
+            let values = collect(input, [0])
+            let alias = values
+            alias[0] = values[1]
+            var index = 0
+            while index < 2 {
+                alias[0] = alias[0] + 1
+                index = index + 1
+            }
+            alias[0] > 2
+        }
+        type Valid = Input where valid(self)
+        """)
+}
+
+test fn invariant_origins_follow_return_values_loops_and_hidden_storage() {
+    let header = """
+        import std.list.push
+        record Input {
+            count Int
+            values List[Int]
+        }
+        """
+    resource_reject_reason(concat(header, """
+        fn select(input Input) List[Int] {
+            return input.values
+        }
+        fn valid(input Input) Bool {
+            select(input)[0] > 0
+        }
+        type Invalid = Input where valid(self)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+    resource_reject_reason(concat(header, """
+        fn valid(input Input) Bool {
+            var values = [1]
+            var index = 0
+            while index < 2 {
+                if values[0] < 0 {
+                    return false
+                }
+                values = input.values
+                index = index + 1
+            }
+            true
+        }
+        type Invalid = Input where valid(self)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+    resource_reject_reason(concat(header, """
+        fn store(input Input, values List[List[Int]]) {
+            push(values, input.values)
+        }
+        fn valid(input Input) Bool {
+            let values = [[1]]
+            let alias = values
+            store(input, alias)
+            values[1][0] > 0
+        }
+        type Invalid = Input where valid(self)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+    resource_reject_reason(concat(header, """
+        fn valid(input Input) Bool {
+            let read = fn() Int {
+                input.values[0]
+            }
+            read() > 0
+        }
+        type Invalid = Input where valid(self)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+}

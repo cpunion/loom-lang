@@ -1,0 +1,75 @@
+fn collect_count(value SharedSnapshot, scratch List[Int]) List[Int] {
+    push(scratch, value.details.count)
+    scratch
+}
+
+fn positive_with_scratch(value SharedSnapshot) Bool {
+    let scratch = collect_count(value, [0])
+    let alias = scratch
+    alias[0] = scratch[1]
+    alias[0] > 0
+}
+
+type ScratchCount = SharedSnapshot where positive_with_scratch(self)
+
+// Enum tags and inline payloads are values, unlike mutable List contents.
+enum Measure {
+    Missing
+    Pair(Int, Int)
+}
+
+record Measurement {
+    reading Measure
+    notes List[Int]
+}
+
+fn positive_reading(reading Measure) Bool {
+    match reading {
+        Measure.Missing => false
+        Measure.Pair(first, second) => first > 0 && second > 0
+    }
+}
+
+fn positive_measurement(value Measurement) Bool {
+    positive_reading(value.reading)
+}
+
+type PositiveMeasurement = Measurement where positive_measurement(self)
+
+fn invariant_effect_scope() Bool {
+    let notes = [1]
+    let source = SharedSnapshot {
+        details = SharedDetails {
+            count = 3
+            values = notes
+        }
+        name = "scratch"
+        bytes = std.bytes.new()
+    }
+    let valid = match ScratchCount(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let measurement = Measurement {
+        reading = Measure.Pair(1, 2)
+        notes = notes
+    }
+    let positive = match PositiveMeasurement(measurement) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    notes[0] = -1
+    assert valid.details.values[0] == -1 && positive.notes[0] == -1
+    assert positive_reading(positive.reading)
+    match PositiveMeasurement(Measurement {
+            reading = Measure.Pair(0, 2)
+            ..measurement
+        }) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
