@@ -32,6 +32,25 @@ fn typed_macros_execute_without_a_runtime_generator() {
         assert!(!lowered.contains("$0"));
         assert!(!lowered.contains("loom_rt_macro"));
     }
+    let directory = common::root().join(package);
+    let source = directory.join("main.loom");
+    let text = fs::read_to_string(&source).unwrap();
+    let output = loom(&[
+        "editor-query",
+        directory.to_str().unwrap(),
+        "--at",
+        source.to_str().unwrap(),
+        &text.find("helper_call!(40)").unwrap().to_string(),
+    ]);
+    success(&output);
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(report.contains("\"types\":[\"Int\"]"), "{report}");
+    assert!(
+        report
+            .replace("\\\\", "/")
+            .contains("generators/generate.loom"),
+        "{report}"
+    );
 }
 
 #[test]

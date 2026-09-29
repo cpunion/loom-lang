@@ -2,6 +2,7 @@ import std.reflect.Schema
 import std.reflect.Kind
 import std.list.length
 import std.list.push
+import std.result.Result
 import typed_macros.generators.helper_call
 import typed_macros.generators.private_type
 
@@ -74,6 +75,20 @@ ensures result == value + value
     twice!(value)
 }
 
+fn positive(types List[Schema]) Text {
+    discard types
+    "$0 > 0"
+}
+
+type Positive = Int where positive!(self)
+
+fn checked(value Int) Bool {
+    match Positive(value) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
+
 record Secret {
     value Int
 }
@@ -83,6 +98,7 @@ fn exercise() {
     assert twice!(next(values)) == 42 && length(values) == 2
     assert nested!(20) == 41
     assert proved(21) == 42
+    assert checked(1) && !checked(0)
     let number, text = pair!(42, "answer")
     assert number == 42 && text == "answer"
     assert selected(41) == 42 && selected("text") == "text"
