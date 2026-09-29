@@ -91,6 +91,15 @@ function addNotices(bundle) {
       mkdirSync(dirname(join(destination, name)), { recursive: true });
       copyFileSync(join(sourceDir, name), join(destination, name));
     }
+    // The asn1-rs proc-macro tarball omits its project's shared license files.
+    if (pkg.name === "asn1-rs-impl" && names.length === 0) {
+      const parent = metadata.packages.find(item => item.name === "asn1-rs" && item.repository === pkg.repository);
+      if (!parent) throw new Error("missing asn1-rs project license source");
+      for (const name of ["LICENSE-APACHE", "LICENSE-MIT"]) {
+        copyFileSync(join(dirname(parent.manifest_path), name), join(destination, name));
+        names.push(name);
+      }
+    }
     // These two crates publish license metadata without a license file in
     // their crate tarballs. Both offer Apache-2.0; use the exact standard text
     // distributed with their dependency inkwell.
