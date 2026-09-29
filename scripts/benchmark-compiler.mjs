@@ -2,7 +2,7 @@
 // Fresh compiler processes; optional paired compiler or native cache comparison.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { arch, cpus, platform, release } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ let runs = 3;
 let extended = false;
 let compareCache = false;
 let compareFrontend = false;
+let compareEdits = false;
 let checkOnly = false;
 let sizes = [10, 50, 200];
 const args = process.argv.slice(2);
@@ -29,6 +30,7 @@ for (let index = 0; index < args.length; index += 1) {
   --extended       Add startup, test --no-run, and generated package growth
   --compare-cache  Pair native builds with and without a warm object cache
   --compare-frontend Pair checks/builds with and without a warm frontend cache
+  --compare-edits  Pair fresh checks after each source edit; requires --check-only
   --check-only     Only check packages; no native builds, tests, or startup timing
   --sizes N,N,...  Generated helper counts, 1..512 (default: 10,50,200);
                    implies --extended, at most eight distinct sizes
@@ -37,6 +39,10 @@ macOS only: one unmeasured warmup per case, warm OS caches. --compare-cache
 also records an initial cache miss separately, then alternates measured order.
 Object-only variants check sources and link current artifacts. Frontend hits
 still load/parse sources and verify dependencies; native emission is unchanged.
+--compare-edits copies each package, changes one private helper per sample pair,
+and requires a whole-closure miss with actual definition/body reuse. Both variants
+check identical edited source. This measures an isolated edit, not a public API
+change; source files in the checkout are never edited.
 --baseline checks
 the same inputs with both compilers, warming each once and alternating measured
 baseline/candidate order. It cannot be combined with --compare-cache.
@@ -49,6 +55,7 @@ Temporary inputs are removed.`);
   if (option === "--extended") { extended = true; continue; }
   if (option === "--compare-cache") { compareCache = true; continue; }
   if (option === "--compare-frontend") { compareFrontend = true; continue; }
+  if (option === "--compare-edits") { compareEdits = true; continue; }
   if (option === "--check-only") { checkOnly = true; continue; }
   const value = args[++index];
   if (!value || value.startsWith("--")) throw new Error(`${option} needs a value`);
@@ -63,6 +70,9 @@ if (!Number.isInteger(runs) || runs < 1 || runs > 20) throw new Error("--runs mu
 if (baseline && !checkOnly) throw new Error("--baseline requires --check-only");
 if (compareCache && (baseline || checkOnly)) throw new Error("--compare-cache cannot be combined with --baseline or --check-only");
 if (compareFrontend && (baseline || compareCache)) throw new Error("--compare-frontend cannot be combined with --baseline or --compare-cache");
+if (compareEdits && (!checkOnly || baseline || compareCache || compareFrontend)) {
+  throw new Error("--compare-edits requires --check-only and cannot be combined with another comparison");
+}
 if (sizes.length > 8 || new Set(sizes).size !== sizes.length ||
     sizes.some(size => !Number.isInteger(size) || size < 1 || size > 512)) {
   throw new Error("--sizes needs one to eight distinct integers in 1..512");
@@ -117,10 +127,13 @@ const report = {
   extended,
   compareCache,
   compareFrontend,
+  compareEdits,
   checkOnly,
   generatedSizes: extended ? sizes : [],
   host: { os: platform(), release: release(), arch: arch(), cpu: cpus()[0]?.model },
-  method: baseline
+  method: compareEdits
+    ? "fresh processes; copied packages; one private helper changes each pair; identical source per uncached/incremental pair; alternating order; initial miss separate; whole-closure hits forbidden; definition/body reuse required"
+    : baseline
     ? "fresh processes; same source inputs; one warmup per compiler per case; paired samples alternate baseline/candidate order; sample indexes identify pairs; no incremental compiler cache"
     : compareFrontend
     ? "fresh processes; one uncached warmup and one initial frontend miss per case; paired samples alternate uncached/cache order; loading, parsing and dependency validation always run; no native object reuse"
@@ -141,7 +154,7 @@ function measure(mode, packagePath, cache = null, expectedCache = null, executab
     "--std", join(root, "compiler/std"));
   if (nativeMode) command.push("--native-tool", join(root, "target/debug/loom-native"),
     "--output", join(temporary, "program"));
-  if (cache) command.push(compareFrontend ? "--frontend-cache" : "--object-cache", cache);
+  if (cache) command.push(compareFrontend || compareEdits ? "--frontend-cache" : "--object-cache", cache);
   const started = process.hrtime.bigint();
   const result = spawnSync("/usr/bin/time", ["-l", ...command], {
     cwd: root, env: environment, encoding: "utf8", maxBuffer: 1024 * 1024,
@@ -156,12 +169,13 @@ function measure(mode, packagePath, cache = null, expectedCache = null, executab
   const phases = Object.fromEntries([...result.stderr.matchAll(/^loom-native timings: (.+)$/gm)]
     .flatMap(line => [...line[1].matchAll(/(decode|codegen|link)_ms=([\d.]+)/g)].map(field => [field[1], Number(field[2])])));
   if (expectedCache) {
-    const pattern = compareFrontend ? /^loom cache: frontend (.+)$/gm : /^loom cache: (.+)$/gm;
+    const pattern = compareFrontend || compareEdits ? /^loom cache: frontend (.+)$/gm : /^loom cache: (.+)$/gm;
     const markers = [...result.stderr.matchAll(pattern)].map(match => match[1]);
     if (markers.length !== 1 || markers[0] !== expectedCache) throw new Error(`expected cache ${expectedCache}:\n${result.stderr}`);
-    if (!compareFrontend && expectedCache === "hit" && (phases.decode !== undefined || phases.codegen !== undefined ||
+    if (!compareFrontend && !compareEdits && expectedCache === "hit" && (phases.decode !== undefined || phases.codegen !== undefined ||
         result.stderr.includes("loom-native phase: codegen"))) throw new Error("cache hit unexpectedly decoded or generated native code");
   }
+  const reuse = result.stderr.match(/^loom cache: definitions reused (\d+), bodies reused (\d+)$/m);
   if (nativeMode && (!Number.isFinite(phases.link) || ((compareFrontend || expectedCache !== "hit") &&
       (!Number.isFinite(phases.decode) || !Number.isFinite(phases.codegen))))) {
     throw new Error("missing native phase timings; rebuild loom-native and ensure the package has tests");
@@ -169,6 +183,7 @@ function measure(mode, packagePath, cache = null, expectedCache = null, executab
   return {
     wallMs, peakRssBytes: Number(rss[1]), userCpuMs: Number(cpu[2]) * 1000, systemCpuMs: Number(cpu[3]) * 1000,
     ...(nativeMode ? { decodeMs: phases.decode ?? 0, codegenMs: phases.codegen ?? 0, linkMs: phases.link } : {}),
+    ...(reuse ? { definitionsReused: Number(reuse[1]), bodiesReused: Number(reuse[2]) } : {}),
   };
 }
 
@@ -227,7 +242,7 @@ function pairedSamples(measureVariant) {
   for (let pair = 0; pair < runs; pair += 1) {
     const order = pair % 2 === 0 ? [0, 1] : [1, 0];
     for (const [position, variant] of order.entries()) {
-      samples[variant].push(measureVariant(variant));
+      samples[variant].push(measureVariant(variant, pair));
       positions[variant].push(position);
     }
   }
@@ -240,13 +255,41 @@ function benchmark(name, mode, packagePath, generated) {
     const timings = checkOnly
       ? ` ${number(summary.userCpuMs)} | ${number(summary.systemCpuMs)} |`
       : ` ${number(summary.decodeMs)} | ${number(summary.codegenMs)} | ${number(summary.linkMs)} |`;
-    console.log(`| ${name} | ${mode} |${compareCache || compareFrontend || baseline ? ` ${variant} |` : ""} ${number(summary.wallMs)} | ${number(summary.peakRssBytes / 1048576)} |${timings}`);
+    console.log(`| ${name} | ${mode} |${compareCache || compareFrontend || compareEdits || baseline ? ` ${variant} |` : ""} ${number(summary.wallMs)} | ${number(summary.peakRssBytes / 1048576)} |${timings}${compareEdits ? ` ${summary.definitionsReused ?? "—"} | ${summary.bodiesReused ?? "—"} |` : ""}`);
   };
   const record = (samples, extra = {}) => {
     const summary = Object.fromEntries(Object.keys(samples[0]).map(key => [key, median(samples.map(sample => sample[key]))]));
     report.cases.push({ name, command: mode, package: packagePath, ...(generated ? { generated } : {}), ...extra, median: summary, samples });
     display(summary, extra.variant);
   };
+  if (compareEdits) {
+    const original = resolve(root, packagePath);
+    const copied = join(temporary, `edited-${report.cases.length}`);
+    for (const file of inputs(original)) {
+      const destination = join(copied, relative(original, file));
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(file, destination);
+    }
+    const probe = join(copied, "benchmark_edit_probe.loom");
+    const edit = revision => writeFileSync(probe, `fn benchmark_edit_probe() Int {\n    ${revision}\n}\n`);
+    edit(0);
+    const cache = join(temporary, `cache-${report.cases.length}`);
+    measure(mode, copied);
+    const firstMiss = measure(mode, copied, cache, "miss");
+    display(firstMiss, "initial miss (observation)");
+    let revision = -1;
+    const { samples, positions } = pairedSamples((variant, pair) => {
+      if (revision !== pair) { edit(pair + 1); revision = pair; }
+      const sample = measure(mode, copied, variant ? cache : null, variant ? "miss" : null);
+      if (variant && (!(sample.definitionsReused > 0) || !(sample.bodiesReused > 0))) {
+        throw new Error(`${name}: edited check did not reuse definitions and bodies`);
+      }
+      return sample;
+    });
+    record(samples[0], { variant: "uncached-edit", samplePositions: positions[0] });
+    record(samples[1], { variant: "incremental-edit", flags: ["--frontend-cache", cache], samplePositions: positions[1], firstMiss });
+    return;
+  }
   if (baseline) {
     const compilers = [baseline, compiler];
     for (const executable of compilers) measure(mode, packagePath, null, null, executable);
@@ -269,8 +312,8 @@ function benchmark(name, mode, packagePath, generated) {
 }
 
 try {
-  console.log(`| Case | Command |${compareCache || compareFrontend || baseline ? " Variant |" : ""} Wall ms | RSS MiB |${checkOnly ? " User CPU ms | System CPU ms |" : " Decode ms | Codegen ms | Link ms |"}`);
-  console.log(`| --- | --- |${compareCache || compareFrontend || baseline ? " --- |" : ""} ---: | ---: | ---: | ---: |${checkOnly ? "" : " ---: |"}`);
+  console.log(`| Case | Command |${compareCache || compareFrontend || compareEdits || baseline ? " Variant |" : ""} Wall ms | RSS MiB |${checkOnly ? " User CPU ms | System CPU ms |" : " Decode ms | Codegen ms | Link ms |"}${compareEdits ? " Definitions reused | Bodies reused |" : ""}`);
+  console.log(`| --- | --- |${compareCache || compareFrontend || compareEdits || baseline ? " --- |" : ""} ---: | ---: | ---: | ---: |${checkOnly ? "" : " ---: |"}${compareEdits ? " ---: | ---: |" : ""}`);
   if (extended && !checkOnly) benchmark("startup", "--version", null);
   const packages = [
     ["scalar", "compiler/examples/scalar"], ["data", "compiler/examples/data"], ["compiler", "compiler/loom"],
