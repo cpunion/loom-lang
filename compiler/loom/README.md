@@ -319,7 +319,7 @@ and a checked `program`; `definitions_reused(cache)` counts reused abstract
 function checks and `bodies_reused(cache)` counts reused concrete bodies.
 Body edits invalidate transitive callers; declaration/import
 changes and changed invariant helpers recheck conservatively. Syntax-producing
-macros, async, resource, closure and variadic definitions are not reused. Only successful checks
+macros, async, resource and closure definitions are not reused. Only successful checks
 replace the saved basis. Concrete reuse covers ordinary scalar, aggregate,
 List, generic and compile-time-specialized bodies with unchanged source text.
 Static instance keys retain detached immutable values; types, named callbacks and
@@ -330,6 +330,10 @@ call/function-reference targets and source spans against fresh bindings; asserti
 messages use current paths and positions. Elaboration-introduced call edges also
 participate in invalidation. Unsupported bodies recheck normally. Evidence is
 detached from returned mutable programs. Use fresh build inputs as above.
+Variadic body keys use the source declaration and arity, never a previous check's
+expanded symbol. Current arity validation and signature expansion still run;
+eligible bodies retain their concrete type/constant keys. Compile-time loops and
+maps use the same dependency invalidation.
 The resident editor uses this path automatically after a snapshot changes.
 Top-level declaration generation reruns with current build inputs before matching
 its expanded definitions. Unchanged generated bodies can therefore participate in

@@ -1,0 +1,49 @@
+test fn variadic_bodies_restore_by_source_declaration_and_arity() {
+    let source = """
+        fn bundle[Ts...](items Ts...) (Ts...) {
+            items
+        }
+        fn mapped[Ts...](items (Ts...)) (Ts...) {
+            comptime map item in items {
+                item
+            }
+        }
+        fn count[Ts...](items Ts...) Int {
+            var total = 0
+            comptime for item in items {
+                discard item
+                total = total + 1
+            }
+            total
+        }
+        pub fn answer() Int {
+            let pair = mapped(bundle(3, true))
+            let triple = bundle(1, "two", false)
+            assert pair.1 && !triple.2
+            pair.0 + count(triple...) + count(1)
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let cache = restored_definition_cache(initial)
+    assert match cached_source(cache, concat("fn unrelated(value List[Bool]) List[Bool] { value }\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    assert bodies_reused(cache) >= 6
+    discard restored_definition_cache(cache)
+    let invalid = std.text.join(std.text.split(source, "bundle(3, true)"), "bundle(3, 4)")
+    assert match cached_source(cache, invalid) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

@@ -43,6 +43,11 @@ record DefinitionEntry {
     text Text
 }
 
+record DefinitionReuse {
+    checks List[Bool]
+    bodies List[Bool]
+}
+
 pub record CachedCheck {
     source Project
     bindings std.loom.binding.Program
@@ -227,12 +232,11 @@ fn definition_context(first DefinitionBasis, second DefinitionBasis) Bool {
 
 // Syntax-producing macros and hidden resource/task operations need richer dependency
 // summaries. Recheck them and their callers, rather than treating unknown edges
-// as independence. Methods and generated/variadic signatures are also rebuilt.
+// as independence. Methods and expanded signatures are still rebuilt.
 fn definition_opaque(node Node, root Bool) Bool {
     let kind = node.kind
     if kind == NodeKind.MacroCall || kind == NodeKind.Scoped ||
-    kind == NodeKind.Await || kind == NodeKind.Async || kind == NodeKind.TypePack ||
-    kind == NodeKind.ComptimeFor || kind == NodeKind.ComptimeMap || (kind == NodeKind.Function && !root) {
+    kind == NodeKind.Await || kind == NodeKind.Async || (kind == NodeKind.Function && !root) {
         return true
     }
     var index = 0
@@ -343,11 +347,15 @@ fn definition_matches(previous DefinitionBasis, basis DefinitionBasis, changed M
     matches
 }
 
-fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cache DefinitionCache) List[Bool] {
-    let reuse = new[Bool]()
+fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cache DefinitionCache) DefinitionReuse {
+    let reuse = DefinitionReuse {
+        checks = new[Bool]()
+        bodies = new[Bool]()
+    }
     var index = 0
     while index < length(basis.entries) {
-        push(reuse, false)
+        push(reuse.checks, false)
+        push(reuse.bodies, false)
         index = index + 1
     }
     if length(cache.state.basis) == 0 {
@@ -377,7 +385,11 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
         if item.node.kind == NodeKind.Function && !stable {
             discard std.map.insert(changed, item.name, true)
         }
-        set(reuse, index, stable && item.owner < 0 && get(previous.reusable, matched))
+        // A successful concrete instance is its own evidence. A declaration
+        // with deferred/variadic validation need not have a reusable abstract
+        // check; that validation still runs in the fresh environment.
+        set(reuse.bodies, index, stable && item.owner < 0)
+        set(reuse.checks, index, stable && item.owner < 0 && get(previous.reusable, matched))
         index = index + 1
     }
     var more = true
@@ -387,7 +399,8 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
         while index < length(basis.entries) {
             let item = get(source.symbols, index)
             if item.node.kind == NodeKind.Function && definition_depends(get(basis.entries, index).node, changed) {
-                set(reuse, index, false)
+                set(reuse.checks, index, false)
+                set(reuse.bodies, index, false)
                 match std.map.get(changed, item.name) {
                     Option.Some(_) => {
                     }
@@ -406,8 +419,9 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
         let header = get(basis.project.files, index).tree
         if definition_depends(header, changed) {
             var item = 0
-            while item < length(reuse) {
-                set(reuse, item, false)
+            while item < length(reuse.checks) {
+                set(reuse.checks, item, false)
+                set(reuse.bodies, item, false)
                 item = item + 1
             }
             return reuse
@@ -432,8 +446,8 @@ pub fn check_project_cached(project Project, tests Bool, inputs BuildInputs, cac
     // resulting declarations, not a prior generator result, define reuse.
     let reuse = definition_reuse(source, basis, cache)
     let env = prepare_with_inputs(source, inputs)?
-    let bodies = body_reuse(cache, basis, reuse)
-    let program = checked_program_reusing(env, reuse, basis.reusable, cache.state.hits, bodies)?
+    let bodies = body_reuse(cache, basis, reuse.bodies)
+    let program = checked_program_reusing(env, reuse.checks, basis.reusable, cache.state.hits, bodies)?
     save_bodies(cache, basis, env, program)
     if length(cache.state.basis) == 0 {
         push(cache.state.basis, basis)
