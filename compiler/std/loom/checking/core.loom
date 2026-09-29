@@ -121,7 +121,6 @@ record Cleanup {
     previous Int
 }
 record Fact {
-    local Int
     predicate Expr
     previous Int
 }

@@ -1541,19 +1541,35 @@ fn guarded(value Int) Positive {
     if value <= 0 { return Positive(1) }
     Positive(value)
 }
+fn related(value Int, lower Int) Positive
+requires value > lower && lower >= 0
+{
+    Positive(value)
+}
+fn retained(value Int) Positive {
+    let copy = value
+    assert value > 0
+    Positive(copy)
+}
 ```
 
 The original boundary condition remains; these constructors add no second check,
-even before LLVM optimization. Immutable scalar copies inherit facts already
-established at the copy, including through further copies; later assertions do
-not propagate back to earlier copies. After a standalone `if`, exactly one
+even before LLVM optimization. Immutable Int bindings retain scalar initializer
+equalities; later assertions can therefore establish an earlier copy's bounds.
+Bounded integer difference propagation combines relations such as `x > y` and
+`y >= 0`, including constant offsets and copy chains. It uses mathematical
+integers internally, but a newly evaluated goal must still be proved within
+machine range. Original initializer arithmetic and its fault checks remain.
+Float copies inherit only exact predicates established at the copy.
+After a standalone `if`, exactly one
 continuing branch can supply its guard, including guards ending in `return`,
 `break` or `continue`. This retains the surviving condition, not assertions made
 inside a branch or deferred cleanup. Facts use binding identities, not names.
-This slice excludes `var`, heap reads, relationships between different locals,
+This slice excludes `var`, heap reads, general relational solving,
 and facts inferred by joining two live branches. Literal Float predicates can be reused, but
 `!(x > 0.0)` does not prove `x <= 0.0` because of NaN. Unknown cases still return
 `Result`; calls and input expressions are never duplicated to seek a proof.
+See the [relational construction example](examples/relational_constraints).
 
 Predicates over `Int` or `Float` may call ordinary pure helpers, including helpers with
 loops, recursion, and freshly allocated data:

@@ -212,12 +212,15 @@ cases retain `Result` construction. Exact call-free predicates and already true
 `&&` conjuncts also discharge Int/Float refinement boundaries without IEEE
 algebra. Conjuncts may regroup or reorder; `||` branches are not assumed true.
 Construction also uses immutable scalar facts from preconditions, successful
-assertions and lexical branches. Immutable scalar copies retain facts established
-before the copy, including through copy chains. Standalone `if` guards retain the
+assertions and lexical branches. Immutable Int bindings retain initializer
+equalities, allowing later evidence about the original to validate a copy.
+Bounded integer difference propagation combines bounds across distinct locals;
+unknown and unsupported facts never become assumptions. Float copies retain only
+established exact predicates. Standalone `if` guards retain the
 surviving condition when exactly one branch can continue to the next statement.
 The original guard remains while proved
 constructors lower directly, preserving one input evaluation. Mutable bindings,
-heap reads, cross-local relations, two-live-branch joins and general Float reasoning
+heap reads, general relational solving, two-live-branch joins and Float algebra
 remain open; unsupported proofs keep their checks. Refinement-to-refinement
 implication can expand direct acyclic scalar helpers with immutable locals,
 preserving evaluated arguments, unused calculations, guarded preconditions and
