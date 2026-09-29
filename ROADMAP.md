@@ -548,7 +548,9 @@ reuse. See the [editor trial](editors/vscode/README.md)
 and its [import](editors/vscode/test/fixtures/import_project/library/defs.loom)
 and [rename](editors/vscode/test/fixtures/rename_project/helper.loom) fixtures.
 Unchanged ordinary abstract definitions also reuse successful checks after edits,
-with transitive caller invalidation; persistent per-definition IR remains open.
+reordering and moves between function-only files in the same package. Additions,
+removals and new overloads invalidate affected callers, not every unrelated
+definition. Persistent per-definition IR remains open.
 Native failing assertions now report their source location and current test,
 including helper assertions and standalone test executables. The first fault
 remains authoritative across cleanup; this does not add stack traces or recovery.

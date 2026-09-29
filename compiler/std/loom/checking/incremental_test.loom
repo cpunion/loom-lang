@@ -136,3 +136,120 @@ test fn definition_cache_owns_evidence_and_uses_ast_not_only_source_text() {
     }
     assert definitions_reused(cache) == 1
 }
+
+test fn definition_reuse_survives_reordering_moves_and_unrelated_additions() {
+    let cache = definition_cache()
+    let leaf = """
+        fn leaf() Int {
+            1
+        }
+        """
+    let callers = """
+        fn caller() Int {
+            leaf()
+        }
+        fn independent() Int {
+            7
+        }
+        """
+    assert match cached_source(cache, concat(leaf, callers)) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    let files = source_files(callers)
+    let moved = source_file("app", leaf, false)
+    push(files, TestFile {
+            path = "moved.loom"
+            ..moved
+        })
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), cache) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert definitions_reused(cache) == 3
+    let added = concat("""
+        fn added() Bool {
+            true
+        }
+        """, concat(callers, leaf))
+    assert match cached_source(cache, added) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert definitions_reused(cache) == 6
+    assert match cached_source(cache, callers) {
+        Result.Err(_) => true
+        _ => false
+    }
+}
+
+test fn newly_added_overloads_invalidate_existing_caller_proofs() {
+    let cache = definition_cache()
+    let source = """
+        type Positive = Int where self > 0
+        fn pick(value Int) Int {
+            1
+        }
+        fn caller() Int
+        ensures result == 1
+        {
+            pick(Positive(1))
+        }
+        """
+    assert match cached_source(cache, source) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert match cached_source(cache, concat(source, """
+        fn pick(value Positive) Int {
+            2
+        }
+        """)) {
+        Result.Err(failed) => failed.diagnostic.message == "required postcondition is not proved by the bounded scalar prover"
+        _ => false
+    }
+}
+
+test fn matching_method_bodies_cannot_move_evidence_between_impl_owners() {
+    let cache = definition_cache()
+    let header = """
+        concept Score {
+            fn score(self Self) Int
+        }
+        fn caller(value Int) Int
+        ensures result == 1
+        {
+            value.score()
+        }
+        """
+    assert match cached_source(cache, concat(header, """
+        impl Score for Int {
+            fn score(self Self) Int {
+                1
+            }
+        }
+        impl Score for Bool {
+            fn score(self Self) Int {
+                2
+            }
+        }
+        """)) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert match cached_source(cache, concat(header, """
+        impl Score for Int {
+            fn score(self Self) Int {
+                2
+            }
+        }
+        impl Score for Bool {
+            fn score(self Self) Int {
+                1
+            }
+        }
+        """)) {
+        Result.Err(failed) => failed.diagnostic.message == "required postcondition is not proved by the bounded scalar prover"
+        _ => false
+    }
+}

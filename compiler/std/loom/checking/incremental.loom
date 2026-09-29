@@ -24,8 +24,17 @@ record DefinitionCacheState {
 record DefinitionBasis {
     project Project
     tests Bool
-    bodies List[Node]
+    entries List[DefinitionEntry]
     reusable List[Bool]
+}
+
+record DefinitionEntry {
+    package Int
+    owner Int
+    test_only Bool
+    trusted_std Bool
+    node Node
+    header Node
 }
 
 pub record CachedCheck {
@@ -47,8 +56,8 @@ pub fn definitions_reused(cache DefinitionCache) Int {
     get(cache.state.hits, 0)
 }
 
-// Normalize locations, not syntax. Signatures, contracts, imports and nominal
-// declarations form the shared basis; ordinary function bodies are separate.
+// Normalize locations, not syntax. Each function keeps its own signature and
+// body. Imports and nominal declarations form the shared checking context.
 fn definition_node(node Node, header Bool) Node {
     let children = new[Node]()
     var index = 0
@@ -72,37 +81,79 @@ fn definition_node(node Node, header Bool) Node {
 }
 
 fn definition_basis(source std.loom.binding.Program) DefinitionBasis {
-    let project = snapshot(Project {
+    let original = snapshot(Project {
             files = source.files
             modules = source.modules
             packages = source.packages
             root = source.root
         })
+    let files = new[SourceFile]()
     var index = 0
-    while index < length(project.files) {
-        let file = get(project.files, index)
-        set(project.files, index, std.loom.project.SourceFile {
-                package = file.package
-                path = file.path
-                text = ""
-                tree = definition_node(file.tree, true)
-                test_only = file.test_only
-                trusted_std = file.trusted_std
-            })
+    while index < length(original.files) {
+        let file = get(original.files, index)
+        let nodes = new[Node]()
+        var declaration = 0
+        while declaration < length(file.tree.children) {
+            let node = child(file.tree, declaration)
+            if node.kind != NodeKind.Function {
+                push(nodes, definition_node(node, true))
+            }
+            declaration = declaration + 1
+        }
+        // Function-only file membership is irrelevant to package-wide lookup.
+        // Imports, nominal declarations and their trust/test origins still bind
+        // the shared context; changes to those conservatively invalidate all.
+        if length(nodes) != 0 {
+            push(files, std.loom.project.SourceFile {
+                    package = file.package
+                    path = file.path
+                    text = ""
+                    tree = Node {
+                        kind = NodeKind.File
+                        value = file.tree.value
+                        span = Span {
+                            start = 0
+                            end = 0
+                        }
+                        children = nodes
+                    }
+                    test_only = file.test_only
+                    trusted_std = file.trusted_std
+                })
+        }
         index = index + 1
     }
-    let bodies = new[Node]()
+    let entries = new[DefinitionEntry]()
     let reusable = new[Bool]()
     index = 0
     while index < length(source.symbols) {
-        push(bodies, definition_node(get(source.symbols, index).node, false))
+        let item = get(source.symbols, index)
+        let file = get(source.files, item.file)
+        let node = definition_node(item.node, false)
+        push(entries, DefinitionEntry {
+                package = file.package
+                owner = item.owner
+                test_only = item.test_only
+                trusted_std = file.trusted_std
+                node = node
+                header = if node.kind == NodeKind.Impl || node.kind == NodeKind.Concept {
+                    definition_node(node, true)
+                } else {
+                    node
+                }
+            })
         push(reusable, false)
         index = index + 1
     }
     DefinitionBasis {
-        project = project
+        project = Project {
+            files = files
+            modules = original.modules
+            packages = original.packages
+            root = original.root
+        }
         tests = source.tests
-        bodies = bodies
+        entries = entries
         reusable = reusable
     }
 }
@@ -111,7 +162,7 @@ fn definition_context(first DefinitionBasis, second DefinitionBasis) Bool {
     let left = first.project
     let right = second.project
     if first.tests != second.tests || left.root != right.root ||
-    length(first.bodies) != length(second.bodies) || length(left.files) != length(right.files) ||
+    length(left.files) != length(right.files) ||
     length(left.modules) != length(right.modules) || length(left.packages) != length(right.packages) {
         return false
     }
@@ -197,10 +248,86 @@ fn definition_depends(node Node, changed Map[Text, Bool]) Bool {
     false
 }
 
+fn definition_bucket(entry DefinitionEntry) Text {
+    concat(std.int.to_text(entry.package), concat("/", entry.node.value))
+}
+
+fn same_definition(left DefinitionBasis, first Int, right DefinitionBasis, second Int) Bool {
+    let a = get(left.entries, first)
+    let b = get(right.entries, second)
+    if a.package != b.package || a.test_only != b.test_only || a.trusted_std != b.trusted_std ||
+    (a.owner < 0) != (b.owner < 0) || !std.loom.ast.same(a.node, b.node) {
+        return false
+    }
+    a.owner < 0 || std.loom.ast.same(get(left.entries, a.owner).header, get(right.entries, b.owner).header)
+}
+
+// Match exact definitions within package/name buckets, not mutable symbol IDs,
+// declaration order or file positions. Unmatched old entries include removals;
+// unmatched new entries include overloads that may change earlier resolution.
+fn definition_matches(previous DefinitionBasis, basis DefinitionBasis, changed Map[Text, Bool]) List[Int] {
+    let buckets = std.map.new[Text, List[Int]]()
+    let used = new[Bool]()
+    var index = 0
+    while index < length(previous.entries) {
+        let entry = get(previous.entries, index)
+        push(used, false)
+        if entry.node.kind == NodeKind.Function {
+            let key = definition_bucket(entry)
+            match std.map.get(buckets, key) {
+                Option.Some(values) => {
+                    push(values, index)
+                }
+                Option.None => {
+                    discard std.map.insert(buckets, key, ints(index))
+                }
+            }
+        }
+        index = index + 1
+    }
+    let matches = new[Int]()
+    index = 0
+    while index < length(basis.entries) {
+        let entry = get(basis.entries, index)
+        var found = -1
+        if entry.node.kind == NodeKind.Function {
+            match std.map.get(buckets, definition_bucket(entry)) {
+                Option.Some(values) => {
+                    var candidate = 0
+                    while found < 0 && candidate < length(values) {
+                        let prior = get(values, candidate)
+                        if !get(used, prior) && same_definition(previous, prior, basis, index) {
+                            found = prior
+                            set(used, prior, true)
+                        }
+                        candidate = candidate + 1
+                    }
+                }
+                Option.None => {
+                }
+            }
+            if found < 0 {
+                discard std.map.insert(changed, entry.node.value, true)
+            }
+        }
+        push(matches, found)
+        index = index + 1
+    }
+    index = 0
+    while index < length(previous.entries) {
+        let entry = get(previous.entries, index)
+        if entry.node.kind == NodeKind.Function && !get(used, index) {
+            discard std.map.insert(changed, entry.node.value, true)
+        }
+        index = index + 1
+    }
+    matches
+}
+
 fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cache DefinitionCache) List[Bool] {
     let reuse = new[Bool]()
     var index = 0
-    while index < length(basis.bodies) {
+    while index < length(basis.entries) {
         push(reuse, false)
         index = index + 1
     }
@@ -212,33 +339,35 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
         return reuse
     }
     let changed = std.map.new[Text, Bool]()
+    let matches = definition_matches(previous, basis, changed)
     index = 0
-    while index < length(basis.bodies) {
-        let node = get(basis.bodies, index)
+    while index < length(basis.entries) {
+        let node = get(basis.entries, index).node
         if node.kind == NodeKind.Refined && definition_opaque(node, true) {
             return reuse
         }
         index = index + 1
     }
     index = 0
-    while index < length(basis.bodies) {
+    while index < length(basis.entries) {
         let item = get(source.symbols, index)
-        let body = get(basis.bodies, index)
+        let body = get(basis.entries, index).node
         let build = package_label(source.modules, source.packages, get(source.files, item.file).package) == "std.build"
-        let stable = std.loom.ast.same(body, get(previous.bodies, index)) && !definition_opaque(body, true) && !build
+        let matched = get(matches, index)
+        let stable = matched >= 0 && !definition_opaque(body, true) && !build
         if item.node.kind == NodeKind.Function && !stable {
             discard std.map.insert(changed, item.name, true)
         }
-        set(reuse, index, stable && item.owner < 0 && get(previous.reusable, index))
+        set(reuse, index, stable && item.owner < 0 && get(previous.reusable, matched))
         index = index + 1
     }
     var more = true
     while more {
         more = false
         index = 0
-        while index < length(basis.bodies) {
+        while index < length(basis.entries) {
             let item = get(source.symbols, index)
-            if item.node.kind == NodeKind.Function && definition_depends(get(basis.bodies, index), changed) {
+            if item.node.kind == NodeKind.Function && definition_depends(get(basis.entries, index).node, changed) {
                 set(reuse, index, false)
                 match std.map.get(changed, item.name) {
                     Option.Some(_) => {
@@ -275,7 +404,11 @@ pub fn check_project_cached(project Project, tests Bool, inputs BuildInputs, cac
     let original = snapshot(project)
     let source = bind(expand_project(original, tests, inputs)?, tests)?
     let basis = definition_basis(source)
-    let reuse = if has_declaration_stages(original, tests) { new[Bool]() } else { definition_reuse(source, basis, cache) }
+    let reuse = if has_declaration_stages(original, tests) {
+        new[Bool]()
+    } else {
+        definition_reuse(source, basis, cache)
+    }
     let env = prepare_with_inputs(source, inputs)?
     let program = checked_program(env, reuse, basis.reusable, cache.state.hits)?
     if length(cache.state.basis) == 0 {

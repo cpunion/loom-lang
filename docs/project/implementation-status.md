@@ -757,8 +757,11 @@ repairs do not become cached evidence. Cancellation restarts the affected worker
 shutdown releases it. Real protocol tests exercise reuse, unsaved type changes,
 file membership and build-input invalidation. After an edit, the worker also
 reuses successful abstract checks of unchanged ordinary function definitions.
-Normalized declaration headers, imports and package identities must agree;
-changed function bodies invalidate their transitive callers. Changed invariant
+Exact function syntax is matched by package and owner, independently of symbol
+IDs, declaration order and function-only file membership. Function additions,
+removals, overload changes and edited bodies invalidate transitive callers.
+Imports, nominal headers, trust, test and package identities still bind reuse.
+Changed invariant
 helpers invalidate proof consumers. Staging, closures, async/resource operations
 and variadics conservatively recheck. Bindings, type IDs, reachable instances and
 source locations are rebuilt, not reused from the old typed program. The same
