@@ -188,7 +188,7 @@ fn macro_syntax(context Context, call Node, node Node, count Int, identity Text,
                 concat(identity, concat("/", to_text(index))), nested || node.kind == NodeKind.Function, depth + 1)?)
         index = index + 1
     }
-    if node.kind == NodeKind.Function {
+    if node.kind == NodeKind.Function || node.kind == NodeKind.MacroCall {
         push(children, Node {
                 kind = NodeKind.ExpansionId
                 value = identity
@@ -214,7 +214,9 @@ fn macro_call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let inputs = call_inputs(context, child(node, 0).children)?
     let schema = reflection_element(context.env, get(current.params, 0))
     var known = true
-    var identity = concat("macro/", concat(to_text(context.signature.symbol), concat("/", to_text(node.span.start))))
+    let marker = part(node, NodeKind.ExpansionId)
+    var identity = concat("macro/", concat(to_text(context.signature.symbol), concat("/",
+                if marker < 0 { to_text(node.span.start) } else { child(node, marker).value })))
     var index = 0
     while index < length(inputs.nodes) {
         let value = input_value(context, inputs, index, -1, false)?

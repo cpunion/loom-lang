@@ -1,0 +1,119 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.source.Span
+import std.reflect.Schema
+import declaration_generation.api.answer
+
+fn field(name Text, ty Text) Node {
+    let span = Span {
+        start = 0
+        end = 0
+    }
+    Node {
+        kind = NodeKind.Field
+        value = name
+        span = span
+        children = [Node {
+                kind = NodeKind.Type
+                value = ty
+                span = span
+                children = []
+            }]
+    }
+}
+
+fn pair() Node {
+    Node {
+        kind = NodeKind.Record
+        value = "Pair"
+        span = Span {
+            start = 0
+            end = 0
+        }
+        children = [Node {
+                kind = NodeKind.TypeParameters
+                value = ""
+                span = Span {
+                    start = 0
+                    end = 0
+                }
+                children = []
+            }, field("left", "Int"), field("right", "Int")]
+    }
+}
+
+fn counter(types List[Schema]) Text {
+    discard types
+    """
+    {
+        var saved = $0
+        fn() Int {
+            saved = saved + 1
+            saved
+        }
+    }
+    """
+}
+
+comptime {
+    pair()
+}
+
+comptime {
+    """
+    type Positive = Int where self > 0
+
+    concept Total {
+        fn total(self Self) Int
+    }
+
+    impl Total for Pair {
+        fn total(self Pair) Int {
+            sum(self)
+        }
+    }
+
+    fn sum(value Pair) Int
+    ensures result == value.left + value.right
+    {
+        value.left + value.right
+    }
+
+    test fn generated_sum() {
+        let value = Pair {
+            left = 20
+            right = 22
+        }
+        assert sum(value) == 42 && value.total() == 42
+        let positive = Positive(42)
+        assert positive == 42
+    }
+
+    test fn generated_closures_keep_distinct_capture_identities() {
+        var first = 1
+        var second = 10
+        let a = fn() Int {
+            first = first + 1
+            first
+        }
+        let b = fn() Int {
+            second = second + 1
+            second
+        }
+        assert a() == 2 && b() == 11
+        assert a() == 3 && b() == 12
+        let c = counter!(20)
+        let d = counter!(30)
+        assert c() == 21 && d() == 31
+        assert c() == 22 && d() == 32
+    }
+    """
+}
+
+fn main() {
+    assert sum(Pair {
+            left = 20
+            right = 22
+        }) == 42
+    assert answer() == 42
+}

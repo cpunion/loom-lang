@@ -225,7 +225,10 @@ covered by the [example](compiler/examples/typed_macros). `std.loom.syntax`
 also supports explicit [declaration generation tools](compiler/examples/ast_generation).
 First-class compile-time type identities now flow through pure functions and
 compile-time data into local types and generic arguments, with no runtime type
-registry. In-compilation declaration expansion remains separate work.
+registry. Explicit top-level `comptime` blocks now generate Text or AST
+declarations in one pre-binding phase, without writing files or adding implicit
+dependencies. The [example](compiler/examples/declaration_generation) exercises
+normal proofs, imported generated symbols, isolated tests and closure identities.
 
 Fixed-shape shared List views now preserve element identities through removal,
 regrowth, moving GC, suspension and compile-time graph reification. Immutable
@@ -535,12 +538,14 @@ Quick Fix verifies one public declaration in a direct offline package against
 the edited in-memory package; missing bare names are searched only through
 selected direct module edges and require one exact export. Checked local and
 unique package-private function rename cover narrow source cases; public/API
-rename and per-definition incremental checking remain open. A resident editor
+rename remains open. A resident editor
 worker now reuses whole checked snapshots across diagnostics and navigation,
 revalidating the loaded source closure and observed build inputs before each
 reuse. See the [editor trial](editors/vscode/README.md)
 and its [import](editors/vscode/test/fixtures/import_project/library/defs.loom)
 and [rename](editors/vscode/test/fixtures/rename_project/helper.loom) fixtures.
+Unchanged ordinary abstract definitions also reuse successful checks after edits,
+with transitive caller invalidation; persistent per-definition IR remains open.
 Native failing assertions now report their source location and current test,
 including helper assertions and standalone test executables. The first fault
 remains authoritative across cleanup; this does not add stack traces or recovery.
@@ -556,7 +561,7 @@ resolved by guessing later operands.
 Shared-container
 results preserve internal aliases and cycles while constructing a fresh graph
 on each runtime evaluation. Successful pure results can be reused within one
-check; persistent CTFE reuse, in-compilation declaration macros, and broader reflection
+check; persistent CTFE reuse and broader reflection
 remain incomplete.
 Source `std.reflect.describe[T]()` now supplies structural type metadata as a
 finite graph of ordinary records/enums/Lists. It handles inferred and recursive
@@ -588,8 +593,8 @@ arithmetic rewriting. Immutable local-flow facts and bounded direct scalar-helpe
 expansion extend this optional proof as described above; mutable/alias facts,
 helper loops and recursive proof dependencies remain open.
 
-Typed expression macros and explicit AST/declaration generation tools use this
-infrastructure; in-compilation declaration macros remain open. The separate source
+Typed expression macros, explicit source tools and in-compilation declaration
+generation use this infrastructure. The separate source
 change tool maintains explicit stable-ID sidecars, reads directory or Git
 snapshots, and applies an exact reviewed merge to a new directory. Same-file
 overloads use parameter-type locators, not declaration positions; move-plus-edit

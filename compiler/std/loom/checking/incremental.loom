@@ -29,6 +29,7 @@ record DefinitionBasis {
 }
 
 pub record CachedCheck {
+    source Project
     bindings std.loom.binding.Program
     program std.loom.typed.Program
 }
@@ -271,9 +272,10 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
 pub fn check_project_cached(project Project, tests Bool, inputs BuildInputs, cache DefinitionCache) Result[CachedCheck, Failure] {
     // Bind an owned snapshot ourselves; mutable public binding indexes are not
     // a reusable authority boundary. Failed checks never replace the last basis.
-    let source = bind(snapshot(project), tests)?
+    let original = snapshot(project)
+    let source = bind(expand_project(original, tests, inputs)?, tests)?
     let basis = definition_basis(source)
-    let reuse = definition_reuse(source, basis, cache)
+    let reuse = if has_declaration_stages(original, tests) { new[Bool]() } else { definition_reuse(source, basis, cache) }
     let env = prepare_with_inputs(source, inputs)?
     let program = checked_program(env, reuse, basis.reusable, cache.state.hits)?
     if length(cache.state.basis) == 0 {
@@ -283,6 +285,7 @@ pub fn check_project_cached(project Project, tests Bool, inputs BuildInputs, cac
         set(cache.state.basis, 0, basis)
     }
     Result.Ok(CachedCheck {
+            source = original
             bindings = source
             program = program
         })

@@ -1,0 +1,301 @@
+import std.loom.binding.bind_headers
+import std.loom.parser.parse
+import std.loom.syntax.emit
+import std.loom.syntax.Fragment
+
+pub fn has_declaration_stages(project Project, tests Bool) Bool {
+    var file = 0
+    while file < length(project.files) {
+        let source = get(project.files, file)
+        if !source.test_only || (tests && source.package == project.root) {
+            var index = 0
+            while index < length(source.tree.children) {
+                if get(source.tree.children, index).kind == NodeKind.Comptime {
+                    return true
+                }
+                index = index + 1
+            }
+        }
+        file = file + 1
+    }
+    false
+}
+
+fn stage_mark(source std.loom.binding.Program, selected List[Bool], pending List[Int], symbol Int) {
+    var owner = symbol
+    while get(source.symbols, owner).owner >= 0 {
+        owner = get(source.symbols, owner).owner
+    }
+    if !get(selected, owner) {
+        set(selected, owner, true)
+        push(pending, owner)
+    }
+}
+
+fn stage_name(source std.loom.binding.Program, owner Int, path Text, selected List[Bool], pending List[Int]) {
+    let item = get(source.symbols, owner)
+    var spelling = path
+    while spelling != "" {
+        let found = candidates(source, item.file, item.test_only, spelling)
+        var index = 0
+        while index < length(found) {
+            stage_mark(source, selected, pending, get(found, index))
+            index = index + 1
+        }
+        spelling = package(spelling)
+    }
+}
+
+fn stage_dependencies(source std.loom.binding.Program, owner Int, node Node, selected List[Bool], pending List[Int]) {
+    let kind = node.kind
+    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.Type ||
+    kind == NodeKind.DynType || kind == NodeKind.Construct {
+        stage_name(source, owner, node.value, selected, pending)
+    }
+    if kind == NodeKind.MethodCall {
+        var index = 0
+        while index < length(source.symbols) {
+            let method = get(source.symbols, index)
+            if method.owner >= 0 && method.node.kind == NodeKind.Function && method.name == node.value {
+                stage_mark(source, selected, pending, index)
+            }
+            index = index + 1
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        stage_dependencies(source, owner, child(node, index), selected, pending)
+        index = index + 1
+    }
+}
+
+fn stage_selection(source std.loom.binding.Program, owner Int) List[Bool] {
+    let selected = new[Bool]()
+    var index = 0
+    while index < length(source.symbols) {
+        push(selected, false)
+        index = index + 1
+    }
+    let pending = new[Int]()
+    stage_mark(source, selected, pending, owner)
+    var cursor = 0
+    var more = true
+    while more {
+        while cursor < length(pending) {
+            let symbol = get(pending, cursor)
+            stage_dependencies(source, symbol, get(source.symbols, symbol).node, selected, pending)
+            cursor = cursor + 1
+        }
+        // Conformance queries and default methods need the implementations of
+        // selected concepts, not only names of directly called functions.
+        index = 0
+        while index < length(source.symbols) {
+            let item = get(source.symbols, index)
+            if item.node.kind == NodeKind.Impl && !get(selected, index) {
+                let concepts = candidates(source, item.file, item.test_only, child(item.node, 0).value)
+                var candidate = 0
+                while candidate < length(concepts) {
+                    if get(selected, get(concepts, candidate)) {
+                        stage_mark(source, selected, pending, index)
+                    }
+                    candidate = candidate + 1
+                }
+            }
+            index = index + 1
+        }
+        more = cursor < length(pending)
+    }
+    selected
+}
+
+fn declaration_file(file SourceFile, children List[Node]) SourceFile {
+    SourceFile {
+        package = file.package
+        path = file.path
+        text = file.text
+        tree = pack_node(file.tree, NodeKind.File, file.tree.value, children)
+        test_only = file.test_only
+        trusted_std = file.trusted_std
+    }
+}
+
+fn stage_project(source std.loom.binding.Program, selected List[Bool]) Project {
+    let files = new[SourceFile]()
+    var file = 0
+    while file < length(source.files) {
+        let original = get(source.files, file)
+        let nodes = new[Node]()
+        var index = 0
+        while index < length(original.tree.children) {
+            let node = get(original.tree.children, index)
+            if node.kind == NodeKind.Import {
+                push(nodes, node)
+            }
+            index = index + 1
+        }
+        index = 0
+        while index < length(source.symbols) {
+            let item = get(source.symbols, index)
+            if item.file == file && item.owner < 0 && get(selected, index) {
+                push(nodes, item.node)
+            }
+            index = index + 1
+        }
+        push(files, declaration_file(original, nodes))
+        file = file + 1
+    }
+    Project {
+        files = files
+        modules = source.modules
+        packages = source.packages
+        root = source.root
+    }
+}
+
+fn declaration_location(node Node, call Node, identity Text) Node {
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, declaration_location(child(node, index), call, concat(identity, concat("/", to_text(index)))))
+        index = index + 1
+    }
+    if node.kind == NodeKind.Function || node.kind == NodeKind.MacroCall {
+        push(children, pack_node(call, NodeKind.ExpansionId, identity, new[Node]()))
+    }
+    pack_node(call, node.kind, node.value, children)
+}
+
+fn declaration_root(node Node, call Node, identity Text) Node {
+    let located = declaration_location(node, call, identity)
+    if node.kind == NodeKind.Function {
+        return located
+    }
+    let children = new[Node]()
+    let marker = pack_node(call, NodeKind.ExpansionId, identity, new[Node]())
+    // A refinement's last child is its predicate; impl header positions stay
+    // fixed. Keep provenance outside both positional parts.
+    if node.kind == NodeKind.Refined {
+        push(children, marker)
+    }
+    var index = 0
+    while index < length(located.children) {
+        push(children, child(located, index))
+        index = index + 1
+    }
+    if node.kind != NodeKind.Refined {
+        push(children, marker)
+    }
+    pack_node(call, node.kind, node.value, children)
+}
+
+fn declaration_stage(source std.loom.binding.Program, file Int, start Int) Int {
+    var symbol = 0
+    while symbol < length(source.symbols) {
+        let item = get(source.symbols, symbol)
+        if item.file == file && item.node.kind == NodeKind.Comptime && item.node.span.start == start {
+            return symbol
+        }
+        symbol = symbol + 1
+    }
+    symbol
+}
+
+fn generated_declarations(source std.loom.binding.Program, owner Int, inputs BuildInputs) Result[List[Node], Failure] {
+    let selected = stage_selection(source, owner)
+    let initial = get(source.symbols, owner)
+    let bound = bind_headers(stage_project(source, selected), source.tests)?
+    let symbol = declaration_stage(bound, initial.file, initial.node.span.start)
+    let env = prepare_with_inputs(bound, inputs)?
+    discard query_templates(env)?
+    let scope = function_scope(env, Signature {
+            symbol = symbol
+            parameters = 0
+            params = new[Int]()
+            compile_time = new[Int]()
+            result = 0
+            requirements = new[Requirement]()
+        }, new[Int](), new[StaticValue](), false)?
+    let context = scope.context
+    let call = initial.node
+    let value = computed(context, call, child(call, 0), -1)?
+    let tree = if value.ty == 3 {
+        match std.loom.parser.parse(value.text) {
+            Result.Ok(parsed) => parsed
+            Result.Err(failed) => {
+                return Result.Err(error(context, call, concat("generated declarations: ", failed.message)))
+            }
+        }
+    } else {
+        if !macro_tree_type(env, value.ty) {
+            return Result.Err(error(context, call, "declaration generation must return Text or std.loom.ast.Node"))
+        }
+        let syntax = macro_tree(context, call, value, 0, ints(100000))?
+        match std.loom.syntax.emit(syntax, if syntax.kind == NodeKind.File {
+                Fragment.File
+            } else {
+                Fragment.Declaration
+            }) {
+            Result.Ok(_) => syntax
+            Result.Err(message) => {
+                return Result.Err(error(context, call, concat("generated declarations: ", message)))
+            }
+        }
+    }
+    let nodes = if tree.kind == NodeKind.File {
+        tree.children
+    } else {
+        source_nodes(tree)
+    }
+    let output = new[Node]()
+    var index = 0
+    while index < length(nodes) {
+        let node = get(nodes, index)
+        if node.kind == NodeKind.Import || node.kind == NodeKind.Comptime {
+            return Result.Err(error(context, call, "generated declarations cannot add imports or another declaration stage; compose generators with ordinary functions"))
+        }
+        push(output, declaration_root(node, call, concat("declaration/", concat(to_text(initial.file),
+                        concat("/", concat(to_text(call.span.start), concat("/", to_text(index))))))))
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+
+// One explicit phase over the pre-expansion source universe. Generation never
+// writes files, reloads dependencies or sees another stage's output. Its result
+// still needs ordinary binding, checking, required proofs and test isolation.
+pub fn expand_project(project Project, tests Bool, inputs BuildInputs) Result[Project, Failure] {
+    if !has_declaration_stages(project, tests) {
+        return Result.Ok(project)
+    }
+    let source = bind_headers(project, tests)?
+    let files = new[SourceFile]()
+    var file = 0
+    while file < length(project.files) {
+        let original = get(project.files, file)
+        let children = new[Node]()
+        var index = 0
+        while index < length(original.tree.children) {
+            let node = get(original.tree.children, index)
+            if node.kind == NodeKind.Comptime && (!original.test_only || (tests && original.package == project.root)) {
+                let owner = declaration_stage(source, file, node.span.start)
+                let declarations = generated_declarations(source, owner, inputs)?
+                var declaration = 0
+                while declaration < length(declarations) {
+                    push(children, get(declarations, declaration))
+                    declaration = declaration + 1
+                }
+            } else {
+                push(children, node)
+            }
+            index = index + 1
+        }
+        push(files, declaration_file(original, children))
+        file = file + 1
+    }
+    Result.Ok(Project {
+            files = files
+            modules = project.modules
+            packages = project.packages
+            root = project.root
+        })
+}

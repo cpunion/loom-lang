@@ -6,6 +6,8 @@ import std.loom.checking.DefinitionCache
 import std.loom.checking.definition_cache
 import std.loom.checking.definitions_reused
 import std.loom.checking.check_project_cached
+import std.loom.checking.has_declaration_stages
+import std.loom.binding.bind_headers
 
 record EditorCache {
     analysis List[Analysis]
@@ -82,6 +84,7 @@ fn editor_checked(bindings std.loom.binding.Program, inputs BuildInputs, cache E
             root = bindings.root
         }, bindings.tests, inputs, cache.definitions)?
     let analysis = Analysis {
+        source = checked.source
         bindings = checked.bindings
         program = checked.program
         inputs = inputs.files

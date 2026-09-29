@@ -825,8 +825,16 @@ the [macro example](../../compiler/examples/typed_macros).
 `std.loom.syntax` emits grammar-validated source for files and individual
 fragments. The [declaration tool](../../compiler/examples/ast_generation) builds
 AST declarations in Loom, then produces a normal package that passes its own
-check/test/run and required proof. This explicit tool pipeline does not provide
-in-compilation declaration expansion; that and predicate reflection remain open.
+check/test/run and required proof. Top-level `comptime` blocks now also generate
+declarations in memory before ordinary binding and checking. They return Text or
+AST through pure functions in the original source universe, without implicit
+iteration or generated imports. Generated symbols retain package visibility,
+required proofs, test isolation and distinct closure/macro identities. Editor
+queries retain the raw source basis, navigate to the generating block, and
+revalidate tracked inputs. These stages conservatively disable per-definition
+check reuse, not whole-snapshot reuse. See the
+[in-compilation example](../../compiler/examples/declaration_generation).
+Predicate reflection remains open.
 First-class compile-time type values now use the keyword `type`. Pure functions
 can pass, return, compare and select identities, including through compile-time
 data and loops. Known type bindings supply local annotations, generic arguments
@@ -843,7 +851,7 @@ wrappers or compiler subprocesses. This supplies syntax data, not macro expansio
 or successful semantic checking; see the
 [fragment example](../../compiler/examples/syntax/fragments.loom).
 
-Stable schemas, lossless editing, richer pack iteration, declaration macros, broader compile-time
+Stable schemas, lossless editing, richer pack iteration, broader compile-time
 reflection, and contract reasoning remain in the
 [roadmap](../../ROADMAP.md#n2--complete-the-language-and-source-library).
 

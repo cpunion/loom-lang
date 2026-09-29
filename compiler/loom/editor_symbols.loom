@@ -3,6 +3,7 @@ import std.loom.analysis.Location
 import std.loom.analysis.inspect_at
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
+import std.loom.ast.has
 import std.loom.lexer.Kind
 import std.loom.lexer.Token
 import std.loom.lexer.lex
@@ -307,7 +308,7 @@ fn editor_private_function(analysis Analysis, target Location, spelling Text) Bo
         if symbol.owner < 0 && symbol.node.kind == NodeKind.Function && symbol.name == spelling &&
         get(files, symbol.file).package == root {
             matches = matches + 1
-            if symbol.file == target.file && !symbol.public && !symbol.test_only &&
+            if symbol.file == target.file && !symbol.public && !symbol.test_only && !std.loom.ast.has(symbol.node, NodeKind.ExpansionId) &&
             !get(files, symbol.file).test_only {
                 match lex(get(files, symbol.file).text) {
                     Result.Ok(tokens) => {
@@ -513,17 +514,11 @@ fn editor_rename_output(bindings std.loom.binding.Program, references List[Locat
     }
 }
 
-fn editor_symbols(options EditorOptions, bindings std.loom.binding.Program, program std.loom.typed.Program,
+fn editor_symbols(options EditorOptions, analysis Analysis,
     file Int, offset Int, inputs BuildInputs) EditorOutput {
+    let bindings = analysis.bindings
     let new_name = options.new_name
     let rename = new_name != ""
-    let analysis = Analysis {
-        bindings = bindings
-        program = program
-        inputs = inputs.files
-        options = options.build_options
-        targets = inputs.targets
-    }
     let tokens = match lex(get(bindings.files, file).text) {
         Result.Ok(value) => value,
         Result.Err(_) => {

@@ -2006,8 +2006,34 @@ preserves macro punctuation; editor hover shows the expanded result type and
 definition navigation targets the source generator. `std.loom.syntax` also
 emits validated file/declaration/type/pattern fragments from public AST data.
 The [declaration tool](examples/ast_generation) generates a normally checked
-package. In-compilation declaration expansion is not implemented by expression
-macros or this explicit generation step.
+package on disk. To generate declarations in the current compilation instead,
+use a top-level block:
+
+```loom
+comptime {
+    """
+    pub fn answer() Int {
+        42
+    }
+    """
+}
+```
+
+The block returns Text or a public AST `File`/declaration through ordinary pure
+Loom calls. All stages see the original source, not other stages' output; compose
+generator functions explicitly. Generated names belong to the invoking package
+and retain explicit `pub`/`test` rules. Output cannot introduce imports or another
+declaration stage. Normal binding, type, resource and required contract checks run
+on the result, without writing source files. This is explicit declaration
+generation, not the definition-site hygiene of expression macros.
+
+The [in-compilation example](examples/declaration_generation) covers generated
+records, refinements, implementations, imported functions and isolated tests.
+Editor diagnostics and navigation point to the generating block; generated names
+are not text-renamed. Tracked build inputs also invalidate generated analyses.
+`std.loom.analysis.analyze` and `check_project_cached` include expansion; low-level
+clients call `expand_project` before `bind`/`check`. Analysis retains the raw
+`source` snapshot separately from expanded bindings for freshness checks.
 
 ### Compile-time type values
 
