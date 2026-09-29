@@ -1039,6 +1039,9 @@ named callbacks; current types rebuild aggregate keys. Erased compile-time calls
 still participate in source dependency invalidation.
 Variadic bodies are keyed by original declaration and arity; current signature
 expansion and arity validation precede reuse, including compile-time loops/maps.
+Concrete method reuse preserves default/associated/static specialization and
+maps inherited clauses to their current concept declaration. Declaration and
+conformance validation still run.
 Compiler bytes, mode/options, module/import identities and observed inputs bind the complete
 checksummed snapshot. Declaration expansion reruns before matching; its raw
 source and expanded trees have separate private snapshots. Unsupported snapshots

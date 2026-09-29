@@ -141,7 +141,7 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
     }
     let saved = get(cache.state.bodies, 0)
     let output = std.bytes.new()
-    cache_text(output, "loom-definition-snapshot 4")
+    cache_text(output, "loom-definition-snapshot 5")
     cache_bool(output, saved.definitions.tests)
     discard cache_definition_source(output, saved.definitions)?
     cache_int(output, length(saved.definitions.reusable))
@@ -162,6 +162,7 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
         let target = get(saved.targets, index)
         cache_int(output, target.symbol)
         cache_int(output, target.arity)
+        cache_int(output, target.prototype)
         cache_ints(output, target.arguments)
         discard cache_constants(output, target.constants)?
         discard cache_function(output, get(saved.functions, index))?
@@ -179,7 +180,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
         text = text
         cursor = ints(0)
     }
-    if cache_read_text(reader)? != "loom-definition-snapshot 4" {
+    if cache_read_text(reader)? != "loom-definition-snapshot 5" {
         return Result.Err("invalid definition snapshot")
     }
     let tests = cache_read_bool(reader)?
@@ -224,6 +225,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
         push(targets, BodyTarget {
                 symbol = cache_read_int(reader)?
                 arity = cache_read_int(reader)?
+                prototype = cache_read_int(reader)?
                 arguments = cache_read_ints(reader)?
                 constants = cache_read_constants(reader)?
             })
