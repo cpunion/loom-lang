@@ -1,0 +1,132 @@
+import std.loom.source.Span
+
+fn roundtrip(text Text, fragment Fragment) {
+    let tree = match parsed(text, fragment) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert match emit(tree, fragment) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
+
+test fn source_trees_roundtrip_across_grammar_fragments() {
+    roundtrip("""
+    import std.list.push
+
+    pub record Entry[T Display] {
+        value T
+        valid Bool
+    }
+
+    enum Item[T] {
+        Empty
+        Value(T, Text)
+    }
+
+    type Positive = Int where self > 0
+
+    concept Family {
+        type Item[T Display] Display = T
+        fn read(self Self) Int
+    }
+
+    impl Family for Int {
+        type Item[T] = T
+        fn read(self Int) Int {
+            self
+        }
+    }
+
+    pub fn visit[Ts...](values Ts...) (Ts...) {
+        comptime for key, value in values {
+            discard key
+            discard value
+        }
+        values
+    }
+
+    fn use(comptime name Text, value Int) Int
+    requires value > 0
+    ensures result >= 0
+    {
+        var items = [value, 2]
+        items[0] = -(value)
+        let saved = Entry[Int] {
+            value = 1
+            valid = true
+        }
+        let copy = Entry[Int] {
+            value = 2
+            ..saved
+        }
+        let Entry { value = first, .. } = copy
+        let a, b = (first, 2)
+        defer {
+            discard "line\nquote\""
+        }
+        while a > 0 {
+            break
+        }
+        comptime if Int implements Display {
+            discard name
+        }
+        match Item.Value(a, "name") {
+            Item.Value(found, _) if found > 0 => found
+            _ => b
+        }
+    }
+    """, Fragment.File)
+    roundtrip("fn(Int, dyn Family[Item = Text]) (Int, Text)", Fragment.Type)
+    roundtrip("let (a, (b, _)) = (1, (2, 3))", Fragment.Statement)
+    roundtrip("Item.Value((name, _), Entry { value = count, .. })", Fragment.Pattern)
+    roundtrip("Entry { value = item, valid = _ }", Fragment.Binding)
+    roundtrip("($0.make[Int](1).await?)", Fragment.Expression)
+    roundtrip("fn(value Int) Int { value + 1 }", Fragment.Expression)
+    roundtrip("invoke!($0, [1, 2]...)", Fragment.Expression)
+    roundtrip("-(1)", Fragment.Expression)
+    roundtrip("if (Entry { value = true }) { 1 } else { 2 }", Fragment.Expression)
+    roundtrip("match (Entry { value = 1 }) { _ => 2 }", Fragment.Expression)
+}
+
+test fn malformed_trees_cannot_smuggle_source_or_internal_markers() {
+    let span = Span {
+        start = 0
+        end = 0
+    }
+    let injected = Node {
+        kind = NodeKind.Name
+        value = "f()"
+        span = span
+        children = new[Node]()
+    }
+    assert match expression(injected) {
+        Result.Err(_) => true
+        _ => false
+    }
+    let missing = Node {
+        kind = NodeKind.Binary
+        value = "+"
+        span = span
+        children = new[Node]()
+    }
+    assert match expression(missing) {
+        Result.Err(_) => true
+        _ => false
+    }
+    let cyclic = Node {
+        kind = NodeKind.Block
+        value = ""
+        span = span
+        children = new[Node]()
+    }
+    push(cyclic.children, cyclic)
+    assert match expression(cyclic) {
+        Result.Err(_) => true
+        _ => false
+    }
+}

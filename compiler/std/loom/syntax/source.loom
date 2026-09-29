@@ -1,0 +1,377 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.parser.parse
+import std.loom.parser.parse_expression
+import std.loom.parser.parse_type
+import std.loom.parser.parse_statement
+import std.loom.parser.parse_declaration
+import std.loom.parser.parse_pattern
+import std.loom.parser.parse_binding_pattern
+import std.loom.source.Diagnostic
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.text.concat
+import std.text.join
+import std.text.length
+import std.result.Result
+
+// Emission is a structural operation, not source preservation. Comments and
+// original whitespace live in source files, not Node. Never trust user-created
+// trees as checked compiler syntax: reparse and compare before returning.
+pub enum Fragment {
+    File
+    Expression
+    Type
+    Statement
+    Declaration
+    Pattern
+    Binding
+}
+
+fn parsed(text Text, fragment Fragment) Result[Node, Diagnostic] {
+    match fragment {
+        Fragment.File => parse(text)
+        Fragment.Expression => parse_expression(text)
+        Fragment.Type => parse_type(text)
+        Fragment.Statement => parse_statement(text)
+        Fragment.Declaration => parse_declaration(text)
+        Fragment.Pattern => parse_pattern(text)
+        Fragment.Binding => parse_binding_pattern(text)
+    }
+}
+
+fn same_tree(first Node, second Node) Bool {
+    if first.kind != second.kind || first.value != second.value || length(first.children) != length(second.children) {
+        return false
+    }
+    var index = 0
+    while index < length(first.children) {
+        if !same_tree(get(first.children, index), get(second.children, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+pub fn emit(node Node, fragment Fragment) Result[Text, Text] {
+    let budget = new[Int]()
+    push(budget, 100000)
+    push(budget, 16777216)
+    let text = source(node, 0, budget)?
+    let checked = match parsed(text, fragment) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(concat("invalid syntax tree: ", failed.message))
+        }
+    }
+    if !same_tree(node, checked) {
+        return Result.Err("syntax tree does not match the selected grammar fragment")
+    }
+    Result.Ok(text)
+}
+
+pub fn expression(node Node) Result[Text, Text] {
+    emit(node, Fragment.Expression)
+}
+
+fn member(node Node, index Int, depth Int, budget List[Int]) Result[Text, Text] {
+    if index < 0 || index >= length(node.children) {
+        return Result.Err("syntax tree is missing a child")
+    }
+    source(get(node.children, index), depth + 1, budget)
+}
+
+fn sequence(node Node, start Int, separator Text, depth Int, budget List[Int]) Result[Text, Text] {
+    let parts = new[Text]()
+    var index = start
+    while index < length(node.children) {
+        push(parts, member(node, index, depth, budget)?)
+        index = index + 1
+    }
+    Result.Ok(join(parts, separator))
+}
+
+fn surrounded(left Text, content Text, right Text) Text {
+    concat(left, concat(content, right))
+}
+
+fn group(node Node, left Text, right Text, depth Int, budget List[Int]) Result[Text, Text] {
+    Result.Ok(surrounded(left, sequence(node, 0, ", ", depth, budget)?, right))
+}
+
+fn source(node Node, depth Int, budget List[Int]) Result[Text, Text] {
+    if depth >= 128 || get(budget, 0) <= 0 || std.text.length(node.value) > get(budget, 1) {
+        return Result.Err("syntax emission budget exhausted")
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    set(budget, 1, get(budget, 1) - std.text.length(node.value))
+    let kind = node.kind
+    let count = length(node.children)
+    if kind == NodeKind.File {
+        return Result.Ok(concat(sequence(node, 0, "\n", depth, budget)?, "\n"))
+    }
+    if kind == NodeKind.Text {
+        return Result.Ok(quote(node.value))
+    }
+    if kind == NodeKind.Integer || kind == NodeKind.Float || kind == NodeKind.Bool {
+        return Result.Ok(node.value)
+    }
+    if kind == NodeKind.Name || kind == NodeKind.TypePack {
+        let named = concat(node.value, if kind == NodeKind.TypePack {
+                "..."
+            } else {
+                ""
+            })
+        return Result.Ok(if count == 0 {
+                named
+            } else {
+                concat(named, concat(" ", sequence(node, 0, " + ", depth, budget)?))
+            })
+    }
+    if kind == NodeKind.MacroInput {
+        return Result.Ok(concat("$", node.value))
+    }
+    if kind == NodeKind.Type || kind == NodeKind.DynType {
+        let name = concat(if kind == NodeKind.DynType {
+                "dyn "
+            } else {
+                ""
+            }, node.value)
+        return Result.Ok(concat(name, if count == 0 {
+                    ""
+                } else {
+                    group(node, "[", "]", depth, budget)?
+                }))
+    }
+    if kind == NodeKind.Tuple || kind == NodeKind.TupleType || kind == NodeKind.Bindings || kind == NodeKind.Parameters || kind == NodeKind.Arguments {
+        return group(node, "(", if count == 1 && (kind == NodeKind.Tuple || kind == NodeKind.TupleType || kind == NodeKind.Bindings) {
+                ",)"
+            } else {
+                ")"
+            }, depth, budget)
+    }
+    if kind == NodeKind.TypeParameters || kind == NodeKind.TypeArguments {
+        return Result.Ok(if count == 0 {
+                ""
+            } else {
+                group(node, "[", "]", depth, budget)?
+            })
+    }
+    if kind == NodeKind.List {
+        return group(node, "[", "]", depth, budget)
+    }
+    if kind == NodeKind.Block {
+        return Result.Ok(surrounded("{\n", sequence(node, 0, "\n", depth, budget)?, "\n}"))
+    }
+    if kind == NodeKind.Binary || kind == NodeKind.Implements {
+        return Result.Ok(surrounded("(", concat(member(node, 0, depth, budget)?,
+                    concat(concat(" ", concat(if kind == NodeKind.Implements {
+                                    "implements"
+                                } else {
+                                    node.value
+                                }, " ")),
+                        member(node, 1, depth, budget)?)), ")"))
+    }
+    if kind == NodeKind.Unary {
+        return Result.Ok(surrounded("(", concat(node.value, surrounded("(", member(node, 0, depth, budget)?, ")")), ")"))
+    }
+    if kind == NodeKind.Select || kind == NodeKind.Await || kind == NodeKind.Try {
+        return Result.Ok(concat(surrounded("(", member(node, 0, depth, budget)?, ")"),
+                if kind == NodeKind.Select {
+                    concat(".", node.value)
+                } else {
+                    if kind == NodeKind.Await {
+                        ".await"
+                    } else {
+                        "?"
+                    }
+                }))
+    }
+    if kind == NodeKind.Spread {
+        return Result.Ok(concat(member(node, 0, depth, budget)?, "..."))
+    }
+    if kind == NodeKind.Call {
+        return Result.Ok(concat(node.value, concat(member(node, 0, depth, budget)?, member(node, 1, depth, budget)?)))
+    }
+    if kind == NodeKind.MacroCall {
+        return Result.Ok(concat(node.value, concat("!", member(node, 0, depth, budget)?)))
+    }
+    if kind == NodeKind.Invoke || kind == NodeKind.Apply || kind == NodeKind.Index {
+        if count < 2 {
+            return Result.Err("syntax tree is missing call or index arguments")
+        }
+        let receiver = member(node, 0, depth, budget)?
+        let args = get(node.children, 1)
+        return Result.Ok(concat(if kind == NodeKind.Apply {
+                    receiver
+                } else {
+                    surrounded("(", receiver, ")")
+                },
+                group(args, if kind == NodeKind.Invoke {
+                        "("
+                    } else {
+                        "["
+                    }, if kind == NodeKind.Invoke {
+                        ")"
+                    } else {
+                        "]"
+                    }, depth + 1, budget)?))
+    }
+    if kind == NodeKind.MethodCall {
+        return Result.Ok(concat(surrounded("(", member(node, 0, depth, budget)?, ")."),
+                concat(node.value, concat(member(node, 1, depth, budget)?, member(node, 2, depth, budget)?))))
+    }
+    if kind == NodeKind.Old {
+        return Result.Ok(surrounded("old(", member(node, 0, depth, budget)?, ")"))
+    }
+    if kind == NodeKind.Let || kind == NodeKind.Var || kind == NodeKind.Scoped {
+        let prefix = if kind == NodeKind.Let {
+            "let "
+        } else {
+            if kind == NodeKind.Var {
+                "var "
+            } else {
+                "scoped "
+            }
+        }
+        return Result.Ok(concat(concat(prefix, node.value), concat(
+                    if count == 2 {
+                        concat(" ", member(node, 0, depth, budget)?)
+                    } else {
+                        ""
+                    },
+                    concat(" = ", member(node, count - 1, depth, budget)?))))
+    }
+    if kind == NodeKind.Destructure || kind == NodeKind.IndexAssign {
+        return Result.Ok(concat(if kind == NodeKind.Destructure {
+                    concat(node.value, " ")
+                } else {
+                    ""
+                },
+                concat(member(node, 0, depth, budget)?, concat(" = ", member(node, 1, depth, budget)?))))
+    }
+    if kind == NodeKind.Assign {
+        return Result.Ok(concat(node.value, concat(" = ", member(node, 0, depth, budget)?)))
+    }
+    if kind == NodeKind.Return || kind == NodeKind.Assert || kind == NodeKind.Discard || kind == NodeKind.Defer || kind == NodeKind.Comptime || kind == NodeKind.Requires || kind == NodeKind.Ensures {
+        let prefix = if kind == NodeKind.Return {
+            "return"
+        } else {
+            if kind == NodeKind.Assert {
+                "assert"
+            } else {
+                if kind == NodeKind.Discard {
+                    "discard"
+                } else {
+                    if kind == NodeKind.Defer {
+                        "defer"
+                    } else {
+                        if kind == NodeKind.Comptime {
+                            "comptime"
+                        } else {
+                            if kind == NodeKind.Requires {
+                                "requires"
+                            } else {
+                                "ensures"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return Result.Ok(concat(prefix, if count == 0 {
+                    ""
+                } else {
+                    concat(" ", member(node, 0, depth, budget)?)
+                }))
+    }
+    if kind == NodeKind.If || kind == NodeKind.While {
+        return Result.Ok(concat(if kind == NodeKind.If {
+                    "if "
+                } else {
+                    "while "
+                },
+                concat(surrounded("(", member(node, 0, depth, budget)?, ")"), concat(" ", concat(member(node, 1, depth, budget)?,
+                            if count == 3 {
+                                concat(" else ", member(node, 2, depth, budget)?)
+                            } else {
+                                ""
+                            })))))
+    }
+    if kind == NodeKind.ComptimeFor || kind == NodeKind.ComptimeMap {
+        let key = if count == 3 {
+            concat(get(node.children, 2).value, ", ")
+        } else {
+            ""
+        }
+        return Result.Ok(concat(if kind == NodeKind.ComptimeFor {
+                    "comptime for "
+                } else {
+                    "comptime map "
+                },
+                concat(key, concat(node.value, concat(" in ", concat(member(node, 0, depth, budget)?, concat(" ", member(node, 1, depth, budget)?)))))))
+    }
+    if kind == NodeKind.Match {
+        return Result.Ok(concat("match ", concat(surrounded("(", member(node, 0, depth, budget)?, ")"), surrounded(" {\n", sequence(node, 1, "\n", depth, budget)?, "\n}"))))
+    }
+    if kind == NodeKind.Arm {
+        return Result.Ok(concat(member(node, 0, depth, budget)?, concat(
+                    if count == 3 {
+                        concat(" if ", member(node, 1, depth, budget)?)
+                    } else {
+                        ""
+                    },
+                    concat(" => ", member(node, count - 1, depth, budget)?))))
+    }
+    if kind == NodeKind.Pattern {
+        return Result.Ok(concat(node.value, if count == 0 {
+                    ""
+                } else {
+                    member(node, 0, depth, budget)?
+                }))
+    }
+    if kind == NodeKind.Wildcard {
+        return Result.Ok("_")
+    }
+    if kind == NodeKind.RestPattern {
+        return Result.Ok("..")
+    }
+    if kind == NodeKind.Break {
+        return Result.Ok("break")
+    }
+    if kind == NodeKind.Continue {
+        return Result.Ok("continue")
+    }
+    if kind == NodeKind.Construct || kind == NodeKind.RecordPattern {
+        let parts = new[Text]()
+        var index = if kind == NodeKind.Construct {
+            1
+        } else {
+            0
+        }
+        while index < count {
+            let field = get(node.children, index)
+            push(parts, if field.kind == NodeKind.Spread {
+                    concat("..", member(field, 0, depth + 1, budget)?)
+                } else {
+                    if field.kind == NodeKind.RestPattern {
+                        ".."
+                    } else {
+                        concat(field.value, concat(" = ", member(field, 0, depth + 1, budget)?))
+                    }
+                })
+            index = index + 1
+        }
+        return Result.Ok(concat(node.value, concat(if kind == NodeKind.Construct {
+                        member(node, 0, depth, budget)?
+                    } else {
+                        ""
+                    },
+                    surrounded(" {\n", join(parts, "\n"), "\n}"))))
+    }
+    declaration_source(node, depth, budget)
+}

@@ -1,0 +1,238 @@
+// Decode variant names, never evaluator-local enum indices.
+fn macro_node_kind(name Text) Result[NodeKind, Text] {
+    if name == "File" {
+        return Result.Ok(NodeKind.File)
+    }
+    if name == "Import" {
+        return Result.Ok(NodeKind.Import)
+    }
+    if name == "Record" {
+        return Result.Ok(NodeKind.Record)
+    }
+    if name == "Enum" {
+        return Result.Ok(NodeKind.Enum)
+    }
+    if name == "Refined" {
+        return Result.Ok(NodeKind.Refined)
+    }
+    if name == "Function" {
+        return Result.Ok(NodeKind.Function)
+    }
+    if name == "Public" {
+        return Result.Ok(NodeKind.Public)
+    }
+    if name == "Test" {
+        return Result.Ok(NodeKind.Test)
+    }
+    if name == "Intrinsic" {
+        return Result.Ok(NodeKind.Intrinsic)
+    }
+    if name == "TypeParameters" {
+        return Result.Ok(NodeKind.TypeParameters)
+    }
+    if name == "Parameters" {
+        return Result.Ok(NodeKind.Parameters)
+    }
+    if name == "Parameter" {
+        return Result.Ok(NodeKind.Parameter)
+    }
+    if name == "Type" {
+        return Result.Ok(NodeKind.Type)
+    }
+    if name == "TypeArguments" {
+        return Result.Ok(NodeKind.TypeArguments)
+    }
+    if name == "Arguments" {
+        return Result.Ok(NodeKind.Arguments)
+    }
+    if name == "ReturnType" {
+        return Result.Ok(NodeKind.ReturnType)
+    }
+    if name == "Field" {
+        return Result.Ok(NodeKind.Field)
+    }
+    if name == "Variant" {
+        return Result.Ok(NodeKind.Variant)
+    }
+    if name == "Requires" {
+        return Result.Ok(NodeKind.Requires)
+    }
+    if name == "Ensures" {
+        return Result.Ok(NodeKind.Ensures)
+    }
+    if name == "Block" {
+        return Result.Ok(NodeKind.Block)
+    }
+    if name == "Let" {
+        return Result.Ok(NodeKind.Let)
+    }
+    if name == "Var" {
+        return Result.Ok(NodeKind.Var)
+    }
+    if name == "Assign" {
+        return Result.Ok(NodeKind.Assign)
+    }
+    if name == "Return" {
+        return Result.Ok(NodeKind.Return)
+    }
+    if name == "Assert" {
+        return Result.Ok(NodeKind.Assert)
+    }
+    if name == "Discard" {
+        return Result.Ok(NodeKind.Discard)
+    }
+    if name == "While" {
+        return Result.Ok(NodeKind.While)
+    }
+    if name == "Integer" {
+        return Result.Ok(NodeKind.Integer)
+    }
+    if name == "Text" {
+        return Result.Ok(NodeKind.Text)
+    }
+    if name == "Bool" {
+        return Result.Ok(NodeKind.Bool)
+    }
+    if name == "Name" {
+        return Result.Ok(NodeKind.Name)
+    }
+    if name == "Call" {
+        return Result.Ok(NodeKind.Call)
+    }
+    if name == "Old" {
+        return Result.Ok(NodeKind.Old)
+    }
+    if name == "Construct" {
+        return Result.Ok(NodeKind.Construct)
+    }
+    if name == "Unary" {
+        return Result.Ok(NodeKind.Unary)
+    }
+    if name == "Binary" {
+        return Result.Ok(NodeKind.Binary)
+    }
+    if name == "Select" {
+        return Result.Ok(NodeKind.Select)
+    }
+    if name == "Try" {
+        return Result.Ok(NodeKind.Try)
+    }
+    if name == "Match" {
+        return Result.Ok(NodeKind.Match)
+    }
+    if name == "Arm" {
+        return Result.Ok(NodeKind.Arm)
+    }
+    if name == "Pattern" {
+        return Result.Ok(NodeKind.Pattern)
+    }
+    if name == "Bindings" {
+        return Result.Ok(NodeKind.Bindings)
+    }
+    if name == "Wildcard" {
+        return Result.Ok(NodeKind.Wildcard)
+    }
+    if name == "If" {
+        return Result.Ok(NodeKind.If)
+    }
+    if name == "Comptime" {
+        return Result.Ok(NodeKind.Comptime)
+    }
+    if name == "ComptimeFor" {
+        return Result.Ok(NodeKind.ComptimeFor)
+    }
+    if name == "ComptimeMap" {
+        return Result.Ok(NodeKind.ComptimeMap)
+    }
+    if name == "TupleType" {
+        return Result.Ok(NodeKind.TupleType)
+    }
+    if name == "Tuple" {
+        return Result.Ok(NodeKind.Tuple)
+    }
+    if name == "Destructure" {
+        return Result.Ok(NodeKind.Destructure)
+    }
+    if name == "Float" {
+        return Result.Ok(NodeKind.Float)
+    }
+    if name == "Concept" {
+        return Result.Ok(NodeKind.Concept)
+    }
+    if name == "Impl" {
+        return Result.Ok(NodeKind.Impl)
+    }
+    if name == "Implements" {
+        return Result.Ok(NodeKind.Implements)
+    }
+    if name == "MethodCall" {
+        return Result.Ok(NodeKind.MethodCall)
+    }
+    if name == "DynType" {
+        return Result.Ok(NodeKind.DynType)
+    }
+    if name == "AssociatedType" {
+        return Result.Ok(NodeKind.AssociatedType)
+    }
+    if name == "FunctionType" {
+        return Result.Ok(NodeKind.FunctionType)
+    }
+    if name == "Invoke" {
+        return Result.Ok(NodeKind.Invoke)
+    }
+    if name == "Defer" {
+        return Result.Ok(NodeKind.Defer)
+    }
+    if name == "Bounds" {
+        return Result.Ok(NodeKind.Bounds)
+    }
+    if name == "Break" {
+        return Result.Ok(NodeKind.Break)
+    }
+    if name == "Continue" {
+        return Result.Ok(NodeKind.Continue)
+    }
+    if name == "List" {
+        return Result.Ok(NodeKind.List)
+    }
+    if name == "Apply" {
+        return Result.Ok(NodeKind.Apply)
+    }
+    if name == "Index" {
+        return Result.Ok(NodeKind.Index)
+    }
+    if name == "IndexAssign" {
+        return Result.Ok(NodeKind.IndexAssign)
+    }
+    if name == "Scoped" {
+        return Result.Ok(NodeKind.Scoped)
+    }
+    if name == "Async" {
+        return Result.Ok(NodeKind.Async)
+    }
+    if name == "Await" {
+        return Result.Ok(NodeKind.Await)
+    }
+    if name == "RecordPattern" {
+        return Result.Ok(NodeKind.RecordPattern)
+    }
+    if name == "RestPattern" {
+        return Result.Ok(NodeKind.RestPattern)
+    }
+    if name == "Spread" {
+        return Result.Ok(NodeKind.Spread)
+    }
+    if name == "TypePack" {
+        return Result.Ok(NodeKind.TypePack)
+    }
+    if name == "IterationKey" {
+        return Result.Ok(NodeKind.IterationKey)
+    }
+    if name == "MacroCall" {
+        return Result.Ok(NodeKind.MacroCall)
+    }
+    if name == "MacroInput" {
+        return Result.Ok(NodeKind.MacroInput)
+    }
+    Result.Err("unsupported or internal macro syntax kind")
+}

@@ -806,13 +806,20 @@ targets cannot bypass constraint checks. The
 native and compile-time generation and separately specialized closures.
 
 Typed expression macros now invoke ordinary pure Loom generators with inferred,
-definition-site-visible input schemas. Returned source is parsed and checked as
-one expression; hygienic positional inputs evaluate once in source order.
+definition-site-visible input schemas. Returned Text or public AST data is
+validated and checked as one expression; hygienic positional inputs evaluate
+once in source order. Structured output must round-trip through the same grammar;
+malformed trees, forged internal markers and excessive/cyclic expansion reject.
 Generated closures, nested macros, cleanup and required proofs use the existing
 checker/evaluator/native path. Generator calls do not become runtime roots.
 Formatting and editor result-type/definition queries recognize macro calls. See
-the [macro example](../../compiler/examples/typed_macros). Arbitrary AST or
-declaration expansion, first-class type values and predicate reflection remain open.
+the [macro example](../../compiler/examples/typed_macros).
+`std.loom.syntax` emits grammar-validated source for files and individual
+fragments. The [declaration tool](../../compiler/examples/ast_generation) builds
+AST declarations in Loom, then produces a normal package that passes its own
+check/test/run and required proof. This explicit tool pipeline does not provide
+in-compilation declaration expansion; that, first-class type values and predicate
+reflection remain open.
 
 Public `std.loom.parser` now parses standalone expressions, types, match/binding
 patterns, statements and declarations through the existing grammar. Fragments

@@ -1,0 +1,51 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.parser.parse_expression
+
+fn syntax(text Text) Node {
+    match parse_expression(text) {
+        Result.Ok(tree) => tree
+        Result.Err(_) => {
+            assert false
+            syntax("0")
+        }
+    }
+}
+
+fn tree_sum(types List[Schema]) Node {
+    assert length(types) == 2
+    let left = syntax("$0")
+    Node {
+        kind = NodeKind.Binary
+        value = "+"
+        span = left.span
+        children = [left, syntax("$1")]
+    }
+}
+
+fn tree_counter(types List[Schema]) Node {
+    assert length(types) == 1
+    syntax("""
+    {
+        var current = $0
+        fn() Int {
+            current = current + 1
+            current
+        }
+    }
+    """)
+}
+
+fn tree_macro_trial() {
+    let values = [0]
+    assert tree_sum!(next(values), 21) == 42 && length(values) == 2
+    let counter = tree_counter!(40)
+    assert counter() == 41 && counter() == 42
+    assert comptime {
+        tree_sum!(20, 22)
+    } == 42
+}
+
+test fn structured_macro_results_keep_normal_argument_and_closure_rules() {
+    tree_macro_trial()
+}

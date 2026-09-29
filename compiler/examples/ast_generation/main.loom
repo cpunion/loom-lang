@@ -1,0 +1,89 @@
+import std.loom.ast.Node
+import std.loom.ast.NodeKind
+import std.loom.source.Span
+import std.loom.parser.parse_declaration
+import std.loom.syntax.emit
+import std.loom.syntax.Fragment
+import std.loom.format.format
+import std.list.new
+import std.list.push
+import std.list.length
+import std.io.write_text
+import std.result.Result
+
+fn node(kind NodeKind, value Text, children List[Node]) Node {
+    Node {
+        kind = kind
+        value = value
+        span = Span {
+            start = 0
+            end = 0
+        }
+        children = children
+    }
+}
+
+fn declaration(text Text) Node {
+    match parse_declaration(text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            declaration("record Invalid {}")
+        }
+    }
+}
+
+fn record_node(name Text, fields List[Text]) Node {
+    let children = [node(NodeKind.TypeParameters, "", new[Node]())]
+    var index = 0
+    while index < length(fields) {
+        let ty = node(NodeKind.Type, "Int", new[Node]())
+        push(children, node(NodeKind.Field, fields[index], [ty]))
+        index = index + 1
+    }
+    node(NodeKind.Record, name, children)
+}
+
+// A schema tool can build declarations structurally and reuse parsed bodies.
+// Its output is an ordinary package: no compiler hooks or unchecked code path.
+fn generated() Text {
+    let definitions = [record_node("Point", ["x", "y"])]
+    push(definitions, declaration("""
+        fn sum(value Point) Int
+        ensures result == value.x + value.y
+        {
+            value.x + value.y
+        }
+        """))
+    push(definitions, declaration("""
+        fn main() {
+            assert sum(Point {
+                    x = 20
+                    y = 22
+                }) == 42
+        }
+        """))
+    push(definitions, declaration("""
+        test fn generated_record_uses_ordinary_contracts() {
+            main()
+        }
+        """))
+    let text = match emit(node(NodeKind.File, "", definitions), Fragment.File) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return ""
+        }
+    }
+    match format(text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+fn main() {
+    discard write_text(generated())
+}

@@ -151,6 +151,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/loom/binding",
         "std/loom/manifest",
         "std/loom/project",
+        "std/loom/syntax",
         "std/loom/proof",
         "std/loom/checking",
         "std/loom/lowering",

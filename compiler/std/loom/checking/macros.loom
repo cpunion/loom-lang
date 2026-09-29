@@ -1,5 +1,61 @@
 import std.loom.parser.parse_expression
 import std.int.parse
+import std.loom.syntax.expression
+
+fn macro_tree_type(env Environment, ty Int) Bool {
+    let shape = get(env.types, ty)
+    if shape.kind != TypeKind.Record || shape.symbol < 0 || length(shape.arguments) != 0 || length(shape.fields) != 4 {
+        return false
+    }
+    let item = symbol(env, shape.symbol)
+    let file = get(env.source.files, item.file)
+    if get(shape.fields, 0).name != "kind" ||
+    !reflection_field(env, ty, 1, "value", 3) || get(shape.fields, 2).name != "span" ||
+    get(shape.fields, 3).name != "children" || reflection_element(env, get(shape.fields, 3).ty) != ty {
+        return false
+    }
+    let kind = get(env.types, get(shape.fields, 0).ty)
+    if kind.kind != TypeKind.Enum {
+        return false
+    }
+    var index = 0
+    while index < length(kind.variants) {
+        if length(get(kind.variants, index).fields) != 0 {
+            return false
+        }
+        index = index + 1
+    }
+    file.trusted_std && item.public && item.name == "Node" &&
+    package_label(env.source.modules, env.source.packages, file.package) == "std.loom.ast"
+}
+
+fn macro_tree(context Context, call Node, value Value, depth Int, budget List[Int]) Result[Node, Failure] {
+    if depth >= 128 || get(budget, 0) <= 0 {
+        return Result.Err(error(context, call, "macro syntax tree budget exhausted"))
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    let kind = get(value.items, 0)
+    let name = get(get(context.env.types, kind.ty).variants, kind.number).name
+    let selected = match macro_node_kind(name) {
+        Result.Ok(found) => found
+        Result.Err(message) => {
+            return Result.Err(error(context, call, message))
+        }
+    }
+    let children = new[Node]()
+    let source = get(value.items, 3)
+    var index = 0
+    while index < std.loom.eval.list_length(source) {
+        push(children, macro_tree(context, call, std.loom.eval.list_element(source, index), depth + 1, budget)?)
+        index = index + 1
+    }
+    Result.Ok(Node {
+            kind = selected
+            value = get(value.items, 1).text
+            span = call.span
+            children = children
+        })
+}
 
 // A generator is an ordinary source function. Only its invocation is staged;
 // neither descriptor construction nor generator calls become runtime roots.
@@ -17,7 +73,7 @@ fn macro_generator(context Context, node Node) Result[Int, Failure] {
         while signature < length(context.env.signatures) {
             let current = get(context.env.signatures, signature)
             if current.symbol == owner && current.parameters == 0 && !has_static(current) &&
-            length(current.params) == 1 && current.result == 3 &&
+            length(current.params) == 1 && (current.result == 3 || macro_tree_type(context.env, current.result)) &&
             !has(symbol(context.env, owner).node, NodeKind.Async) {
                 let element = reflection_element(context.env, get(current.params, 0))
                 if element >= 0 && reflection_nominal(context.env, element, "Schema", TypeKind.Record, 2) {
@@ -32,7 +88,7 @@ fn macro_generator(context Context, node Node) Result[Int, Failure] {
         index = index + 1
     }
     if selected < 0 {
-        return Result.Err(error(context, node, "a macro generator requires fn(List[std.reflect.Schema]) Text"))
+        return Result.Err(error(context, node, "a macro generator requires fn(List[std.reflect.Schema]) with a Text or std.loom.ast.Node result"))
     }
     Result.Ok(selected)
 }
@@ -177,18 +233,28 @@ fn macro_call(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     let argument = expression(ExprKind.List, get(current.params, 0), node, "", -1, descriptors, true)
     let target = schedule(stage.env, id, new[Int](), new[StaticValue](), node)?
-    let invocation = expression(ExprKind.Call, 3, node, "", target, expressions(argument), true)
+    let invocation = expression(ExprKind.Call, current.result, node, "", target, expressions(argument), true)
     let program = prepared(stage)?
-    let generated = match std.loom.eval.evaluate(program, invocation, 0) {
-        Result.Ok(value) => value.text
+    let generated_value = match std.loom.eval.evaluate(program, invocation, 0) {
+        Result.Ok(value) => value
         Result.Err(failed) => {
             return Result.Err(error(context, node, concat("macro generator: ", failed.message)))
         }
     }
-    let parsed = match parse_expression(generated) {
-        Result.Ok(value) => value
-        Result.Err(failed) => {
-            return Result.Err(error(context, node, concat("generated macro expression: ", failed.message)))
+    let parsed = if current.result == 3 {
+        match parse_expression(generated_value.text) {
+            Result.Ok(value) => value
+            Result.Err(failed) => {
+                return Result.Err(error(context, node, concat("generated macro expression: ", failed.message)))
+            }
+        }
+    } else {
+        let tree = macro_tree(context, node, generated_value, 0, ints(100000))?
+        match std.loom.syntax.expression(tree) {
+            Result.Ok(_) => tree
+            Result.Err(message) => {
+                return Result.Err(error(context, node, concat("generated macro expression: ", message)))
+            }
         }
     }
     let syntax = macro_syntax(context, node, parsed, length(values), identity, false, 0)?

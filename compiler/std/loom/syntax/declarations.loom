@@ -1,0 +1,143 @@
+fn field_source(field Node, separator Text, depth Int, budget List[Int]) Result[Text, Text] {
+    Result.Ok(concat(field.value, concat(separator, member(field, 0, depth + 1, budget)?)))
+}
+
+fn declaration_source(node Node, depth Int, budget List[Int]) Result[Text, Text] {
+    let kind = node.kind
+    let count = length(node.children)
+    if kind == NodeKind.Import {
+        return Result.Ok(concat("import ", node.value))
+    }
+    if kind == NodeKind.Public {
+        return Result.Ok("pub ")
+    }
+    if kind == NodeKind.Test {
+        return Result.Ok("test ")
+    }
+    if kind == NodeKind.Async {
+        return Result.Ok("async ")
+    }
+    if kind == NodeKind.Intrinsic {
+        return Result.Ok("intrinsic ")
+    }
+    if kind == NodeKind.Parameter {
+        return Result.Ok(concat(if count == 2 {
+                    "comptime "
+                } else {
+                    ""
+                }, field_source(node, " ", depth, budget)?))
+    }
+    if kind == NodeKind.ReturnType {
+        return Result.Ok(if count == 0 {
+                ""
+            } else {
+                concat(" ", member(node, 0, depth, budget)?)
+            })
+    }
+    if kind == NodeKind.FunctionType {
+        return Result.Ok(concat("fn", concat(member(node, 0, depth, budget)?, member(node, 1, depth, budget)?)))
+    }
+    if kind == NodeKind.AssociatedType {
+        // A one-child binding is printed without 'type' in dyn arguments;
+        // declaration owners supply the keyword for concept/impl members.
+        let parts = new[Text]()
+        push(parts, node.value)
+        var index = 0
+        while index < count {
+            let child = get(node.children, index)
+            push(parts, if child.kind == NodeKind.TypeParameters {
+                    member(node, index, depth, budget)?
+                } else {
+                    if child.kind == NodeKind.Bounds {
+                        concat(" ", sequence(child, 0, " + ", depth + 1, budget)?)
+                    } else {
+                        concat(" = ", member(node, index, depth, budget)?)
+                    }
+                })
+            index = index + 1
+        }
+        return Result.Ok(join(parts, ""))
+    }
+    if kind == NodeKind.Function {
+        let parts = new[Text]()
+        var index = 0
+        while index < count {
+            let child = get(node.children, index)
+            if child.kind == NodeKind.Public || child.kind == NodeKind.Test || child.kind == NodeKind.Async || child.kind == NodeKind.Intrinsic {
+                push(parts, member(node, index, depth, budget)?)
+            }
+            index = index + 1
+        }
+        push(parts, concat("fn ", node.value))
+        index = 0
+        while index < count {
+            let child = get(node.children, index)
+            if child.kind == NodeKind.TypeParameters || child.kind == NodeKind.Parameters || child.kind == NodeKind.ReturnType {
+                push(parts, member(node, index, depth, budget)?)
+            } else if child.kind == NodeKind.Requires || child.kind == NodeKind.Ensures || child.kind == NodeKind.Block {
+                push(parts, concat("\n", member(node, index, depth, budget)?))
+            }
+            index = index + 1
+        }
+        return Result.Ok(join(parts, ""))
+    }
+    if kind == NodeKind.Record || kind == NodeKind.Enum || kind == NodeKind.Refined || kind == NodeKind.Concept || kind == NodeKind.Impl {
+        let parts = new[Text]()
+        var index = 0
+        while index < count && get(node.children, index).kind == NodeKind.Public {
+            push(parts, member(node, index, depth, budget)?)
+            index = index + 1
+        }
+        if kind == NodeKind.Impl {
+            push(parts, concat("impl", concat(member(node, 2, depth, budget)?, concat(" ",
+                            concat(member(node, 0, depth, budget)?, concat(" for ", member(node, 1, depth, budget)?))))))
+            index = 3
+        } else {
+            push(parts, concat(if kind == NodeKind.Record {
+                        "record "
+                    } else {
+                        if kind == NodeKind.Enum {
+                            "enum "
+                        } else {
+                            if kind == NodeKind.Refined {
+                                "type "
+                            } else {
+                                "concept "
+                            }
+                        }
+                    }, node.value))
+            if kind != NodeKind.Concept {
+                push(parts, member(node, index, depth, budget)?)
+                index = index + 1
+            }
+        }
+        if kind == NodeKind.Refined {
+            push(parts, concat(" = ", concat(member(node, index, depth, budget)?, concat(" where ", member(node, index + 1, depth, budget)?))))
+        } else {
+            push(parts, " {\n")
+            while index < count {
+                let child = get(node.children, index)
+                push(parts, if kind == NodeKind.Record {
+                        field_source(child, " ", depth, budget)?
+                    } else if kind == NodeKind.Enum {
+                        concat(child.value, if length(child.children) == 0 {
+                                ""
+                            } else {
+                                group(child, "(", ")", depth + 1, budget)?
+                            })
+                    } else {
+                        concat(if child.kind == NodeKind.AssociatedType {
+                                "type "
+                            } else {
+                                ""
+                            }, member(node, index, depth, budget)?)
+                    })
+                push(parts, "\n")
+                index = index + 1
+            }
+            push(parts, "}")
+        }
+        return Result.Ok(join(parts, ""))
+    }
+    Result.Err("unsupported or internal syntax node")
+}
