@@ -57,3 +57,31 @@ test fn resource_fields_allow_delayed_callbacks_and_local_loop_exits() {
         exercise_resource_expressions()
     }
 }
+
+fn deferred_callback(trace List[Int]) {
+    defer {
+        let callback = fn() Int {
+            scoped value = acquire(1, trace)
+            defer {
+                push(trace, 2)
+            }
+            return 7
+        }
+        assert callback() == 7
+    }
+}
+
+fn exercise_deferred_callback() Bool {
+    let trace List[Int] = []
+    deferred_callback(trace)
+    assert length(trace) == 3
+    assert trace[0] == 10 && trace[1] == 2 && trace[2] == 1
+    true
+}
+
+test fn deferred_callbacks_have_independent_cleanup_scopes() {
+    assert exercise_deferred_callback()
+    assert comptime {
+        exercise_deferred_callback()
+    }
+}

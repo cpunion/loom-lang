@@ -2034,7 +2034,8 @@ A tail or returned value is saved before cleanup, including managed aggregates.
 Cleanup must have no value result; ordinary `discard` remains explicit. Its
 body cannot contain `return`, `?`, `scoped`, or another `defer`, even in an unselected
 compile-time branch. Loop control is allowed only for loops inside the cleanup;
-it cannot leave the cleanup. Called functions have their own ordinary return scopes.
+it cannot leave the cleanup. Called functions, including closures defined inside
+the cleanup, have their own return, cleanup and loop scopes.
 Pure cleanup also executes during compile-time evaluation. Native lowering uses
 direct callbacks and stack registrations, not a general runtime executor. Callbacks
 read and update the owner's local storage, including moving-GC roots. Programs
