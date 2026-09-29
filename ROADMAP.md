@@ -259,8 +259,11 @@ queries, frontend-cache reuse and build receipts. Observed target properties now
 come from the actual backend, with lazy reads, cached-input revalidation and
 emission-time checks against the saved checked artifact. Embedded Bytes and
 computed byte buffers now use compact static blobs, with fresh mutable copies
-and preserved aliases inside computed graphs. Fine-grained persistent
-proof/effect reuse and per-package objects remain open.
+and preserved aliases inside computed graphs. The resident editor also reuses
+successful abstract checks of unchanged ordinary definitions, invalidating
+transitive callers and rechecking opaque dependencies. Current bindings, type
+IDs and reachable bodies are still rebuilt. Fine-grained persistent proof/effect
+reuse and per-package objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic
 method calls into the existing direct-call path. Conditional conformance queries,

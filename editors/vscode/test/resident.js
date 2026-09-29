@@ -70,7 +70,39 @@ fn main() {
     } finally { await overlay.dispose(); }
     assert.equal((await compiler.check(settings, folder, [])).analysisReused, false);
     assert.equal(await fs.readFile(file, 'utf8'), source);
-    console.log('Resident editor smoke passed: analysis reuse, input/options/file-membership invalidation, unsaved type changes.');
+
+    const ordinary = `fn leaf(value Int) Int {
+    value + 1
+}
+
+fn middle(value Int) Int {
+    leaf(value)
+}
+
+fn independent(value Int) Int {
+    value * 2
+}
+
+fn main() {
+    let value = middle(3)
+    assert value > 0
+}
+`;
+    await fs.writeFile(file, ordinary);
+    assert.deepEqual((await compiler.check(settings, folder, [])).diagnostics, []);
+    const edited = ordinary.replace('value + 1', '\n    value + 12');
+    await fs.writeFile(file, edited);
+    const incremental = await compiler.check(settings, folder, []);
+    assert.deepEqual(incremental.diagnostics, []);
+    assert.equal(incremental.analysisReused, false);
+    assert.equal(incremental.definitionsReused, 1);
+    const location = Buffer.byteLength(edited.slice(0, edited.lastIndexOf('middle(3)')));
+    const updated = await compiler.symbols(settings, folder, file, location, []);
+    assert.equal(updated.references.length, 2);
+    assert.ok(updated.references.some(reference => reference.start === edited.indexOf('middle(value')));
+    await fs.writeFile(file, edited.replace('value + 12', 'true'));
+    assert.ok((await compiler.check(settings, folder, [])).diagnostics.length);
+    console.log('Resident editor smoke passed: snapshot/definition reuse, dependency invalidation, current source spans, unsaved type changes.');
   } finally {
     compiler.close();
     await fs.rm(temporary, { recursive: true, force: true });

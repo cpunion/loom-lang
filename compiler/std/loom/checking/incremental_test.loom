@@ -1,0 +1,138 @@
+fn cached_source(cache DefinitionCache, text Text) Result[CachedCheck, Failure] {
+    check_project_cached(fixture_project(source_files(text)), false, build_inputs(no_input_reader), cache)
+}
+
+test fn definition_reuse_tracks_transitive_calls_and_never_caches_failures() {
+    let cache = definition_cache()
+    let first = """
+    fn leaf(value Int) Int {
+        value + 1
+    }
+    fn middle(value Int) Int {
+        leaf(value)
+    }
+    fn unrelated(value Int) Int {
+        value * 2
+    }
+    """
+    let second = """
+    fn leaf(value Int) Int {
+        value + 2
+    }
+    fn middle(value Int) Int {
+        leaf(value)
+    }
+    fn unrelated(value Int) Int {
+        value * 2
+    }
+    """
+    assert match cached_source(cache, first) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert definitions_reused(cache) == 0
+    assert match cached_source(cache, second) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert definitions_reused(cache) == 1
+    assert match cached_source(cache, """
+        fn leaf(value Int) Int {
+            true
+        }
+        fn middle(value Int) Int {
+            leaf(value)
+        }
+        fn unrelated(value Int) Int {
+            value * 2
+        }
+        """) {
+        Result.Err(_) => true
+        _ => false
+    }
+    let before = definitions_reused(cache)
+    assert match cached_source(cache, second) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert definitions_reused(cache) - before == 3
+}
+
+test fn changed_invariant_helpers_revoke_all_dependent_proof_evidence() {
+    let cache = definition_cache()
+    assert match cached_source(cache, """
+        fn valid(value Int) Bool {
+            value > 0
+        }
+        type Positive = Int where valid(self)
+        fn read(value Positive) Int
+        ensures result > 0
+        {
+            value
+        }
+        """) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert match cached_source(cache, """
+        fn valid(value Int) Bool {
+            value >= 0
+        }
+        type Positive = Int where valid(self)
+        fn read(value Positive) Int
+        ensures result > 0
+        {
+            value
+        }
+        """) {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert definitions_reused(cache) == 0
+}
+
+test fn definition_cache_owns_evidence_and_uses_ast_not_only_source_text() {
+    let cache = definition_cache()
+    let project = fixture_project(source_files("""
+        fn value() Int {
+            1
+        }
+        """))
+    let checked = match check_project_cached(project, false, build_inputs(no_input_reader), cache) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let changed = fixture_project(source_files("""
+        fn value() Int {
+            true
+        }
+        """))
+    let original = get(checked.bindings.files, 0)
+    set(checked.bindings.files, 0, std.loom.project.SourceFile {
+            package = original.package
+            path = original.path
+            text = original.text
+            tree = get(changed.files, 0).tree
+            test_only = original.test_only
+            trusted_std = original.trusted_std
+        })
+    let edited = Project {
+        files = checked.bindings.files
+        modules = checked.bindings.modules
+        packages = checked.bindings.packages
+        root = checked.bindings.root
+    }
+    assert match check_project_cached(edited, false, build_inputs(no_input_reader), cache) {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert definitions_reused(cache) == 0
+    assert match check_project_cached(project, false, build_inputs(no_input_reader), cache) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert definitions_reused(cache) == 1
+}

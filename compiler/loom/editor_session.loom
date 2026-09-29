@@ -2,10 +2,15 @@ import std.loom.analysis.is_current_with_inputs
 import std.loom.project.BuildInput
 import std.loom.binding.Failure
 import std.io.read_chunk
+import std.loom.checking.DefinitionCache
+import std.loom.checking.definition_cache
+import std.loom.checking.definitions_reused
+import std.loom.checking.check_project_cached
 
 record EditorCache {
     analysis List[Analysis]
     hits List[Int]
+    definitions DefinitionCache
 }
 
 fn editor_cache() EditorCache {
@@ -14,6 +19,7 @@ fn editor_cache() EditorCache {
     EditorCache {
         analysis = new[Analysis]()
         hits = hits
+        definitions = definition_cache()
     }
 }
 
@@ -69,10 +75,15 @@ fn editor_reuse(cache EditorCache, project Project, tests Bool, inputs BuildInpu
 }
 
 fn editor_checked(bindings std.loom.binding.Program, inputs BuildInputs, cache EditorCache) Result[Analysis, Failure] {
-    let program = check_with_inputs(bindings, inputs)?
+    let checked = check_project_cached(Project {
+            files = bindings.files
+            modules = bindings.modules
+            packages = bindings.packages
+            root = bindings.root
+        }, bindings.tests, inputs, cache.definitions)?
     let analysis = Analysis {
-        bindings = bindings
-        program = program
+        bindings = checked.bindings
+        program = checked.program
         inputs = inputs.files
         options = inputs.options
         targets = inputs.targets
@@ -191,13 +202,15 @@ fn editor_session(executable Text) Result[Bool, Text] {
             }
         }
         let hits = get(cache.hits, 0)
+        let definitions = definitions_reused(cache.definitions)
         let output = editor_execute(args, cache)
         let reused = if get(cache.hits, 0) > hits {
             "true"
         } else {
             "false"
         }
-        let response = concat("{\"analysisReused\":", concat(reused, concat(",", slice(output.text, 1, std.text.length(output.text)))))
+        let response = concat("{\"analysisReused\":", concat(reused, concat(",\"definitionsReused\":",
+                    concat(to_text(definitions_reused(cache.definitions) - definitions), concat(",", slice(output.text, 1, std.text.length(output.text)))))))
         match write_text(response) {
             Result.Ok(_) => {
             }

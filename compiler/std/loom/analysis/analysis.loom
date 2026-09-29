@@ -8,6 +8,7 @@ import std.loom.project.Package
 import std.loom.project.PackageImport
 import std.loom.project.package_label
 import std.loom.project.qualify
+import std.loom.project.snapshot
 import std.loom.binding.Program
 import std.loom.binding.Failure
 import std.loom.binding.bind
@@ -46,46 +47,6 @@ pub record Analysis {
 pub record Expression {
     function Int
     expression Expr
-}
-
-fn copy_node(node Node) Node {
-    let children = new[Node]()
-    var index = 0
-    while index < length(node.children) {
-        push(children, copy_node(get(node.children, index)))
-        index = index + 1
-    }
-    Node { kind = node.kind value = node.value span = node.span children = children }
-}
-fn snapshot(project Project) Project {
-    let modules = new[ModuleInstance]()
-    var index = 0
-    while index < length(project.modules) {
-        push(modules, get(project.modules, index))
-        index = index + 1
-    }
-    let packages = new[Package]()
-    index = 0
-    while index < length(project.packages) {
-        let package = get(project.packages, index)
-        let imports = new[PackageImport]()
-        var edge = 0
-        while edge < length(package.imports) {
-            push(imports, get(package.imports, edge))
-            edge = edge + 1
-        }
-        push(packages, Package { instance = package.instance relative = package.relative imports = imports })
-        index = index + 1
-    }
-    let files = new[SourceFile]()
-    index = 0
-    while index < length(project.files) {
-        let file = get(project.files, index)
-        push(files, SourceFile { package = file.package path = file.path text = file.text
-            tree = copy_node(file.tree) test_only = file.test_only trusted_std = file.trusted_std })
-        index = index + 1
-    }
-    Project { files = files modules = modules packages = packages root = project.root }
 }
 
 // Uses the compiler's binding, typing and proof checks, without a CLI or backend.
