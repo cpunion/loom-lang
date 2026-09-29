@@ -1,0 +1,289 @@
+import std.loom.project.Project
+import std.loom.project.SourceFile
+import std.loom.project.snapshot
+import std.loom.binding.bind
+import std.loom.ast.same
+import std.loom.source.Span
+import std.map.Map
+import std.map.new
+import std.map.insert
+import std.map.get
+import std.option.Option
+
+// Only successful checks can populate this private state. Public mutable ASTs
+// and typed programs are never themselves accepted as cached proof evidence.
+pub record DefinitionCache {
+    state DefinitionCacheState
+}
+
+record DefinitionCacheState {
+    basis List[DefinitionBasis]
+    hits List[Int]
+}
+
+record DefinitionBasis {
+    project Project
+    tests Bool
+    bodies List[Node]
+    reusable List[Bool]
+}
+
+pub record CachedCheck {
+    bindings std.loom.binding.Program
+    program std.loom.typed.Program
+}
+
+pub fn definition_cache() DefinitionCache {
+    DefinitionCache {
+        state = DefinitionCacheState {
+            basis = new[DefinitionBasis]()
+            hits = ints(0)
+        }
+    }
+}
+
+pub fn definitions_reused(cache DefinitionCache) Int {
+    get(cache.state.hits, 0)
+}
+
+// Normalize locations, not syntax. Signatures, contracts, imports and nominal
+// declarations form the shared basis; ordinary function bodies are separate.
+fn definition_node(node Node, header Bool) Node {
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if !(header && node.kind == NodeKind.Function && child.kind == NodeKind.Block) {
+            push(children, definition_node(child, header &&
+                    (node.kind == NodeKind.File || node.kind == NodeKind.Concept || node.kind == NodeKind.Impl)))
+        }
+        index = index + 1
+    }
+    Node {
+        kind = node.kind
+        value = node.value
+        span = Span {
+            start = 0
+            end = 0
+        }
+        children = children
+    }
+}
+
+fn definition_basis(source std.loom.binding.Program) DefinitionBasis {
+    let project = snapshot(Project {
+            files = source.files
+            modules = source.modules
+            packages = source.packages
+            root = source.root
+        })
+    var index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        set(project.files, index, std.loom.project.SourceFile {
+                package = file.package
+                path = file.path
+                text = ""
+                tree = definition_node(file.tree, true)
+                test_only = file.test_only
+                trusted_std = file.trusted_std
+            })
+        index = index + 1
+    }
+    let bodies = new[Node]()
+    let reusable = new[Bool]()
+    index = 0
+    while index < length(source.symbols) {
+        push(bodies, definition_node(get(source.symbols, index).node, false))
+        push(reusable, false)
+        index = index + 1
+    }
+    DefinitionBasis {
+        project = project
+        tests = source.tests
+        bodies = bodies
+        reusable = reusable
+    }
+}
+
+fn definition_context(first DefinitionBasis, second DefinitionBasis) Bool {
+    let left = first.project
+    let right = second.project
+    if first.tests != second.tests || left.root != right.root ||
+    length(first.bodies) != length(second.bodies) || length(left.files) != length(right.files) ||
+    length(left.modules) != length(right.modules) || length(left.packages) != length(right.packages) {
+        return false
+    }
+    var index = 0
+    while index < length(left.modules) {
+        let a = get(left.modules, index)
+        let b = get(right.modules, index)
+        if a.name != b.name || a.source != b.source {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(left.packages) {
+        let a = get(left.packages, index)
+        let b = get(right.packages, index)
+        if a.instance != b.instance || a.relative != b.relative || length(a.imports) != length(b.imports) {
+            return false
+        }
+        var edge = 0
+        while edge < length(a.imports) {
+            let x = get(a.imports, edge)
+            let y = get(b.imports, edge)
+            if x.spelling != y.spelling || x.target != y.target {
+                return false
+            }
+            edge = edge + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(left.files) {
+        let a = get(left.files, index)
+        let b = get(right.files, index)
+        if a.package != b.package || a.path != b.path || a.test_only != b.test_only || a.trusted_std != b.trusted_std ||
+        !std.loom.ast.same(a.tree, b.tree) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+// Staged syntax and hidden resource/task operations need richer dependency
+// summaries. Recheck them and their callers, rather than treating unknown edges
+// as independence. Methods and generated/variadic signatures are also rebuilt.
+fn definition_opaque(node Node, root Bool) Bool {
+    let kind = node.kind
+    if kind == NodeKind.Comptime || kind == NodeKind.MacroCall || kind == NodeKind.Scoped ||
+    kind == NodeKind.Await || kind == NodeKind.Async || kind == NodeKind.TypePack ||
+    kind == NodeKind.ComptimeFor || kind == NodeKind.ComptimeMap || (kind == NodeKind.Function && !root) {
+        return true
+    }
+    var index = 0
+    while index < length(node.children) {
+        if definition_opaque(get(node.children, index), false) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn definition_depends(node Node, changed Map[Text, Bool]) Bool {
+    let kind = node.kind
+    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.MethodCall ||
+    kind == NodeKind.Construct || kind == NodeKind.Type || kind == NodeKind.Select {
+        match std.map.get(changed, std.loom.project.name(node.value)) {
+            Option.Some(_) => {
+                return true
+            }
+            Option.None => {
+            }
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        if definition_depends(get(node.children, index), changed) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cache DefinitionCache) List[Bool] {
+    let reuse = new[Bool]()
+    var index = 0
+    while index < length(basis.bodies) {
+        push(reuse, false)
+        index = index + 1
+    }
+    if length(cache.state.basis) == 0 {
+        return reuse
+    }
+    let previous = get(cache.state.basis, 0)
+    if !definition_context(previous, basis) {
+        return reuse
+    }
+    let changed = std.map.new[Text, Bool]()
+    index = 0
+    while index < length(basis.bodies) {
+        let node = get(basis.bodies, index)
+        if node.kind == NodeKind.Refined && definition_opaque(node, true) {
+            return reuse
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(basis.bodies) {
+        let item = get(source.symbols, index)
+        let body = get(basis.bodies, index)
+        let build = package_label(source.modules, source.packages, get(source.files, item.file).package) == "std.build"
+        let stable = std.loom.ast.same(body, get(previous.bodies, index)) && !definition_opaque(body, true) && !build
+        if item.node.kind == NodeKind.Function && !stable {
+            discard std.map.insert(changed, item.name, true)
+        }
+        set(reuse, index, stable && item.owner < 0 && get(previous.reusable, index))
+        index = index + 1
+    }
+    var more = true
+    while more {
+        more = false
+        index = 0
+        while index < length(basis.bodies) {
+            let item = get(source.symbols, index)
+            if item.node.kind == NodeKind.Function && definition_depends(get(basis.bodies, index), changed) {
+                set(reuse, index, false)
+                match std.map.get(changed, item.name) {
+                    Option.Some(_) => {
+                    }
+                    Option.None => {
+                        discard std.map.insert(changed, item.name, true)
+                        more = true
+                    }
+                }
+            }
+            index = index + 1
+        }
+    }
+    // Invariant and inherited-contract helpers can affect any definition.
+    index = 0
+    while index < length(basis.project.files) {
+        let header = get(basis.project.files, index).tree
+        if definition_depends(header, changed) {
+            var item = 0
+            while item < length(reuse) {
+                set(reuse, item, false)
+                item = item + 1
+            }
+            return reuse
+        }
+        index = index + 1
+    }
+    reuse
+}
+
+pub fn check_project_cached(project Project, tests Bool, inputs BuildInputs, cache DefinitionCache) Result[CachedCheck, Failure] {
+    // Bind an owned snapshot ourselves; mutable public binding indexes are not
+    // a reusable authority boundary. Failed checks never replace the last basis.
+    let source = bind(snapshot(project), tests)?
+    let basis = definition_basis(source)
+    let reuse = definition_reuse(source, basis, cache)
+    let env = prepare_with_inputs(source, inputs)?
+    let program = checked_program(env, reuse, basis.reusable, cache.state.hits)?
+    if length(cache.state.basis) == 0 {
+        push(cache.state.basis, basis)
+    }
+    else {
+        set(cache.state.basis, 0, basis)
+    }
+    Result.Ok(CachedCheck {
+            bindings = source
+            program = program
+        })
+}

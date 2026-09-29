@@ -752,8 +752,16 @@ options and observed target properties. Missing or changed input files trigger a
 fresh check without relying on client notifications. Failed checks and completion
 repairs do not become cached evidence. Cancellation restarts the affected worker;
 shutdown releases it. Real protocol tests exercise reuse, unsaved type changes,
-file membership and build-input invalidation. Public/API rename and per-definition
-incremental checking remain unimplemented.
+file membership and build-input invalidation. After an edit, the worker also
+reuses successful abstract checks of unchanged ordinary function definitions.
+Normalized declaration headers, imports and package identities must agree;
+changed function bodies invalidate their transitive callers. Changed invariant
+helpers invalidate proof consumers. Staging, closures, async/resource operations
+and variadics conservatively recheck. Bindings, type IDs, reachable instances and
+source locations are rebuilt, not reused from the old typed program. The same
+in-memory facility is available as `std.loom.checking.check_project_cached`;
+failed checks never replace its private evidence. Persistent per-definition IR
+and public/API rename remain open.
 Qualified paths now enumerate existing package/import spellings, preserving
 overloads and source-instance/test identity. Local receiver bindings take priority;
 type and dyn positions filter declarations without claiming valid instantiation.

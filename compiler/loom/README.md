@@ -311,6 +311,17 @@ read-only. `is_current` compares module origins, package/import edges, file
 metadata, text and AST, not the disk: reload first to detect filesystem changes.
 These are result-local indices, not persistent identities or an incremental cache.
 
+For repeated edits, `std.loom.checking.definition_cache()` creates private,
+in-memory validation evidence. Pass it to
+`check_project_cached(project, tests, inputs, cache)` to obtain fresh `bindings`
+and a checked `program`; `definitions_reused(cache)` counts reused abstract
+function checks. Body edits invalidate transitive callers; declaration/import
+changes and changed invariant helpers recheck conservatively. Staged, async,
+resource, closure and variadic definitions are not reused. Only successful checks
+replace the saved basis. This skips eligible validation, not binding, concrete
+instance emission or native compilation. Use fresh build inputs as above.
+The resident editor uses this path automatically after a snapshot changes.
+
 Query offsets are half-open UTF-8 byte offsets. Equal spans prefer the outer
 resolved expression, including field selections and coercions. A call's index
 addresses `analysis.program.functions`; local indices address that function's
