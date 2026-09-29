@@ -61,23 +61,32 @@ fn template(context Context, declaration Int) Result[Int, Failure] {
     data_type(context.env, declaration, abstract_arguments(context.env, count), 0)
 }
 
-fn pending_resource_exit(node Node, loops Int) Bool {
-    // Creating a closure does not execute its body. A local loop exit also
-    // leaves the pending aggregate alive; only exits beyond the field matter.
-    if node.kind == NodeKind.Function {
-        return false
-    }
-    if node.kind == NodeKind.Return || node.kind == NodeKind.Try || node.kind == NodeKind.Await {
+fn pending_resource_exit(value Expr, loops Int) Bool {
+    // Inspect selected checked code, not source branches or closure bodies.
+    // Result propagation is already a match with a returning error arm.
+    if value.kind == ExprKind.Return || value.kind == ExprKind.Await || value.kind == ExprKind.Suspend {
         return true
     }
-    if loops == 0 && (node.kind == NodeKind.Break || node.kind == NodeKind.Continue) {
+    if loops == 0 && (value.kind == ExprKind.Break || value.kind == ExprKind.Continue) {
         return true
     }
     var index = 0
-    while index < length(node.children) {
-        let nested = if node.kind == NodeKind.While && index == 1 { loops + 1 } else { loops }
-        if pending_resource_exit(child(node, index), nested) {
+    while index < length(value.children) {
+        let nested = if value.kind == ExprKind.While && index == 1 { loops + 1 } else { loops }
+        if pending_resource_exit(get(value.children, index), nested) {
             return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var member = 0
+        while member < length(body) {
+            if pending_resource_exit(get(body, member), loops) {
+                return true
+            }
+            member = member + 1
         }
         index = index + 1
     }
@@ -114,10 +123,10 @@ fn pending_record(context Context, node Node, ty Int, fields List[Expr]) Result[
     while index < length(fields) {
         let field = get(fields, index)
         let source = child(node, index + 1)
-        if active && pending_resource_exit(source, 0) {
+        let value = get(field.children, 0)
+        if active && pending_resource_exit(value, 0) {
             return Result.Err(error(context, source, "a resource field cannot precede return, ?, loop exit or await during aggregate construction"))
         }
-        let value = get(field.children, 0)
         let resource = must_scope(context, field.ty)?
         if resource && (resource_concept(context.env, "Dispose") < 0 ||
             !satisfies(context, field.ty, resource_concept(context.env, "Dispose"))?) {

@@ -2110,7 +2110,8 @@ not just the abstract field's outer Dispose method; completed fields still drain
 if a later initializer or a cleanup faults. See the
 [generic cleanup tests](examples/cleanup/generic_resource_test.loom).
 Later fields may create closures or use field-local loops: a closure's return
-and a local loop's break/continue do not escape aggregate construction. Actual
+and a local loop's break/continue do not escape aggregate construction. Discarded
+`comptime if` branches do not participate in this check. Actual
 enclosing returns, propagation, loop exits and awaits still reject while a
 resource field is pending.
 Resource lists, enum payloads, and matching a resource itself remain unsupported.

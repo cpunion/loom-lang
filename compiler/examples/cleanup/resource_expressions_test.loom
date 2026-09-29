@@ -2,6 +2,7 @@ record CallbackResource {
     inner Leaf
     callback fn() Int
     tag Int
+    selected Int
 }
 
 impl Dispose for CallbackResource {
@@ -29,6 +30,11 @@ fn callback_resource(trace List[Int]) CallbackResource {
             push(trace, 20)
             count
         }
+        selected = comptime if true {
+            3
+        } else {
+            return callback_resource(trace)
+        }
     }
 }
 
@@ -38,7 +44,7 @@ fn exercise_resource_expressions() Bool {
         scoped value = callback_resource(trace)
         // A closure body runs when called, not during construction.
         assert length(trace) == 2 && trace[0] == 10 && trace[1] == 20
-        assert value.tag == 2 && value.callback() == 7
+        assert value.tag == 2 && value.selected == 3 && value.callback() == 7
         assert length(trace) == 3 && trace[2] == 30
     }
     assert length(trace) == 5 && trace[3] == 2 && trace[4] == 1
