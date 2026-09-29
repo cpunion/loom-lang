@@ -32,7 +32,9 @@ fn invariant_predicate(predicate Expr, value Value, state State) State {
 }
 
 fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int) State {
-    if depth >= 16 || ty < 0 || ty >= length(types) {
+    // Built-in scalar/opaque IDs have no type predicates. Avoid loading their
+    // aggregate Type metadata for every ordinary parameter or record leaf.
+    if ty < 6 || depth >= 16 || ty >= length(types) {
         return state
     }
     let shape = get(types, ty)

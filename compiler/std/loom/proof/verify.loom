@@ -450,8 +450,10 @@ fn verify_body(proof Verification) Result[Bool, Text] {
     }
     index = 0
     while index < length(function.params) {
-        state = invariant_facts(proof.program.types, get(function.params, index),
-            get(state.locals, index), state, 0)
+        let ty = get(function.params, index)
+        if ty >= 6 {
+            state = invariant_facts(proof.program.types, ty, get(state.locals, index), state, 0)
+        }
         index = index + 1
     }
     index = 0
