@@ -13,7 +13,11 @@ test fn constraints_observe_selected_inline_fields_without_freezing_shared_sibli
         fn positive(value Int) Bool {
             value > 0
         }
-        type Valid = Envelope where positive(self.details.count)
+        fn valid(value Envelope) Bool {
+            let copy = value
+            positive(copy.details.count)
+        }
+        type Valid = Envelope where valid(self)
         pub fn checked(value Envelope) Result[Valid, ConstraintError] {
             Valid(value)
         }
@@ -25,6 +29,28 @@ test fn constraints_observe_selected_inline_fields_without_freezing_shared_sibli
             value.details.values[0] = -1
             value.bytes[0] = 0
             count(value)
+        }
+        """)
+}
+
+test fn recursive_helpers_can_forward_shared_handles_without_observing_them() {
+    discard accepted_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+        record Shared {
+            count Int
+            values List[Int]
+        }
+        fn valid(value Shared, depth Int) Bool {
+            if depth > 0 {
+                valid(value, depth - 1)
+            } else {
+                value.count > 0
+            }
+        }
+        type Valid = Shared where valid(self, 2)
+        pub fn checked(value Shared) Result[Valid, ConstraintError] {
+            Valid(value)
         }
         """)
 }
@@ -44,6 +70,21 @@ test fn constraints_cannot_hide_shared_reads_inside_pure_helpers() {
         """
     rejects(concat(header, "type Invalid = Shared where head(self.values)"))
     rejects(concat(header, "type Invalid = Shared where hidden(self)"))
+    rejects(concat(header, """
+        fn checked(value Shared) Bool
+        requires value.values[0] > 0
+        {
+            true
+        }
+        type Invalid = Shared where checked(self)
+        """))
+    rejects(concat(header, """
+        fn write(value Shared) Bool {
+            value.values[0] = 42
+            value.count > 0
+        }
+        type Invalid = Shared where write(self)
+        """))
     resource_reject("""
         import std.resource.MustScope
         record Handle {

@@ -333,8 +333,10 @@ closure supplies bounded symbolic expansion of input invariants, retaining
 guarded preconditions and successful arithmetic without new runtime roots.
 Immutable predicate fields now coexist with unobserved shared siblings in a
 record refinement; aliases can mutate those siblings without invalidating the
-constraint. Supported helper conjuncts retain facts beside unsupported clauses.
-Helper loops/recursion and predicates over mutable contents remain open.
+constraint. Whole-record predicate helpers can copy and forward shared handles;
+transitive read analysis checks their bodies and preconditions, including cycles.
+Supported helper conjuncts retain facts beside unsupported clauses. Proofs of
+helper loops/recursion and predicates over mutable contents remain open.
 See the [example](compiler/examples/invariant_contracts).
 
 Structural tuples, numeric projection, and nested let/var destructuring use the

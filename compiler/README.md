@@ -1500,9 +1500,11 @@ type PositiveEntry = Entry where self.count > 0
 
 `notes` keeps ordinary sharing and mutation, including through existing aliases.
 The predicate's `count` is an inline value, so those mutations cannot invalidate
-it. Pure helpers can receive the observed immutable fields. A predicate that
-passes shared contents (or a whole record containing them) to a helper still
-rejects; it needs a finer read-footprint analysis, not a one-time truth check.
+it. Pure helpers may receive the whole record: the checker follows direct calls,
+including recursive calls and preconditions, and rejects observations of shared
+contents. Copying or forwarding a shared handle does not itself observe it.
+Indirect calls with shared inputs still reject. This read analysis does not
+prove the predicate's truth or permit mutable-content invariants.
 Scoped resources and one-shot Tasks cannot be wrapped in a refinement.
 Its constructor checks an unknown value once and returns `Result`; copying the
 refined value or widening it to the base record adds no check. Fields cannot be
