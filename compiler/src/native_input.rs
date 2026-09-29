@@ -1002,6 +1002,15 @@ impl Converter<'_> {
                         _ => return Err("checked list pop type mismatch".into()),
                     }
                 }
+                if operation == Primitive::ListRetainRange
+                    && (!matches!(arguments[0].ty, Type::List(_))
+                        || ty != Type::Unit
+                        || arguments[2].ty != Type::Int
+                        || arguments[3].ty != Type::Int
+                        || !matches!(arguments[1].ty, Type::List(id) if self.program.lists[id] == arguments[0].ty))
+                {
+                    return Err("list retained range type mismatch".into());
+                }
                 if matches!(
                     operation,
                     Primitive::ProcessCaptureConfigured | Primitive::ProcessCaptureInputConfigured
@@ -1372,6 +1381,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "list_push" => P::ListPush,
         "list_set" => P::ListSet,
         "list_pop" => P::ListPop,
+        "list_retain_range" => P::ListRetainRange,
         "open" => P::Open,
         "create" => P::Create,
         "read" => P::Read,
@@ -1518,6 +1528,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskWaitFileWriteBytes
         | P::TaskCreate
         | P::CleanupEach => 3,
+        P::ListRetainRange => 4,
         P::ProcessCaptureConfigured => 6,
         P::ProcessCaptureInputConfigured => 7,
     }

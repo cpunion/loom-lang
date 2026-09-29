@@ -20,25 +20,40 @@ import std.float.from_int
 import std.float.to_text
 
 fn arity(name Text) Int {
-    if name == "list_new" || name == "bytes_new" { return 0 }
-    if name == "list_new_capacity" { return 1 }
+    if name == "list_retain_range" {
+        return 4
+    }
+    if name == "list_new" || name == "bytes_new" {
+        return 0
+    }
+    if name == "list_new_capacity" {
+        return 1
+    }
     if name == "text_len" || name == "list_len" || name == "list_take" || name == "bytes_len" || name == "bytes_utf8" || name == "bytes_text_copy" ||
-        name == "float_from_int" || name == "float_to_int" || name == "float_parse" || name == "float_format" ||
-        name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" { return 1 }
-    if name == "text_slice" || name == "list_set" || name == "list_replace" || name == "bytes_set" { return 3 }
+    name == "float_from_int" || name == "float_to_int" || name == "float_parse" || name == "float_format" ||
+    name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" {
+        return 1
+    }
+    if name == "text_slice" || name == "list_set" || name == "list_replace" || name == "bytes_set" {
+        return 3
+    }
     2
 }
+
 fn integer_argument(expr Expr, value Value) Result[Int, Failure] {
     if value.ty != 1 { return Result.Err(failure(expr, "compile-time intrinsic needs an Int argument")) }
     Result.Ok(value.number)
 }
+
 fn text_argument(expr Expr, value Value) Result[Text, Failure] {
     if value.ty != 3 { return Result.Err(failure(expr, "compile-time intrinsic needs a Text argument")) }
     Result.Ok(value.text)
 }
+
 fn boundary(value Text, index Int) Bool {
     index == length(value) || byte(value, index) < 128 || byte(value, index) >= 192
 }
+
 fn utf8(values List[Value]) Bool {
     var offset = 0
     while offset < length(values) {
@@ -65,10 +80,15 @@ fn utf8(values List[Value]) Bool {
     }
     true
 }
+
 fn primitive(state State, expr Expr, values List[Value]) Result[Value, Failure] {
     let name = expr.text
-    if !pure_intrinsic(name) { return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", name))) }
-    if length(values) != arity(name) { return Result.Err(failure(expr, "invalid checked intrinsic arity")) }
+    if !pure_intrinsic(name) {
+        return Result.Err(failure(expr, concat("compile-time evaluation forbids intrinsic ", name)))
+    }
+    if length(values) != arity(name) {
+        return Result.Err(failure(expr, "invalid checked intrinsic arity"))
+    }
     if name == "list_new" || name == "bytes_new" || name == "list_new_capacity" {
         if name == "list_new_capacity" && integer_argument(expr, get(values, 0))? < 0 {
             return Result.Err(failure(expr, "invalid list capacity"))
@@ -76,15 +96,21 @@ fn primitive(state State, expr Expr, values List[Value]) Result[Value, Failure] 
         return Result.Ok(fresh(state, expr.ty))
     }
     let first = get(values, 0)
-    if name == "float_from_int" { return Result.Ok(floating(from_int(integer_argument(expr, first)?))) }
+    if name == "float_from_int" {
+        return Result.Ok(floating(from_int(integer_argument(expr, first)?)))
+    }
     if name == "float_parse" {
         let text = text_argument(expr, first)?
         discard spend(state, expr, 0, length(text))?
         return decimal(expr, text)
     }
     if name == "float_to_int" || name == "float_format" {
-        if first.ty != 5 { return Result.Err(failure(expr, "compile-time intrinsic needs a Float argument")) }
-        if name == "float_to_int" { return Result.Ok(number(saturating_integer(first.floating))) }
+        if first.ty != 5 {
+            return Result.Err(failure(expr, "compile-time intrinsic needs a Float argument"))
+        }
+        if name == "float_to_int" {
+            return Result.Ok(number(saturating_integer(first.floating)))
+        }
         let text = std.float.to_text(first.floating)
         discard spend(state, expr, 0, length(text) / 32 + 1)?
         discard spend(state, expr, 1, length(text))?
@@ -92,61 +118,110 @@ fn primitive(state State, expr Expr, values List[Value]) Result[Value, Failure] 
     }
     if name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" {
         let codepoint = integer_argument(expr, first)?
-        return Result.Ok(flag(if name == "unicode_alphabetic" { is_alphabetic(codepoint) }
-            else { if name == "unicode_alphanumeric" { is_alphanumeric(codepoint) } else { is_whitespace(codepoint) } }))
+        return Result.Ok(flag(if name == "unicode_alphabetic" {
+                    is_alphabetic(codepoint)
+                }
+                else {
+                    if name == "unicode_alphanumeric" {
+                        is_alphanumeric(codepoint)
+                    } else {
+                        is_whitespace(codepoint)
+                    }
+                }))
     }
     if name == "text_len" || name == "text_byte" || name == "text_concat" || name == "text_equal" || name == "text_slice" {
         let text = text_argument(expr, first)?
-        if name == "text_len" { return Result.Ok(number(length(text))) }
+        if name == "text_len" {
+            return Result.Ok(number(length(text)))
+        }
         if name == "text_concat" || name == "text_equal" {
             let other = text_argument(expr, get(values, 1))?
             discard spend(state, expr, 0, length(text) / 32 + length(other) / 32 + 1)?
-            if name == "text_equal" { return Result.Ok(flag(text == other)) }
+            if name == "text_equal" {
+                return Result.Ok(flag(text == other))
+            }
             discard spend(state, expr, 1, length(text))?
             discard spend(state, expr, 1, length(other))?
             return Result.Ok(string(concat(text, other)))
         }
         let start = integer_argument(expr, get(values, 1))?
         if name == "text_byte" {
-            if start < 0 || start >= length(text) { return Result.Err(failure(expr, "compile-time Text index out of bounds")) }
+            if start < 0 || start >= length(text) {
+                return Result.Err(failure(expr, "compile-time Text index out of bounds"))
+            }
             return Result.Ok(number(byte(text, start)))
         }
         let end = integer_argument(expr, get(values, 2))?
-        if start < 0 || end < start || end > length(text) { return Result.Err(failure(expr, "compile-time Text slice out of bounds")) }
-        if !boundary(text, start) || !boundary(text, end) { return Result.Err(failure(expr, "compile-time Text slice is not a UTF-8 boundary")) }
+        if start < 0 || end < start || end > length(text) {
+            return Result.Err(failure(expr, "compile-time Text slice out of bounds"))
+        }
+        if !boundary(text, start) || !boundary(text, end) {
+            return Result.Err(failure(expr, "compile-time Text slice is not a UTF-8 boundary"))
+        }
         discard spend(state, expr, 0, (end - start) / 32 + 1)?
         discard spend(state, expr, 1, end - start)?
         return Result.Ok(string(slice(text, start, end)))
     }
     let bytes = name == "bytes_len" || name == "bytes_push" || name == "bytes_get" || name == "bytes_set" ||
-        name == "bytes_utf8" || name == "bytes_text_copy"
+    name == "bytes_utf8" || name == "bytes_text_copy"
     if bytes {
-        if first.ty != 4 { return Result.Err(failure(expr, "compile-time intrinsic needs Bytes")) }
+        if first.ty != 4 {
+            return Result.Err(failure(expr, "compile-time intrinsic needs Bytes"))
+        }
     } else {
         if first.ty < 0 || first.ty >= length(state.program.types) || get(state.program.types, first.ty).kind != TypeKind.List {
             return Result.Err(failure(expr, "compile-time intrinsic needs a List"))
         }
     }
-    let size = if bytes { length(first.items) } else { list_length(first) }
-    if name == "list_take" { return Result.Ok(list_take_value(state, expr, first)) }
-    if name == "list_len" || name == "bytes_len" { return Result.Ok(number(size)) }
+    let size = if bytes {
+        length(first.items)
+    } else {
+        list_length(first)
+    }
+    if name == "list_take" {
+        return list_take_value(state, expr, first)
+    }
+    if name == "list_retain_range" {
+        return list_retain_value(state, expr, values)
+    }
+    if name == "list_len" || name == "bytes_len" {
+        return Result.Ok(number(size))
+    }
     if name == "list_push" || name == "list_append" || name == "bytes_push" {
         let value = get(values, 1)
         if bytes {
             let byte = integer_argument(expr, value)?
-            if byte < 0 || byte > 255 { return Result.Err(failure(expr, "compile-time byte out of range")) }
+            if byte < 0 || byte > 255 {
+                return Result.Err(failure(expr, "compile-time byte out of range"))
+            }
         }
         discard spend(state, expr, 1, 64)?
-        if bytes { std.list.push(first.items, value) } else { list_push_value(first, value) }
-        return Result.Ok(if name == "list_append" { first } else { unit() })
+        if bytes {
+            std.list.push(first.items, value)
+        } else {
+            list_push_value(first, value)
+        }
+        return Result.Ok(if name == "list_append" {
+                first
+            } else {
+                unit()
+            })
     }
     if name == "list_get" || name == "list_set" || name == "list_replace" || name == "bytes_get" || name == "bytes_set" {
         let index = integer_argument(expr, get(values, 1))?
         if index < 0 || index >= size {
-            return Result.Err(failure(expr, if bytes { "compile-time Bytes index out of bounds" } else { "compile-time List index out of bounds" }))
+            return Result.Err(failure(expr, if bytes {
+                        "compile-time Bytes index out of bounds"
+                    } else {
+                        "compile-time List index out of bounds"
+                    }))
         }
         if name == "list_get" || name == "bytes_get" {
-            return Result.Ok(if bytes { get(first.items, index) } else { list_element(first, index) })
+            return Result.Ok(if bytes {
+                    get(first.items, index)
+                } else {
+                    list_element(first, index)
+                })
         }
         let value = get(values, 2)
         if name == "list_replace" {
@@ -159,19 +234,31 @@ fn primitive(state State, expr Expr, values List[Value]) Result[Value, Failure] 
         }
         if bytes {
             let byte = integer_argument(expr, value)?
-            if byte < 0 || byte > 255 { return Result.Err(failure(expr, "compile-time byte out of range")) }
+            if byte < 0 || byte > 255 {
+                return Result.Err(failure(expr, "compile-time byte out of range"))
+            }
         }
-        if bytes { set(first.items, index, value) } else { list_store(first, index, value) }
+        if bytes {
+            set(first.items, index, value)
+        } else {
+            list_store(first, index, value)
+        }
         return Result.Ok(unit())
     }
     discard spend(state, expr, 0, length(first.items) + 1)?
     let valid = utf8(first.items)
-    if name == "bytes_utf8" { return Result.Ok(flag(valid)) }
-    if !valid { return Result.Err(failure(expr, "compile-time Bytes contain invalid UTF-8")) }
+    if name == "bytes_utf8" {
+        return Result.Ok(flag(valid))
+    }
+    if !valid {
+        return Result.Err(failure(expr, "compile-time Bytes contain invalid UTF-8"))
+    }
     discard spend(state, expr, 1, length(first.items) * 2)?
     let buffer = std.bytes.new()
     var index = 0
-    while index < length(first.items) { std.bytes.push(buffer, get(first.items, index).number)
-        index = index + 1 }
+    while index < length(first.items) {
+        std.bytes.push(buffer, get(first.items, index).number)
+        index = index + 1
+    }
     Result.Ok(string(to_text(buffer)))
 }

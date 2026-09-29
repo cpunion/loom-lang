@@ -224,6 +224,12 @@ input evaluation, contracts, cleanup, formatting and editor navigation are
 covered by the [example](compiler/examples/typed_macros). Declaration/AST
 expansion and first-class type values remain separate work.
 
+Fixed-shape shared List views now preserve element identities through removal,
+regrowth, moving GC, suspension and compile-time graph reification. Immutable
+range metadata supports persistent length constraints without isolating the
+source. General content-invariant alias/effect analysis remains an exit criterion,
+not a claim made by this view implementation.
+
 Each addition must work through the native CLI and its `std` tests. Required
 proofs remain mandatory even while the supported prover fragment grows. Exact
 overload ranking, macro spelling, solver choice, artifact encoding, and runtime

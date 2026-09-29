@@ -23,6 +23,7 @@ record ReifyObject {
     value Value
     local Int
 }
+
 record Reification {
     context Context
     node Node
@@ -30,6 +31,7 @@ record Reification {
     by_id List[Int]
     budget List[Int]
 }
+
 fn reify_spend(state Reification, index Int, amount Int) Result[Bool, Failure] {
     let remaining = get(state.budget, index)
     if amount < 0 || amount > remaining {
@@ -38,8 +40,11 @@ fn reify_spend(state Reification, index Int, amount Int) Result[Bool, Failure] {
     set(state.budget, index, remaining - amount)
     Result.Ok(true)
 }
+
 fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] {
-    if depth >= 256 { return Result.Err(error(state.context, state.node, "comptime result depth exhausted")) }
+    if depth >= 256 {
+        return Result.Err(error(state.context, state.node, "comptime result depth exhausted"))
+    }
     discard reify_spend(state, 0, 1)?
     if value.ty < 0 || value.ty >= length(state.context.env.types) {
         return Result.Err(error(state.context, state.node, "comptime result has no concrete type"))
@@ -54,11 +59,24 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
             discard reify_spend(state, 0, 1)?
             push(state.by_id, -1)
         }
-        if get(state.by_id, value.number) >= 0 { return Result.Ok(true) }
+        if get(state.by_id, value.number) >= 0 {
+            return Result.Ok(true)
+        }
         let local = length(state.context.locals)
-        push(state.context.locals, Local { name = "" ty = value.ty mutable = false is_scoped = false })
+        push(state.context.locals, Local {
+                name = ""
+                ty = value.ty
+                mutable = false
+                is_scoped = false
+            })
         set(state.by_id, value.number, length(state.objects))
-        push(state.objects, ReifyObject { value = value local = local })
+        push(state.objects, ReifyObject {
+                value = value
+                local = local
+            })
+        if kind == TypeKind.List && get(value.items, 0).text == "retained-range" {
+            discard reify_visit(state, get(get(value.items, 0).items, 0), depth + 1)?
+        }
     }
     // Register containers before walking their contents: aliases and cycles
     // revisit an ID, while aggregate fields retain ordinary value semantics.
@@ -72,15 +90,24 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
     }
     if shared || kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum || kind == TypeKind.Dyn {
         var index = 0
-        let count = if kind == TypeKind.List { list_length(value) } else { length(value.items) }
+        let count = if kind == TypeKind.List {
+            list_length(value)
+        } else {
+            length(value.items)
+        }
         while index < count {
-            let item = if kind == TypeKind.List { list_element(value, index) } else { get(value.items, index) }
+            let item = if kind == TypeKind.List {
+                list_element(value, index)
+            } else {
+                get(value.items, index)
+            }
             discard reify_visit(state, item, depth + 1)?
             index = index + 1
         }
     }
     Result.Ok(true)
 }
+
 fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] {
     if depth >= 256 { return Result.Err(error(state.context, state.node, "comptime result depth exhausted")) }
     discard reify_spend(state, 0, 2)?
@@ -181,7 +208,13 @@ fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
     let budget = new[Int]()
     push(budget, 100000)
     push(budget, 16777216)
-    let state = Reification { context = context node = node objects = new[ReifyObject]() by_id = new[Int]() budget = budget }
+    let state = Reification {
+        context = context
+        node = node
+        objects = new[ReifyObject]()
+        by_id = new[Int]()
+        budget = budget
+    }
     discard reify_visit(state, value, 0)?
     let body = new[Expr]()
     var index = 0
@@ -204,7 +237,11 @@ fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
             }
             expression(ExprKind.Bytes, 4, node, encode(bytes), -1, new[Expr](), true)
         } else {
-            expression(if frame { ExprKind.FrameNew } else { ExprKind.Intrinsic }, object.value.ty, node,
+            expression(if frame {
+                    ExprKind.FrameNew
+                } else {
+                    ExprKind.Intrinsic
+                }, object.value.ty, node,
                 "list_new", -1, new[Expr](), true)
         }
         push(body, expression(ExprKind.Let, 0, node, "", object.local, expressions(create), true))
@@ -215,20 +252,55 @@ fn materialize(context Context, node Node, value Value) Result[Expr, Failure] {
         let object = get(state.objects, index)
         let frame = get(context.env.types, object.value.ty).kind == TypeKind.Frame
         var item = 0
-        let count = if object.value.ty == 4 { 0 } else { if frame { length(object.value.items) } else { list_length(object.value) } }
+        let count = if object.value.ty == 4 {
+            0
+        } else {
+            if frame {
+                length(object.value.items)
+            } else {
+                list_length(object.value)
+            }
+        }
         while item < count {
             discard reify_spend(state, 0, 2)?
-            let value = if frame { get(object.value.items, item) } else { list_element(object.value, item) }
+            let value = if frame {
+                get(object.value.items, item)
+            } else {
+                list_element(object.value, item)
+            }
             let content = reify_value(state, value, 0)?
             let reference = atom(ExprKind.Local, object.value.ty, node, object.local)
-            push(body, expression(if frame { ExprKind.FrameStore } else { ExprKind.Intrinsic }, 0, node,
-                "list_push", if frame { item } else { -1 }, pair(reference, content), true))
+            push(body, expression(if frame {
+                        ExprKind.FrameStore
+                    } else {
+                        ExprKind.Intrinsic
+                    }, 0, node,
+                    "list_push", if frame {
+                        item
+                    } else {
+                        -1
+                    }, pair(reference, content), true))
             item = item + 1
         }
         index = index + 1
     }
+    // Restore view registrations after all sources and retained cells exist.
+    index = 0
+    while index < length(state.objects) {
+        let object = get(state.objects, index)
+        if get(context.env.types, object.value.ty).kind == TypeKind.List && get(object.value.items, 0).text == "retained-range" {
+            let metadata = get(object.value.items, 0).items
+            let args = pair(reify_value(state, get(metadata, 0), 0)?, atom(ExprKind.Local, object.value.ty, node, object.local))
+            push(args, reify_value(state, get(metadata, 1), 0)?)
+            push(args, reify_value(state, get(metadata, 2), 0)?)
+            push(body, expression(ExprKind.Intrinsic, 0, node, "list_retain_range", -1, args, true))
+        }
+        index = index + 1
+    }
     let final_value = reify_value(state, value, 0)?
-    if length(body) == 0 { return Result.Ok(final_value) }
+    if length(body) == 0 {
+        return Result.Ok(final_value)
+    }
     push(body, final_value)
     Result.Ok(expression(ExprKind.Block, value.ty, node, "", -1, body, true))
 }

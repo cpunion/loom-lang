@@ -1,0 +1,14 @@
+test fn retained_ranges_agree_at_compile_time_and_runtime() {
+    assert shared_identity()
+    assert comptime {
+        shared_identity()
+    }
+    let source, first, overlap = comptime {
+        prepared()
+    }
+    check_prepared(source, first, overlap)
+}
+
+test async fn fixed_length_constraint_survives_suspension_and_source_resize() {
+    suspended().await
+}

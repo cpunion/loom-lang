@@ -2442,6 +2442,12 @@ possible allocation, used locals and pending expression snapshots reload updated
 references. An earlier argument retains its own value even if a later argument
 reassigns the source variable.
 List/Text accesses use checked typed loads/stores, not runtime accessors.
+Source `std.list.view` adds fixed-shape ranges with shared element identities;
+see the [shared view example](examples/shared_views). A watched List removal
+retains one cell per removed identity for overlapping views. An ordinary List
+removal has only a registration-flag branch; reads and writes are unchanged.
+Internal weak registrations are pruned after GC tracing, not language-level
+weak references. Views retain their source and any detached cells they need.
 List/Bytes push calls the runtime only on capacity growth, then reloads the
 backing pointer before publishing the initialized element. Raw spare capacity
 is uninitialized and never traced; managed headers/payloads still start zeroed.

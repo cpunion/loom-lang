@@ -147,6 +147,10 @@ preserve nonemptiness without preserving length. Content constraints, such as
 positivity or sortedness, still require protection against other aliases.
 A read-only handle alone provides no such protection.
 
+Fixed List views capture element identities: overlapping views share updates
+even after those elements are removed from the source. Appending after removal
+creates new identities; it does not overwrite the removed elements in old views.
+
 Unsafe shared strengthening is rejected. Creating a constrained value must not
 silently install dynamic monitoring that makes old aliases acquire new runtime
 failures. Explicit isolation or an invariant-preserving API can establish a

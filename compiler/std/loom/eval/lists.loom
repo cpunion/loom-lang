@@ -21,10 +21,46 @@ fn list_push_value(value Value, item Value) {
     else {
         push(value.items, item)
     }
-    set(value.items, 0, number(size + 1))
+    let header = get(value.items, 0)
+    set(value.items, 0, Value {
+            ty = 1
+            number = size + 1
+            floating = 0.0
+            text = header.text
+            items = header.items
+        })
 }
 
-fn list_take_value(state State, expr Expr, value Value) Value {
+fn list_retain_value(state State, expr Expr, values List[Value]) Result[Value, Failure] {
+    let source = get(values, 0)
+    let removed = get(values, 1)
+    let start = integer_argument(expr, get(values, 2))?
+    let end = integer_argument(expr, get(values, 3))?
+    if start < 0 || end < start || list_length(removed) > end - start || end - list_length(removed) > list_length(source) {
+        return Result.Err(failure(expr, "list view range out of bounds"))
+    }
+    discard spend(state, expr, 1, 256)?
+    let metadata = new[Value]()
+    push(metadata, source)
+    push(metadata, number(start))
+    push(metadata, number(end))
+    set(removed.items, 0, Value {
+            ty = 1
+            number = list_length(removed)
+            floating = 0.0
+            text = "retained-range"
+            items = metadata
+        })
+    push(state.list_views, RetainedRange {
+            source = source.number
+            removed = removed
+            start = start
+            end = end
+        })
+    Result.Ok(unit())
+}
+
+fn list_take_value(state State, expr Expr, value Value) Result[Value, Failure] {
     let shape = get(state.program.types, expr.ty)
     let present = if length(get(shape.variants, 0).fields) == 1 {
         0
@@ -33,9 +69,25 @@ fn list_take_value(state State, expr Expr, value Value) Value {
     }
     let size = list_length(value)
     if size == 0 {
-        return aggregate(expr.ty, 1 - present, new[Value]())
+        return Result.Ok(aggregate(expr.ty, 1 - present, new[Value]()))
     }
     let element = list_element(value, size - 1)
+    var cell = unknown()
+    var index = 0
+    while index < length(state.list_views) {
+        discard spend(state, expr, 0, 1)?
+        let view = get(state.list_views, index)
+        if view.source == value.number && view.start < size && view.end - list_length(view.removed) == size {
+            if cell.ty < 0 {
+                discard spend(state, expr, 1, 128)?
+                cell = fresh(state, value.ty)
+                list_push_value(cell, element)
+            }
+            discard spend(state, expr, 1, 64)?
+            list_push_value(view.removed, cell)
+        }
+        index = index + 1
+    }
     set(value.items, size, unknown())
     set(value.items, 0, number(size - 1))
     let fields = new[Value]()
@@ -44,5 +96,5 @@ fn list_take_value(state State, expr Expr, value Value) Value {
     let pair = aggregate(get(get(shape.variants, present).fields, 0), 0, fields)
     let payload = new[Value]()
     push(payload, pair)
-    aggregate(expr.ty, present, payload)
+    Result.Ok(aggregate(expr.ty, present, payload))
 }

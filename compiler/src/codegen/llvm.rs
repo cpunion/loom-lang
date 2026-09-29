@@ -834,6 +834,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::ListPop => {
                 return Ok(Some(self.list_pop(values[0].into_pointer_value(), result)?));
             }
+            Primitive::ListRetainRange => ("list_retain_range", None),
             Primitive::ListGet | Primitive::ListSet => {
                 let element = if operation == Primitive::ListGet {
                     native_type(self.context, self.program, result)?

@@ -1,0 +1,109 @@
+import std.list.push
+import std.list.transfer.take_last
+import std.list.view.View
+import std.list.view.capture
+import std.list.view.length
+import std.list.view.get
+import std.list.view.set
+import std.option.Option
+import std.result.Result
+import std.result.ConstraintError
+import std.time.sleep_ms
+
+type Pair = View[Int] where length(self) == 2
+
+fn checked_pair(source List[Int]) Result[Pair, ConstraintError] {
+    Pair(capture(source))
+}
+
+fn pop[T](source List[T]) T {
+    match take_last(source) {
+        Option.Some((value, remaining)) => {
+            discard remaining
+            value
+        }
+        Option.None => {
+            assert false
+            pop(source)
+        }
+    }
+}
+
+fn shared_identity() Bool {
+    let source = [10, 20, 30]
+    let first = capture(source, 0, 2)
+    let second = capture(source, 1, 3)
+    source[1] = 21
+    assert get(first, 1) == 21 && get(second, 0) == 21
+    assert pop(source) == 30
+    assert pop(source) == 21
+    push(source, 90)
+    set(first, 1, 22)
+    assert source[1] == 90 && get(second, 0) == 22
+    set(first, 0, 11)
+    assert source[0] == 11
+    let replacement = capture(source)
+    assert pop(source) == 90
+    set(replacement, 1, 91)
+    assert get(first, 1) == 22 && get(replacement, 1) == 91
+    assert pop(source) == 11
+    push(source, 100)
+    set(first, 0, 12)
+    assert get(replacement, 0) == 12 && source[0] == 100
+    assert length(first) == 2 && length(second) == 2
+    assert get(second, 1) == 30
+    true
+}
+
+fn prepared() (List[Text], View[Text], View[Text]) {
+    let source = ["first", "second", "third"]
+    let first = capture(source)
+    let overlap = capture(source, 1, 3)
+    assert pop(source) == "third"
+    (source, first, overlap)
+}
+
+fn check_prepared(source List[Text], first View[Text], overlap View[Text]) {
+    // Restore both already-detached identities and still-active registrations.
+    set(first, 2, "kept")
+    assert get(overlap, 1) == "kept"
+    assert pop(source) == "second"
+    push(source, "replacement")
+    set(first, 1, "retained")
+    assert get(overlap, 0) == "retained" && source[1] == "replacement"
+    var count = 0
+    while count < 100 {
+        push(source, "growth")
+        count = count + 1
+    }
+    set(first, 0, "shared")
+    assert source[0] == "shared" && length(first) == 3
+}
+
+async fn suspended() {
+    let source = [1, 2]
+    let pair = match checked_pair(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    sleep_ms(0).await
+    assert pop(source) == 2
+    push(source, 3)
+    set(pair, 1, 4)
+    assert get(pair, 1) == 4 && source[1] == 3 && length(pair) == 2
+}
+
+async fn main() {
+    assert shared_identity()
+    assert comptime {
+        shared_identity()
+    }
+    let source, first, overlap = comptime {
+        prepared()
+    }
+    check_prepared(source, first, overlap)
+    suspended().await
+}

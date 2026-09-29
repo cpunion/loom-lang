@@ -91,6 +91,7 @@ pub enum Primitive {
     ListPush,
     ListSet,
     ListPop,
+    ListRetainRange,
     CleanupEach,
     Open,
     Create,

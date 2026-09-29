@@ -8,6 +8,56 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         list: PointerValue<'ctx>,
         element: Type,
     ) -> NativeResult<BasicValueEnum<'ctx>> {
+        let pointer = list.get_type();
+        let layout = self.context.struct_type(
+            &[
+                self.size_type.into(),
+                self.size_type.into(),
+                pointer.into(),
+                self.size_type.into(),
+                pointer.into(),
+                self.size_type.into(),
+            ],
+            false,
+        );
+        let watched = self
+            .builder
+            .build_load(
+                self.size_type,
+                self.builder
+                    .build_struct_gep(layout, list, 5, "list.watched.slot")?,
+                "list.watched",
+            )?
+            .into_int_value();
+        let detach = self
+            .context
+            .append_basic_block(self.function, "list.detach");
+        let ready = self.context.append_basic_block(self.function, "list.pop");
+        let origin = self
+            .builder
+            .get_insert_block()
+            .ok_or("missing list block")?;
+        self.builder.build_conditional_branch(
+            self.builder.build_int_compare(
+                IntPredicate::NE,
+                watched,
+                self.size_type.const_zero(),
+                "list.has.views",
+            )?,
+            detach,
+            ready,
+        )?;
+        self.builder.position_at_end(detach);
+        let moved = self
+            .runtime_call("list_detach", Some(list.get_type().into()), &[list.into()])?
+            .ok_or("missing relocated list")?
+            .into_pointer_value();
+        self.restore_locals()?;
+        self.builder.build_unconditional_branch(ready)?;
+        self.builder.position_at_end(ready);
+        let header = self.builder.build_phi(list.get_type(), "list.header")?;
+        header.add_incoming(&[(&list, origin), (&moved, detach)]);
+        let list = header.as_basic_value().into_pointer_value();
         let length = self
             .builder
             .build_load(self.size_type, list, "list.length")?
