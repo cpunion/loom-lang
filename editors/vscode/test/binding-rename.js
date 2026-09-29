@@ -13,10 +13,24 @@ async function bindingRenameSmoke(executable, stdRoot) {
   const uri = URI.file(file).toString();
   const client = await session({ executable, stdRoot }, folder);
   const source = `import std.option.Option
+import std.resource.Dispose
+import std.resource.MustScope
 
 record Pair {
     left Int
     right Int
+}
+
+record Guard {
+    count Int
+}
+
+impl MustScope for Guard {
+}
+
+impl Dispose for Guard {
+    fn dispose(self Guard) {
+    }
 }
 
 concept Add {
@@ -57,13 +71,20 @@ fn whole(value Option[Int]) Int {
     }
 }
 
+fn unused(ignored Int) Int {
+    7
+}
+
 fn main() {
+    scoped guard = Guard { count = 1 }
+    assert guard.count == 1
     let (first, second) = (1, 2)
     let Pair { left = chosen, right = _ } = Pair { left = first right = second }
     assert identity(chosen) == 1
     assert choose(Option.Some(first)) == 1
     assert whole(Option.Some(second)) == 2
     assert Pair { left = first right = second }.add(3) == 4
+    assert unused(3) == 7
 }
 `;
   let version = 1;
@@ -82,6 +103,8 @@ fn main() {
       ['payload\n', 'payload', 2],
       ['copy)', 'copy', 2],
       ['extra\n', 'extra', 2],
+      ['guard.count', 'guard', 2],
+      ['ignored Int', 'ignored', 1],
     ]) {
       const document = TextDocument.create(uri, 'loom', version, source);
       const start = source.indexOf(fragment) + (fragment.startsWith('-') ? 1 : 0);
@@ -104,6 +127,12 @@ fn main() {
     const document = TextDocument.create(uri, 'loom', version, source);
     const params = { textDocument: { uri }, position: document.positionAt(source.indexOf('amount >=')) };
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...params, newName: 'identity' }), /conflict/);
+    assert.equal(await client.rpc.sendRequest('textDocument/rename', {
+      textDocument: { uri }, position: document.positionAt(source.indexOf('Option.None') + 7), newName: 'Changed',
+    }), null);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
+      textDocument: { uri }, position: document.positionAt(source.indexOf('left = chosen')), newName: 'changed',
+    }), /checked local bindings/);
     await assert.rejects(fs.readFile(file), { code: 'ENOENT' });
     console.log('Binding rename smoke passed: parameters/contracts, destructuring, guarded/whole match bindings and method locals.');
   } finally {
