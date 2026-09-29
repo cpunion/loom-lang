@@ -4,6 +4,13 @@ Only the native compiler under `compiler/` is maintained. Its
 [guide](../../compiler/README.md) lists the tested subset and commands.
 The former workspace compiler and its feature matrices have been removed.
 
+`loom test --recursive` now selects directory packages below one module root,
+including test-only packages. Each selected package keeps its private test scope;
+dependency tests are still excluded. Nested modules, hidden/build directories and
+directory symlinks are not traversed. Package failures do not skip later packages,
+and the command reports a failing aggregate status. `--no-run` uses separate
+per-package artifacts. See the [programming trial](../../compiler/examples/wordcount).
+
 Source `async fn`, `async fn main`, `test async fn` and postfix `.await` now
 have a native implementation. Calls create hot child Tasks in one owner-thread
 ready queue; they do not execute inline or create parallel threads. Loom lowers

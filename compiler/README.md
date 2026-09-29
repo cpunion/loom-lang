@@ -114,6 +114,15 @@ each tool's command surface.
 `--output` optionally selects its path. Both forms of source tests and normal
 test-only imports remain included. A package with no tests reports `0 tests`
 without creating a binary. Ordinary `loom test` still compiles and runs its tests.
+`loom test --recursive [directory]` visits packages in deterministic directory
+order, including test-only packages and children of source-free directories.
+Each package gets its own test scope and `target/tests` executable (`.exe` on
+Windows); imported packages still exclude tests. Hidden directories, `target`,
+`node_modules`, directory symlinks and nested modules with their own `loom.toml`
+are not traversed. It continues after a package fails and exits unsuccessfully
+if any selected package failed. `--no-run` checks and compiles the same selection;
+recursive mode rejects shared `--output`/`--emit-ir` paths. An empty selection is
+an error. Run nested modules separately; this is not dependency-test discovery.
 `loom run [package] -- [arguments...]` passes arguments to the built program.
 Try the [multi-package file tool](examples/wordcount/README.md) for a complete
 edit, format, test, and run exercise.

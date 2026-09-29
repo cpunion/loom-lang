@@ -19,17 +19,20 @@ test fn run_separator_preserves_program_arguments_literally() {
     std.list.push(args, ".")
     std.list.push(args, "--")
     std.list.push(args, "--std")
+    std.list.push(args, "--recursive")
     std.list.push(args, "a path with spaces")
     std.list.push(args, "")
     std.list.push(args, "--")
     match options(args) {
         Result.Ok(value) => {
             assert value.std_root == "compiler/std"
-            assert std.list.length(value.program_args) == 4
+            assert !value.recursive
+            assert std.list.length(value.program_args) == 5
             assert std.list.get(value.program_args, 0) == "--std"
-            assert std.list.get(value.program_args, 1) == "a path with spaces"
-            assert std.list.get(value.program_args, 2) == ""
-            assert std.list.get(value.program_args, 3) == "--"
+            assert std.list.get(value.program_args, 1) == "--recursive"
+            assert std.list.get(value.program_args, 2) == "a path with spaces"
+            assert std.list.get(value.program_args, 3) == ""
+            assert std.list.get(value.program_args, 4) == "--"
         }
         Result.Err(_) => {
             assert false
@@ -46,6 +49,28 @@ test fn run_separator_preserves_program_arguments_literally() {
     assert match options(rejected) {
         Result.Err(message) => message == "-- is only available with run",
         _ => false
+    }
+}
+
+test fn recursive_testing_selects_packages_without_a_shared_output_path() {
+    let args = driver_arguments("test")
+    std.list.push(args, "--recursive")
+    std.list.push(args, "--no-run")
+    assert match options(args) {
+        Result.Ok(value) => value.recursive && value.no_run
+        Result.Err(_) => false
+    }
+    std.list.push(args, "--output")
+    std.list.push(args, "target/all-tests")
+    assert match options(args) {
+        Result.Err(message) => message == "test --recursive cannot use a shared --output or --emit-ir path"
+        Result.Ok(_) => false
+    }
+    let build = driver_arguments("build")
+    std.list.push(build, "--recursive")
+    assert match options(build) {
+        Result.Err(message) => message == "--recursive is only available with test"
+        Result.Ok(_) => false
     }
 }
 
