@@ -386,7 +386,9 @@ validation. Inherited contract locations track the concept's current file and
 offset, separately from the implementation.
 Async/Task bodies reuse checked flow before fresh coroutine lowering; task call
 targets and creation labels use current bindings and source locations. Captured
-frame bodies still recheck.
+frame bodies still recheck, rebuilding current capture plans. Their enclosing
+declarations and ordinary callers can reuse evidence; nested source calls remain
+transitive invalidation edges. No captured runtime environment is persisted.
 Dynamic calls and boxes rebuild current interface/witness identities and used
 method slots; cached bodies do not restore an old runtime dispatch table.
 Scoped bodies reuse typed cleanup, while current transitive resource flow checks

@@ -1,0 +1,50 @@
+test fn closure_callers_reuse_while_current_capture_plans_are_rebuilt() {
+    let source = """
+        fn increase(previous Int, amount Int) Int {
+            previous + amount
+        }
+        fn counter(start Int) fn(Int) Int {
+            var total = start
+            fn(amount Int) Int {
+                total = increase(total, amount)
+                total
+            }
+        }
+        pub fn answer() Int {
+            let next = counter(1)
+            let first = next(2)
+            first + next(4)
+        }
+        """
+    let initial = definition_cache()
+    let first = match cached_source(initial, source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert cached_answer(first) == 10
+    let cache = restored_definition_cache(initial)
+    let shifted = concat("fn unrelated() Bool { true }\n\n", source)
+    let reused = match cached_source(cache, shifted) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert cached_answer(reused) == 10
+    assert definitions_reused(cache) >= 3 && bodies_reused(cache) >= 2
+    // The only call to increase is inside the anonymous function. It still
+    // invalidates the enclosing declaration and its ordinary callers.
+    let changed = join(split(shifted, "previous + amount"), "previous + amount + 1")
+    let updated = match cached_source(cache, changed) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert cached_answer(updated) == 13
+}

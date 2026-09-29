@@ -30,6 +30,70 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn closure_callers_reuse_without_restoring_old_capture_environments() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+import std.time.sleep_ms
+fn increase(previous Int, amount Int) Int {
+    previous + amount
+}
+fn counter(start Int) fn(Int) Int {
+    var total = start
+    fn(amount Int) Int {
+        total = increase(total, amount)
+        total
+    }
+}
+async fn main() {
+    let next = counter(1)
+    let first = next(2)
+    sleep_ms(1).await
+    assert first + next(4) == 10
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(&path, format!("fn unrelated() Int {{ 1 }}\n\n{source}")).unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    let bodies: usize = trace
+        .split(", bodies reused ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(bodies >= 4, "{trace}");
+    let executable = common::executable(directory.path(), "cached-closures");
+    checked(
+        &cached(
+            "build",
+            &package,
+            &cache,
+            &["--output", executable.to_str().unwrap()],
+        ),
+        true,
+    );
+    success(&common::run_tasks(&executable));
+    // A nested closure's source dependencies remain ordinary invalidation
+    // edges, even when its callers have reusable concrete bodies.
+    fs::write(
+        &path,
+        source.replace("previous + amount", "previous + amount + 1"),
+    )
+    .unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    let failed = cached("run", &package, &cache, &[]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("assertion failed"));
+}
+
+#[test]
 fn embedded_tests_do_not_disable_production_definition_snapshots() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");
