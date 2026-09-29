@@ -80,14 +80,20 @@ fn validate_refinement(env Environment, owner Int, base Int) Result[Bool, Failur
     }
     let program = prepared(stage)?
     discard list_constraint_expression(env, program.functions, owner, value)?
-    if !inline_constraint_base(env, base, 0) && !invariant_observation(env, program, value, length(stage.locals), get(env.types, base).kind == TypeKind.List) {
-        return Result.Err(failure(env, owner, predicate, "type constraints may observe immutable fields, not shared mutable contents"))
+    var element_writes = false
+    if !inline_constraint_base(env, base, 0) {
+        let list = get(env.types, base).kind == TypeKind.List
+        let reads = invariant_observation(env, program, value, length(stage.locals), list)
+        if !get(reads.valid, 0) {
+            return Result.Err(failure(env, owner, predicate, "type constraints may observe immutable fields, not shared mutable contents"))
+        }
+        element_writes = list && !get(reads.element_reads, 0)
     }
     match std.loom.eval.validate(program, value) {
         Result.Ok(_) => {}
         Result.Err(failed) => { return Result.Err(failure(env, owner, predicate, concat("type constraint: ", failed.message))) }
     }
-    Result.Ok(true)
+    Result.Ok(element_writes)
 }
 fn refinements(env Environment) Result[Bool, Failure] {
     // Make every proof-eligible template available before typing predicates
@@ -111,7 +117,13 @@ fn refinements(env Environment) Result[Bool, Failure] {
     while index < length(env.types) {
         let ty = get(env.types, index)
         if ty.kind == TypeKind.Refined {
-            discard validate_refinement(env, ty.symbol, get(ty.fields, 0).ty)?
+            let element_writes = validate_refinement(env, ty.symbol, get(ty.fields, 0).ty)?
+            let state = get(env.type_states, index)
+            set(env.type_states, index, TypeState {
+                    phase = state.phase
+                    task_width = state.task_width
+                    list_element_writes = element_writes
+                })
         }
         index = index + 1
     }

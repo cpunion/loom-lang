@@ -239,9 +239,11 @@ recognizes stable enum tags and inline payloads. General mutable-content
 invariants still need a preservation proof over all reachable writes. An explicit
 isolation route now works for List-backed constraints with immutable elements:
 fresh literals or proved non-publishing factories establish the boundary, and
-inferred non-escaping reads/copies preserve it. Copies of constrained values share;
-unrestricted weakening and mutation reject. This read-only slice adds no implicit
-copy or runtime monitor and does not establish general write-preservation proofs.
+inferred non-escaping operations preserve it. Copies of constrained values share.
+Length-only predicates admit element replacement and source `set`/`reverse`;
+content-dependent predicates retain read-only storage. Length changes and raw
+alias escape reject. These disjoint-effect proofs add no implicit copy or runtime
+monitor; arbitrary predicate-preserving writes remain open.
 
 Each addition must work through the native CLI and its `std` tests. Required
 proofs remain mandatory even while the supported prover fragment grows. Exact

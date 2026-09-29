@@ -1,4 +1,4 @@
-fn list_constraint_checked(source Text) Result[std.loom.typed.Program, Failure] {
+fn list_constraint_files(source Text) List[TestFile] {
     let files = source_files(source)
     push(files, source_file("std.result", """
         pub enum Result[T, E] {
@@ -28,7 +28,11 @@ fn list_constraint_checked(source Text) Result[std.loom.typed.Program, Failure] 
             output
         }
         """, true))
-    checked(files)
+    files
+}
+
+fn list_constraint_checked(source Text) Result[std.loom.typed.Program, Failure] {
+    checked(list_constraint_files(source))
 }
 
 fn list_constraint_accept(source Text) {
@@ -183,4 +187,117 @@ test fn list_constraint_factories_must_not_publish_or_return_input_aliases() {
     list_constraint_reject("""
         type Invalid = List[List[Int]] where true
         """)
+}
+
+test fn length_constraints_allow_shared_element_replacement_through_helpers() {
+    list_constraint_accept(concat(list_constraint_source(), """
+        fn sized(values List[Int]) Bool {
+            length(values) == 2
+        }
+        type Pair = List[Int] where sized(self)
+        fn replace[T](values List[T], item T) {
+            let alias = values
+            var index = 0
+            while index < length(alias) {
+                alias[index] = item
+                index = index + 1
+            }
+        }
+        fn main() {
+            let values = Pair([1, 2])
+            let alias = values
+            values[0] = -1
+            assert alias[0] == -1
+            replace(values, 8)
+            assert alias[0] == 8 && alias[1] == 8
+        }
+        """))
+}
+
+test fn preserving_writes_require_disjoint_effects_and_cannot_publish_aliases() {
+    let header = concat(list_constraint_source(), "\ntype Pair = List[Int] where length(self) == 2\n")
+    list_constraint_reject(concat(header, """
+        fn invalid(value Pair) {
+            push(value, 3)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn resize(values List[Int]) {
+            push(values, 3)
+        }
+        fn invalid(value Pair) {
+            resize(value)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn leak(values List[Int], target List[List[Int]]) {
+            target[0] = values
+        }
+        fn invalid(value Pair, target List[List[Int]]) {
+            leak(value, target)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn replace(values List[Int], item Int) {
+            values[0] = item
+        }
+        fn invalid(value Positive) {
+            replace(value, -1)
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn observed(values List[Int]) Bool {
+            let alias = values
+            if length(alias) == 2 {
+                return alias[0] > 0
+            }
+            false
+        }
+        type Observed = List[Int] where observed(self)
+        fn invalid(value Observed) {
+            value[0] = -1
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn first_positive(values List[Int]) Bool {
+            values[0] > 0
+        }
+        fn invoke(values List[Int], predicate fn(List[Int]) Bool) Bool {
+            predicate(values)
+        }
+        type Observed = List[Int] where invoke(self, first_positive)
+        fn invalid(value Observed) {
+            value[0] = -1
+        }
+        """))
+    list_constraint_reject(concat(header, """
+        fn invalid(value Pair) List[Int] {
+            value
+        }
+        """))
+}
+
+test fn cached_predicate_edits_revoke_element_write_permissions() {
+    let source = concat(list_constraint_source(), """
+        fn sized(values List[Int]) Bool {
+            length(values) == 2
+        }
+        type Pair = List[Int] where sized(self)
+        pub fn replace(value Pair) {
+            value[0] = 8
+        }
+        """)
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(list_constraint_files(source)),
+        false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    let changed = std.text.join(std.text.split(source, "length(values) == 2"), "values[0] == 2")
+    assert match check_project_cached(fixture_project(list_constraint_files(changed)),
+        false, build_inputs(no_input_reader), cache) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
 }

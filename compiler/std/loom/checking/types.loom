@@ -76,7 +76,7 @@ fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
         }
     }
     push(env.types, Type { kind = kind symbol = symbol arguments = arguments fields = fields variants = new[Variant]() constraint = new[Expr]() })
-    push(env.type_states, TypeState { phase = 2 task_width = -1 })
+    push(env.type_states, TypeState { phase = 2 task_width = -1 list_element_writes = false })
     length(env.types) - 1
 }
 fn tuple_type(env Environment, owner Int, node Node, elements List[Int]) Result[Int, Failure] {
@@ -235,13 +235,13 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
     let id = length(env.types)
     let placeholder = simple_type(kind, declaration, arguments)
     push(env.types, placeholder)
-    push(env.type_states, TypeState { phase = 0 task_width = -1 })
+    push(env.type_states, TypeState { phase = 0 task_width = -1 list_element_writes = false })
     if env.expand_data { discard expand_type(env, id, depth)? }
     Result.Ok(id)
 }
 fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     if depth > 64 { return Result.Err(failure(env, get(env.types, id).symbol, symbol(env, get(env.types, id).symbol).node, "type specialization depth exceeded")) }
-    set(env.type_states, id, TypeState { phase = 1 task_width = -1 })
+    set(env.type_states, id, TypeState { phase = 1 task_width = -1 list_element_writes = false })
     let shape = get(env.types, id)
     let declaration = shape.symbol
     let kind = shape.kind
@@ -282,7 +282,7 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
         // Predicates are validated after every function signature is available.
     }
     set(env.types, id, Type { kind = kind symbol = declaration arguments = arguments fields = fields variants = variants constraint = constraints })
-    set(env.type_states, id, TypeState { phase = 2 task_width = -1 })
+    set(env.type_states, id, TypeState { phase = 2 task_width = -1 list_element_writes = false })
     Result.Ok(true)
 }
 fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node) Result[Int, Failure] {

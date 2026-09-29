@@ -1,4 +1,6 @@
 import std.list.clone
+import std.list.reverse
+import std.list.set
 
 fn all_positive(values List[Int]) Bool {
     var index = 0
@@ -12,6 +14,12 @@ fn all_positive(values List[Int]) Bool {
 }
 
 type PositiveValues = List[Int] where all_positive(self)
+
+fn pair_length(values List[Int]) Bool {
+    length(values) == 2
+}
+
+type IntPair = List[Int] where pair_length(self)
 
 fn positive_copy(values List[Int]) Result[PositiveValues, ConstraintError] {
     PositiveValues(clone(values))
@@ -54,10 +62,23 @@ fn list_constraint_scope() Bool {
     }
     let literal = PositiveValues([2, 3])
     assert values_sum(literal) == 5
+    let pair = IntPair([1, 2])
+    let pair_alias = pair
+    pair[0] = -7
+    assert pair_alias[0] == -7
+    reverse(pair)
+    set(pair, 0, 9)
+    assert pair_alias[0] == 9 && pair_alias[1] == -7
+    assert length(pair) == 2
     true
 }
 
 async fn retain_positive_values(values PositiveValues) PositiveValues {
+    values
+}
+
+async fn retain_pair(values IntPair) IntPair {
+    reverse(values)
     values
 }
 
@@ -69,4 +90,9 @@ test async fn list_constraints_survive_task_handoff_and_moving_collection() {
     copied[0] = -3
     let returned = child.await
     assert returned[0] == 3 && values_sum(alias) == 7
+    let pair = IntPair([5, 6])
+    let pair_child = retain_pair(pair)
+    pair[0] = 7
+    let pair_returned = pair_child.await
+    assert pair[0] == 6 && pair_returned[1] == 7
 }
