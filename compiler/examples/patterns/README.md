@@ -50,7 +50,8 @@ matches, with bindings in scope. A false guard keeps its effects and tries the
 next arm. Guards do not establish exhaustive coverage. `guards.loom` exercises
 source order, shared mutation, guard cleanup/returns, compile-time evaluation,
 timer waits and Task payload retention. Consuming a Task needed by a later path
-rejects; guarded matches containing MustScope resources currently reject.
+rejects. Guarded matches over scoped resources borrow payloads without
+transferring their cleanup ownership; ordinary bindings cannot erase MustScope.
 
 `multiline.loom` also uses raw triple-quoted Text for native and compile-time
 comparisons and patterns. Closing indentation is removed without interpreting

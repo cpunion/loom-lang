@@ -1,0 +1,20 @@
+import std.task.Outcome
+import std.task.cancel_when
+import std.time.monotonic_ns
+import std.time.sleep_until_ns
+
+// Request cancellation at an absolute process-local monotonic deadline.
+// Completed results and cleanup faults retain their actual Outcome. Return
+// waits for drain; a running blocking OS call may finish after the deadline.
+pub fn at[T](task Task[T], deadline Int) Task[Outcome[T]]
+requires deadline >= 0
+{
+    cancel_when(task, sleep_until_ns(deadline))
+}
+
+// Compute the deadline now, not when a later queued task body starts.
+pub fn after_ns[T](task Task[T], duration Int) Task[Outcome[T]]
+requires duration >= 0
+{
+    at(task, monotonic_ns() + duration)
+}

@@ -23,7 +23,7 @@ subtree until its consumer extracts the result, even if the completed producer
 itself is transferred. The example exercises this with nested tuples, generic
 forwarding, a callback, shared data and timers.
 
-This is aggregate transfer, not a join API or tuple `.await` sugar. Await each
-Task explicitly. [Enums](../task_enums) also support Task payloads. Task-bearing
-Lists remain unsupported; shared-container transfer and multi-task completion
-observation are the next composition boundaries.
+This example transfers aggregate fields and awaits them explicitly.
+[Enums](../task_enums) and [dynamic Lists](../task_lists) also carry Task
+obligations. For tuple `.await` and source `all`/`settled`/`any`/`race` policies,
+see [task joins](../task_joins).

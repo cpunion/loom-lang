@@ -1,6 +1,7 @@
 import std.task.Outcome
 import std.task.outcome
 import std.task.cancel
+import std.task.deadline.after_ns
 import std.time.sleep_ms
 import std.list.push
 import std.io.write_text
@@ -37,5 +38,13 @@ async fn main() {
     }
     assert events[1] == "started"
     assert events[2] == "cleaned"
+    match after_ns(work(events), 1000000).await {
+        Outcome.Cancelled => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert events[3] == "started" && events[4] == "cleaned"
     discard write_text("outcomes finished\n")
 }

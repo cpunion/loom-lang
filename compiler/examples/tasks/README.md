@@ -22,8 +22,9 @@ without creating an executor. The async `render` function receives both tasks
 and awaits their results in order; this is explicit composition, not a fail-fast
 `Task.all` implementation.
 
-This is a single-threaded CPU ready queue, not thread parallelism or an async
-I/O implementation. The final `write_text` call is ordinary synchronous I/O.
+This example exercises a single-owner ready queue, not thread parallelism.
+Its final `write_text` call is synchronous; real async timer/file/socket examples
+are linked from the [compiler guide](../../README.md#source-tasks).
 
 Inside `render`, try duplicating `let label = word.await` with a different local name. `loom check`
 rejects the second await. Replacing it with `discard word` also fails: a task
@@ -37,9 +38,10 @@ producer retains its returned child until the actual consumer extracts it.
 Calls evaluate arguments before transferring them, and early returns cannot
 abandon already-evaluated Task arguments.
 
-A synchronous helper that creates or transfers Tasks must expose a direct Task
+A synchronous helper that creates or transfers Tasks must expose a Task-bearing
 parameter or return type; it uses its async caller's execution environment.
-An ordinary synchronous `main` cannot start tasks. Task-containing aggregates,
-async methods, Task-bearing function values/dynamic calls, and suspension with
-active `scoped`/`defer` cleanup remain unimplemented. Task operations cannot run
-inside cleanup; ordinary synchronous cleanup can precede a Task return.
+An ordinary synchronous `main` cannot start tasks. See separate examples for
+[aggregate transfer](../task_aggregates), [async methods](../async_methods),
+[callbacks](../task_callbacks), and [suspended cleanup](../async_cleanup).
+Task operations cannot run inside cleanup; ordinary synchronous cleanup can
+precede a Task return.
