@@ -3,11 +3,32 @@ fn collect_count(value SharedSnapshot, scratch List[Int]) List[Int] {
     scratch
 }
 
+record ScratchWorkspace {
+    input SharedSnapshot
+    scratch List[Int]
+}
+
+enum ScratchParts {
+    Pair(SharedSnapshot, List[Int])
+}
+
+fn scratch_positive(parts ScratchParts) Bool {
+    match parts {
+        ScratchParts.Pair(value, scratch) => {
+            let alias = scratch
+            alias[0] = value.details.count
+            alias[0] > 0
+        }
+    }
+}
+
 fn positive_with_scratch(value SharedSnapshot) Bool {
-    let scratch = collect_count(value, [0])
-    let alias = scratch
-    alias[0] = scratch[1]
-    alias[0] > 0
+    let workspace = ScratchWorkspace {
+        input = value
+        scratch = collect_count(value, [0])
+    }
+    let pair = (workspace.input, workspace.scratch)
+    scratch_positive(ScratchParts.Pair(pair.0, pair.1))
 }
 
 type ScratchCount = SharedSnapshot where positive_with_scratch(self)

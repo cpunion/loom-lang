@@ -550,9 +550,12 @@ Unknown construction checks once; copies and base-record widening do not recheck
 Direct predicate helpers may copy and forward the whole record. Input-origin
 summaries distinguish shared inputs from fresh local scratch, including mixed
 helper arguments, recursive calls, returned aliases and preconditions. Monotone
-local origins cover branch/loop assignments and match payloads. Reads/writes of
-input storage, indirect shared-input calls and mutable storage of input aliases
-reject; fresh scratch and immutable enum tags/payloads are allowed. Scoped/Task
+local origins cover branch/loop assignments and match payloads. Field paths keep
+input and fresh scratch separate through mixed records, tuples, enum payloads,
+record updates and helper returns. Budget exhaustion widens to unknown input
+reachability, never freshness. Reads/writes of input storage, indirect shared-input
+calls and mutations storing input aliases reject; fresh scratch and immutable
+enum tags/payloads are allowed. Scoped/Task
 payloads and unchecked replacement still reject. This is separate from the bounded proof
 fragment; recursive predicates do not provide automatic proof evidence.
 Native O0/O2, compile-time and moving-GC tests exercise

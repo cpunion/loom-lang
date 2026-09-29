@@ -1,0 +1,136 @@
+// Paths identify mutable input storage reachable through immutable aggregate
+// fields. An empty path means any reachable storage; no paths means fresh data.
+record InputOrigin {
+    paths List[List[Int]]
+}
+
+fn origin_empty() InputOrigin {
+    InputOrigin {
+        paths = new[List[Int]]()
+    }
+}
+
+fn origin_input() InputOrigin {
+    let paths = new[List[Int]]()
+    push(paths, new[Int]())
+    InputOrigin {
+        paths = paths
+    }
+}
+
+fn origin_shared(origin InputOrigin) Bool {
+    length(origin.paths) != 0
+}
+
+fn origin_prefix(prefix List[Int], path List[Int]) Bool {
+    if length(prefix) > length(path) {
+        return false
+    }
+    var index = 0
+    while index < length(prefix) {
+        if get(prefix, index) != get(path, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn origin_covers_path(origin InputOrigin, path List[Int]) Bool {
+    var index = 0
+    while index < length(origin.paths) {
+        if origin_prefix(get(origin.paths, index), path) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn origin_covers(outer InputOrigin, inner InputOrigin) Bool {
+    var index = 0
+    while index < length(inner.paths) {
+        if !origin_covers_path(outer, get(inner.paths, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn origin_union(left InputOrigin, right InputOrigin) InputOrigin {
+    if origin_covers(left, right) {
+        return left
+    }
+    if origin_covers(right, left) {
+        return right
+    }
+    let paths = new[List[Int]]()
+    var index = 0
+    while index < length(left.paths) {
+        push(paths, get(left.paths, index))
+        index = index + 1
+    }
+    index = 0
+    while index < length(right.paths) {
+        let path = get(right.paths, index)
+        if !origin_covers_path(left, path) {
+            push(paths, path)
+        }
+        index = index + 1
+    }
+    // Exceeding the analysis budget loses precision, never an input origin.
+    if length(paths) > 256 {
+        origin_input()
+    } else {
+        InputOrigin {
+            paths = paths
+        }
+    }
+}
+
+fn origin_field(origin InputOrigin, field Int) InputOrigin {
+    let paths = new[List[Int]]()
+    var index = 0
+    while index < length(origin.paths) {
+        let source = get(origin.paths, index)
+        if length(source) >= 64 {
+            return origin_input()
+        }
+        let path = ints(field)
+        var item = 0
+        while item < length(source) {
+            push(path, get(source, item))
+            item = item + 1
+        }
+        push(paths, path)
+        index = index + 1
+    }
+    InputOrigin {
+        paths = paths
+    }
+}
+
+fn origin_project(origin InputOrigin, field Int) InputOrigin {
+    let paths = new[List[Int]]()
+    var index = 0
+    while index < length(origin.paths) {
+        let source = get(origin.paths, index)
+        if length(source) == 0 {
+            return origin_input()
+        }
+        if get(source, 0) == field {
+            let path = new[Int]()
+            var item = 1
+            while item < length(source) {
+                push(path, get(source, item))
+                item = item + 1
+            }
+            push(paths, path)
+        }
+        index = index + 1
+    }
+    InputOrigin {
+        paths = paths
+    }
+}
