@@ -9,7 +9,7 @@ Loom. A resident compiler reuses unchanged checked snapshots for diagnostics,
 hover and navigation, and unchanged ordinary checks and concrete bodies after edits.
 Replacing or rebuilding the compiler restarts its worker on the next request;
 queued requests remain serialized and cancellation still retires only that worker.
-Public/API rename and persistent per-definition IR reuse are not implemented.
+Public/API rename is not implemented. CLI disk caching is separate and opt-in.
 
 ## Try it
 

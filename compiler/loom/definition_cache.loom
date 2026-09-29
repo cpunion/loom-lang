@@ -1,0 +1,77 @@
+import std.loom.checking.export_definition_cache
+import std.loom.checking.import_trusted_definition_cache
+
+// One last successful definition basis per selected closure/configuration.
+// File membership and contents deliberately do not key this slot: the checker
+// matches definitions and invalidates changed names and transitive consumers.
+fn definition_key(options Options, project Project, identity Text) Text {
+    frontend_key(options, Project {
+            files = new[SourceFile]()
+            modules = project.modules
+            packages = project.packages
+            root = project.root
+        }, identity)
+}
+
+fn definition_load(path Text, prefix Text, project Project, inputs BuildInputs) DefinitionCache {
+    if match entry_kind(path) {
+        Result.Ok(kind) => kind == FileKind.File,
+        _ => false
+    } {
+        match read_bytes(path) {
+            Result.Ok(bytes) => {
+                // The same bundle integrity and observed-input checks as whole
+                // artifacts run BEFORE the trusted compiler-host import API.
+                match frontend_decode_kind(bytes, prefix, project, "definitions", inputs) {
+                    Option.Some(value) => {
+                        match import_trusted_definition_cache(value.input) {
+                            Result.Ok(cache) => {
+                                return cache
+                            }
+                            Result.Err(_) => {
+                            }
+                        }
+                    }
+                    Option.None => {
+                    }
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    definition_cache()
+}
+
+fn prepare_incremental(options Options, project Project, inputs BuildInputs, identity Text) Result[Prepared, Text] {
+    let root = join_path(options.frontend_cache, "definitions-v1")
+    discard cache_directory(root)?
+    let key = definition_key(options, project, identity)
+    let prefix = concat("loom-definition-cache 1\n", concat(key, "\n"))
+    let path = join_path(root, concat(key, ".ldef"))
+    let cache = definition_load(path, prefix, project, inputs)
+    let checked = match check_project_cached(project, options.command == "test", inputs, cache) {
+        Result.Ok(value) => value.program
+        Result.Err(failed) => {
+            return Result.Err(diagnostic(project.files, failed))
+        }
+    }
+    cache_trace(concat("definitions reused ", concat(to_text(definitions_reused(cache)),
+                concat(", bodies reused ", to_text(bodies_reused(cache))))))
+    let prepared = prepare_checked(options, project, inputs, checked)
+    match export_definition_cache(cache) {
+        Result.Ok(snapshot) => {
+            frontend_publish(root, path, prefix, Prepared {
+                    inputs = prepared.inputs
+                    targets = prepared.targets
+                    input = snapshot
+                    entry = prepared.entry
+                    tests = prepared.tests
+                    project = project
+                })
+        }
+        Result.Err(_) => {
+        }
+    }
+    Result.Ok(prepared)
+}

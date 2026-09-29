@@ -1,0 +1,234 @@
+import std.loom.project.ModuleInstance
+import std.loom.project.Package
+import std.loom.project.PackageImport
+
+fn cache_project(output Bytes, project Project) Result[Bool, Text] {
+    cache_int(output, project.root)
+    cache_int(output, length(project.modules))
+    var index = 0
+    while index < length(project.modules) {
+        let module = get(project.modules, index)
+        cache_text(output, module.name)
+        cache_text(output, module.source)
+        index = index + 1
+    }
+    cache_int(output, length(project.packages))
+    index = 0
+    while index < length(project.packages) {
+        let package = get(project.packages, index)
+        cache_int(output, package.instance)
+        cache_text(output, package.relative)
+        cache_int(output, length(package.imports))
+        var edge = 0
+        while edge < length(package.imports) {
+            let imported = get(package.imports, edge)
+            cache_text(output, imported.spelling)
+            cache_int(output, imported.target)
+            edge = edge + 1
+        }
+        index = index + 1
+    }
+    cache_int(output, length(project.files))
+    index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        // Public callers can supply ASTs unlike their source text. Such checks
+        // still work in memory, but cannot mint a text-backed disk snapshot.
+        let parsed = match std.loom.parser.parse(file.text) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("cache requires source-backed syntax")
+            }
+        }
+        if !std.loom.ast.same(parsed, file.tree) {
+            return Result.Err("cache requires source-backed syntax")
+        }
+        cache_int(output, file.package)
+        cache_text(output, file.path)
+        cache_text(output, file.text)
+        cache_bool(output, file.test_only)
+        cache_bool(output, file.trusted_std)
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn cache_read_project(reader CacheReader) Result[Project, Text] {
+    let root = cache_read_int(reader)?
+    let module_count = cache_read_count(reader)?
+    let modules = new[ModuleInstance]()
+    var index = 0
+    while index < module_count {
+        push(modules, ModuleInstance {
+                name = cache_read_text(reader)?
+                source = cache_read_text(reader)?
+            })
+        index = index + 1
+    }
+    let package_count = cache_read_count(reader)?
+    let packages = new[Package]()
+    index = 0
+    while index < package_count {
+        let instance = cache_read_int(reader)?
+        if instance < 0 || instance >= module_count {
+            return Result.Err("invalid cached module")
+        }
+        let relative = cache_read_text(reader)?
+        let import_count = cache_read_count(reader)?
+        let imports = new[PackageImport]()
+        var edge = 0
+        while edge < import_count {
+            let spelling = cache_read_text(reader)?
+            let target = cache_read_int(reader)?
+            if target < 0 || target >= package_count {
+                return Result.Err("invalid cached import")
+            }
+            push(imports, PackageImport {
+                    spelling = spelling
+                    target = target
+                })
+            edge = edge + 1
+        }
+        push(packages, Package {
+                instance = instance
+                relative = relative
+                imports = imports
+            })
+        index = index + 1
+    }
+    if root < 0 || root >= package_count {
+        return Result.Err("invalid cached root")
+    }
+    let file_count = cache_read_count(reader)?
+    let files = new[SourceFile]()
+    index = 0
+    while index < file_count {
+        let package = cache_read_int(reader)?
+        if package < 0 || package >= package_count {
+            return Result.Err("invalid cached package")
+        }
+        let path = cache_read_text(reader)?
+        let text = cache_read_text(reader)?
+        let tree = match std.loom.parser.parse(text) {
+            Result.Ok(value) => value
+            Result.Err(_) => {
+                return Result.Err("invalid cached source")
+            }
+        }
+        push(files, SourceFile {
+                package = package
+                path = path
+                text = text
+                tree = tree
+                test_only = cache_read_bool(reader)?
+                trusted_std = cache_read_bool(reader)?
+            })
+        index = index + 1
+    }
+    Result.Ok(Project {
+            files = files
+            modules = modules
+            packages = packages
+            root = root
+        })
+}
+
+// Same-compiler host snapshots only. The private state cannot be replaced by a
+// mutable returned AST/Program. Exporting it does not export a portable proof.
+pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
+    if length(cache.state.bodies) != 1 {
+        return Result.Err("no successful definition cache")
+    }
+    let saved = get(cache.state.bodies, 0)
+    let output = std.bytes.new()
+    cache_text(output, "loom-definition-snapshot 1")
+    cache_bool(output, saved.definitions.tests)
+    discard cache_project(output, saved.definitions.source)?
+    cache_int(output, length(saved.definitions.reusable))
+    var index = 0
+    while index < length(saved.definitions.reusable) {
+        cache_bool(output, get(saved.definitions.reusable, index))
+        index = index + 1
+    }
+    cache_int(output, length(saved.types))
+    index = 0
+    while index < length(saved.types) {
+        cache_type(output, get(saved.types, index))
+        index = index + 1
+    }
+    cache_int(output, length(saved.functions))
+    index = 0
+    while index < length(saved.functions) {
+        let target = get(saved.targets, index)
+        cache_int(output, target.symbol)
+        cache_ints(output, target.arguments)
+        cache_bool(output, target.ordinary)
+        discard cache_function(output, get(saved.functions, index))?
+        index = index + 1
+    }
+    Result.Ok(std.bytes.to_text(output))
+}
+
+// An explicit trust boundary for compiler hosts, NOT a proof checker. The host
+// must bind the complete snapshot to this compiler's bytes and an intact local
+// cache bundle. Never import untrusted/downloaded input through this API.
+// Source changes after import still use the ordinary dependency invalidation.
+pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] {
+    let reader = CacheReader {
+        text = text
+        cursor = ints(0)
+    }
+    if cache_read_text(reader)? != "loom-definition-snapshot 1" {
+        return Result.Err("invalid definition snapshot")
+    }
+    let tests = cache_read_bool(reader)?
+    let project = cache_read_project(reader)?
+    let source = match bind(project, tests) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("invalid cached bindings")
+        }
+    }
+    let basis = definition_basis(source)
+    let count = cache_read_count(reader)?
+    if count != length(basis.reusable) {
+        return Result.Err("invalid cached definition count")
+    }
+    var index = 0
+    while index < count {
+        set(basis.reusable, index, cache_read_bool(reader)?)
+        index = index + 1
+    }
+    let type_count = cache_read_count(reader)?
+    let types = new[Type]()
+    index = 0
+    while index < type_count {
+        push(types, cache_read_type(reader)?)
+        index = index + 1
+    }
+    let function_count = cache_read_count(reader)?
+    let functions = new[Function]()
+    let targets = new[BodyTarget]()
+    index = 0
+    while index < function_count {
+        push(targets, BodyTarget {
+                symbol = cache_read_int(reader)?
+                arguments = cache_read_ints(reader)?
+                ordinary = cache_read_bool(reader)?
+            })
+        push(functions, cache_read_function(reader)?)
+        index = index + 1
+    }
+    if get(reader.cursor, 0) != std.text.length(text) {
+        return Result.Err("trailing definition snapshot data")
+    }
+    let cache = definition_cache()
+    push(cache.state.basis, basis)
+    push(cache.state.bodies, BodyBasis {
+            definitions = basis
+            types = types
+            targets = targets
+            functions = functions
+        })
+    Result.Ok(cache)
+}
