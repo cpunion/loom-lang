@@ -160,6 +160,16 @@ fn interval(relation Text, bounds Bounds) Bool {
     low >= 0
 }
 fn holds(predicate Predicate, facts List[Predicate]) Bool {
+    // A directly established range needs no search for unrelated
+    // contradictions. If it fails, the existing contradiction proof may still
+    // discharge the goal; failure here is not evidence of falsity.
+    match predicate {
+        Predicate.Constant(value) => { if value { return true } }
+        Predicate.Compare(relation, value) => {
+            if interval(relation, range(value, facts)) { return true }
+        }
+        _ => {}
+    }
     var index = 0
     while index < length(facts) {
         let fact = get(facts, index)
@@ -179,7 +189,7 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
     }
     match predicate {
         Predicate.Constant(value) => value
-        Predicate.Compare(relation, value) => interval(relation, range(value, facts))
+        Predicate.Compare(_, _) => false
         Predicate.And(values) => holds(get(values, 0), facts) && holds(get(values, 1), facts)
         Predicate.Or(values) => holds(get(values, 0), facts) || holds(get(values, 1), facts)
         Predicate.Equal(values) => (holds(get(values, 0), facts) && holds(get(values, 1), facts)) ||

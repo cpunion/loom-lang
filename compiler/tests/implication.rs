@@ -167,6 +167,68 @@ fn main() {
 }
 
 #[test]
+fn relational_checks_disappear_before_llvm_optimization() {
+    let (_directory, executable, ir) = build(
+        r#"
+type Positive = Int where self > 0
+type Percent = Int where self >= 0 && self <= 100
+
+fn above(value Int, floor Int) Positive
+requires value > floor && floor >= 0
+{
+    Positive(value)
+}
+
+fn next(value Int) Percent {
+    assert value >= 0 && value < 100
+    let next = value + 1
+    Percent(next)
+}
+
+fn main() {
+    assert above(7, 2) == 7
+    assert next(99) == 100
+}
+"#,
+    );
+    success(&Command::new(executable).output().unwrap());
+    // Only source requirements/assertions remain, even at O0. The real
+    // initializer still executes its overflow check; proofs do not replace it.
+    assert_eq!(ir.matches("icmp sgt i64").count(), 1);
+    assert_eq!(ir.matches("icmp sge i64").count(), 2);
+    assert_eq!(ir.matches("icmp slt i64").count(), 1);
+    assert!(!ir.contains("icmp sle i64"));
+    assert_eq!(
+        ir.matches("call { i64, i1 } @llvm.sadd.with.overflow.i64")
+            .count(),
+        1
+    );
+
+    let package = "compiler/examples/relational_constraints";
+    for command in ["check", "test", "run"] {
+        success(&common::loom(&[command, package]));
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::executable(temporary.path(), "relations");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package])
+                .arg("--output")
+                .arg(&executable)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(
+            &Command::new(&executable)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+    }
+}
+
+#[test]
 fn flow_boundaries_keep_nan_and_mutable_cleanup_checks() {
     let (_directory, executable, ir) = build(
         r#"

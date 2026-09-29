@@ -1,0 +1,347 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+record FactLocal {
+    id Int
+    ty Int
+}
+
+// Compact only referenced identities. A large original local ID is not an
+// allocation size, and different scalar types must never share one identity.
+fn fact_expression(value Expr, locals List[FactLocal], budget List[Int], depth Int) Result[Expr, Text] {
+    if depth >= 64 || !conjunction_step(budget) || (value.ty != 1 && value.ty != 2 && value.ty != 5) || length(value.arms) != 0 {
+        return Result.Err("unsupported scalar fact")
+    }
+    var local = value.index
+    if value.kind == ExprKind.Local {
+        if value.index < 0 || length(value.children) != 0 {
+            return Result.Err("invalid scalar identity")
+        }
+        local = 0
+        while local < length(locals) && get(locals, local).id != value.index {
+            local = local + 1
+        }
+        if local == length(locals) {
+            if local >= 32 {
+                return Result.Err("scalar identity budget exhausted")
+            }
+            push(locals, FactLocal {
+                    id = value.index
+                    ty = value.ty
+                })
+        }
+        if get(locals, local).ty != value.ty {
+            return Result.Err("inconsistent scalar identity")
+        }
+    } else {
+        let literal = value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool
+        let unary = value.kind == ExprKind.Unary || value.kind == ExprKind.Coerce
+        if (!literal && !unary && value.kind != ExprKind.Binary) ||
+        length(value.children) != (if literal {
+                0
+            } else {
+                if unary {
+                    1
+                } else {
+                    2
+                }
+            }) {
+            return Result.Err("unsupported scalar fact expression")
+        }
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, fact_expression(get(value.children, index), locals, budget, depth + 1)?)
+        index = index + 1
+    }
+    Result.Ok(Expr {
+            kind = value.kind
+            ty = value.ty
+            span = value.span
+            text = if value.kind == ExprKind.Local {
+                ""
+            } else {
+                value.text
+            }
+            index = local
+            children = children
+            arms = value.arms
+            falls = value.falls
+        })
+}
+
+record Difference {
+    left Int
+    right Int
+    limit Number
+}
+
+fn connected_fact(value Expr, locals List[FactLocal], budget List[Int], depth Int) Bool {
+    if depth >= 64 || !conjunction_step(budget) {
+        return false
+    }
+    if value.kind == ExprKind.Local {
+        var index = 0
+        while index < length(locals) {
+            if get(locals, index).id == value.index {
+                return true
+            }
+            index = index + 1
+        }
+    }
+    var index = 0
+    while index < length(value.children) {
+        if connected_fact(get(value.children, index), locals, budget, depth + 1) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Each edge is x - y <= limit. Missing variables denote the constant zero.
+// Only unit coefficients qualify; all arithmetic here uses mathematical Ints.
+fn difference_edges(edges List[Difference], relation Text, value Linear, zero Int) {
+    if relation != "==" && relation != "<=" && relation != "<" && relation != ">=" && relation != ">" {
+        return
+    }
+    var left = zero
+    var right = zero
+    var index = 0
+    while index < length(value.terms) {
+        let term = get(value.terms, index)
+        if compare(term.factor, integer(1)) == 0 && left == zero {
+            left = term.id
+        } else {
+            if compare(term.factor, integer(-1)) != 0 || right != zero {
+                return
+            }
+            right = term.id
+        }
+        index = index + 1
+    }
+    let reverse = relation == ">" || relation == ">="
+    let limit = if reverse {
+        value.constant
+    } else {
+        negate(value.constant)
+    }
+    push(edges, Difference {
+            left = if reverse {
+                right
+            } else {
+                left
+            }
+            right = if reverse {
+                left
+            } else {
+                right
+            }
+            limit = if relation == "<" || relation == ">" {
+                subtract(limit, integer(1))
+            } else {
+                limit
+            }
+        })
+    if relation == "==" {
+        push(edges, Difference {
+                left = right
+                right = left
+                limit = value.constant
+            })
+    }
+}
+
+fn difference_facts(state State) State {
+    let count = length(state.locals)
+    let edges = new[Difference]()
+    var index = 0
+    while index < length(state.facts) {
+        match get(state.facts, index) {
+            Predicate.Compare(relation, value) => difference_edges(edges, relation, value, count)
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    let bounds = new[Bounds]()
+    index = 0
+    while index < count {
+        push(bounds, Bounds {
+                low = integer(-9223372036854775808)
+                high = integer(9223372036854775807)
+            })
+        index = index + 1
+    }
+    push(bounds, Bounds {
+            low = integer(0)
+            high = integer(0)
+        })
+    // Monotone interval propagation, not a complete solver. Stopping early
+    // only loses proofs; every retained bound follows from an actual edge.
+    var round = 0
+    var changed = true
+    while changed && round <= count {
+        changed = false
+        index = 0
+        while index < length(edges) {
+            let edge = get(edges, index)
+            let a = get(bounds, edge.left)
+            let b = get(bounds, edge.right)
+            let high = sum(b.high, edge.limit)
+            let low = subtract(a.low, edge.limit)
+            if compare(high, a.high) < 0 {
+                set(bounds, edge.left, Bounds {
+                        low = a.low
+                        high = high
+                    })
+                changed = true
+            }
+            if compare(low, b.low) > 0 {
+                let current = get(bounds, edge.right)
+                set(bounds, edge.right, Bounds {
+                        low = low
+                        high = current.high
+                    })
+                changed = true
+            }
+            index = index + 1
+        }
+        round = round + 1
+    }
+    var output = state
+    index = 0
+    while index <= count {
+        let bound = get(bounds, index)
+        if compare(bound.low, bound.high) > 0 {
+            return assume(state, Predicate.Constant(false))
+        }
+        if index < count {
+            match get(state.locals, index) {
+                Value.Number(value) => {
+                    // range() already starts at machine bounds. Retain only
+                    // improvements, not duplicate bounds for every identity.
+                    if compare(bound.low, integer(-9223372036854775808)) > 0 {
+                        output = assume(output, Predicate.Compare(">=", add(value, constant(negate(bound.low)))))
+                    }
+                    if compare(bound.high, integer(9223372036854775807)) < 0 {
+                        output = assume(output, Predicate.Compare("<=", add(value, constant(negate(bound.high)))))
+                    }
+                }
+                _ => {
+                }
+            }
+        }
+        index = index + 1
+    }
+    output
+}
+
+fn scalar_facts_imply(premises List[Expr], conclusion Expr) Result[Bool, Text] {
+    if conclusion.ty != 2 {
+        return Result.Ok(false)
+    }
+    let locals = new[FactLocal]()
+    let budget = new[Int]()
+    push(budget, 4096)
+    let goal = fact_expression(conclusion, locals, budget, 0)?
+    if length(locals) == 0 {
+        return Result.Ok(implies(proof_bool(goal, true), goal))
+    }
+    let known = new[Expr]()
+    let selected = new[Bool]()
+    var index = 0
+    while index < length(premises) && index < 256 {
+        push(selected, false)
+        index = index + 1
+    }
+    let search = new[Int]()
+    push(search, 16384)
+    var previous = -1
+    // Start at the goal's identities; unrelated statements must not crowd out
+    // useful evidence. Newly discovered bindings can connect earlier facts.
+    while previous != length(locals) && get(search, 0) > 0 && length(known) < 32 {
+        previous = length(locals)
+        index = 0
+        while index < length(selected) && get(search, 0) > 0 && length(known) < 32 {
+            let premise = get(premises, index)
+            if !get(selected, index) && premise.ty == 2 && connected_fact(premise, locals, search, 0) {
+                set(selected, index, true)
+                match fact_expression(premise, locals, budget, 0) {
+                    Result.Ok(value) => push(known, value)
+                    Result.Err(_) => {
+                    }
+                }
+            }
+            index = index + 1
+        }
+    }
+    if length(known) == 0 {
+        return Result.Ok(false)
+    }
+    var conjunction = get(known, 0)
+    index = 1
+    while index < length(known) {
+        conjunction = proof_and(conjunction, get(known, index))
+        index = index + 1
+    }
+    set(budget, 0, 4096)
+    // Exact typed reuse also works for IEEE values and non-linear terms.
+    if destination_conjuncts(conjunction, goal, budget) {
+        return Result.Ok(true)
+    }
+    let values = new[Value]()
+    index = 0
+    while index < length(locals) {
+        let ty = get(locals, index).ty
+        push(values, if ty == 1 {
+                Value.Number(variable(index))
+            } else {
+                if ty == 2 {
+                    Value.Boolean(Predicate.Variable(index))
+                } else {
+                    Value.Empty
+                }
+            })
+        index = index + 1
+    }
+    var state = State {
+        locals = values
+        facts = new[Predicate]()
+    }
+    index = 0
+    while index < length(known) {
+        match pure(get(known, index), state) {
+            Result.Ok(value) => match value {
+                Value.Boolean(predicate) => {
+                    state = assume(state, predicate)
+                }
+                _ => {
+                }
+            }
+            // An unsupported extra fact must not hide sufficient evidence.
+            Result.Err(_) => {
+            }
+        }
+        index = index + 1
+    }
+    state = difference_facts(state)
+    discard defined(goal, state)?
+    Result.Ok(holds(boolean(pure(goal, state)?)?, state.facts))
+}
+
+// The caller supplies checked, already-established facts over stable scalars.
+// IDs identify values, not spelling. Unknowns and budget exhaustion retain checks.
+pub fn implies_facts(premises List[Expr], conclusion Expr) Bool {
+    match scalar_facts_imply(premises, conclusion) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+}

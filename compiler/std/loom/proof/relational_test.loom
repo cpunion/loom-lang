@@ -1,0 +1,64 @@
+import std.int.to_text
+
+test fn difference_propagation_preserves_direction_strictness_and_identity() {
+    let x = local(19)
+    let y = local(1000000)
+    let z = local(3)
+    let premises = nodes(operation(">", x, y), operation(">=", y, z))
+    push(premises, operation(">=", z, literal("0")))
+    assert implies_facts(premises, operation(">", x, literal("0")))
+    assert !implies_facts(premises, operation(">", z, literal("0")))
+    assert !implies_facts(premises, operation(">", local(20), literal("0")))
+    let negative = nodes(operation("<=", x, y), operation("<", y, literal("0")))
+    assert implies_facts(negative, operation("<", x, literal("0")))
+    assert !implies_facts(negative, operation(">", x, literal("0")))
+    let offset = nodes(operation("==", x, operation("+", y, literal("1"))), operation(">=", y, literal("0")))
+    assert implies_facts(offset, operation(">", x, literal("0")))
+}
+
+test fn relational_implication_retains_definedness_and_unsupported_fallback() {
+    let x = local(8)
+    let y = local(9)
+    let increment = operation(">", operation("+", x, literal("1")), x)
+    let bounded = nodes(operation("<=", x, y), operation("<", y, literal("9223372036854775807")))
+    assert implies_facts(bounded, increment)
+    let unbounded = nodes(operation(">", x, y), operation(">=", y, literal("0")))
+    assert !implies_facts(unbounded, increment)
+    push(unbounded, operation("==", operation("%", y, literal("2")), literal("0")))
+    assert implies_facts(unbounded, operation(">", x, literal("0")))
+    let branch = nodes(operation("||", operation(">", x, literal("0")), operation(">", y, literal("0"))))
+    assert !implies_facts(branch, operation(">", x, literal("0")))
+    let nonlinear = nodes(operation(">", operation("*", x, y), literal("0")))
+    assert !implies_facts(nonlinear, operation(">", x, literal("0")))
+    assert implies_facts(new[Expr](), operation("==", literal("1"), literal("1")))
+    assert !implies_facts(new[Expr](), operation("==", operation("/", literal("1"), literal("0")), literal("0")))
+}
+
+test fn difference_propagation_handles_positive_and_negative_offsets() {
+    let x = local(0)
+    let y = local(1)
+    var offset = -2
+    while offset <= 2 {
+        let premises = nodes(operation("<=", operation("-", x, y), literal(to_text(offset))))
+        push(premises, operation(">=", y, literal("-2")))
+        push(premises, operation("<=", y, literal("2")))
+        let goal = operation("<=", x, literal(to_text(2 + offset)))
+        assert implies_facts(premises, goal)
+        assert !implies_facts(premises, operation("<=", x, literal(to_text(1 + offset))))
+        offset = offset + 1
+    }
+}
+
+test fn relational_proofs_prioritize_connected_facts_with_bounded_work() {
+    let premises = new[Expr]()
+    var index = 10
+    while index < 50 {
+        push(premises, operation(">", local(index), literal("0")))
+        index = index + 1
+    }
+    // The useful bound occurs before the relation that connects it to x.
+    push(premises, operation(">=", local(1), literal("0")))
+    push(premises, operation(">", local(0), local(1)))
+    assert implies_facts(premises, operation(">", local(0), literal("0")))
+    assert !implies_facts(premises, operation(">", local(2), literal("0")))
+}

@@ -1,0 +1,130 @@
+test fn relational_refinement_facts_follow_bounds_copies_and_offsets() {
+    let program = accepted("""
+type Positive = Int where self > 0
+type Bounded = Int where self >= 0 && self <= 100
+type Increment = Int where self + 1 > self
+
+pub fn related(value Int, lower Int) Positive
+requires value > lower && lower >= 0
+{
+    Positive(value)
+}
+
+pub fn copied(value Int) Positive {
+    let copy = value
+    assert value > 0
+    Positive(copy)
+}
+
+pub fn calculated(value Int) Bounded {
+    assert value >= 0 && value <= 99
+    let next = value + 1
+    Bounded(next)
+}
+
+pub fn guarded(value Int, lower Int) Positive {
+    if lower < 0 || value <= lower {
+        return Positive(1)
+    }
+    Positive(value)
+}
+
+pub fn chain(value Int, middle Int, lower Int) Positive {
+    assert value > middle
+    assert middle >= lower
+    assert lower >= 0
+    Positive(value)
+}
+
+pub fn evaluated(value Int) Increment {
+    let next = value + 1
+    Increment(value)
+}
+""")
+    var index = 0
+    while index < length(program.functions) {
+        let body = get(program.functions, index).body
+        assert get(body.children, length(body.children) - 1).kind == ExprKind.Coerce
+        index = index + 1
+    }
+}
+
+test fn relational_facts_preserve_exact_copies_and_ieee_predicates() {
+    let program = accepted("""
+type Even = Int where self % 2 == 0
+type NotANumber = Float where self != self
+
+pub fn exact(value Int) Even {
+    assert value % 2 == 0
+    let copy = value
+    Even(copy)
+}
+
+pub fn nan(value Float, other Float) NotANumber {
+    assert other > 0.0
+    assert value != value
+    let copy = value
+    NotANumber(copy)
+}
+""")
+    var index = 0
+    while index < length(program.functions) {
+        let body = get(program.functions, index).body
+        assert get(body.children, length(body.children) - 1).kind == ExprKind.Coerce
+        index = index + 1
+    }
+}
+
+test fn relational_facts_do_not_invent_alias_branch_or_overflow_evidence() {
+    let program = flow_program("""
+import std.result.Result
+import std.result.ConstraintError
+
+type Positive = Int where self > 0
+type Increment = Int where self + 1 > self
+type NonPositive = Float where self <= 0.0
+
+pub fn mutable(value Int) Result[Positive, ConstraintError] {
+    var lower = 1
+    let copy = lower
+    lower = value
+    assert lower > 0
+    Positive(value)
+}
+
+pub fn aliased(values List[Int], value Int) Result[Positive, ConstraintError] {
+    assert values[0] > 0
+    let lower = values[0]
+    assert value >= lower
+    Positive(value)
+}
+
+pub fn either(value Int, other Int) Result[Positive, ConstraintError] {
+    assert value > 0 || other > 0
+    Positive(value)
+}
+
+pub fn joined(value Int, other Int) Result[Positive, ConstraintError] {
+    if value > other {
+        assert other > 0
+    }
+    Positive(value)
+}
+
+pub fn overflow(value Int, lower Int) Result[Increment, ConstraintError] {
+    assert value >= lower && lower >= 0
+    Increment(value)
+}
+
+pub fn floating(value Float, other Float) Result[NonPositive, ConstraintError] {
+    assert !(value > other) && other <= 0.0
+    NonPositive(value)
+}
+""")
+    var index = 0
+    while index < length(program.functions) {
+        let body = get(program.functions, index).body
+        assert get(body.children, length(body.children) - 1).kind == ExprKind.Block
+        index = index + 1
+    }
+}

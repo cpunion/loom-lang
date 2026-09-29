@@ -283,8 +283,12 @@ algebra must not stand in for IEEE floating-point proofs.
 Lexical immutable-scalar facts from preconditions, assertions and branch guards
 now also discharge construction checks and survive immutable scalar copies.
 Standalone exit guards retain the condition of their sole continuing branch.
-Mutable/shared-alias facts, general cross-local
-relations and two-live-branch join inference remain later work. Bounded expansion of
+Integer facts now retain distinct bindings, immutable initializer equalities and
+bounded difference propagation across locals. Later evidence can validate an
+earlier immutable Int copy; source guards and initializer faults remain intact.
+Mutable/shared-alias facts, general relational solving and two-live-branch join
+inference remain later work. See the [example](compiler/examples/relational_constraints).
+Bounded expansion of
 direct scalar helpers now supports refinement implication while retaining
 evaluation and precondition obligations. Conditional bodies and early returns
 are supported; helper loops, mutation and recursive dependencies remain open.

@@ -1,0 +1,55 @@
+import std.result.Result
+import std.result.ConstraintError
+
+type Positive = Int where self > 0
+
+type Percent = Int where self >= 0 && self <= 100
+
+fn above(value Int, floor Int) Positive
+requires value > floor && floor >= 0
+{
+    Positive(value)
+}
+
+fn next_percent(value Int) Percent {
+    assert value >= 0 && value < 100
+    let next = value + 1
+    Percent(next)
+}
+
+fn retained(value Int) Positive {
+    let saved = value
+    assert value > 0
+    Positive(saved)
+}
+
+fn guarded(value Int, floor Int) Positive {
+    if floor < 0 || value <= floor {
+        return Positive(1)
+    }
+    Positive(value)
+}
+
+fn unresolved(value Int, other Int) Result[Positive, ConstraintError] {
+    assert value > 0 || other > 0
+    Positive(value)
+}
+
+fn main() {
+    assert above(7, 2) == 7
+    assert next_percent(99) == 100
+    assert retained(42) == 42
+    assert guarded(7, 2) == 7
+    assert guarded(0, 2) == 1
+    match unresolved(0, 2) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+}
+
+test fn refinement_relations() {
+    main()
+}
