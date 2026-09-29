@@ -372,9 +372,29 @@ mod tests {
 
     #[test]
     fn refused_connect_notifications_remain_terminal_after_error_reads() {
+        const CHILD: &str = "LOOM_TEST_REFUSED_CONNECT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Parallel process tests can temporarily inherit the listener
+            // across fork, keeping it alive after this test drops its handle.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tasks::socket::tests::refused_connect_notifications_remain_terminal_after_error_reads",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            return;
+        }
         for address in ["127.0.0.1:0", "[::1]:0"] {
             let listener = TcpListener::bind(address).unwrap();
             let address = listener.local_addr().unwrap();
+            // Keep an accepted connection alive after closing the listener.
+            // The port stays reserved but rejects new connections; otherwise
+            // a parallel test can reuse it and make this connect succeed.
+            let _peer = TcpStream::connect(address).unwrap();
+            let (_reservation, _) = listener.accept().unwrap();
             drop(listener);
             let sockets = Sockets::default();
             let token = sockets.connect(&address.to_string());
