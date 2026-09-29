@@ -1,0 +1,23 @@
+// Own clauses precede inherited clauses. Their source files/offsets may differ,
+// even when two declarations happen to have overlapping numeric byte spans.
+fn body_contract_source(reuse BodyReuse, target BodyTarget, kind NodeKind, index Int) Int {
+    let declaration = get(get(reuse.prior, 0).definitions.entries, target.symbol).node
+    if target.prototype >= 0 && index >= length(group(declaration, kind)) {
+        target.prototype
+    } else {
+        target.symbol
+    }
+}
+
+fn body_contracts(env Environment, reuse BodyReuse, target BodyTarget, values List[Expr], kind NodeKind) Result[List[Expr], Failure] {
+    let mapped = new[Expr]()
+    var index = 0
+    while index < length(values) {
+        let previous = body_contract_source(reuse, target, kind, index)
+        let owner = body_symbol(reuse, previous)
+        let span = get(get(reuse.prior, 0).definitions.entries, previous).span
+        push(mapped, body_expression(env, reuse, get(values, index), owner, symbol(env, owner).node.span.start - span.start)?)
+        index = index + 1
+    }
+    Result.Ok(mapped)
+}

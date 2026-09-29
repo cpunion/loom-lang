@@ -30,6 +30,86 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn method_instances_reuse_defaults_and_keep_inherited_contracts() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let rules = r#"
+concept Keep {
+    fn keep(self Self, input Int) Int
+    requires input > 0
+    ensures result == input
+}
+"#;
+    let rules_path = package.join("rules.loom");
+    fs::write(&rules_path, rules).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+concept Convert {
+    type Item
+    fn stored(self Self, item Self.Item) Self.Item
+    fn echo[T](self Self, item T) T {
+        item
+    }
+    fn selected(self Self, comptime enabled Bool, item Int) Int {
+        comptime if enabled {
+            item + 1
+        } else {
+            item
+        }
+    }
+}
+impl Convert for Int {
+    type Item = Text
+    fn stored(receiver Int, item Text) Text {
+        item
+    }
+}
+impl Keep for Bool {
+    fn keep(receiver Bool, item Int) Int {
+        item
+    }
+}
+fn main() {
+    assert 1.stored("kept") == "kept" && 1.echo(true)
+    assert 1.selected(true, 6) + 1.selected(false, 10) == 17
+    assert true.keep(7) == 7
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(&path, format!("fn unused() Int {{ 1 }}\n{source}")).unwrap();
+    fs::write(
+        &rules_path,
+        format!("fn unrelated() Bool {{ true }}\n\n{rules}"),
+    )
+    .unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    assert!(trace.contains(", bodies reused 6"), "{trace}");
+    checked(&cached("run", &package, &cache, &[]), true);
+    success(&common::loom(&["run", package.to_str().unwrap()]));
+    // Retain the inherited runtime entry check, not just the successful proof.
+    fs::write(
+        &path,
+        source.replace("assert true.keep(7) == 7", "discard true.keep(-1)"),
+    )
+    .unwrap();
+    assert!(!cached("run", &package, &cache, &[]).status.success());
+    fs::write(
+        &path,
+        source.replace(
+            "fn keep(receiver Bool, item Int) Int {\n        item",
+            "fn keep(receiver Bool, item Int) Int {\n        0",
+        ),
+    )
+    .unwrap();
+    assert!(!cached("check", &package, &cache, &[]).status.success());
+}
+
+#[test]
 fn variadic_instances_reuse_current_expanded_symbols_and_distinct_arities() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

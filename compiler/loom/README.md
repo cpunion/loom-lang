@@ -334,6 +334,9 @@ Variadic body keys use the source declaration and arity, never a previous check'
 expanded symbol. Current arity validation and signature expansion still run;
 eligible bodies retain their concrete type/constant keys. Compile-time loops and
 maps use the same dependency invalidation.
+Concrete concept/default/impl methods use the same path while declaration and
+conformance checks still run. Inherited contract clauses retain their own source
+declaration/file mapping, independent of the implementation's location.
 The resident editor uses this path automatically after a snapshot changes.
 Top-level declaration generation reruns with current build inputs before matching
 its expanded definitions. Unchanged generated bodies can therefore participate in

@@ -3,6 +3,7 @@
 record BodyTarget {
     symbol Int
     arity Int
+    prototype Int
     arguments List[Int]
     constants List[BodyConstant]
 }
@@ -262,8 +263,11 @@ fn body_expression_supported(reuse BodyReuse, value Expr, span Span, seen List[I
     true
 }
 
-fn body_supported(reuse BodyReuse, value Function) Bool {
+fn body_supported(reuse BodyReuse, target BodyTarget, value Function) Bool {
     if value.is_async {
+        return false
+    }
+    if target.prototype >= 0 && body_symbol(reuse, target.prototype) < 0 {
         return false
     }
     let seen = new[Int]()
@@ -286,14 +290,16 @@ fn body_supported(reuse BodyReuse, value Function) Bool {
     }
     index = 0
     while index < length(value.preconditions) {
-        if !body_expression_supported(reuse, get(value.preconditions, index), value.span, seen) {
+        let owner = body_contract_source(reuse, target, NodeKind.Requires, index)
+        if !body_expression_supported(reuse, get(value.preconditions, index), get(get(reuse.prior, 0).definitions.entries, owner).span, seen) {
             return false
         }
         index = index + 1
     }
     index = 0
     while index < length(value.postconditions) {
-        if !body_expression_supported(reuse, get(value.postconditions, index), value.span, seen) {
+        let owner = body_contract_source(reuse, target, NodeKind.Ensures, index)
+        if !body_expression_supported(reuse, get(value.postconditions, index), get(get(reuse.prior, 0).definitions.entries, owner).span, seen) {
             return false
         }
         index = index + 1
@@ -434,7 +440,7 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
         let target = get(prior.targets, candidate)
         if target.arity == arity && body_symbol(reuse, target.symbol) == owner &&
         (std.loom.ast.has(current.node, NodeKind.ExpansionId) ||
-            (current.text != "" && current.text == get(prior.definitions.entries, target.symbol).text)) && body_supported(reuse, value) &&
+            (current.text != "" && current.text == get(prior.definitions.entries, target.symbol).text)) && body_supported(reuse, target, value) &&
         same(body_types(env, reuse, value.arguments)?, instance.arguments) &&
         body_constants_supported(reuse, target.constants, new[Int]()) &&
         same_constants(body_constants(env, reuse, target.constants, owner)?, instance.constants) {
@@ -461,8 +467,8 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
                 params = body_types(env, reuse, value.params)?
                 result = body_type(env, reuse, value.result)?
                 locals = locals
-                preconditions = body_expressions(env, reuse, value.preconditions, concrete_owner, offset)?
-                postconditions = body_expressions(env, reuse, value.postconditions, concrete_owner, offset)?
+                preconditions = body_contracts(env, reuse, target, value.preconditions, NodeKind.Requires)?
+                postconditions = body_contracts(env, reuse, target, value.postconditions, NodeKind.Ensures)?
                 result_local = value.result_local
                 body = body_expression(env, reuse, value.body, concrete_owner, offset)?
                 runtime_name = value.runtime_name

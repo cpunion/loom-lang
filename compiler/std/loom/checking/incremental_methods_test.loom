@@ -1,0 +1,112 @@
+test fn method_bodies_rekey_receivers_associated_types_and_static_arguments() {
+    let source = """
+        concept Convert {
+            type Item
+            fn stored(self Self, item Self.Item) Self.Item
+            fn echo[T](self Self, item T) T {
+                item
+            }
+            fn selected(self Self, comptime enabled Bool, item Int) Int {
+                comptime if enabled {
+                    item + 1
+                } else {
+                    item
+                }
+            }
+        }
+        impl Convert for Int {
+            type Item = Text
+            fn stored(receiver Int, item Text) Text {
+                item
+            }
+        }
+        pub fn answer() Int {
+            assert 1.stored("kept") == "kept"
+            assert 1.echo(true)
+            1.selected(true, 6) + 1.selected(false, 10)
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    assert match cached_source(cache, concat("fn unused(value List[Bool]) List[Bool] { value }\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    assert bodies_reused(cache) >= 5
+    discard restored_definition_cache(cache)
+}
+
+test fn inherited_cached_contracts_follow_their_current_declaration_file() {
+    let rules = """
+        pub concept Keep {
+            fn keep(self Self, input Int) Int
+            requires input > 0
+            ensures result == input
+        }
+        """
+    let source = """
+        import rules.Keep
+        impl Keep for Bool {
+            fn keep(receiver Bool, item Int) Int {
+                item
+            }
+        }
+        pub fn answer() Int {
+            true.keep(7)
+        }
+        """
+    let files = source_files(source)
+    push(files, source_file("rules", rules, false))
+    let initial = definition_cache()
+    assert match check_project_cached(fixture_project(files), false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    let changed = source_files(concat("fn unused() Int { 1 }\n", source))
+    push(changed, source_file("rules", concat("fn unrelated() Bool { true }\n\n", rules), false))
+    let checked = match check_project_cached(fixture_project(changed), false, build_inputs(no_input_reader), cache) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert bodies_reused(cache) >= 2
+    var index = 0
+    while index < length(checked.program.functions) {
+        let function = get(checked.program.functions, index)
+        if length(function.preconditions) != 0 {
+            let current = get(checked.bindings.symbols, method_declaration_for_test(checked, function.symbol)).node.span
+            let predicate = get(function.preconditions, 0).span
+            assert predicate.start >= current.start && predicate.end <= current.end
+        }
+        index = index + 1
+    }
+    let invalid = source_files(std.text.join(std.text.split(source, "\n        item\n"), "\n        0\n"))
+    push(invalid, source_file("rules", rules, false))
+    assert match check_project_cached(fixture_project(invalid), false, build_inputs(no_input_reader), cache) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+fn method_declaration_for_test(checked CachedCheck, owner Int) Int {
+    var index = 0
+    while index < length(checked.bindings.symbols) {
+        let item = get(checked.bindings.symbols, index)
+        if item.name == "keep" && item.owner >= 0 &&
+        get(checked.bindings.symbols, item.owner).node.kind == NodeKind.Concept {
+            return index
+        }
+        index = index + 1
+    }
+    owner
+}

@@ -388,7 +388,7 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
         // A successful concrete instance is its own evidence. A declaration
         // with deferred/variadic validation need not have a reusable abstract
         // check; that validation still runs in the fresh environment.
-        set(reuse.bodies, index, stable && item.owner < 0)
+        set(reuse.bodies, index, stable)
         set(reuse.checks, index, stable && item.owner < 0 && get(previous.reusable, matched))
         index = index + 1
     }

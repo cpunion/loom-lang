@@ -381,6 +381,9 @@ Snapshots retain raw source and private expanded trees separately; unchanged
 generated bodies use the current generating block's location and extent.
 Variadic instances rebuild their current signatures and arity checks before body
 reuse; expanded symbol IDs are not persistent identities.
+Concrete methods can reuse bodies without skipping declaration/conformance
+validation. Inherited contract locations track the concept's current file and
+offset, separately from the implementation.
 Build receipts use the freshly loaded project and actual artifact; requested IR,
 linking and test execution still run.
 Only successful checks are published. Each `checked-v2` entry contains metadata
