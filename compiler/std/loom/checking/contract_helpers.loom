@@ -119,7 +119,20 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
         let checked = with_contracts(function, function.preconditions, conditions)
         match verify_with_types(context.env.types, checked) {
             Result.Ok(_) => Result.Ok(checked)
-            Result.Err(message) => Result.Err(error(context, node, message))
+            Result.Err(message) => {
+                match expanded_input_types(context, checked) {
+                    Result.Ok(types) => match verify_with_types(types, checked) {
+                        Result.Ok(_) => {
+                            return Result.Ok(checked)
+                        }
+                        Result.Err(_) => {
+                        }
+                    }
+                    Result.Err(_) => {
+                    }
+                }
+                Result.Err(error(context, node, message))
+            }
         }
     } else {
         let stage = staging(context, node)?
@@ -155,7 +168,20 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
                 // for reflection/CTFE, not private helper indices or runtime roots.
                 Result.Ok(with_contracts(function, function.preconditions, conditions))
             }
-            Result.Err(message) => Result.Err(error(context, node, message))
+            Result.Err(message) => {
+                match expanded_input_types(context, proof) {
+                    Result.Ok(types) => match verify_with_helpers(proof_types(program, types), proof) {
+                        Result.Ok(conditions) => {
+                            return Result.Ok(with_contracts(function, function.preconditions, conditions))
+                        }
+                        Result.Err(_) => {
+                        }
+                    }
+                    Result.Err(_) => {
+                    }
+                }
+                Result.Err(error(context, node, message))
+            }
         }
     }
 }

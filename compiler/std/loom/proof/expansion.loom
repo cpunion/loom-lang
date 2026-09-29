@@ -377,12 +377,12 @@ fn evaluated_bounds(value Expr) Expr {
     proof_and(proof_expr(value, ExprKind.Binary, 2, ">=", -1, proof_children(value, low)),
         proof_expr(value, ExprKind.Binary, 2, "<=", -1, proof_children(value, high)))
 }
-fn contract_predicates(program Program, function Function, inputs List[Expr], entry Bool, budget List[Int]) Result[List[Expr], Text] {
+fn contract_predicates(program Program, locals List[Local], inputs List[Expr], entry Bool, budget List[Int]) Result[List[Expr], Text] {
     let output = new[Expr]()
     let bindings = new[ExpansionBinding]()
     var index = 0
-    while index < length(function.locals) {
-        let reference = proof_expr(function.body, ExprKind.Local, get(function.locals, index).ty, "", index, new[Expr]())
+    while index < length(locals) && length(inputs) > 0 {
+        let reference = proof_expr(get(inputs, 0), ExprKind.Local, get(locals, index).ty, "", index, new[Expr]())
         push(bindings, ExpansionBinding { local = index value = reference })
         index = index + 1
     }
@@ -390,7 +390,7 @@ fn contract_predicates(program Program, function Function, inputs List[Expr], en
     while index < length(inputs) {
         let input = get(inputs, index)
         let context = Expansion { program = program budget = budget active = new[Int]() checks = new[Evaluation]() }
-        let predicate = expanded(context, input, proof_bool(input, true), bindings, function.locals, false, 0, 0)?
+        let predicate = expanded(context, input, proof_bool(input, true), bindings, locals, false, 0, 0)?
         var check_index = 0
         while check_index < length(context.checks) {
             let check = get(context.checks, check_index)
@@ -424,9 +424,27 @@ fn contract_predicates(program Program, function Function, inputs List[Expr], en
 fn expanded_contracts(program Program, function Function) Result[Function, Text] {
     let budget = new[Int]()
     push(budget, 4096)
-    let preconditions = contract_predicates(program, function, function.preconditions, true, budget)?
-    let postconditions = contract_predicates(program, function, function.postconditions, false, budget)?
+    let preconditions = contract_predicates(program, function.locals, function.preconditions, true, budget)?
+    let postconditions = contract_predicates(program, function.locals, function.postconditions, false, budget)?
     Result.Ok(Function { is_async = function.is_async symbol = function.symbol arguments = function.arguments params = function.params result = function.result
         locals = function.locals preconditions = preconditions postconditions = postconditions result_local = function.result_local
         body = function.body runtime_name = function.runtime_name span = function.span })
+}
+
+// The checked predicate belongs to this prepared closure and uses self local 0.
+// Successful construction has already evaluated it: retain guarded helper
+// preconditions and arithmetic bounds, not just the helper's Boolean result.
+pub fn invariant_predicates(program Program, base Int, predicate Expr) Result[List[Expr], Text] {
+    let locals = new[Local]()
+    push(locals, Local {
+            name = "self"
+            ty = base
+            mutable = false
+            is_scoped = false
+        })
+    let inputs = new[Expr]()
+    push(inputs, predicate)
+    let budget = new[Int]()
+    push(budget, 4096)
+    contract_predicates(program, locals, inputs, true, budget)
 }

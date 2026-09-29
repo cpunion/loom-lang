@@ -1,14 +1,34 @@
 import std.result.Result
 import std.result.ConstraintError
 
-type Positive = Int where self > 0
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where positive(self)
 
 record Pair {
     lower Int
     upper Int
 }
 
-type Ordered = Pair where self.upper > self.lower && self.lower >= 0
+fn ordered(value Pair) Bool {
+    value.upper > value.lower && value.lower >= 0
+}
+
+type Ordered = Pair where ordered(self)
+
+fn below_limit(value Int) Bool {
+    value < 100
+}
+
+type Limited = Int where below_limit(self)
+
+fn limited(value Limited) Int
+ensures result < 100
+{
+    value
+}
 
 record Holder {
     amount Positive
@@ -43,6 +63,8 @@ fn checked_interval(value Pair) Result[Ordered, ConstraintError] {
 }
 
 fn exercise() {
+    // Constant construction and proof-only expansion do not retain this helper.
+    assert limited(Limited(9)) == 9
     match checked_amount(0) {
         Result.Ok(_) => {
             assert false

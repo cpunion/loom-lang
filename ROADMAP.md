@@ -318,8 +318,11 @@ Required contracts also consume checked input-type invariants for immutable
 integer/Boolean and inline record values. Refined leaves retain their identities
 through nested records/tuples; no caller-local index or shared sibling becomes
 evidence about another value. Supported conjuncts can establish facts without a
-duplicate `requires` clause or native check. Invariant helper expansion and shared
-state reasoning remain open. See the [example](compiler/examples/invariant_contracts).
+duplicate `requires` clause or native check. When needed, a private checked helper
+closure supplies bounded symbolic expansion of input invariants, retaining
+guarded preconditions and successful arithmetic without new runtime roots.
+Helper loops/recursion and shared-state reasoning remain open.
+See the [example](compiler/examples/invariant_contracts).
 
 Structural tuples, numeric projection, and nested let/var destructuring use the
 native aggregate path, including generics, shared containers, and compile-time

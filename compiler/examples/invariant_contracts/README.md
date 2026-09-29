@@ -11,12 +11,16 @@ receiving those values can prove postconditions without repeating their type
 constraints as `requires` clauses. Nested inline fields keep their own facts,
 even beside an unrelated shared List. Failed construction still returns `Result`.
 
-This proof slice consumes call-free integer/Boolean predicates over immutable
-scalar and inline record values, including refined leaves inside tuples.
+This proof slice consumes integer/Boolean predicates over immutable scalar and
+inline record values, including refined leaves inside tuples. The predicates
+here call ordinary pure functions. When direct facts are insufficient, bounded
+symbolic expansion retains their results, preconditions and successful checked
+calculations, guarded by the branches that actually executed at construction.
+These proof-only helpers do not become new runtime roots.
+
 Unsupported conjuncts supply no evidence; disjunction alternatives are never
-assumed individually. Helper calls in invariant templates, shared contents and
-required Float arithmetic are not added to the proof fragment. Predicates and
-inline traversal use the existing proof budgets; unknown required proofs reject.
+assumed individually. Helper loops/recursion, shared contents and required Float
+arithmetic remain outside this fragment. Unknown required proofs reject.
 
 The native program retains the original construction checks. Entry invariant
 facts are compile-time evidence, not additional runtime checks or a new ABI.
