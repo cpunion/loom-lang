@@ -7,6 +7,7 @@ record Bounds {
 
 pub fn related(value Int, lower Int) Int
 requires value > lower && lower >= 0
+ensures result == value
 ensures result > 0
 {
     value

@@ -192,14 +192,33 @@ fn postcondition_holds(condition Expr, state State, depth Int) Result[Bool, Text
     Result.Ok(holds(boolean(pure(condition, state)?)?, state.facts))
 }
 
+fn required_condition(condition Expr, state State) Result[Bool, Text] {
+    discard defined(condition, state)?
+    if !postcondition_holds(condition, state, 256)? {
+        return Result.Err("required postcondition is not proved by the bounded scalar prover")
+    }
+    Result.Ok(true)
+}
+
 fn returned(function Function, state State, value Value) Result[Bool, Text] {
-    let returned = difference_facts(assigned(state, function.result_local, value))
+    var returned = assigned(state, function.result_local, value)
+    var propagated = false
     var index = 0
     while index < length(function.postconditions) {
         let condition = get(function.postconditions, index)
-        discard defined(condition, returned)?
-        if !postcondition_holds(condition, returned, 256)? {
-            return Result.Err("required postcondition is not proved by the bounded scalar prover")
+        match required_condition(condition, returned) {
+            Result.Ok(_) => {
+            }
+            Result.Err(message) => {
+                if propagated {
+                    return Result.Err(message)
+                }
+                // Most contracts need only direct facts or scalar intervals.
+                // Derive cross-symbol bounds once, only if that proof failed.
+                returned = difference_facts(returned)
+                propagated = true
+                discard required_condition(condition, returned)?
+            }
         }
         index = index + 1
     }
