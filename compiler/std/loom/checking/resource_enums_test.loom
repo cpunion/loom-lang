@@ -1,0 +1,120 @@
+fn resource_enum_header() Text {
+    concat(resource_header(), """
+        enum Bundle {
+            Empty
+            Pair(Handle, Handle, Int)
+        }
+        impl Dispose for Bundle {
+            fn dispose(self Bundle) {
+            }
+        }
+        fn bundle(log List[Int]) Bundle {
+            Bundle.Pair(make(log), make(log), 7)
+        }
+        """)
+}
+
+test fn enum_resources_borrow_payloads_without_transferring_scope() {
+    resource_accept(concat(resource_enum_header(), """
+        fn run() {
+            scoped value = bundle([0])
+            match value {
+                Bundle.Pair(first, second, tag) => {
+                    assert first.use() + second.use() == 14
+                    assert tag == 7
+                }
+                Bundle.Empty => {
+                }
+            }
+        }
+        """))
+    resource_reject(concat(resource_enum_header(), """
+        fn run() {
+            scoped value = bundle([0])
+            match value {
+                Bundle.Pair(first, _, _) => {
+                    scoped stolen = first
+                }
+                _ => {
+                }
+            }
+        }
+        """))
+    resource_reject(concat(resource_enum_header(), """
+        fn run() Handle {
+            scoped value = bundle([0])
+            match value {
+                Bundle.Pair(first, _, _) => first
+                _ => make([0])
+            }
+        }
+        """))
+    resource_reject(concat(resource_enum_header(), """
+        fn run() {
+            scoped value = bundle([0])
+            match value {
+                Bundle.Pair(first, _, _) => {
+                    first.dispose()
+                }
+                _ => {
+                }
+            }
+        }
+        """))
+}
+
+test fn enum_pending_payloads_cannot_copy_resources_or_cross_an_early_exit() {
+    resource_reject(concat(resource_enum_header(), """
+        fn run() {
+            scoped handle = make([0])
+            scoped value = Bundle.Pair(handle, make([0]), 1)
+        }
+        """))
+    resource_reject(concat(resource_enum_header(), """
+        fn run(log List[Int]) Bundle {
+            Bundle.Pair(make(log), make(log), {
+                    return Bundle.Empty()
+                    0
+                })
+        }
+        """))
+    resource_reject(concat(resource_enum_header(), """
+        fn run() {
+            discard bundle([0])
+        }
+        """))
+}
+
+test fn nested_borrowed_resource_patterns_cannot_escape_or_dispose_payloads() {
+    let header = concat(resource_enum_header(), """
+        enum Outer {
+            Some(Bundle)
+            None
+        }
+        impl Dispose for Outer {
+            fn dispose(self Outer) {
+            }
+        }
+        """)
+    resource_reject(concat(header, """
+        fn run() Handle {
+            scoped value = Outer.Some(bundle([0]))
+            match value {
+                Outer.Some(Bundle.Pair(first, _, _)) => first
+                _ => make([0])
+            }
+        }
+        """))
+    resource_reject(concat(header, """
+        fn run() {
+            scoped value = Outer.Some(bundle([0]))
+            match value {
+                Outer.Some(Bundle.Pair(first, _, _)) if first.use() == 7 => {
+                    first.dispose()
+                }
+                _ => {
+                }
+            }
+        }
+        """))
+}

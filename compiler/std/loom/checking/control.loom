@@ -237,6 +237,7 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
     var selected = -1
     var whole = -1
     let locals = new[Int]()
+    let borrowed = resource_borrowed(context, value)?
     if pattern.kind != NodeKind.Wildcard {
         selected = pattern_variant(context, pattern, value.ty)?
         if selected >= 0 {
@@ -248,7 +249,7 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
             var field = 0
             while field < length(fields) {
                 let binding = get(bindings, field)
-                if must_scope(context, get(fields, field))? {
+                if !borrowed && must_scope(context, get(fields, field))? {
                     discard resource_payload(context, binding, match_body(arm))?
                 }
                 if binding.kind == NodeKind.Wildcard {
@@ -256,18 +257,22 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
                 } else {
                     push(locals, length(current.locals))
                     current = bind_local(current, binding, binding.value, get(fields, field), false, context.head)?
+                    if borrowed && must_scope(context, get(fields, field))? {
+                        resource_borrow_local(current, length(current.locals) - 1)
+                    }
                 }
                 field = field + 1
             }
         } else {
             whole = length(current.locals)
-            if must_scope(context, value.ty)? {
+            if !borrowed && must_scope(context, value.ty)? {
                 discard resource_payload(context, pattern, match_body(arm))?
             }
             current = bind_local(current, pattern, pattern.value, value.ty, false, context.head)?
+            if borrowed && must_scope(context, value.ty)? { resource_borrow_local(current, whole) }
         }
     } else {
-        if must_scope(context, value.ty)? {
+        if !borrowed && must_scope(context, value.ty)? {
             return Result.Err(error(context, pattern, "a wildcard cannot discard a resource payload"))
         }
     }
@@ -282,7 +287,7 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
 fn matched(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let value = expr(context, child(node, 0), -1)?
     let marker = resource_concept(context.env, "MustScope")
-    if marker >= 0 && satisfies(context, value.ty, marker)? {
+    if marker >= 0 && !scoped_receiver_root(context, value) && satisfies(context, value.ty, marker)? {
         return Result.Err(error(context, node, "a MustScope value requires scoped; direct resource matching is not yet supported"))
     }
     var nested = 1

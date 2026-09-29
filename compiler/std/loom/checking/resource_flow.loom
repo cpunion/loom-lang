@@ -187,6 +187,10 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         let value = resource_expression(flow, get(expr.children, 0), false)?
         let local = get(current.locals, expr.index)
+        if kind == ExprKind.Let && expr.text == "pattern-binding" && value.protected {
+            set(flow.locals, expr.index, resource_value(true, false, -1))
+            return Result.Ok(resource_value(false, false, -1))
+        }
         if local.is_scoped {
             if kind == ExprKind.Assign || value.protected || !value.fresh {
                 return Result.Err(resource_error(flow, expr, "scoped requires a fresh resource, not a copied or borrowed value"))
@@ -216,7 +220,7 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         resource_join(flow, no)
         return Result.Ok(resource_value(first.protected || other.protected, first.fresh && other.fresh, -1))
     }
-    if kind == ExprKind.Match { return resource_match(flow, expr) }
+    if kind == ExprKind.Match { return resource_match(flow, expr, automatic) }
     if kind == ExprKind.While {
         discard resource_expression(flow, get(expr.children, 0), false)?
         let body = resource_branch(flow)
@@ -250,10 +254,11 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         // wrapper does not acquire exclusive ownership of its reachable data.
         return Result.Ok(resource_value(value.protected && flow_resource(flow, expr.ty)?, false, -1))
     }
-    if kind == ExprKind.Record && expr.text == "resource-pending-transfer" {
+    if (kind == ExprKind.Record || kind == ExprKind.Variant) && expr.text == "resource-pending-transfer" {
         var field = 0
         while field < length(expr.children) {
-            let input = get(get(expr.children, field).children, 0)
+            let child = get(expr.children, field)
+            let input = if kind == ExprKind.Record { get(child.children, 0) } else { child }
             let value = resource_expression(flow, input, false)?
             if flow_resource(flow, input.ty)? {
                 if input.kind != ExprKind.Local || !value.protected ||
@@ -284,7 +289,7 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
         index = index + 1
     }
     if protected { return Result.Err(resource_error(flow, expr, "a scoped value cannot be copied, discarded, boxed, or stored in an aggregate")) }
-    let last_record_resource = kind == ExprKind.Record && resources == 1 && resource_index + 1 == length(expr.children)
+    let last_record_resource = (kind == ExprKind.Record || kind == ExprKind.Variant) && resources == 1 && resource_index + 1 == length(expr.children)
     if resources != 0 && !last_record_resource && (kind != ExprKind.Variant || length(expr.children) != 1) {
         if kind == ExprKind.Record && resources == 1 {
             return Result.Err(resource_error(flow, expr, "a resource field must be initialized last until pending-transfer cleanup is supported"))
@@ -297,11 +302,11 @@ fn resource_expression(flow ResourceFlow, expr Expr, automatic Bool) Result[Reso
     Result.Ok(resource_value(false, kind == ExprKind.Record || kind == ExprKind.Variant || kind == ExprKind.List, -1))
 }
 
-fn resource_match(flow ResourceFlow, expr Expr) Result[ResourceValue, Failure] {
+fn resource_match(flow ResourceFlow, expr Expr, automatic Bool) Result[ResourceValue, Failure] {
     let input = get(expr.children, 0)
     let value = resource_expression(flow, input, false)?
     let resource = flow_resource(flow, input.ty)?
-    if value.protected || (resource && !value.fresh) {
+    if !value.protected && resource && !value.fresh {
         return Result.Err(resource_error(flow, input, "resource matching requires a fresh result, not a scoped or copied value"))
     }
     var protected = false
@@ -312,9 +317,10 @@ fn resource_match(flow ResourceFlow, expr Expr) Result[ResourceValue, Failure] {
         let arm = get(expr.arms, index)
         let branch = resource_branch(flow)
         if arm.whole >= 0 {
-            set(branch.locals, arm.whole, resource_value(false, resource, if resource { arm.whole } else { -1 }))
+            set(branch.locals, arm.whole, resource_value(value.protected, resource && !value.protected,
+                    if resource && !value.protected { arm.whole } else { -1 }))
         } else {
-            if resource && arm.variant < 0 { return Result.Err(resource_error(flow, expr, "a wildcard cannot discard a resource payload")) }
+            if resource && !value.protected && arm.variant < 0 { return Result.Err(resource_error(flow, expr, "a wildcard cannot discard a resource payload")) }
         }
         var field = 0
         if arm.variant >= 0 {
@@ -322,14 +328,17 @@ fn resource_match(flow ResourceFlow, expr Expr) Result[ResourceValue, Failure] {
             while field < length(fields) {
                 let local = get(arm.bindings, field)
                 let needed = flow_resource(flow, get(fields, field))?
-                if local < 0 && needed { return Result.Err(resource_error(flow, expr, "a wildcard cannot discard a resource payload")) }
-                if local >= 0 { set(branch.locals, local, resource_value(false, needed, if needed { local } else { -1 })) }
+                if local < 0 && needed && !value.protected { return Result.Err(resource_error(flow, expr, "a wildcard cannot discard a resource payload")) }
+                if local >= 0 {
+                    set(branch.locals, local, resource_value(value.protected && needed, needed && !value.protected,
+                            if needed && !value.protected { local } else { -1 }))
+                }
                 field = field + 1
             }
         }
         var output = resource_value(false, true, -1)
         field = 0
-        while field < length(arm.body) { output = resource_expression(branch, get(arm.body, field), false)?
+        while field < length(arm.body) { output = resource_expression(branch, get(arm.body, field), automatic)?
             field = field + 1 }
         if resource_pending(branch) && output.pending < 0 { return Result.Err(resource_error(flow, expr, "a resource payload must immediately enter scoped")) }
         protected = protected || output.protected

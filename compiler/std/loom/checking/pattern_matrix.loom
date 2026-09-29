@@ -12,6 +12,7 @@ record PatternPlan {
     output Int
     used List[Bool]
     budget List[Int]
+    borrowed Bool
 }
 
 fn pattern_step(plan PatternPlan, depth Int) Result[Bool, Failure] {
@@ -34,7 +35,7 @@ fn pattern_local(context Context, source Node, ty Int) Expr {
 }
 
 fn pattern_let(source Node, local Int, value Expr) Expr {
-    expression(ExprKind.Let, 0, source, "", local, expressions(value), value.falls)
+    expression(ExprKind.Let, 0, source, "pattern-binding", local, expressions(value), value.falls)
 }
 
 fn pattern_block(source Node, values List[Expr], body Expr) Expr {
@@ -46,6 +47,7 @@ fn pattern_block(source Node, values List[Expr], body Expr) Expr {
 // was decomposed along this path, rebuild it from the still-live payloads.
 // This preserves one-shot Task transfer instead of reading a consumed parent.
 fn pattern_replace(plan PatternPlan, value Expr, local Int, replacement Expr, depth Int) Result[Expr, Failure] {
+    if plan.borrowed { return Result.Ok(value) }
     discard pattern_step(plan, depth)?
     if value.kind == ExprKind.Local && value.index == local {
         return Result.Ok(replacement)
@@ -232,7 +234,7 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
             }
             field = field + 1
         }
-        let rebuilt = expression(if product {
+        let rebuilt = if plan.borrowed { value } else { expression(if product {
                 ExprKind.Record
             } else {
                 ExprKind.Variant
@@ -240,7 +242,7 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
                 -1
             } else {
                 variant
-            }, reconstructed, true)
+            }, reconstructed, true) }
         let selected = pattern_rows(plan, rows, column, if product {
                 -2
             } else {
@@ -279,6 +281,7 @@ fn pattern_decision(plan PatternPlan, rows List[PatternRow], values List[Expr], 
 fn nested_match(context Context, node Node, value Expr, expected Int, enforce Bool) Result[Expr, Failure] {
     let rows = new[PatternRow]()
     let used = new[Bool]()
+    let borrowed = resource_borrowed(context, value)?
     var output = if enforce {
         expected
     } else {
@@ -289,11 +292,11 @@ fn nested_match(context Context, node Node, value Expr, expected Int, enforce Bo
     // Generic inference, diagnostics and cleanup locals do not depend on tag order.
     while index < length(node.children) {
         let arm = child(node, index)
-        let scope = pattern_scope(context, child(arm, 0), value.ty, match_body(arm), context.head, 0)?
+        let scope = pattern_scope(context, child(arm, 0), value.ty, match_body(arm), context.head, 0, borrowed)?
         let guard = new[Expr]()
         var selected = scope.context
         if match_guarded(arm) {
-            if must_scope(context, value.ty)? {
+            if !borrowed && must_scope(context, value.ty)? {
                 return Result.Err(error(context, child(arm, 1), "guarded matching cannot delay scoped resource adoption"))
             }
             let condition = expr(selected, child(arm, 1), 2)?
@@ -332,6 +335,7 @@ fn nested_match(context Context, node Node, value Expr, expected Int, enforce Bo
         }
         used = used
         budget = budget
+        borrowed = borrowed
     }
     let saved = pattern_local(context, child(node, 0), value.ty)
     let body = pattern_decision(plan, rows, expressions(saved), 0)?

@@ -1,0 +1,90 @@
+// One callback per stored resource. Enum callbacks select only the active
+// variant; independent registrations keep draining if an earlier dispose faults.
+fn resource_cleanups(context Context, node Node, receiver Expr, output List[Expr], depth Int) Result[Bool, Failure] {
+    if depth >= 64 {
+        return Result.Err(error(context, node, "nested resource aggregate depth limit exceeded"))
+    }
+    let capability = resource_concept(context.env, "Dispose")
+    if capability < 0 || !satisfies(context, receiver.ty, capability)? {
+        return Result.Err(error(context, node, "scoped resources must implement std.resource.Dispose"))
+    }
+    let shape = get(context.env.types, receiver.ty)
+    if shape.kind == TypeKind.List && must_scope(context, get(shape.arguments, 0))? {
+        return Result.Err(error(context, node, "resource lists require pending-transfer cleanup, which is not yet supported"))
+    }
+    var index = 0
+    while index < length(shape.fields) {
+        let field = get(shape.fields, index)
+        if must_scope(context, field.ty)? {
+            let value = expression(ExprKind.Field, field.ty, node, "", index, expressions(receiver), true)
+            discard resource_cleanups(context, node, value, output, depth + 1)?
+        }
+        index = index + 1
+    }
+    let slots = new[List[Arm]]()
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        let bindings = new[Int]()
+        let children = new[Expr]()
+        var field = 0
+        while field < length(fields) {
+            let ty = get(fields, field)
+            if must_scope(context, ty)? {
+                let local = length(context.locals)
+                push(context.locals, Local {
+                        name = ""
+                        ty = ty
+                        mutable = false
+                        is_scoped = true
+                    })
+                push(bindings, local)
+                discard resource_cleanups(context, node, atom(ExprKind.Local, ty, node, local), children, depth + 1)?
+            } else {
+                push(bindings, -1)
+            }
+            field = field + 1
+        }
+        // Mutually exclusive variants share registration slots. The number of
+        // callbacks follows the largest payload, not the sum of all variants.
+        var member = 0
+        while member < length(children) {
+            if member == length(slots) {
+                push(slots, new[Arm]())
+            }
+            push(get(slots, member), Arm {
+                    variant = index
+                    bindings = bindings
+                    whole = -1
+                    body = expressions(expression(ExprKind.Block, 0, node, "", -1,
+                            expressions(get(children, member)), true))
+                })
+            member = member + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(slots) {
+        let arms = get(slots, index)
+        push(arms, Arm {
+                variant = -1
+                bindings = new[Int]()
+                whole = -1
+                body = expressions(expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true))
+            })
+        push(output, Expr {
+                kind = ExprKind.Match
+                ty = 0
+                span = node.span
+                text = ""
+                index = -1
+                children = expressions(receiver)
+                arms = arms
+                falls = true
+            })
+        index = index + 1
+    }
+    push(output, method_call_checked(context, node, node, receiver, "dispose", new[Node](),
+            plain_inputs(new[Node]()), capability, 0)?)
+    Result.Ok(true)
+}

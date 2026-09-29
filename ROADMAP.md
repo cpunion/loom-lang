@@ -442,7 +442,11 @@ Multi-field MustScope aggregates now disarm per-field pending cleanup after
 successful construction. Nested record resources also receive pending cleanup.
 Generic parameters and associated fields use declared Dispose/MustScope bounds;
 selected concrete instances rebuild guards for all actual descendants, including
-fault exits. Resource Lists and enum payloads remain open.
+fault exits. Enum payloads now use the same pending guards and active-variant
+cleanup; scoped enum matches borrow rather than transfer their payloads, including
+nested and guarded patterns. Native and compile-time tests cover generic payloads,
+cleanup faults, suspension and cancellation. Resource Lists and recursive resource
+cleanup remain open.
 Suspended lexical cleanup is implemented as described above, not a
 general resource-transfer facility.
 
