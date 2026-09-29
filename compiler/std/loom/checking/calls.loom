@@ -135,7 +135,7 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
 }
 
 fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
-    let selected = meta_binding(context, node.value)
+    let selected = meta_constructor_type(context, node, node.value)?
     if selected >= 0 && length(child(node, 0).children) != 0 {
         return Result.Err(error(context, node, "a type value is not a generic type constructor"))
     }
@@ -201,7 +201,7 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
     Result.Ok(expression(ExprKind.Record, ty, node, "", -1, fields, all_fall(fields)))
 }
 fn variant(context Context, node Node, types List[Node], inputs CallInputs, expected Int) Result[Expr, Failure] {
-    let selected_type = meta_binding(context, package(node.value))
+    let selected_type = meta_constructor_type(context, node, package(node.value))?
     if selected_type >= 0 && length(types) != 0 {
         return Result.Err(error(context, node, "a type value is not a generic type constructor"))
     }
@@ -266,6 +266,16 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let types = child(node, 0).children
     let inputs = call_inputs(context, child(node, 1).children)?
     let first = slice(node.value, 0, first_dot(node.value))
+    if lookup(context, first) < 0 && parameter_name(context, first) {
+        if package(node.value) != "" { return variant(context, node, types, inputs, expected) }
+        let selected = meta_constructor_type(context, node, first)?
+        let declaration = meta_visible(context, node, selected)?
+        if length(types) != 0 { return Result.Err(error(context, node, "a type value is not a generic type constructor")) }
+        if get(context.env.types, selected).kind == TypeKind.Refined {
+            return constrained(context, node, declaration, meta_arguments(context, node, selected), inputs)
+        }
+        return Result.Err(error(context, node, "use a record or enum constructor for the selected type"))
+    }
     if lookup(context, first) >= 0 {
         let selected = meta_binding(context, first)
         if selected >= 0 {

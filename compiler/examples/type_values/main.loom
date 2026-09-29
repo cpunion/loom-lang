@@ -51,6 +51,7 @@ fn is_integer(comptime choice Choice) Bool {
 }
 
 fn exercise() {
+    static_nominal_scope()
     let Number = comptime {
         choose(true, Int, Float)
     }
@@ -89,17 +90,19 @@ fn exercise() {
         value = "boxed"
     }
     assert boxed.value == "boxed"
+    let B { value = unboxed } = boxed
+    assert unboxed == "boxed"
     let M = comptime {
         of[Maybe[Int]]()
     }
     let maybe = M.Some(7)
     assert match maybe {
-        Maybe.Some(value) => value == 7
-        Maybe.None => false
+        M.Some(value) => value == 7
+        M.None => false
     }
     let empty = M.None
     assert match empty {
-        Maybe.None => true
+        M.None => true
         _ => false
     }
     let P = comptime {
@@ -112,6 +115,10 @@ fn exercise() {
 
 test fn type_values_are_computed_not_runtime_tags() {
     exercise()
+    assert comptime {
+        static_nominal_scope()
+        true
+    }
 }
 
 fn main() {

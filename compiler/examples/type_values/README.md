@@ -12,7 +12,11 @@ it in compile-time data, and select it with loops and conditionals.
 `std.meta.of[T]()` also accepts tuple/function/dynamic type syntax.
 
 An immutable binding of a computed type can supply local annotations, generic
-arguments and visible nominal constructors. `comptime { ... }` can also appear
+arguments, visible nominal constructors and exact-type record/enum patterns.
+Static field and type-pack iteration uses the same constructors and patterns;
+[static_nominal.loom](static_nominal.loom) selects record, enum and refinement
+shapes with `comptime if`. An unknown generic shape does not gain undeclared
+construction capabilities. `comptime { ... }` can also appear
 directly in local type annotations and explicit generic arguments. Checks and
 visibility still apply to the selected concrete type. No type registry, erased
 conversion or type-producing helper enters native code.

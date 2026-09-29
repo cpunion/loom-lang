@@ -41,6 +41,24 @@ fn meta_named(context Context, node Node) Bool {
     if lookup(context, slice(path, 0, first_dot(path))) >= 0 {
         return false
     }
+    if package(path) != "" {
+        match meta_constructor_type(context, source, package(path)) {
+            Result.Ok(selected) => {
+                if selected >= 0 {
+                    let shape = get(context.env.types, selected)
+                    var index = 0
+                    while shape.kind == TypeKind.Enum && index < length(shape.variants) {
+                        if get(shape.variants, index).name == name(path) {
+                            return false
+                        }
+                        index = index + 1
+                    }
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
     if path == "Int" || path == "Float" || path == "Bool" || path == "Text" || path == "Bytes" ||
     path == "List" || path == "Task" || path == "type" || parameter_name(context, path) {
         return true
@@ -80,6 +98,21 @@ fn meta_binding(context Context, name Text) Int {
         }
     }
     -1
+}
+
+// Selected type values, static field types and generic parameters use the same
+// nominal construction path. Resolution supplies the exact instantiated type;
+// normal constructors/patterns still enforce shape, arguments and visibility.
+fn meta_constructor_type(context Context, node Node, path Text) Result[Int, Failure] {
+    let selected = meta_binding(context, path)
+    if selected >= 0 {
+        return Result.Ok(selected)
+    }
+    let first = slice(path, 0, first_dot(path))
+    if parameter_name(context, first) || meta_binding(context, first) >= 0 {
+        return context_type(context, pack_node(node, NodeKind.Type, path, new[Node]()))
+    }
+    Result.Ok(-1)
 }
 
 fn meta_visible(context Context, node Node, ty Int) Result[Int, Failure] {

@@ -34,9 +34,27 @@ test fn selected_types_do_not_grant_private_construction_access() {
         pub fn secret() type {
             Secret
         }
+        pub fn sample() Secret {
+            Secret {
+                value = 7
+            }
+        }
         """, false))
     assert match checked(files) {
         Result.Err(failed) => failed.diagnostic.message == "cannot construct a private type from another package"
+        Result.Ok(_) => false
+    }
+    set(files, 0, source_file("app", """
+        import hidden.secret
+        import hidden.sample
+        fn main() {
+            let Selected = comptime { secret() }
+            let Selected { value = item } = sample()
+            discard item
+        }
+        """, false))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "cannot inspect a private record from another package"
         Result.Ok(_) => false
     }
 }
@@ -81,6 +99,44 @@ test fn type_values_never_supply_runtime_tags_or_skip_required_proofs() {
         fn hidden(flag Bool) {
             let T = comptime { if flag { Int } else { Text } }
             discard T
+        }
+        """)
+}
+
+test fn selected_patterns_keep_exact_type_arguments_and_abstract_requirements() {
+    rejects("""
+        record Box[T] {
+            value T
+        }
+        fn main() {
+            let Selected = comptime { Box[Int] }
+            let value = Box { value = "not an Int" }
+            match value {
+                Selected { value = value } => {
+                    discard value
+                }
+            }
+        }
+        """)
+    rejects("""
+        enum Choice[T] {
+            Some(T)
+            None
+        }
+        fn main() {
+            let Selected = comptime { Choice[Int] }
+            let value = Choice.Some("not an Int")
+            match value {
+                Selected.Some(value) => {
+                    discard value
+                }
+                Selected.None => {}
+            }
+        }
+        """)
+    rejects("""
+        fn missing_requirement[T]() T {
+            T { value = 1 }
         }
         """)
 }

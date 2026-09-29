@@ -847,7 +847,10 @@ Predicate reflection remains open.
 First-class compile-time type values now use the keyword `type`. Pure functions
 can pass, return, compare and select identities, including through compile-time
 data and loops. Known type bindings supply local annotations, generic arguments
-and visible nominal constructors; native code retains only the selected types.
+and visible nominal constructors and exact-type record/enum patterns. Static
+field and type-pack iteration uses these same operations after selecting a known
+shape; unknown generic shapes do not gain undeclared construction capabilities.
+Native code retains only the selected types.
 Runtime escape rejects, and static aggregate keys preserve exact type identity.
 Type construction requires explicit staging; declaration signatures still use
 ordinary generic parameters. See the [example](../../compiler/examples/type_values).
