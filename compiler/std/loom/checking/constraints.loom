@@ -76,7 +76,7 @@ fn validate_refinement(env Environment, owner Int, base Int) Result[Bool, Failur
         return Result.Err(failure(env, owner, predicate, "refinements cannot contain scoped resources or one-shot Tasks"))
     }
     let program = prepared(stage)?
-    if !inline_constraint_base(env, base, 0) && !invariant_observation(env, program, value) {
+    if !inline_constraint_base(env, base, 0) && !invariant_observation(env, program, value, length(stage.locals)) {
         return Result.Err(failure(env, owner, predicate, "type constraints may observe immutable fields, not shared mutable contents"))
     }
     match std.loom.eval.validate(program, value) {

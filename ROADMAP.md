@@ -233,8 +233,11 @@ normal proofs, imported generated symbols, isolated tests and closure identities
 Fixed-shape shared List views now preserve element identities through removal,
 regrowth, moving GC, suspension and compile-time graph reification. Immutable
 range metadata supports persistent length constraints without isolating the
-source. General content-invariant alias/effect analysis remains an exit criterion,
-not a claim made by this view implementation.
+source. Predicate effect analysis now distinguishes input aliases from fresh
+scratch through direct calls, returns and loop/branch assignments. It also
+recognizes stable enum tags and inline payloads. General mutable-content
+invariants still need a preservation proof over all reachable writes; neither
+views nor fresh-scratch analysis claim to supply that proof.
 
 Each addition must work through the native CLI and its `std` tests. Required
 proofs remain mandatory even while the supported prover fragment grows. Exact

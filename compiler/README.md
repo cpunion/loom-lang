@@ -1502,11 +1502,16 @@ type PositiveEntry = Entry where self.count > 0
 
 `notes` keeps ordinary sharing and mutation, including through existing aliases.
 The predicate's `count` is an inline value, so those mutations cannot invalidate
-it. Pure helpers may receive the whole record: the checker follows direct calls,
-including recursive calls and preconditions, and rejects observations of shared
-contents. Copying or forwarding a shared handle does not itself observe it.
-Indirect calls with shared inputs still reject. This read analysis does not
-prove the predicate's truth or permit mutable-content invariants.
+it. Pure helpers may receive the whole record. Input-origin analysis follows
+direct calls, recursive calls, preconditions, returned aliases and local
+assignments to a fixed point across branches/loops. Immutable field projections,
+enum tags and inline payloads are stable; mutable input contents are not.
+Fresh local Lists/Bytes may be used as scratch storage, including through helpers
+that also receive the input record. Copying or forwarding an input handle does
+not itself observe it. Indirect calls involving input storage and storing such
+aliases into mutable scratch storage conservatively reject. This analysis does
+not prove predicate truth or permit mutable-content invariants. See the
+[effect example](examples/record_refinement/effects.loom).
 Scoped resources and one-shot Tasks cannot be wrapped in a refinement.
 Its constructor checks an unknown value once and returns `Result`; copying the
 refined value or widening it to the base record adds no check. Fields cannot be

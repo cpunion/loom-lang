@@ -60,6 +60,7 @@ fn prepared() ActiveCount {
 
 fn main() {
     assert shared_invariant_scope()
+    assert invariant_effect_scope()
     assert match checked(Snapshot {
             inner = Inner {
                 count = 3

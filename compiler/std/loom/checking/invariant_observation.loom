@@ -1,70 +1,182 @@
+record InvariantCall {
+    target Int
+    inputs List[Bool]
+    borrowed Bool
+}
+
 record InvariantReads {
     env Environment
     functions List[Function]
-    // Visiting recursive helpers are safe only if the complete traversal
-    // succeeds. Any observed shared read rejects the whole predicate.
-    states List[Int]
+    calls List[InvariantCall]
+    valid List[Bool]
 }
 
-fn invariant_helper_reads(reads InvariantReads, target Int, depth Int) Bool {
-    if target < 0 || target >= length(reads.functions) || depth >= 64 { return false }
-    if get(reads.states, target) != 0 { return true }
-    set(reads.states, target, 1)
-    let function = get(reads.functions, target)
+record InvariantFrame {
+    locals List[Bool]
+    changed List[Bool]
+    returned List[Bool]
+}
+
+fn invariant_flag(value Bool) List[Bool] {
+    let flags = new[Bool]()
+    push(flags, value)
+    flags
+}
+
+fn invariant_frame(count Int, inputs List[Bool]) InvariantFrame {
+    let locals = new[Bool]()
     var index = 0
-    while index < length(function.preconditions) {
-        if !invariant_read(reads, get(function.preconditions, index), false, depth + 1) { return false }
+    while index < count {
+        push(locals, index < length(inputs) && get(inputs, index))
         index = index + 1
     }
-    invariant_read(reads, function.body, false, depth + 1)
+    InvariantFrame {
+        locals = locals
+        changed = invariant_flag(false)
+        returned = invariant_flag(false)
+    }
 }
 
-// Copies and projections transport shared handles without observing contents.
-// Follow helpers only when their actual arguments carry shared state; helpers
-// over immutable inputs may still allocate and use their own fresh containers.
-fn invariant_read(reads InvariantReads, value Expr, projection Bool, depth Int) Bool {
-    let env = reads.env
-    let path = projection && (value.kind == ExprKind.Local || value.kind == ExprKind.Field || value.kind == ExprKind.Coerce)
-    if !path && value.ty != 0 && !inline_constraint_base(env, value.ty, 0) {
-        return false
+fn invariant_bind(frame InvariantFrame, local Int, borrowed Bool) {
+    if borrowed && local >= 0 && !get(frame.locals, local) {
+        set(frame.locals, local, true)
+        set(frame.changed, 0, true)
     }
-    var shared_call = false
-    var argument = 0
-    while value.kind == ExprKind.Call && argument < length(value.children) {
-        shared_call = shared_call || !inline_constraint_base(env, get(value.children, argument).ty, 0)
-        argument = argument + 1
+}
+
+fn invariant_call(reads InvariantReads, target Int, inputs List[Bool], depth Int) Bool {
+    if target < 0 || target >= length(reads.functions) || depth >= 64 {
+        set(reads.valid, 0, false)
+        return true
     }
-    if shared_call && !invariant_helper_reads(reads, value.index, depth) { return false }
     var index = 0
-    while index < length(value.children) {
-        let projects = value.kind == ExprKind.Field || (path && value.kind == ExprKind.Coerce) ||
-            value.kind == ExprKind.Let || value.kind == ExprKind.Assign || value.kind == ExprKind.Discard || shared_call
-        if !invariant_read(reads, get(value.children, index), projects, depth) {
-            return false
+    while index < length(reads.calls) {
+        let saved = get(reads.calls, index)
+        var equal = saved.target == target && length(saved.inputs) == length(inputs)
+        var input = 0
+        while equal && input < length(inputs) {
+            equal = get(saved.inputs, input) == get(inputs, input)
+            input = input + 1
+        }
+        if equal {
+            return saved.borrowed
         }
         index = index + 1
     }
+    if length(reads.calls) >= 1024 {
+        set(reads.valid, 0, false)
+        return true
+    }
+    let function = get(reads.functions, target)
+    // A visiting recursive call conservatively transports input aliases in any
+    // shared result. Its effects are still scanned before this query succeeds.
+    push(reads.calls, InvariantCall {
+            target = target
+            inputs = inputs
+            borrowed = true
+        })
+    if function.runtime_name != "" {
+        set(reads.valid, 0, false)
+        return true
+    }
+    let frame = invariant_frame(length(function.locals), inputs)
+    var origin = false
+    var more = true
+    while more && get(reads.valid, 0) {
+        set(frame.changed, 0, false)
+        var clause = 0
+        while clause < length(function.preconditions) {
+            discard invariant_origin(reads, frame, get(function.preconditions, clause), depth + 1)
+            clause = clause + 1
+        }
+        origin = invariant_origin(reads, frame, function.body, depth + 1) || get(frame.returned, 0)
+        more = get(frame.changed, 0)
+    }
+    set(reads.calls, index, InvariantCall {
+            target = target
+            inputs = inputs
+            borrowed = origin
+        })
+    origin
+}
+
+// Origins mean reachable mutable input storage, not merely a shared type.
+// Immutable projections forget that origin. Locals accumulate origins to a
+// fixed point across branches/loops; assignment cannot hide an earlier alias.
+// Storing an input alias in mutable storage is conservatively rejected, so a
+// fresh handle can never acquire hidden input reachability through another alias.
+fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, depth Int) Bool {
+    if depth >= 256 || !get(reads.valid, 0) {
+        set(reads.valid, 0, false)
+        return true
+    }
+    let kind = value.kind
+    let shared = value.ty != 0 && !inline_constraint_base(reads.env, value.ty, 0)
+    if kind == ExprKind.Local {
+        return shared && get(frame.locals, value.index)
+    }
+    let inputs = new[Bool]()
+    var borrowed = false
+    var index = 0
+    while index < length(value.children) {
+        let origin = invariant_origin(reads, frame, get(value.children, index), depth + 1)
+        push(inputs, origin)
+        borrowed = borrowed || origin
+        index = index + 1
+    }
+    if kind == ExprKind.Let || kind == ExprKind.Assign {
+        invariant_bind(frame, value.index, borrowed)
+    }
+    if kind == ExprKind.Return && borrowed {
+        set(frame.returned, 0, true)
+    }
+    if kind == ExprKind.Call && borrowed {
+        borrowed = invariant_call(reads, value.index, inputs, depth + 1)
+    }
+    if (kind == ExprKind.Intrinsic || kind == ExprKind.IndirectCall || kind == ExprKind.DynCall ||
+        kind == ExprKind.FrameStore) && borrowed {
+        set(reads.valid, 0, false)
+    }
+    if kind == ExprKind.Field && length(value.children) == 1 && get(inputs, 0) &&
+    get(reads.env.types, get(value.children, 0).ty).kind == TypeKind.Frame {
+        set(reads.valid, 0, false)
+    }
+    if kind == ExprKind.Deferred || kind == ExprKind.Await || kind == ExprKind.TaskCall ||
+    kind == ExprKind.Suspend || kind == ExprKind.ResourceDrain {
+        set(reads.valid, 0, false)
+    }
     index = 0
     while index < length(value.arms) {
-        let body = get(value.arms, index).body
+        let arm = get(value.arms, index)
+        invariant_bind(frame, arm.whole, borrowed)
         var member = 0
-        while member < length(body) {
-            if !invariant_read(reads, get(body, member), false, depth) {
-                return false
-            }
+        while member < length(arm.bindings) {
+            invariant_bind(frame, get(arm.bindings, member), borrowed)
+            member = member + 1
+        }
+        member = 0
+        while member < length(arm.body) {
+            borrowed = invariant_origin(reads, frame, get(arm.body, member), depth + 1) || borrowed
             member = member + 1
         }
         index = index + 1
     }
-    true
+    shared && borrowed
 }
 
-fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr) Bool {
-    let states = new[Int]()
-    var index = 0
-    while index < length(program.functions) {
-        push(states, 0)
-        index = index + 1
+fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int) Bool {
+    let reads = InvariantReads {
+        env = env
+        functions = program.functions
+        calls = new[InvariantCall]()
+        valid = invariant_flag(true)
     }
-    invariant_read(InvariantReads { env = env functions = program.functions states = states }, value, false, 0)
+    let frame = invariant_frame(count, invariant_flag(true))
+    var more = true
+    while more && get(reads.valid, 0) {
+        set(frame.changed, 0, false)
+        discard invariant_origin(reads, frame, value, 0)
+        more = get(frame.changed, 0)
+    }
+    get(reads.valid, 0)
 }
