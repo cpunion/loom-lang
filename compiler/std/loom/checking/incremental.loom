@@ -38,7 +38,6 @@ record DefinitionEntry {
     test_only Bool
     trusted_std Bool
     node Node
-    header Node
     span Span
     text Text
 }
@@ -73,37 +72,52 @@ pub fn bodies_reused(cache DefinitionCache) Int {
     get(cache.state.body_hits, 0)
 }
 
-// Normalize locations, not syntax. Each function keeps its own signature and
-// body. Imports and nominal declarations form the shared checking context.
-fn definition_node(node Node, header Bool) Node {
-    let children = new[Node]()
-    var index = 0
-    while index < length(node.children) {
-        let child = get(node.children, index)
-        if !(header && node.kind == NodeKind.Function && child.kind == NodeKind.Block) {
-            push(children, definition_node(child, header &&
-                    (node.kind == NodeKind.File || node.kind == NodeKind.Concept || node.kind == NodeKind.Impl)))
-        }
-        index = index + 1
+// Ignore locations while comparing, not by allocating another normalized AST.
+// Header comparisons omit method bodies but retain signatures and contracts.
+fn definition_same(left Node, right Node, header Bool) Bool {
+    if left.kind != right.kind || left.value != right.value {
+        return false
     }
-    Node {
-        kind = node.kind
-        value = node.value
-        span = Span {
-            start = 0
-            end = 0
+    let children_header = header && (left.kind == NodeKind.File ||
+        left.kind == NodeKind.Concept || left.kind == NodeKind.Impl)
+    var first = 0
+    var second = 0
+    while first < length(left.children) || second < length(right.children) {
+        while first < length(left.children) && header && left.kind == NodeKind.Function &&
+        get(left.children, first).kind == NodeKind.Block {
+            first = first + 1
         }
-        children = children
+        while second < length(right.children) && header && right.kind == NodeKind.Function &&
+        get(right.children, second).kind == NodeKind.Block {
+            second = second + 1
+        }
+        if first == length(left.children) || second == length(right.children) {
+            return first == length(left.children) && second == length(right.children)
+        }
+        if !definition_same(get(left.children, first), get(right.children, second), children_header) {
+            return false
+        }
+        first = first + 1
+        second = second + 1
     }
+    true
 }
 
-fn definition_basis(source std.loom.binding.Program) DefinitionBasis {
+fn definition_basis(source std.loom.binding.Program) Result[DefinitionBasis, Failure] {
     let original = snapshot(Project {
             files = source.files
             modules = source.modules
             packages = source.packages
             root = source.root
         })
+    // Bind the private snapshot once so entries can share its declaration trees.
+    // Public returned bindings remain independently mutable.
+    Result.Ok(definition_basis_from(bind(original, source.tests)?, original))
+}
+
+// The project is private cache storage. Live checks detach it above; the disk
+// reader already owns fresh parsed trees, so restoring must not copy them again.
+fn definition_basis_from(source std.loom.binding.Program, original Project) DefinitionBasis {
     let files = new[SourceFile]()
     var index = 0
     while index < length(original.files) {
@@ -113,7 +127,7 @@ fn definition_basis(source std.loom.binding.Program) DefinitionBasis {
         while declaration < length(file.tree.children) {
             let node = child(file.tree, declaration)
             if node.kind != NodeKind.Function {
-                push(nodes, definition_node(node, true))
+                push(nodes, node)
             }
             declaration = declaration + 1
         }
@@ -146,7 +160,7 @@ fn definition_basis(source std.loom.binding.Program) DefinitionBasis {
     while index < length(source.symbols) {
         let item = get(source.symbols, index)
         let file = get(source.files, item.file)
-        let node = definition_node(item.node, false)
+        let node = item.node
         push(entries, DefinitionEntry {
                 package = file.package
                 owner = item.owner
@@ -158,11 +172,6 @@ fn definition_basis(source std.loom.binding.Program) DefinitionBasis {
                     item.node.span.start < item.node.span.end {
                     std.text.slice(file.text, item.node.span.start, item.node.span.end)
                 } else { "" }
-                header = if node.kind == NodeKind.Impl || node.kind == NodeKind.Concept {
-                    definition_node(node, true)
-                } else {
-                    node
-                }
             })
         push(reusable, false)
         index = index + 1
@@ -222,7 +231,7 @@ fn definition_context(first DefinitionBasis, second DefinitionBasis) Bool {
         let a = get(left.files, index)
         let b = get(right.files, index)
         if a.package != b.package || a.path != b.path || a.test_only != b.test_only || a.trusted_std != b.trusted_std ||
-        !std.loom.ast.same(a.tree, b.tree) {
+        !definition_same(a.tree, b.tree, true) {
             return false
         }
         index = index + 1
@@ -248,7 +257,7 @@ fn definition_opaque(node Node, root Bool) Bool {
     false
 }
 
-fn definition_depends(node Node, changed Map[Text, Bool]) Bool {
+fn definition_depends(node Node, changed Map[Text, Bool], header Bool) Bool {
     let kind = node.kind
     if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.MethodCall ||
     kind == NodeKind.Construct || kind == NodeKind.Type || kind == NodeKind.Select {
@@ -262,7 +271,10 @@ fn definition_depends(node Node, changed Map[Text, Bool]) Bool {
     }
     var index = 0
     while index < length(node.children) {
-        if definition_depends(get(node.children, index), changed) {
+        let child = get(node.children, index)
+        if !(header && kind == NodeKind.Function && child.kind == NodeKind.Block) &&
+        definition_depends(child, changed, header &&
+            (kind == NodeKind.File || kind == NodeKind.Concept || kind == NodeKind.Impl)) {
             return true
         }
         index = index + 1
@@ -278,10 +290,10 @@ fn same_definition(left DefinitionBasis, first Int, right DefinitionBasis, secon
     let a = get(left.entries, first)
     let b = get(right.entries, second)
     if a.package != b.package || a.test_only != b.test_only || a.trusted_std != b.trusted_std ||
-    (a.owner < 0) != (b.owner < 0) || !std.loom.ast.same(a.node, b.node) {
+    (a.owner < 0) != (b.owner < 0) || !definition_same(a.node, b.node, false) {
         return false
     }
-    a.owner < 0 || std.loom.ast.same(get(left.entries, a.owner).header, get(right.entries, b.owner).header)
+    a.owner < 0 || definition_same(get(left.entries, a.owner).node, get(right.entries, b.owner).node, true)
 }
 
 // Match exact definitions within package/name buckets, not mutable symbol IDs,
@@ -397,7 +409,7 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
         index = 0
         while index < length(basis.entries) {
             let item = get(source.symbols, index)
-            if item.node.kind == NodeKind.Function && definition_depends(get(basis.entries, index).node, changed) {
+            if item.node.kind == NodeKind.Function && definition_depends(get(basis.entries, index).node, changed, false) {
                 set(reuse.checks, index, false)
                 set(reuse.bodies, index, false)
                 match std.map.get(changed, item.name) {
@@ -416,7 +428,7 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
     index = 0
     while index < length(basis.project.files) {
         let header = get(basis.project.files, index).tree
-        if definition_depends(header, changed) {
+        if definition_depends(header, changed, true) {
             var item = 0
             while item < length(reuse.checks) {
                 set(reuse.checks, item, false)
@@ -435,7 +447,7 @@ pub fn check_project_cached(project Project, tests Bool, inputs BuildInputs, cac
     // a reusable authority boundary. Failed checks never replace the last basis.
     let original = snapshot(project)
     let source = bind(expand_project(original, tests, inputs)?, tests)?
-    let basis = definition_basis(source)
+    let basis = definition_basis(source)?
     if has_declaration_stages(original, tests) {
         // CachedCheck.source is public mutable data. Keep an independent raw
         // source basis so generated snapshots cannot be minted from edited ASTs.

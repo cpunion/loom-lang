@@ -1,0 +1,28 @@
+test fn snapshot_numbers_keep_the_canonical_counted_encoding() {
+    let values = [0, 1, -1, 9, 10, -10, 999, 1000, -1000,
+        9223372036854775807, -9223372036854775808]
+    let output = std.bytes.new()
+    let expected = std.bytes.new()
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        cache_int(output, value)
+        cache_text(expected, std.int.to_text(value))
+        index = index + 1
+    }
+    assert std.bytes.to_text(output) == std.bytes.to_text(expected)
+    let reader = CacheReader {
+        text = std.bytes.to_text(output)
+        cursor = ints(0)
+    }
+    index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        assert match cache_read_int(reader) {
+            Result.Ok(decoded) => decoded == value
+            Result.Err(_) => false
+        }
+        index = index + 1
+    }
+    assert get(reader.cursor, 0) == std.text.length(reader.text)
+}

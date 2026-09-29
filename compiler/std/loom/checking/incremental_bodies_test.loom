@@ -54,6 +54,15 @@ test fn concrete_bodies_rekey_nominals_calls_and_generic_instances() {
     set(answer.body.children, 0, expression(ExprKind.Integer, 1,
             get(first.bindings.symbols, answer.symbol).node, "99", -1, new[Expr](), true))
     assert cached_answer(first) == 99
+    // Cache entries share only their private snapshot, never returned binding
+    // trees. Mutating public syntax must not revoke or rewrite saved evidence.
+    let declaration = get(first.bindings.symbols, answer.symbol).node
+    push(declaration.children, Node {
+            kind = NodeKind.Bool
+            value = "false"
+            span = declaration.span
+            children = new[Node]()
+        })
     let second = match cached_source(cache, concat("""
         fn added(value List[Bool]) List[Bool] {
             value

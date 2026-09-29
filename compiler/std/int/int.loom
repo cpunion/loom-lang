@@ -7,19 +7,25 @@ pub enum ParseError { Invalid OutOfRange }
 
 // ASCII decimal with an optional sign; no whitespace or radix prefixes.
 pub fn parse(value Text) Result[Int, ParseError] {
-    let size = length(value)
-    if size == 0 { return Result.Err(ParseError.Invalid) }
-    let first = byte(value, 0)
+    parse(value, 0, length(value))
+}
+
+// Parse an ASCII decimal byte range without allocating a Text slice.
+pub fn parse(value Text, start Int, end Int) Result[Int, ParseError] {
+    if start < 0 || end > length(value) || start >= end {
+        return Result.Err(ParseError.Invalid)
+    }
+    let first = byte(value, start)
     let negative = first == 45
-    var index = if negative || first == 43 { 1 } else { 0 }
-    if index == size { return Result.Err(ParseError.Invalid) }
+    var index = start + if negative || first == 43 { 1 } else { 0 }
+    if index == end { return Result.Err(ParseError.Invalid) }
 
     // Accumulate negatively so Int's minimum is representable. Check before
     // multiplying or subtracting: out-of-range input is an error, not a fault.
     let limit = if negative { -9223372036854775808 } else { -9223372036854775807 }
     let multiple = limit / 10
     var number = 0
-    while index < size {
+    while index < end {
         let current = byte(value, index)
         if current < 48 || current > 57 { return Result.Err(ParseError.Invalid) }
         let digit_value = current - 48
