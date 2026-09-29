@@ -182,18 +182,18 @@ fn postcondition_holds(condition Expr, state State, depth Int) Result[Bool, Text
             if holds(fact, state.facts) {
                 return Result.Ok(true)
             }
-            return postcondition_holds(right, assume(state, not(fact)), depth - 1)
+            return postcondition_holds(right, difference_facts(assume(state, not(fact))), depth - 1)
         }
         if !postcondition_holds(left, state, depth - 1)? {
             return Result.Ok(false)
         }
-        return postcondition_holds(right, assume(state, fact), depth - 1)
+        return postcondition_holds(right, difference_facts(assume(state, fact)), depth - 1)
     }
     Result.Ok(holds(boolean(pure(condition, state)?)?, state.facts))
 }
 
 fn returned(function Function, state State, value Value) Result[Bool, Text] {
-    let returned = assigned(state, function.result_local, value)
+    let returned = difference_facts(assigned(state, function.result_local, value))
     var index = 0
     while index < length(function.postconditions) {
         let condition = get(function.postconditions, index)

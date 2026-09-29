@@ -3,6 +3,64 @@ mod common;
 use common::success;
 
 #[test]
+fn relational_contracts_share_the_prover_and_preserve_real_faults() {
+    let package = "compiler/examples/relational_contracts";
+    success(&common::loom(&["check", package]));
+    success(&common::loom(&["test", package]));
+    success(&common::loom(&["run", package]));
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = common::executable(directory.path(), "relational-contracts");
+    let ir_path = directory.path().join("contracts.ll");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&[
+                "build",
+                package,
+                "--output",
+                artifact.to_str().unwrap(),
+                "--emit-ir",
+                ir_path.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
+        );
+        success(
+            &Command::new(&artifact)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+        let entry = Command::new(&artifact)
+            .arg("invalid-entry")
+            .output()
+            .unwrap();
+        assert_eq!(entry.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&entry.stderr).contains("precondition"));
+        let overflow = Command::new(&artifact)
+            .args(["body", "overflow"])
+            .output()
+            .unwrap();
+        assert_eq!(overflow.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&overflow.stderr).contains("overflow"));
+        if level == "0" {
+            let ir = fs::read_to_string(&ir_path).unwrap();
+            assert_eq!(
+                ir.matches("icmp sgt i64").count(),
+                4,
+                "only the four source entry comparisons remain"
+            );
+            assert_eq!(
+                ir.matches("call { i64, i1 } @llvm.sadd.with.overflow.i64")
+                    .count(),
+                2,
+                "grow and argument collection retain their checked increments"
+            );
+        }
+    }
+}
+
+#[test]
 fn proved_body_calls_keep_native_calls_argument_order_and_overflow_faults() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(

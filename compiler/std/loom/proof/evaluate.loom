@@ -152,7 +152,7 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
         var branch = state
         if expr.text == "&&" || expr.text == "||" {
             let fact = boolean(pure(left, state)?)?
-            branch = assume(state, if expr.text == "&&" { fact } else { not(fact) })
+            branch = difference_facts(assume(state, if expr.text == "&&" { fact } else { not(fact) }))
         }
         discard defined(get(expr.children, 1), branch)?
     }

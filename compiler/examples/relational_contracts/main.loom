@@ -1,0 +1,88 @@
+import std.process.arguments
+import std.list.length
+
+record Bounds {
+    lower Int
+    upper Int
+}
+
+fn related(value Int, lower Int) Int
+requires value > lower && lower >= 0
+ensures result > 0
+{
+    value
+}
+
+fn advance(value Int, upper Int) Int
+requires value <= upper && upper < 9223372036854775807
+ensures result + 1 > result
+{
+    value
+}
+
+fn grow(value Int, lower Int) Int
+requires value >= lower && lower >= 0
+ensures result > 0
+{
+    value + 1
+}
+
+fn from_record(value Bounds) Int
+requires value.upper > value.lower && value.lower >= 0
+ensures result > 0
+{
+    value.upper
+}
+
+fn at_least(value Int) Int
+ensures result >= value
+{
+    value
+}
+
+fn through_call(value Int) Int
+requires value > 0
+ensures result > 0
+{
+    at_least(value)
+}
+
+fn snapshot(value Int, lower Int) Int
+requires value > lower && lower >= 0
+ensures result > 0
+{
+    var current = value
+    let saved = current
+    current = -1
+    saved
+}
+
+fn exercise() {
+    assert related(4, 2) == 4
+    assert advance(4, 9) == 4
+    assert advance(9223372036854775806, 9223372036854775806) == 9223372036854775806
+    assert grow(4, 0) == 5
+    assert from_record(Bounds {
+            lower = 0
+            upper = 7
+        }) == 7
+    assert through_call(6) == 6
+    assert snapshot(3, 0) == 3
+}
+
+fn main() {
+    let count = length(arguments())
+    if count == 2 {
+        discard related(0, 0)
+    } else {
+        if count == 3 {
+            discard grow(9223372036854775807, 0)
+        } else {
+            exercise()
+        }
+    }
+}
+
+test fn scalar_relationships_prove_required_contracts() {
+    exercise()
+}
