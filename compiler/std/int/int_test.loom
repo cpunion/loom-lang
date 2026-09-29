@@ -56,3 +56,27 @@ test fn parse_invalid() {
     expect_error("+-1", ParseError.Invalid)
     expect_error("１２", ParseError.Invalid)
 }
+
+test fn parse_byte_ranges_without_slices() {
+    let source = "雪:-9223372036854775808;tail"
+    assert match parse(source, 4, 24) {
+        Result.Ok(value) => value == -9223372036854775808
+        Result.Err(_) => false
+    }
+    assert match parse(source, 4, 25) {
+        Result.Err(ParseError.Invalid) => true
+        _ => false
+    }
+    assert match parse(source, -1, 3) {
+        Result.Err(ParseError.Invalid) => true
+        _ => false
+    }
+    assert match parse(source, 8, 4) {
+        Result.Err(ParseError.Invalid) => true
+        _ => false
+    }
+    assert match parse(source, 0, 99) {
+        Result.Err(ParseError.Invalid) => true
+        _ => false
+    }
+}

@@ -202,7 +202,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
             return Result.Err("invalid cached bindings")
         }
     }
-    let basis = definition_basis(source)
+    let basis = definition_basis_from(source, project)
     if generated {
         push(basis.original, original)
     }

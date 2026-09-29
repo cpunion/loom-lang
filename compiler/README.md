@@ -540,6 +540,8 @@ timings; local variables remain conservatively rooted for the function.
   Identical test/production overload signatures are currently rejected.
 - Source `std.int` provides `minimum`, `maximum`, decimal `to_text`, and
   `parse(Text) Result[Int, ParseError]` through ordinary imports and calls.
+  `parse(text, start, end)` parses a byte range without a temporary slice;
+  invalid or empty ranges return `ParseError.Invalid`.
   Parsing accepts ASCII decimal digits with an optional sign and leading zeros;
   invalid syntax and out-of-range input return errors, not arithmetic faults.
   It works in `comptime` without an additional intrinsic.
