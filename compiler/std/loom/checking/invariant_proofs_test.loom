@@ -110,7 +110,109 @@ ensures result + 1 > result
     value
 }
 """)
-    // An unexpanded helper predicate is not an arbitrary Boolean assumption.
+    // Recursive helpers remain outside bounded symbolic expansion.
+    rejects("""
+fn positive(value Int) Bool {
+    if value > 1 {
+        return positive(value - 1)
+    }
+    value == 1
+}
+
+type Positive = Int where positive(self)
+
+fn unsupported(value Positive) Int
+ensures result > 0
+{
+    value
+}
+""")
+}
+
+test fn invariant_helpers_supply_value_and_evaluation_facts() {
+    discard accepted("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where positive(self)
+
+record Pair {
+    lower Int
+    upper Int
+}
+
+fn ordered(value Pair) Bool {
+    value.upper > value.lower && value.lower >= 0
+}
+
+type Ordered = Pair where ordered(self)
+
+record Holder {
+    scalar Positive
+    interval Ordered
+    shared List[Int]
+}
+
+pub fn scalar(other Int, value Positive) Int
+ensures result > 0
+{
+    value
+}
+
+pub fn aggregate(value Holder) Int
+ensures result > 0
+{
+    value.interval.upper
+}
+
+pub fn tuple_value(value (Int, Positive)) Int
+ensures result > 0
+{
+    value.1
+}
+
+fn identity(value Int) Int
+ensures result == value
+{
+    value
+}
+
+pub fn forwarded(value Positive) Int
+ensures result > 0
+{
+    identity(value)
+}
+
+fn checked(value Int) Bool
+requires value > 0
+{
+    true
+}
+
+type Checked = Int where checked(self)
+
+pub fn checked_precondition(value Checked) Int
+ensures result > 0
+{
+    value
+}
+
+fn selected(value Int, ignored Int) Bool {
+    value > 0
+}
+
+type Room = Int where selected(self, self + 1)
+
+pub fn eager_argument(value Room) Int
+ensures result + 1 > result
+{
+    value
+}
+""")
+}
+
+test fn invariant_helper_facts_cannot_escape_their_value_or_guard() {
     rejects("""
 fn positive(value Int) Bool {
     value > 0
@@ -118,7 +220,48 @@ fn positive(value Int) Bool {
 
 type Positive = Int where positive(self)
 
-fn unsupported(value Positive) Int
+fn wrong(value Positive, other Int) Int
+ensures result > 0
+{
+    other
+}
+""")
+    rejects("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Positive = Int where positive(self)
+
+fn overflow(value Positive) Int
+ensures result + 1 > result
+{
+    value
+}
+""")
+    rejects("""
+fn positive(value Int) Bool {
+    value > 0
+}
+
+type Choice = Int where self == 9223372036854775807 || positive(self + 1)
+
+fn skipped_argument(value Choice) Int
+ensures result + 1 > result
+{
+    value
+}
+""")
+    rejects("""
+fn checked(value Int) Bool
+requires value > 0
+{
+    true
+}
+
+type Choice = Int where self == 0 || checked(self)
+
+fn skipped_precondition(value Choice) Int
 ensures result > 0
 {
     value

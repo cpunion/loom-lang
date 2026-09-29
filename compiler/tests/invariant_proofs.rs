@@ -39,6 +39,10 @@ fn typed_inputs_prove_contracts_without_rechecking_construction() {
                 "only the two dynamic construction predicates remain"
             );
             assert_eq!(ir.matches("icmp sge i64").count(), 1);
+            assert!(
+                !ir.contains("icmp slt i64"),
+                "the compile-time-only invariant helper must not become a native root"
+            );
         }
     }
 }

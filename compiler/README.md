@@ -1667,9 +1667,12 @@ ensures result > 0
 The same applies to inline
 record invariants and refined leaves inside records/tuples. Facts belong to the
 actual symbolic value, not the spelling or slot of `self` in the template.
-Shared contents remain opaque. Call-free Int/Bool predicates use the existing
-bounded fragment; unknown conjuncts, invariant helper calls and Float arithmetic
-supply no evidence. See the [input invariant example](examples/invariant_contracts).
+Shared contents remain opaque. Int/Bool predicates use the existing bounded
+fragment. If direct facts are insufficient, acyclic pure predicate helpers expand
+in a private checked closure, retaining their guarded preconditions and successful
+checked calculations. This does not add runtime calls or change construction
+checks. Unsupported conjuncts, helper loops/recursion and Float arithmetic supply
+no evidence. See the [input invariant example](examples/invariant_contracts).
 
 The current proof fragment supports scalar linear arithmetic, comparisons,
 Boolean facts, local assignments, and acyclic branches/returns. It reasons from

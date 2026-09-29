@@ -1,0 +1,115 @@
+import std.loom.typed.Type
+import std.loom.typed.TypeKind
+import std.loom.typed.Expr
+import std.loom.typed.Function
+import std.loom.proof.invariant_predicates
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+fn input_invariant_types(env Environment, ty Int, seen List[Int], selected List[Int], depth Int) {
+    if ty < 6 || ty >= length(env.types) || depth >= 16 {
+        return
+    }
+    var index = 0
+    while index < length(seen) {
+        if get(seen, index) == ty {
+            return
+        }
+        index = index + 1
+    }
+    push(seen, ty)
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Refined {
+        index = 0
+        while index < length(shape.constraint) {
+            if predicate_calls(get(shape.constraint, index), 0) {
+                push(selected, ty)
+                index = length(shape.constraint)
+            } else {
+                index = index + 1
+            }
+        }
+    } else {
+        if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+            return
+        }
+    }
+    index = 0
+    while index < length(shape.fields) {
+        input_invariant_types(env, get(shape.fields, index).ty, seen, selected, depth + 1)
+        index = index + 1
+    }
+}
+
+// Only a failed required proof pays for this private helper closure. Never put
+// its call indices in shared type metadata or the runtime reachability queue.
+fn expanded_input_types(context Context, function Function) Result[List[Type], Failure] {
+    let selected = new[Int]()
+    let seen = new[Int]()
+    var index = 0
+    while index < length(function.params) {
+        input_invariant_types(context.env, get(function.params, index), seen, selected, 0)
+        index = index + 1
+    }
+    if length(selected) == 0 {
+        return Result.Ok(context.env.types)
+    }
+    let stage = staging(context, symbol(context.env, context.signature.symbol).node)?
+    let predicates = new[Expr]()
+    index = 0
+    while index < length(selected) {
+        let shape = get(stage.env.types, get(selected, index))
+        let base = get(shape.fields, 0).ty
+        let locals = predicate_scope(stage.env, shape.symbol, base).locals
+        let scope = predicate_context(stage.env, shape.symbol, locals, 0, true)
+        push(predicates, expr(scope, predicate_node(stage.env, shape.symbol), 2)?)
+        index = index + 1
+    }
+    let program = prepared(stage)?
+    let types = new[Type]()
+    index = 0
+    while index < length(program.types) {
+        push(types, get(program.types, index))
+        index = index + 1
+    }
+    index = 0
+    while index < length(selected) {
+        let ty = get(selected, index)
+        let shape = get(types, ty)
+        match invariant_predicates(program, get(shape.fields, 0).ty, get(predicates, index)) {
+            Result.Ok(predicates) => {
+                set(types, ty, Type {
+                        kind = shape.kind
+                        symbol = shape.symbol
+                        arguments = shape.arguments
+                        fields = shape.fields
+                        variants = shape.variants
+                        constraint = predicates
+                    })
+            }
+            // Unsupported loops, recursion and exhausted budgets contribute no
+            // new evidence. The original call-free conjuncts remain available.
+            Result.Err(_) => {
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(types)
+}
+
+fn proof_types(program std.loom.typed.Program, types List[Type]) std.loom.typed.Program {
+    std.loom.typed.Program {
+        types = types
+        functions = program.functions
+        entry = program.entry
+        tests = program.tests
+        test_names = program.test_names
+        exports = program.exports
+        interfaces = program.interfaces
+        witnesses = program.witnesses
+    }
+}
