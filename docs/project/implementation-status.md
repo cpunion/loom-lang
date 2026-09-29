@@ -1033,7 +1033,10 @@ Whole-closure hits skip type/proof/effect analysis and lowering, not actual test
 execution, IR emission or final linking. On misses, a last-successful definition
 snapshot can reuse ordinary/generated abstract checks and concrete bodies across processes.
 It rebuilds bindings, invalidates changed/transitive consumers and remaps types,
-calls and locations through the same resident-cache machinery. Compiler bytes,
+calls and locations through the same resident-cache machinery. Compile-time
+specializations retain detached immutable constants, including type values and
+named callbacks; current types rebuild aggregate keys. Erased compile-time calls
+still participate in source dependency invalidation. Compiler bytes,
 mode/options, module/import identities and observed inputs bind the complete
 checksummed snapshot. Declaration expansion reruns before matching; its raw
 source and expanded trees have separate private snapshots. Unsupported snapshots

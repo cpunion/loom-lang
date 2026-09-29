@@ -1,0 +1,165 @@
+// Instance keys never retain a previous check's computation/environment index.
+// Immutable values are detached; captured callbacks recheck normally.
+fn body_copy_value(value Value) Value {
+    let items = new[Value]()
+    var index = 0
+    while index < length(value.items) {
+        push(items, body_copy_value(get(value.items, index)))
+        index = index + 1
+    }
+    Value {
+        ty = value.ty
+        number = value.number
+        floating = value.floating
+        text = value.text
+        items = items
+    }
+}
+
+fn body_copy_constants(env Environment, constants List[StaticValue]) List[BodyConstant] {
+    let copied = new[BodyConstant]()
+    var index = 0
+    while index < length(constants) {
+        let value = get(constants, index)
+        let stored = new[Value]()
+        if value.storage < -1 {
+            push(stored, body_copy_value(get(env.computations, -2 - value.storage).value))
+        }
+        push(copied, BodyConstant {
+                value = StaticValue {
+                    ty = value.ty
+                    known = value.known
+                    number = value.number
+                    text = value.text
+                    arguments = copy_indices(value.arguments)
+                    storage = if value.storage < -1 { -2 } else if value.storage >= 0 { 0 } else { -1 }
+                }
+                stored = stored
+            })
+        index = index + 1
+    }
+    copied
+}
+
+fn body_value_supported(reuse BodyReuse, value Value, seen List[Int]) Bool {
+    let kind = get(get(reuse.prior, 0).types, value.ty).kind
+    if kind == TypeKind.Meta {
+        return body_type_supported(reuse, value.number, seen)
+    }
+    if !body_type_shape_supported(reuse, value.ty, seen, true) {
+        return false
+    }
+    var index = 0
+    while index < length(value.items) {
+        if !body_value_supported(reuse, get(value.items, index), seen) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn body_constants_supported(reuse BodyReuse, values List[BodyConstant], seen List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        let saved = get(values, index)
+        let value = saved.value
+        if !value.known || value.storage >= 0 {
+            return false
+        }
+        let kind = get(get(reuse.prior, 0).types, value.ty).kind
+        if kind == TypeKind.Meta {
+            if !body_type_supported(reuse, value.number, seen) {
+                return false
+            }
+        } else if !body_type_shape_supported(reuse, value.ty, seen, true) {
+            return false
+        }
+        if kind == TypeKind.Function && !body_source_supported(reuse, value.number) {
+            return false
+        }
+        var argument = 0
+        while argument < length(value.arguments) {
+            if !body_type_supported(reuse, get(value.arguments, argument), seen) {
+                return false
+            }
+            argument = argument + 1
+        }
+        if value.storage < -1 && !body_value_supported(reuse, get(saved.stored, 0), seen) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn body_value(env Environment, reuse BodyReuse, value Value) Result[Value, Failure] {
+    let items = new[Value]()
+    var index = 0
+    while index < length(value.items) {
+        push(items, body_value(env, reuse, get(value.items, index))?)
+        index = index + 1
+    }
+    Result.Ok(Value {
+            ty = body_type(env, reuse, value.ty)?
+            number = if get(get(reuse.prior, 0).types, value.ty).kind == TypeKind.Meta {
+                body_type(env, reuse, value.number)?
+            } else {
+                value.number
+            }
+            floating = value.floating
+            text = value.text
+            items = items
+        })
+}
+
+fn body_constants(env Environment, reuse BodyReuse, values List[BodyConstant], owner Int) Result[List[StaticValue], Failure] {
+    let mapped = new[StaticValue]()
+    var index = 0
+    while index < length(values) {
+        let saved = get(values, index)
+        let value = saved.value
+        let kind = get(get(reuse.prior, 0).types, value.ty).kind
+        let ty = body_type(env, reuse, value.ty)?
+        var storage = -1
+        var text = value.text
+        if value.storage < -1 {
+            let stored = body_value(env, reuse, get(saved.stored, 0))?
+            text = match stored_value_key(env.types, stored) {
+                Result.Ok(key) => key
+                Result.Err(message) => {
+                    return Result.Err(failure(env, owner, symbol(env, owner).node, message))
+                }
+            }
+            storage = -2 - length(env.computations)
+            // The restored value is available for specialization, but is not a
+            // cached evaluation of any current source expression.
+            push(env.computations, Computation {
+                    owner = -1
+                    arguments = new[Int]()
+                    constants = new[StaticValue]()
+                    aliases = new[Int]()
+                    node = symbol(env, owner).node
+                    expected = ty
+                    ty = ty
+                    value = stored
+                })
+        }
+        push(mapped, StaticValue {
+                ty = ty
+                known = true
+                number = if kind == TypeKind.Meta {
+                    body_type(env, reuse, value.number)?
+                } else if kind == TypeKind.Function {
+                    body_symbol(reuse, value.number)
+                } else {
+                    value.number
+                }
+                text = text
+                arguments = body_types(env, reuse, value.arguments)?
+                storage = storage
+            })
+        index = index + 1
+    }
+    Result.Ok(mapped)
+}

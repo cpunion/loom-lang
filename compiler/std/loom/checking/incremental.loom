@@ -225,12 +225,12 @@ fn definition_context(first DefinitionBasis, second DefinitionBasis) Bool {
     true
 }
 
-// Staged syntax and hidden resource/task operations need richer dependency
+// Syntax-producing macros and hidden resource/task operations need richer dependency
 // summaries. Recheck them and their callers, rather than treating unknown edges
 // as independence. Methods and generated/variadic signatures are also rebuilt.
 fn definition_opaque(node Node, root Bool) Bool {
     let kind = node.kind
-    if kind == NodeKind.Comptime || kind == NodeKind.MacroCall || kind == NodeKind.Scoped ||
+    if kind == NodeKind.MacroCall || kind == NodeKind.Scoped ||
     kind == NodeKind.Await || kind == NodeKind.Async || kind == NodeKind.TypePack ||
     kind == NodeKind.ComptimeFor || kind == NodeKind.ComptimeMap || (kind == NodeKind.Function && !root) {
         return true

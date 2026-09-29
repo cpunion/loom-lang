@@ -104,7 +104,7 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
                     get(env.signatures, instance.signature).symbol
                 }
                 arguments = copy_indices(instance.arguments)
-                ordinary = instance.signature >= 0 && length(instance.constants) == 0
+                constants = body_copy_constants(env, instance.constants)
             })
         index = index + 1
     }

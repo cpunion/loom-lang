@@ -276,12 +276,15 @@ come from the actual backend, with lazy reads, cached-input revalidation and
 emission-time checks against the saved checked artifact. Embedded Bytes and
 computed byte buffers now use compact static blobs, with fresh mutable copies
 and preserved aliases inside computed graphs. The resident editor also reuses
-successful abstract checks of unchanged ordinary definitions, invalidating
+successful abstract checks of unchanged definitions, invalidating
 transitive callers and rechecking opaque dependencies. Current bindings, type
 IDs are rebuilt; eligible concrete bodies now rekey types, calls and source
 locations against those bindings instead of rechecking. The opt-in frontend cache
 also persists this last-successful definition basis across CLI processes, with
-compiler identity, source and observed-input validation. Unsupported cases recheck;
+compiler identity, source and observed-input validation. Declaration generation
+reruns before matching; private snapshots retain both raw and expanded source.
+Compile-time-specialized bodies also reuse detached immutable constants, with
+current type/function identities and rebuilt aggregate keys. Unsupported cases recheck;
 per-package native objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic
