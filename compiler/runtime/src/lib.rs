@@ -166,6 +166,7 @@ struct Heap {
     bytes: usize, // Occupied slots, including abandoned growth slices until GC.
     threshold: usize,
     stress: bool,
+    list_views: Vec<ListView>,
 }
 
 const MIN_THRESHOLD: usize = 64 * 1024;
@@ -186,6 +187,7 @@ impl Default for Heap {
             threshold: MIN_THRESHOLD,
             stress: std::env::var_os("LOOM_GC_STRESS").as_deref()
                 == Some(std::ffi::OsStr::new("1")),
+            list_views: Vec::new(),
         }
     }
 }
@@ -416,6 +418,34 @@ extern "C" fn loom_rt_collect() {
     }
     HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
+        // Internal weak registrations do not keep abandoned views or their
+        // removed elements alive. Resolve them only after strong tracing ends.
+        let Heap {
+            previous,
+            list_views,
+            ..
+        } = &mut *heap;
+        for view in list_views.iter() {
+            if let Some(object) = previous.get(&(view.source as usize)) {
+                if !object.forwarded.is_null() {
+                    unsafe { (*object.forwarded.cast::<List>()).watched = 0 };
+                }
+            }
+        }
+        list_views.retain_mut(|view| {
+            let moved = |pointer: *mut List| {
+                previous
+                    .get(&(pointer as usize))
+                    .map_or(ptr::null_mut(), |object| object.forwarded.cast::<List>())
+            };
+            view.source = moved(view.source);
+            view.removed = moved(view.removed);
+            if view.source.is_null() || view.removed.is_null() {
+                return false;
+            }
+            unsafe { (*view.source).watched = 1 };
+            true
+        });
         for (address, object) in &heap.previous {
             if object.individually_owned() && object.forwarded as usize != *address {
                 // SAFETY: Roots/fields now address to-space; self-forwarded
@@ -866,6 +896,95 @@ struct List {
     buffer: Buffer,
     stride: usize,
     trace_element: Option<Trace>,
+    watched: usize,
+}
+
+// The public View and its access policy are Loom records/functions. This
+// registry only preserves element identity at structural removal boundaries.
+struct ListView {
+    source: *mut List,
+    removed: *mut List,
+    start: usize,
+    end: usize,
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C-unwind" fn loom_rt_list_retain_range(
+    source: *mut u8,
+    removed: *mut u8,
+    start: i64,
+    end: i64,
+) {
+    unsafe {
+        let retained = (*removed.cast::<List>()).buffer.len;
+        if start < 0
+            || end < start
+            || retained as u64 > (end - start) as u64
+            || end as u64 - retained as u64 > (*source.cast::<List>()).buffer.len as u64
+        {
+            fault("list view range out of bounds");
+        }
+        if (end - start) as u64 != retained as u64 {
+            let source = source.cast::<List>();
+            (*source).watched = 1;
+            HEAP.with(|heap| {
+                heap.borrow_mut().list_views.push(ListView {
+                    source,
+                    removed: removed.cast(),
+                    start: start as usize,
+                    end: end as usize,
+                })
+            });
+        }
+    }
+}
+
+// Called only on a watched List, before generated code removes its last slot.
+// Each removed identity gets one shared cell, even for overlapping views.
+#[unsafe(no_mangle)]
+unsafe extern "C-unwind" fn loom_rt_list_detach(source: *mut u8) -> *mut u8 {
+    unsafe {
+        let list = source.cast::<List>();
+        let length = (*list).buffer.len;
+        let mut values = vec![source, ptr::null_mut()];
+        HEAP.with(|heap| {
+            for view in &heap.borrow().list_views {
+                if view.source == list
+                    && view.start < length
+                    && view.end - (*view.removed).buffer.len == length
+                {
+                    values.push(view.removed.cast());
+                }
+            }
+        });
+        if values.len() == 2 {
+            return source;
+        }
+        let slots = values.as_mut_ptr();
+        let roots: Vec<Root> = (0..values.len())
+            .map(|index| Root {
+                address: slots.add(index).cast(),
+                trace: trace_pointer,
+            })
+            .collect();
+        let mut frame = std::mem::MaybeUninit::<RootFrame>::uninit();
+        loom_rt_roots_enter(frame.as_mut_ptr(), roots.as_ptr(), roots.len());
+        let cell = loom_rt_list_new((*list).stride, (*list).trace_element, 1).cast::<List>();
+        *slots.add(1) = cell.cast();
+        let list = (*slots).cast::<List>();
+        ptr::copy_nonoverlapping(
+            (*list).buffer.data.add((length - 1) * (*list).stride),
+            (*cell).buffer.data,
+            (*list).stride,
+        );
+        (*cell).buffer.len = 1;
+        for index in 2..values.len() {
+            // The item is a rooted slot, not a stale pointer snapshot across reserve.
+            list_push(*slots.add(index), slots.add(1).cast());
+        }
+        loom_rt_roots_leave(frame.as_mut_ptr());
+        *slots
+    }
 }
 
 unsafe extern "C" fn trace_bytes(pointer: *mut u8) {
@@ -1564,6 +1683,47 @@ mod tests {
         }
         drop(literal_root);
         drop(checkpoint);
+        loom_rt_collect();
+        assert_eq!(live(), 0);
+    }
+
+    #[test]
+    fn view_registrations_are_weak_and_removed_cells_are_shared() {
+        HEAP.with(|heap| heap.borrow_mut().stress = true);
+        // SAFETY: Every managed value remains in a rewritable root slot;
+        // pointer-valued cells use the ordinary List tracer.
+        rooted([ptr::null_mut(); 4], |slots| unsafe {
+            *slots = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 0);
+            *slots.add(1) = text("kept");
+            list_push(*slots, slots.add(1).cast());
+            *slots.add(1) = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 0);
+            *slots.add(2) = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 0);
+            *slots.add(3) = loom_rt_list_new(size_of::<*mut u8>(), Some(trace_pointer), 0);
+            for index in 1..4 {
+                loom_rt_list_retain_range(*slots, *slots.add(index), 0, 1);
+            }
+            *slots.add(3) = ptr::null_mut();
+            loom_rt_collect();
+            assert_eq!(HEAP.with(|heap| heap.borrow().list_views.len()), 2);
+            let list = loom_rt_list_detach(*slots).cast::<List>();
+            (*list).buffer.len = 0;
+            loom_rt_collect();
+            let cell = |index| {
+                let removed = (*slots.add(index)).cast::<List>();
+                *(*removed).buffer.data.cast::<*mut List>()
+            };
+            assert_eq!(cell(1), cell(2));
+            assert_eq!(
+                text_bytes(*(*cell(1)).buffer.data.cast::<*mut u8>()),
+                b"kept"
+            );
+            *slots.add(1) = ptr::null_mut();
+            *slots.add(2) = ptr::null_mut();
+            loom_rt_collect();
+            assert_eq!((*(*slots).cast::<List>()).watched, 0);
+            assert!(HEAP.with(|heap| heap.borrow().list_views.is_empty()));
+        });
+        HEAP.with(|heap| heap.borrow_mut().stress = false);
         loom_rt_collect();
         assert_eq!(live(), 0);
     }

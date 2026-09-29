@@ -109,6 +109,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::ListNew
         | Primitive::ListNewCapacity
         | Primitive::ListPush
+        | Primitive::ListPop
         | Primitive::CleanupEach
         | Primitive::Read
         | Primitive::SocketRead
@@ -164,7 +165,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::ListLen
         | Primitive::ListGet
         | Primitive::ListSet
-        | Primitive::ListPop
+        | Primitive::ListRetainRange
         | Primitive::Open
         | Primitive::Create
         | Primitive::Write

@@ -314,7 +314,15 @@ fn infer(env Environment, pattern Int, actual Int, arguments List[Int]) Bool {
         return true
     }
     let value = get(env.types, actual)
-    if !same_constructor(env, source, value) { return false }
+    if !same_constructor(env, source, value) {
+        // Preserve a bare T's exact type above. A structural parameter such
+        // as View[T] can infer through ordinary implicit refinement weakening;
+        // overload admission still validates the complete conversion.
+        if value.kind == TypeKind.Refined && source.kind != TypeKind.Refined {
+            return infer(env, pattern, base_type(env, actual), arguments)
+        }
+        return false
+    }
     var index = 0
     var matched = true
     while index < length(source.arguments) {

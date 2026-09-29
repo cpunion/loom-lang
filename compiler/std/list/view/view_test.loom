@@ -1,0 +1,11 @@
+test fn empty_ranges_and_copies_have_immutable_shape() {
+    let source = [1, 2]
+    assert length(capture(source, 1, 1)) == 0
+    let first = capture(source)
+    let alias = first
+    std.list.push(source, 3)
+    set(alias, 0, 4)
+    assert get(first, 0) == 4 && source[0] == 4 && length(alias) == 2
+}
+
+import std.list.push

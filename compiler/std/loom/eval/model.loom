@@ -31,15 +31,19 @@ pub record Value {
     text Text
     items List[Value]
 }
+
 pub record Failure {
     span Span
     message Text
 }
+
 enum Control { Normal Return Break Continue }
+
 record Step {
     value Value
     control Control
 }
+
 record Frame {
     locals List[Value]
     calls Int
@@ -51,30 +55,55 @@ record State {
     budget List[Int]
     partial Bool
     task_types List[Int]
+    list_views List[RetainedRange]
+}
+
+record RetainedRange {
+    source Int
+    removed Value
+    start Int
+    end Int
 }
 
 pub fn unknown() Value { Value { ty = -1 number = 0 floating = 0.0 text = "" items = new[Value]() } }
+
 pub fn number(value Int) Value { Value { ty = 1 number = value floating = 0.0 text = "" items = new[Value]() } }
+
 pub fn floating(value Float) Value { Value { ty = 5 number = 0 floating = value text = "" items = new[Value]() } }
+
 pub fn flag(value Bool) Value { Value { ty = 2 number = if value { 1 } else { 0 } floating = 0.0 text = "" items = new[Value]() } }
+
 fn unit() Value { Value { ty = 0 number = 0 floating = 0.0 text = "" items = new[Value]() } }
+
 fn string(value Text) Value { Value { ty = 3 number = 0 floating = 0.0 text = value items = new[Value]() } }
+
 fn aggregate(ty Int, tag Int, items List[Value]) Value { Value { ty = ty number = tag floating = 0.0 text = "" items = items } }
+
 fn step(value Value) Step { Step { value = value control = Control.Normal } }
+
 fn failure(expr Expr, message Text) Failure { Failure { span = expr.span message = message } }
+
 fn finished(expr Expr, value Step) Result[Value, Failure] {
     if value.control == Control.Break || value.control == Control.Continue {
         return Result.Err(failure(expr, "compile-time loop control escaped its loop"))
     }
     Result.Ok(value.value)
 }
+
 fn state(program Program, partial Bool) State {
     let budget = new[Int]()
     push(budget, 100000)
     push(budget, 16777216)
     push(budget, 0)
-    State { program = program budget = budget partial = partial task_types = new[Int]() }
+    State {
+        program = program
+        budget = budget
+        partial = partial
+        task_types = new[Int]()
+        list_views = new[RetainedRange]()
+    }
 }
+
 fn fresh(state State, ty Int, items List[Value]) Value {
     // execute's work budget bounds the number of allocations well below Int.
     let id = get(state.budget, 2) + 1
@@ -91,7 +120,9 @@ fn fresh(state State, ty Int, items List[Value]) Value {
     }
     aggregate(ty, id, items)
 }
+
 fn fresh(state State, ty Int) Value { fresh(state, ty, new[Value]()) }
+
 fn spend(state State, expr Expr, index Int, amount Int) Result[Bool, Failure] {
     let remaining = get(state.budget, index)
     if amount < 0 || amount > remaining {
@@ -101,6 +132,7 @@ fn spend(state State, expr Expr, index Int, amount Int) Result[Bool, Failure] {
     set(state.budget, index, remaining - amount)
     Result.Ok(true)
 }
+
 fn slots(state State, expr Expr, count Int) Result[List[Value], Failure] {
     if count < 0 || count > get(state.budget, 1) / 64 {
         return Result.Err(failure(expr, "compile-time allocation budget exhausted"))
@@ -113,15 +145,18 @@ fn slots(state State, expr Expr, count Int) Result[List[Value], Failure] {
         index = index + 1 }
     Result.Ok(values)
 }
+
 fn child(expr Expr, index Int) Result[Expr, Failure] {
     if index < 0 || index >= length(expr.children) { return Result.Err(failure(expr, "invalid checked expression children")) }
     Result.Ok(get(expr.children, index))
 }
+
 fn stored(frame Frame, expr Expr, index Int, value Value) Result[Bool, Failure] {
     if index < 0 || index >= length(frame.locals) { return Result.Err(failure(expr, "invalid compile-time local index")) }
     set(frame.locals, index, value)
     Result.Ok(true)
 }
+
 fn boolean(expr Expr, value Value) Result[Bool, Failure] {
     if value.ty != 2 { return Result.Err(failure(expr, "compile-time condition needs a known Bool")) }
     Result.Ok(value.number != 0)

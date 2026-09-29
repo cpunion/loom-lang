@@ -24,6 +24,7 @@ record RuntimeSignature {
     params List[Int]
     result Int
 }
+
 record CheckedBody {
     context Context
     function Function
@@ -32,6 +33,7 @@ record CheckedBody {
 fn signature(env Environment, id Int, arguments List[Int], node Node) Result[Signature, Failure] {
     signature_in(env, id, arguments, node, get(env.signatures, id).symbol)
 }
+
 fn signature_in(env Environment, id Int, arguments List[Int], node Node, owner Int) Result[Signature, Failure] {
     let original = get(env.signatures, id)
     if length(arguments) != original.parameters {
@@ -57,6 +59,7 @@ fn signature_in(env Environment, id Int, arguments List[Int], node Node, owner I
     Result.Ok(Signature { symbol = original.symbol parameters = original.parameters params = params
         compile_time = original.compile_time result = substitute(env, owner, original.result, arguments, node)? requirements = obligations })
 }
+
 fn method_target(env Environment, id Int, arguments List[Int], constants List[StaticValue]) Result[Instance, Failure] {
     let current = get(env.signatures, id)
     let declaration = symbol(env, current.symbol).node
@@ -76,6 +79,7 @@ fn method_target(env Environment, id Int, arguments List[Int], constants List[St
         arguments = if target == id { arguments } else { member_arguments(selected.arguments, argument_tail(arguments, 1)) }
         constants = constants })
 }
+
 fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticValue], node Node) Result[Int, Failure] {
     let current = get(env.signatures, id)
     // Scheduling has the callee identity, not the caller's source identity.
@@ -114,49 +118,109 @@ fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticV
     push(env.pending, Instance { signature = id arguments = arguments constants = constants })
     Result.Ok(scheduled)
 }
+
 fn runtime(parameters Int, params List[Int], returns Int) RuntimeSignature {
     RuntimeSignature { parameters = parameters params = params result = returns }
 }
+
 fn two_types(a Int, b Int) List[Int] { let values = ints(a)
     push(values, b)
     values
 }
+
 fn three_types(a Int, b Int, c Int) List[Int] { let values = two_types(a, b)
     push(values, c)
     values
 }
+
 fn runtime_signature(env Environment, name Text) RuntimeSignature {
-    if name == "fault_text" { return runtime(0, ints(3), 0) }
-    if name == "clock_monotonic_ns" { return runtime(0, new[Int](), 1) }
-    if name == "timer_until_ns" { return runtime(0, ints(1), 0) }
-    if name == "socket_wait" { return runtime(0, two_types(1, 1), 0) }
-    if name == "socket_listen" || name == "socket_connect" { return runtime(0, ints(3), 1) }
-    if name == "socket_accept" || name == "socket_connect_status" || name == "socket_close" || name == "socket_local_port" { return runtime(0, ints(1), 1) }
-    if name == "socket_read" || name == "socket_write_bytes" { return runtime(0, three_types(1, 4, 1), 1) }
-    if name == "task_next" { return runtime(0, new[Int](), 1) }
-    if name == "async_read" || name == "async_write_bytes" { return runtime(0, three_types(1, 4, 1), 1) }
-    if name == "async_write" { return runtime(0, three_types(1, 3, 1), 1) }
-    if name == "async_resolve" { return runtime(0, three_types(3, 4, 1), 1) }
-    if name == "async_open" { return runtime(0, two_types(3, 2), 1) }
-    if name == "async_close" || name == "file_abort" { return runtime(0, ints(1), 1) }
-    if name == "float_from_int" { return runtime(0, ints(1), 5) }
-    if name == "float_to_int" { return runtime(0, ints(5), 1) }
-    if name == "float_parse" { return runtime(0, ints(3), 5) }
-    if name == "float_format" { return runtime(0, ints(5), 3) }
-    if name == "text_len" || name == "open" || name == "create" || name == "path_kind" { return runtime(0, ints(3), 1) }
-    if name == "text_byte" { return runtime(0, two_types(3, 1), 1) }
-    if name == "text_concat" { return runtime(0, two_types(3, 3), 3) }
-    if name == "text_equal" { return runtime(0, two_types(3, 3), 2) }
-    if name == "text_slice" { return runtime(0, three_types(3, 1, 1), 3) }
-    if name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" { return runtime(0, ints(1), 2) }
-    if name == "arg_count" { return runtime(0, new[Int](), 1) }
-    if name == "arg_text" { return runtime(0, ints(1), 3) }
-    if name == "process_run" { return runtime(0, ints(intern(env, TypeKind.List, -1, ints(3))), 1) }
-    if name == "process_run_input" { return runtime(0, two_types(intern(env, TypeKind.List, -1, ints(3)), 3), 1) }
+    if name == "fault_text" {
+        return runtime(0, ints(3), 0)
+    }
+    if name == "clock_monotonic_ns" {
+        return runtime(0, new[Int](), 1)
+    }
+    if name == "timer_until_ns" {
+        return runtime(0, ints(1), 0)
+    }
+    if name == "socket_wait" {
+        return runtime(0, two_types(1, 1), 0)
+    }
+    if name == "socket_listen" || name == "socket_connect" {
+        return runtime(0, ints(3), 1)
+    }
+    if name == "socket_accept" || name == "socket_connect_status" || name == "socket_close" || name == "socket_local_port" {
+        return runtime(0, ints(1), 1)
+    }
+    if name == "socket_read" || name == "socket_write_bytes" {
+        return runtime(0, three_types(1, 4, 1), 1)
+    }
+    if name == "task_next" {
+        return runtime(0, new[Int](), 1)
+    }
+    if name == "async_read" || name == "async_write_bytes" {
+        return runtime(0, three_types(1, 4, 1), 1)
+    }
+    if name == "async_write" {
+        return runtime(0, three_types(1, 3, 1), 1)
+    }
+    if name == "async_resolve" {
+        return runtime(0, three_types(3, 4, 1), 1)
+    }
+    if name == "async_open" {
+        return runtime(0, two_types(3, 2), 1)
+    }
+    if name == "async_close" || name == "file_abort" {
+        return runtime(0, ints(1), 1)
+    }
+    if name == "float_from_int" {
+        return runtime(0, ints(1), 5)
+    }
+    if name == "float_to_int" {
+        return runtime(0, ints(5), 1)
+    }
+    if name == "float_parse" {
+        return runtime(0, ints(3), 5)
+    }
+    if name == "float_format" {
+        return runtime(0, ints(5), 3)
+    }
+    if name == "text_len" || name == "open" || name == "create" || name == "path_kind" {
+        return runtime(0, ints(3), 1)
+    }
+    if name == "text_byte" {
+        return runtime(0, two_types(3, 1), 1)
+    }
+    if name == "text_concat" {
+        return runtime(0, two_types(3, 3), 3)
+    }
+    if name == "text_equal" {
+        return runtime(0, two_types(3, 3), 2)
+    }
+    if name == "text_slice" {
+        return runtime(0, three_types(3, 1, 1), 3)
+    }
+    if name == "unicode_alphabetic" || name == "unicode_alphanumeric" || name == "unicode_whitespace" {
+        return runtime(0, ints(1), 2)
+    }
+    if name == "arg_count" {
+        return runtime(0, new[Int](), 1)
+    }
+    if name == "arg_text" {
+        return runtime(0, ints(1), 3)
+    }
+    if name == "process_run" {
+        return runtime(0, ints(intern(env, TypeKind.List, -1, ints(3))), 1)
+    }
+    if name == "process_run_input" {
+        return runtime(0, two_types(intern(env, TypeKind.List, -1, ints(3)), 3), 1)
+    }
     if name == "process_capture_configured" || name == "process_capture_input_configured" {
         let list = intern(env, TypeKind.List, -1, ints(3))
         let params = ints(list)
-        if name == "process_capture_input_configured" { push(params, 4) }
+        if name == "process_capture_input_configured" {
+            push(params, 4)
+        }
         push(params, 3)
         push(params, 1)
         push(params, list)
@@ -164,23 +228,57 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
         push(params, 4)
         return runtime(0, params, 1)
     }
-    if name == "env_get" { return runtime(0, two_types(3, 4), 1) }
-    if name == "exit" { return runtime(0, ints(1), 0) }
-    if name == "bytes_new" { return runtime(0, new[Int](), 4) }
-    if name == "bytes_len" { return runtime(0, ints(4), 1) }
-    if name == "bytes_get" { return runtime(0, two_types(4, 1), 1) }
-    if name == "bytes_set" { return runtime(0, three_types(4, 1, 1), 0) }
-    if name == "bytes_push" { return runtime(0, two_types(4, 1), 0) }
-    if name == "bytes_utf8" { return runtime(0, ints(4), 2) }
-    if name == "bytes_text_copy" { return runtime(0, ints(4), 3) }
-    if name == "read" { return runtime(0, three_types(1, 4, 1), 1) }
-    if name == "write" { return runtime(0, three_types(1, 3, 1), 1) }
-    if name == "write_bytes" { return runtime(0, three_types(1, 4, 1), 1) }
-    if name == "close" { return runtime(0, ints(1), 1) }
-    if name == "directory_read" { return runtime(0, two_types(3, intern(env, TypeKind.List, -1, ints(3))), 1) }
-    if name == "path_canonical" { return runtime(0, two_types(3, 4), 1) }
-    if name == "directory_create" || name == "file_remove" || name == "directory_remove" || name == "path_entry_kind" { return runtime(0, ints(3), 1) }
-    if name == "path_rename" { return runtime(0, two_types(3, 3), 1) }
+    if name == "env_get" {
+        return runtime(0, two_types(3, 4), 1)
+    }
+    if name == "exit" {
+        return runtime(0, ints(1), 0)
+    }
+    if name == "bytes_new" {
+        return runtime(0, new[Int](), 4)
+    }
+    if name == "bytes_len" {
+        return runtime(0, ints(4), 1)
+    }
+    if name == "bytes_get" {
+        return runtime(0, two_types(4, 1), 1)
+    }
+    if name == "bytes_set" {
+        return runtime(0, three_types(4, 1, 1), 0)
+    }
+    if name == "bytes_push" {
+        return runtime(0, two_types(4, 1), 0)
+    }
+    if name == "bytes_utf8" {
+        return runtime(0, ints(4), 2)
+    }
+    if name == "bytes_text_copy" {
+        return runtime(0, ints(4), 3)
+    }
+    if name == "read" {
+        return runtime(0, three_types(1, 4, 1), 1)
+    }
+    if name == "write" {
+        return runtime(0, three_types(1, 3, 1), 1)
+    }
+    if name == "write_bytes" {
+        return runtime(0, three_types(1, 4, 1), 1)
+    }
+    if name == "close" {
+        return runtime(0, ints(1), 1)
+    }
+    if name == "directory_read" {
+        return runtime(0, two_types(3, intern(env, TypeKind.List, -1, ints(3))), 1)
+    }
+    if name == "path_canonical" {
+        return runtime(0, two_types(3, 4), 1)
+    }
+    if name == "directory_create" || name == "file_remove" || name == "directory_remove" || name == "path_entry_kind" {
+        return runtime(0, ints(3), 1)
+    }
+    if name == "path_rename" {
+        return runtime(0, two_types(3, 3), 1)
+    }
     let parameter = get(abstract_arguments(env, 1), 0)
     if name == "resource_generate" {
         let callback = intern(env, TypeKind.Function, -1, two_types(1, parameter))
@@ -194,14 +292,33 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
         return runtime(1, two_types(task, 1), task)
     }
     let list = intern(env, TypeKind.List, -1, ints(parameter))
-    if name == "list_new" { return runtime(1, new[Int](), list) }
-    if name == "list_len" { return runtime(1, ints(list), 1) }
-    if name == "list_get" { return runtime(1, two_types(list, 1), parameter) }
-    if name == "list_push" { return runtime(1, two_types(list, parameter), 0) }
-    if name == "list_append" { return runtime(1, two_types(list, parameter), list) }
-    if name == "list_set" { return runtime(1, three_types(list, 1, parameter), 0) }
+    if name == "list_new" {
+        return runtime(1, new[Int](), list)
+    }
+    if name == "list_len" {
+        return runtime(1, ints(list), 1)
+    }
+    if name == "list_get" {
+        return runtime(1, two_types(list, 1), parameter)
+    }
+    if name == "list_push" {
+        return runtime(1, two_types(list, parameter), 0)
+    }
+    if name == "list_append" {
+        return runtime(1, two_types(list, parameter), list)
+    }
+    if name == "list_set" {
+        return runtime(1, three_types(list, 1, parameter), 0)
+    }
+    if name == "list_retain_range" {
+        let params = two_types(list, intern(env, TypeKind.List, -1, ints(list)))
+        push(params, 1)
+        push(params, 1)
+        return runtime(1, params, 0)
+    }
     runtime(-1, new[Int](), -1)
 }
+
 fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
     let current = get(env.signatures, id)
     let item = symbol(env, current.symbol)
@@ -268,6 +385,7 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
     }
     Result.Ok(item.name)
 }
+
 fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
     if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool { return Result.Ok(true) }
     if node.kind == NodeKind.Name {
@@ -315,11 +433,13 @@ fn old_parameter(context Context, node Node) Bool {
     }
     false
 }
+
 fn old_place(context Context, node Node) Bool {
     if node.kind == NodeKind.Name { return old_parameter(context, node) }
     if node.kind == NodeKind.Select { return old_place(context, child(node, 0)) }
     false
 }
+
 fn old_inline_path(context Context, value Expr) Bool {
     if value.kind == ExprKind.Local {
         return value.index >= 0 && value.index < length(context.locals) &&
@@ -332,6 +452,7 @@ fn old_inline_path(context Context, value Expr) Bool {
     }
     false
 }
+
 fn has_old(node Node) Bool {
     if node.kind == NodeKind.Old { return true }
     var index = 0
@@ -341,6 +462,7 @@ fn has_old(node Node) Bool {
     }
     false
 }
+
 fn old_contract(context Context, node Node, kind NodeKind) Result[Node, Failure] {
     if node.kind == NodeKind.Old {
         if kind != NodeKind.Ensures { return Result.Err(error(context, node, "old is only valid in ensures")) }
@@ -363,6 +485,7 @@ fn old_contract(context Context, node Node, kind NodeKind) Result[Node, Failure]
     }
     Result.Ok(Node { kind = node.kind value = node.value span = node.span children = children })
 }
+
 fn contracts(context Context, node Node, kind NodeKind) Result[List[Expr], Failure] {
     let clauses = new[Expr]()
     var index = 0
@@ -478,11 +601,13 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
     discard task_flow(context, checked_function)?
     Result.Ok(CheckedBody { context = context function = checked_function })
 }
+
 fn checked_function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
     let checked = function_body(env, id, arguments, constants, emit)?
     let verified = checked_contracts(checked.context, id, checked.function)?
     Result.Ok(close_function(checked.context, verified))
 }
+
 fn function(env Environment, id Int, arguments List[Int], constants List[StaticValue], emit Bool) Result[Function, Failure] {
     if active_pack(env) < 0 { return checked_function(env, id, arguments, constants, emit) }
     let pending = pending_pack_snapshot(env)

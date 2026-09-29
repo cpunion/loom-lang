@@ -370,6 +370,19 @@ before checking nonemptiness; wrapper aliases still share permitted updates.
 This is a library invariant-preserving API, not a language-level constrained
 List conversion or a fixed-shape view into the original List.
 
+`std.list.view.View[T]` now provides fixed-shape shared ranges over ordinary
+Lists. Source writes and overlapping views share element identities; removal
+retains the old element, while a later append creates a distinct one. View
+length remains immutable across source resize, moving GC and suspension, so a
+length refinement uses the existing persistent-invariant check without copying
+the source. Loom owns the view API; one private registration operation and a
+watched-removal slow path maintain retained cells. Internal weak registrations
+do not keep abandoned views alive. Ordinary List reads/writes/growth keep their
+direct layout. Compile-time evaluation and graph reification preserve these
+relationships; Task/MustScope payloads reject. See the
+[shared view example](../../compiler/examples/shared_views). This closes fixed
+shape, not general content-invariant alias/effect analysis.
+
 Source `std.map` and `std.set` now use shared Lists and ordinary bounded generics
 for open-addressed hash tables. Explicit `std.equal.Equal`/`std.hash.Hash`
 implementations cover Int, Bool and Text; custom managed keys use the same direct

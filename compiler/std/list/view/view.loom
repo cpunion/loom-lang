@@ -1,0 +1,64 @@
+import std.list.new
+import std.list.length
+import std.list.get
+import std.list.set
+
+intrinsic fn list_retain_range[T](source List[T], removed List[List[T]], start Int, end Int)
+
+// Immutable range metadata, shared element identities. The private state
+// prevents callers from replacing the source or the retained tail.
+pub record View[T] {
+    state State[T]
+}
+
+record State[T] {
+    source List[T]
+    removed List[List[T]]
+    start Int
+    end Int
+}
+
+// Bounds are checked once. Removing a source element preserves it for every
+// view that captured it; a subsequent append introduces a new identity.
+pub fn capture[T](source List[T], start Int, end Int) View[T] {
+    let removed = new[List[T]]()
+    list_retain_range(source, removed, start, end)
+    View {
+        state = State {
+            source = source
+            removed = removed
+            start = start
+            end = end
+        }
+    }
+}
+
+pub fn capture[T](source List[T]) View[T] {
+    capture(source, 0, std.list.length(source))
+}
+
+pub fn length[T](view View[T]) Int {
+    view.state.end - view.state.start
+}
+
+pub fn get[T](view View[T], index Int) T {
+    assert index >= 0 && index < length(view)
+    let position = view.state.start + index
+    let removed = view.state.removed
+    if position < view.state.end - std.list.length(removed) {
+        std.list.get(view.state.source, position)
+    } else {
+        std.list.get(std.list.get(removed, view.state.end - 1 - position), 0)
+    }
+}
+
+pub fn set[T](view View[T], index Int, value T) {
+    assert index >= 0 && index < length(view)
+    let position = view.state.start + index
+    let removed = view.state.removed
+    if position < view.state.end - std.list.length(removed) {
+        std.list.set(view.state.source, position, value)
+    } else {
+        std.list.set(std.list.get(removed, view.state.end - 1 - position), 0, value)
+    }
+}
