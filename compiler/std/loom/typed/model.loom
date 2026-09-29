@@ -96,6 +96,8 @@ pub enum ExprKind {
     FrameStore
     Suspend
     Bytes
+    // A receiver-only drain refers to an enclosing traversal with the same
+    // element-local index, keeping recursive layouts finite.
     ResourceDrain
 }
 

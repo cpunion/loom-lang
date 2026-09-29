@@ -90,7 +90,7 @@ fn call(state State, expr Expr, target Int, values List[Value], start Int, paren
     if count != length(function.params) || count > length(function.locals) {
         return Result.Err(failure(expr, "invalid checked call arguments"))
     }
-    let frame = Frame { locals = slots(state, expr, length(function.locals))? calls = parent.calls + 1 }
+    let frame = Frame { locals = slots(state, expr, length(function.locals))? calls = parent.calls + 1 drains = parent.drains }
     var index = 0
     while index < count { set(frame.locals, index, get(values, index + start))
         index = index + 1 }
@@ -301,14 +301,16 @@ fn execute(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure]
     if expr.kind == ExprKind.ResourceDrain {
         let value = execute(state, child(expr, 0)?, frame, depth + 1)?
         if value.control != Control.Normal { return Result.Ok(value) }
+        let cleanup = resource_drain_frame(state, expr, frame)?
+        let template = get(cleanup.drains, length(cleanup.drains) - 1)
         var element = list_length(value.value)
         while element > 0 {
             element = element - 1
-            discard stored(frame, expr, expr.index, list_element(value.value, element))?
-            var index = length(expr.children)
+            discard stored(cleanup, expr, expr.index, list_element(value.value, element))?
+            var index = length(template.children)
             while index > 1 {
                 index = index - 1
-                let completed = execute(state, get(expr.children, index), frame, depth + 1)?
+                let completed = execute(state, get(template.children, index), cleanup, depth + 1)?
                 if completed.control != Control.Normal { return Result.Ok(completed) }
             }
         }

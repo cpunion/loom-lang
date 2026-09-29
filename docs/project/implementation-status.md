@@ -853,7 +853,10 @@ drain elements in reverse order, including partially constructed Lists and neste
 record/enum/List cleanup faults. Synchronous MustScope parameters are checked
 borrows; indexing and read-only calls preserve the single cleanup owner. Native,
 compile-time, moving-GC, suspension and cancellation tests cover this path.
-Recursive resource cleanup and transfer into Tasks remain unsupported.
+Recursive resource layouts through Lists now use finite typed cleanup functions;
+recursive factories and borrowed traversal share the same fresh/no-escape checks.
+Native/compile-time resource trees and nested fault/cancellation tests cover this
+path. Resource transfer into Tasks remains unsupported.
 
 The [file-tool trial](../../compiler/examples/wordcount/README.md) exercises
 same-directory tests, a separate library package, Unicode text and file I/O.

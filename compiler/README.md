@@ -2146,8 +2146,11 @@ or manually dispose resource elements. Synchronous MustScope parameters are
 checked borrows, including indirect calls; callers must scope fresh arguments
 first. No borrowing syntax is required. See the
 [List cleanup tests](examples/cleanup/resource_list_test.loom).
-Recursive resource cleanup remains unsupported; static cleanup expansion retains
-its finite depth bound.
+Recursive record/enum layouts through Lists also clean up through finite typed
+helpers. Recursive factories retain the fresh-return requirement; read-only
+recursive traversal borrows the tree. Copying or mutating scoped resource edges
+cannot manufacture shared ownership or cycles. See the
+[resource tree tests](examples/cleanup/resource_tree_test.loom).
 Lexical cleanup across suspension is
 supported as described in [Source Tasks](#source-tasks).
 

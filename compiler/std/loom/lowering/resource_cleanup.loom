@@ -1,10 +1,10 @@
 // Resource traversal is typed Loom IR. The runtime only resumes this callback
 // after a fault; it knows neither List layout nor the element's Dispose methods.
-fn resource_drain_call(program Program, value Expr, receiver Expr, target Int) Expr {
+fn resource_drain_call(program Program, value Expr, receiver Expr, target Int, count Int) Expr {
     let function = get(program.functions, target)
     let arguments = pair(receiver,
         node(ExprKind.FunctionRef, function_type(program.types, function.params, 0), value.span, target, new[Expr]()))
-    push(arguments, integer(length(value.children) - 1, value.span))
+    push(arguments, integer(count, value.span))
     operation("cleanup_each", 0, value.span, arguments)
 }
 
@@ -71,23 +71,35 @@ fn resource_drain(program Program, source Function, value Expr, children List[Ex
         pair(node(ExprKind.Local, receiver.ty, value.span, 0, new[Expr]()),
             node(ExprKind.Local, 1, value.span, 1, new[Expr]())))
     let body = pair(node(ExprKind.Let, 0, value.span, get(mapping, value.index), one(selected)), dispatch)
-    let target = length(program.functions)
-    push(program.functions, generated(source, params, 0, locals, block(body, 0, value.span, true)))
-    set(callbacks, value.index, target)
-    resource_drain_call(program, value, receiver, target)
+    let target = get(callbacks, value.index)
+    set(program.functions, target, generated(source, params, 0, locals, block(body, 0, value.span, true)))
+    resource_drain_call(program, value, receiver, target, length(children) - 1)
 }
 
-fn resource_cleanup_expression(program Program, source Function, value Expr, callbacks List[Int]) Expr {
+fn resource_cleanup_expression(program Program, source Function, value Expr, callbacks List[Int], counts List[Int]) Expr {
     // Defer and every normal exit share the same typed traversal. Its anonymous
     // element binding is unique within the source function.
-    if value.kind == ExprKind.ResourceDrain && get(callbacks, value.index) >= 0 {
-        return resource_drain_call(program, value,
-            resource_cleanup_expression(program, source, get(value.children, 0), callbacks), get(callbacks, value.index))
+    if value.kind == ExprKind.ResourceDrain {
+        if get(callbacks, value.index) >= 0 {
+            return resource_drain_call(program, value,
+                resource_cleanup_expression(program, source, get(value.children, 0), callbacks, counts),
+                get(callbacks, value.index), get(counts, value.index))
+        }
+        // Publish the callback signature before walking descendants. Recursive
+        // List edges call this same typed function instead of expanding again.
+        assert length(value.children) > 1
+        let params = ints(get(value.children, 0).ty)
+        push(params, 1)
+        push(params, 1)
+        let target = length(program.functions)
+        push(program.functions, generated(source, params, 0, new[Local](), empty(value.span)))
+        set(callbacks, value.index, target)
+        set(counts, value.index, length(value.children) - 1)
     }
     let children = new[Expr]()
     var index = 0
     while index < length(value.children) {
-        push(children, resource_cleanup_expression(program, source, get(value.children, index), callbacks))
+        push(children, resource_cleanup_expression(program, source, get(value.children, index), callbacks, counts))
         index = index + 1
     }
     if value.kind == ExprKind.ResourceDrain {
@@ -100,7 +112,7 @@ fn resource_cleanup_expression(program Program, source Function, value Expr, cal
         let body = new[Expr]()
         var member = 0
         while member < length(arm.body) {
-            push(body, resource_cleanup_expression(program, source, get(arm.body, member), callbacks))
+            push(body, resource_cleanup_expression(program, source, get(arm.body, member), callbacks, counts))
             member = member + 1
         }
         push(arms, Arm {
@@ -145,13 +157,15 @@ fn resource_cleanup_program(source Program) Program {
         }
         if has_scope {
             let callbacks = new[Int]()
+            let counts = new[Int]()
             local = 0
             while local < length(function.locals) {
                 push(callbacks, -1)
+                push(counts, 0)
                 local = local + 1
             }
             set(program.functions, index, function_body(function,
-                    resource_cleanup_expression(program, function, function.body, callbacks)))
+                    resource_cleanup_expression(program, function, function.body, callbacks, counts)))
         }
         index = index + 1
     }

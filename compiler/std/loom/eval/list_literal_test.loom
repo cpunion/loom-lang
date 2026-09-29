@@ -64,6 +64,7 @@ test fn list_elements_execute_once_in_order_and_propagate_control() {
     let frame = Frame {
         locals = new[Value]()
         calls = 0
+        drains = new[Expr]()
     }
     let checked = list_literal(6, two(literal(1), literal(2)))
     assert match execute(state, checked, frame, 0) {

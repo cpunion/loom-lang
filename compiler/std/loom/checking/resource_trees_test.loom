@@ -1,0 +1,48 @@
+test fn recursive_resource_factories_keep_fresh_returns_and_read_only_borrowing() {
+    let header = concat(resource_header(), """
+        enum Tree {
+            Leaf(Handle)
+            Branch(List[Tree])
+        }
+        impl Dispose for Tree {
+            fn dispose(self Tree) {
+            }
+        }
+        fn tree(depth Int) Tree {
+            if depth == 0 {
+                return Tree.Leaf(make([0]))
+            }
+            Tree.Branch([tree(depth - 1), tree(depth - 1)])
+        }
+        """)
+    resource_accept(concat(header, """
+        fn run() {
+            scoped value = tree(3)
+        }
+        """))
+    resource_reject(concat(header, """
+        fn alias(value Tree, again Bool) Tree {
+            if again {
+                return alias(value, false)
+            }
+            value
+        }
+        """))
+    resource_reject(concat(header, """
+        fn cycle() {
+            scoped value = tree(2)
+            scoped shared = Tree.Branch([value])
+        }
+        """))
+    resource_reject(concat(header, """
+        fn mutate(value Tree) {
+            match value {
+                Tree.Branch(children) => {
+                    children[0] = tree(0)
+                }
+                _ => {
+                }
+            }
+        }
+        """))
+}

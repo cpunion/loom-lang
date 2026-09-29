@@ -449,7 +449,9 @@ cleanup faults, suspension and cancellation. Resource Lists support literals and
 runtime-sized factory construction, reverse cleanup after partial construction,
 and checked borrowing through parameters/indexing. Nested List/enum/record
 cleanup shares typed callbacks and continues after faults; moving-GC, suspension
-and cancellation tests cover the path. Recursive resource cleanup remains open.
+and cancellation tests cover the path. Recursive resource layouts through Lists
+now lower to finite typed helpers; resource-tree construction, borrowed traversal,
+compile-time execution and fault/cancellation cleanup are covered.
 Suspended lexical cleanup is implemented as described above, not a
 general resource-transfer facility.
 

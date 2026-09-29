@@ -103,13 +103,18 @@ fn resource_consume(flow ResourceFlow, value ResourceValue) {
 }
 
 // A summary is for one concrete function and its borrowed arguments. Recursive
-// edges may share the no-escape obligation, but never establish freshness.
+// edges may rely on MustScope's checked fresh-return promise, but cannot infer
+// freshness for an ordinary Dispose-only result from a cycle.
 fn resource_function(analysis ResourceAnalysis, id Int, borrowed List[Int]) Result[Bool, Failure] {
     var index = 0
     while index < length(analysis.summaries) {
         let previous = get(analysis.summaries, index)
         if previous.function == id && same(previous.borrowed, borrowed) {
-            return Result.Ok(!previous.visiting && previous.fresh)
+            if previous.visiting {
+                let current = get(analysis.functions, id)
+                return resource_type(analysis.env, current.symbol, resource_requirements(analysis, id)?, current.result, new[Int]())
+            }
+            return Result.Ok(previous.fresh)
         }
         index = index + 1
     }
