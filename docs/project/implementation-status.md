@@ -565,8 +565,9 @@ fragment; recursive predicates do not provide automatic proof evidence.
 Native O0/O2, compile-time and moving-GC tests exercise
 the [shared-field example](../../compiler/examples/record_refinement/shared.loom).
 Closed inline record literals with a prover-supported `Int`/`Bool` predicate
-produce the refined type directly. Closed pure record literals with `Float`
-leaves can do the same when compile-time evaluation establishes the predicate.
+produce the refined type directly. Closed record literals with `Float`, Text,
+tuple and enum fields, and Lists of those immutable aggregates, do the same when
+compile-time evaluation establishes the predicate; false constants are diagnostics.
 Unknown inputs and unevaluated expressions retain the `Result` boundary.
 List-backed constraints now admit length/content predicates over immutable
 scalar/Text/inline aggregate elements. Fresh literals and proved pure,

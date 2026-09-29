@@ -1536,7 +1536,7 @@ Its constructor checks an unknown value once and returns `Result`; copying the
 refined value or widening it to the base record adds no check. Fields cannot be
 assigned in place. A closed record
 literal whose `Int`/`Bool` predicate is proved by the bounded verifier returns
-the refined type directly. A closed, pure literal with `Float` fields can also
+the refined type directly. Closed literals with `Float`, Text, tuple or enum fields can also
 return directly when compile-time evaluation establishes its predicate; a false
 constant is a diagnostic. Unknown inputs, calls, and failed optional evaluation
 retain the `Result` boundary.
@@ -1559,7 +1559,9 @@ fn checked_copy(values List[Int]) Result[PositiveValues, ConstraintError] {
 Here `all_positive` is an ordinary pure function; see the complete
 [List constraint example](examples/record_refinement/lists.loom). A proved
 literal returns `PositiveValues` directly; other inputs keep the checked Result
-boundary. `PositiveValues(existing_list)` rejects: construction cannot silently
+boundary. Immutable aggregate elements use the same rule, including Text and
+enum payloads; see the [literal example](examples/record_refinement/literals.loom).
+`PositiveValues(existing_list)` rejects: construction cannot silently
 change that List's existing writable aliases. No automatic copy or runtime
 monitor is installed. Copies of a constrained value keep sharing its storage.
 

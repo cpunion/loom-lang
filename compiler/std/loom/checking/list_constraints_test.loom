@@ -348,3 +348,48 @@ test fn list_append_requires_a_preservation_proof_not_just_length_only_reads() {
         }
         """))
 }
+
+test fn immutable_aggregate_literals_prove_constraints_without_result_wrapping() {
+    let header = concat(list_constraint_source(), """
+        record Label {
+            name Text
+            pair (Int, Bool)
+        }
+        enum Item {
+            Labeled(Label)
+            Empty
+        }
+        fn labeled(values List[Item]) Bool {
+            length(values) == 1 && match values[0] {
+                Item.Labeled(value) => value.name == "ok" && value.pair.0 > 0 && value.pair.1
+                Item.Empty => false
+            }
+        }
+        type Labeled = List[Item] where labeled(self)
+        type Named = Label where self.name == "ok"
+
+        """)
+    list_constraint_accept(concat(header, """
+        fn literal() Labeled {
+            Labeled([Item.Labeled(Label {
+                        name = "ok"
+                        pair = (1, true)
+                    })])
+        }
+        fn named() Named {
+            Named(Label {
+                    name = "ok"
+                    pair = (1, true)
+                })
+        }
+        """))
+    let invalid = concat(header, """
+        fn literal() Labeled {
+            Labeled([Item.Empty])
+        }
+        """)
+    assert match list_constraint_checked(invalid) {
+        Result.Err(failed) => failed.diagnostic.message == "this constant does not satisfy the type constraint"
+        Result.Ok(_) => false
+    }
+}

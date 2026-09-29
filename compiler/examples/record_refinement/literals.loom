@@ -1,0 +1,38 @@
+record LiteralLabel {
+    text Text
+    pair (Int, Bool)
+}
+
+enum LiteralItem {
+    Labeled(LiteralLabel)
+    Empty
+}
+
+fn labeled_literal(values List[LiteralItem]) Bool {
+    length(values) == 1 && match values[0] {
+        LiteralItem.Labeled(value) => value.text == "ok" && value.pair.0 > 0 && value.pair.1
+        LiteralItem.Empty => false
+    }
+}
+
+type LabeledItems = List[LiteralItem] where labeled_literal(self)
+
+type NamedLiteral = LiteralLabel where self.text == "ok"
+
+fn literal_constraint_scope() Bool {
+    let label = NamedLiteral(LiteralLabel {
+            text = "ok"
+            pair = (1, true)
+        })
+    let items = LabeledItems([LiteralItem.Labeled(LiteralLabel {
+                    text = "ok"
+                    pair = (2, true)
+                })])
+    let alias = items
+    assert label.text == "ok"
+    assert match alias[0] {
+        LiteralItem.Labeled(value) => value.pair.0 == 2
+        LiteralItem.Empty => false
+    }
+    true
+}
