@@ -15,7 +15,7 @@ fn closed_list_value(value Expr) Bool {
     var index = 0
     while index < length(value.children) {
         let child = get(value.children, index)
-        if child.kind != ExprKind.Text && !closed_record_value(child, 0) {
+        if !closed_inline_value(child, 0) {
             return false
         }
         index = index + 1
