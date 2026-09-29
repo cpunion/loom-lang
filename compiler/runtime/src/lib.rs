@@ -797,13 +797,22 @@ unsafe fn process_capture_configured(
     stdout: *mut u8,
     stderr: *mut u8,
 ) -> i64 {
+    let output = unsafe { configured_process(arguments, directory, clear, changes) }
+        .and_then(|command| capture_process(command, input));
+    // SAFETY: Both output buffers retain their exact private ABI type.
+    unsafe { process_output(output, stdout, stderr) }
+}
+
+unsafe fn configured_process(
+    arguments: *const u8,
+    directory: *const u8,
+    clear: i64,
+    changes: *const u8,
+) -> Result<std::process::Command, i64> {
     // SAFETY: All inputs have their exact private signature. The builder copies
     // paths and environment entries into Rust storage before any Loom allocation.
-    let command = unsafe {
-        let command = match process_command(arguments) {
-            Ok(command) => command,
-            Err(status) => return status,
-        };
+    unsafe {
+        let command = process_command(arguments)?;
         let directory = std::str::from_utf8_unchecked(text_bytes(directory));
         let changes = &*changes.cast::<List>();
         let values = (0..changes.buffer.len).map(|index| {
@@ -814,15 +823,29 @@ unsafe fn process_capture_configured(
                 .cast::<*const u8>();
             std::str::from_utf8_unchecked(text_bytes(value))
         });
-        match process_io::configure(command, directory, clear, values) {
-            Ok(command) => command,
-            Err(status) => return status,
-        }
-    };
-    let output = match process_io::capture(command, input) {
-        Ok(output) => output,
+        process_io::configure(command, directory, clear, values)
+    }
+}
+
+fn capture_process(
+    command: std::process::Command,
+    input: Vec<u8>,
+) -> Result<std::process::Output, i64> {
+    match process_io::capture(command, input) {
+        Ok(output) => Ok(output),
         Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory => fatal("out of memory"),
-        Err(_) => return -1,
+        Err(_) => Err(-1),
+    }
+}
+
+unsafe fn process_output(
+    output: Result<std::process::Output, i64>,
+    stdout: *mut u8,
+    stderr: *mut u8,
+) -> i64 {
+    let output = match output {
+        Ok(output) => output,
+        Err(status) => return status,
     };
     rooted([stdout, stderr], |slots| {
         for (index, bytes) in [&output.stdout, &output.stderr].into_iter().enumerate() {

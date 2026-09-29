@@ -64,4 +64,7 @@ test fn intrinsic_effect_and_type_metadata_cannot_be_changed_by_a_declaration() 
     rejects_timer("async intrinsic fn async_write_bytes(fd Int, value Bytes, offset Int) Bool", "")
     rejects_timer("intrinsic fn async_resolve(host Text, buffer Bytes, port Int) Int", "")
     rejects_timer("async intrinsic fn async_resolve(host Int, buffer Bytes, port Int) Int", "")
+    rejects_timer("intrinsic fn async_process_capture(arguments List[Text], input Bytes, directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int", "")
+    rejects_timer("async intrinsic fn async_process_capture(arguments List[Int], input Bytes, directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int", "")
+    rejects_timer("async intrinsic fn async_process_capture(arguments List[Text], input Bytes, directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Bool", "")
 }

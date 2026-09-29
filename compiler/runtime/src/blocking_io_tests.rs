@@ -48,7 +48,7 @@ fn workers_keep_native_files_and_binary_buffers_until_completion() {
         reactor.clone(),
         opened,
     );
-    let original = finish(&reactor, opened, &job).file.unwrap();
+    let original = finish(&reactor, opened, &job).file().unwrap();
     let file = original.try_clone().unwrap();
     let registration1 = registration(&reactor, 1);
     let job = pool.submit(
@@ -58,7 +58,7 @@ fn workers_keep_native_files_and_binary_buffers_until_completion() {
     );
     drop(original);
     assert_eq!(
-        finish(&reactor, registration1, &job).count,
+        finish(&reactor, registration1, &job).bytes().0,
         payload.len() as i64
     );
     assert_eq!(std::fs::read(&path).unwrap(), payload);
@@ -71,20 +71,20 @@ fn workers_keep_native_files_and_binary_buffers_until_completion() {
             reactor.clone(),
             token,
         );
-        let chunk = finish(&reactor, token, &job);
-        assert!(chunk.count >= 0);
-        if chunk.count == 0 {
+        let (count, bytes) = finish(&reactor, token, &job).bytes();
+        assert!(count >= 0);
+        if count == 0 {
             break;
         }
-        copied.extend_from_slice(&chunk.bytes);
+        copied.extend_from_slice(&bytes);
     }
     let closed = registration(&reactor, 2);
     let job = pool.submit(Operation::Close(original), reactor.clone(), closed);
-    assert_eq!(finish(&reactor, closed, &job).count, 0);
+    assert_eq!(finish(&reactor, closed, &job).bytes().0, 0);
     assert_eq!(copied, payload);
     let token = registration(&reactor, 3);
     let job = pool.submit(Operation::Failed, reactor.clone(), token);
-    assert_eq!(finish(&reactor, token, &job).count, -1);
+    assert_eq!(finish(&reactor, token, &job).bytes().0, -1);
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn cancellation_discards_an_open_file_before_result_extraction() {
         })
         .unwrap();
     assert!(!timeout.timed_out());
-    assert!(matches!(&*state, State::Complete(outcome) if outcome.file.is_some()));
+    assert!(matches!(&*state, State::Complete(Outcome::File(Some(_)))));
     drop(state);
     let cancelled = reactor.cancel(token).unwrap();
     job.cancel_and_drain();
@@ -136,13 +136,12 @@ fn resolver_workers_publish_owned_numeric_addresses_in_os_order() {
             reactor.clone(),
             token,
         );
-        let outcome = finish(&reactor, token, &job);
-        assert!(outcome.file.is_none());
-        let text = String::from_utf8(outcome.bytes).unwrap();
+        let (count, bytes) = finish(&reactor, token, &job).bytes();
+        let text = String::from_utf8(bytes).unwrap();
         let addresses: Vec<std::net::SocketAddr> =
             text.lines().map(|line| line.parse().unwrap()).collect();
         assert!(!addresses.is_empty());
-        assert_eq!(outcome.count as usize, addresses.len());
+        assert_eq!(count as usize, addresses.len());
         assert!(
             addresses
                 .iter()
@@ -158,9 +157,9 @@ fn resolver_workers_publish_owned_numeric_addresses_in_os_order() {
     let token = registration(&reactor, 1);
     // NUL cannot enter a native resolver name; failure needs no external DNS.
     let job = pool.submit(Operation::Resolve("\0".into(), 80), reactor.clone(), token);
-    let outcome = finish(&reactor, token, &job);
-    assert_eq!(outcome.count, -1);
-    assert!(outcome.bytes.is_empty() && outcome.file.is_none());
+    let (count, bytes) = finish(&reactor, token, &job).bytes();
+    assert_eq!(count, -1);
+    assert!(bytes.is_empty());
 }
 
 struct Dropped(Arc<AtomicBool>);
@@ -181,11 +180,7 @@ fn bounded_workers_drop_queued_inputs_and_drain_running_cancellation() {
         Operation::Test(Box::new(move || {
             started.send(()).unwrap();
             gate.recv().unwrap();
-            Outcome {
-                count: 7,
-                bytes: vec![1, 2],
-                file: None,
-            }
+            Outcome::Bytes(7, vec![1, 2])
         })),
         reactor.clone(),
         token,

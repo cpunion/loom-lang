@@ -16,15 +16,32 @@ pub(super) enum Operation {
     Read(File, usize),
     Write(File, Vec<u8>),
     Resolve(String, u16),
+    Capture(Result<Box<std::process::Command>, i64>, Vec<u8>),
     Failed,
     #[cfg(test)]
     Test(Box<dyn FnOnce() -> Outcome + Send>),
 }
 
-pub(super) struct Outcome {
-    pub count: i64,
-    pub bytes: Vec<u8>,
-    pub file: Option<File>,
+pub(super) enum Outcome {
+    Bytes(i64, Vec<u8>),
+    File(Option<File>),
+    Process(Result<std::process::Output, i64>),
+}
+
+impl Outcome {
+    pub(super) fn bytes(self) -> (i64, Vec<u8>) {
+        match self {
+            Self::Bytes(count, bytes) => (count, bytes),
+            _ => super::fatal("unexpected native I/O result"),
+        }
+    }
+
+    pub(super) fn file(self) -> Option<File> {
+        match self {
+            Self::File(file) => file,
+            _ => super::fatal("unexpected native file result"),
+        }
+    }
 }
 
 impl Operation {
@@ -37,11 +54,12 @@ impl Operation {
                 } else {
                     File::open(path)
                 };
-                return Outcome {
-                    count: if file.is_ok() { 0 } else { -1 },
-                    bytes,
-                    file: file.ok(),
-                };
+                return Outcome::File(file.ok());
+            }
+            Self::Capture(command, input) => {
+                return Outcome::Process(
+                    command.and_then(|command| super::capture_process(*command, input)),
+                );
             }
             Self::Close(file) => close_file(file),
             Self::Read(mut file, limit) => {
@@ -80,11 +98,7 @@ impl Operation {
         };
         // Read/write inputs are dropped before completion. Open results retain
         // the native File until extraction or cancellation, not just an integer.
-        Outcome {
-            count,
-            bytes,
-            file: None,
-        }
+        Outcome::Bytes(count, bytes)
     }
 }
 

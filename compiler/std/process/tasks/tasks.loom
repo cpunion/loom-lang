@@ -1,0 +1,98 @@
+import std.process.Output
+import std.process.ExitStatus
+import std.process.SpawnError
+import std.process.Options
+import std.process.EnvChange
+import std.option.Option
+import std.result.Result
+import std.list.new
+import std.list.push
+import std.list.length
+import std.list.get
+import std.bytes.new
+import std.text.contains
+import std.text.concat
+
+async intrinsic fn async_process_capture(arguments List[Text], input Bytes, directory Text, clear Int, changes List[Text], stdout Bytes, stderr Bytes) Int
+
+// Same binary capture contract as std.process, using the bounded native I/O
+// pool. Inputs are snapshotted when the Task first reaches its native wait.
+// Cancellation drains an already running child; it does not kill a process tree.
+pub fn capture(arguments List[Text]) Task[Result[Output, SpawnError]] {
+    capture_input(arguments, std.bytes.new())
+}
+
+pub fn capture(arguments List[Text], options Options) Task[Result[Output, SpawnError]] {
+    capture_input(arguments, std.bytes.new(), options)
+}
+
+pub fn capture_input(arguments List[Text], input Bytes) Task[Result[Output, SpawnError]] {
+    capture_input(arguments, input, Options {
+            directory = Option.None
+            clear_environment = false
+            environment = new[EnvChange]()
+        })
+}
+
+pub async fn capture_input(arguments List[Text], input Bytes, options Options) Result[Output, SpawnError] {
+    let directory = match options.directory {
+        Option.None => ""
+        Option.Some(value) => {
+            if value == "" || contains(value, "\0") {
+                return Result.Err(SpawnError.InvalidOptions)
+            }
+            value
+        }
+    }
+    let changes = new[Text]()
+    var index = 0
+    while index < length(options.environment) {
+        let entry = match get(options.environment, index) {
+            EnvChange.Set(name, value) => {
+                if !valid_name(name) || contains(value, "\0") {
+                    return Result.Err(SpawnError.InvalidOptions)
+                }
+                concat(concat(name, "="), value)
+            }
+            EnvChange.Remove(name) => {
+                if !valid_name(name) {
+                    return Result.Err(SpawnError.InvalidOptions)
+                }
+                name
+            }
+        }
+        push(changes, entry)
+        index = index + 1
+    }
+    let stdout = std.bytes.new()
+    let stderr = std.bytes.new()
+    let clear = if options.clear_environment {
+        1
+    } else {
+        0
+    }
+    let code = async_process_capture(arguments, input, directory, clear, changes, stdout, stderr).await
+    if code == -2 {
+        return Result.Err(SpawnError.EmptyArguments)
+    }
+    if code == -4 {
+        return Result.Err(SpawnError.InvalidOptions)
+    }
+    if code < 0 && code != -3 {
+        return Result.Err(SpawnError.Failed)
+    }
+    let status = if code == -3 {
+        ExitStatus.Terminated
+    } else {
+        ExitStatus.Exited(code)
+    }
+    Result.Ok(Output {
+            status = status
+            stdout = stdout
+            stderr = stderr
+        })
+}
+
+fn valid_name(name Text) Bool {
+    name != "" && !contains(name, "=") && !contains(name, "\0")
+}

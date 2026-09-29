@@ -189,6 +189,23 @@ fn external_parking(graph Graph, source Expr, start Int, loop Loop) Value {
             return Value { state = after expression = empty(source.span) }
         }
         let reading = source.text == "async_read"
+        if source.text == "async_process_capture" {
+            assert source.ty == 1 && length(arguments) == 7
+            let inputs = new[Expr]()
+            var input = 0
+            while input < 5 {
+                push(inputs, get(arguments, input))
+                input = input + 1
+            }
+            let park = state(graph)
+            let after = state(graph)
+            jump(graph, current, park)
+            finish(graph, park, Exit.Park, operation("task_wait_process_capture", 2, source.span, inputs), edges(after), new[Arm]())
+            let output = operation("task_process_capture_result", 1, source.span, pair(get(arguments, 5), get(arguments, 6)))
+            let saved = temporary(graph, 1)
+            save(graph, after, saved, output)
+            return Value { state = after expression = local(graph, saved) }
+        }
         let resolving = source.text == "async_resolve"
         let bytes_result = reading || resolving
         let opening = source.text == "async_open"

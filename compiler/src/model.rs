@@ -142,6 +142,8 @@ pub enum Primitive {
     TaskFileResult,
     TaskBytesResult,
     TaskWaitResolve,
+    TaskWaitProcessCapture,
+    TaskProcessCaptureResult,
     TaskWaitFileOpen,
     TaskWaitFileClose,
     TaskFileOpenResult,

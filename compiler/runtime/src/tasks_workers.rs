@@ -180,7 +180,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_wait_file_write_bytes(
 
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_task_file_result() -> i64 {
-    completed().count
+    completed().bytes().0
 }
 
 #[unsafe(no_mangle)]
@@ -199,8 +199,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_wait_file_open(
 
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_task_file_open_result() -> i64 {
-    let outcome = completed();
-    match outcome.file {
+    match completed().file() {
         Some(file) => edit(|owner, _| Ok(owner.workers.get().unwrap().insert(file))),
         None => -1,
     }
@@ -220,21 +219,53 @@ pub(super) extern "C-unwind" fn loom_rt_file_abort(token: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C-unwind" fn loom_rt_task_bytes_result(bytes: *mut u8) -> i64 {
-    let outcome = completed();
-    if !outcome.bytes.is_empty() {
+    let (count, output) = completed().bytes();
+    if !output.is_empty() {
         // SAFETY: The caller roots Bytes. reserve reloads its moved header;
         // native output remains independent across collection and the copy.
         unsafe {
-            let buffer = super::super::reserve(bytes, outcome.bytes.len(), 1);
+            let buffer = super::super::reserve(bytes, output.len(), 1);
             ptr::copy_nonoverlapping(
-                outcome.bytes.as_ptr(),
+                output.as_ptr(),
                 (*buffer).data.add((*buffer).len),
-                outcome.bytes.len(),
+                output.len(),
             );
-            (*buffer).len += outcome.bytes.len();
+            (*buffer).len += output.len();
         }
     }
-    outcome.count
+    count
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_task_wait_process_capture(
+    arguments: *const u8,
+    input: *const u8,
+    directory: *const u8,
+    clear: i64,
+    changes: *const u8,
+) -> i32 {
+    worker_wait(|| {
+        // SAFETY: Snapshot every managed input once, before submission. Workers
+        // own only Command and Rust bytes, never pointers into the moving heap.
+        unsafe {
+            Operation::Capture(
+                crate::configured_process(arguments, directory, clear, changes).map(Box::new),
+                crate::buffer_bytes(input).to_vec(),
+            )
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C-unwind" fn loom_rt_task_process_capture_result(
+    stdout: *mut u8,
+    stderr: *mut u8,
+) -> i64 {
+    let Outcome::Process(output) = completed() else {
+        fatal("unexpected native process result");
+    };
+    // SAFETY: Shared extraction roots both outputs across every allocation.
+    unsafe { crate::process_output(output, stdout, stderr) }
 }
 
 #[cfg(test)]
@@ -289,11 +320,7 @@ mod tests {
                 started.send(()).unwrap();
                 gate.recv().unwrap();
                 finished.store(true, Ordering::SeqCst);
-                Outcome {
-                    count: 1,
-                    bytes: vec![1],
-                    file: Some(tempfile::tempfile().unwrap()),
-                }
+                Outcome::File(Some(tempfile::tempfile().unwrap()))
             }))),
             0
         );

@@ -1,0 +1,47 @@
+import std.process.arguments
+import std.process.exit_code
+import std.process.ExitStatus
+import std.process.tasks.capture
+import std.list.length
+import std.list.new
+import std.list.push
+import std.io.write_bytes
+import std.io.write_error
+import std.result.Result
+
+async fn main() {
+    let values = arguments()
+    if length(values) < 2 {
+        discard write_error("usage: async-processes EXECUTABLE [ARGUMENTS...]\n")
+        exit_code(2)
+        return
+    }
+    let command = new[Text]()
+    var index = 1
+    while index < length(values) {
+        push(command, values[index])
+        index = index + 1
+    }
+    match capture(command).await {
+        Result.Ok(output) => {
+            discard write_bytes(output.stdout)
+            discard write_error(output.stderr)
+            match output.status {
+                ExitStatus.Exited(code) => {
+                    exit_code(if code <= 255 {
+                            code
+                        } else {
+                            1
+                        })
+                }
+                ExitStatus.Terminated => {
+                    exit_code(1)
+                }
+            }
+        }
+        Result.Err(_) => {
+            discard write_error("could not capture child process\n")
+            exit_code(1)
+        }
+    }
+}
