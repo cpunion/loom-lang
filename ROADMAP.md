@@ -287,7 +287,8 @@ Compile-time-specialized bodies also reuse detached immutable constants, with
 current type/function identities and rebuilt aggregate keys. Variadic instances
 key the original declaration and arity, rebuilding signatures and arity validation
 before reusing concrete bodies. Concrete methods keep current conformance checks
-and independent inherited-contract source mapping. Unsupported cases recheck;
+and independent inherited-contract source mapping. Async/Task body reuse precedes
+fresh coroutine lowering and refreshes task-creation labels. Unsupported cases recheck;
 per-package native objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic

@@ -1,0 +1,50 @@
+test fn async_bodies_reuse_checked_task_flow_and_current_creation_locations() {
+    let source = """
+        record Pair {
+            first Task[Int]
+            second Task[Text]
+        }
+        async fn number(item Int) Int {
+            item
+        }
+        async fn label() Text {
+            "task"
+        }
+        fn forward(item Task[Int]) Task[Int] {
+            item
+        }
+        async fn main() {
+            let callback fn(Int) Task[Int] = number
+            let values = Pair {
+                first = forward(callback(7))
+                second = label()
+            }
+            assert values.first.await == 7
+            assert values.second.await == "task"
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    let changed = concat("fn unused(value List[Bool]) List[Bool] { value }\n\n", source)
+    let checked = match cached_source(cache, changed) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            assert false
+            return
+        }
+    }
+    assert bodies_reused(cache) >= 4
+    let main = get(checked.program.functions, checked.program.entry)
+    assert main.is_async && main.span.start >= 2
+    discard restored_definition_cache(cache)
+    let invalid = std.text.join(std.text.split(source, "values.second.await == \"task\""), "values.first.await == 7")
+    assert match cached_source(cache, invalid) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

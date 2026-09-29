@@ -319,7 +319,7 @@ and a checked `program`; `definitions_reused(cache)` counts reused abstract
 function checks and `bodies_reused(cache)` counts reused concrete bodies.
 Body edits invalidate transitive callers; declaration/import
 changes and changed invariant helpers recheck conservatively. Syntax-producing
-macros, async, resource and closure definitions are not reused. Only successful checks
+macros, resource and closure definitions are not reused. Only successful checks
 replace the saved basis. Concrete reuse covers ordinary scalar, aggregate,
 List, generic and compile-time-specialized bodies with unchanged source text.
 Static instance keys retain detached immutable values; types, named callbacks and
@@ -337,6 +337,9 @@ maps use the same dependency invalidation.
 Concrete concept/default/impl methods use the same path while declaration and
 conformance checks still run. Inherited contract clauses retain their own source
 declaration/file mapping, independent of the implementation's location.
+Async/Task bodies can reuse checked one-shot flow before fresh coroutine lowering,
+including private waits and named Task callbacks. Task-creation labels are rebuilt
+from current source, like assertions; captured-frame bodies still recheck.
 The resident editor uses this path automatically after a snapshot changes.
 Top-level declaration generation reruns with current build inputs before matching
 its expanded definitions. Unchanged generated bodies can therefore participate in

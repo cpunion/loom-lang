@@ -1042,6 +1042,9 @@ expansion and arity validation precede reuse, including compile-time loops/maps.
 Concrete method reuse preserves default/associated/static specialization and
 maps inherited clauses to their current concept declaration. Declaration and
 conformance validation still run.
+Async/Task bodies reuse one-shot flow evidence before fresh coroutine lowering,
+with current direct/indirect task-creation labels. Private waits keep the same
+runtime path; captured-frame and resource bodies still recheck.
 Compiler bytes, mode/options, module/import identities and observed inputs bind the complete
 checksummed snapshot. Declaration expansion reruns before matching; its raw
 source and expanded trees have separate private snapshots. Unsupported snapshots

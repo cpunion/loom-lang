@@ -30,6 +30,88 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn async_instances_reuse_before_lowering_with_real_waits_and_current_labels() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+import std.time.sleep_ms
+record Pair {
+    first Task[Int]
+    second Task[Text]
+}
+async fn number(item Int) Int {
+    sleep_ms(1).await
+    assert item > 0
+    item
+}
+async fn label() Text {
+    "task"
+}
+fn forward(item Task[Int]) Task[Int] {
+    item
+}
+async fn main() {
+    let callback fn(Int) Task[Int] = number
+    let values = Pair {
+        first = forward(callback(7))
+        second = label()
+    }
+    assert values.first.await == 7
+    assert values.second.await == "task"
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    let shifted = format!("fn unused() Int {{ 1 }}\n\n{source}");
+    fs::write(&path, shifted).unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    let bodies: usize = trace
+        .split(", bodies reused ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(bodies >= 4, "{trace}");
+    let executed = common::command(&["run"])
+        .arg(&package)
+        .arg("--frontend-cache")
+        .arg(&cache)
+        .env("LOOM_GC_STRESS", "1")
+        .env("LOOM_NATIVE_TIMINGS", "1")
+        .output()
+        .unwrap();
+    checked(&executed, true);
+
+    let failing = source.replace("callback(7)", "callback(-7)");
+    fs::write(&path, &failing).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    let shifted = format!("fn moved() Int {{ 2 }}\n\n{failing}");
+    fs::write(&path, &shifted).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    let failed = cached("run", &package, &cache, &[]);
+    assert!(!failed.status.success());
+    let (line, text) = shifted
+        .lines()
+        .enumerate()
+        .find(|(_, text)| text.contains("callback(-7)"))
+        .unwrap();
+    let column = text.find("callback(-7)").unwrap() + 1;
+    let diagnostic = format!(
+        "{}:{}:{column}: task created here",
+        path.canonicalize().unwrap().display(),
+        line + 1
+    );
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(stderr.contains(&diagnostic), "{stderr}");
+}
+
+#[test]
 fn method_instances_reuse_defaults_and_keep_inherited_contracts() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");
