@@ -1,6 +1,7 @@
 import std.loom.project.ModuleInstance
 import std.loom.project.Package
 import std.loom.project.PackageImport
+import std.loom.project.select_source
 
 fn cache_project(output Bytes, project Project) Result[Bool, Text] {
     cache_int(output, project.root)
@@ -40,12 +41,14 @@ fn cache_project(output Bytes, project Project) Result[Bool, Text] {
                 return Result.Err("cache requires source-backed syntax")
             }
         }
-        if !std.loom.ast.same(parsed, file.tree) {
+        let complete = std.loom.ast.same(parsed, file.tree)
+        if !complete && !std.loom.ast.same(std.loom.project.select_source(parsed, false), file.tree) {
             return Result.Err("cache requires source-backed syntax")
         }
         cache_int(output, file.package)
         cache_text(output, file.path)
         cache_text(output, file.text)
+        cache_bool(output, complete)
         cache_bool(output, file.test_only)
         cache_bool(output, file.trusted_std)
         index = index + 1
@@ -115,11 +118,12 @@ fn cache_read_project(reader CacheReader) Result[Project, Text] {
                 return Result.Err("invalid cached source")
             }
         }
+        let selected = std.loom.project.select_source(tree, cache_read_bool(reader)?)
         push(files, SourceFile {
                 package = package
                 path = path
                 text = text
-                tree = tree
+                tree = selected
                 test_only = cache_read_bool(reader)?
                 trusted_std = cache_read_bool(reader)?
             })
@@ -141,7 +145,7 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
     }
     let saved = get(cache.state.bodies, 0)
     let output = std.bytes.new()
-    cache_text(output, "loom-definition-snapshot 6")
+    cache_text(output, "loom-definition-snapshot 7")
     cache_bool(output, saved.definitions.tests)
     discard cache_definition_source(output, saved.definitions)?
     cache_int(output, length(saved.definitions.reusable))
@@ -181,7 +185,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
         text = text
         cursor = ints(0)
     }
-    if cache_read_text(reader)? != "loom-definition-snapshot 6" {
+    if cache_read_text(reader)? != "loom-definition-snapshot 7" {
         return Result.Err("invalid definition snapshot")
     }
     let tests = cache_read_bool(reader)?

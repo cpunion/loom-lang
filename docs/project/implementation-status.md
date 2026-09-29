@@ -791,8 +791,8 @@ IDs, declaration order and function-only file membership. Function additions,
 removals, overload changes and edited bodies invalidate transitive callers.
 Imports, nominal headers, trust, test and package identities still bind reuse.
 Changed invariant
-helpers invalidate proof consumers. Staging, closures, async/resource operations
-and variadics conservatively recheck. Ordinary concrete bodies also reuse their
+helpers invalidate proof consumers. Captured-frame bodies and expression-macro
+consumers conservatively recheck. Ordinary concrete bodies also reuse their
 checked result when source text is unchanged, including scalar, aggregate, List
 and generic instances. Fresh bindings drive type, call-target and source-span
 remapping; assertion diagnostics follow moved files. Changed overloads and
@@ -800,7 +800,8 @@ elaboration-introduced calls invalidate affected bodies. Unsupported forms still
 recheck, and all cached IR is detached from mutable public results. The same
 in-memory facility is available as `std.loom.checking.check_project_cached`;
 failed checks never replace its private evidence. The CLI can persist the same
-ordinary definition/body evidence through its trusted-local frontend cache;
+definition/body evidence, including generated, staged, variadic, method, dynamic,
+async and scoped bodies, through its trusted-local frontend cache;
 public/API rename remains open.
 Qualified paths now enumerate existing package/import spellings, preserving
 overloads and source-instance/test identity. Local receiver bindings take priority;

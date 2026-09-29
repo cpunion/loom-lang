@@ -208,6 +208,37 @@ test fn definition_snapshots_require_source_backed_syntax_and_complete_encoding(
     }
 }
 
+test fn snapshots_preserve_the_loader_test_selection() {
+    let project = fixture_project(source_files("""
+        pub fn answer() Int {
+            7
+        }
+        test fn excluded() {
+            missing()
+        }
+        """))
+    let file = get(project.files, 0)
+    set(project.files, 0, SourceFile {
+            package = file.package
+            path = file.path
+            text = file.text
+            tree = std.loom.project.select_source(file.tree, false)
+            test_only = file.test_only
+            trusted_std = file.trusted_std
+        })
+    let initial = definition_cache()
+    assert match check_project_cached(project, false, build_inputs(no_input_reader), initial) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let restored = restored_definition_cache(initial)
+    assert match check_project_cached(project, false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert definitions_reused(restored) == 1 && bodies_reused(restored) == 1
+}
+
 test fn generated_snapshots_own_raw_and_expanded_source_separately() {
     let text = """"
         comptime {
