@@ -1,7 +1,7 @@
 record InvariantCall {
     target Int
-    inputs List[Bool]
-    borrowed Bool
+    inputs List[InputOrigin]
+    origin InputOrigin
 }
 
 record InvariantReads {
@@ -12,9 +12,9 @@ record InvariantReads {
 }
 
 record InvariantFrame {
-    locals List[Bool]
+    locals List[InputOrigin]
     changed List[Bool]
-    returned List[Bool]
+    returned List[InputOrigin]
 }
 
 fn invariant_flag(value Bool) List[Bool] {
@@ -23,31 +23,37 @@ fn invariant_flag(value Bool) List[Bool] {
     flags
 }
 
-fn invariant_frame(count Int, inputs List[Bool]) InvariantFrame {
-    let locals = new[Bool]()
+fn invariant_frame(count Int, inputs List[InputOrigin]) InvariantFrame {
+    let locals = new[InputOrigin]()
     var index = 0
     while index < count {
-        push(locals, index < length(inputs) && get(inputs, index))
+        push(locals, if index < length(inputs) {
+                get(inputs, index)
+            } else {
+                origin_empty()
+            })
         index = index + 1
     }
+    let returned = new[InputOrigin]()
+    push(returned, origin_empty())
     InvariantFrame {
         locals = locals
         changed = invariant_flag(false)
-        returned = invariant_flag(false)
+        returned = returned
     }
 }
 
-fn invariant_bind(frame InvariantFrame, local Int, borrowed Bool) {
-    if borrowed && local >= 0 && !get(frame.locals, local) {
-        set(frame.locals, local, true)
+fn invariant_bind(frame InvariantFrame, local Int, origin InputOrigin) {
+    if local >= 0 && !origin_covers(get(frame.locals, local), origin) {
+        set(frame.locals, local, origin_union(get(frame.locals, local), origin))
         set(frame.changed, 0, true)
     }
 }
 
-fn invariant_call(reads InvariantReads, target Int, inputs List[Bool], depth Int) Bool {
+fn invariant_call(reads InvariantReads, target Int, inputs List[InputOrigin], depth Int) InputOrigin {
     if target < 0 || target >= length(reads.functions) || depth >= 64 {
         set(reads.valid, 0, false)
-        return true
+        return origin_input()
     }
     var index = 0
     while index < length(reads.calls) {
@@ -55,17 +61,18 @@ fn invariant_call(reads InvariantReads, target Int, inputs List[Bool], depth Int
         var equal = saved.target == target && length(saved.inputs) == length(inputs)
         var input = 0
         while equal && input < length(inputs) {
-            equal = get(saved.inputs, input) == get(inputs, input)
+            equal = origin_covers(get(saved.inputs, input), get(inputs, input)) &&
+            origin_covers(get(inputs, input), get(saved.inputs, input))
             input = input + 1
         }
         if equal {
-            return saved.borrowed
+            return saved.origin
         }
         index = index + 1
     }
     if length(reads.calls) >= 1024 {
         set(reads.valid, 0, false)
-        return true
+        return origin_input()
     }
     let function = get(reads.functions, target)
     // A visiting recursive call conservatively transports input aliases in any
@@ -73,14 +80,14 @@ fn invariant_call(reads InvariantReads, target Int, inputs List[Bool], depth Int
     push(reads.calls, InvariantCall {
             target = target
             inputs = inputs
-            borrowed = true
+            origin = origin_input()
         })
     if function.runtime_name != "" {
         set(reads.valid, 0, false)
-        return true
+        return origin_input()
     }
     let frame = invariant_frame(length(function.locals), inputs)
-    var origin = false
+    var origin = origin_empty()
     var more = true
     while more && get(reads.valid, 0) {
         set(frame.changed, 0, false)
@@ -89,79 +96,121 @@ fn invariant_call(reads InvariantReads, target Int, inputs List[Bool], depth Int
             discard invariant_origin(reads, frame, get(function.preconditions, clause), depth + 1)
             clause = clause + 1
         }
-        origin = invariant_origin(reads, frame, function.body, depth + 1) || get(frame.returned, 0)
+        origin = origin_union(invariant_origin(reads, frame, function.body, depth + 1), get(frame.returned, 0))
         more = get(frame.changed, 0)
     }
     set(reads.calls, index, InvariantCall {
             target = target
             inputs = inputs
-            borrowed = origin
+            origin = origin
         })
     origin
 }
 
 // Origins mean reachable mutable input storage, not merely a shared type.
-// Immutable projections forget that origin. Locals accumulate origins to a
+// Immutable leaf projections forget that origin; record/tuple fields and enum
+// payloads retain separate paths. Locals accumulate origins to a
 // fixed point across branches/loops; assignment cannot hide an earlier alias.
-// Storing an input alias in mutable storage is conservatively rejected, so a
+// Mutation that stores an input alias is conservatively rejected, so a
 // fresh handle can never acquire hidden input reachability through another alias.
-fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, depth Int) Bool {
+fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, depth Int) InputOrigin {
     if depth >= 256 || !get(reads.valid, 0) {
         set(reads.valid, 0, false)
-        return true
+        return origin_input()
     }
     let kind = value.kind
     let shared = value.ty != 0 && !inline_constraint_base(reads.env, value.ty, 0)
     if kind == ExprKind.Local {
-        return shared && get(frame.locals, value.index)
+        return if shared {
+            get(frame.locals, value.index)
+        } else {
+            origin_empty()
+        }
     }
-    let inputs = new[Bool]()
-    var borrowed = false
+    if kind == ExprKind.Record || kind == ExprKind.FrameNew {
+        var aggregate = origin_empty()
+        var field = 0
+        while field < length(value.children) {
+            let initializer = get(value.children, field)
+            let origin = invariant_origin(reads, frame, get(initializer.children, 0), depth + 1)
+            aggregate = origin_union(aggregate, origin_field(origin, initializer.index))
+            field = field + 1
+        }
+        return if kind == ExprKind.FrameNew && origin_shared(aggregate) {
+            origin_input()
+        } else {
+            aggregate
+        }
+    }
+    let inputs = new[InputOrigin]()
+    var borrowed = origin_empty()
     var index = 0
     while index < length(value.children) {
         let origin = invariant_origin(reads, frame, get(value.children, index), depth + 1)
         push(inputs, origin)
-        borrowed = borrowed || origin
+        borrowed = origin_union(borrowed, if kind == ExprKind.Variant {
+                origin_field(origin, index)
+            } else {
+                origin
+            })
         index = index + 1
     }
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         invariant_bind(frame, value.index, borrowed)
     }
-    if kind == ExprKind.Return && borrowed {
-        set(frame.returned, 0, true)
+    if kind == ExprKind.Return {
+        set(frame.returned, 0, origin_union(get(frame.returned, 0), borrowed))
     }
-    if kind == ExprKind.Call && borrowed {
+    if kind == ExprKind.Call && origin_shared(borrowed) {
         borrowed = invariant_call(reads, value.index, inputs, depth + 1)
     }
     if (kind == ExprKind.Intrinsic || kind == ExprKind.IndirectCall || kind == ExprKind.DynCall ||
-        kind == ExprKind.FrameStore) && borrowed {
+        kind == ExprKind.FrameStore) && origin_shared(borrowed) {
         set(reads.valid, 0, false)
     }
-    if kind == ExprKind.Field && length(value.children) == 1 && get(inputs, 0) &&
-    get(reads.env.types, get(value.children, 0).ty).kind == TypeKind.Frame {
-        set(reads.valid, 0, false)
+    if kind == ExprKind.Field && length(value.children) == 1 {
+        if origin_shared(get(inputs, 0)) && get(reads.env.types, get(value.children, 0).ty).kind == TypeKind.Frame {
+            set(reads.valid, 0, false)
+        }
+        borrowed = origin_project(get(inputs, 0), value.index)
     }
     if kind == ExprKind.Deferred || kind == ExprKind.Await || kind == ExprKind.TaskCall ||
     kind == ExprKind.Suspend || kind == ExprKind.ResourceDrain {
         set(reads.valid, 0, false)
     }
+    let scrutinee = borrowed
+    if kind == ExprKind.Match {
+        borrowed = origin_empty()
+    }
     index = 0
     while index < length(value.arms) {
         let arm = get(value.arms, index)
-        invariant_bind(frame, arm.whole, borrowed)
+        invariant_bind(frame, arm.whole, scrutinee)
         var member = 0
         while member < length(arm.bindings) {
-            invariant_bind(frame, get(arm.bindings, member), borrowed)
+            invariant_bind(frame, get(arm.bindings, member), origin_project(scrutinee, member))
             member = member + 1
         }
         member = 0
         while member < length(arm.body) {
-            borrowed = invariant_origin(reads, frame, get(arm.body, member), depth + 1) || borrowed
+            let origin = invariant_origin(reads, frame, get(arm.body, member), depth + 1)
+            if member == length(arm.body) - 1 {
+                borrowed = origin_union(borrowed, origin)
+            }
             member = member + 1
         }
         index = index + 1
     }
-    shared && borrowed
+    if !shared {
+        return origin_empty()
+    }
+    if kind == ExprKind.Block && length(inputs) != 0 {
+        return get(inputs, length(inputs) - 1)
+    }
+    if (kind == ExprKind.List || kind == ExprKind.FunctionRef || kind == ExprKind.DynBox) && origin_shared(borrowed) {
+        return origin_input()
+    }
+    borrowed
 }
 
 fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int) Bool {
@@ -171,7 +220,9 @@ fn invariant_observation(env Environment, program std.loom.typed.Program, value 
         calls = new[InvariantCall]()
         valid = invariant_flag(true)
     }
-    let frame = invariant_frame(count, invariant_flag(true))
+    let inputs = new[InputOrigin]()
+    push(inputs, origin_input())
+    let frame = invariant_frame(count, inputs)
     var more = true
     while more && get(reads.valid, 0) {
         set(frame.changed, 0, false)

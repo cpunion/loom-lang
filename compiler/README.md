@@ -1507,9 +1507,13 @@ direct calls, recursive calls, preconditions, returned aliases and local
 assignments to a fixed point across branches/loops. Immutable field projections,
 enum tags and inline payloads are stable; mutable input contents are not.
 Fresh local Lists/Bytes may be used as scratch storage, including through helpers
-that also receive the input record. Copying or forwarding an input handle does
-not itself observe it. Indirect calls involving input storage and storing such
-aliases into mutable scratch storage conservatively reject. This analysis does
+that also receive the input record. Record/tuple fields and enum payloads retain
+separate origins: wrapping input and scratch together does not make the scratch
+an input alias. Branches, record updates and returns merge these paths; an
+analysis limit widens to unknown input storage, never to assumed freshness.
+Copying or forwarding an input handle does not itself observe it. Indirect calls
+involving input storage and mutation that stores such aliases into scratch
+conservatively reject. This analysis does
 not prove predicate truth or permit mutable-content invariants. See the
 [effect example](examples/record_refinement/effects.loom).
 Scoped resources and one-shot Tasks cannot be wrapped in a refinement.

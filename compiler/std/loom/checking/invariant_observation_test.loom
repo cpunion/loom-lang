@@ -204,3 +204,46 @@ test fn invariant_origins_follow_return_values_loops_and_hidden_storage() {
         type Invalid = Input where valid(self)
         """), "type constraints may observe immutable fields, not shared mutable contents")
 }
+
+test fn invariant_field_origins_merge_aliases_across_branches_and_record_updates() {
+    let header = """
+        record Input {
+            count Int
+            values List[Int]
+        }
+        record Mixed {
+            input Input
+            scratch List[Int]
+        }
+        fn read(value Mixed) Bool {
+            value.scratch[0] > 0
+        }
+        """
+    discard accepted(concat(header, """
+        fn valid(input Input) Bool {
+            read(Mixed {
+                input = input
+                scratch = [input.count]
+            })
+        }
+        type Valid = Input where valid(self)
+        """))
+    resource_reject_reason(concat(header, """
+        fn valid(input Input) Bool {
+            let local = Mixed {
+                input = input
+                scratch = [1]
+            }
+            let changed = if input.count > 0 {
+                local
+            } else {
+                Mixed {
+                    scratch = input.values
+                    ..local
+                }
+            }
+            read(changed)
+        }
+        type Invalid = Input where valid(self)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+}
