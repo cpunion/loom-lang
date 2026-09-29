@@ -1561,9 +1561,22 @@ boundary. `PositiveValues(existing_list)` rejects: construction cannot silently
 change that List's existing writable aliases. No automatic copy or runtime
 monitor is installed. Copies of a constrained value keep sharing its storage.
 
-The current capability is read-only. Indexing, ordinary non-escaping read helpers
-and explicit copies are allowed; mutation, returning a raw List alias, publishing
-it in another aggregate and unknown effects reject at compile time. Factories
+Indexing, ordinary non-escaping read helpers and explicit copies are allowed.
+When the predicate observes only length, element replacement is also permitted:
+
+```loom
+type IntPair = List[Int] where length(self) == 2
+
+fn replace_first(pair IntPair, value Int) {
+    pair[0] = value
+}
+```
+
+Aliases observe that replacement. Source helpers such as `set` and `reverse`
+work by the same inferred effects, without special library-name rules or a new
+check after each write. Length changes still reject. A predicate that observes
+elements keeps the read-only capability; unknown effects, raw alias returns and
+publication into another aggregate reject at compile time. Factories
 and borrows are checked through helper bodies, not trusted annotations. These
 rules also run for compile-time code and unused concrete functions. The constrained
 List has the ordinary native List layout and survives moving GC and Task handoff.

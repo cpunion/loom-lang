@@ -572,13 +572,17 @@ scalar/Text/inline aggregate elements. Fresh literals and proved pure,
 non-publishing factories establish the alias boundary; explicit source `clone`
 works without a library-name shortcut. Existing writable aliases cannot be
 strengthened. Copies keep sharing, but raw weakening is limited to non-escaping
-read operations and fresh copies. Writes, alias returns/publication and unknown
+operations and fresh copies. Predicate input effects distinguish length from
+element observations: length-only constraints permit indexed replacement and
+source helpers such as `set`/`reverse`, without a runtime recheck. Length changes,
+element writes under content predicates, alias returns/publication and unknown
 effects reject, including in unused concrete functions and CTFE. Closed proved
 literals return the refined type; dynamic inputs retain Result construction.
 No monitor, implicit copy or runtime wrapper is introduced. Native O0/O2, moving
 GC and Task handoff exercise the [List example](../../compiler/examples/record_refinement/lists.loom).
-The current capability is read-only; general invariant-preserving writes and
-strengthening existing mutable alias graphs remain open.
+Editing a predicate revokes old write permissions, including after persistent
+definition-cache restoration. General predicate-preserving writes beyond these
+disjoint effects and strengthening existing mutable alias graphs remain open.
 
 Record updates now accept one final `..base`, preserving missing fields from
 the same nominal record declaration. Explicit fields and the base evaluate once
