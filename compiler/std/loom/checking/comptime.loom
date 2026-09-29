@@ -143,7 +143,7 @@ fn computed_index(context Context, node Node, input Node, expected Int) Result[I
     let program = prepared(stage)?
     let body = close_function(stage, Function { is_async = false symbol = stage.signature.symbol arguments = stage.arguments params = new[Int]() result = value.ty
         locals = stage.locals preconditions = new[Expr]() postconditions = new[Expr]() result_local = -1 body = value runtime_name = "" span = value.span })
-    discard resource_computation(stage, program.functions, body)?
+    discard check_computation_effects(stage, program.functions, body)?
     match std.loom.eval.evaluate(program, body.body, length(body.locals)) {
         Result.Ok(value) => {
             let index = length(context.env.computations)

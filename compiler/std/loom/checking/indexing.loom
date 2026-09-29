@@ -13,6 +13,9 @@ fn index_element(context Context, node Node, receiver Expr) Result[Int, Failure]
     let shape = get(context.env.types, receiver.ty)
     if shape.kind == TypeKind.List { return Result.Ok(get(shape.arguments, 0)) }
     if shape.kind == TypeKind.Bytes { return Result.Ok(1) }
+    if shape.kind == TypeKind.Refined && constrained_list(context.env, receiver.ty) {
+        return Result.Ok(get(get(context.env.types, base_type(context.env, receiver.ty)).arguments, 0))
+    }
     Result.Err(error(context, node, "indexing requires a List or Bytes value"))
 }
 fn index_arguments(context Context, node Node, receiver Expr, indices List[Node]) Result[List[Expr], Failure] {
@@ -21,7 +24,10 @@ fn index_arguments(context Context, node Node, receiver Expr, indices List[Node]
 }
 fn index_read(context Context, node Node, receiver Expr, indices List[Node]) Result[Expr, Failure] {
     let element = index_element(context, node, receiver)?
-    let values = index_arguments(context, node, receiver, indices)?
+    let base = if context.env.has_refinements && constrained_list(context.env, receiver.ty) {
+        typed(context, node, receiver, base_type(context.env, receiver.ty))?
+    } else { receiver }
+    let values = index_arguments(context, node, base, indices)?
     let primitive = if receiver.ty == 4 { "bytes_get" } else { "list_get" }
     Result.Ok(expression(ExprKind.Intrinsic, element, node, primitive, -1, values, all_fall(values)))
 }
@@ -52,7 +58,10 @@ fn index_assignment(context Context, node Node) Result[Expr, Failure] {
     let receiver = expr(context, child(target, 0), -1)?
     let element = index_element(context, target, receiver)?
     let indices = child(target, 1).children
-    let values = index_arguments(context, target, receiver, indices)?
+    let base = if context.env.has_refinements && constrained_list(context.env, receiver.ty) {
+        typed(context, node, receiver, base_type(context.env, receiver.ty))?
+    } else { receiver }
+    let values = index_arguments(context, target, base, indices)?
     push(values, expr(context, child(node, 1), element)?)
     // Evaluate the container, index and replacement once, in source order. The
     // existing primitive checks bounds after argument evaluation, as set() does.

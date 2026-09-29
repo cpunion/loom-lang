@@ -1,4 +1,8 @@
 test fn persistent_constraints_preserve_unobserved_shared_data() {
+    assert list_constraint_scope()
+    assert comptime {
+        list_constraint_scope()
+    }
     assert invariant_callback_scope()
     assert comptime {
         invariant_callback_scope()
