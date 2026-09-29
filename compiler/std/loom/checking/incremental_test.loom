@@ -2,6 +2,88 @@ fn cached_source(cache DefinitionCache, text Text) Result[CachedCheck, Failure] 
     check_project_cached(fixture_project(source_files(text)), false, build_inputs(no_input_reader), cache)
 }
 
+test fn generated_definitions_reuse_only_after_current_expansion_is_checked() {
+    let source = """"
+        fn api() Text {
+            """
+            pub fn generated(value Int) Int {
+                value + 1
+            }
+            """
+        }
+        comptime {
+            api()
+        }
+        pub fn answer() Int
+        ensures result == 8
+        {
+            generated(7)
+        }
+        """"
+    let cache = definition_cache()
+    assert match cached_source(cache, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match cached_source(cache, concat(source, "\nfn unrelated() Int { 3 }\n")) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert definitions_reused(cache) >= 2 && bodies_reused(cache) >= 2
+    let changed = std.text.join(std.text.split(source, "value + 1"), "value + 2")
+    assert match cached_source(cache, changed) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match cached_source(cache, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}
+
+test fn generated_definition_reuse_observes_current_build_options() {
+    let files = source_files("""
+        import std.build.value
+        comptime {
+            value("declaration")
+        }
+        pub fn answer() Int
+        ensures result == 8
+        {
+            generated(7)
+        }
+        """)
+    push(files, source_file("std.build", """
+        intrinsic fn option_text(comptime name Text) Text
+        pub fn value(comptime name Text) Text {
+            option_text(name)
+        }
+        """, true))
+    let project = fixture_project(files)
+    let options = [BuildOption {
+            name = "declaration"
+            value = "pub fn generated(item Int) Int { item + 1 }"
+        }]
+    let cache = definition_cache()
+    assert match check_project_cached(project, false, build_inputs(no_input_reader, options), cache) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match check_project_cached(project, false, build_inputs(no_input_reader, options), cache) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(cache) >= 2
+    set(options, 0, BuildOption {
+            name = "declaration"
+            value = "pub fn generated(item Int) Int { item + 2 }"
+        })
+    assert match check_project_cached(project, false, build_inputs(no_input_reader, options), cache) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
 test fn definition_reuse_tracks_transitive_calls_and_never_caches_failures() {
     let cache = definition_cache()
     let first = """

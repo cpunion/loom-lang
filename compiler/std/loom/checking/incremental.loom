@@ -421,11 +421,9 @@ pub fn check_project_cached(project Project, tests Bool, inputs BuildInputs, cac
     let original = snapshot(project)
     let source = bind(expand_project(original, tests, inputs)?, tests)?
     let basis = definition_basis(source)
-    let reuse = if has_declaration_stages(original, tests) {
-        new[Bool]()
-    } else {
-        definition_reuse(source, basis, cache)
-    }
+    // Expansion always reruns with current tracked inputs before matching. The
+    // resulting declarations, not a prior generator result, define reuse.
+    let reuse = definition_reuse(source, basis, cache)
     let env = prepare_with_inputs(source, inputs)?
     let bodies = body_reuse(cache, basis, reuse)
     let program = checked_program_reusing(env, reuse, basis.reusable, cache.state.hits, bodies)?

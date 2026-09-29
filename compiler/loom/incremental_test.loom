@@ -15,15 +15,31 @@ test fn reused_concrete_bodies_build_and_run_through_the_native_backend() {
         }
     }
     let source = join_path(stage, "main.loom")
+    let generated = join_path(stage, "generated.loom")
     let manifest = join_path(stage, "loom.toml")
     let artifact = join_path(stage, "cached.exe")
     defer {
         discard remove_file(source)
+        discard remove_file(generated)
         discard remove_file(manifest)
         discard remove_file(artifact)
         discard remove_empty_dir(stage)
     }
     assert match std.file.write_text(manifest, "[module]\nname = \"cached\"\n") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match std.file.write_text(generated, """"
+        comptime {
+            """
+            fn generated() Int
+            ensures result == 11
+            {
+                11
+            }
+            """
+        }
+        """") {
         Result.Ok(_) => true
         Result.Err(_) => false
     }
@@ -45,6 +61,7 @@ test fn reused_concrete_bodies_build_and_run_through_the_native_backend() {
             Choice.Some((unbox(value), [9, 10]))
         }
         fn main() {
+            assert generated() == 11
             match packet(Box { value = 7 }) {
                 Choice.Some(pair) => {
                     assert pair.0 == 7 && pair.1[1] == 10
@@ -80,7 +97,7 @@ test fn reused_concrete_bodies_build_and_run_through_the_native_backend() {
             return
         }
     }
-    assert bodies_reused(cache) >= 4
+    assert bodies_reused(cache) >= 5
     let selected = match options(driver_arguments("build")) {
         Result.Ok(value) => value
         Result.Err(_) => {
