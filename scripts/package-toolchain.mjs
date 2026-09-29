@@ -62,6 +62,14 @@ function addRustNotices(bundle) {
   return true;
 }
 
+function noticeFiles(directory, prefix = "") {
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const name = `${prefix}${entry.name}`;
+    if (entry.isDirectory()) return noticeFiles(join(directory, entry.name), `${name}/`);
+    return entry.isFile() && /^(license|copying|notice|authors)([.-]|$)/i.test(entry.name) ? [name] : [];
+  }).sort();
+}
+
 function addNotices(bundle) {
   const metadata = JSON.parse(run("cargo", ["metadata", "--locked", "--format-version", "1"], root));
   const packages = metadata.packages.filter(pkg => pkg.source !== null)
@@ -77,19 +85,22 @@ function addNotices(bundle) {
     const sourceDir = dirname(pkg.manifest_path);
     const destination = join(licenses, `${pkg.name}-${pkg.version}`);
     mkdirSync(destination);
-    const names = readdirSync(sourceDir).filter(name => /^(license|copying|notice|authors)([.-]|$)/i.test(name) &&
-      statSync(join(sourceDir, name)).isFile()).sort();
-    for (const name of names) copyFileSync(join(sourceDir, name), join(destination, name));
+    // Some dependencies (including ring) reference vendored nested licenses.
+    const names = noticeFiles(sourceDir);
+    for (const name of names) {
+      mkdirSync(dirname(join(destination, name)), { recursive: true });
+      copyFileSync(join(sourceDir, name), join(destination, name));
+    }
     // These two crates publish license metadata without a license file in
     // their crate tarballs. Both offer Apache-2.0; use the exact standard text
     // distributed with their dependency inkwell.
-    if (!names.some(name => /^(license|copying)([.-]|$)/i.test(name)) &&
+    if (!names.some(name => /^(license|copying)([.-]|$)/i.test(basename(name))) &&
         (pkg.name === "inkwell_internals" || pkg.name === "r-efi") &&
         pkg.license.includes("Apache-2.0")) {
       copyFileSync(apacheLicense, join(destination, "LICENSE-APACHE"));
       names.push("LICENSE-APACHE");
     }
-    if (!names.some(name => /^(license|copying)([.-]|$)/i.test(name))) {
+    if (!names.some(name => /^(license|copying)([.-]|$)/i.test(basename(name)))) {
       throw new Error(`${pkg.name} ${pkg.version} has no license text to distribute`);
     }
     rows.push(`| ${pkg.name} | ${pkg.version} | ${pkg.license.replaceAll("|", "\\|")} | ` +
