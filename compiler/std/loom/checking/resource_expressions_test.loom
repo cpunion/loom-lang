@@ -1,0 +1,106 @@
+import std.loom.parser.parse_expression
+
+fn resource_expression_exits(source Text) Bool {
+    match parse_expression(source) {
+        Result.Ok(node) => pending_resource_exit(node, 0)
+        Result.Err(_) => {
+            assert false
+            true
+        }
+    }
+}
+
+test fn pending_resource_exit_checks_preserve_enclosing_control_boundaries() {
+    assert !resource_expression_exits("""
+fn() Int {
+    return 1
+}
+""")
+    assert !resource_expression_exits("""
+{
+    while true {
+        break
+    }
+    1
+}
+""")
+    assert resource_expression_exits("""
+{
+    while true {
+        break
+    }
+    break
+}
+""")
+    assert resource_expression_exits("""
+{
+    while true {
+        return 1
+    }
+}
+""")
+    assert resource_expression_exits("""
+{
+    while fetch().await {
+        continue
+    }
+}
+""")
+    assert resource_expression_exits("""
+{
+    while true {
+        discard fetch()?
+        break
+    }
+}
+""")
+    assert resource_expression_exits("""
+{
+    while {
+        continue
+        true
+    } {
+    }
+}
+""")
+}
+
+test fn pending_resources_allow_control_flow_inside_local_execution_scopes() {
+    resource_accept(concat(resource_header(), """
+record Wrapped {
+    inner Handle
+    callback fn() Int
+    tag Int
+}
+
+impl Dispose for Wrapped {
+    fn dispose(self Wrapped) {
+    }
+}
+
+fn wrap(log List[Int]) Wrapped {
+    Wrapped {
+        inner = make(log)
+        callback = fn() Int {
+            return 7
+        }
+        tag = {
+            var count = 0
+            while true {
+                count = count + 1
+                if count == 2 {
+                    break
+                }
+                continue
+            }
+            count
+        }
+    }
+}
+
+fn main() {
+    scoped value = wrap([0])
+    assert value.callback() == 7 && value.tag == 2
+}
+"""))
+}

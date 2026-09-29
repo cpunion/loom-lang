@@ -61,12 +61,24 @@ fn template(context Context, declaration Int) Result[Int, Failure] {
     data_type(context.env, declaration, abstract_arguments(context.env, count), 0)
 }
 
-fn pending_resource_exit(node Node) Bool {
-    if node.kind == NodeKind.Return || node.kind == NodeKind.Try || node.kind == NodeKind.Break ||
-        node.kind == NodeKind.Continue || node.kind == NodeKind.Await { return true }
+fn pending_resource_exit(node Node, loops Int) Bool {
+    // Creating a closure does not execute its body. A local loop exit also
+    // leaves the pending aggregate alive; only exits beyond the field matter.
+    if node.kind == NodeKind.Function {
+        return false
+    }
+    if node.kind == NodeKind.Return || node.kind == NodeKind.Try || node.kind == NodeKind.Await {
+        return true
+    }
+    if loops == 0 && (node.kind == NodeKind.Break || node.kind == NodeKind.Continue) {
+        return true
+    }
     var index = 0
     while index < length(node.children) {
-        if pending_resource_exit(child(node, index)) { return true }
+        let nested = if node.kind == NodeKind.While && index == 1 { loops + 1 } else { loops }
+        if pending_resource_exit(child(node, index), nested) {
+            return true
+        }
         index = index + 1
     }
     false
@@ -102,7 +114,7 @@ fn pending_record(context Context, node Node, ty Int, fields List[Expr]) Result[
     while index < length(fields) {
         let field = get(fields, index)
         let source = child(node, index + 1)
-        if active && pending_resource_exit(source) {
+        if active && pending_resource_exit(source, 0) {
             return Result.Err(error(context, source, "a resource field cannot precede return, ?, loop exit or await during aggregate construction"))
         }
         let value = get(field.children, 0)
