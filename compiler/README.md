@@ -396,6 +396,8 @@ linking and test execution still run.
 Only successful checks are published. Each `checked-v2` entry contains metadata
 and checked bytes under one SHA-256 checksum; `definitions-v1` binds its source,
 private checked bodies and input metadata the same way. Damage causes a miss.
+Snapshots preserve the loader's embedded-test selection: production builds omit
+`test fn` bodies without losing definition reuse or importing test-only code.
 Recorded `std.build.input_file` requests are resolved and their actual content
 digests checked on every hit. Missing, changed or redirected inputs force a
 fresh check. The receipt binds the snapshots used by that check or cache hit.
@@ -406,7 +408,8 @@ build. An unidentifiable executable disables reuse; a checksum is not an
 attestation against a malicious cache writer. No old cache-format compatibility
 or automatic eviction is promised. `LOOM_NATIVE_TIMINGS` reports
 `loom cache: frontend hit`, `miss`, or `unavailable`, and definition/body reuse
-counts after whole-closure misses. This is not a remote proof/artifact exchange.
+counts after whole-closure misses, plus a reason if a definition snapshot cannot
+be exported. This is not a remote proof/artifact exchange.
 
 Hashing has a fixed cost, so this remains opt-in. Measure a project with
 `node scripts/benchmark-compiler.mjs --compare-frontend --check-only`; the harness

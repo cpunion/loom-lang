@@ -30,6 +30,51 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn embedded_tests_do_not_disable_production_definition_snapshots() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+import std.int.to_text
+fn answer() Text {
+    to_text(7)
+}
+fn main() {
+    assert answer() == "7"
+}
+test fn excluded() {
+    assert false
+}
+"#;
+    fs::write(&path, source).unwrap();
+    fs::write(package.join("main_test.loom"), "not production syntax").unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(&path, format!("fn unrelated() Int {{ 1 }}\n{source}")).unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    let bodies: usize = trace
+        .split(", bodies reused ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(bodies >= 2, "{trace}");
+    // Fresh abstract checks may intern additional unused types; compare native
+    // behavior, not private type-table numbering.
+    let fresh = common::loom(&["run", package.to_str().unwrap()]);
+    success(&fresh);
+    checked(&cached("run", &package, &cache, &[]), true);
+    fs::write(package.join("main_test.loom"), "test fn included() {}\n").unwrap();
+    let testing = cached("test", &package, &cache, &[]);
+    assert!(!testing.status.success());
+    assert!(String::from_utf8_lossy(&testing.stderr).contains("assertion failed"));
+}
+
+#[test]
 fn scoped_body_reuse_retains_list_cleanup_fault_draining_and_hidden_dispose_edges() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

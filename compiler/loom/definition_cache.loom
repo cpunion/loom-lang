@@ -70,7 +70,8 @@ fn prepare_incremental(options Options, project Project, inputs BuildInputs, ide
                     project = project
                 })
         }
-        Result.Err(_) => {
+        Result.Err(message) => {
+            cache_trace(concat("definition snapshot unavailable: ", message))
         }
     }
     Result.Ok(prepared)

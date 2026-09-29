@@ -226,7 +226,8 @@ fn import_directory(loader Loader, owner Int, package Text) Result[Text, Text] {
     Result.Ok(directory)
 }
 
-fn production(tree Node, tests Bool) Node {
+// Match the loader's selected syntax without changing source bytes or spans.
+pub fn select_source(tree Node, tests Bool) Node {
     if tests {
         return tree
     }
@@ -352,7 +353,7 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
                     get(loader.overlays, overlay).text
                 }
                 let tree = match std.loom.parser.parse(text) {
-                    Result.Ok(value) => production(value, tests)
+                    Result.Ok(value) => select_source(value, tests)
                     Result.Err(error) => {
                         push(loader.failures, LoadFailure {
                                 path = source_path
