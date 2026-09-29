@@ -154,7 +154,7 @@ fn body_type_shape_supported(reuse BodyReuse, ty Int, seen List[Int], stored Boo
     let shape = get(get(reuse.prior, 0).types, ty)
     let kind = shape.kind
     if kind == TypeKind.Parameter || kind == TypeKind.Associated || (kind == TypeKind.Meta && !stored) ||
-    kind == TypeKind.Dyn || kind == TypeKind.Task || kind == TypeKind.Frame {
+    kind == TypeKind.Dyn || kind == TypeKind.Frame {
         return false
     }
     if (kind == TypeKind.Record || kind == TypeKind.Enum || kind == TypeKind.Refined) && body_symbol(reuse, shape.symbol) < 0 {
@@ -231,14 +231,14 @@ fn body_target_supported(reuse BodyReuse, target Int, seen List[Int]) Bool {
 fn body_expression_supported(reuse BodyReuse, value Expr, span Span, seen List[Int]) Bool {
     let kind = value.kind
     if kind == ExprKind.Deferred || kind == ExprKind.DynBox || kind == ExprKind.DynCall ||
-    kind == ExprKind.FrameNew || kind == ExprKind.FrameStore || kind == ExprKind.TaskCall ||
-    kind == ExprKind.Await || kind == ExprKind.Suspend || kind == ExprKind.ResourceDrain || kind == ExprKind.TypeValue {
+    kind == ExprKind.FrameNew || kind == ExprKind.FrameStore ||
+    kind == ExprKind.ResourceDrain || kind == ExprKind.TypeValue {
         return false
     }
     if !body_type_supported(reuse, value.ty, seen) || value.span.start < span.start || value.span.end > span.end {
         return false
     }
-    if (kind == ExprKind.Call || kind == ExprKind.FunctionRef) && !body_target_supported(reuse, value.index, seen) {
+    if (kind == ExprKind.Call || kind == ExprKind.TaskCall || kind == ExprKind.FunctionRef) && !body_target_supported(reuse, value.index, seen) {
         return false
     }
     var index = 0
@@ -264,9 +264,6 @@ fn body_expression_supported(reuse BodyReuse, value Expr, span Span, seen List[I
 }
 
 fn body_supported(reuse BodyReuse, target BodyTarget, value Function) Bool {
-    if value.is_async {
-        return false
-    }
     if target.prototype >= 0 && body_symbol(reuse, target.prototype) < 0 {
         return false
     }
@@ -385,15 +382,16 @@ fn body_expression(env Environment, reuse BodyReuse, value Expr, owner Int, offs
             kind = value.kind
             ty = body_type(env, reuse, value.ty)?
             span = span
-            text = if value.kind == ExprKind.Assert && value.text != "" {
+            text = if (value.kind == ExprKind.Assert || value.kind == ExprKind.TaskCall ||
+                value.kind == ExprKind.IndirectCall) && value.text != "" {
                 render(file.path, file.text, Diagnostic {
                         span = span
-                        message = "assertion failed"
+                        message = if value.kind == ExprKind.Assert { "assertion failed" } else { "task created here" }
                     })
             } else {
                 value.text
             }
-            index = if value.kind == ExprKind.Call || value.kind == ExprKind.FunctionRef {
+            index = if value.kind == ExprKind.Call || value.kind == ExprKind.TaskCall || value.kind == ExprKind.FunctionRef {
                 body_target(env, reuse, value.index)?
             } else {
                 value.index
@@ -461,7 +459,7 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
                 local = local + 1
             }
             let mapped = Function {
-                is_async = false
+                is_async = value.is_async
                 symbol = concrete_owner
                 arguments = copy_indices(instance.arguments)
                 params = body_types(env, reuse, value.params)?
