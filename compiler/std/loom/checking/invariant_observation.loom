@@ -7,6 +7,7 @@ record InvariantCall {
 record InvariantReads {
     env Environment
     functions List[Function]
+    references List[Expr]
     calls List[InvariantCall]
     valid List[Bool]
 }
@@ -164,7 +165,10 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
     if kind == ExprKind.Call && origin_shared(borrowed) {
         borrowed = invariant_call(reads, value.index, inputs, depth + 1)
     }
-    if (kind == ExprKind.Intrinsic || kind == ExprKind.IndirectCall || kind == ExprKind.DynCall ||
+    if kind == ExprKind.IndirectCall && origin_shared(borrowed) {
+        borrowed = invariant_indirect(reads, value, inputs, depth + 1)
+    }
+    if (kind == ExprKind.Intrinsic || kind == ExprKind.DynCall ||
         kind == ExprKind.FrameStore) && origin_shared(borrowed) {
         set(reads.valid, 0, false)
     }
@@ -214,9 +218,23 @@ fn invariant_origin(reads InvariantReads, frame InvariantFrame, value Expr, dept
 }
 
 fn invariant_observation(env Environment, program std.loom.typed.Program, value Expr, count Int) Bool {
+    let references = new[Expr]()
+    invariant_references(value, references)
+    var function = 0
+    while function < length(program.functions) {
+        let body = get(program.functions, function)
+        invariant_references(body.body, references)
+        var clause = 0
+        while clause < length(body.preconditions) {
+            invariant_references(get(body.preconditions, clause), references)
+            clause = clause + 1
+        }
+        function = function + 1
+    }
     let reads = InvariantReads {
         env = env
         functions = program.functions
+        references = references
         calls = new[InvariantCall]()
         valid = invariant_flag(true)
     }

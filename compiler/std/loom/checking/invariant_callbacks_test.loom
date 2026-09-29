@@ -1,0 +1,111 @@
+test fn invariant_callbacks_preserve_field_origins_through_known_targets() {
+    resource_accept("""
+        record Input {
+            count Int
+            values List[Int]
+        }
+        fn forward(value Input, callback fn(Input) Input) Input {
+            callback(value)
+        }
+        fn identity(value Input) Input {
+            value
+        }
+        fn positive(value Input) Bool {
+            forward(value, identity).count > 0
+        }
+        fn nonzero(value Input) Bool {
+            value.count != 0
+        }
+        fn choose(first Bool) fn(Input) Bool {
+            if first {
+                positive
+            } else {
+                nonzero
+            }
+        }
+        fn apply(value Input, callback fn(Input) Bool) Bool {
+            callback(value)
+        }
+        type Valid = Input where apply(self, choose(self.count > 0))
+        """)
+}
+
+test fn invariant_callbacks_check_all_targets_returns_and_preconditions() {
+    let header = """
+        record Input {
+            count Int
+            values List[Int]
+        }
+        fn positive(value Input) Bool {
+            value.count > 0
+        }
+        fn apply(value Input, callback fn(Input) Bool) Bool {
+            callback(value)
+        }
+        """
+    resource_reject_reason(concat(header, """
+        fn borrowed(value Input) Bool {
+            value.values[0] > 0
+        }
+        fn choose(first Bool) fn(Input) Bool {
+            if first {
+                positive
+            } else {
+                borrowed
+            }
+        }
+        type Invalid = Input where apply(self, choose(true))
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+    resource_reject(concat(header, """
+        fn has_values(values List[Int]) Bool {
+            values[0] > 0
+        }
+        fn required(value Input) Bool
+        requires has_values(value.values)
+        {
+            value.count > 0
+        }
+        type Invalid = Input where apply(self, required)
+        """))
+    resource_reject_reason(concat(header, """
+        fn borrowed(value Input) List[Int] {
+            value.values
+        }
+        fn forward(value Input, callback fn(Input) List[Int]) List[Int] {
+            callback(value)
+        }
+        fn invalid(value Input) Bool {
+            forward(value, borrowed)[0] > 0
+        }
+        type Invalid = Input where invalid(self)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+    resource_reject_reason(concat(header, """
+        fn write(value Input) Bool {
+            value.values[0] = 1
+            value.count > 0
+        }
+        type Invalid = Input where apply(self, write)
+        """), "type constraints may observe immutable fields, not shared mutable contents")
+}
+
+test fn invariant_callbacks_do_not_infer_targets_for_input_supplied_functions() {
+    resource_reject_reason("""
+        record Input {
+            count Int
+            values List[Int]
+        }
+        record Envelope {
+            value Input
+            callback fn(Input) Bool
+        }
+        fn positive(value Input) Bool {
+            value.count > 0
+        }
+        fn valid(value Envelope) Bool {
+            let known = positive
+            let unknown = value.callback
+            known(value.value) && unknown(value.value)
+        }
+        type Invalid = Envelope where valid(self)
+        """, "type constraints may observe immutable fields, not shared mutable contents")
+}

@@ -234,7 +234,7 @@ Fixed-shape shared List views now preserve element identities through removal,
 regrowth, moving GC, suspension and compile-time graph reification. Immutable
 range metadata supports persistent length constraints without isolating the
 source. Predicate effect analysis now distinguishes input aliases from fresh
-scratch through direct calls, returns and loop/branch assignments. It also
+scratch through direct calls, known named callback targets, returns and loop/branch assignments. It also
 recognizes stable enum tags and inline payloads. General mutable-content
 invariants still need a preservation proof over all reachable writes; neither
 views nor fresh-scratch analysis claim to supply that proof.
