@@ -766,8 +766,12 @@ removals, overload changes and edited bodies invalidate transitive callers.
 Imports, nominal headers, trust, test and package identities still bind reuse.
 Changed invariant
 helpers invalidate proof consumers. Staging, closures, async/resource operations
-and variadics conservatively recheck. Bindings, type IDs, reachable instances and
-source locations are rebuilt, not reused from the old typed program. The same
+and variadics conservatively recheck. Ordinary concrete bodies also reuse their
+checked result when source text is unchanged, including scalar, aggregate, List
+and generic instances. Fresh bindings drive type, call-target and source-span
+remapping; assertion diagnostics follow moved files. Changed overloads and
+elaboration-introduced calls invalidate affected bodies. Unsupported forms still
+recheck, and all cached IR is detached from mutable public results. The same
 in-memory facility is available as `std.loom.checking.check_project_cached`;
 failed checks never replace its private evidence. Persistent per-definition IR
 and public/API rename remain open.

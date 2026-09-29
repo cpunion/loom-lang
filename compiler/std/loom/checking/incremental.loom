@@ -19,6 +19,8 @@ pub record DefinitionCache {
 record DefinitionCacheState {
     basis List[DefinitionBasis]
     hits List[Int]
+    bodies List[BodyBasis]
+    body_hits List[Int]
 }
 
 record DefinitionBasis {
@@ -35,6 +37,8 @@ record DefinitionEntry {
     trusted_std Bool
     node Node
     header Node
+    span Span
+    text Text
 }
 
 pub record CachedCheck {
@@ -48,12 +52,18 @@ pub fn definition_cache() DefinitionCache {
         state = DefinitionCacheState {
             basis = new[DefinitionBasis]()
             hits = ints(0)
+            bodies = new[BodyBasis]()
+            body_hits = ints(0)
         }
     }
 }
 
 pub fn definitions_reused(cache DefinitionCache) Int {
     get(cache.state.hits, 0)
+}
+
+pub fn bodies_reused(cache DefinitionCache) Int {
+    get(cache.state.body_hits, 0)
 }
 
 // Normalize locations, not syntax. Each function keeps its own signature and
@@ -136,6 +146,11 @@ fn definition_basis(source std.loom.binding.Program) DefinitionBasis {
                 test_only = item.test_only
                 trusted_std = file.trusted_std
                 node = node
+                span = item.node.span
+                text = if item.node.span.start >= 0 && item.node.span.end <= std.text.length(file.text) &&
+                    item.node.span.start < item.node.span.end {
+                    std.text.slice(file.text, item.node.span.start, item.node.span.end)
+                } else { "" }
                 header = if node.kind == NodeKind.Impl || node.kind == NodeKind.Concept {
                     definition_node(node, true)
                 } else {
@@ -410,7 +425,9 @@ pub fn check_project_cached(project Project, tests Bool, inputs BuildInputs, cac
         definition_reuse(source, basis, cache)
     }
     let env = prepare_with_inputs(source, inputs)?
-    let program = checked_program(env, reuse, basis.reusable, cache.state.hits)?
+    let bodies = body_reuse(cache, basis, reuse)
+    let program = checked_program_reusing(env, reuse, basis.reusable, cache.state.hits, bodies)?
+    save_bodies(cache, basis, env, program)
     if length(cache.state.basis) == 0 {
         push(cache.state.basis, basis)
     }

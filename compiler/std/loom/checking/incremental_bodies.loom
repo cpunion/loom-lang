@@ -1,0 +1,439 @@
+// Concrete bodies have their own private, detached basis. They are never read
+// back from the mutable Program returned by the public checking API.
+record BodyTarget {
+    symbol Int
+    arguments List[Int]
+    ordinary Bool
+}
+
+record BodyBasis {
+    definitions DefinitionBasis
+    types List[Type]
+    targets List[BodyTarget]
+    functions List[Function]
+}
+
+record BodyReuse {
+    prior List[BodyBasis]
+    current List[DefinitionEntry]
+    allowed List[Bool]
+    symbols List[Int]
+    types List[Int]
+    functions Map[Int, List[Int]]
+    changed Map[Text, Bool]
+    hits List[Int]
+}
+
+fn no_body_reuse() BodyReuse {
+    BodyReuse {
+        prior = new[BodyBasis]()
+        current = new[DefinitionEntry]()
+        allowed = new[Bool]()
+        symbols = new[Int]()
+        types = new[Int]()
+        functions = std.map.new[Int, List[Int]]()
+        changed = std.map.new[Text, Bool]()
+        hits = ints(0)
+    }
+}
+
+fn copy_indices(values List[Int]) List[Int] {
+    let copied = new[Int]()
+    var index = 0
+    while index < length(values) {
+        push(copied, get(values, index))
+        index = index + 1
+    }
+    copied
+}
+
+fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) BodyReuse {
+    if length(cache.state.bodies) == 0 || length(allowed) == 0 {
+        return no_body_reuse()
+    }
+    let prior = get(cache.state.bodies, 0)
+    let changed = std.map.new[Text, Bool]()
+    let matches = definition_matches(prior.definitions, basis, changed)
+    let symbols = new[Int]()
+    var index = 0
+    while index < length(prior.definitions.entries) {
+        push(symbols, -1)
+        index = index + 1
+    }
+    index = 0
+    while index < length(matches) {
+        if get(matches, index) >= 0 {
+            set(symbols, get(matches, index), index)
+        }
+        index = index + 1
+    }
+    // Nominal declarations are unique by package/name. The shared definition
+    // context already requires their complete syntax and import environment.
+    let nominals = std.map.new[Text, Int]()
+    index = 0
+    while index < length(basis.entries) {
+        let entry = get(basis.entries, index)
+        if nominal_data(entry.node.kind) {
+            discard std.map.insert(nominals, definition_bucket(entry), index)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(prior.definitions.entries) {
+        let entry = get(prior.definitions.entries, index)
+        if nominal_data(entry.node.kind) {
+            match std.map.get(nominals, definition_bucket(entry)) {
+                Option.Some(value) => {
+                    set(symbols, index, value)
+                }
+                Option.None => {
+                }
+            }
+        }
+        index = index + 1
+    }
+    let types = new[Int]()
+    index = 0
+    while index < length(prior.types) {
+        push(types, -1)
+        index = index + 1
+    }
+    let functions = std.map.new[Int, List[Int]]()
+    index = 0
+    while index < length(prior.functions) {
+        let owner = get(prior.functions, index).symbol
+        if owner >= 0 && owner < length(symbols) && get(symbols, owner) >= 0 {
+            let mapped = get(symbols, owner)
+            match std.map.get(functions, mapped) {
+                Option.Some(instances) => {
+                    push(instances, index)
+                }
+                Option.None => {
+                    discard std.map.insert(functions, mapped, ints(index))
+                }
+            }
+        }
+        index = index + 1
+    }
+    BodyReuse {
+        prior = cache.state.bodies
+        current = basis.entries
+        allowed = allowed
+        symbols = symbols
+        types = types
+        functions = functions
+        changed = changed
+        hits = cache.state.body_hits
+    }
+}
+
+fn body_symbol(reuse BodyReuse, previous Int) Int {
+    if previous < 0 || previous >= length(reuse.symbols) {
+        -1
+    } else {
+        get(reuse.symbols, previous)
+    }
+}
+
+fn body_type_supported(reuse BodyReuse, ty Int, seen List[Int]) Bool {
+    if resource_seen(seen, ty) {
+        return true
+    }
+    push(seen, ty)
+    let shape = get(get(reuse.prior, 0).types, ty)
+    let kind = shape.kind
+    if kind == TypeKind.Parameter || kind == TypeKind.Associated || kind == TypeKind.Meta ||
+    kind == TypeKind.Dyn || kind == TypeKind.Task || kind == TypeKind.Frame {
+        return false
+    }
+    if (kind == TypeKind.Record || kind == TypeKind.Enum || kind == TypeKind.Refined) && body_symbol(reuse, shape.symbol) < 0 {
+        return false
+    }
+    var index = 0
+    while index < length(shape.arguments) {
+        if !body_type_supported(reuse, get(shape.arguments, index), seen) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.fields) {
+        if !body_type_supported(reuse, get(shape.fields, index).ty, seen) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if !body_type_supported(reuse, get(fields, field), seen) {
+                return false
+            }
+            field = field + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn body_target_supported(reuse BodyReuse, target Int, seen List[Int]) Bool {
+    let targets = get(reuse.prior, 0).targets
+    if target < 0 || target >= length(targets) {
+        return false
+    }
+    let instance = get(targets, target)
+    if !instance.ordinary || body_symbol(reuse, instance.symbol) < 0 {
+        return false
+    }
+    let owner = body_symbol(reuse, instance.symbol)
+    // Include elaboration-introduced edges (indexing, implicit constructors,
+    // function references), not only names visible in the original AST.
+    if owner >= length(reuse.allowed) || !get(reuse.allowed, owner) {
+        return false
+    }
+    match std.map.get(reuse.changed, get(reuse.current, owner).node.value) {
+        Option.Some(_) => {
+            return false
+        }
+        Option.None => {
+        }
+    }
+    var index = 0
+    while index < length(instance.arguments) {
+        if !body_type_supported(reuse, get(instance.arguments, index), seen) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn body_expression_supported(reuse BodyReuse, value Expr, span Span, seen List[Int]) Bool {
+    let kind = value.kind
+    if kind == ExprKind.Deferred || kind == ExprKind.DynBox || kind == ExprKind.DynCall ||
+    kind == ExprKind.FrameNew || kind == ExprKind.FrameStore || kind == ExprKind.TaskCall ||
+    kind == ExprKind.Await || kind == ExprKind.Suspend || kind == ExprKind.ResourceDrain || kind == ExprKind.TypeValue {
+        return false
+    }
+    if !body_type_supported(reuse, value.ty, seen) || value.span.start < span.start || value.span.end > span.end {
+        return false
+    }
+    if (kind == ExprKind.Call || kind == ExprKind.FunctionRef) && !body_target_supported(reuse, value.index, seen) {
+        return false
+    }
+    var index = 0
+    while index < length(value.children) {
+        if !body_expression_supported(reuse, get(value.children, index), span, seen) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var member = 0
+        while member < length(arm.body) {
+            if !body_expression_supported(reuse, get(arm.body, member), span, seen) {
+                return false
+            }
+            member = member + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn body_supported(reuse BodyReuse, value Function) Bool {
+    if value.is_async {
+        return false
+    }
+    let seen = new[Int]()
+    if !body_type_supported(reuse, value.result, seen) {
+        return false
+    }
+    var index = 0
+    while index < length(value.arguments) {
+        if !body_type_supported(reuse, get(value.arguments, index), seen) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.locals) {
+        if !body_type_supported(reuse, get(value.locals, index).ty, seen) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.preconditions) {
+        if !body_expression_supported(reuse, get(value.preconditions, index), value.span, seen) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.postconditions) {
+        if !body_expression_supported(reuse, get(value.postconditions, index), value.span, seen) {
+            return false
+        }
+        index = index + 1
+    }
+    body_expression_supported(reuse, value.body, value.span, seen)
+}
+
+fn body_type(env Environment, reuse BodyReuse, ty Int) Result[Int, Failure] {
+    if get(reuse.types, ty) >= 0 {
+        return Result.Ok(get(reuse.types, ty))
+    }
+    let shape = get(get(reuse.prior, 0).types, ty)
+    let arguments = new[Int]()
+    var index = 0
+    while index < length(shape.arguments) {
+        push(arguments, body_type(env, reuse, get(shape.arguments, index))?)
+        index = index + 1
+    }
+    let mapped = if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
+        data_type(env, body_symbol(reuse, shape.symbol), arguments, 0)?
+    } else {
+        intern(env, shape.kind, -1, arguments)
+    }
+    set(reuse.types, ty, mapped)
+    Result.Ok(mapped)
+}
+
+fn body_types(env Environment, reuse BodyReuse, types List[Int]) Result[List[Int], Failure] {
+    let mapped = new[Int]()
+    var index = 0
+    while index < length(types) {
+        push(mapped, body_type(env, reuse, get(types, index))?)
+        index = index + 1
+    }
+    Result.Ok(mapped)
+}
+
+fn body_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure] {
+    let prior = get(get(reuse.prior, 0).targets, target)
+    let owner = body_symbol(reuse, prior.symbol)
+    var index = 0
+    while index < length(env.signatures) {
+        if get(env.signatures, index).symbol == owner {
+            return schedule(env, index, body_types(env, reuse, prior.arguments)?, new[StaticValue](), symbol(env, owner).node)
+        }
+        index = index + 1
+    }
+    Result.Err(failure(env, owner, symbol(env, owner).node, "cached call has no current signature"))
+}
+
+fn body_expression(env Environment, reuse BodyReuse, value Expr, owner Int, offset Int) Result[Expr, Failure] {
+    let children = body_expressions(env, reuse, value.children, owner, offset)?
+    let arms = new[Arm]()
+    var index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = copy_indices(arm.bindings)
+                whole = arm.whole
+                body = body_expressions(env, reuse, arm.body, owner, offset)?
+            })
+        index = index + 1
+    }
+    let span = Span {
+        start = value.span.start + offset
+        end = value.span.end + offset
+    }
+    let file = get(env.source.files, symbol(env, owner).file)
+    Result.Ok(Expr {
+            kind = value.kind
+            ty = body_type(env, reuse, value.ty)?
+            span = span
+            text = if value.kind == ExprKind.Assert && value.text != "" {
+                render(file.path, file.text, Diagnostic {
+                        span = span
+                        message = "assertion failed"
+                    })
+            } else {
+                value.text
+            }
+            index = if value.kind == ExprKind.Call || value.kind == ExprKind.FunctionRef {
+                body_target(env, reuse, value.index)?
+            } else {
+                value.index
+            }
+            children = children
+            arms = arms
+            falls = value.falls
+        })
+}
+
+fn body_expressions(env Environment, reuse BodyReuse, values List[Expr], owner Int, offset Int) Result[List[Expr], Failure] {
+    let mapped = new[Expr]()
+    var index = 0
+    while index < length(values) {
+        push(mapped, body_expression(env, reuse, get(values, index), owner, offset)?)
+        index = index + 1
+    }
+    Result.Ok(mapped)
+}
+
+fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option[Function], Failure] {
+    if length(reuse.prior) == 0 || instance.signature < 0 || length(instance.constants) != 0 {
+        return Result.Ok(Option.None)
+    }
+    let owner = get(env.signatures, instance.signature).symbol
+    if owner >= length(reuse.allowed) || !get(reuse.allowed, owner) {
+        return Result.Ok(Option.None)
+    }
+    let prior = get(reuse.prior, 0)
+    let current = get(reuse.current, owner)
+    let candidates = match std.map.get(reuse.functions, owner) {
+        Option.Some(values) => values
+        Option.None => {
+            return Result.Ok(Option.None)
+        }
+    }
+    var index = 0
+    while index < length(candidates) {
+        let candidate = get(candidates, index)
+        let value = get(prior.functions, candidate)
+        let target = get(prior.targets, candidate)
+        if value.symbol >= 0 && body_symbol(reuse, value.symbol) == owner && target.ordinary &&
+        current.text != "" && current.text == get(prior.definitions.entries, value.symbol).text && body_supported(reuse, value) &&
+        same(body_types(env, reuse, value.arguments)?, instance.arguments) {
+            let offset = current.span.start - value.span.start
+            let locals = new[Local]()
+            var local = 0
+            while local < length(value.locals) {
+                let item = get(value.locals, local)
+                push(locals, Local {
+                        name = item.name
+                        ty = body_type(env, reuse, item.ty)?
+                        mutable = item.mutable
+                        is_scoped = item.is_scoped
+                    })
+                local = local + 1
+            }
+            let mapped = Function {
+                is_async = false
+                symbol = owner
+                arguments = copy_indices(instance.arguments)
+                params = body_types(env, reuse, value.params)?
+                result = body_type(env, reuse, value.result)?
+                locals = locals
+                preconditions = body_expressions(env, reuse, value.preconditions, owner, offset)?
+                postconditions = body_expressions(env, reuse, value.postconditions, owner, offset)?
+                result_local = value.result_local
+                body = body_expression(env, reuse, value.body, owner, offset)?
+                runtime_name = value.runtime_name
+                span = current.span
+            }
+            set(reuse.hits, 0, get(reuse.hits, 0) + 1)
+            return Result.Ok(Option.Some(mapped))
+        }
+        index = index + 1
+    }
+    Result.Ok(Option.None)
+}

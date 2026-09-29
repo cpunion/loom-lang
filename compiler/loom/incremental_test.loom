@@ -1,0 +1,99 @@
+fn cached_trial_program(path Text, cache DefinitionCache) Result[std.loom.typed.Program, Text] {
+    let project = load(path, "compiler/std", false)?
+    match check_project_cached(project, false, build_inputs(no_input_reader), cache) {
+        Result.Ok(value) => Result.Ok(value.program)
+        Result.Err(failed) => Result.Err(diagnostic(project.files, failed))
+    }
+}
+
+test fn reused_concrete_bodies_build_and_run_through_the_native_backend() {
+    let stage = match receipt_stage("compiler/loom/target/incremental-native-test") {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let source = join_path(stage, "main.loom")
+    let manifest = join_path(stage, "loom.toml")
+    let artifact = join_path(stage, "cached.exe")
+    defer {
+        discard remove_file(source)
+        discard remove_file(manifest)
+        discard remove_file(artifact)
+        discard remove_empty_dir(stage)
+    }
+    assert match std.file.write_text(manifest, "[module]\nname = \"cached\"\n") {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let text = """
+        record Box[T] {
+            value T
+        }
+        enum Choice[T] {
+            Some(T)
+            None
+        }
+        fn identity[T](value T) T {
+            value
+        }
+        fn unbox(value Box[Int]) Int {
+            identity(value).value
+        }
+        fn packet(value Box[Int]) Choice[(Int, List[Int])] {
+            Choice.Some((unbox(value), [9, 10]))
+        }
+        fn main() {
+            match packet(Box { value = 7 }) {
+                Choice.Some(pair) => {
+                    assert pair.0 == 7 && pair.1[1] == 10
+                }
+                Choice.None => {
+                    assert false
+                }
+            }
+        }
+        """
+    assert match std.file.write_text(source, text) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = definition_cache()
+    assert match cached_trial_program(stage, cache) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match std.file.write_text(source, concat("""
+        fn added(value List[Bool]) List[Bool] {
+            value
+        }
+
+        """, text)) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let program = match cached_trial_program(stage, cache) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert bodies_reused(cache) >= 4
+    let selected = match options(driver_arguments("build")) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert match compile(selected, encode(lower(program), new[BuildOption]()), false, artifact) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert match run([artifact]) {
+        Result.Ok(code) => code == 0
+        Result.Err(_) => false
+    }
+}

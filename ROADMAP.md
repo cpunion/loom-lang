@@ -270,7 +270,8 @@ computed byte buffers now use compact static blobs, with fresh mutable copies
 and preserved aliases inside computed graphs. The resident editor also reuses
 successful abstract checks of unchanged ordinary definitions, invalidating
 transitive callers and rechecking opaque dependencies. Current bindings, type
-IDs and reachable bodies are still rebuilt. Fine-grained persistent proof/effect
+IDs are rebuilt; eligible concrete bodies now rekey types, calls and source
+locations against those bindings instead of rechecking. Fine-grained persistent proof/effect
 reuse and per-package objects remain open.
 
 Static nominal concepts now lower explicit implementations and bounded generic
@@ -550,7 +551,9 @@ and [rename](editors/vscode/test/fixtures/rename_project/helper.loom) fixtures.
 Unchanged ordinary abstract definitions also reuse successful checks after edits,
 reordering and moves between function-only files in the same package. Additions,
 removals and new overloads invalidate affected callers, not every unrelated
-definition. Persistent per-definition IR remains open.
+definition. Concrete scalar/aggregate/List and generic bodies also reuse checked
+IR with current type, call and source-location mappings; unsupported forms
+recheck. Persistent per-definition IR remains open.
 Native failing assertions now report their source location and current test,
 including helper assertions and standalone test executables. The first fault
 remains authoritative across cleanup; this does not add stack traces or recovery.

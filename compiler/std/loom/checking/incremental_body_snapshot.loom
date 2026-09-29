@@ -1,0 +1,122 @@
+// Detach every mutable list before returning a checked program to callers.
+// Nominal type definitions will be rebuilt in the next environment; snapshots
+// retain only the shape needed to validate and rekey a cached concrete body.
+fn body_copy_expressions(values List[Expr]) List[Expr] {
+    let copied = new[Expr]()
+    var index = 0
+    while index < length(values) {
+        push(copied, body_copy_expression(get(values, index)))
+        index = index + 1
+    }
+    copied
+}
+
+fn body_copy_expression(value Expr) Expr {
+    let arms = new[Arm]()
+    var index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        push(arms, Arm {
+                variant = arm.variant
+                bindings = copy_indices(arm.bindings)
+                whole = arm.whole
+                body = body_copy_expressions(arm.body)
+            })
+        index = index + 1
+    }
+    Expr {
+        kind = value.kind
+        ty = value.ty
+        span = value.span
+        text = value.text
+        index = value.index
+        children = body_copy_expressions(value.children)
+        arms = arms
+        falls = value.falls
+    }
+}
+
+fn body_copy_function(value Function) Function {
+    let locals = new[Local]()
+    var index = 0
+    while index < length(value.locals) {
+        push(locals, get(value.locals, index))
+        index = index + 1
+    }
+    Function {
+        is_async = value.is_async
+        symbol = value.symbol
+        arguments = copy_indices(value.arguments)
+        params = copy_indices(value.params)
+        result = value.result
+        locals = locals
+        preconditions = body_copy_expressions(value.preconditions)
+        postconditions = body_copy_expressions(value.postconditions)
+        result_local = value.result_local
+        body = body_copy_expression(value.body)
+        runtime_name = value.runtime_name
+        span = value.span
+    }
+}
+
+fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, program std.loom.typed.Program) {
+    let types = new[Type]()
+    var index = 0
+    while index < length(program.types) {
+        let ty = get(program.types, index)
+        let fields = new[Field]()
+        var field = 0
+        while field < length(ty.fields) {
+            push(fields, get(ty.fields, field))
+            field = field + 1
+        }
+        let variants = new[Variant]()
+        var variant = 0
+        while variant < length(ty.variants) {
+            let member = get(ty.variants, variant)
+            push(variants, Variant {
+                    name = member.name
+                    fields = copy_indices(member.fields)
+                })
+            variant = variant + 1
+        }
+        push(types, Type {
+                kind = ty.kind
+                symbol = ty.symbol
+                arguments = copy_indices(ty.arguments)
+                fields = fields
+                variants = variants
+                constraint = new[Expr]()
+            })
+        index = index + 1
+    }
+    let functions = new[Function]()
+    let targets = new[BodyTarget]()
+    index = 0
+    while index < length(program.functions) {
+        let value = get(program.functions, index)
+        let instance = get(env.pending, index)
+        push(functions, body_copy_function(value))
+        push(targets, BodyTarget {
+                symbol = if instance.signature < 0 {
+                    -1
+                } else {
+                    get(env.signatures, instance.signature).symbol
+                }
+                arguments = copy_indices(instance.arguments)
+                ordinary = instance.signature >= 0 && length(instance.constants) == 0
+            })
+        index = index + 1
+    }
+    let saved = BodyBasis {
+        definitions = basis
+        types = types
+        targets = targets
+        functions = functions
+    }
+    if length(cache.state.bodies) == 0 {
+        push(cache.state.bodies, saved)
+    } else {
+        set(cache.state.bodies, 0, saved)
+    }
+}
