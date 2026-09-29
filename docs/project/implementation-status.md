@@ -512,7 +512,13 @@ Recursive proof dependencies, helper loops/mutation, returns inside helper opera
 indirect calls and dyn calls without a usable contract remain unsupported; required proofs never
 fall back to runtime checks or sampled evaluation.
 Required contracts also follow scalar fields through nested inline records/tuples and
-Int-backed refinements. In `ensures`, `old(expr)` currently denotes an immutable
+Int-backed refinements. Supported input-type invariants now become facts over
+those exact immutable values, without repeating construction checks or adding
+entry clauses. This includes record refinements and nested refined leaves;
+unsupported conjuncts, invariant helper expansion and shared contents remain
+outside this slice. See the
+[input invariant example](../../compiler/examples/invariant_contracts).
+In `ensures`, `old(expr)` currently denotes an immutable
 parameter scalar or inline record/tuple scalar path; shared-data snapshots, index and
 call expressions reject rather than treating a mutable alias as entry state.
 Record-backed refinements now admit only immutable inline scalar/record leaves.

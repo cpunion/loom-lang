@@ -1651,6 +1651,26 @@ unknown required proofs still block compilation. This is interval propagation,
 not general relational solving, and adds no runtime mechanism.
 See the [relational contract example](examples/relational_contracts).
 
+Immutable input refinements contribute their supported predicates to required
+proofs without a duplicate `requires` or runtime check:
+
+```loom
+type Positive = Int where self > 0
+
+fn amount(value Positive) Int
+ensures result > 0
+{
+    value
+}
+```
+
+The same applies to inline
+record invariants and refined leaves inside records/tuples. Facts belong to the
+actual symbolic value, not the spelling or slot of `self` in the template.
+Shared contents remain opaque. Call-free Int/Bool predicates use the existing
+bounded fragment; unknown conjuncts, invariant helper calls and Float arithmetic
+supply no evidence. See the [input invariant example](examples/invariant_contracts).
+
 The current proof fragment supports scalar linear arithmetic, comparisons,
 Boolean facts, local assignments, and acyclic branches/returns. It reasons from
 preconditions and successful checked operations. A source-written `assert`
