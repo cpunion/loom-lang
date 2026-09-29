@@ -2583,8 +2583,9 @@ failure or Task cancellation closes its socket.
 `read` appends to a shared Bytes buffer;
 `Ok(0)` means EOF for a positive limit. `write_bytes` retries partial and
 WouldBlock writes until its initial buffer length is sent. Bytes contents are
-not snapshotted: alias mutation during a pending write can change the data or
-cause a write error. `Listener` and
+not snapshotted: alias mutation during a pending write can change existing data
+or cause a write error, but appended bytes stay outside the initial write end.
+`Listener` and
 `Stream` contain private owner-local token state, never a raw descriptor.
 Copying a wrapper aliases its identity; `close_listener`/`close_stream` revoke
 all copies and reject close while a pending or delivered readiness wait leases

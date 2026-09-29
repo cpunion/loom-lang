@@ -390,13 +390,16 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_write_bytes(
     token: i64,
     bytes: *const u8,
     offset: i64,
+    end: i64,
 ) -> i64 {
-    let Ok(offset) = usize::try_from(offset) else {
+    let (Ok(offset), Ok(end)) = (usize::try_from(offset), usize::try_from(end)) else {
         return -1;
     };
     // SAFETY: This call does not retain or relocate the rooted Bytes value.
     let bytes = unsafe { buffer_bytes(bytes) };
-    let Some(bytes) = bytes.get(offset..) else {
+    // A suspended source writer retains its initial end even if an alias
+    // appends to the shared buffer before a readiness retry.
+    let Some(bytes) = bytes.get(offset..end) else {
         return -1;
     };
     let Some(socket) = edit(|owner, _| Ok(owner.sockets().get(token))) else {

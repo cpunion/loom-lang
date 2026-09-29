@@ -71,4 +71,5 @@ test fn intrinsic_effect_and_type_metadata_cannot_be_changed_by_a_declaration() 
     rejects_timer("intrinsic fn socket_set_nodelay(token Int, enabled Bool) Int", "")
     rejects_timer("intrinsic fn socket_shutdown_write(token Int, how Int) Int", "")
     rejects_timer("async intrinsic fn socket_shutdown_write(token Int) Int", "")
+    rejects_timer("intrinsic fn socket_write_bytes(token Int, buffer Bytes, offset Int) Int", "")
 }

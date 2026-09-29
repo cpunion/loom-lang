@@ -158,8 +158,13 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "socket_set_nodelay" {
         return runtime(0, two_types(1, 1), 1)
     }
-    if name == "socket_read" || name == "socket_write_bytes" {
+    if name == "socket_read" {
         return runtime(0, three_types(1, 4, 1), 1)
+    }
+    if name == "socket_write_bytes" {
+        let arguments = three_types(1, 4, 1)
+        push(arguments, 1)
+        return runtime(0, arguments, 1)
     }
     if name == "task_next" {
         return runtime(0, new[Int](), 1)

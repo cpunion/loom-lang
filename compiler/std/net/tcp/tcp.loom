@@ -51,7 +51,7 @@ intrinsic fn socket_accept(token Int) Int
 
 intrinsic fn socket_read(token Int, buffer Bytes, limit Int) Int
 
-intrinsic fn socket_write_bytes(token Int, value Bytes, offset Int) Int
+intrinsic fn socket_write_bytes(token Int, value Bytes, offset Int, end Int) Int
 
 intrinsic fn socket_close(token Int) Int
 
@@ -223,7 +223,7 @@ pub async fn write_bytes(stream Stream, value Bytes) Result[Int, TcpError] {
     let size = length(value)
     var offset = 0
     while offset < size {
-        let count = socket_write_bytes(stream.state.token, value, offset)
+        let count = socket_write_bytes(stream.state.token, value, offset, size)
         if count == -2 {
             socket_wait(stream.state.token, 2).await
         } else {
