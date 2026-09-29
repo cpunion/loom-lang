@@ -115,6 +115,12 @@ fn difference_holds(predicate Predicate, facts List[Predicate]) Bool {
                 Result.Err(_) => false
             }
         }
+        Predicate.And(values) =>
+        (holds(get(values, 0), facts) || difference_holds(get(values, 0), facts)) &&
+        (holds(get(values, 1), facts) || difference_holds(get(values, 1), facts))
+        Predicate.Or(values) =>
+        holds(get(values, 0), facts) || difference_holds(get(values, 0), facts) ||
+        holds(get(values, 1), facts) || difference_holds(get(values, 1), facts)
         _ => false
     }
 }

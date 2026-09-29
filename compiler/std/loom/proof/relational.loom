@@ -392,7 +392,8 @@ fn scalar_facts_imply(premises List[Expr], conclusion Expr) Result[Bool, Text] {
     }
     state = difference_facts(state)
     discard defined(goal, state)?
-    postcondition_holds(goal, state, 256)
+    let predicate = boolean(pure(goal, state)?)?
+    Result.Ok(holds(predicate, state.facts) || difference_holds(predicate, state.facts))
 }
 
 // The caller supplies checked, already-established facts over stable scalars.

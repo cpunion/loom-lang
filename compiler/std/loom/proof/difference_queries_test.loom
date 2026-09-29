@@ -1,6 +1,7 @@
 test fn difference_queries_prove_relative_bounds_without_absolute_ranges() {
     let premises = nodes(operation(">", local(7), local(8)), operation(">", local(8), local(9)))
     assert implies_facts(premises, operation(">", local(7), local(9)))
+    assert implies_facts(premises, operation("&&", operation(">", local(7), local(9)), operation(">", local(8), local(9))))
     assert !implies_facts(premises, operation(">", operation("+", local(7), literal("1")), local(7)))
     let x = variable(1000000)
     let y = variable(3)
