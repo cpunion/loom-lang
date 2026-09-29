@@ -25,7 +25,10 @@ import std.loom.proof.verify_with_types
 
 fn predicate_form(node Node, calls Bool) Bool {
     if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool || node.kind == NodeKind.Text { return true }
-    if node.kind == NodeKind.Name { return node.value == "self" || starts_with(node.value, "self.") }
+    // Closed function references are valid arguments to pure predicate helpers.
+    // Binding still exposes no runtime local other than self; purity and input
+    // observation validate their reachable call targets after typing.
+    if node.kind == NodeKind.Name { return calls || node.value == "self" || starts_with(node.value, "self.") }
     if node.kind == NodeKind.Select { return predicate_form(child(node, 0), calls) }
     if node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall {
         if !calls { return false }

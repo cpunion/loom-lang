@@ -1,0 +1,58 @@
+fn callback_apply[T](value T, callback fn(T) Bool) Bool {
+    callback(value)
+}
+
+fn snapshot_named(value SharedSnapshot) Bool {
+    std.text.length(value.name) > 0
+}
+
+fn snapshot_named_positive(value SharedSnapshot) Bool {
+    value.details.count > 0 && snapshot_named(value)
+}
+
+fn snapshot_predicate(positive Bool) fn(SharedSnapshot) Bool {
+    if positive {
+        snapshot_named_positive
+    } else {
+        snapshot_named
+    }
+}
+
+type CallbackSnapshot = SharedSnapshot where callback_apply(self, snapshot_predicate(self.details.count > 0))
+
+fn callback_snapshot(value SharedSnapshot) Result[CallbackSnapshot, ConstraintError] {
+    CallbackSnapshot(value)
+}
+
+fn invariant_callback_scope() Bool {
+    let values = [1]
+    let source = SharedSnapshot {
+        details = SharedDetails {
+            count = 3
+            values = values
+        }
+        name = "callback"
+        bytes = std.bytes.new()
+    }
+    let valid = match callback_snapshot(source) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return false
+        }
+    }
+    push(values, -1)
+    values[0] = 42
+    assert valid.details.values[0] == 42 && length(valid.details.values) == 2
+    let widened SharedSnapshot = valid
+    assert widened.name == "callback" && source.details.count == 3
+    let bad = SharedSnapshot {
+        name = ""
+        ..source
+    }
+    assert match callback_snapshot(bad) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    true
+}

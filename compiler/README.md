@@ -1520,11 +1520,15 @@ that also receive the input record. Record/tuple fields and enum payloads retain
 separate origins: wrapping input and scratch together does not make the scratch
 an input alias. Branches, record updates and returns merge these paths; an
 analysis limit widens to unknown input storage, never to assumed freshness.
-Copying or forwarding an input handle does not itself observe it. Indirect calls
-involving input storage and mutation that stores such aliases into scratch
-conservatively reject. This analysis does
+Copying or forwarding an input handle does not itself observe it. Named callback
+arguments retain these origins: every reachable target of the checked function
+shape is analyzed, including its preconditions and returned aliases. Input-supplied
+or captured callbacks stay opaque; their indirect calls involving input storage,
+and mutation that stores such aliases into scratch, conservatively reject. This analysis does
 not prove predicate truth or permit mutable-content invariants. See the
 [effect example](examples/record_refinement/effects.loom).
+The [callback example](examples/record_refinement/callbacks.loom) uses ordinary
+higher-order helpers at the same checked construction boundary.
 Scoped resources and one-shot Tasks cannot be wrapped in a refinement.
 Its constructor checks an unknown value once and returns `Result`; copying the
 refined value or widening it to the base record adds no check. Fields cannot be
