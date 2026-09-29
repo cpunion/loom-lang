@@ -90,7 +90,9 @@ fn exercise() {
         value = "boxed"
     }
     assert boxed.value == "boxed"
-    let B { value = unboxed } = boxed
+    let B {
+        value = unboxed
+    } = boxed
     assert unboxed == "boxed"
     let M = comptime {
         of[Maybe[Int]]()

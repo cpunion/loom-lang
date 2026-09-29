@@ -10,7 +10,9 @@ fn pack_boxes[Ts...](values (Ts...)) Bool {
     var valid = true
     comptime for T in Ts {
         comptime if T == Box[Int] {
-            let T { value = item } = T {
+            let T {
+                value = item
+            } = T {
                 value = 42
             }
             valid = valid && item == 42
@@ -22,14 +24,20 @@ fn pack_boxes[Ts...](values (Ts...)) Bool {
 }
 
 fn static_nominal_scope() {
-    assert pack_boxes((Box { value = 1 }, Box { value = 2 }))
+    assert pack_boxes((Box {
+                value = 1
+            }, Box {
+                value = 2
+            }))
     let checks = comptime map T in FieldTypes {
         comptime if T == Box[Int] {
             let value = T {
                 value = 42
             }
             match value {
-                T { value = item } => item == 42
+                T {
+                    value = item
+                } => item == 42
             }
         } else {
             comptime if T == Box[Text] {
@@ -37,7 +45,9 @@ fn static_nominal_scope() {
                     value = "selected"
                 }
                 match value {
-                    T { value = T } => T == "selected"
+                    T {
+                        value = T
+                    } => T == "selected"
                 }
             } else {
                 comptime if T == Maybe[Int] {
