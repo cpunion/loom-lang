@@ -145,6 +145,9 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
             return Result.Ok(expression(ExprKind.Coerce, value.ty, node, "", -1, expressions(rebuilt), true))
         }
     }
+    if kind == TypeKind.Meta {
+        return meta_literal(state.context, node, value.number)
+    }
     if kind == TypeKind.Int || kind == TypeKind.Float || kind == TypeKind.Refined {
         let base = base_type(state.context.env, value.ty)
         let text = if base == 5 { std.float.to_text(value.floating) } else { std.int.to_text(value.number) }

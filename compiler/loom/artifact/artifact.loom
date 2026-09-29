@@ -81,6 +81,7 @@ fn type_tag(kind TypeKind) Int {
         TypeKind.Bytes => 4,
         TypeKind.Parameter => 5,
         TypeKind.Associated => 5
+        TypeKind.Meta => 5
         TypeKind.List => 6,
         TypeKind.Record => 7,
         TypeKind.Tuple => 7
@@ -96,7 +97,9 @@ fn type_tag(kind TypeKind) Int {
 
 fn data(buffer Bytes, value Type) {
     integer(buffer, type_tag(value.kind))
-    integer(buffer, value.symbol)
+    // Unused compile-time identities share the backend's non-emittable opaque
+    // type slot; they never expose the checking session's type-value payload.
+    integer(buffer, if value.kind == TypeKind.Meta { 0 } else { value.symbol })
     if value.kind == TypeKind.List || value.kind == TypeKind.Task {
         integer(buffer, get(value.arguments, 0))
     }
@@ -172,6 +175,10 @@ fn expression_tag(kind ExprKind) Int {
         ExprKind.FrameStore => 32
         ExprKind.Bytes => 33
         ExprKind.ResourceDrain => {
+            assert false
+            -1
+        }
+        ExprKind.TypeValue => {
             assert false
             -1
         }

@@ -135,11 +135,15 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
 }
 
 fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
-    let declaration = find_data(context.env, context.signature.symbol, node, node.value)?
+    let selected = meta_binding(context, node.value)
+    if selected >= 0 && length(child(node, 0).children) != 0 {
+        return Result.Err(error(context, node, "a type value is not a generic type constructor"))
+    }
+    let declaration = if selected >= 0 { meta_visible(context, node, selected)? } else { find_data(context.env, context.signature.symbol, node, node.value)? }
     if declaration < 0 { return Result.Err(error(context, node, "unknown record type")) }
     let shape = get(context.env.types, template(context, declaration)?)
     if shape.kind != TypeKind.Record { return Result.Err(error(context, node, "construction requires a record type")) }
-    let arguments = data_arguments(context, node, declaration, child(node, 0).children, expected)?
+    let arguments = data_arguments(context, node, declaration, child(node, 0).children, if selected >= 0 { selected } else { expected })?
     let seen = new[Bool]()
     var index = 0
     while index < length(shape.fields) { push(seen, false)
@@ -197,7 +201,13 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
     Result.Ok(expression(ExprKind.Record, ty, node, "", -1, fields, all_fall(fields)))
 }
 fn variant(context Context, node Node, types List[Node], inputs CallInputs, expected Int) Result[Expr, Failure] {
-    let declaration = find_data(context.env, context.signature.symbol, node, package(node.value))?
+    let selected_type = meta_binding(context, package(node.value))
+    if selected_type >= 0 && length(types) != 0 {
+        return Result.Err(error(context, node, "a type value is not a generic type constructor"))
+    }
+    let declaration = if selected_type >= 0 { meta_visible(context, node, selected_type)? } else {
+        find_data(context.env, context.signature.symbol, node, package(node.value))?
+    }
     if declaration < 0 { return Result.Err(error(context, node, "unknown enum type")) }
     let shape = get(context.env.types, template(context, declaration)?)
     if shape.kind != TypeKind.Enum { return Result.Err(error(context, node, "variant construction requires an enum")) }
@@ -210,7 +220,7 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     if selected < 0 { return Result.Err(error(context, node, "unknown enum variant")) }
     let patterns = get(shape.variants, selected).fields
     if length(patterns) != length(inputs.nodes) { return Result.Err(error(context, node, "enum payload count does not match")) }
-    let arguments = data_arguments(context, node, declaration, types, expected)?
+    let arguments = data_arguments(context, node, declaration, types, if selected_type >= 0 { selected_type } else { expected })?
     let values = new[Expr]()
     index = 0
     while index < length(inputs.nodes) {
@@ -257,6 +267,16 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let inputs = call_inputs(context, child(node, 1).children)?
     let first = slice(node.value, 0, first_dot(node.value))
     if lookup(context, first) >= 0 {
+        let selected = meta_binding(context, first)
+        if selected >= 0 {
+            let declaration = meta_visible(context, node, selected)?
+            if package(node.value) != "" { return variant(context, node, types, inputs, expected) }
+            if length(types) != 0 { return Result.Err(error(context, node, "a type value is not a generic type constructor")) }
+            if get(context.env.types, selected).kind == TypeKind.Refined {
+                return constrained(context, node, declaration, meta_arguments(context, node, selected), inputs)
+            }
+            return Result.Err(error(context, node, "use a record or enum constructor for the selected type"))
+        }
         if package(node.value) == "" {
             let callee = Node { kind = NodeKind.Name value = node.value span = node.span children = new[Node]() }
             let value = expr(context, callee, -1)?

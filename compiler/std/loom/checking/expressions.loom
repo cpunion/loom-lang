@@ -51,9 +51,13 @@ fn named(context Context, node Node, expected Int) Result[Expr, Failure] {
     let end = first_dot(node.value)
     let first = slice(node.value, 0, end)
     let local = lookup(context, first)
+    if local >= 0 && end < length(node.value) && meta_binding(context, first) >= 0 {
+        return variant(context, node, new[Node](), plain_inputs(new[Node]()), expected)
+    }
     if local < 0 {
         let options = referenced_functions(context, node.value)
         if length(options) != 0 { return function_value(context, node, options, new[Node](), expected) }
+        if meta_named(context, node) { return meta_literal(context, node, context_type(context, node)?) }
         if end < length(node.value) { return variant(context, node, new[Node](), plain_inputs(new[Node]()), expected) }
         return Result.Err(error(context, node, "unknown local value"))
     }
@@ -85,6 +89,11 @@ fn expr(context Context, node Node, expected Int) Result[Expr, Failure] {
 }
 fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let kind = node.kind
+    if (kind == NodeKind.Type || kind == NodeKind.Apply) && meta_named(context, node) {
+        if unknown_static(context, node) { return deferred(context, node, meta_type(context.env)) }
+        let value = meta_literal(context, node, context_type(context, node)?)?
+        return if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
+    }
     if kind == NodeKind.MacroCall {
         let value = macro_call(context, node, expected)?
         return if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
@@ -140,7 +149,7 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
             return Result.Err(error(context, node, "tuple equality is not supported"))
         }
         let argument = if logical { 2 } else { if !bitwise && (equality || left.ty == 5) { left.ty } else { 1 } }
-        if left.ty != argument || (left.ty != 1 && left.ty != 2 && left.ty != 5 && !(equality && (left.ty == 3 || enum_equality(context, left.ty)))) {
+        if left.ty != argument || (left.ty != 1 && left.ty != 2 && left.ty != 5 && !(equality && (left.ty == 3 || get(context.env.types, left.ty).kind == TypeKind.Meta || enum_equality(context, left.ty)))) {
             return Result.Err(error(context, node, "invalid operator operand; generic operations need an explicit capability"))
         }
         let right = expr(context, child(node, 1), argument)?

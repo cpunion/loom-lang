@@ -98,6 +98,8 @@ fn path(cursor Cursor) Result[Step, Diagnostic] {
     Result.Ok(done(cursor, rest, NodeKind.Name, value, new[Node]()))
 }
 fn type_ref(cursor Cursor) Result[Step, Diagnostic] {
+    if word(cursor, "type") { return Result.Ok(done(cursor, next(cursor), NodeKind.Type, "type", new[Node]())) }
+    if word(cursor, "comptime") { return comptime_expr(cursor) }
     if word(cursor, "fn") { return function_type(cursor) }
     if at(cursor, Kind.LParen) { return parenthesized(cursor, Items.Types, NodeKind.TupleType) }
     let dynamic = word(cursor, "dyn")
@@ -111,7 +113,7 @@ fn function_type(cursor Cursor) Result[Step, Diagnostic] {
     let params = sequence(next(cursor), Kind.LParen, Kind.RParen, NodeKind.Parameters, Items.Types, false)?
     var rest = params.rest
     let returns = new[Node]()
-    if at(rest, Kind.LParen) || word(rest, "fn") || word(rest, "dyn") ||
+    if at(rest, Kind.LParen) || word(rest, "fn") || word(rest, "dyn") || word(rest, "type") || word(rest, "comptime") ||
         (at(rest, Kind.Name) && !reserved(token(rest).value)) {
         let returned = type_ref(rest)?
         if returned.node.value == "Unit" { return Result.Err(error(rest, "omit the Unit return annotation")) }

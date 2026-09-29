@@ -61,7 +61,7 @@ fn scalar_purity(state State, expr Expr, depth Int) Result[Bool, Failure] {
     if task_type(state, expr.ty) { return Result.Err(failure(expr, "compile-time evaluation cannot transfer tasks")) }
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
     discard spend(state, expr, 0, 1)?
-    if expr.kind != ExprKind.Integer && expr.kind != ExprKind.Float && expr.kind != ExprKind.Bool && expr.kind != ExprKind.Text &&
+    if expr.kind != ExprKind.TypeValue && expr.kind != ExprKind.Integer && expr.kind != ExprKind.Float && expr.kind != ExprKind.Bool && expr.kind != ExprKind.Text &&
         expr.kind != ExprKind.Local && expr.kind != ExprKind.Unary && expr.kind != ExprKind.Binary && expr.kind != ExprKind.Coerce {
         return Result.Err(failure(expr, "expression is not a call-free scalar constant"))
     }

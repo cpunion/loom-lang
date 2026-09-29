@@ -2006,8 +2006,39 @@ preserves macro punctuation; editor hover shows the expanded result type and
 definition navigation targets the source generator. `std.loom.syntax` also
 emits validated file/declaration/type/pattern fragments from public AST data.
 The [declaration tool](examples/ast_generation) generates a normally checked
-package. In-compilation declaration expansion and first-class type values are
-not implemented by expression macros or this explicit generation step.
+package. In-compilation declaration expansion is not implemented by expression
+macros or this explicit generation step.
+
+### Compile-time type values
+
+`type` is a compile-time-only value type. It does not reserve the ordinary name
+`Type`, expose compiler indices, or add runtime type discovery:
+
+```loom
+fn choose(flag Bool, first type, second type) type {
+    if flag { first } else { second }
+}
+
+fn main() {
+    let Number = comptime { choose(true, Int, Float) }
+    let answer Number = 42
+    assert answer == 42
+}
+```
+
+Pure functions can pass, return, compare and store types in compile-time data.
+`std.meta.of[(Int, Text)]()` and `of[fn(Int) Bool]()` provide compound types.
+Known immutable type bindings supply local annotations, generic arguments and
+visible record/enum/refinement constructors. A `comptime { ... }` block can also
+supply a type directly in a local annotation or explicit generic argument.
+Nominal identity, visibility, bounds and construction checks are unchanged.
+Type-bearing data cannot escape into runtime locals, parameters or results;
+source-public type-producing functions have no native export.
+
+Type construction follows explicit staging: `std.meta.list(comptime element type)`
+requires its argument to be known at that call. A type-valued evaluator local is
+not an implicit generic parameter. Declaration signatures still use `[T]`, not
+value-dependent return-type inference. See the [type-value example](examples/type_values).
 
 ### Type reflection
 

@@ -39,7 +39,8 @@ fn well_formed(env Environment, owner Int, ty Int, obligations List[Requirement]
     Result.Ok(true)
 }
 fn context_type(context Context, node Node) Result[Int, Failure] {
-    let ty = resolve_bound(context.env, context.signature.symbol, node, context.arguments, context.signature.requirements, 0)?
+    let resolved = meta_type_node(context, node)?
+    let ty = resolve_bound(context.env, context.signature.symbol, resolved, context.arguments, context.signature.requirements, 0)?
     discard well_formed(context.env, context.signature.symbol, ty, context.signature.requirements, node, 0)?
     Result.Ok(ty)
 }

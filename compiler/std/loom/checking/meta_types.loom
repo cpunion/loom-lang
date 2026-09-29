@@ -1,0 +1,253 @@
+// Type values are session-local identities used only by the checked evaluator.
+// They are not reflection descriptors, runtime tags or a conformance registry.
+fn meta_type(env Environment) Int {
+    intern(env, TypeKind.Meta, -1, new[Int]())
+}
+
+fn has_meta_types(env Environment) Bool {
+    var index = 0
+    while index < length(env.types) {
+        if get(env.types, index).kind == TypeKind.Meta {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn meta_literal(context Context, node Node, ty Int) Result[Expr, Failure] {
+    if ty < 0 || ty >= length(context.env.types) {
+        return Result.Err(error(context, node, "invalid compile-time type identity"))
+    }
+    if ty == 0 {
+        return Result.Err(error(context, node, "an omitted result is not a source type value"))
+    }
+    if !concrete(context.env, ty) {
+        return deferred(context, node, meta_type(context.env))
+    }
+    Result.Ok(expression(ExprKind.TypeValue, meta_type(context.env), node, "", ty, new[Expr](), true))
+}
+
+fn meta_named(context Context, node Node) Bool {
+    let source = if node.kind == NodeKind.Apply {
+        child(node, 0)
+    } else {
+        node
+    }
+    if source.kind != NodeKind.Name && source.kind != NodeKind.Type {
+        return false
+    }
+    let path = source.value
+    if lookup(context, slice(path, 0, first_dot(path))) >= 0 {
+        return false
+    }
+    if path == "Int" || path == "Float" || path == "Bool" || path == "Text" || path == "Bytes" ||
+    path == "List" || path == "Task" || path == "type" || parameter_name(context, path) {
+        return true
+    }
+    match find_data(context.env, context.signature.symbol, source, path) {
+        Result.Ok(found) => found >= 0
+        Result.Err(_) => false
+    }
+}
+
+fn meta_reference(node Node, ty Int) Node {
+    pack_node(node, NodeKind.Type, concat("$type#", to_text(ty)), new[Node]())
+}
+
+fn meta_binding(context Context, name Text) Int {
+    let found = lookup(context, name)
+    if found < 0 {
+        return -1
+    }
+    let binding = get(context.bindings, found)
+    if binding.constant < -1 {
+        let alias = get(context.env.static_aliases, -2 - binding.constant)
+        if get(context.env.types, alias.ty).kind == TypeKind.Meta && std.text.starts_with(alias.node.value, "$type#") {
+            match std.int.parse(slice(alias.node.value, 6, length(alias.node.value))) {
+                Result.Ok(value) => {
+                    return value
+                }
+                Result.Err(_) => {
+                }
+            }
+        }
+    }
+    if binding.constant >= 0 {
+        let value = get(context.constants, binding.constant)
+        if value.known && get(context.env.types, value.ty).kind == TypeKind.Meta {
+            return value.number
+        }
+    }
+    -1
+}
+
+fn meta_visible(context Context, node Node, ty Int) Result[Int, Failure] {
+    let shape = get(context.env.types, ty)
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Enum && shape.kind != TypeKind.Refined {
+        return Result.Err(error(context, node, "the selected type has no nominal constructor"))
+    }
+    let declaration = symbol(context.env, shape.symbol)
+    let here = symbol(context.env, context.signature.symbol)
+    if !declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package {
+        return Result.Err(error(context, node, "cannot construct a private type from another package"))
+    }
+    Result.Ok(shape.symbol)
+}
+
+fn meta_arguments(context Context, node Node, ty Int) List[Node] {
+    let arguments = get(context.env.types, ty).arguments
+    let nodes = new[Node]()
+    var index = 0
+    while index < length(arguments) {
+        push(nodes, meta_reference(node, get(arguments, index)))
+        index = index + 1
+    }
+    nodes
+}
+
+fn meta_type_node(context Context, node Node) Result[Node, Failure] {
+    if node.kind == NodeKind.Comptime {
+        let value = computed(context, node, child(node, 0), meta_type(context.env))?
+        return Result.Ok(meta_reference(node, value.number))
+    }
+    if node.kind == NodeKind.Name || node.kind == NodeKind.Type {
+        let end = first_dot(node.value)
+        let selected = meta_binding(context, slice(node.value, 0, end))
+        if selected >= 0 {
+            if end == length(node.value) && length(node.children) != 0 {
+                return Result.Err(error(context, node, "a type value is not a generic type constructor"))
+            }
+            let reference = meta_reference(node, selected)
+            return Result.Ok(pack_node(node, node.kind, concat(reference.value, slice(node.value, end, length(node.value))), node.children))
+        }
+    }
+    if length(node.children) == 0 {
+        return Result.Ok(node)
+    }
+    let children = new[Node]()
+    var index = 0
+    while index < length(node.children) {
+        push(children, meta_type_node(context, child(node, index))?)
+        index = index + 1
+    }
+    Result.Ok(pack_node(node, node.kind, node.value, children))
+}
+
+fn bind_meta(context Context, node Node, value Expr, boundary Int) Result[Step, Failure] {
+    if node.kind == NodeKind.Var || value.kind != ExprKind.TypeValue {
+        return Result.Err(error(context, node, "type bindings must be immutable and compile-time known; use comptime { ... }"))
+    }
+    let index = length(context.env.static_aliases)
+    push(context.env.static_aliases, StaticAlias {
+            node = meta_reference(node, value.index)
+            ty = value.ty
+        })
+    let next = bind_name(context, node, node.value, -1, -2 - index, boundary)?
+    Result.Ok(Step {
+            context = next
+            expression = expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true)
+        })
+}
+
+fn contains_meta(env Environment, ty Int, seen List[Int]) Bool {
+    if resource_seen(seen, ty) {
+        return false
+    }
+    push(seen, ty)
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Meta {
+        return true
+    }
+    var index = 0
+    while index < length(shape.arguments) {
+        if contains_meta(env, get(shape.arguments, index), seen) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.fields) {
+        if contains_meta(env, get(shape.fields, index).ty, seen) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(shape.variants) {
+        let fields = get(shape.variants, index).fields
+        var field = 0
+        while field < length(fields) {
+            if contains_meta(env, get(fields, field), seen) {
+                return true
+            }
+            field = field + 1
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn meta_signature(env Environment, signature Signature) Bool {
+    if contains_meta(env, signature.result, new[Int]()) {
+        return true
+    }
+    var index = 0
+    while index < length(signature.params) {
+        if !is_static(signature, index) && contains_meta(env, get(signature.params, index), new[Int]()) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn runtime_meta_expression(env Environment, owner Int, value Expr) Result[Bool, Failure] {
+    if contains_meta(env, value.ty, new[Int]()) {
+        return Result.Err(failure(env, owner, symbol(env, owner).node, "type values have no runtime representation; evaluate them inside comptime"))
+    }
+    var index = 0
+    while index < length(value.children) {
+        discard runtime_meta_expression(env, owner, get(value.children, index))?
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            discard runtime_meta_expression(env, owner, get(body, item))?
+            item = item + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn runtime_meta(env Environment, functions List[Function]) Result[Bool, Failure] {
+    if env.stage_depth != 0 || !has_meta_types(env) {
+        return Result.Ok(true)
+    }
+    var index = 0
+    while index < length(functions) {
+        let function = get(functions, index)
+        if contains_meta(env, function.result, new[Int]()) {
+            return Result.Err(failure(env, function.symbol, symbol(env, function.symbol).node, "type-producing functions can only execute at compile time"))
+        }
+        var local = 0
+        while local < length(function.locals) {
+            if contains_meta(env, get(function.locals, local).ty, new[Int]()) {
+                return Result.Err(failure(env, function.symbol, symbol(env, function.symbol).node, "type values cannot be stored in runtime locals or parameters"))
+            }
+            local = local + 1
+        }
+        discard runtime_meta_expression(env, function.symbol, function.body)?
+        var clause = 0
+        while clause < length(function.preconditions) {
+            discard runtime_meta_expression(env, function.symbol, get(function.preconditions, clause))?
+            clause = clause + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

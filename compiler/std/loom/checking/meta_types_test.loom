@@ -1,0 +1,86 @@
+test fn type_values_flow_through_pure_functions_and_select_concrete_types() {
+    discard accepted("""
+        fn select(flag Bool, a type, b type) type {
+            var chosen = a
+            if !flag {
+                chosen = b
+            }
+            chosen
+        }
+        fn identity[T](value T) T {
+            value
+        }
+        fn main() {
+            let T = comptime { select(true, Int, Bool) }
+            let value T = 42
+            assert identity[T](value) == 42
+        }
+        """)
+}
+
+test fn selected_types_do_not_grant_private_construction_access() {
+    let files = source_files("""
+        import hidden.secret
+        fn main() {
+            let Selected = comptime { secret() }
+            let value = Selected { value = 7 }
+            discard value
+        }
+        """)
+    push(files, source_file("hidden", """
+        record Secret {
+            value Int
+        }
+        pub fn secret() type {
+            Secret
+        }
+        """, false))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "cannot construct a private type from another package"
+        Result.Ok(_) => false
+    }
+}
+
+test fn type_values_never_supply_runtime_tags_or_skip_required_proofs() {
+    rejects("""
+        fn guarded()
+        requires Int == Int
+        {
+        }
+        fn main() {
+            guarded()
+        }
+        """)
+    rejects("""
+        fn pick(value Bool) type {
+            if value { Int } else { Text }
+        }
+        fn main() {
+            discard pick(true)
+        }
+        """)
+    rejects("""
+        record Wrapped {
+            ty type
+        }
+        fn main() {
+            let value = Wrapped { ty = Int }
+            discard value
+        }
+        """)
+    rejects("""
+        fn hidden() Int
+        ensures result == 2
+        {
+            let T = comptime { Int }
+            let value T = 1
+            value
+        }
+        """)
+    rejects("""
+        fn hidden(flag Bool) {
+            let T = comptime { if flag { Int } else { Text } }
+            discard T
+        }
+        """)
+}

@@ -826,8 +826,14 @@ the [macro example](../../compiler/examples/typed_macros).
 fragments. The [declaration tool](../../compiler/examples/ast_generation) builds
 AST declarations in Loom, then produces a normal package that passes its own
 check/test/run and required proof. This explicit tool pipeline does not provide
-in-compilation declaration expansion; that, first-class type values and predicate
-reflection remain open.
+in-compilation declaration expansion; that and predicate reflection remain open.
+First-class compile-time type values now use the keyword `type`. Pure functions
+can pass, return, compare and select identities, including through compile-time
+data and loops. Known type bindings supply local annotations, generic arguments
+and visible nominal constructors; native code retains only the selected types.
+Runtime escape rejects, and static aggregate keys preserve exact type identity.
+Type construction requires explicit staging; declaration signatures still use
+ordinary generic parameters. See the [example](../../compiler/examples/type_values).
 
 Public `std.loom.parser` now parses standalone expressions, types, match/binding
 patterns, statements and declarations through the existing grammar. Fragments
