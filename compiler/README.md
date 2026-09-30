@@ -2674,12 +2674,16 @@ promised across operating systems. These operations report `Address`, `Option`
 or `Shutdown` errors, including stale tokens. See the
 [EOF-delimited request/response example](examples/tcp_half_close/README.md).
 
+`abort(stream)` revokes all aliases and retires active socket waits. Pending I/O
+wakes to fail, including a wait Task that has not started yet. Already-sent bytes
+are not rolled back; callers must still consume or cancel their child Tasks.
+
 `std.net.tls` provides `Connection`, `ClientOptions`, `ServerOptions`, `Trust`,
 `Identity` and `ClientAuth`
 and typed errors over TLS 1.2/1.3. `connect(host, port)` verifies the host against compiled Mozilla
 roots. The options overload accepts explicit PEM trust roots and ALPN; numeric
 `connect(address, name, options)` separates the TCP endpoint from the verified
-DNS/IP name. `Identity { certificates, private_key }` holds a PEM chain and key.
+DNS/IP name. `Identity` holds a PEM certificate chain and private key.
 Client options select `Option.None` or `Option.Some(identity)`; server options
 require an identity and select `ClientAuth.Anonymous` or
 `ClientAuth.Required(client_ca_pem)`. Required authentication rejects missing,
@@ -2695,16 +2699,18 @@ Write shutdown sends TLS close-notify, not TCP FIN, and preserves receiving.
 This preserves the local receive side, not a promise of more peer data; TLS 1.2
 peers may close both directions. EOF-delimited request/response protocols should
 use TLS 1.3 or an explicit application message delimiter.
-Copies share one connection: overlapping I/O returns `Busy`. Drain child Tasks
-before closing; failed/cancelled operations close the connection so partially
-sent records cannot be reused. Payload contents share TCP's alias rules above.
+Copies share one connection: one reader and one writer can run concurrently;
+same-direction overlap returns `Busy`. Encrypted output retains order, and an
+active writer does not block reads behind its outgoing backpressure. Drain child
+Tasks before closing; failed/cancelled operations retire the connection and wake
+pending operations to fail, so partially sent records cannot be reused. Payload
+contents share TCP's alias rules above.
 `protocol`, `local_address` and `peer_address` query ALPN and numeric endpoints.
 `peer_certificate` returns a fresh DER copy of the verified leaf as
 `Result[Option[Bytes], TlsError]`; anonymous clients have no leaf. Certificate
 authentication does not assign application roles or interpret client names.
 No CRL/OCSP policy is exposed yet; trusted issuance is not a revocation guarantee.
-Concurrent read/write directions and resumption configuration remain
-open. See the [TLS example](examples/tls_loopback/README.md).
+Resumption configuration remains open. See the [TLS example](examples/tls_loopback/README.md).
 
 The source package owns this policy; Rustls supplies packet processing in the
 optional `libloom_tls.a` (`loom_tls.lib`) beside the core archive. Native linking
@@ -2823,7 +2829,7 @@ old-language support policy. Stage numbers denote bootstrap generations, not
 language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Broader proofs and mutable-alias preservation, general resource transfer into
-Tasks, concurrent TLS directions/general worker APIs, remaining pack combinations,
+Tasks, general worker APIs, remaining pack combinations,
 version normalization and complete incremental coverage remain open.
 Semantic-change and deployment tools have bounded working
 prototypes, not their general accepted workflows. See the concise

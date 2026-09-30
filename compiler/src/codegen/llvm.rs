@@ -704,6 +704,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskRun
             | Primitive::TaskWaitTimer
             | Primitive::TaskWaitSocket
+            | Primitive::TaskWaitTls
             | Primitive::TaskWaitFileRead
             | Primitive::TaskWaitFileWrite
             | Primitive::TaskWaitFileWriteBytes
@@ -875,6 +876,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::SocketAddress => ("socket_address", Some(pointer.into())),
             Primitive::SocketSetNodelay => ("socket_set_nodelay", Some(i64_type.into())),
             Primitive::SocketShutdownWrite => ("socket_shutdown_write", Some(i64_type.into())),
+            Primitive::SocketAbort => ("socket_abort", Some(i64_type.into())),
             Primitive::TlsClient => ("tls_client", Some(i64_type.into())),
             Primitive::TlsServer => ("tls_server", Some(i64_type.into())),
             Primitive::TlsReceive => ("tls_receive", Some(i64_type.into())),
@@ -886,6 +888,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::TlsRelease => ("tls_release", Some(i64_type.into())),
             Primitive::TlsProtocol => ("tls_protocol", Some(pointer.into())),
             Primitive::TlsPeerCertificate => ("tls_peer_certificate", Some(i64_type.into())),
+            Primitive::TlsGeneration => ("tls_generation", Some(i64_type.into())),
+            Primitive::TlsNotify => ("tls_notify", Some(i64_type.into())),
             Primitive::DirectoryRead => ("directory_read", Some(i64_type.into())),
             Primitive::PathKind => ("path_kind", Some(i64_type.into())),
             Primitive::PathCanonical => ("path_canonical", Some(i64_type.into())),

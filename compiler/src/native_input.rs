@@ -686,10 +686,12 @@ impl Converter<'_> {
                     );
                 }
             }
-            Primitive::TaskWaitSocket => {
+            Primitive::TaskWaitSocket | Primitive::TaskWaitTls => {
                 if arguments.iter().any(|argument| argument.ty != Type::Int) || result != Type::Bool
                 {
-                    return Err("checked socket wait requires two Ints and Bool readiness".into());
+                    return Err(
+                        "checked readiness wait requires two Ints and Bool readiness".into(),
+                    );
                 }
             }
             Primitive::MonotonicNs => {
@@ -1088,9 +1090,12 @@ impl Converter<'_> {
                     | Primitive::SocketConnectStatus
                     | Primitive::SocketClose
                     | Primitive::SocketShutdownWrite
+                    | Primitive::SocketAbort
                     | Primitive::TlsStatus
                     | Primitive::TlsShutdown
                     | Primitive::TlsRelease
+                    | Primitive::TlsGeneration
+                    | Primitive::TlsNotify
                     | Primitive::SocketLocalPort => Some((&[Type::Int], Type::Int)),
                     Primitive::TlsProtocol => Some((&[Type::Int], Type::Text)),
                     Primitive::TlsOutput | Primitive::TlsPeerCertificate => {
@@ -1457,6 +1462,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "socket_address" => P::SocketAddress,
         "socket_set_nodelay" => P::SocketSetNodelay,
         "socket_shutdown_write" => P::SocketShutdownWrite,
+        "socket_abort" => P::SocketAbort,
         "tls_client" => P::TlsClient,
         "tls_server" => P::TlsServer,
         "tls_receive" => P::TlsReceive,
@@ -1468,6 +1474,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "tls_release" => P::TlsRelease,
         "tls_protocol" => P::TlsProtocol,
         "tls_peer_certificate" => P::TlsPeerCertificate,
+        "tls_generation" => P::TlsGeneration,
+        "tls_notify" => P::TlsNotify,
         "directory_read" => P::DirectoryRead,
         "path_kind" => P::PathKind,
         "path_canonical" => P::PathCanonical,
@@ -1497,6 +1505,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_run" => P::TaskRun,
         "task_wait_timer" => P::TaskWaitTimer,
         "task_wait_socket" => P::TaskWaitSocket,
+        "task_wait_tls" => P::TaskWaitTls,
         "task_wait_file_read" => P::TaskWaitFileRead,
         "task_wait_file_write" => P::TaskWaitFileWrite,
         "task_wait_file_write_bytes" => P::TaskWaitFileWriteBytes,
@@ -1555,10 +1564,13 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::SocketClose
         | P::SocketLocalPort
         | P::SocketShutdownWrite
+        | P::SocketAbort
         | P::TlsStatus
         | P::TlsShutdown
         | P::TlsRelease
         | P::TlsProtocol
+        | P::TlsGeneration
+        | P::TlsNotify
         | P::PathKind
         | P::DirectoryCreate
         | P::FileRemove
@@ -1595,6 +1607,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskProcessCaptureResult
         | P::TaskWaitFileOpen
         | P::TaskWaitSocket
+        | P::TaskWaitTls
         | P::PathRename => 2,
         P::SocketAddress | P::SocketSetNodelay => 2,
         P::TlsOutput | P::TlsPeerCertificate => 2,
@@ -1909,6 +1922,9 @@ mod tests {
             ("tls_status", &[1][..]),
             ("tls_shutdown", &[1][..]),
             ("tls_release", &[1][..]),
+            ("tls_generation", &[1][..]),
+            ("tls_notify", &[1][..]),
+            ("socket_abort", &[1][..]),
         ] {
             let operation = primitive(name).unwrap();
             let program = decode(&stream(name, params, 1)).unwrap();

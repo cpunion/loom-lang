@@ -323,6 +323,26 @@ impl Reactor {
         Ok(true)
     }
 
+    // Revoke both directions by the existing handle index, without scanning
+    // the owner's Tasks. The caller retains the socket until interest removal.
+    pub(crate) fn revoke_readiness(&self, source: u64) -> io::Result<()> {
+        let mut core = lock(&self.core)?;
+        let Some(handle) = core.handles.get(&source).copied() else {
+            return Ok(());
+        };
+        self.poller.notify()?;
+        self.update_handle(&mut core, source, Handle::default())?;
+        if let Some(read) = handle.read {
+            core.finish(read, ERROR, 0);
+        }
+        if let Some(write) = handle.write {
+            if Some(write) != handle.read {
+                core.finish(write, ERROR, 0);
+            }
+        }
+        Ok(())
+    }
+
     // Completion is committed before wakeup: even if notify reports an OS
     // error, this registration is terminal and its notification remains queued.
     pub(crate) fn notify_completion(

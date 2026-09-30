@@ -5,6 +5,69 @@ use std::mem::size_of;
 
 thread_local! {
     static EVENTS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+    static COMPLETION: RefCell<Option<crate::native::Completion>> = const { RefCell::new(None) };
+    static GENERATION_CHANGED: Cell<bool> = const { Cell::new(false) };
+}
+
+unsafe extern "C-unwind" fn notified(_: *mut u8) -> i64 {
+    if let Some(completion) = crate::native::wait_completion(7, GENERATION_CHANGED.get()) {
+        COMPLETION.with(|stored| *stored.borrow_mut() = Some(completion));
+        return 1;
+    }
+    0
+}
+
+unsafe extern "C-unwind" fn notifications(frame: *mut u8) -> i64 {
+    rooted([frame], |slots| unsafe {
+        if (*(*slots).cast::<Frame>()).state == 0 {
+            // A preceding notification needs no OS registration or reactor.
+            assert!(crate::native::wait_completion(7, true).is_none());
+            with_owner(|owner| assert!(owner.reactor.get().is_none()));
+            GENERATION_CHANGED.set(false);
+            let first = task(notified);
+            (*(*slots).cast::<Frame>()).first = first;
+            (*(*slots).cast::<Frame>()).state = 1;
+        }
+        if (*(*slots).cast::<Frame>()).state == 1 {
+            if loom_rt_task_wait_timer(0) == 0 {
+                return 1;
+            }
+            GENERATION_CHANGED.set(true);
+            COMPLETION.with(|stored| stored.borrow_mut().take().unwrap().notify());
+            (*(*slots).cast::<Frame>()).state = 2;
+            loom_rt_collect();
+        }
+        if (*(*slots).cast::<Frame>()).state == 2 {
+            let first = (*(*slots).cast::<Frame>()).first;
+            if loom_rt_task_await(first) == 0 {
+                return 1;
+            }
+            loom_rt_task_release(first);
+            GENERATION_CHANGED.set(false);
+            let second = task(notified);
+            (*(*slots).cast::<Frame>()).second = second;
+            (*(*slots).cast::<Frame>()).state = 3;
+        }
+        if loom_rt_task_wait_timer(0) == 0 {
+            return 1;
+        }
+        let second = (*(*slots).cast::<Frame>()).second;
+        super::outcomes::loom_rt_task_cancel_begin(second);
+        loom_rt_task_release(second);
+        // A producer can retain this native registration after cancellation.
+        COMPLETION.with(|stored| stored.borrow_mut().take().unwrap().notify());
+        with_owner(|owner| assert_eq!(owner.core.borrow().pending, 0));
+        0
+    })
+}
+
+unsafe extern "C-unwind" fn construct_notifications() -> u64 {
+    unsafe { task(notifications) }
+}
+
+#[test]
+fn provider_notifications_handle_prior_signals_wakes_gc_and_cancellation() {
+    unsafe { loom_rt_task_run(construct_notifications) };
 }
 
 #[repr(C)]

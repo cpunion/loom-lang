@@ -6,6 +6,7 @@ import std.net.tcp.accept
 import std.net.tcp.read
 import std.net.tcp.write_bytes
 import std.net.tcp.close_stream
+import std.net.tcp.abort
 import std.net.tcp.local_address
 import std.net.tcp.peer_address
 import std.result.Result
@@ -56,7 +57,7 @@ pub record ServerOptions {
 record State {
     transport std.net.tcp.Stream
     token Int
-    // Shared between aliases: operation state (idle/busy/closed), write closed.
+    // Shared aliases: closed, write closed, reading, writing, flushing.
     flags List[Int]
 }
 
@@ -86,6 +87,12 @@ intrinsic fn tls_release(token Int) Int
 
 intrinsic fn tls_protocol(token Int) Text
 
+intrinsic fn tls_generation(token Int) Int
+
+intrinsic fn tls_notify(token Int) Int
+
+async intrinsic fn tls_wait(token Int, generation Int)
+
 pub fn default_client() ClientOptions {
     ClientOptions {
         trust = Trust.Builtin
@@ -111,22 +118,27 @@ fn protocol_error(code Int) TlsError {
     }
 }
 
-fn claim(stream Connection) Result[Int, TlsError] {
+fn claim(stream Connection, slot Int) Result[Int, TlsError] {
     let state = get(stream.state.flags, 0)
     if state == 2 {
         return Result.Err(TlsError.Closed)
     }
-    if state == 1 {
+    if get(stream.state.flags, slot) == 1 {
         return Result.Err(TlsError.Busy)
     }
-    set(stream.state.flags, 0, 1)
+    set(stream.state.flags, slot, 1)
     Result.Ok(0)
 }
 
 // Immediate transport close, suitable for defer. Graceful TLS EOF is the
 // separate async shutdown_write operation. Active operations must drain first.
 pub fn close(stream Connection) Result[Int, TlsError] {
-    discard claim(stream)?
+    if get(stream.state.flags, 0) == 2 {
+        return Result.Err(TlsError.Closed)
+    }
+    if get(stream.state.flags, 2) != 0 || get(stream.state.flags, 3) != 0 {
+        return Result.Err(TlsError.Busy)
+    }
     let outcome = transport(std.net.tcp.close_stream(stream.state.transport))
     match outcome {
         Result.Ok(_) => {
@@ -140,16 +152,46 @@ pub fn close(stream Connection) Result[Int, TlsError] {
     outcome
 }
 
-fn finish_operation(stream Connection, success Bool) {
-    set(stream.state.flags, 0, 0)
-    if !success {
+fn finish_operation(stream Connection, slot Int, success Bool) {
+    if slot == 0 {
+        set(stream.state.flags, 2, 0)
+        set(stream.state.flags, 3, 0)
+    } else {
+        set(stream.state.flags, slot, 0)
+    }
+    if !success && get(stream.state.flags, 0) != 2 {
         // A cancelled write may have sent only part of a TLS record. Retiring
         // the stream prevents later operations from reusing that broken state.
-        discard close(stream)
+        set(stream.state.flags, 0, 2)
+        discard tls_release(stream.state.token)
+        discard std.net.tcp.abort(stream.state.transport)
     }
 }
 
-async fn flush(stream Connection) Result[Int, TlsError] {
+async fn flush(stream Connection, drain Bool) Result[Int, TlsError] {
+    while get(stream.state.flags, 4) != 0 {
+        if !drain && get(stream.state.flags, 3) != 0 {
+            return Result.Ok(0)
+        }
+        let generation = tls_generation(stream.state.token)
+        if generation < 0 {
+            return Result.Err(TlsError.Closed)
+        }
+        tls_wait(stream.state.token, generation).await
+    }
+    if get(stream.state.flags, 0) == 2 {
+        return Result.Err(TlsError.Closed)
+    }
+    // Recheck after this Task starts: a writer can claim the direction between
+    // the reader creating its flush Task and this first resume.
+    if !drain && get(stream.state.flags, 3) != 0 {
+        return Result.Ok(0)
+    }
+    set(stream.state.flags, 4, 1)
+    defer {
+        set(stream.state.flags, 4, 0)
+        discard tls_notify(stream.state.token)
+    }
     while true {
         let bytes = std.bytes.new()
         let count = tls_output(stream.state.token, bytes)
@@ -160,6 +202,12 @@ async fn flush(stream Connection) Result[Int, TlsError] {
             return Result.Ok(0)
         }
         discard transport(std.net.tcp.write_bytes(stream.state.transport, bytes).await)?
+        // A reader sends only its initial protocol response. Application data
+        // queued by a concurrent writer must not hold the reader behind that
+        // writer's backpressure; the writer takes over after this notification.
+        if !drain {
+            return Result.Ok(0)
+        }
     }
     Result.Err(TlsError.Protocol)
 }
@@ -183,15 +231,15 @@ async fn handshake(raw std.net.tcp.Stream, token Int) Result[Connection, TlsErro
         state = State {
             transport = raw
             token = token
-            flags = [1, 0]
+            flags = [0, 0, 1, 1, 0]
         }
     }
     var success = false
     defer {
-        finish_operation(stream, success)
+        finish_operation(stream, 0, success)
     }
     while true {
-        discard flush(stream).await?
+        discard flush(stream, true).await?
         let status = tls_status(token)
         if status == 0 {
             success = true
@@ -292,19 +340,23 @@ pub async fn accept(listener Listener, options ServerOptions) Result[Connection,
     outcome
 }
 
-// One I/O operation at a time per TLS stream (including its aliases). This
-// prevents concurrent operations from interleaving extracted encrypted records.
+// One reader and one writer may run together, including through aliases.
+// Same-direction overlap still returns Busy. Encrypted writes retain order.
 pub async fn read(stream Connection, output Bytes, limit Int) Result[Int, TlsError] {
     if limit <= 0 {
         return Result.Err(TlsError.Argument)
     }
-    discard claim(stream)?
+    discard claim(stream, 2)?
     var success = false
     defer {
-        finish_operation(stream, success)
+        finish_operation(stream, 2, success)
     }
     while true {
-        discard flush(stream).await?
+        // An active writer drains protocol responses too. Do not block reads
+        // behind application writes: both peers may be sending large payloads.
+        if get(stream.state.flags, 3) == 0 {
+            discard flush(stream, false).await?
+        }
         let count = tls_read(stream.state.token, output, limit)
         if count >= 0 {
             success = true
@@ -322,10 +374,10 @@ pub async fn write_bytes(stream Connection, input Bytes) Result[Int, TlsError] {
     if get(stream.state.flags, 1) != 0 {
         return Result.Err(TlsError.Closed)
     }
-    discard claim(stream)?
+    discard claim(stream, 3)?
     var success = false
     defer {
-        finish_operation(stream, success)
+        finish_operation(stream, 3, success)
     }
     let end = std.bytes.length(input)
     var offset = 0
@@ -335,23 +387,23 @@ pub async fn write_bytes(stream Connection, input Bytes) Result[Int, TlsError] {
             return Result.Err(protocol_error(count))
         }
         offset = offset + count
-        discard flush(stream).await?
+        discard flush(stream, true).await?
     }
     success = true
     Result.Ok(offset)
 }
 
 pub async fn shutdown_write(stream Connection) Result[Int, TlsError] {
-    discard claim(stream)?
+    discard claim(stream, 3)?
     var success = false
     defer {
-        finish_operation(stream, success)
+        finish_operation(stream, 3, success)
     }
     let status = tls_shutdown(stream.state.token)
     if status < 0 {
         return Result.Err(protocol_error(status))
     }
-    discard flush(stream).await?
+    discard flush(stream, true).await?
     set(stream.state.flags, 1, 1)
     success = true
     Result.Ok(0)

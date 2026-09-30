@@ -116,6 +116,8 @@ fn server(
 struct Session {
     connection: Connection,
     write_closed: bool,
+    generation: i64,
+    waiters: Vec<native::Completion>,
 }
 
 impl Session {
@@ -196,6 +198,8 @@ impl Sessions {
             Session {
                 connection,
                 write_closed: false,
+                generation: 0,
+                waiters: Vec::new(),
             },
         );
         self.next.set(token);
@@ -406,13 +410,62 @@ extern "C-unwind" fn loom_rt_tls_shutdown(token: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 extern "C-unwind" fn loom_rt_tls_release(token: i64) -> i64 {
+    let session =
+        native::context::<Sessions, _>(|sessions| sessions.entries.borrow_mut().remove(&token));
+    let Some(session) = session else {
+        return CLOSED;
+    };
+    for waiter in session.waiters {
+        waiter.notify();
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C-unwind" fn loom_rt_tls_generation(token: i64) -> i64 {
     native::context::<Sessions, _>(|sessions| {
-        if sessions.entries.borrow_mut().remove(&token).is_some() {
-            0
-        } else {
-            CLOSED
-        }
+        sessions
+            .with(token, |session| session.generation)
+            .unwrap_or(CLOSED)
     })
+}
+
+#[unsafe(no_mangle)]
+extern "C-unwind" fn loom_rt_tls_notify(token: i64) -> i64 {
+    let waiters = native::context::<Sessions, _>(|sessions| {
+        sessions.with(token, |session| {
+            session.generation = session
+                .generation
+                .checked_add(1)
+                .expect("TLS notification identities exhausted");
+            std::mem::take(&mut session.waiters)
+        })
+    });
+    let Some(waiters) = waiters else {
+        return CLOSED;
+    };
+    for waiter in waiters {
+        waiter.notify();
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+extern "C-unwind" fn loom_rt_tls_wait(token: i64, generation: i64) -> i32 {
+    let ready = native::context::<Sessions, _>(|sessions| {
+        sessions
+            .with(token, |session| session.generation != generation)
+            .unwrap_or(true)
+    });
+    let Some(waiter) = native::wait_completion(token as u64, ready) else {
+        return 1;
+    };
+    native::context::<Sessions, _>(|sessions| {
+        sessions
+            .with(token, |session| session.waiters.push(waiter))
+            .expect("live TLS notification source");
+    });
+    0
 }
 
 #[unsafe(no_mangle)]

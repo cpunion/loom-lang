@@ -17,8 +17,11 @@ payload, then runs O0/O2 under moving-GC stress. It also rejects wrong names,
 unknown roots and expired certificates, verifies mutual TLS with a separate
 client CA (including absent, untrusted, expired and wrong-purpose client
 certificates), checks cached linking and unused-import
-DCE, and interoperates with a Rustls peer for clean EOF, truncation and cancelled
-reads. The independent-peer profiles exercise TLS 1.2 and 1.3; TLS 1.2 peers can
+DCE, and interoperates with a Rustls peer for clean EOF, truncation and cancellation
+of either direction while both are pending. Concurrent transfers exchange 8 MiB
+in each direction; the smaller transfer also runs under moving-GC stress. The
+independent peer holds a small receive window until the client finishes, forcing
+backpressure during cancellation. Its profiles exercise TLS 1.2 and 1.3; TLS 1.2 peers can
 close both directions on close-notify, so applications must not assume that a
 response can follow their TLS 1.2 write shutdown. No external server, persistent
 private key or verifier bypass is needed.
@@ -29,6 +32,8 @@ and a payload file larger than 64 KiB:
 ```sh
 target/loom run compiler/examples/tls_loopback -- ca.pem cert.pem key.pem payload.bin ok
 ```
+
+Use `duplex` instead of `ok` to send and receive simultaneously on both peers.
 
 For mutual TLS, append the client CA, client certificate chain and matching key:
 
@@ -45,7 +50,7 @@ application permissions remain library/application policy.
 
 Do not commit private keys. `Trust.Builtin` uses compiled Mozilla roots, not the
 OS trust store; `Trust.Certificates(bytes)` explicitly supplies custom roots.
-The first API permits one active I/O operation per connection (including aliases).
-Cancellation retires the connection after draining waits. Full-duplex concurrent
-TLS operations are not implemented. Revocation and resumption configuration
-are not exposed.
+One reader and one writer may run together across connection aliases; overlapping
+reads or overlapping writes return `Busy`. Cancellation drains that operation,
+retires the connection and wakes the other direction to fail. Revocation and
+resumption configuration are not exposed.

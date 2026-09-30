@@ -134,6 +134,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TaskCleanupPop
         | Primitive::TaskWaitTimer
         | Primitive::TaskWaitSocket
+        | Primitive::TaskWaitTls
         | Primitive::TaskWaitFileRead
         | Primitive::TaskWaitResolve
         | Primitive::TaskWaitProcessCapture
@@ -187,6 +188,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::SocketLocalPort
         | Primitive::SocketSetNodelay
         | Primitive::SocketShutdownWrite
+        | Primitive::SocketAbort
         | Primitive::TlsClient
         | Primitive::TlsServer
         | Primitive::TlsReceive
@@ -194,6 +196,8 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TlsStatus
         | Primitive::TlsShutdown
         | Primitive::TlsRelease
+        | Primitive::TlsGeneration
+        | Primitive::TlsNotify
         | Primitive::PathKind
         | Primitive::DirectoryCreate
         | Primitive::PathRename

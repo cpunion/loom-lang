@@ -145,6 +145,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | Primitive::TaskWaitNext
             | Primitive::TaskWaitTimer
             | Primitive::TaskWaitSocket
+            | Primitive::TaskWaitTls
             | Primitive::TaskWaitFileRead
             | Primitive::TaskWaitResolve
             | Primitive::TaskWaitProcessCapture
@@ -267,6 +268,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::TaskAwait => "task_await",
             Primitive::TaskWaitNext => "task_wait_next",
             Primitive::TaskWaitSocket => "task_wait_socket",
+            Primitive::TaskWaitTls => "tls_wait",
             Primitive::TaskWaitFileRead => "task_wait_file_read",
             Primitive::TaskWaitResolve => "task_wait_resolve",
             Primitive::TaskWaitProcessCapture => "task_wait_process_capture",

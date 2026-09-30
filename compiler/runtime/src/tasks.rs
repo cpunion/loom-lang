@@ -484,6 +484,59 @@ fn wait_fault(error: io::Error) -> ! {
     fault(&format!("task wait failed: {error}"));
 }
 
+pub(crate) fn notify_completion(completion: crate::native::Completion) {
+    completion
+        .reactor
+        .notify_completion(completion.registration, super::wait::COMPLETION, 0)
+        .unwrap_or_else(|error| wait_fault(error));
+}
+
+pub(crate) fn provider_completion(identity: u64, ready: bool) -> Option<crate::native::Completion> {
+    if ready {
+        edit(|owner, core| {
+            let id = core.current.ok_or("provider wait outside a resume")?;
+            if !matches!(
+                core.tasks[&id].state,
+                State::Running | State::ExternalWaiting
+            ) {
+                return Err("task already awaits a child");
+            }
+            if let Some(wait) = core.tasks[&id].external.as_ref() {
+                if wait.source.kind != KIND_COMPLETION || wait.source.handle != identity {
+                    return Err("task already has another external wait");
+                }
+                owner.cancel_wait(core, id);
+            }
+            core.tasks.get_mut(&id).unwrap().state = State::Running;
+            Ok(())
+        });
+        return None;
+    }
+    // SAFETY: Completion notifications borrow no native resource.
+    if unsafe {
+        wait_source(
+            WaitSource {
+                kind: KIND_COMPLETION,
+                interests: 0,
+                handle: identity,
+                deadline_ns: 0,
+            },
+            None,
+        )
+    }
+    .is_some()
+    {
+        return None;
+    }
+    Some(edit(|owner, core| {
+        let id = core.current.ok_or("provider wait outside a resume")?;
+        Ok(crate::native::Completion {
+            reactor: owner.reactor.get().unwrap().clone(),
+            registration: core.tasks[&id].external.as_ref().unwrap().registration,
+        })
+    }))
+}
+
 // Readiness adapters supply an owned lease until completion/cancel; the
 // reactor itself only borrows the native handle, never a moving Loom pointer.
 unsafe fn wait_source(

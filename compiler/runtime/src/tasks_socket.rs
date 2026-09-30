@@ -229,6 +229,14 @@ impl Sockets {
         true
     }
 
+    fn retire_stream(&self, token: i64) -> Option<Rc<Socket>> {
+        let mut handles = self.handles.borrow_mut();
+        if !matches!(handles.get(&token)?.as_ref(), Socket::Stream { .. }) {
+            return None;
+        }
+        handles.remove(&token)
+    }
+
     fn local_port(&self, token: i64) -> i64 {
         self.address(token, false)
             .map_or(-1, |address| i64::from(address.port()))
@@ -297,6 +305,23 @@ pub(super) extern "C-unwind" fn loom_rt_socket_connect_status(token: i64) -> i64
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_socket_close(token: i64) -> i64 {
     edit(|owner, _| Ok(if owner.sockets().close(token) { 0 } else { -1 }))
+}
+
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_socket_abort(token: i64) -> i64 {
+    edit(|owner, _| {
+        let Some(socket) = owner.sockets().retire_stream(token) else {
+            return Ok(-1);
+        };
+        // Revoke the token first, remove native interest while its Rc leases
+        // remain alive, and wake waiters through ordinary ready notifications.
+        if let Some(reactor) = owner.reactor.get() {
+            reactor
+                .revoke_readiness(socket.handle())
+                .unwrap_or_else(|_| fatal("failed to retire socket wait"));
+        }
+        Ok(0)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -421,8 +446,29 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_socket_write_bytes(
 
 #[unsafe(no_mangle)]
 pub(super) extern "C-unwind" fn loom_rt_task_wait_socket(token: i64, interests: i64) -> i32 {
-    let lease = edit(|owner, _| Ok(owner.sockets().get(token)))
-        .unwrap_or_else(|| fault("socket wait requires a live token"));
+    let lease = edit(|owner, core| {
+        let id = core.current.ok_or("socket wait outside a resume")?;
+        if let Some(lease) = owner.sockets().get(token) {
+            return Ok(Some(lease));
+        }
+        if !matches!(
+            core.tasks[&id].state,
+            State::Running | State::ExternalWaiting
+        ) {
+            return Err("task already awaits a child");
+        }
+        if let Some(wait) = core.tasks[&id].external.as_ref() {
+            if wait.source.kind != KIND_READINESS || wait.socket.is_none() {
+                return Err("task already has another external wait");
+            }
+        }
+        // An abort can happen before the wait Task starts or after its wait
+        // was delivered. Consume that old registration without rearming it.
+        owner.cancel_wait(core, id);
+        core.tasks.get_mut(&id).unwrap().state = State::Running;
+        Ok(None)
+    });
+    let Some(lease) = lease else { return 1 };
     let source = lease
         .source(interests)
         .unwrap_or_else(|| fault("invalid socket readiness interest"));

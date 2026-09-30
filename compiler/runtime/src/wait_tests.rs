@@ -196,10 +196,11 @@ fn tcp_readiness_merges_disjoint_interests_without_owning_the_socket() {
     socket.set_nonblocking(true).unwrap();
     // Declared after socket: all registrations are dropped before its handle.
     let reactor = Reactor::new().unwrap();
+    let handle = socket_handle(&socket);
     let source = |interests| WaitSource {
         kind: KIND_READINESS,
         interests,
-        handle: socket_handle(&socket),
+        handle,
         deadline_ns: 0,
     };
     // The test retains ownership of socket until the reactor has been dropped.
@@ -245,6 +246,26 @@ fn tcp_readiness_merges_disjoint_interests_without_owning_the_socket() {
     }
     .unwrap();
     assert!(reactor.cancel(pending).unwrap());
+    let read = unsafe { reactor.register(source(READABLE), 16) }.unwrap();
+    let write = unsafe { reactor.register(source(WRITABLE), 17) }.unwrap();
+    reactor.revoke_readiness(handle).unwrap();
+    let revoked = ready(&reactor, 2);
+    assert!(revoked.iter().all(|item| item.events == ERROR));
+    assert!(
+        revoked
+            .iter()
+            .any(|item| item.registration == read && item.owner == 16)
+    );
+    assert!(
+        revoked
+            .iter()
+            .any(|item| item.registration == write && item.owner == 17)
+    );
+    assert!(!reactor.cancel(read).unwrap());
+    let combined = unsafe { reactor.register(source(READABLE | WRITABLE), 18) }.unwrap();
+    reactor.revoke_readiness(handle).unwrap();
+    reactor.revoke_readiness(handle).unwrap();
+    same_registration(ready(&reactor, 1)[0].registration, combined);
     // Also leave an active borrow for Reactor::drop to unregister.
     unsafe {
         reactor.register(

@@ -249,12 +249,16 @@ is copied into native state before transport suspension. ALPN is optional.
 The engine retains no GC pointers, schedules no I/O and owns no executor.
 Its archive is selected only for emitted TLS references, including cached objects.
 
-The initial `Connection` API permits one active I/O operation across all aliases;
-overlap returns `Busy`, not implicit queueing. Failed or cancelled operations
-drain transport children and retire the connection. `shutdown_write().await`
+The `Connection` API permits one reader and one writer concurrently across all
+aliases; same-direction overlap returns `Busy`, not implicit queueing. Encrypted
+output is serialized with generation-checked completion notifications. A reader
+does not wait behind an active writer's application-data backpressure. Failed or
+cancelled operations drain their transport children and retire the connection,
+revoking socket registrations and waking the other direction to fail.
+`shutdown_write().await`
 flushes close-notify while retaining the receive side; synchronous `close` retires
 the transport and fits `defer`. Unexpected TCP EOF is not a successful TLS EOF.
-Deadlines use ordinary Task cancellation. Concurrent directions, certificate
+Deadlines use ordinary Task cancellation. Certificate
 revocation and session-resumption policy remain future work, not implicit guarantees.
 
 `std.process.tasks.capture` / `capture_input` submit copied native commands and
