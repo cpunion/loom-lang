@@ -280,7 +280,13 @@ fn explicit_credentials_are_fetch_scoped_redacted_and_unneeded_offline() {
     assert!(!root.join("credential.log").exists());
 
     let authenticated = app("authenticated", url);
-    success(&fixture.resolve_with_credentials(&authenticated, false, true));
+    let resolved = fixture.resolve_with_credentials(&authenticated, false, true);
+    assert!(
+        resolved.status.success(),
+        "Loom: {}\nTest-only Git transport: {}",
+        String::from_utf8_lossy(&resolved.stderr),
+        fs::read_to_string(root.join("transport-error.log")).unwrap_or_default()
+    );
     assert!(
         server
             .authenticated

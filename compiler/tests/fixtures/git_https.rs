@@ -119,7 +119,14 @@ fn serve(
     while !head.ends_with(b"\r\n\r\n") {
         assert!(head.len() < 65536);
         let mut byte = [0];
-        stream.read_exact(&mut byte).unwrap();
+        if let Err(error) = stream.read_exact(&mut byte) {
+            if head.is_empty() {
+                // A TLS client may abandon a connection before making an HTTP
+                // request. Required Git operations still have to succeed.
+                return;
+            }
+            panic!("Git fixture request ended inside its headers: {error}");
+        }
         head.push(byte[0]);
     }
     let head = String::from_utf8(head).unwrap();
