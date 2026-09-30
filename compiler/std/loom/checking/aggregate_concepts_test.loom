@@ -1,0 +1,93 @@
+fn aggregate_concept_definitions() Text {
+    """
+    record Packet {
+        first Int
+        second Int
+        shared List[Int]
+    }
+    concept C {
+        fn packet(self Self, value Int) Packet
+        ensures result.first == value
+        ensures result.second >= 0
+        fn pair(self Self, value Int) (Int, Bool)
+        ensures result.0 == old(value)
+        ensures result.1 {
+            (value, true)
+        }
+    }
+    impl C for Bool {
+        fn packet(receiver Bool, input Int) Packet {
+            Packet {
+                first = input
+                second = 0
+                shared = [input]
+            }
+        }
+    }
+    """
+}
+
+test fn generic_and_dynamic_methods_compose_inline_aggregate_contracts() {
+    discard accepted(concat(aggregate_concept_definitions(), """
+            fn forward[T C](source T, value Int) Packet
+            ensures result.first == value
+            ensures result.second >= 0 {
+                source.packet(value)
+            }
+            fn erased(source dyn C, value Int) Packet
+            ensures result.first == value
+            ensures result.second >= 0 {
+                source.packet(value)
+            }
+            fn pair[T C](source T, value Int) (Int, Bool)
+            ensures result.0 == value
+            ensures result.1 {
+                source.pair(value)
+            }
+            fn erased_pair(source dyn C, value Int) (Int, Bool)
+            ensures result.0 == value
+            ensures result.1 {
+                source.pair(value)
+            }
+            fn main() {
+                let source dyn C = true
+                assert forward(true, 7).first == 7
+                assert erased(source, 8).first == 8
+                assert pair(true, 9).0 == 9
+                assert erased_pair(source, 10).1
+            }
+            """))
+}
+
+test fn aggregate_concept_summaries_preserve_unspecified_and_shared_boundaries() {
+    let declarations = aggregate_concept_definitions()
+    rejects(concat(declarations, """
+            fn invented[T C](source T, value Int) Packet
+            ensures result.second == value {
+                source.packet(value)
+            }
+            """))
+    rejects(concat(declarations, """
+            fn independent(source dyn C, value Int) Bool
+            ensures result {
+                source.packet(value).second == source.packet(value).second
+            }
+            """))
+    rejects(concat(declarations, """
+            fn shared[T C](source T, value Int) Packet
+            ensures result.shared[0] == value {
+                source.packet(value)
+            }
+            """))
+    rejects(concat(declarations, """
+            impl C for Int {
+                fn packet(self Int, value Int) Packet {
+                    Packet {
+                        first = 0
+                        second = 0
+                        shared = [value]
+                    }
+                }
+            }
+            """))
+}

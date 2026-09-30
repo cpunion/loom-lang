@@ -141,10 +141,11 @@ Predicates may call pure functions, but cannot rely on external mutable state.
 Every declared `ensures` requires a static proof. Current reasoning includes
 scalar/inline-aggregate identities, guarded preconditions/assertions, bounded
 integer difference relations, input-type invariants, inferred scalar/inline-aggregate loop
-invariants, finite pure helpers and verified callee summaries. Synchronous Int/Bool
-concept calls use declared contracts through generic/associated or dyn receivers,
+invariants, finite pure helpers and verified callee summaries. Synchronous scalar
+and inline aggregate concept calls use declared contracts through generic/associated or dyn receivers,
 not a guessed implementation or hidden receiver knowledge. Private abstract
-summaries are neither executable CTFE bodies nor native functions.
+summaries are neither executable CTFE bodies nor native functions. Unspecified
+leaves remain independent; shared siblings supply no content or alias facts.
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` currently covers immutable
 parameter scalar paths, not arbitrary entry-state snapshots.

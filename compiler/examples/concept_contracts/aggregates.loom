@@ -1,0 +1,75 @@
+record Reading {
+    value Int
+    flags (Bool, Int)
+    shared List[Int]
+}
+
+concept Capture {
+    fn reading(self Self, value Int) Reading
+    ensures result.value == value
+    ensures result.flags.0
+    ensures result.flags.1 == value
+    fn pair(self Self, value Int) (Int, Bool)
+    ensures result.0 == value
+    ensures result.1 {
+        (value, true)
+    }
+}
+
+record Sensor {
+    shared List[Int]
+}
+
+impl Capture for Sensor {
+    fn reading(receiver Sensor, input Int) Reading {
+        Reading {
+            value = input
+            flags = (true, input)
+            shared = receiver.shared
+        }
+    }
+}
+
+fn capture[T Capture](source T, input Int) Reading
+ensures result.value == input
+ensures result.flags.0
+ensures result.flags.1 == input {
+    source.reading(input)
+}
+
+fn capture_dynamic(source dyn Capture, input Int) Reading
+ensures result.value == input
+ensures result.flags.0
+ensures result.flags.1 == input {
+    source.reading(input)
+}
+
+fn capture_pair[T Capture](source T, input Int) (Int, Bool)
+ensures result.0 == input
+ensures result.1 {
+    source.pair(input)
+}
+
+fn dynamic_pair(source dyn Capture, input Int) (Int, Bool)
+ensures result.0 == input
+ensures result.1 {
+    source.pair(input)
+}
+
+fn aggregate_exercise() {
+    let shared = [1]
+    let sensor = Sensor {
+        shared = shared
+    }
+    let snapshot = capture(sensor, 42)
+    let erased dyn Capture = sensor
+    let dynamic = capture_dynamic(erased, 43)
+    shared[0] = 2
+    assert snapshot.value == 42 && snapshot.flags.0 && snapshot.flags.1 == 42
+    assert dynamic.value == 43 && dynamic.flags.0 && dynamic.flags.1 == 43
+    assert snapshot.shared[0] == 2 && dynamic.shared[0] == 2
+    let static_pair = capture_pair(sensor, 44)
+    let erased_pair = dynamic_pair(erased, 45)
+    assert static_pair.0 == 44 && static_pair.1
+    assert erased_pair.0 == 45 && erased_pair.1
+}
