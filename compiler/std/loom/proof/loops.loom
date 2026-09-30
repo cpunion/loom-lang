@@ -67,10 +67,10 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
     let scalar = kind == ExprKind.Integer || kind == ExprKind.Bool || kind == ExprKind.Local ||
     kind == ExprKind.Unary || kind == ExprKind.Binary || kind == ExprKind.Coerce ||
     kind == ExprKind.Field || kind == ExprKind.Record
-    if !scalar {
+    if !scalar && kind != ExprKind.Call {
         if guard || (kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.While &&
             kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
-            kind != ExprKind.Assert && kind != ExprKind.Discard && kind != ExprKind.Call &&
+            kind != ExprKind.Assert && kind != ExprKind.Discard &&
             kind != ExprKind.Break && kind != ExprKind.Continue &&
             kind != ExprKind.Defer && kind != ExprKind.Cleanup) {
             return Result.Err("unsupported effect or control flow in required loop proof")
@@ -86,7 +86,7 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
         }
         set(writes, expr.index, true)
     }
-    // Direct body calls reuse body_call's checked scalar/aggregate summaries
+    // Direct calls reuse body_call's checked scalar/aggregate summaries
     // or finite pure expansion. Captured cells, indirect calls and heap access
     // are not admitted here; they cannot mutate one of these scalar locals.
     var index = 0
@@ -121,6 +121,57 @@ fn add_loop_candidate(candidates List[LoopCandidate], candidate LoopCandidate, e
     Result.Ok(true)
 }
 
+fn loop_call_free(expr Expr) Bool {
+    if expr.kind == ExprKind.Call {
+        return false
+    }
+    var index = 0
+    while index < length(expr.children) {
+        if !loop_call_free(get(expr.children, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn loop_candidate_guard(proof Verification, guard Expr) Expr {
+    if loop_call_free(guard) {
+        return guard
+    }
+    let bindings = new[ExpansionBinding]()
+    var index = 0
+    while index < length(proof.function.locals) {
+        push(bindings, ExpansionBinding {
+                local = index
+                value = proof_expr(guard, ExprKind.Local, get(proof.function.locals, index).ty,
+                    "", index, new[Expr]())
+            })
+        index = index + 1
+    }
+    // Pure expansion proposes useful scalar predicates, not call equivalence or
+    // established facts. Every proposal still needs entry and backedge proofs.
+    // A failed optional proposal cannot consume the mandatory proof's budget.
+    let budget = new[Int]()
+    push(budget, 256)
+    let context = Expansion {
+        program = proof.program
+        list_lengths = false
+        budget = budget
+        active = new[Int]()
+        checks = new[Evaluation]()
+    }
+    match expanded(context, guard, proof_bool(guard, true), bindings,
+        proof.function.locals, false, 0, 0) {
+        Result.Ok(value) => if bounded_contract(value) {
+            value
+        } else {
+            guard
+        }
+        Result.Err(_) => guard
+    }
+}
+
 fn loop_guard_candidates(expr Expr, candidates List[LoopCandidate], entry State) Result[Bool, Text] {
     if expr.kind != ExprKind.Binary {
         return Result.Ok(true)
@@ -128,6 +179,12 @@ fn loop_guard_candidates(expr Expr, candidates List[LoopCandidate], entry State)
     if expr.text == "&&" {
         discard loop_guard_candidates(get(expr.children, 0), candidates, entry)?
         return loop_guard_candidates(get(expr.children, 1), candidates, entry)
+    }
+    // Calls execute afresh at each tested head, with their own result identities
+    // and established checks. A syntactic call is not a stable invariant term:
+    // only its verified facts on that execution may constrain the exit state.
+    if !loop_call_free(expr) {
+        return Result.Ok(true)
     }
     // A strict continuation bound can become a non-strict loop invariant.
     // Do not split disjunctions or assume that every guard is inductive.
@@ -213,7 +270,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     let guard = get(expr.children, 0)
     let body = get(expr.children, 1)
     let head = loop_head(proof, writes, entry)
-    var candidates = loop_candidates(guard, writes, entry)?
+    var candidates = loop_candidates(loop_candidate_guard(proof, guard), writes, entry)?
     while true {
         discard loop_step(proof)?
         let assumed = loop_assumptions(head, candidates)?

@@ -1848,12 +1848,16 @@ invariants, without new annotations. The prover freshens every written Int/Bool
 local and proposes entry/range bounds and weakened relational guards. Each candidate
 must hold on entry and on every symbolic backedge; removing a candidate rechecks
 all survivors. Zero-iteration exits and early returns remain separate proof
-obligations. Branches, nested loops and the existing direct body-call proof rules
+obligations. Branches, nested loops and the existing direct-call proof rules
 are supported. `break` records the state at that exit; `continue` contributes a
 backedge that must preserve every retained invariant. Nested jumps target the
 nearest loop. Scalar lexical cleanup executes before jumps in its checked order,
-preserving evaluated return snapshots. Calls in guards, resource cleanup and heap writes inside a required loop
-proof currently reject. The bounded
+preserving evaluated return snapshots. Guard calls execute with fresh result
+identities using verified summaries or finite pure expansion; their syntax is
+not reused as a stable invariant term. Optional pure expansion can suggest bounds,
+but contributes no assumed facts and every candidate still needs induction.
+Resource cleanup and heap writes inside a
+required loop proof currently reject. The bounded
 inference neither unrolls a sample of iterations nor adds runtime invariant
 checks. See the [loop contract example](examples/loop_contracts).
 

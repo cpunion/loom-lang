@@ -131,8 +131,8 @@ Scalar loops infer entry/guard bounds and check inductiveness to a fixed point;
 zero-iteration paths and early returns retain separate obligations. This supports
 scalar assignments, branches, nested loops, break/continue paths and existing
 direct-call proof rules. Scalar lexical cleanup retains its checked order and
-return snapshots; calls in guards, resource cleanup and heap mutation remain
-unsupported. See the
+return snapshots. Guard calls use fresh checked results, not stable syntactic
+invariant terms. Resource cleanup and heap mutation remain unsupported. See the
 [native loop example](../../compiler/examples/loop_contracts).
 
 General content-preserving mutation, strengthening existing mutable alias graphs,
