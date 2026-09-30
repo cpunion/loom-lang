@@ -49,6 +49,13 @@ test fn fragments_keep_original_byte_spans_and_the_ordinary_grammar() {
     assert fragment_node(parse_statement("let (a, b) = pair")).kind == NodeKind.Destructure
     assert fragment_node(parse_expression("fetch().await?")).kind == NodeKind.Try
     assert fragment_node(parse_expression("1 +\n2")).value == "+"
+    let identity = fragment_node(parse_expression("type"))
+    assert identity.kind == NodeKind.Type && identity.value == "type"
+    let call = fragment_node(parse_expression("new[List[type]]()"))
+    let container = child(child(call, 0), 0)
+    assert container.kind == NodeKind.Apply
+    assert child(child(container, 1), 0).value == "type"
+    discard fragment_error(parse_declaration("fn type() {}"))
 }
 
 test fn match_and_binding_fragments_keep_their_contextual_meanings() {

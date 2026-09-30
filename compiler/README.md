@@ -3014,7 +3014,7 @@ language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Broader proofs and mutable-alias preservation, general resource transfer into
 Tasks, general worker APIs, remaining pack combinations,
-version normalization and complete incremental coverage remain open.
+and complete incremental coverage remain open.
 Semantic-change and deployment tools have bounded working
 prototypes, not their general accepted workflows. See the concise
 [status](../docs/project/implementation-status.md) and
