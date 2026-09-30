@@ -272,7 +272,9 @@ fn match_scope(context Context, value Expr, arm Node) Result[MatchScope, Failure
                 discard resource_payload(context, pattern, match_body(arm))?
             }
             current = bind_local(current, pattern, pattern.value, value.ty, false, context.head)?
-            if borrowed && must_scope(context, value.ty)? { resource_borrow_local(current, whole) }
+            if borrowed && must_scope(context, value.ty)? {
+                resource_borrow_local(current, whole)
+            }
         }
     } else {
         if !borrowed && must_scope(context, value.ty)? {
@@ -378,12 +380,18 @@ record ResultShape {
 }
 
 fn result_shape(context Context, node Node) Result[ResultShape, Failure] {
+    let cached = get(context.env.inputs, 0).result_shapes
+    if length(cached) != 0 {
+        return Result.Ok(get(cached, 0))
+    }
     var declaration = -1
     var index = 0
     while index < length(context.env.source.symbols) {
         let item = symbol(context.env, index)
         let file = get(context.env.source.files, item.file)
-        if package_label(context.env.source.modules, context.env.source.packages, file.package) == "std.result" && file.trusted_std && !item.test_only && item.public && item.name == "Result" && length(group(item.node, NodeKind.TypeParameters)) == 2 {
+        if item.name == "Result" && item.public && !item.test_only && file.trusted_std &&
+        package_label(context.env.source.modules, context.env.source.packages, file.package) == "std.result" &&
+        length(group(item.node, NodeKind.TypeParameters)) == 2 {
             declaration = index
         }
         index = index + 1
@@ -409,11 +417,13 @@ fn result_shape(context Context, node Node) Result[ResultShape, Failure] {
     if shape.kind != TypeKind.Enum || length(shape.variants) != 2 || ok < 0 || err < 0 {
         return Result.Err(error(context, node, "Result must be the source enum containing Ok(T) and Err(E)"))
     }
-    Result.Ok(ResultShape {
-            declaration = declaration
-            ok = ok
-            err = err
-        })
+    let checked = ResultShape {
+        declaration = declaration
+        ok = ok
+        err = err
+    }
+    push(cached, checked)
+    Result.Ok(checked)
 }
 
 fn result_types(context Context, node Node, shape ResultShape, ty Int) Result[List[Int], Failure] {
