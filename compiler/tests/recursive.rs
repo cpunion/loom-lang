@@ -34,6 +34,7 @@ fn recursive_nominal_types_need_indirect_layout_edges() {
     for source in [
         "record Grow[T] { children List[Grow[List[T]]] }",
         "record Grow[T] { children List[Grow[Grow[T]]] }",
+        "record Grow[Ts...] { children List[Grow[Int, Ts...]] } fn use(value Grow[Bool]) {}",
     ] {
         let error = checked(source).unwrap_err();
         assert!(error.contains("specialization"), "{source}: {error}");
