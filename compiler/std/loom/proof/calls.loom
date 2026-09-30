@@ -303,12 +303,12 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
     var index = 0
     while index < length(function.params) {
         let ty = get(function.params, index)
-        // A verified summary may carry additional dyn arguments, but their
-        // hidden witnesses contribute no proof facts at any position.
-        let opaque_dynamic = ty >= 0 && ty < length(proof.program.types) &&
-            get(proof.program.types, ty).kind == TypeKind.Dyn && length(function.postconditions) != 0
-        if (!helper_type(proof.program, ty, 0) || ty == 5) && !opaque_dynamic {
-            return Result.Err("body proof helper parameters must be Int, Bool or inline aggregates, apart from contracted dyn arguments")
+        // Contracted abstract/dyn arguments contribute no proof facts. Their
+        // concrete implementation or hidden witness is never guessed.
+        let shape = if ty >= 0 && ty < length(proof.program.types) { get(proof.program.types, ty).kind } else { TypeKind.Unit }
+        let opaque = (shape == TypeKind.Dyn || shape == TypeKind.Parameter || shape == TypeKind.Associated) && length(function.postconditions) != 0
+        if (!helper_type(proof.program, ty, 0) || ty == 5) && !opaque {
+            return Result.Err("body proof helper parameters must be Int, Bool or inline aggregates, apart from contracted opaque arguments")
         }
         index = index + 1
     }

@@ -1,0 +1,153 @@
+fn abstract_contract_declarations() Text {
+    """
+    concept Keep {
+        fn keep(self Self, value Int) Int
+        requires value >= 0
+        ensures result == old(value)
+        fn positive(self Self, value Int) Bool
+        ensures result == (value > 0) {
+            value > 0
+        }
+    }
+    impl Keep for Bool {
+        fn keep(receiver Bool, input Int) Int {
+            input
+        }
+    }
+    """
+}
+
+test fn abstract_method_contracts_compose_without_runtime_summaries() {
+    let program = accepted(concat(abstract_contract_declarations(), """
+        fn forward[T Keep](receiver T, value Int) Int
+        ensures result == value {
+            receiver.keep(value)
+        }
+        fn twice[T Keep](receiver T, value Int) Int
+        ensures result == value {
+            forward(receiver, forward(receiver, value))
+        }
+        fn positive[T Keep](receiver T, value Int) Bool
+        ensures result == (value > 0) {
+            receiver.positive(value)
+        }
+        fn main() {
+            assert twice(true, 4) == 4
+            assert positive(true, 5)
+            assert !positive(true, 0)
+        }
+        """))
+    var index = 0
+    while index < length(program.functions) {
+        assert dynamic_count(get(program.functions, index).body, ExprKind.Deferred) == 0
+        index = index + 1
+    }
+}
+
+test fn abstract_method_proofs_use_declared_guarantees_not_default_bodies() {
+    let source = """
+        concept C {
+            fn keep(self Self, value Int) Int
+            requires value > 0
+            ensures result >= 0 {
+                value
+            }
+        }
+        impl C for Bool {}
+        """
+    discard accepted(concat(source, """
+            fn forward[T C](receiver T, value Int) Int
+            ensures result >= 0 {
+                receiver.keep(value)
+            }
+            """))
+    rejects(concat(source, """
+            fn too_strong[T C](receiver T, value Int) Int
+            requires value > 0
+            ensures result == value {
+                receiver.keep(value)
+            }
+            """))
+    rejects(concat(source, """
+            fn confused[T C](receiver T, value Int) Bool
+            requires value > 0
+            ensures result {
+                receiver.keep(value) == receiver.keep(value)
+            }
+            """))
+    rejects("""
+        concept C {
+            fn value(self Self) Int
+        }
+        fn unsupported[T C](receiver T) Int
+        ensures result >= 0 {
+            receiver.value()
+        }
+        """)
+    rejects(concat(abstract_contract_declarations(), """
+            impl Keep for Int {
+                fn keep(self Int, value Int) Int {
+                    0
+                }
+            }
+            """))
+}
+
+test fn associated_receivers_use_only_their_declared_concept_contracts() {
+    discard accepted(concat(abstract_contract_declarations(), """
+            concept Source {
+                type Item Keep
+                fn item(self Self) Self.Item
+            }
+            impl Source for Bool {
+                type Item = Bool
+                fn item(self Bool) Bool {
+                    self
+                }
+            }
+            fn forward[S Source](receiver S.Item, value Int) Int
+            ensures result == value {
+                receiver.keep(value)
+            }
+            fn main() {
+                assert forward[Bool](true, 6) == 6
+            }
+            """))
+}
+
+test fn abstract_method_contracts_keep_static_arguments_and_package_scope() {
+    let files = source_files("""
+        import rules.C
+        impl C for Bool {
+            fn keep[U](receiver Bool, input Int, comptime extra Int) Int {
+                input
+            }
+        }
+        fn forward[T C](receiver T, value Int) Int
+        ensures result > 0 {
+            receiver.keep[Bool](value, 7)
+        }
+        fn main() {
+            assert forward(true, 8) == 8
+            assert comptime { forward(true, 9) } == 9
+        }
+        """)
+    push(files, source_file("rules", """
+            fn positive[T](value Int) Bool {
+                value > 0
+            }
+            pub concept C {
+                fn keep[Tag](self Self, value Int, comptime extra Int) Int
+                requires positive[Tag](value)
+                ensures positive[Tag](result)
+            }
+            """, false))
+    match checked(files) {
+        Result.Ok(_) => {
+        }
+        Result.Err(failed) => {
+            show_failure(fixture_project(files), failed)
+            assert false
+        }
+    }
+}

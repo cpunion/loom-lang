@@ -332,16 +332,40 @@ fn emit_functions(env Environment, retain Bool) Result[List[Function], Failure] 
     emit_functions_reusing(env, retain, no_body_reuse())
 }
 fn emit_functions_reusing(env Environment, retain Bool, bodies BodyReuse) Result[List[Function], Failure] {
+    emit_functions_in(env, retain, bodies, false)
+}
+// Only a private proof program may retain abstract call instances. Normal
+// emission and CTFE still require concrete runtime parameters and results.
+fn emit_functions_in(env Environment, retain Bool, bodies BodyReuse, proof Bool) Result[List[Function], Failure] {
     let functions = new[Function]()
     var index = 0
     var more = true
     while more {
         while index < length(env.pending) {
             let instance = get(env.pending, index)
-            match reuse_body(env, bodies, instance)? {
-                Option.Some(value) => { push(functions, value) }
-                Option.None => { push(functions, function(env, instance.signature, instance.arguments, instance.constants, true)?) }
+            if !proof && abstract_method_instance(env, instance.signature, instance.arguments) {
+                let owner = get(env.signatures, instance.signature).symbol
+                return Result.Err(failure(env, owner, symbol(env, owner).node, "emitted function types must be concrete"))
             }
+            let checked = if proof && abstract_method_instance(env, instance.signature, instance.arguments) {
+                declared_method_summary(env, instance.signature, instance.arguments, instance.constants)?
+            } else {
+                match reuse_body(env, bodies, instance)? {
+                    Option.Some(value) => value
+                    Option.None => function(env, instance.signature, instance.arguments, instance.constants, true)?
+                }
+            }
+            if !proof {
+                let declaration = symbol(env, checked.symbol).node
+                let seen = new[Int]()
+                var parameter = 0
+                while parameter < length(checked.params) {
+                    discard emitted_type(env, checked.symbol, get(checked.params, parameter), declaration, seen)?
+                    parameter = parameter + 1
+                }
+                discard emitted_type(env, checked.symbol, checked.result, declaration, seen)?
+            }
+            push(functions, checked)
             index = index + 1
         }
         more = activate_witnesses(env, retain)?
