@@ -91,3 +91,32 @@ test fn aggregate_concept_summaries_preserve_unspecified_and_shared_boundaries()
             }
             """))
 }
+
+test fn opaque_list_initializers_retain_scalar_evaluation_and_order() {
+    discard accepted(concat(aggregate_concept_definitions(), """
+            fn updated() Packet
+            ensures result.first == 2 {
+                var value = 1
+                let shared = [value, {
+                    value = 2
+                    value
+                }]
+                Packet {
+                    first = value
+                    second = 0
+                    shared = shared
+                }
+            }
+            """))
+    rejects("""
+        fn ignored() Int
+        ensures result == 1 {
+            var value = 1
+            let shared = [{
+                value = 2
+                value
+            }]
+            value
+        }
+        """)
+}

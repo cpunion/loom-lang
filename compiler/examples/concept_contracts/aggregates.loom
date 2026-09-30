@@ -14,6 +14,14 @@ concept Capture {
     ensures result.1 {
         (value, true)
     }
+    fn fresh(self Self, value Int) Reading
+    ensures result.value == value {
+        Reading {
+            value = value
+            flags = (true, value)
+            shared = [value]
+        }
+    }
 }
 
 record Sensor {
@@ -56,6 +64,11 @@ ensures result.1 {
     source.pair(input)
 }
 
+fn fresh_capture[T Capture](source T, input Int) Reading
+ensures result.value == input {
+    source.fresh(input)
+}
+
 fn aggregate_exercise() {
     let shared = [1]
     let sensor = Sensor {
@@ -72,4 +85,6 @@ fn aggregate_exercise() {
     let erased_pair = dynamic_pair(erased, 45)
     assert static_pair.0 == 44 && static_pair.1
     assert erased_pair.0 == 45 && erased_pair.1
+    let fresh = fresh_capture(sensor, 46)
+    assert fresh.value == 46 && fresh.shared[0] == 46
 }

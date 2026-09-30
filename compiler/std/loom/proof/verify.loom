@@ -367,6 +367,21 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     if expr.kind == ExprKind.Record {
         return record_outcomes(proof, expr, state, depth - 1)
     }
+    if expr.kind == ExprKind.List {
+        // Allocation supplies no heap facts, but every initializer still runs
+        // once, in order. Its scalar updates, guards and exits cannot vanish.
+        let inputs = call_arguments(proof, expr, state, depth - 1)?
+        let output = new[Outcome]()
+        var index = 0
+        while index < length(inputs) {
+            discard add_outcome(output, Outcome {
+                    state = get(inputs, index).state
+                    value = Value.Empty
+                })?
+            index = index + 1
+        }
+        return Result.Ok(output)
+    }
     if expr.kind == ExprKind.Field {
         let receivers = execute(proof, get(expr.children, 0), state, depth - 1)?
         let output = new[Outcome]()
