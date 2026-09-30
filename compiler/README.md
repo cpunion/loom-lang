@@ -1990,7 +1990,7 @@ and facts inferred by joining two live branches. Literal Float predicates can be
 `Result`; calls and input expressions are never duplicated to seek a proof.
 See the [relational construction example](examples/relational_constraints).
 
-Predicates over `Int` or `Float` may call ordinary pure helpers, including helpers with
+Predicates over `Int`, `Float` or `Text` may call ordinary pure helpers, including helpers with
 loops, recursion, and freshly allocated data:
 
 ```loom
@@ -2015,8 +2015,8 @@ For example, replacing `self >= 0` above with `nonnegative(self)` can still remo
 the check when `nonnegative` returns `value >= 0`. A helper returning `true` after
 `let unused = value + 1` cannot discard a possible overflow. Unsupported helper
 loops/mutation, indirect calls or exhausted expansion retain runtime checks.
-Shared-container constraints, mutable flow facts and invariant-aware proofs over
-refined parameters remain open.
+General implications over shared mutable contents remain open; supported
+immutable input invariants and flow facts are described below.
 
 `requires` is checked before the callee body. Every declared `ensures` must be
 proved; unknown or unsupported proofs reject the build, including for functions
@@ -2051,8 +2051,8 @@ participate in these proofs, including `old`, finite helpers, Text refinements
 and declared generic/dyn concept summaries. Established equalities compose
 transitively; known inequality propagates across equal values. Different unknown
 Text values do not imply unequal contents, and inequality is not transitive.
-Disjunctive facts do not establish either alternative. Text concatenation, length and substring reasoning
-remain unsupported. See the [native Text example](examples/text_contracts).
+Disjunctive facts do not establish either alternative. Text concatenation, length
+and substring reasoning remain unsupported. See the [native Text example](examples/text_contracts).
 
 Aggregate summaries compose through nested calls, field projections and
 whole-value updates. Unconditional proved equalities such as
