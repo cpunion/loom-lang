@@ -74,6 +74,7 @@ fn exercise() {
     assert count(10000) == 10000
     assert advance(7, 3) == 7
     assert advance(-4, 3) == 3
+    assert advance(-3, 0) == 0
     assert advance(9223372036854775806, 9223372036854775807) == 9223372036854775807
     assert advance(-9223372036854775808, -9223372036854775807) == -9223372036854775807
     assert sum_before(-3) == 0

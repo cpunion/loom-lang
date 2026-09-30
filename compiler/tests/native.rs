@@ -630,7 +630,8 @@ fn manifest_does_not_silently_ignore_configuration() {
 fn rejects_unsound_proofs_types_and_ignored_values() {
     for text in [
         "fn f(x Int) Int ensures result > x { x }",
-        "fn f(x Int) Int ensures result >= 0 { var y = x\nwhile y < 0 { y = y + 1 }\ny }",
+        // Reaching zero now proves nonnegativity, but not strict positivity.
+        "fn f(x Int) Int ensures result > 0 { var y = x\nwhile y < 0 { y = y + 1 }\ny }",
         "fn main() { let x = true + 1\ndiscard x }",
         "fn main() { 42 }",
         "fn main() Unit {}",
