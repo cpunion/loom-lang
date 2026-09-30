@@ -1,5 +1,10 @@
 import std.loom.manifest.valid_git
 import std.loom.manifest.valid_git_subdir
+import std.loom.manifest.valid_git_url
+import std.semver.parse_version
+import std.semver.requirement
+import std.semver.matches
+import std.semver.compare
 import std.hash.sha256.hex
 import std.bytes.new
 import std.bytes.push
@@ -25,6 +30,8 @@ record LockedSource {
     rev Text
     tree Text
     subdir Text
+    request Text
+    version Text
 }
 
 record Snapshot {
@@ -40,6 +47,7 @@ record Resolution {
     credential_tool Text
     locks List[LockedSource]
     snapshots List[Snapshot]
+    plan VersionPlan
 }
 
 fn append_text(output Bytes, value Text) {
@@ -98,7 +106,7 @@ fn lock_index(locks List[LockedSource], owner Text, name Text) Int {
 
 fn parse_lock(text Text) Result[List[LockedSource], Text] {
     let lines = parts(text, 10)
-    if get(lines, 0) != "loom-lock 2" {
+    if get(lines, 0) != "loom-lock 3" {
         return Result.Err("unsupported loom.lock format")
     }
     let locks = new[LockedSource]()
@@ -109,7 +117,7 @@ fn parse_lock(text Text) Result[List[LockedSource], Text] {
             return Result.Ok(locks)
         }
         let fields = parts(line, 9)
-        if length(fields) != 6 {
+        if length(fields) != 8 {
             return Result.Err("malformed loom.lock entry")
         }
         let owner = get(fields, 0)
@@ -118,9 +126,14 @@ fn parse_lock(text Text) Result[List[LockedSource], Text] {
         let rev = get(fields, 3)
         let tree = get(fields, 4)
         let subdir = get(fields, 5)
+        let request = get(fields, 6)
+        let version = get(fields, 7)
         if !hex_id(owner, 64) || !segment(name) || name == "std" || !valid_git(git, rev) || !hex_id(tree, 64) ||
-        !valid_git_subdir(subdir) {
+        !valid_git_subdir(subdir) || !hex_id(request, 64) {
             return Result.Err("invalid loom.lock source identity")
+        }
+        if version != "" {
+            discard parse_version(version)?
         }
         if lock_index(locks, owner, name) >= 0 {
             return Result.Err("duplicate loom.lock dependency edge")
@@ -140,6 +153,8 @@ fn parse_lock(text Text) Result[List[LockedSource], Text] {
                 rev = rev
                 tree = tree
                 subdir = subdir
+                request = request
+                version = version
             })
         index = index + 1
     }
@@ -169,11 +184,13 @@ fn encode_lock(locks List[LockedSource]) Text {
         line = concat(line, concat("\t", entry.rev))
         line = concat(line, concat("\t", entry.tree))
         line = concat(line, concat("\t", entry.subdir))
+        line = concat(line, concat("\t", entry.request))
+        line = concat(line, concat("\t", entry.version))
         include(lines, line)
         index = index + 1
     }
     let output = std.bytes.new()
-    append_text(output, "loom-lock 2\n")
+    append_text(output, "loom-lock 3\n")
     index = 0
     while index < length(lines) {
         append_text(output, get(lines, index))

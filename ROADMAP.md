@@ -78,9 +78,13 @@ lexical cleanup and real stackless async I/O. These do not close the gates below
 | Constraints and proofs | Broaden sound contract composition, entry-state reasoning and mutation preservation; close the sorting/permutation and constrained shared-data stories without replacing proof with tests. |
 | Compile-time programming | Complete accepted pack/type/function combinations and useful reflection while retaining explicit requirements, selected branches, visibility and tracked inputs. |
 | Source `std` and async | Complete application I/O beyond verified TLS streams, including general workers and remaining socket policies; retain cancellation and resource guarantees. |
-| Modules | Resolve and normalize permitted versions, preserving source identity, explicit local/graph-wide fork policy and locked offline builds across anonymous/authenticated sources. |
 | Programming feedback | Broaden checked editor operations and incremental coverage; reduce real edited-source latency and memory, not only unchanged-cache timings. |
 | Effect reasoning | Validate transformations against actual data/control/resource conflicts, including aliasing, faults and cleanup; unknown overlap must retain ordering. |
+
+The module version slice now resolves SemVer Git tags and normalizes compatible
+requests, with source identity, explicit local/graph fork policy, and locked
+offline builds across anonymous/authenticated sources. Version labels are not
+behavioral compatibility proofs.
 
 Use these complete acceptance stories, rather than a count of syntax features:
 

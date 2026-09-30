@@ -194,6 +194,7 @@ test fn production_cycles_still_reject_before_loading_files() {
             credential_tool = ""
             locks = new[LockedSource]()
             snapshots = new[Snapshot]()
+            plan = empty_plan()
         }
         overrides = new[Dependency]()
         overlays = new[OverlayFile]()
@@ -201,6 +202,7 @@ test fn production_cycles_still_reject_before_loading_files() {
     }
     push(loader.modules, ModuleRoot {
             name = "app"
+            version = ""
             base = "/app"
             dependencies = new[Dependency]()
         })
@@ -235,6 +237,7 @@ test fn module_roots_reuse_identity_independently_of_display_names() {
             credential_tool = ""
             locks = new[LockedSource]()
             snapshots = new[Snapshot]()
+            plan = empty_plan()
         }
         overrides = new[Dependency]()
         overlays = new[OverlayFile]()
@@ -242,16 +245,19 @@ test fn module_roots_reuse_identity_independently_of_display_names() {
     }
     let standard = ModuleRoot {
         name = "std"
+        version = ""
         base = "/std"
         dependencies = new[Dependency]()
     }
     let app = ModuleRoot {
         name = "app"
+        version = ""
         base = "/app"
         dependencies = new[Dependency]()
     }
     let codec = ModuleRoot {
         name = "codec"
+        version = ""
         base = "/codec"
         dependencies = new[Dependency]()
     }
@@ -274,6 +280,7 @@ test fn module_roots_reuse_identity_independently_of_display_names() {
     assert length(loader.modules) == 3
     assert match register_module(loader, ModuleRoot {
             name = "codec"
+            version = ""
             base = "/fork"
             dependencies = new[Dependency]()
         }) {
@@ -282,6 +289,7 @@ test fn module_roots_reuse_identity_independently_of_display_names() {
     }
     assert match register_module(loader, ModuleRoot {
             name = "renamed"
+            version = ""
             base = "/codec"
             dependencies = new[Dependency]()
         }) {

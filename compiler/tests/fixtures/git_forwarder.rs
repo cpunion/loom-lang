@@ -225,7 +225,7 @@ fn main() {
     }
     let command = args.get(offset).map(String::as_str).unwrap_or("");
     require(
-        matches!(command, "init" | "fetch" | "ls-tree" | "cat-file"),
+        matches!(command, "init" | "fetch" | "ls-tree" | "cat-file" | "ls-remote"),
         "unexpected Git command",
     );
     let mut log = fs::OpenOptions::new()
@@ -239,15 +239,17 @@ fn main() {
         process::exit(91);
     }
     let is_fetch = command == "fetch";
+    let is_remote = command == "ls-remote";
+    let is_network = is_fetch || is_remote;
     let authenticated = env::var_os("GIT_CONFIG_COUNT").is_some();
     if authenticated {
         require(
-            is_fetch
+            is_network
                 && env::var("GIT_CONFIG_COUNT").as_deref() == Ok("1")
                 && env::var("GIT_CONFIG_KEY_0").as_deref()
                     == Ok(format!("http.{source_url}.extraHeader").as_str())
                 && env::var("GIT_CONFIG_VALUE_0").as_deref() == Ok(AUTH_HEADER),
-            "credential escaped its fetch scope",
+            "credential escaped its network scope",
         );
     } else {
         require(
@@ -256,11 +258,11 @@ fn main() {
             "partial credential environment",
         );
     }
-    if is_fetch && https_url.is_none() && root.join("requires-auth").exists() && !authenticated {
+    if is_network && https_url.is_none() && root.join("requires-auth").exists() && !authenticated {
         eprintln!("{SENTINEL}: authentication required");
         process::exit(95);
     }
-    if is_fetch && https_url.is_none() && root.join("auth-echo").exists() {
+    if is_network && https_url.is_none() && root.join("auth-echo").exists() {
         println!("{AUTH_HEADER}");
         eprintln!("{SENTINEL}: echoed authenticated server response");
         process::exit(96);
@@ -315,6 +317,21 @@ fn main() {
             args[source] = git_path(&root.join("remote"));
         }
     }
+    if is_remote {
+        require(
+            args[offset..offset + 3] == ["ls-remote", "--tags", "--"],
+            "tag discovery isolation flags differ",
+        );
+        let source = args.len() - 1;
+        require(args[source] == source_url, "unexpected tag discovery source");
+        if let Ok(advertisement) = fs::read(root.join("tag-advertisement")) {
+            std::io::stdout().write_all(&advertisement).unwrap();
+            return;
+        }
+        if https_url.is_none() {
+            args[source] = git_path(&root.join("remote"));
+        }
+    }
     let mut git = Command::new(GIT);
     if https_url.is_some() {
         // Trust only this fixture's ephemeral CA, without changing host trust.
@@ -334,7 +351,7 @@ fn main() {
         ]);
     }
     git.args(args);
-    if is_fetch && https_url.is_none() {
+    if is_network && https_url.is_none() {
         // Only this explicitly trusted fixture substitutes a local transport.
         git.env("GIT_ALLOW_PROTOCOL", "file");
     }

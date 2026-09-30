@@ -1,0 +1,307 @@
+record VersionSelection {
+    owner Text
+    name Text
+    git Text
+    subdir Text
+    request Text
+    candidate VersionCandidate
+}
+
+record VersionRequest {
+    owner Text
+    name Text
+    git Text
+    subdir Text
+    request Text
+    candidates List[VersionCandidate]
+}
+
+record VersionPlan {
+    catalogs List[VersionCatalog]
+    selected List[VersionSelection]
+    pending List[VersionRequest]
+    used List[LockedSource]
+}
+
+fn empty_plan() VersionPlan {
+    VersionPlan {
+        catalogs = new[VersionCatalog]()
+        selected = new[VersionSelection]()
+        pending = new[VersionRequest]()
+        used = new[LockedSource]()
+    }
+}
+
+fn source_request(dependency Dependency) Text {
+    let source = match dependency.source {
+        DependencySource.Path(path) => concat("path\n", path),
+        DependencySource.Git(git, rev, subdir) => concat("git\n", concat(git, concat("\n", concat(rev, concat("\n", subdir)))))
+    }
+    hashed(concat(source, concat("\n", concat(dependency.version, if dependency.scope == DependencyScope.Graph {
+                        "\ngraph"
+                    } else {
+                        "\nlocal"
+                    }))))
+}
+
+fn dependency_request(declared Dependency, selected Dependency) Text {
+    hashed(concat(source_request(declared), source_request(selected)))
+}
+
+fn satisfies(range Text, version Text) Result[Bool, Text] {
+    if range == "" {
+        return Result.Ok(true)
+    }
+    if version == "" {
+        return Result.Ok(false)
+    }
+    Result.Ok(matches(requirement(range)?, parse_version(version)?))
+}
+
+fn module_requirement(module ModuleRoot, range Text) Result[Bool, Text] {
+    if !satisfies(range, module.version)? {
+        return Result.Err("dependency module.version does not satisfy a declared requirement; a graph fork cannot override incompatible requirements")
+    }
+    Result.Ok(true)
+}
+
+fn dependency_revision(resolution Resolution, base Text, declared Dependency, selected Dependency, request Text, comptime fetch Bool) Result[(Text, Text), Text] {
+    let git, rev, subdir = match selected.source {
+        DependencySource.Git(git, rev, subdir) => (git, rev, subdir),
+        DependencySource.Path(_) => {
+            return Result.Err("expected a Git dependency")
+        }
+    }
+    if rev != "" {
+        return Result.Ok(("", rev))
+    }
+    let owner = source_owner(resolution, base)?
+    comptime if !fetch {
+        let index = lock_index(resolution.locks, owner, declared.name)
+        if index < 0 {
+            return Result.Err("Git dependency is not locked; run loom resolve")
+        }
+        let locked = get(resolution.locks, index)
+        if locked.git != git || locked.subdir != subdir || locked.request != request || locked.version == "" {
+            return Result.Err("Git dependency changed from loom.lock; run loom resolve")
+        }
+        if !satisfies(declared.version, locked.version)? || !satisfies(selected.version, locked.version)? {
+            return Result.Err("locked version does not satisfy the dependency requirements; run loom resolve")
+        }
+        return Result.Ok((locked.version, locked.rev))
+    }
+    var index = 0
+    while index < length(resolution.plan.selected) {
+        let value = get(resolution.plan.selected, index)
+        if value.owner == owner && value.name == declared.name && value.request == request {
+            return Result.Ok((value.candidate.version, value.candidate.rev))
+        }
+        index = index + 1
+    }
+    let catalog = version_catalog(resolution, git, subdir)?
+    let candidates = new[VersionCandidate]()
+    index = 0
+    while index < length(catalog) {
+        let candidate = get(catalog, index)
+        if satisfies(declared.version, candidate.version)? && satisfies(selected.version, candidate.version)? {
+            push(candidates, candidate)
+        }
+        index = index + 1
+    }
+    if length(candidates) == 0 {
+        return Result.Err("no SemVer tag satisfies the dependency requirements")
+    }
+    push(resolution.plan.pending, VersionRequest {
+            owner = owner
+            name = declared.name
+            git = git
+            subdir = subdir
+            request = request
+            candidates = candidates
+        })
+    Result.Err("dependency version selection is pending")
+}
+
+fn choice_cost(values List[VersionSelection]) Int {
+    var count = 0
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        var previous = 0
+        var found = false
+        var family = false
+        while previous < index {
+            let other = get(values, previous)
+            if value.git == other.git && value.subdir == other.subdir {
+                family = true
+            }
+            if value.git == other.git && value.subdir == other.subdir && value.candidate.rev == other.candidate.rev {
+                found = true
+            }
+            previous = previous + 1
+        }
+        if !found && family {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    count
+}
+
+fn instance_cost(values List[LockedSource]) Int {
+    var families = 0
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        var previous = 0
+        var found = false
+        while previous < index {
+            let other = get(values, previous)
+            if value.git == other.git && value.subdir == other.subdir {
+                found = true
+            }
+            previous = previous + 1
+        }
+        if !found {
+            families = families + 1
+        }
+        index = index + 1
+    }
+    instance_count(values) - families
+}
+
+fn instance_count(values List[LockedSource]) Int {
+    var count = 0
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        var previous = 0
+        var found = false
+        while previous < index {
+            let other = get(values, previous)
+            if value.git == other.git && value.subdir == other.subdir && value.rev == other.rev {
+                found = true
+            }
+            previous = previous + 1
+        }
+        if !found {
+            count = count + 1
+        }
+        index = index + 1
+    }
+    count
+}
+
+fn version_loader(initial Loader, selected List[VersionSelection]) Loader {
+    let locks = new[LockedSource]()
+    var index = 0
+    while index < length(initial.resolution.locks) {
+        push(locks, get(initial.resolution.locks, index))
+        index = index + 1
+    }
+    let plan = VersionPlan {
+        catalogs = initial.resolution.plan.catalogs
+        selected = selected
+        pending = new[VersionRequest]()
+        used = new[LockedSource]()
+    }
+    // Replays must not retain packages or module instances from another choice.
+    let modules = new[ModuleRoot]()
+    index = 0
+    while index < length(initial.modules) {
+        push(modules, get(initial.modules, index))
+        index = index + 1
+    }
+    Loader {
+        files = new[SourceFile]()
+        modules = modules
+        packages = new[Package]()
+        std_root = initial.std_root
+        active = new[Int]()
+        complete = new[Int]()
+        resolution = Resolution {
+            root = initial.resolution.root
+            tool = initial.resolution.tool
+            credential_tool = initial.resolution.credential_tool
+            locks = locks
+            snapshots = initial.resolution.snapshots
+            plan = plan
+        }
+        overrides = initial.overrides
+        overlays = initial.overlays
+        failures = initial.failures
+    }
+}
+
+// Deterministic branch-and-bound over the actual selected import closure.
+// A candidate may change transitive requirements, so each branch reloads that
+// closure. Verified snapshots and tag catalogs are shared, never partial locks.
+// Minimize duplicate instances within each source family, never reward dropping
+// unrelated dependencies. Descending tags and sorted import traversal
+// decide ties. Disjoint ranges remain separate; forks never share identity.
+fn resolve_versions(initial Loader, root Int, directory Text, tests Bool) Result[Loader, Text] {
+    let frontier = new[List[VersionSelection]]()
+    push(frontier, new[VersionSelection]())
+    var cursor = 1
+    var best Option[Loader] = Option.None
+    var score = -1
+    var error = "no dependency version assignment satisfies the selected import graph"
+    while cursor > 0 {
+        cursor = cursor - 1
+        let selected = get(frontier, cursor)
+        if score < 0 || choice_cost(selected) < score {
+            let loader = version_loader(initial, selected)
+            let original = get(initial.packages, root)
+            push(loader.packages, Package {
+                    instance = original.instance
+                    relative = original.relative
+                    imports = new[PackageImport]()
+                })
+            match visit(loader, 0, directory, tests, 0, true) {
+                Result.Ok(_) => {
+                    let count = instance_cost(loader.resolution.plan.used)
+                    if score < 0 || count < score {
+                        score = count
+                        best = Option.Some(loader)
+                    }
+                }
+                Result.Err(message) => {
+                    error = message
+                    if length(loader.resolution.plan.pending) > 0 {
+                        let request = get(loader.resolution.plan.pending, 0)
+                        var candidate = length(request.candidates)
+                        while candidate > 0 {
+                            candidate = candidate - 1
+                            let next = new[VersionSelection]()
+                            var previous = 0
+                            while previous < length(selected) {
+                                push(next, get(selected, previous))
+                                previous = previous + 1
+                            }
+                            push(next, VersionSelection {
+                                    owner = request.owner
+                                    name = request.name
+                                    git = request.git
+                                    subdir = request.subdir
+                                    request = request.request
+                                    candidate = get(request.candidates, candidate)
+                                })
+                            if score < 0 || choice_cost(next) < score {
+                                if cursor < length(frontier) {
+                                    set(frontier, cursor, next)
+                                } else {
+                                    push(frontier, next)
+                                }
+                                cursor = cursor + 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    match best {
+        Option.Some(loader) => Result.Ok(loader),
+        Option.None => Result.Err(error)
+    }
+}

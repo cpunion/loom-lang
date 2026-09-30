@@ -1,0 +1,131 @@
+record VersionCandidate {
+    version Text
+    rev Text
+}
+
+record VersionCatalog {
+    git Text
+    subdir Text
+    candidates List[VersionCandidate]
+}
+
+fn tag_version(tag Text, subdir Text) Text {
+    var label = tag
+    if subdir != "" && starts_with(label, concat(subdir, "/")) {
+        label = slice(label, length(subdir) + 1, length(label))
+    }
+    if starts_with(label, "v") {
+        label = slice(label, 1, length(label))
+    }
+    match parse_version(label) {
+        Result.Ok(_) => label,
+        Result.Err(_) => ""
+    }
+}
+
+fn tag_candidates(text Text, subdir Text) Result[List[VersionCandidate], Text] {
+    let lines = parts(text, 10)
+    let candidates = new[VersionCandidate]()
+    var index = 0
+    while index < length(lines) {
+        let line = get(lines, index)
+        if line != "" {
+            let fields = parts(line, 9)
+            if length(fields) != 2 {
+                return Result.Err("invalid Git tag advertisement; remote output was suppressed")
+            }
+            let object = get(fields, 0)
+            let reference = get(fields, 1)
+            if (!hex_id(object, 40) && !hex_id(object, 64)) || !starts_with(reference, "refs/tags/") {
+                return Result.Err("invalid Git tag advertisement; remote output was suppressed")
+            }
+            if !ends_with(reference, "^{}") {
+                let label = tag_version(slice(reference, 10, length(reference)), subdir)
+                if label != "" {
+                    var rev = object
+                    var peeled = 0
+                    while peeled < length(lines) {
+                        let other = parts(get(lines, peeled), 9)
+                        if length(other) == 2 && get(other, 1) == concat(reference, "^{}") {
+                            rev = get(other, 0)
+                        }
+                        peeled = peeled + 1
+                    }
+                    if !hex_id(rev, length(object)) {
+                        return Result.Err("invalid peeled Git tag object")
+                    }
+                    let candidate = VersionCandidate {
+                        version = label,
+                        rev = rev
+                    }
+                    var found = false
+                    var previous = 0
+                    while previous < length(candidates) {
+                        let value = get(candidates, previous)
+                        if value.version == label {
+                            if value.rev != rev {
+                                return Result.Err("ambiguous SemVer tags identify different objects")
+                            }
+                            found = true
+                        }
+                        previous = previous + 1
+                    }
+                    if !found {
+                        // Descending precedence, then label, then object ID.
+                        // Build metadata affects identity, never precedence.
+                        push(candidates, candidate)
+                        var position = length(candidates) - 1
+                        while position > 0 {
+                            let previous = get(candidates, position - 1)
+                            let order = compare(parse_version(label)?, parse_version(previous.version)?)
+                            if order < 0 || (order == 0 && !before(previous.version, label)) {
+                                break
+                            }
+                            set(candidates, position, previous)
+                            position = position - 1
+                        }
+                        set(candidates, position, candidate)
+                    }
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(candidates)
+}
+
+fn version_catalog(resolution Resolution, git Text, subdir Text) Result[List[VersionCandidate], Text] {
+    var index = 0
+    while index < length(resolution.plan.catalogs) {
+        let catalog = get(resolution.plan.catalogs, index)
+        if catalog.git == git && catalog.subdir == subdir {
+            return Result.Ok(catalog.candidates)
+        }
+        index = index + 1
+    }
+    if !valid_git_url(git) {
+        return Result.Err("invalid HTTPS Git dependency source")
+    }
+    let stage = staging(resolution.root)?
+    defer {
+        discard remove_staging(stage)
+    }
+    let session = git_session(stage, resolution.tool)?
+    let arguments = parts("ls-remote\n--tags\n--", 10)
+    push(arguments, git)
+    let credential = source_credential(resolution.credential_tool, git)?
+    let bytes = authenticated_fetch(session, arguments, git, credential)?
+    let text = match decode_utf8(bytes) {
+        Result.Ok(value) => value,
+        Result.Err(_) => {
+            return Result.Err("invalid Git tag advertisement; remote output was suppressed")
+        }
+    }
+    let candidates = tag_candidates(text, subdir)?
+    push(resolution.plan.catalogs, VersionCatalog {
+            git = git
+            subdir = subdir
+            candidates = candidates
+        })
+    Result.Ok(candidates)
+}

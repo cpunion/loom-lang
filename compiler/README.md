@@ -670,6 +670,11 @@ timings; local variables remain conservatively rooted for the function.
   leaves the input unchanged, and also works at compile time within evaluator
   limits. Inputs must be shorter than 2^61 bytes. No hashing runtime operation
   is added; the library is neither a password hash nor an authentication scheme.
+- Source `std.semver` parses SemVer 2.0.0 with `parse_version(Text)`, compares
+  precedence with `compare(Version, Version) Int`, and parses/matches ranges with
+  `requirement(Text)` and `matches(Requirement, Version) Bool`. Numeric components
+  are not limited by machine integer sizes; build metadata does not affect
+  precedence. The same source library is used by dependency resolution.
 - Native executable builds when the selected package has `main`; otherwise,
   an object containing its public functions and their dependencies. Object
   symbols are private compiler conventions, not a supported foreign ABI.
@@ -1501,6 +1506,36 @@ Sources use credential-free HTTPS URLs with ASCII host/path spelling
 and an optional port. URL escapes, query strings, fragments and IPv6 literals
 are not supported in this first transport slice. `path` and `git` cannot mix.
 
+Alternatively, select [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html) tags:
+
+```toml
+[dependencies.codec]
+git = "https://github.com/example/codec-fork.git"
+version = "^1.2"
+subdir = "packages/codec"
+```
+
+Use `rev` or `version`, never both. Tags are `v1.2.3` or `1.2.3`; monorepos may
+also use `<subdir>/v1.2.3`. Lightweight and annotated tags resolve to full commit
+IDs, and the selected module's `version` must exactly match the tag's SemVer
+label. Conflicting aliases for one label reject. Module versions, when supplied,
+must be complete SemVer values.
+
+Ranges support caret (`^1.2`, also the meaning of bare `1.2`), tilde (`~1.2`),
+wildcards (`*`, `1.*`, `1.2.x`), exact (`=1.2.3`), and complete-version comparisons
+(`>=1.2.3, <2.0.0`). Commas intersect requirements; OR/hyphen ranges are not
+supported. Caret respects `0.x` compatibility boundaries. Prereleases require
+an explicit prerelease comparator with the same major/minor/patch. Build metadata
+is ignored for range matching, but retained in the selected source identity.
+A path dependency may add `version` to check its editable module's version.
+
+Explicit resolution searches the selected import graph, including candidate-dependent
+transitive imports. It minimizes duplicate instances within each URL/subdirectory
+family, then prefers descending versions in sorted import traversal order. It
+does not reward dropping unrelated dependencies. Disjoint requirements can keep
+multiple instances; different forks/content are not unified by labels. Search can
+be combinatorial for conflicting graphs; normal builds never run the search.
+
 ```sh
 target/loom resolve path/to/app
 target/loom resolve path/to/app --tests
@@ -1514,7 +1549,11 @@ Git edge is missing, changed, or lacks an intact cached snapshot. Unused manifes
 dependencies are not fetched. The lock preserves unrelated package edges, uses
 location-independent owner identities, and anchors exact source identities to
 SHA-256 snapshots, including each edge's selected subdirectory. Changing `subdir`
-requires resolution even when the commit is unchanged. Local path inputs remain
+or a declared/effective requirement requires resolution even when the commit is
+unchanged. Lock format 3 records the request identity, selected version, full
+commit and digest; no old lock-format compatibility is maintained. Resolution
+reports selected Git edge/instance counts and changed edges without echoing remote
+tag data. Local path inputs remain
 editable. Different Git URLs/commits/module directories remain different nominal
 instances; identical module sources reuse an instance. Modules from one URL/commit
 share a single verified whole-repository snapshot and content digest.
@@ -1541,9 +1580,10 @@ retains its URL, exact commit and optional `subdir`; all matching edges reuse th
 same nominal module instance. Each importing Git edge locks the effective source.
 Changing that source requires `resolve` before offline use; local path sources
 remain editable and are not made immutable by graph selection. An incompatible
-fork can still fail ordinary type/contract checks. There is no compatibility
-claim based only on its name or version, no implicit version-range resolution,
-and no separate `replace` table.
+fork must satisfy both original and root-selected version requirements and can
+still fail ordinary type/contract checks. There is no compatibility proof based
+only on its name or version, no implicit resolution during builds, and no
+separate `replace` table.
 
 Snapshots live under the root module's `target/loom-deps`. Every selected snapshot
 is checked against actual regular-file contents and exact directory membership,
@@ -1567,19 +1607,20 @@ repository path on stdin. There is no shell expansion, automatic discovery,
 ordinary host context and returns UTF-8 `username` and `password` fields; tokens
 can be supplied as passwords. It owns any credential storage or refresh.
 
-The resulting Basic authorization header exists only in the fetch child's
+The resulting Basic authorization header exists only in the fetch/tag-discovery child's
 environment, scoped to the selected URL, never in argv, a config file, lock,
 cache or diagnostic. Redirects, external pack/bundle URLs and dumb HTTP are
 disabled; TLS verification remains mandatory. This is not isolation from a
 trusted Git executable or other processes able to inspect the child environment.
-Helper failures and remote errors suppress their output. Cache hits and ordinary
-offline commands never invoke the helper. No credentials are needed to rebuild
+Helper failures and remote errors suppress their output. Exact-commit cache hits
+and ordinary offline commands never invoke the helper. Explicit SemVer resolution
+discovers tags again, even with cached commits. No credentials are needed to rebuild
 an already resolved, intact snapshot.
 Git-facing Windows drive/UNC paths use forward slashes without verbatim prefixes;
 Loom's canonical paths and native cwd remain unchanged. Windows Git sessions
 enable its builtin long-path support, not a promise about arbitrary external tools.
-Version-range resolution and compatible-version normalization remain open. Native object and frontend caches
-are separate, opt-in trusted-local facilities described above.
+Native object and frontend caches are separate, opt-in trusted-local facilities
+described above.
 Resolution currently assumes a single writer and trusted filesystem ancestors;
 atomic lock replacement is not crash durability or protection from concurrent
 same-user mutation. Failed work leaves the prior lock unchanged, with best-effort

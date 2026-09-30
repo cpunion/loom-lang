@@ -13,8 +13,8 @@ fn parsed(text Text) Module {
 }
 
 test fn supported_manifest_subset() {
-    let module = parsed("schema = 2 # version\nlanguage = '0.4'\n[module]\nname = \"front\\u0065nd\"\nversion = \"0.1#dev\" # comment\n[dependencies]\n")
-    assert module.name == "frontend" && module.version == "0.1#dev"
+    let module = parsed("schema = 2 # version\nlanguage = '0.4'\n[module]\nname = \"front\\u0065nd\"\nversion = \"0.1.0+dev\" # comment\n[dependencies]\n")
+    assert module.name == "frontend" && module.version == "0.1.0+dev"
     assert length(module.dependencies) == 0
     assert parsed("dependencies = {}\n[module]\nname = 'demo'\n").name == "demo"
 }
@@ -69,7 +69,7 @@ test fn incomplete_duplicate_and_unsupported_dependencies_reject() {
     rejects(concat(prefix, "[dependencies.codec]\npath='../codec'\npath='../other'"))
     rejects(concat(prefix, "[dependencies.codec]\npath='../codec'\n[dependencies.codec]"))
     rejects(concat(prefix, "[dependencies.codec]\ngit='https://example.com/codec'"))
-    rejects(concat(prefix, "[dependencies.codec]\npath='../codec'\nversion='1'"))
+    rejects(concat(prefix, "[dependencies.codec]\npath='../codec'\nversion='bad'"))
     rejects(concat(prefix, "[dependencies]\ncodec={path='../codec'}"))
     rejects(concat(prefix, "[dependencies.Codec]\npath='../codec'"))
     rejects(concat(prefix, "[dependencies.std]\npath='../std'"))
@@ -79,6 +79,34 @@ test fn incomplete_duplicate_and_unsupported_dependencies_reject() {
 
 fn revision() Text {
     "0123456789abcdef0123456789abcdef01234567"
+}
+
+test fn semver_requirements_work_for_git_and_local_sources() {
+    let module = parsed("""
+[module]
+name = 'app'
+version = '0.4.0-dev+001'
+[dependencies.codec]
+version = '^1.2'
+git = 'https://example.com/codec'
+subdir = 'packages/codec'
+[dependencies.local]
+version = '>=1.0.0, <2.0.0'
+path = '../local'
+""")
+    let codec = get(module.dependencies, 0)
+    assert codec.version == "^1.2"
+    assert match codec.source {
+        DependencySource.Git(_, rev, subdir) => rev == "" && subdir == "packages/codec",
+        _ => false
+    }
+    assert get(module.dependencies, 1).version == ">=1.0.0, <2.0.0"
+    let prefix = "[module]\nname='app'\n[dependencies.codec]\ngit='https://example.com/codec'\n"
+    rejects(concat(prefix, "version=''"))
+    rejects(concat(prefix, "version='main'"))
+    rejects(concat(prefix, "version='^1.0'\nrev=''"))
+    rejects(concat(prefix, "version='^1.0'\nrev='0123456789abcdef0123456789abcdef01234567'"))
+    rejects("[module]\nname='app'\nversion='0.1#dev'")
 }
 
 fn git_manifest(url Text, rev Text) Text {

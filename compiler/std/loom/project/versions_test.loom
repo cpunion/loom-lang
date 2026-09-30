@@ -1,0 +1,68 @@
+test fn tag_catalog_peels_annotated_tags_and_preserves_identity() {
+    let a = "0123456789012345678901234567890123456789"
+    let b = "1123456789012345678901234567890123456789"
+    let text = concat(a, concat("\trefs/tags/v1.2.3\n", concat(b, concat("\trefs/tags/v1.2.3^{}\n", concat(a, "\trefs/tags/packages/codec/v1.3.0\n")))))
+    let values = match tag_candidates(text, "packages/codec") {
+        Result.Ok(values) => values,
+        Result.Err(_) => {
+            assert false
+            new[VersionCandidate]()
+        }
+    }
+    assert length(values) == 2
+    assert get(values, 0).version == "1.3.0" && get(values, 0).rev == a
+    assert get(values, 1).version == "1.2.3" && get(values, 1).rev == b
+    let conflicting = concat(a, concat("\trefs/tags/1.2.3\n", concat(b, "\trefs/tags/v1.2.3\n")))
+    assert match tag_candidates(conflicting, "") {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert match tag_candidates("secret remote output\n", "") {
+        Result.Err(_) => true,
+        Result.Ok(_) => false
+    }
+    assert tag_version("other/v1.0.0", "packages/codec") == ""
+}
+
+test fn normalization_counts_sources_not_names_or_version_labels() {
+    let values = new[VersionSelection]()
+    let first = VersionSelection {
+        owner = "one"
+        name = "codec"
+        git = "https://example.com/codec"
+        subdir = ""
+        request = "request"
+        candidate = VersionCandidate {
+            version = "1.0.0",
+            rev = "commit"
+        }
+    }
+    push(values, first)
+    push(values, first)
+    assert choice_cost(values) == 0
+    push(values, VersionSelection {
+            owner = first.owner
+            name = first.name
+            git = "https://example.com/fork"
+            subdir = first.subdir
+            request = first.request
+            candidate = first.candidate
+        })
+    assert choice_cost(values) == 0
+    push(values, VersionSelection {
+            owner = "two"
+            name = first.name
+            git = first.git
+            subdir = first.subdir
+            request = first.request
+            candidate = VersionCandidate {
+                version = "2.0.0",
+                rev = "another"
+            }
+        })
+    assert choice_cost(values) == 1
+    assert match satisfies("^1", "") {
+        Result.Ok(value) => !value,
+        Result.Err(_) => false
+    }
+}
