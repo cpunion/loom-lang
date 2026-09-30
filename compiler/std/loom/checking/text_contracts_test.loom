@@ -1,0 +1,275 @@
+test fn immutable_text_contracts_compose_entry_values_helpers_and_literals() {
+    discard accepted("""
+        fn same_bytes(left Text, right Text) Bool {
+            left == right
+        }
+        fn entry(value Text) Text {
+            value
+        }
+        fn identity(value Text) Text
+        ensures same_bytes(result, old(entry(value)))
+        {
+            value
+        }
+        fn relay(value Text) Text
+        ensures result == old(value)
+        {
+            identity(identity(value))
+        }
+        fn literal() Text
+        ensures result == "é😀"
+        {
+            "é😀"
+        }
+        fn selected(value Text, enabled Bool) Text
+        ensures result == value
+        {
+            if enabled {
+                return relay(value)
+            }
+            value
+        }
+        fn main() {
+            assert selected(literal(), true) == "é😀"
+        }
+        """)
+}
+
+test fn text_equalities_are_content_facts_not_non_alias_assumptions() {
+    discard accepted("""
+        fn equal(left Text, right Text) Text
+        requires left == right
+        ensures result == left
+        {
+            right
+        }
+        fn unequal(left Text, right Text) Text
+        requires left != right
+        ensures result != left
+        {
+            right
+        }
+        fn chosen(value Text, other Text) Text
+        ensures result == value
+        {
+            if value == other {
+                return other
+            }
+            value
+        }
+        """)
+    rejects("""
+        fn invented(left Text, right Text) Text
+        ensures result == left
+        {
+            right
+        }
+        """)
+    rejects("""
+        fn distinct(left Text, right Text) Bool
+        ensures result
+        {
+            left != right
+        }
+        """)
+    rejects("""
+        fn wrong() Text
+        ensures result == "é"
+        {
+            "é"
+        }
+        """)
+}
+
+test fn text_fields_and_refinements_preserve_values_without_shared_heap_facts() {
+    discard accepted("""
+        type Tag = Text where self == "ready"
+        record Envelope {
+            label Tag
+            values List[Int]
+        }
+        fn tag(value Tag) Text
+        ensures result == "ready"
+        {
+            value
+        }
+        fn copied(value Envelope) Envelope
+        ensures result.label == old(value.label)
+        {
+            value
+        }
+        fn main() {
+            let original = Envelope { label = Tag("ready") values = [1] }
+            let alias = copied(original)
+            original.values[0] = 9
+            assert tag(alias.label) == "ready" && alias.values[0] == 9
+        }
+        """)
+    rejects("""
+        record Envelope {
+            label Text
+            values List[Int]
+        }
+        fn changed(value Envelope) Text
+        ensures result == old(value.label)
+        {
+            "different"
+        }
+        """)
+    rejects("""
+        fn mutable_bytes(value Bytes) Bytes
+        ensures result == old(value)
+        {
+            value
+        }
+        """)
+}
+
+test fn text_summary_results_keep_independent_identities_and_eager_arguments() {
+    rejects("""
+        fn choice(flag Bool) Text
+        ensures result == result
+        {
+            if flag { "yes" } else { "no" }
+        }
+        fn unproved(first Bool, second Bool) Bool
+        ensures result
+        {
+            choice(first) == choice(second)
+        }
+        """)
+    discard accepted("""
+        fn first(left Text, right Text) Text {
+            left
+        }
+        fn retained(value Text) Text
+        ensures result == value
+        {
+            var local = value
+            first(local, {
+                local = "changed"
+                local
+            })
+        }
+        """)
+    rejects("""
+        fn first(left Text, right Text) Text {
+            left
+        }
+        fn overwritten(value Text) Text
+        ensures result == value
+        {
+            var local = value
+            discard first(local, {
+                local = "changed"
+                local
+            })
+            local
+        }
+        """)
+}
+
+test fn text_contracts_use_declared_concept_summaries_and_recheck_restored_helpers() {
+    discard accepted("""
+        concept Keep {
+            fn keep(self Self, value Text) Text
+            ensures result == old(value)
+        }
+        impl Keep for Int {
+            fn keep(self Int, value Text) Text {
+                value
+            }
+        }
+        fn generic[T Keep](receiver T, value Text) Text
+        ensures result == value
+        {
+            receiver.keep(value)
+        }
+        fn dynamic(receiver dyn Keep, value Text) Text
+        ensures result == value
+        {
+            receiver.keep(value)
+        }
+        fn main() {
+            assert generic(1, "é😀") == "é😀"
+            let receiver dyn Keep = 1
+            assert dynamic(receiver, "ready") == "ready"
+        }
+        """)
+    rejects("""
+        concept Keep {
+            fn keep(self Self, value Text) Text
+            ensures result == old(value)
+        }
+        impl Keep for Int {
+            fn keep(self Int, value Text) Text {
+                "wrong"
+            }
+        }
+        """)
+    let source = """
+        fn helper(value Text) Text {
+            value
+        }
+        pub fn keep(value Text) Text
+        ensures result == value
+        {
+            helper(value)
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    let moved = concat("fn unrelated(value List[Bool]) List[Bool] { value }\n", source)
+    assert match cached_source(cache, moved) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let changed = std.text.join(std.text.split(moved, """
+        fn helper(value Text) Text {
+            value
+        }
+        """), """
+        fn helper(value Text) Text {
+            "wrong"
+        }
+        """)
+    assert match cached_source(restored_definition_cache(cache), changed) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
+
+test fn text_refinements_fold_literals_and_keep_unknown_construction_checked() {
+    discard accepted_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+        type Tag = Text where self == "ready"
+        fn literal() Tag {
+            Tag("ready")
+        }
+        fn checked(value Text) Result[Tag, ConstraintError] {
+            Tag(value)
+        }
+        fn widened(value Tag) Text {
+            value
+        }
+        """)
+    rejects("""
+        type Tag = Text where self == "ready"
+        fn invalid() Tag {
+            Tag("wrong")
+        }
+        """)
+    rejects_result("""
+        import std.result.Result
+        import std.result.ConstraintError
+        type Tag = Text where self == "ready"
+        fn unchecked(value Text) Tag {
+            Tag(value)
+        }
+        """)
+}

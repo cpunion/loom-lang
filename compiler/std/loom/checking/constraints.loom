@@ -215,10 +215,14 @@ fn folded_predicate(env Environment, owner Int, known Value) Result[Value, Failu
     let predicate = predicate_node(env, owner)
     let stage = staging(predicate_scope(env, owner, known.ty), predicate)?
     let value = expr(stage, predicate, 2)?
-    let literal = if known.ty == 5 {
-        expression(ExprKind.Float, 5, predicate, std.float.to_text(known.floating), -1, new[Expr](), true)
+    let literal = if known.ty == 3 {
+        expression(ExprKind.Text, 3, predicate, known.text, -1, new[Expr](), true)
     } else {
-        expression(ExprKind.Integer, 1, predicate, std.int.to_text(known.number), -1, new[Expr](), true)
+        if known.ty == 5 {
+            expression(ExprKind.Float, 5, predicate, std.float.to_text(known.floating), -1, new[Expr](), true)
+        } else {
+            expression(ExprKind.Integer, 1, predicate, std.int.to_text(known.number), -1, new[Expr](), true)
+        }
     }
     let bind = expression(ExprKind.Let, 0, predicate, "", 0, expressions(literal), true)
     let initialized = expression(ExprKind.Block, 2, predicate, "", -1, pair(bind, value), true)

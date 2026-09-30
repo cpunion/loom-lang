@@ -185,7 +185,7 @@ fn dynamic_contract_summary(context Context, call Expr) Result[Function, Failure
 }
 
 fn method_summary_type(env Environment, ty Int, depth Int) Bool {
-    if ty == 1 || ty == 2 { return true }
+    if ty == 1 || ty == 2 || ty == 3 { return true }
     if depth >= 16 || ty < 0 || ty >= length(env.types) { return false }
     let shape = get(env.types, ty)
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {

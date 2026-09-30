@@ -92,7 +92,7 @@ fn record_outcomes(proof Verification, expr Expr, state State, depth Int) Result
 }
 
 fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
-    if ty == 1 || ty == 2 {
+    if ty == 1 || ty == 2 || ty == 3 {
         return fresh_result(proof, ty)
     }
     if depth >= 16 || ty < 0 || ty >= length(proof.program.types) {
@@ -132,11 +132,28 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
     if ty == 5 {
         return Result.Err("Float parameters are not supported in required proofs")
     }
-    if ty == 3 || ty == 4 { return Result.Ok(Value.Empty) }
+    if ty == 3 {
+        return Result.Ok(Value.Text(TextValue {
+                    id = id
+                    text = ""
+                    known = false
+                }))
+    }
+    if ty == 4 {
+        return Result.Ok(Value.Empty)
+    }
     if ty < 0 || ty >= length(proof.program.types) {
         return Result.Err("required proof currently needs scalar parameters")
     }
     let shape = get(proof.program.types, ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
+    get(proof.program.types, get(shape.fields, 0).ty).kind == TypeKind.Text {
+        return Result.Ok(Value.Text(TextValue {
+                    id = id
+                    text = ""
+                    known = false
+                }))
+    }
     // An abstract receiver may be present without contributing any proof
     // fact. A scalar operation or field projection on Empty still rejects.
     if opaque_argument(proof.program, ty, 0) {
@@ -146,7 +163,7 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
         return Result.Ok(Value.Number(variable(id)))
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
-        get(proof.program.types, get(shape.fields, 0).ty).kind == TypeKind.Record {
+    get(proof.program.types, get(shape.fields, 0).ty).kind == TypeKind.Record {
         return Result.Ok(record_parameter_value(proof, get(shape.fields, 0).ty, 0))
     }
     if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
@@ -343,7 +360,10 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     if expr.kind == ExprKind.Defer {
         return Result.Ok(outcomes(state, Value.Empty))
     }
-    if expr.kind == ExprKind.Text || expr.kind == ExprKind.Bytes {
+    if expr.kind == ExprKind.Text {
+        return Result.Ok(outcomes(state, pure(expr, state)?))
+    }
+    if expr.kind == ExprKind.Bytes {
         return Result.Ok(outcomes(state, Value.Empty))
     }
     if expr.kind == ExprKind.Cleanup {
@@ -397,9 +417,14 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
                     if expr.index < 0 || expr.index >= length(fields) {
                         return Result.Err("invalid proof record field")
                     }
-                    discard add_outcome(output, Outcome { state = receiver.state value = get(fields, expr.index) })?
+                    discard add_outcome(output, Outcome {
+                            state = receiver.state
+                            value = get(fields, expr.index)
+                        })?
                 }
-                _ => { return Result.Err("field proof requires an inline aggregate") }
+                _ => {
+                    return Result.Err("field proof requires an inline aggregate")
+                }
             }
             index = index + 1
         }

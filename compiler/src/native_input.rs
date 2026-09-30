@@ -485,10 +485,13 @@ fn layout(program: &c::Program, ty: Type, state: &mut [u8]) -> Result<()> {
             };
             if *base != Type::Int
                 && *base != Type::Float
+                && *base != Type::Text
                 && !matches!(base, Type::List(_))
                 && !inline_record
             {
-                return Err("native refined layout needs Int, Float, a record or a List".into());
+                return Err(
+                    "native refined layout needs Int, Float, Text, a record or a List".into(),
+                );
             }
             layout(program, *base, state)?;
         }

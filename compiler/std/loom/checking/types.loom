@@ -279,9 +279,9 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     if kind == TypeKind.Refined {
         let base = resolve_bound(env, declaration, child(item.node, type_part(item.node)), arguments, obligations, depth + 1)?
         let base_kind = get(env.types, base).kind
-        if length(arguments) != 0 || (base != 1 && base != 5 && base_kind != TypeKind.Record && base_kind != TypeKind.List) {
+        if length(arguments) != 0 || (base != 1 && base != 3 && base != 5 && base_kind != TypeKind.Record && base_kind != TypeKind.List) {
             return Result.Err(failure(env, declaration, item.node,
-                "constraints require Int, Float, a record or a List base"))
+                "constraints require Int, Float, Text, a record or a List base"))
         }
         if base_kind == TypeKind.List && !inline_constraint_base(env, get(get(env.types, base).arguments, 0), 0) {
             return Result.Err(failure(env, declaration, item.node, "List constraints require immutable inline elements"))

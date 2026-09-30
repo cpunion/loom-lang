@@ -1424,11 +1424,11 @@ combines defaults, recursive static callbacks, Text/Bool options and dynamic cal
 Bounded synchronous scalar concept method contracts are proved for each
 implementation; required proofs may use the same declared postconditions through
 abstract generic/associated receivers or `dyn`. Private summaries support Int,
-Bool and inline record/tuple scalar facts. Unspecified leaves remain independent;
+Bool, Text and inline record/tuple value facts. Unspecified leaves remain independent;
 shared siblings supply no content or alias facts. Summaries never guess an
 implementation or enter native code. See the [generic](examples/concept_contracts/generic.loom)
 and [aggregate](examples/concept_contracts/aggregates.loom) contract examples.
-Text, Bytes and List inputs may be carried opaquely in these proofs, including
+Bytes and List inputs may be carried opaquely in these proofs, including
 generic nominal receivers: a declared scalar guarantee need not inspect them.
 Their contents, mutable aliases and unmodeled operations still provide no evidence.
 Pure static and dynamic calls can also execute inside an isolated `comptime`
@@ -1817,6 +1817,11 @@ arithmetic returns `Int`, while generic inference retains nominal identity.
 Float needs no check. Money never implicitly converts to Int. Finiteness is a
 predicate choice, not an extra hidden restriction on Float constraints.
 
+Immutable Text uses the same boundary: `type Tag = Text where self == "ready"`
+allows direct `Tag("ready")`, rejects a false constant, and checks an unknown
+input once through `Result[Tag, ConstraintError]`. Widening Tag to Text needs no
+check. Equality compares UTF-8 bytes without normalization.
+
 A record can have a `where` predicate over immutable `Int`, `Bool`, `Float`,
 `Text`, or nested inline record/refined fields. Shared siblings are allowed when
 the predicate does not observe them:
@@ -2031,7 +2036,7 @@ when the caller is unused. Verified postconditions retain call-free checked
 expressions for compile-time execution.
 
 Direct calls in a body requiring proof use the callee's verified postconditions
-as a summary for `Int`/`Bool` values and leaves of inline records/tuples.
+as a summary for `Int`/`Bool`/`Text` values and leaves of inline records/tuples.
 Synchronous `dyn` calls can use the exact concept
 method's declared scalar contract, which every implementation must satisfy;
 the proof never guesses a concrete witness. For example, `identity(value)` with
@@ -2040,6 +2045,12 @@ Without a summary, the prover can expand a finite pure body using those values. 
 are evaluated in order and their values captured before applying the summary;
 separate call results are not equated merely because they share a callee. The
 emitted function keeps its ordinary calls and original locals.
+
+Immutable Text identities, exact literals and established `==`/`!=` facts also
+participate in these proofs, including `old`, finite helpers, Text refinements
+and declared generic/dyn concept summaries. Different unknown Text values do
+not imply unequal contents. Text concatenation, length and substring reasoning
+remain unsupported. See the [native Text example](examples/text_contracts).
 
 Aggregate summaries compose through nested calls, field projections and
 whole-value updates. Unconditional proved equalities such as
