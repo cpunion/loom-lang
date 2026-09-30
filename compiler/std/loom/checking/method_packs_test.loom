@@ -4,12 +4,17 @@ fn method_pack_definitions() Text {
             type Item
             fn gather[Ts...](self Self, values Ts...) (Ts...) { values }
             fn pair[Ts...](self Self, values (Ts...)) (Self.Item, (Ts...))
+            fn checked[Ts...](self Self, budget Int, values Ts...) (Ts...)
+            requires budget >= 0
         }
         record Box[X] { value X }
         impl[X] Packing for Box[X] {
             type Item = X
             fn pair[Us...](self Box[X], values (Us...)) (X, (Us...)) {
                 (self.value, values)
+            }
+            fn checked[Us...](self Box[X], limit Int, values Us...) (Us...) {
+                values
             }
         }
         """
@@ -86,6 +91,7 @@ test fn method_pack_slots_restore_by_declaration_and_selected_arity() {
             let pair = source.pair((5, true))
             assert pair.1.1
             assert source.gather(6).0 == 6
+            assert source.checked(0, 7).0 == 7
             pair.0 + pair.1.0
         }
         """)
@@ -105,7 +111,7 @@ test fn method_pack_slots_restore_by_declaration_and_selected_arity() {
             false
         }
     }
-    assert bodies_reused(cache) >= 3
+    assert bodies_reused(cache) >= 4
     discard restored_definition_cache(cache)
     let invalid = std.text.join(std.text.split(source, "(5, true)"), "(5, 6)")
     assert match cached_source(cache, invalid) {
