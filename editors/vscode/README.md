@@ -2,14 +2,15 @@
 
 A small development extension: highlighting, brackets/comments, unsaved-buffer
 diagnostics, name/member completion, checked type hover, go to definition, find references,
-conservative local/private-function rename, import quick fixes, and document
+checked local and module-wide function rename, import quick fixes, and document
 formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
 Loom. A resident compiler reuses unchanged checked snapshots for diagnostics,
 hover and navigation, and unchanged ordinary checks and concrete bodies after edits.
 Replacing or rebuilding the compiler restarts its worker on the next request;
 queued requests remain serialized and cancellation still retires only that worker.
-Public/API rename is not implemented. CLI disk caching is separate and opt-in.
+Type/field rename and edits across external module consumers are not implemented.
+CLI disk caching is separate and opt-in.
 
 ## Try it
 
@@ -131,9 +132,10 @@ whole-package check, all differing types and targets from checked generic instan
 are retained.
 
 This is checked-body navigation, not a complete symbol index. References use
-exact definition spans from checked uses in the loaded import closure, and can
-include the declaration. They omit uninstantiated bodies, unchecked syntax and
-ambiguous targets. A package error suppresses references and rename until the
+exact definition spans from checked uses and can include the declaration. One
+public top-level function in the current module also includes import declarations
+and uses in other directory packages and their private tests. They omit
+uninstantiated bodies, unchecked syntax and ambiguous targets. A package error suppresses references and rename until the
 whole package checks; hover and definition retain their independent-function
 fallback.
 
@@ -144,8 +146,16 @@ enum variants are not local bindings. Every local edit is checked again in an
 in-memory package before it is offered. It also renames
 one production package-private top-level function across files in the selected package when
 every same-spelled token is an exact checked reference and the virtual edits pass
-a full in-memory package check with test files included. It refuses overloads, public functions/import
-rewrites, unresolved occurrences, name collisions, and invalid identifiers;
+a full in-memory package check with test files included. One public top-level
+function can be renamed throughout the current module, updating imports, bare
+calls, qualified calls and callback references. Each directory is checked as its
+own test root, including unopened tests and file-backed unsaved snapshots. The
+virtual edit must pass every selected package's type and contract checks before
+it is offered. Discovery uses the recursive test boundary: nested modules,
+hidden/build directories and directory symlinks are excluded. This is a local
+module edit, not an API migration for external consumers or dependency snapshots.
+It refuses overloads, generated code, unaccounted occurrences, name collisions,
+and invalid identifiers.
 Runtime-local rename also works in compile-time-specialized functions and selected
 branches when checked instances account for every occurrence. Unobserved uses,
 nested closures and compile-time iteration still refuse the edit.
@@ -157,7 +167,7 @@ refuse the edit. This does not add metadata to executable IR or bypass the final
 virtual-package check. Navigation points to the parameter, not its specialized
 callback target; hover reports concrete checked parameter types across observed
 specializations. Uses erased in unobserved branches still provide no evidence.
-Field, type and public function rename are not yet available. The server
+Field and type rename are not yet available. The server
 returns a workspace edit for the
 client to apply; it never writes source files directly.
 

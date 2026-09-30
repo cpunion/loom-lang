@@ -1,6 +1,12 @@
 // Select directories, not an enlarged test root: every package keeps its own
 // private test scope and loads imported packages in production mode.
 fn test_packages(path Text, root Bool, packages List[Text]) Result[Bool, Text] {
+    package_directories(path, root, packages, new[Text]())
+}
+
+// Editor snapshots can add a source file to an existing directory. Keep their
+// discovery under the same nested-module and directory-link boundary as tests.
+fn package_directories(path Text, root Bool, packages List[Text], overlays List[Text]) Result[Bool, Text] {
     if !root {
         match std.fs.kind(join_path(path, "loom.toml")) {
             Result.Ok(value) => {
@@ -48,12 +54,19 @@ fn test_packages(path Text, root Bool, packages List[Text]) Result[Bool, Text] {
         }
         index = index + 1
     }
+    index = 0
+    while index < length(overlays) {
+        if get(overlays, index) == path {
+            source = true
+        }
+        index = index + 1
+    }
     if source {
         push(packages, path)
     }
     index = 0
     while index < length(children) {
-        discard test_packages(get(children, index), false, packages)?
+        discard package_directories(get(children, index), false, packages, overlays)?
         index = index + 1
     }
     Result.Ok(true)

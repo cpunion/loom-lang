@@ -107,6 +107,13 @@ fn editor_selected(analysis Analysis, file Int, offset Int, token Token, tokens 
         Option.None => {
         }
     }
+    match editor_import_selected(analysis, file, token, tokens) {
+        Option.Some(found) => {
+            return Option.Some(found)
+        }
+        Option.None => {
+        }
+    }
     if editor_declaration(get(analysis.bindings.files, file).tree, tokens, token.span) {
         return Option.Some(Location {
                 file = file
@@ -332,12 +339,18 @@ fn editor_name_conflict(analysis Analysis, file Int, scope Span, name Text) Bool
 }
 
 // Private declarations cannot be imported by another package. Keep this
-// strictly to one ordinary declaration in the selected package; overloads and
-// public API/import spelling changes need a different rename model.
+// strictly to one ordinary declaration in the selected package. Public edits
+// use module-wide package checks instead.
 fn editor_private_function(analysis Analysis, target Location, spelling Text) Bool {
+    editor_top_function(analysis, target, spelling, false)
+}
+
+fn editor_top_function(analysis Analysis, target Location, spelling Text, public Bool) Bool {
     let files = analysis.bindings.files
     let root = analysis.bindings.root
-    if get(files, target.file).package != root {
+    let package = get(files, target.file).package
+    if (!public && package != root) ||
+    get(analysis.bindings.packages, package).instance != get(analysis.bindings.packages, root).instance {
         return false
     }
     var matches = 0
@@ -346,9 +359,9 @@ fn editor_private_function(analysis Analysis, target Location, spelling Text) Bo
     while index < length(analysis.bindings.symbols) {
         let symbol = get(analysis.bindings.symbols, index)
         if symbol.owner < 0 && symbol.node.kind == NodeKind.Function && symbol.name == spelling &&
-        get(files, symbol.file).package == root {
+        get(files, symbol.file).package == package {
             matches = matches + 1
-            if symbol.file == target.file && !symbol.public && !symbol.test_only && !std.loom.ast.has(symbol.node, NodeKind.ExpansionId) &&
+            if symbol.file == target.file && symbol.public == public && !symbol.test_only && !std.loom.ast.has(symbol.node, NodeKind.ExpansionId) &&
             !get(files, symbol.file).test_only {
                 match lex(get(files, symbol.file).text) {
                     Result.Ok(tokens) => {
@@ -587,27 +600,40 @@ fn editor_static_binding(analysis Analysis, file Int, token Token, tokens List[T
                 if node.value == token.value && has(node, NodeKind.Comptime) {
                     let span = match editor_name(tokens, node) {
                         Option.Some(value) => value
-                        Option.None => { return Option.None }
+                        Option.None => {
+                            return Option.None
+                        }
                     }
                     let information = match static_parameter_info(analysis.bindings, owner, parameter, inputs) {
                         Result.Ok(value) => value
-                        Result.Err(_) => { return Option.None }
+                        Result.Err(_) => {
+                            return Option.None
+                        }
                     }
-                    let target = Location { file = file span = span }
+                    let target = Location {
+                        file = file
+                        span = span
+                    }
                     let references = new[Location]()
                     editor_push_location(references, target)
                     var index = 0
                     while index < length(information.references) {
-                        editor_push_location(references, Location { file = file span = get(information.references, index) })
+                        editor_push_location(references, Location {
+                                file = file
+                                span = get(information.references, index)
+                            })
                         index = index + 1
                     }
-                    if editor_contains(references, Location { file = file span = token.span }) {
+                    if editor_contains(references, Location {
+                            file = file
+                            span = token.span
+                        }) {
                         return Option.Some(EditorStaticBinding {
-                            declaration = target
-                            scope = item.node.span
-                            references = references
-                            types = information.types
-                        })
+                                declaration = target
+                                scope = item.node.span
+                                references = references
+                                types = information.types
+                            })
                     }
                 }
                 parameter = parameter + 1
@@ -651,11 +677,12 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
             }
             return EditorOutput {
                 text = concat("{\"diagnostics\":[],\"declaration\":", concat(editor_location_json(bindings, binding.declaration),
-                    concat(",\"references\":", concat(editor_locations_json(bindings, binding.references), "}\n"))))
+                        concat(",\"references\":", concat(editor_locations_json(bindings, binding.references), "}\n"))))
                 failed = false
             }
         }
-        Option.None => {}
+        Option.None => {
+        }
     }
     let target = match editor_selected(analysis, file, offset, token, tokens) {
         Option.Some(value) => value,
@@ -664,6 +691,9 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
         }
     }
     let references = editor_references(analysis, target, token.value)
+    if editor_top_function(analysis, target, token.value, true) {
+        return editor_public_symbols(options, analysis, target, token.value, inputs)
+    }
     if rename {
         if !editor_valid_new_name(new_name) {
             return editor_error("Rename needs a valid non-reserved Loom identifier")
@@ -682,7 +712,7 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
             }
         }
         if !editor_private_function(analysis, target, token.value) {
-            return editor_error("Rename supports checked local bindings and parameters, or one package-private top-level function")
+            return editor_error("Rename supports checked local bindings and parameters, or one top-level function in the selected module")
         }
         if !options.tests {
             return editor_error("Private function rename requires --tests to account for test-file uses")
