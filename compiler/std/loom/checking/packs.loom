@@ -99,8 +99,8 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         }
         return Result.Ok(false)
     }
-    if item.node.kind != NodeKind.Function || item.owner >= 0 || has(item.node, NodeKind.Intrinsic) {
-        return Result.Err(failure(env, owner, item.node, "type packs currently belong to ordinary top-level functions"))
+    if (item.node.kind != NodeKind.Function && !data_pack(item.node)) || item.owner >= 0 || has(item.node, NodeKind.Intrinsic) {
+        return Result.Err(failure(env, owner, item.node, "type packs belong to top-level functions, records or enums"))
     }
     if has(item.node, NodeKind.Ensures) {
         return Result.Err(failure(env, owner, item.node, "variadic postconditions require a proof over every arity; that proof is not supported yet"))
@@ -109,7 +109,7 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
     if selected + 1 != length(types) {
         return Result.Err(failure(env, owner, get(types, selected), "declare one type pack, last in the type parameter list"))
     }
-    if !variadic_parameters(parameters) && tuple_pack_position(parameters) < 0 {
+    if !data_pack(item.node) && !variadic_parameters(parameters) && tuple_pack_position(parameters) < 0 {
         return Result.Err(failure(env, owner, item.node, "a type pack needs a structural tuple parameter or a final variadic parameter"))
     }
     var clause = 0
@@ -139,6 +139,9 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
             previous = previous + 1
         }
         bound = bound + 1
+    }
+    if data_pack(item.node) {
+        return Result.Ok(false)
     }
     var index = 0
     while index < length(parameters) {

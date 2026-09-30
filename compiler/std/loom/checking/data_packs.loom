@@ -1,0 +1,203 @@
+// Data instances keep their original nominal symbol and ordinary flat type
+// arguments. Only declaration type syntax expands; no new runtime shape or
+// synthetic nominal identity is introduced for an arity.
+fn data_pack(node Node) Bool {
+    (node.kind == NodeKind.Record || node.kind == NodeKind.Enum) && pack_parameter(node) >= 0
+}
+
+fn expanded_parameters(env Environment, owner Int, count Int) List[Node] {
+    let parameters = type_parameters(env, owner)
+    if !data_pack(symbol(env, owner).node) {
+        return parameters
+    }
+    let expanded = new[Node]()
+    let prefix = length(parameters) - 1
+    let pack = get(parameters, prefix)
+    var index = 0
+    while index < prefix {
+        push(expanded, get(parameters, index))
+        index = index + 1
+    }
+    while index < count {
+        push(expanded, pack_node(pack, NodeKind.Name, pack_name(pack.value, index - prefix), pack.children))
+        index = index + 1
+    }
+    expanded
+}
+
+fn sequence_pack_arity(patterns List[Node], count Int) Int {
+    var spreads = 0
+    var index = 0
+    while index < length(patterns) {
+        if get(patterns, index).kind == NodeKind.Spread {
+            spreads = spreads + 1
+        }
+        index = index + 1
+    }
+    let expanded = count - length(patterns) + spreads
+    if spreads > 0 && expanded >= 0 && expanded % spreads == 0 {
+        expanded / spreads
+    } else {
+        -1
+    }
+}
+
+// Only infer the length here. Ordinary inference still checks every constructor,
+// repeated occurrence, fixed field and element type after expansion.
+fn shape_pack_arity(env Environment, pattern Node, ty Int, depth Int) Int {
+    if depth >= 64 {
+        return -1
+    }
+    let shape = get(env.types, base_type(env, ty))
+    let patterns = if pattern.kind == NodeKind.FunctionType {
+        group(pattern, NodeKind.Parameters)
+    } else {
+        pattern.children
+    }
+    let count = length(shape.arguments) - if pattern.kind == NodeKind.FunctionType {
+        1
+    } else {
+        0
+    }
+    let direct = sequence_pack_arity(patterns, count)
+    if direct >= 0 {
+        return direct
+    }
+    if length(patterns) != count {
+        return -1
+    }
+    var index = 0
+    while index < count {
+        let arity = shape_pack_arity(env, get(patterns, index), get(shape.arguments, index), depth + 1)
+        if arity >= 0 {
+            return arity
+        }
+        index = index + 1
+    }
+    if pattern.kind == NodeKind.FunctionType && shape.kind == TypeKind.Function {
+        let returns = group(pattern, NodeKind.ReturnType)
+        if length(returns) != 0 {
+            return shape_pack_arity(env, get(returns, 0), get(shape.arguments, count), depth + 1)
+        }
+    }
+    -1
+}
+
+fn data_argument_count(context Context, node Node, declaration Int, types List[Node], expected Int, inputs CallInputs) Result[Int, Failure] {
+    let source = symbol(context.env, declaration).node
+    let prefix = pack_parameter(source)
+    if prefix < 0 {
+        return Result.Ok(length(group(source, NodeKind.TypeParameters)))
+    }
+    if length(types) != 0 {
+        if length(types) < prefix {
+            return Result.Err(error(context, node, "wrong number of type arguments"))
+        }
+        return Result.Ok(length(types))
+    }
+    if expected >= 0 {
+        let shape = get(context.env.types, expected)
+        if shape.symbol == declaration && (shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum) {
+            return Result.Ok(length(shape.arguments))
+        }
+    }
+    // A structural field or enum payload supplies one unambiguous length.
+    // Other occurrences are checked against the chosen arity during inference.
+    var member = 0
+    while member < length(source.children) {
+        let field = child(source, member)
+        if field.kind == NodeKind.Field {
+            var input = 1
+            while input < length(node.children) {
+                let value = child(node, input)
+                if value.kind == NodeKind.Field && value.value == field.value &&
+                mentions_pack(child(field, 0), get(group(source, NodeKind.TypeParameters), prefix).value) {
+                    let probed = static_probe(context, child(value, 0), -1)?
+                    let arity = shape_pack_arity(context.env, child(field, 0), probed.ty, 0)
+                    if arity >= 0 {
+                        return Result.Ok(prefix + arity)
+                    }
+                }
+                input = input + 1
+            }
+        }
+        if field.kind == NodeKind.Variant && field.value == std.loom.project.name(node.value) {
+            let direct = sequence_pack_arity(field.children, length(inputs.nodes))
+            if direct >= 0 {
+                return Result.Ok(prefix + direct)
+            }
+            var payload = 0
+            while length(field.children) == length(inputs.nodes) && payload < length(field.children) {
+                let pattern = child(field, payload)
+                if mentions_pack(pattern, get(group(source, NodeKind.TypeParameters), prefix).value) {
+                    let probed = match saved_input(inputs, payload) {
+                        Option.Some(value) => value
+                        Option.None => static_probe(context, get(inputs.nodes, payload), -1)?
+                    }
+                    let arity = shape_pack_arity(context.env, pattern, probed.ty, 0)
+                    if arity >= 0 {
+                        return Result.Ok(prefix + arity)
+                    }
+                }
+                payload = payload + 1
+            }
+        }
+        member = member + 1
+    }
+    if node.kind == NodeKind.Construct {
+        let base = child(node, length(node.children) - 1)
+        if base.kind == NodeKind.Spread {
+            let probed = static_probe(context, child(base, 0), -1)?
+            let shape = get(context.env.types, base_type(context.env, probed.ty))
+            if shape.kind == TypeKind.Record && shape.symbol == declaration {
+                return Result.Ok(length(shape.arguments))
+            }
+        }
+    }
+    Result.Err(error(context, node, "cannot infer data pack arity; provide type arguments or an expected type"))
+}
+
+// Check every selected arity with abstract elements, not just the concrete
+// types that happened to instantiate it. A caller cannot supply undeclared
+// capabilities to a data declaration. The scan also covers newly expanded
+// recursive instances and types restored from incremental evidence.
+fn validate_data_packs(env Environment) Result[Bool, Failure] {
+    let checked = new[Int]()
+    var index = 0
+    while index < length(env.types) {
+        let shape = get(env.types, index)
+        if (shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum) && data_pack(symbol(env, shape.symbol).node) {
+            let arguments = abstract_arguments(env, length(shape.arguments))
+            let id = data_type(env, shape.symbol, arguments, 0)?
+            var seen = false
+            var previous = 0
+            while previous < length(checked) {
+                seen = seen || get(checked, previous) == id
+                previous = previous + 1
+            }
+            if !seen {
+                push(checked, id)
+                let abstract = get(env.types, id)
+                let obligations = requirements(env, shape.symbol, arguments)?
+                let node = symbol(env, shape.symbol).node
+                var field = 0
+                while field < length(abstract.fields) {
+                    discard well_formed(env, shape.symbol, get(abstract.fields, field).ty, obligations, node, 0)?
+                    field = field + 1
+                }
+                var variant = 0
+                while variant < length(abstract.variants) {
+                    let fields = get(abstract.variants, variant).fields
+                    field = 0
+                    while field < length(fields) {
+                        discard well_formed(env, shape.symbol, get(fields, field), obligations, node, 0)?
+                        field = field + 1
+                    }
+                    variant = variant + 1
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

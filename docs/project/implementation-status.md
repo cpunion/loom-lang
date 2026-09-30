@@ -93,9 +93,12 @@ live Task or scoped-resource obligations.
 Compile-time execution uses a bounded evaluator over the checked model, with
 pure functions, loops, recursion and fresh shared graphs. Type values remain
 compile-time-only. Static scalar/immutable-aggregate/function parameters,
-selected branches, top-level variadics and fixed-shape `comptime for/map` share
+selected branches, function/data type packs and fixed-shape `comptime for/map` share
 ordinary typing. Heterogeneous tuple packs are not runtime-sized Lists.
-Method/data packs, multiple packs and universal variadic postcondition proofs
+Record/enum packs infer arity from structural initializers, preserve nominal
+identity and check selected arities with abstract elements. Recursive data,
+Task payloads, compile-time values and incremental restoration use the same
+typed aggregate path. Method/implementation packs, multiple packs and universal variadic postcondition proofs
 remain unsupported. Compile-time execution is not proof by sampling.
 
 Typed expression macros receive inferred schemas and return checked hygienic

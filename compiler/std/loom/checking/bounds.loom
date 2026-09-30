@@ -59,7 +59,7 @@ fn declaration_types(env Environment) Result[Bool, Failure] {
     var owner = 0
     while owner < length(env.source.symbols) {
         let item = symbol(env, owner)
-        if nominal_data(item.node.kind) {
+        if nominal_data(item.node.kind) && !data_pack(item.node) {
             let arguments = abstract_arguments(env, length(group(item.node, NodeKind.TypeParameters)))
             let ty = get(env.types, data_type(env, owner, arguments, 0)?)
             let obligations = requirements(env, owner, arguments)?

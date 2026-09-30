@@ -1,0 +1,141 @@
+test fn data_packs_infer_fields_payloads_and_preserve_nominal_instances() {
+    discard accepted("""
+        record Packet[Tag, Ts...] {
+            tag Tag
+            values (Ts...)
+        }
+        enum Reply[Ts...] {
+            Values(Ts...)
+            Empty
+        }
+        fn bundle[Ts...](values Ts...) Packet[Int, Ts...] {
+            Packet { tag = 7, values = values }
+        }
+        fn empty[Ts...](values Ts...) (Ts...) {
+            values
+        }
+        fn main() {
+            let packet = bundle(1, "two", true)
+            assert packet.values.2 && packet.tag == 7
+            let same Packet[Int, Int, Text, Bool] = packet
+            let changed = Packet { values = (false,), ..same }
+            assert !changed.values.0 && changed.tag == 7
+            let blank = Packet { tag = "empty", values = empty() }
+            discard blank.values
+            let reply = Reply.Values(1, "two")
+            assert match reply {
+                Reply.Values(number, text) => number == 1 && text == "two"
+                Reply.Empty => false
+            }
+            let none Reply[Int, Text] = Reply.Empty
+            discard none
+        }
+        """)
+}
+
+test fn data_pack_bounds_are_checked_abstractly_for_every_selected_arity() {
+    let prefix = """
+        concept Tagged {}
+        impl Tagged for Int {}
+        record Bounded[T Tagged] {
+            value T
+        }
+        """
+    discard accepted(concat(prefix, """
+        record Good[Ts... Tagged] {
+            values (Bounded[Ts]...)
+        }
+        fn main() {
+            discard Good { values = (Bounded { value = 1 }, Bounded { value = 2 }) }
+        }
+        """))
+    rejects(concat(prefix, """
+        record Missing[Ts...] {
+            values (Bounded[Ts]...)
+        }
+        fn main() {
+            discard Missing[Int] { values = (Bounded { value = 1 },) }
+        }
+        """))
+    rejects(concat(prefix, """
+        record Required[Ts... Tagged] {
+            values (Ts...)
+        }
+        fn main() {
+            discard Required { values = (1, true) }
+        }
+        """))
+    rejects("""
+        record Pair[Ts...] {
+            left (Ts...)
+            right (Ts...)
+        }
+        fn main() {
+            discard Pair { left = (1, true), right = (1,) }
+        }
+        """)
+}
+
+test fn recursive_data_packs_keep_finite_layout_and_task_obligations() {
+    discard accepted("""
+        enum Tree[Ts...] {
+            Leaf(Ts...)
+            Branch(List[Tree[Ts...]])
+        }
+        record Pending[Ts...] {
+            tasks (Task[Ts]...)
+        }
+        async fn item[T](value T) T { value }
+        async fn main() {
+            let leaf = Tree.Leaf(1, true)
+            let tree = Tree.Branch([leaf])
+            discard tree
+            let pending = Pending { tasks = (item(1), item(true)) }
+            assert pending.tasks.0.await == 1
+            assert pending.tasks.1.await
+        }
+        """)
+    rejects("""
+        record Infinite[Ts...] {
+            child Infinite[Ts...]
+        }
+        fn use(value Infinite[Int]) { discard value }
+        """)
+    rejects("""
+        record Pending[Ts...] {
+            tasks (Task[Ts]...)
+        }
+        async fn item() Int { 1 }
+        async fn main() {
+            let task = item()
+            let pending = Pending { tasks = (task, task) }
+            discard pending.tasks.0.await
+            discard pending.tasks.1.await
+        }
+        """)
+}
+
+test fn data_packs_restore_from_incremental_evidence_with_original_identity() {
+    let source = """
+        record Packet[Ts...] {
+            values (Ts...)
+        }
+        pub fn answer() Int {
+            let packet = Packet { values = (40, true) }
+            assert packet.values.1
+            packet.values.0 + 2
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    let cache = restored_definition_cache(initial)
+    assert match cached_source(cache, concat("fn unrelated() {}\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert bodies_reused(cache) >= 1
+    discard restored_definition_cache(cache)
+}

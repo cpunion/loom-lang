@@ -1,0 +1,116 @@
+import std.list.get
+import std.list.length
+import std.list.push
+
+record Packet[Tag, Ts...] {
+    tag Tag
+    values (Ts...)
+}
+
+enum Tree[Ts...] {
+    Leaf(Ts...)
+    Branch(List[Tree[Ts...]])
+}
+
+record Pending[Ts...] {
+    tasks (Task[Ts]...)
+}
+
+record Callback[R, Ts...] {
+    call fn(Ts...) R
+}
+
+fn format(number Int, text Text) Text {
+    assert number == 42
+    text
+}
+
+fn packet[Ts...](values Ts...) Packet[Text, Ts...] {
+    Packet {
+        tag = "packet",
+        values = values
+    }
+}
+
+fn leaves(tree Tree[Int, Text]) Int {
+    match tree {
+        Tree.Leaf(number, text) => {
+            assert text == "leaf"
+            number
+        }
+        Tree.Branch(children) => {
+            var count = 0
+            var index = 0
+            while index < length(children) {
+                count = count + leaves(get(children, index))
+                index = index + 1
+            }
+            count
+        }
+    }
+}
+
+fn mark(events List[Int], value Int) Int {
+    push(events, value)
+    value
+}
+
+async fn echo[T](value T) T {
+    value
+}
+
+async fn exercise() {
+    let events List[Int] = []
+    let source = Packet {
+        tag = "once",
+        values = (mark(events, 1), mark(events, 2))
+    }
+    assert length(events) == 2 && events[0] == 1 && events[1] == 2
+    assert source.values.0 == 1 && source.values.1 == 2
+    let changed = Packet {
+        values = (true,),
+        ..source
+    }
+    assert changed.values.0 && changed.tag == "once"
+    let blank = packet()
+    discard blank.values
+
+    let constant = comptime {
+        packet(7, "compile time", true)
+    }
+    assert constant.values.0 == 7 && constant.values.1 == "compile time" && constant.values.2
+
+    let shared = [10]
+    let aliases = packet(shared, shared)
+    aliases.values.0[0] = 42
+    let resumed = echo(aliases).await
+    assert resumed.values.1[0] == 42
+
+    let leaf = Tree.Leaf(1, "leaf")
+    let tree = Tree.Branch([leaf, leaf])
+    assert leaves(echo(tree).await) == 2
+    let empty = Tree.Leaf()
+    assert match empty {
+        Tree.Leaf => true
+        Tree.Branch(_) => false
+    }
+
+    let callback = Callback {
+        call = format
+    }
+    assert callback.call(42, "inferred") == "inferred"
+
+    let pending = Pending {
+        tasks = (echo(42), echo("result"), echo(true))
+    }
+    let values = pending.tasks.await
+    assert values.0 == 42 && values.1 == "result" && values.2
+}
+
+async fn main() {
+    exercise().await
+}
+
+test async fn data_packs_use_native_aggregates_and_typed_tasks() {
+    exercise().await
+}

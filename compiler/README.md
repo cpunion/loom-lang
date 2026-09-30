@@ -971,9 +971,37 @@ Unselected arities have not had their bodies verified. Variadic `ensures`
 declarations currently reject even when uncalled: proving selected arities is
 not a proof for every arity. Preconditions currently use fixed scalar parameters,
 not the tuple pack, and retain ordinary checked/runtime boundaries.
-Multiple packs, variadic methods and data declarations,
+Multiple packs, variadic methods and implementation headers,
 general type-list reflection and richer pack iteration remain open. This
 implementation does not complete the accepted metaprogramming design.
+
+Records and enums accept one final type pack too:
+
+```loom
+record Packet[Tag, Ts...] {
+    tag Tag
+    values (Ts...)
+}
+enum Tree[Ts...] {
+    Leaf(Ts...)
+    Branch(List[Tree[Ts...]])
+}
+
+let packet = Packet { tag = "data", values = (42, true) }
+let leaf = Tree.Leaf(1, "leaf")
+let tree = Tree.Branch([leaf])
+```
+
+An explicit type list, expected type, or structural initializer determines the
+arity; ordinary inference checks the element types and repeated occurrences.
+Nested data and function signatures can supply the shape. Phantom packs require
+an expected type or explicit arguments. Empty packs, record updates, recursive
+List-backed structures, compile-time values and Task fields retain ordinary
+rules. Each selected arity checks field/payload requirements with abstract
+elements, so concrete callers cannot supply undeclared capabilities. Unselected
+arities are not verified. Instances retain the original nominal declaration;
+no runtime pack or per-arity nominal type is introduced. See the
+[native data-pack example](examples/data_packs/main.loom).
 
 Records also support `let Packet { value = item, .. } = packet` and the same
 form with `var`. Named fields can reorder and nest record/tuple bindings; generic
