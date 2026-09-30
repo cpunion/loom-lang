@@ -320,6 +320,9 @@ fn main() {
         // Trust only this fixture's ephemeral CA, without changing host trust.
         git.args(["-c", "http.schannelUseSSLCAInfo=true"]);
         if cfg!(windows) {
+            // Git applies Schannel options only when the backend is explicitly
+            // selected, even when libcurl already defaults to Schannel.
+            git.args(["-c", "http.sslBackend=schannel"]);
             // This ephemeral issuer has no CRL/OCSP service. Disable only its
             // revocation lookup, not chain/time/name verification. Production
             // Git arguments above retain the transport's normal verification.
