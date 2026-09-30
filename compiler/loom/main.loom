@@ -36,6 +36,7 @@ fn main() {
     }
     let mode = get(args, 1)
     if mode == "--help" || mode == "-h" {
+        discard write_text("--git-credential-tool <executable> explicitly supplies Git credentials during resolve.\n")
         discard write_text("--build-option name=value supplies a fixed compile-time input (repeatable, not for secrets).\n")
         discard write_text("--frontend-cache <trusted local directory> enables checked-closure reuse for check/build/test/run/emit-checked.\n")
         discard write_text("loom test [directory] --recursive [--no-run] selects packages below one module root.\n")
