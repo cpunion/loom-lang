@@ -128,6 +128,7 @@ fn link_command(
                 "userenv.lib",
                 "ws2_32.lib",
                 "bcrypt.lib",
+                "advapi32.lib",
                 "dbghelp.lib",
             ]);
         }
@@ -232,6 +233,8 @@ mod tests {
             "/OPT:REF",
             "/Brepro",
             "dbghelp.lib",
+            "bcrypt.lib",
+            "advapi32.lib",
         ] {
             assert!(args.contains(&OsStr::new(argument)));
         }
