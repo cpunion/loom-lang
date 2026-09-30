@@ -1,0 +1,53 @@
+import std.list.length
+import std.option.Option
+
+fn pair(number Int, ready Bool) (Int, Bool) {
+    assert false
+    (number, ready)
+}
+
+fn signal() {
+    assert false
+}
+
+test fn function_signatures_are_compile_time_data_without_executing_callbacks() {
+    assert comptime {
+        let parameters = parameter_types(pair)
+        assert length(parameters) == 2
+        assert parameters[0] == Int && parameters[1] == Bool
+        match return_type(pair) {
+            Option.Some(output) => output == of[(Int, Bool)]()
+            Option.None => false
+        }
+    }
+    assert comptime {
+        assert length(parameter_types(signal)) == 0
+        match return_type(signal) {
+            Option.None => true
+            Option.Some(_) => false
+        }
+    }
+    let Output = comptime {
+        match return_type(pair) {
+            Option.Some(output) => output
+            Option.None => Int
+        }
+    }
+    let value Output = (40, true)
+    assert value.0 == 40 && value.1
+    assert comptime {
+        let state = [1]
+        let callback = fn(number Float) Bool {
+            discard number
+            state[0] = 2
+            false
+        }
+        let parameters = parameter_types(callback)
+        assert state[0] == 1 && length(parameters) == 1
+        assert parameters[0] == Float
+        match return_type(callback) {
+            Option.Some(output) => output == Bool
+            Option.None => false
+        }
+    }
+}

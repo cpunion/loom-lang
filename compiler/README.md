@@ -935,6 +935,16 @@ resources and constraints still apply. See the
 [static nominal example](examples/type_values/static_nominal.loom). Macros and
 first-class type values are separate facilities.
 
+For a known function value, `std.meta.parameter_types(callback)` returns an
+ordered compile-time `List[type]`, and `std.meta.return_type(callback)` returns
+`Option[type]`. An omitted result is `None`, not a source `Unit` type. Both are
+ordinary Loom library functions using structural packs; they do not execute
+the callback, expose captured data, add an intrinsic or create a runtime registry.
+Their type-valued results can be inspected inside `comptime`; a selected result
+type may feed the usual annotation/construction boundary. An unresolved overload
+still needs an annotation or explicit specialization. See the
+[function-signature example](examples/type_values/signatures.loom).
+
 A structural parameter takes one tuple argument and one runtime tuple
 parameter. It may have fixed fields around one expanded pattern, such as
 `values (Int, Pattern[Ts]..., Text)`. The pack arity is the argument's statically

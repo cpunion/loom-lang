@@ -1,0 +1,41 @@
+import std.meta.parameter_types
+import std.meta.return_type
+import std.option.Option
+
+fn described_callback(number Int, text Text) Bool {
+    // Introspection must not execute or retain this otherwise unused callback.
+    assert false
+    number > 0 && text != ""
+}
+
+fn described_no_result() {
+    assert false
+}
+
+fn function_signatures() {
+    let signature_ok = comptime {
+        let parameters = parameter_types(described_callback)
+        assert length(parameters) == 2
+        assert parameters[0] == Int && parameters[1] == Text
+        match return_type(described_callback) {
+            Option.Some(output) => output == Bool
+            Option.None => false
+        }
+    }
+    assert signature_ok
+    assert comptime {
+        assert length(parameter_types(described_no_result)) == 0
+        match return_type(described_no_result) {
+            Option.None => true
+            Option.Some(_) => false
+        }
+    }
+    let Output = comptime {
+        match return_type(described_callback) {
+            Option.Some(output) => output
+            Option.None => Int
+        }
+    }
+    let value Output = true
+    assert value
+}
