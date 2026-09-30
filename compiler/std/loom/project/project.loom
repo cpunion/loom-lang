@@ -451,7 +451,7 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
 // Only the selected root package contributes tests. Imports are directory
 // packages; compiler-owned intrinsic trust comes from each canonical file path.
 pub fn load(path Text, std_root Text, tests Bool) Result[Project, Text] {
-    load_selected(path, std_root, tests, false, "git", "", new[OverlayFile](), new[LoadFailure]())
+    load_selected(path, std_root, tests, new[OverlayFile](), new[LoadFailure]())
 }
 
 // Resolve only this package's import closure. Tests are opt-in just as in load;
@@ -543,12 +543,9 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
     Result.Ok((loader, root, directory))
 }
 
-fn load_selected(path Text, std_root Text, tests Bool, comptime fetch Bool, git_tool Text, credential_tool Text, overlays List[OverlayFile], failures List[LoadFailure]) Result[Project, Text] {
-    let initial, root, directory = prepare_loader(path, std_root, git_tool, credential_tool, overlays, failures)?
-    let loader = selected_loader(initial, root, directory, tests, fetch)?
-    comptime if fetch {
-        discard publish_lock(loader.resolution)?
-    }
+fn load_selected(path Text, std_root Text, tests Bool, overlays List[OverlayFile], failures List[LoadFailure]) Result[Project, Text] {
+    let loader, root, directory = prepare_loader(path, std_root, "git", "", overlays, failures)?
+    discard visit(loader, root, directory, tests, 0, false)?
     Result.Ok(loaded_project(loader, root))
 }
 
@@ -568,14 +565,5 @@ fn loaded_project(loader Loader, root Int) Project {
         modules = modules
         packages = loader.packages
         root = root
-    }
-}
-
-fn selected_loader(initial Loader, root Int, directory Text, tests Bool, comptime fetch Bool) Result[Loader, Text] {
-    comptime if fetch {
-        return resolve_versions(initial, root, directory, tests)
-    } else {
-        discard visit(initial, root, directory, tests, 0, false)?
-        return Result.Ok(initial)
     }
 }

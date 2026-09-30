@@ -146,7 +146,7 @@ fn version_parts(text Text, partial Bool) Result[(Version, Int), Text] {
 }
 
 pub fn parse_version(text Text) Result[Version, Text] {
-    let version, _ = version_parts(text, false)?
+    let version, ignored_count = version_parts(text, false)?
     Result.Ok(version)
 }
 
@@ -294,7 +294,7 @@ fn comparator(text Text) Result[Comparator, Text] {
         if offset != 0 {
             return Result.Err("wildcards cannot have a SemVer operator")
         }
-        let version, _ = version_parts("0", true)?
+        let version, ignored_count = version_parts("0", true)?
         return Result.Ok(Comparator {
                 operator = Operator.Prefix
                 version = version

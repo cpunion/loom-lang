@@ -75,14 +75,16 @@ fn tag_candidates(text Text, subdir Text) Result[List[VersionCandidate], Text] {
                         // Build metadata affects identity, never precedence.
                         push(candidates, candidate)
                         var position = length(candidates) - 1
-                        while position > 0 {
+                        var inserting = true
+                        while position > 0 && inserting {
                             let previous = get(candidates, position - 1)
                             let order = compare(parse_version(label)?, parse_version(previous.version)?)
                             if order < 0 || (order == 0 && !before(previous.version, label)) {
-                                break
+                                inserting = false
+                            } else {
+                                set(candidates, position, previous)
+                                position = position - 1
                             }
-                            set(candidates, position, previous)
-                            position = position - 1
                         }
                         set(candidates, position, candidate)
                     }

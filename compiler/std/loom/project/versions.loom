@@ -229,7 +229,7 @@ fn version_loader(initial Loader, selected List[VersionSelection]) Loader {
         }
         overrides = initial.overrides
         overlays = initial.overlays
-        failures = initial.failures
+        failures = new[LoadFailure]()
     }
 }
 
