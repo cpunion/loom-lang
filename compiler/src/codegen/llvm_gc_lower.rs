@@ -157,19 +157,26 @@ pub(super) fn lower<'ctx>(
         let table_type =
             root.array_type(u32::try_from(slots.len()).map_err(|_| "too many GC roots")?);
         let table = builder.build_alloca(table_type, "gc.roots")?;
-        let mut entries = table_type.const_zero();
+        // Initialize addressable entries directly. A whole-array insertvalue
+        // chain makes LLVM repeatedly walk thousands of unrelated descriptors
+        // when simplifying extracts after SROA in large rooted functions.
         for (index, (slot, trace)) in slots.iter().enumerate() {
-            let item = builder
-                .build_insert_value(root.const_zero(), *slot, 0, "gc.address")?
-                .into_struct_value();
-            let item = builder
-                .build_insert_value(item, *trace, 1, "gc.trace")?
-                .into_struct_value();
-            entries = builder
-                .build_insert_value(entries, item, index as u32, "gc.root")?
-                .into_array_value();
+            // SAFETY: index is within the statically sized stack table and
+            // each entry has the exact two-pointer runtime Root layout.
+            #[allow(unsafe_code)]
+            let item = unsafe {
+                builder.build_in_bounds_gep(
+                    table_type,
+                    table,
+                    &[size.const_zero(), size.const_int(index as u64, false)],
+                    "gc.root",
+                )?
+            };
+            let address = builder.build_struct_gep(root, item, 0, "gc.address")?;
+            let tracer = builder.build_struct_gep(root, item, 1, "gc.trace")?;
+            builder.build_store(address, *slot)?;
+            builder.build_store(tracer, *trace)?;
         }
-        builder.build_store(table, entries)?;
         let frame_type = context.struct_type(&[pointer.into(), pointer.into(), size.into()], false);
         let frame = builder.build_alloca(frame_type, "gc.frame")?;
         let enter = gc::runtime_function(

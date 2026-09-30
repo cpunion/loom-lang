@@ -377,6 +377,135 @@ fn typed_memory_access_preserves_aliases_argument_order_and_managed_layouts() {
 }
 
 #[test]
+fn guarded_primitive_forwarders_share_the_callers_gc_frame() {
+    let index = local(Type::Int, 1);
+    let call = value(
+        Type::Unit,
+        E::Call(
+            1,
+            vec![
+                local(Type::Bytes, 0),
+                value(
+                    Type::Int,
+                    E::Binary(Binary::Rem, Box::new(index.clone()), Box::new(int(256))),
+                ),
+            ],
+        ),
+    );
+    let mut program = program(
+        vec![Type::Bytes, Type::Int],
+        vec![
+            statement(S::Let {
+                local: 0,
+                value: primitive(Type::Bytes, Primitive::BytesNew, vec![]),
+            }),
+            statement(S::Let {
+                local: 1,
+                value: int(0),
+            }),
+            statement(S::While {
+                condition: value(
+                    Type::Bool,
+                    E::Binary(Binary::Lt, Box::new(index.clone()), Box::new(int(257))),
+                ),
+                body: checked::Block {
+                    statements: vec![
+                        statement(S::Expr(call)),
+                        statement(S::Assign {
+                            local: 1,
+                            value: value(
+                                Type::Int,
+                                E::Binary(Binary::Add, Box::new(index.clone()), Box::new(int(1))),
+                            ),
+                        }),
+                    ],
+                    tail: None,
+                    falls_through: true,
+                },
+            }),
+            equal(
+                primitive(Type::Int, Primitive::BytesLen, vec![local(Type::Bytes, 0)]),
+                int(257),
+            ),
+            equal(
+                primitive(
+                    Type::Int,
+                    Primitive::BytesGet,
+                    vec![local(Type::Bytes, 0), int(256)],
+                ),
+                int(0),
+            ),
+        ],
+    );
+    program.functions.push(checked::Function {
+        name: "push".into(),
+        params: vec![Type::Bytes, Type::Int],
+        result: Type::Unit,
+        locals: vec![Type::Bytes, Type::Int],
+        requires: vec![value(
+            Type::Bool,
+            E::Binary(
+                Binary::And,
+                Box::new(value(
+                    Type::Bool,
+                    E::Binary(Binary::Ge, Box::new(index.clone()), Box::new(int(0))),
+                )),
+                Box::new(value(
+                    Type::Bool,
+                    E::Binary(Binary::Le, Box::new(index), Box::new(int(255))),
+                )),
+            ),
+        )],
+        body: checked::Block {
+            statements: vec![statement(S::Expr(value(
+                Type::Unit,
+                E::Call(2, vec![local(Type::Bytes, 0), local(Type::Int, 1)]),
+            )))],
+            tail: None,
+            falls_through: true,
+        },
+        span: Span::default(),
+    });
+    program.functions.push(checked::Function {
+        name: "bytes_push".into(),
+        params: vec![Type::Bytes, Type::Int],
+        result: Type::Unit,
+        locals: vec![Type::Bytes, Type::Int],
+        requires: vec![],
+        body: checked::Block {
+            statements: vec![effect(
+                Primitive::BytesPush,
+                vec![local(Type::Bytes, 0), local(Type::Int, 1)],
+            )],
+            tail: None,
+            falls_through: true,
+        },
+        span: Span::default(),
+    });
+    for optimization in [Optimization::O0, Optimization::O2] {
+        let (ir, output) = emit_run(&program, optimization);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let frames = ir
+            .lines()
+            .filter(|line| line.contains("call void @loom_rt_roots_enter("))
+            .count();
+        if optimization == Optimization::O0 {
+            assert!(frames > 1);
+        } else {
+            assert_eq!(frames, 1, "thin push wrapper retained a separate frame");
+            assert!(
+                !ir.contains("call void @loom.fn.1(")
+                    && !ir.contains("call fastcc void @loom.fn.1(")
+            );
+        }
+    }
+}
+
+#[test]
 fn direct_access_rejects_invalid_indices_and_bytes() {
     let list = Type::List(0);
     for operation in [

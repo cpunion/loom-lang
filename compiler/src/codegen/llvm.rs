@@ -379,13 +379,39 @@ fn emit_checked(
     // Inline source abstractions before committing to physical root frames.
     // These opaque markers preserve managed snapshots through the early pass.
     if optimization != OptimizationLevel::None {
+        let always_inline = Attribute::get_named_enum_kind_id("alwaysinline");
+        let mut forwarders = BTreeSet::new();
+        loop {
+            let before = forwarders.len();
+            for id in &reachable {
+                if !forwarders.contains(id)
+                    && gc::primitive_forwarder(&program.functions[*id], &forwarders)
+                {
+                    forwarders.insert(*id);
+                }
+            }
+            if forwarders.len() == before {
+                break;
+            }
+        }
+        for id in forwarders {
+            functions[id].unwrap().add_attribute(
+                AttributeLoc::Function,
+                context.create_enum_attribute(always_inline, 0),
+            );
+        }
         module
             .run_passes(
-                "function(sroa,early-cse),cgscc(inline)",
+                "always-inline,function(sroa,early-cse),cgscc(inline)",
                 machine,
                 PassBuilderOptions::create(),
             )
             .map_err(|error| error.to_string())?;
+        // Exported/address-taken wrappers may remain. Once roots are physical,
+        // they obey the same noinline boundary as every other rooted function.
+        for function in module.get_functions() {
+            function.remove_enum_attribute(AttributeLoc::Function, always_inline);
+        }
     }
     gc_lower::lower(&context, &module, machine)?;
     let pipeline = match optimization {

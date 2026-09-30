@@ -92,6 +92,21 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
     }
     let functions = new[Function]()
     let targets = new[BodyTarget]()
+    // Checking and rekeying succeeded before entering this private snapshot
+    // builder. Retire the previous concrete IR before cloning its replacement;
+    // no caller can observe or mutate these lists while the snapshot is built.
+    let saved = BodyBasis {
+        definitions = basis
+        types = types
+        targets = targets
+        functions = functions
+        interfaces = body_copy_interfaces(env)
+    }
+    if length(cache.state.bodies) == 0 {
+        push(cache.state.bodies, saved)
+    } else {
+        set(cache.state.bodies, 0, saved)
+    }
     index = 0
     while index < length(program.functions) {
         let value = get(program.functions, index)
@@ -110,7 +125,11 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
                 -1
             }
         }
-        let source = if pack >= 0 { get(env.packs, pack).source } else { value.symbol }
+        let source = if pack >= 0 {
+            get(env.packs, pack).source
+        } else {
+            value.symbol
+        }
         push(functions, body_copy_function(value))
         push(targets, BodyTarget {
                 symbol = if pack >= 0 {
@@ -125,7 +144,11 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
                 } else {
                     -1
                 }
-                implementation_arity = if instance.signature < 0 { -1 } else { impl_member_arity(env, source) }
+                implementation_arity = if instance.signature < 0 {
+                    -1
+                } else {
+                    impl_member_arity(env, source)
+                }
                 prototype = if prototype == value.symbol || (pack >= 0 && prototype == get(env.packs, pack).source) {
                     -1
                 } else {
@@ -135,17 +158,5 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
                 constants = body_copy_constants(env, instance.constants)
             })
         index = index + 1
-    }
-    let saved = BodyBasis {
-        definitions = basis
-        types = types
-        targets = targets
-        functions = functions
-        interfaces = body_copy_interfaces(env)
-    }
-    if length(cache.state.bodies) == 0 {
-        push(cache.state.bodies, saved)
-    } else {
-        set(cache.state.bodies, 0, saved)
     }
 }
