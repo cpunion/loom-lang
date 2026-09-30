@@ -1340,9 +1340,11 @@ the default body it replaces. The [method example](examples/comptime_parameters/
 combines defaults, recursive static callbacks, Text/Bool options and dynamic calls.
 Bounded synchronous scalar concept method contracts are proved for each
 implementation; required proofs may use the same declared postconditions through
-abstract generic/associated receivers or `dyn`. These private summaries return
-Int/Bool and never guess an implementation, inspect shared state, or enter native
-code. See the [contract example](examples/concept_contracts/generic.loom).
+abstract generic/associated receivers or `dyn`. Private summaries support Int,
+Bool and inline record/tuple scalar facts. Unspecified leaves remain independent;
+shared siblings supply no content or alias facts. Summaries never guess an
+implementation or enter native code. See the [generic](examples/concept_contracts/generic.loom)
+and [aggregate](examples/concept_contracts/aggregates.loom) contract examples.
 Pure static and dynamic calls can also execute inside an isolated `comptime`
 computation.
 
