@@ -1,0 +1,56 @@
+import std.list.length
+import std.option.Option
+
+test fn function_type_metadata_needs_no_callback_and_preserves_exact_structure() {
+    assert comptime {
+        let inputs = parameter_types[fn(Int, (Text, Bool), fn(Float) Text) Task[Int]]()
+        assert length(inputs) == 3
+        assert inputs[0] == Int
+        assert inputs[1] == of[(Text, Bool)]()
+        assert inputs[2] == of[fn(Float) Text]()
+        assert match return_type[fn(Int) Task[Int]]() {
+            Option.Some(output) => output == of[Task[Int]]()
+            Option.None => false
+        }
+        assert length(parameter_types[fn()]()) == 0
+        assert match return_type[fn()]() {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        let actual = parameter_types(pair)
+        let declared = parameter_types[fn(Int, Bool) (Int, Bool)]()
+        assert length(actual) == length(declared)
+        assert actual[0] == declared[0] && actual[1] == declared[1]
+        match return_type[fn() (Int, Bool)]() {
+            Option.Some(output) => output == of[(Int, Bool)]()
+            Option.None => false
+        }
+    }
+    let Output = comptime {
+        match return_type[fn() (Int, Bool)]() {
+            Option.Some(output) => output
+            Option.None => Int
+        }
+    }
+    let value Output = (42, true)
+    assert value.0 == 42 && value.1
+}
+
+record Described {
+}
+
+impl Signature for Described {
+    type Parameters = (Int, Text)
+    type Output = Bool
+}
+
+test fn signature_metadata_can_be_composed_with_explicit_library_conformance() {
+    assert comptime {
+        let inputs = parameter_types[Described]()
+        assert length(inputs) == 2 && inputs[0] == Int && inputs[1] == Text
+        match return_type[Described]() {
+            Option.Some(output) => output == Bool
+            Option.None => false
+        }
+    }
+}

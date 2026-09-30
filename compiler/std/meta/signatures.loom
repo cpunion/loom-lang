@@ -1,0 +1,43 @@
+import std.list.new
+import std.list.push
+import std.option.Option
+import std.reflect.describe
+import std.reflect.Kind
+
+// Library metadata, not a language-level callable trait or runtime registry.
+// Other implementations must describe their parameters as an ordered tuple.
+pub concept Signature {
+    type Parameters
+    type Output
+}
+
+impl[R, Ts...] Signature for fn(Ts...) R {
+    type Parameters = (Ts...)
+    type Output = R
+}
+
+fn tuple_parameter_types[Fields]() List[type] {
+    let types = new[type]()
+    comptime if describe[Fields]().types[0].kind == Kind.Tuple {
+        comptime for T in Fields {
+            push(types, T)
+        }
+    } else {
+        assert false
+    }
+    types
+}
+
+// A type alone supplies the declared signature; no callback or sample value
+// is constructed. Tuple iteration follows the normal type visibility rules.
+pub fn parameter_types[F Signature]() List[type] {
+    tuple_parameter_types[F.Parameters]()
+}
+
+pub fn return_type[F Signature]() Option[type] {
+    comptime if describe[F.Output]().types[0].kind == Kind.NoResult {
+        Option.None
+    } else {
+        Option.Some(of[F.Output]())
+    }
+}

@@ -56,6 +56,17 @@ pub fn answer() Int {
         assert of[fn(Int, Bool) Text]() == of[fn(Int, Bool) Text]()
         let parameters = parameter_types(unused_callback)
         assert length(parameters) == 2 && parameters[0] == Int && parameters[1] == Bool
+        let declared = parameter_types[fn(Int, Bool) Text]()
+        assert length(declared) == 2 && declared[0] == Int && declared[1] == Bool
+        assert length(parameter_types[fn()]()) == 0
+        assert match return_type[fn()]() {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        assert match return_type[fn(Int) Task[Bool]]() {
+            Option.Some(output) => output == of[Task[Bool]]()
+            Option.None => false
+        }
         assert length(parameter_types(unused_no_result)) == 0
         assert match return_type(unused_no_result) {
             Option.None => true
@@ -100,4 +111,43 @@ fn main() {
         2
     );
     assert!(text.contains("i64 42"));
+}
+
+#[test]
+fn signature_metadata_requires_conformance_tuple_shape_and_compile_time_use() {
+    let folder = tempfile::tempdir().unwrap();
+    for body in [
+        r#"
+fn main() {
+    discard comptime { parameter_types[Int]() }
+}
+"#,
+        r#"
+record Malformed {}
+impl Signature for Malformed {
+    type Parameters = List[Int]
+    type Output = Int
+}
+fn main() {
+    discard comptime { parameter_types[Malformed]() }
+}
+"#,
+        r#"
+fn main() {
+    let inputs = parameter_types[fn(Int) Bool]()
+    discard inputs
+}
+"#,
+    ] {
+        fs::write(
+            folder.path().join("main.loom"),
+            format!("import std.meta.parameter_types\nimport std.meta.Signature\n{body}"),
+        )
+        .unwrap();
+        let output = loom(&["check", folder.path().to_str().unwrap()]);
+        assert!(
+            !output.status.success(),
+            "accepted invalid metadata use: {body}"
+        );
+    }
 }
