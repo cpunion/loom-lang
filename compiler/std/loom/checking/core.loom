@@ -366,6 +366,11 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
     check_with_inputs(source, build_inputs(no_input_reader))
 }
 pub fn check_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Result[std.loom.typed.Program, Failure] {
+    discard expanded_source(source)?
+    let env = prepare_with_inputs(source, inputs)?
+    checked_program(env, new[Bool](), new[Bool](), ints(0))
+}
+fn expanded_source(source std.loom.binding.Program) Result[Bool, Failure] {
     var index = 0
     while index < length(source.symbols) {
         let item = get(source.symbols, index)
@@ -376,8 +381,7 @@ pub fn check_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Re
         }
         index = index + 1
     }
-    let env = prepare_with_inputs(source, inputs)?
-    checked_program(env, new[Bool](), new[Bool](), ints(0))
+    Result.Ok(true)
 }
 fn checked_program(env Environment, reuse List[Bool], reusable List[Bool], hits List[Int]) Result[std.loom.typed.Program, Failure] {
     checked_program_reusing(env, reuse, reusable, hits, no_body_reuse())

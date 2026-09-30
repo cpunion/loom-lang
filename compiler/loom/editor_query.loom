@@ -76,6 +76,34 @@ fn editor_inspection(bindings std.loom.binding.Program, inspection Option[Inspec
     }
 }
 
+// Source binding evidence takes precedence over the expression produced by
+// specialization: a callback parameter is not its concrete target function.
+fn editor_bound_inspection(analysis Analysis, file Int, offset Int, inputs BuildInputs) Option[Inspection] {
+    match lex(get(analysis.bindings.files, file).text) {
+        Result.Ok(tokens) => {
+            match editor_token(tokens, offset) {
+                Option.Some(token) => {
+                    match editor_static_binding(analysis, file, token, tokens, inputs) {
+                        Option.Some(binding) => {
+                            let definitions = new[Location]()
+                            std.list.push(definitions, binding.declaration)
+                            return Option.Some(Inspection {
+                                span = token.span
+                                types = binding.types
+                                definitions = definitions
+                            })
+                        }
+                        Option.None => {}
+                    }
+                }
+                Option.None => {}
+            }
+        }
+        Result.Err(_) => {}
+    }
+    inspect_at(analysis, file, offset)
+}
+
 test fn query_options_require_an_explicit_source_and_byte_offset() {
     let args = cli_arguments("editor-query")
     std.list.push(args, "--std")

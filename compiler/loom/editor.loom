@@ -343,7 +343,7 @@ fn editor_analyzed(args List[Text], options EditorOptions, project Project, anal
         let output = if get(args, 1) == "editor-references" || get(args, 1) == "editor-rename" {
             editor_symbols(options, analysis, index, options.offset, inputs)
         } else {
-            editor_inspection(analysis.bindings, inspect_at(analysis, index, options.offset), "")
+            editor_inspection(analysis.bindings, editor_bound_inspection(analysis, index, options.offset, inputs), "")
         }
         return editor_input_report(inputs, output)
     }
