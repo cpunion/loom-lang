@@ -242,12 +242,10 @@ fn native_peer_distinguishes_tls_eof_truncation_and_cancelled_reads() {
                 stream.flush().unwrap();
                 if mode == "busy" {
                     assert!(stream.read(&mut request).is_err());
-                } else {
-                    if mode == "graceful" {
-                        connection.send_close_notify();
-                        while connection.wants_write() {
-                            connection.write_tls(&mut socket).unwrap();
-                        }
+                } else if mode == "graceful" {
+                    connection.send_close_notify();
+                    while connection.wants_write() {
+                        connection.write_tls(&mut socket).unwrap();
                     }
                 }
             });
