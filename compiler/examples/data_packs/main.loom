@@ -60,6 +60,7 @@ async fn echo[T](value T) T {
 }
 
 async fn exercise() {
+    associated().await
     let events List[Int] = []
     let source = Packet {
         tag = "once",
