@@ -42,6 +42,7 @@ record Options {
     tests Bool
     recursive Bool
     git_tool Text
+    credential_tool Text
     object_cache Text
     frontend_cache Text
     receipt Text
@@ -70,6 +71,7 @@ fn options(args List[Text]) Result[Options, Text] {
     var tests = false
     var recursive = false
     var git_tool = "git"
+    var credential_tool = ""
     var object_cache = ""
     var frontend_cache = ""
     var receipt = ""
@@ -110,7 +112,7 @@ fn options(args List[Text]) Result[Options, Text] {
                         }
                         no_run = true
                     } else {
-                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--object-cache" || arg == "--frontend-cache" || arg == "--receipt" || arg == "--build-option" {
+                        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" || arg == "--git-tool" || arg == "--git-credential-tool" || arg == "--object-cache" || arg == "--frontend-cache" || arg == "--receipt" || arg == "--build-option" {
                             index = index + 1
                             if index == length(args) {
                                 return Result.Err(concat(arg, " needs a value"))
@@ -169,6 +171,15 @@ fn options(args List[Text]) Result[Options, Text] {
                                     return Result.Err("--git-tool is only available with resolve")
                                 }
                                 git_tool = value
+                            }
+                            if arg == "--git-credential-tool" {
+                                if command != "resolve" {
+                                    return Result.Err("--git-credential-tool is only available with resolve")
+                                }
+                                if credential_tool != "" || value == "" {
+                                    return Result.Err("--git-credential-tool needs one nonempty executable path")
+                                }
+                                credential_tool = value
                             }
                             if arg == "--output" || arg == "-o" {
                                 if output != "" {
@@ -237,6 +248,7 @@ fn options(args List[Text]) Result[Options, Text] {
             tests = tests
             recursive = recursive
             git_tool = git_tool
+            credential_tool = credential_tool
             object_cache = object_cache
             frontend_cache = frontend_cache
             receipt = receipt
@@ -340,7 +352,7 @@ fn execute(args List[Text]) Result[Text, Text] {
 
 fn execute_package(selected Options) Result[Text, Text] {
     if selected.command == "resolve" {
-        discard resolve(selected.path, selected.std_root, selected.tests, selected.git_tool)?
+        discard resolve(selected.path, selected.std_root, selected.tests, selected.git_tool, selected.credential_tool)?
         return Result.Ok("resolved package dependencies\n")
     }
     let prepared = prepared(selected)?

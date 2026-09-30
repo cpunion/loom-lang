@@ -115,7 +115,7 @@ fn git_arguments(session GitSession, arguments List[Text]) List[Text] {
     push(values, session.tool)
     push(values, "--no-pager")
     push(values, "--no-replace-objects")
-    let settings = parts("credential.helper=\ncredential.interactive=false\nhttp.sslVerify=true\nhttp.followRedirects=false\nhttp.proxy=\nhttp.emptyAuth=false\nhttp.delegation=none\nfetch.fsckObjects=true\ngc.auto=0\nmaintenance.auto=false", 10)
+    let settings = parts("credential.helper=\ncredential.interactive=false\nhttp.sslVerify=true\nhttp.followRedirects=false\nhttp.proxy=\nhttp.emptyAuth=false\nhttp.delegation=none\nfetch.fsckObjects=true\nfetch.uriprotocols=\ntransfer.bundleURI=false\ngc.auto=0\nmaintenance.auto=false", 10)
     var index = 0
     while index < length(settings) {
         push(values, "-c")
@@ -175,6 +175,9 @@ fn snapshot_path(root Text, git Text, rev Text) Text {
 }
 
 fn fetch_snapshot(resolution Resolution, git Text, rev Text, expected Text) Result[Snapshot, Text] {
+    if !valid_git(git, rev) {
+        return Result.Err("invalid HTTPS Git dependency source")
+    }
     let stage = staging(resolution.root)?
     defer {
         discard remove_staging(stage)
@@ -190,6 +193,9 @@ fn fetch_snapshot(resolution Resolution, git Text, rev Text, expected Text) Resu
     push(init, git_path(repository))
     discard git_output(session, init)?
     let fetch = repository_arguments(repository, "fetch")
+    // Shallow fetching also rejects dumb HTTP before its alternate-object
+    // walker can contact another repository. Keep this transport boundary when
+    // changing fetch policy; URL-scoped headers alone are not a request filter.
     let flags = parts("--quiet\n--depth=1\n--no-tags\n--no-recurse-submodules\n--no-write-fetch-head\n--no-auto-maintenance\n--", 10)
     var index = 0
     while index < length(flags) {
@@ -198,7 +204,8 @@ fn fetch_snapshot(resolution Resolution, git Text, rev Text, expected Text) Resu
     }
     push(fetch, git)
     push(fetch, rev)
-    discard git_output(session, fetch)?
+    let credential = source_credential(resolution.credential_tool, git)?
+    discard authenticated_fetch(session, fetch, git, credential)?
     let kind_arguments = repository_arguments(repository, "cat-file")
     push(kind_arguments, "-t")
     push(kind_arguments, rev)

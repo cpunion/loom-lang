@@ -79,6 +79,7 @@ fn test_recursive(selected Options) Result[Text, Text] {
             tests = selected.tests
             recursive = false
             git_tool = selected.git_tool
+            credential_tool = selected.credential_tool
             object_cache = selected.object_cache
             frontend_cache = selected.frontend_cache
             receipt = selected.receipt

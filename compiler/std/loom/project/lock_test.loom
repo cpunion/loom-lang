@@ -101,12 +101,14 @@ test fn lock_owners_are_location_independent_and_git_paths_are_contained() {
     let first = Resolution {
         root = "/one/app"
         tool = "git"
+        credential_tool = ""
         locks = new[LockedSource]()
         snapshots = new[Snapshot]()
     }
     let second = Resolution {
         root = "/two/app"
         tool = "git"
+        credential_tool = ""
         locks = new[LockedSource]()
         snapshots = new[Snapshot]()
     }

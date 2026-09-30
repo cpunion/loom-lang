@@ -122,7 +122,7 @@ pub fn load_overlaid(path Text, std_root Text, tests Bool, overlays List[SourceO
         }
     }
     let failures = new[LoadFailure]()
-    match load_selected(path, std_root, tests, false, "git", files, failures) {
+    match load_selected(path, std_root, tests, false, "git", "", files, failures) {
         Result.Ok(project) => Result.Ok(project)
         Result.Err(message) => Result.Err(if length(failures) == 0 {
                 load_failure(message)

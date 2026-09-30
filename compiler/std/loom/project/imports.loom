@@ -14,7 +14,7 @@ pub record ImportScope {
 // not proof of a valid package. Declarations come from parseable production files.
 // Resolution is offline and uses the ordinary manifest, lock and snapshot rules.
 pub fn import_scope(path Text, std_root Text, qualifier Text, overlays List[SourceOverlay]) Result[ImportScope, Text] {
-    let loader, root, selected = prepare_loader(path, std_root, "git", overlay_files(overlays)?, new[LoadFailure]())?
+    let loader, root, selected = prepare_loader(path, std_root, "git", "", overlay_files(overlays)?, new[LoadFailure]())?
     let scope = ImportScope {
         namespaces = new[Text]()
         declarations = new[ImportDeclaration]()

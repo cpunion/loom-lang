@@ -216,6 +216,9 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
   and verifies selected cached snapshots against their locked contents and names.
   A compile-time mode shares traversal without retaining fetch/write operations
   in native consumers that use only `load`.
+  The five-argument overload adds an explicit `credential_tool` executable for
+  noninteractive HTTPS authentication; the four-argument form stays anonymous.
+  Credentials are ephemeral fetch inputs, never project/lock/cache fields.
   See [module dependencies](../README.md#module-dependencies) for source policies
   and the remaining resolver limits.
 - `std.loom.binding.bind(project, tests)` returns `Result[Program, Failure]`
