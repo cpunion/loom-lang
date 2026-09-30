@@ -13,22 +13,35 @@ fn with_result(text Text) Result[std.loom.typed.Program, Failure] {
     push(files, source_file("std.result", "pub enum Result[T, E] { Ok(T) Err(E) }\npub enum ConstraintError { Rejected }", true))
     checked(files)
 }
+
 fn accepted_result(text Text) std.loom.typed.Program {
     match with_result(text) {
         Result.Ok(program) => program
-        Result.Err(_) => { assert false
-            accepted_result("") }
+        Result.Err(_) => {
+            assert false
+            accepted_result("")
+        }
     }
 }
+
 fn rejects_result(text Text) {
-    match with_result(text) { Result.Err(_) => {}
-        Result.Ok(_) => { assert false } }
+    match with_result(text) {
+        Result.Err(_) => {
+        }
+        Result.Ok(_) => {
+            assert false
+        }
+    }
 }
 
 test fn type_mismatches_name_types_and_only_unused_values_suggest_discard() {
     match checked(source_files("fn main() { let result = 1 }")) {
-        Result.Err(failed) => { assert failed.diagnostic.message == "result is reserved for function postconditions; choose another binding name" }
-        Result.Ok(_) => { assert false }
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "result is reserved for function postconditions; choose another binding name"
+        }
+        Result.Ok(_) => {
+            assert false
+        }
     }
     let source = "record Item { quantity Int }\nfn main() { discard Item { quantity = \"three\" } }"
     match checked(source_files(source)) {
@@ -36,11 +49,17 @@ test fn type_mismatches_name_types_and_only_unused_values_suggest_discard() {
             assert failed.diagnostic.message == "expected Int, found Text"
             assert slice(source, failed.diagnostic.span.start, failed.diagnostic.span.end) == "\"three\""
         }
-        Result.Ok(_) => { assert false }
+        Result.Ok(_) => {
+            assert false
+        }
     }
     match checked(source_files("fn main() { 42 }")) {
-        Result.Err(failed) => { assert failed.diagnostic.message == "unused value of type Int; use discard to ignore it" }
-        Result.Ok(_) => { assert false }
+        Result.Err(failed) => {
+            assert failed.diagnostic.message == "unused value of type Int; use discard to ignore it"
+        }
+        Result.Ok(_) => {
+            assert false
+        }
     }
 }
 
@@ -69,7 +88,9 @@ test fn constrained_construction_and_propagation_have_explicit_ir() {
     var refined = -1
     var index = 0
     while index < length(program.types) {
-        if get(program.types, index).kind == TypeKind.Refined { refined = index }
+        if get(program.types, index).kind == TypeKind.Refined {
+            refined = index
+        }
         index = index + 1
     }
     assert refined >= 0
@@ -85,4 +106,63 @@ test fn constrained_construction_and_propagation_have_explicit_ir() {
     rejects_result("import std.result.Result\nfn wrong() Result[Int, Text] { Result.Ok(1?) }")
     rejects_result("import std.result.Result\nfn main() { discard Result.Ok[Int, Text](1)? }")
     rejects_result("type Positive = Int where self > 0\nfn widen(values List[Positive]) List[Int] { values }")
+}
+
+test fn trusted_result_shapes_are_validated_per_binding_snapshot() {
+    let files = source_files("""
+        import std.result.Result
+        import std.result.ConstraintError
+        type Positive = Int where self > 0
+        fn build(value Int) Result[Positive, ConstraintError] {
+            Positive(value)
+        }
+        fn twice(value Int) Result[Int, ConstraintError] {
+            let first = build(value)?
+            let second = build(value)?
+            Result.Ok(first + second)
+        }
+        fn main() {
+            discard twice(2)
+        }
+        """)
+    push(files, source_file("std.result", """
+        pub enum Result[T, E] {
+            Ok(T)
+            Err(E)
+        }
+        pub enum ConstraintError {
+            Rejected
+        }
+        """, true))
+    assert match checked(files) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    // A new check must not reuse a previously accepted shape after an edit.
+    set(files, 1, source_file("std.result", """
+        pub enum Result[T, E] {
+            Ok(T)
+            Err(T)
+        }
+        pub enum ConstraintError {
+            Rejected
+        }
+        """, true))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "Result must be the source enum containing Ok(T) and Err(E)"
+        Result.Ok(_) => false
+    }
+    set(files, 1, source_file("std.result", """
+        pub enum Result[T, E] {
+            Ok(T)
+            Err(E)
+        }
+        pub enum ConstraintError {
+            Rejected(Int)
+        }
+        """, true))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "ConstraintError must contain an empty Rejected variant"
+        Result.Ok(_) => false
+    }
 }

@@ -3,6 +3,9 @@ import std.loom.source.Span
 record CheckInputs {
     build BuildInputs
     static_queries List[StaticReferenceQuery]
+    // Trusted source shapes are fixed within this binding/type snapshot.
+    result_shapes List[ResultShape]
+    constraint_errors List[Int]
 }
 
 record StaticReferenceQuery {
@@ -21,11 +24,15 @@ pub record StaticParameterInfo {
 }
 
 fn static_query_type(env Environment, types List[Text], ty Int) {
-    if !concrete(env, ty) { return }
+    if !concrete(env, ty) {
+        return
+    }
     let label = type_name(env.source, env.types, env.interfaces, ty)
     var index = 0
     while index < length(types) {
-        if get(types, index) == label { return }
+        if get(types, index) == label {
+            return
+        }
         index = index + 1
     }
     push(types, label)
@@ -105,5 +112,8 @@ pub fn static_parameter_info(source std.loom.binding.Program, owner Int, paramet
             types = types
         })
     discard checked_program(env, new[Bool](), new[Bool](), ints(0))?
-    Result.Ok(StaticParameterInfo { references = references types = types })
+    Result.Ok(StaticParameterInfo {
+            references = references
+            types = types
+        })
 }
