@@ -59,7 +59,6 @@ test fn inherited_cached_contracts_follow_their_current_declaration_file() {
             }
         }
         fn forward[T Keep](receiver T, value Int) Int
-        requires value > 0
         ensures result == value {
             receiver.keep(value)
         }
