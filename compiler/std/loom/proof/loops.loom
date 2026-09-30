@@ -1,0 +1,232 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.list.new
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+import std.result.Result
+
+enum LoopCandidate {
+    Entry(Int, Text, Value)
+    Guard(Expr)
+}
+
+fn loop_step(proof Verification) Result[Bool, Text] {
+    let remaining = get(proof.budget, 0)
+    if remaining <= 0 {
+        return Result.Err("loop proof budget exhausted")
+    }
+    set(proof.budget, 0, remaining - 1)
+    Result.Ok(true)
+}
+
+// Enumerate all writes, including declarations and nested loops. Unknown effects
+// cannot keep stale facts about a local, an alias, or a captured mutable cell.
+fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, depth Int) Result[Bool, Text] {
+    discard loop_step(proof)?
+    if depth <= 0 {
+        return Result.Err("loop proof depth budget exhausted")
+    }
+    let kind = expr.kind
+    let scalar = kind == ExprKind.Integer || kind == ExprKind.Bool || kind == ExprKind.Local ||
+    kind == ExprKind.Unary || kind == ExprKind.Binary || kind == ExprKind.Coerce ||
+    kind == ExprKind.Field || kind == ExprKind.Record
+    if !scalar {
+        if guard || (kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.While &&
+            kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
+            kind != ExprKind.Assert && kind != ExprKind.Discard && kind != ExprKind.Call) {
+            return Result.Err("unsupported effect or control flow in required loop proof")
+        }
+    }
+    if kind == ExprKind.Let || kind == ExprKind.Assign {
+        let ty = get(proof.function.locals, expr.index).ty
+        if ty != 1 && ty != 2 {
+            return Result.Err("required loop proof needs scalar local assignments")
+        }
+        set(writes, expr.index, true)
+    }
+    // Direct body calls reuse body_call's checked scalar/aggregate summaries
+    // or finite pure expansion. Captured cells, indirect calls and heap access
+    // are not admitted here; they cannot mutate one of these scalar locals.
+    var index = 0
+    while index < length(expr.children) {
+        discard loop_writes(proof, get(expr.children, index), writes,
+            guard || (kind == ExprKind.While && index == 0), depth - 1)?
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] {
+    match candidate {
+        LoopCandidate.Entry(index, relation, initial) => {
+            boolean(binary(relation, get(state.locals, index), initial)?)
+        }
+        LoopCandidate.Guard(expr) => boolean(pure(expr, state)?)
+    }
+}
+
+fn loop_holds(fact Predicate, state State) Bool {
+    holds(fact, state.facts) || difference_holds(fact, state.facts)
+}
+
+fn add_loop_candidate(candidates List[LoopCandidate], candidate LoopCandidate, entry State) Result[Bool, Text] {
+    if loop_holds(loop_predicate(candidate, entry)?, entry) {
+        if length(candidates) >= 64 {
+            return Result.Err("loop invariant candidate budget exhausted")
+        }
+        push(candidates, candidate)
+    }
+    Result.Ok(true)
+}
+
+fn loop_guard_candidates(expr Expr, candidates List[LoopCandidate], entry State) Result[Bool, Text] {
+    if expr.kind != ExprKind.Binary {
+        return Result.Ok(true)
+    }
+    if expr.text == "&&" {
+        discard loop_guard_candidates(get(expr.children, 0), candidates, entry)?
+        return loop_guard_candidates(get(expr.children, 1), candidates, entry)
+    }
+    // A strict continuation bound can become a non-strict loop invariant.
+    // Do not split disjunctions or assume that every guard is inductive.
+    if expr.text == "<" || expr.text == "<=" || expr.text == ">" || expr.text == ">=" || expr.text == "==" {
+        let relation = if expr.text == "<" {
+            "<="
+        } else {
+            if expr.text == ">" {
+                ">="
+            } else {
+                expr.text
+            }
+        }
+        let weak = proof_expr(expr, ExprKind.Binary, 2, relation, -1, expr.children)
+        discard add_loop_candidate(candidates, LoopCandidate.Guard(weak), entry)?
+    }
+    Result.Ok(true)
+}
+
+fn loop_candidates(guard Expr, writes List[Bool], entry State) Result[List[LoopCandidate], Text] {
+    let candidates = new[LoopCandidate]()
+    var index = 0
+    while index < length(writes) {
+        if get(writes, index) {
+            let initial = get(entry.locals, index)
+            match initial {
+                Value.Number(_) => {
+                    discard add_loop_candidate(candidates, LoopCandidate.Entry(index, ">=", initial), entry)?
+                    discard add_loop_candidate(candidates, LoopCandidate.Entry(index, "<=", initial), entry)?
+                }
+                Value.Boolean(_) => {
+                    discard add_loop_candidate(candidates, LoopCandidate.Entry(index, "==", initial), entry)?
+                }
+                _ => {
+                }
+            }
+        }
+        index = index + 1
+    }
+    discard loop_guard_candidates(guard, candidates, entry)?
+    Result.Ok(candidates)
+}
+
+fn loop_head(proof Verification, writes List[Bool], entry State) State {
+    var state = entry
+    var index = 0
+    while index < length(writes) {
+        if get(writes, index) {
+            let value = fresh_result(proof, get(proof.function.locals, index).ty)
+            state = bounded(value, assigned(state, index, value))
+        }
+        index = index + 1
+    }
+    // Facts still mention immutable entry identities, never the fresh values.
+    state
+}
+
+fn loop_assumptions(head State, candidates List[LoopCandidate]) Result[State, Text] {
+    var state = head
+    var index = 0
+    while index < length(candidates) {
+        state = assume(state, loop_predicate(get(candidates, index), head)?)
+        index = index + 1
+    }
+    Result.Ok(state)
+}
+
+fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], depth Int) Result[List[Outcome], Text] {
+    let guard = get(expr.children, 0)
+    let body = get(expr.children, 1)
+    let head = loop_head(proof, writes, entry)
+    var candidates = loop_candidates(guard, writes, entry)?
+    while true {
+        discard loop_step(proof)?
+        let assumed = loop_assumptions(head, candidates)?
+        let conditions = execute(proof, guard, assumed, depth - 1)?
+        let backedges = new[Outcome]()
+        let exits = new[Outcome]()
+        var index = 0
+        while index < length(conditions) {
+            let condition = get(conditions, index)
+            let fact = boolean(condition.value)?
+            discard append(backedges, execute(proof, body, assume(condition.state, fact), depth - 1)?)?
+            discard add_outcome(exits, Outcome {
+                    state = assume(condition.state, not(fact))
+                    value = Value.Empty
+                })?
+            index = index + 1
+        }
+        let survivors = new[LoopCandidate]()
+        index = 0
+        while index < length(candidates) {
+            let candidate = get(candidates, index)
+            var preserved = true
+            var edge = 0
+            while edge < length(backedges) && preserved {
+                let state = get(backedges, edge).state
+                preserved = loop_holds(loop_predicate(candidate, state)?, state)
+                edge = edge + 1
+            }
+            if preserved {
+                push(survivors, candidate)
+            }
+            index = index + 1
+        }
+        if length(survivors) == length(candidates) {
+            return Result.Ok(exits)
+        }
+        // Recheck every survivor after a removal: a candidate may have relied
+        // on the rejected one. The final pass also rechecks early returns.
+        candidates = survivors
+    }
+    Result.Err("loop invariant inference did not converge")
+}
+
+fn loop_outcomes(proof Verification, expr Expr, state State, depth Int) Result[List[Outcome], Text] {
+    let writes = new[Bool]()
+    var index = 0
+    while index < length(state.locals) {
+        push(writes, false)
+        index = index + 1
+    }
+    discard loop_writes(proof, expr, writes, false, depth)?
+    let output = new[Outcome]()
+    let conditions = execute(proof, get(expr.children, 0), state, depth - 1)?
+    index = 0
+    while index < length(conditions) {
+        let condition = get(conditions, index)
+        let fact = boolean(condition.value)?
+        // The zero-iteration path need not satisfy inferred entered-loop bounds.
+        discard add_outcome(output, Outcome {
+                state = assume(condition.state, not(fact))
+                value = Value.Empty
+            })?
+        let entry = assume(condition.state, fact)
+        if !loop_holds(Predicate.Constant(false), entry) {
+            discard append(output, entered_loop(proof, expr, entry, writes, depth - 1)?)?
+        }
+        index = index + 1
+    }
+    Result.Ok(output)
+}

@@ -349,6 +349,9 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     if expr.kind == ExprKind.If {
         return conditional(proof, expr, state, depth)
     }
+    if expr.kind == ExprKind.While {
+        return loop_outcomes(proof, expr, state, depth)
+    }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary {
         return operation(proof, expr, state, depth)
     }

@@ -1827,6 +1827,17 @@ unit-coefficient differences; it does not assume hypothetical source arithmetic
 is defined or solve general nonlinear constraints. It adds no runtime mechanism.
 See the [relational contract example](examples/relational_contracts).
 
+Scalar `while` bodies can prove normal-return contracts through inferred
+invariants, without new annotations. The prover freshens every written Int/Bool
+local and proposes entry bounds and weakened relational guards. Each candidate
+must hold on entry and on every symbolic backedge; removing a candidate rechecks
+all survivors. Zero-iteration exits and early returns remain separate proof
+obligations. Branches, nested loops and the existing direct body-call proof rules
+are supported. Calls in guards, cleanup, heap writes and break/continue inside a
+required loop proof currently reject. The bounded
+inference neither unrolls a sample of iterations nor adds runtime invariant
+checks. See the [loop contract example](examples/loop_contracts).
+
 Immutable input refinements contribute their supported predicates to required
 proofs without a duplicate `requires` or runtime check:
 
@@ -1851,7 +1862,7 @@ checks. Unsupported conjuncts, helper loops/recursion and Float arithmetic suppl
 no evidence. See the [input invariant example](examples/invariant_contracts).
 
 The current proof fragment supports scalar linear arithmetic, comparisons,
-Boolean facts, local assignments, and acyclic branches/returns. It reasons from
+Boolean facts, local assignments, branches/returns, and the scalar loops above. It reasons from
 preconditions and successful checked operations. A source-written `assert`
 provides a fact only after that assertion succeeds; the compiler never inserts
 an assertion to rescue a failed postcondition proof. Postcondition arithmetic
@@ -2415,7 +2426,8 @@ outside the loop. A loop condition is outside its own body's control scope.
 Labels and values on loop-control statements are not supported. A `comptime`
 block evaluates its own loops and cannot jump into a runtime loop; a selected
 `comptime if` branch is ordinary code at its insertion point. Loop execution is
-supported at compile time, but general loop-invariant proofs remain unsupported.
+supported at compile time. Required proofs support inferred scalar invariants,
+but not general loop contracts or break/continue in a proved loop.
 The [loops example](examples/loops/main.loom) includes same-package unit tests.
 
 ## Source Tasks

@@ -113,8 +113,8 @@ Predicates may call pure functions, but cannot rely on external mutable state.
 
 Every declared `ensures` requires a static proof. Current reasoning includes
 scalar/inline-aggregate identities, guarded preconditions/assertions, bounded
-integer difference relations, input-type invariants, finite pure helpers and
-verified callee summaries. Synchronous dyn calls use declared method contracts,
+integer difference relations, input-type invariants, inferred scalar loop
+invariants, finite pure helpers and verified callee summaries. Synchronous dyn calls use declared method contracts,
 not hidden receiver knowledge. Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` currently covers immutable
 parameter scalar paths, not arbitrary entry-state snapshots.
@@ -127,8 +127,14 @@ Length-only predicates permit element writes, and bounded preservation proofs
 admit some appends. Content-dependent predicates retain read-only storage.
 There is no implicit copy, monitor or alias-triggered runtime failure.
 
+Scalar loops infer entry/guard bounds and check inductiveness to a fixed point;
+zero-iteration paths and early returns retain separate obligations. This supports
+scalar assignments, branches, nested loops and existing direct-call proof rules,
+not calls in guards, cleanup, break/continue or heap mutation. See the
+[native loop example](../../compiler/examples/loop_contracts).
+
 General content-preserving mutation, strengthening existing mutable alias graphs,
-loop/recursive proofs, arbitrary `old` snapshots and general Float reasoning
+general loop/recursive proofs, arbitrary `old` snapshots and general Float reasoning
 remain open. Sorting/permutation contracts are an accepted goal, not a completed
 story. Exact supported rules and examples are in the
 [contract reference](../../compiler/README.md#contract-boundary).

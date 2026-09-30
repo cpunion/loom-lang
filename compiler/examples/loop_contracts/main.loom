@@ -1,0 +1,74 @@
+fn reached(value Int, limit Int) Bool {
+    let proof_only_marker = 91827365
+    proof_only_marker > 0 && value >= limit
+}
+
+fn step(value Int) Int
+ensures result == value + 1
+{
+    value + 1
+}
+
+fn advance(start Int, limit Int) Int
+ensures result >= start
+ensures reached(result, limit)
+{
+    var current = start
+    while current < limit {
+        current = current + 1
+    }
+    current
+}
+
+fn count(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var current = 0
+    while current < limit {
+        current = step(current)
+    }
+    current
+}
+
+fn sum_before(limit Int) Int
+ensures result >= 0
+{
+    var current = 0
+    var total = 0
+    while current < limit {
+        total = total + current
+        current = current + 1
+    }
+    total
+}
+
+fn stop() Bool
+ensures !result
+{
+    var running = true
+    while running {
+        running = false
+    }
+    running
+}
+
+fn exercise() {
+    assert count(0) == 0
+    assert count(10000) == 10000
+    assert advance(7, 3) == 7
+    assert advance(-4, 3) == 3
+    assert advance(9223372036854775806, 9223372036854775807) == 9223372036854775807
+    assert advance(-9223372036854775808, -9223372036854775807) == -9223372036854775807
+    assert sum_before(-3) == 0
+    assert sum_before(10) == 45
+    assert !stop()
+}
+
+fn main() {
+    exercise()
+}
+
+test fn inferred_loop_contracts_run_as_ordinary_native_loops() {
+    exercise()
+}
