@@ -16,7 +16,15 @@ test fn variadic_bodies_restore_by_source_declaration_and_arity() {
             }
             total
         }
+        fn keep[R, Ts...](callback fn(Ts...) R) fn(Ts...) R {
+            callback
+        }
+        fn scalar(value Int) Int {
+            value
+        }
         pub fn answer() Int {
+            let callback = keep(scalar)
+            assert callback(3) == 3
             let pair = mapped(bundle(3, true))
             let triple = bundle(1, "two", false)
             assert pair.1 && !triple.2

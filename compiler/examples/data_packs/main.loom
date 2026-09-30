@@ -60,6 +60,7 @@ async fn echo[T](value T) T {
 }
 
 async fn exercise() {
+    exercise_functions()
     associated().await
     let events List[Int] = []
     let source = Packet {
@@ -86,6 +87,10 @@ async fn exercise() {
     aliases.values.0[0] = 42
     let resumed = echo(aliases).await
     assert resumed.values.1[0] == 42
+    let reader = echo(wrap(fn(index Int) Int {
+                shared[index]
+            })).await
+    assert reader.call(0) == 42
 
     let leaf = Tree.Leaf(1, "leaf")
     let tree = Tree.Branch([leaf, leaf])

@@ -1,0 +1,131 @@
+test fn function_patterns_infer_pack_arity_without_a_value_pack() {
+    discard accepted("""
+        fn identity[R, Ts...](callback fn(Ts...) R) fn(Ts...) R {
+            callback
+        }
+        fn pair() (Int, Bool) {
+            (42, true)
+        }
+        fn zero() Int {
+            42
+        }
+        fn output[Ts...](callback fn() (Ts...)) (Ts...) {
+            callback()
+        }
+        fn framed[R, Ts...](callback fn(Int, Ts..., Text) R) fn(Int, Ts..., Text) R {
+            callback
+        }
+        fn label(number Int, enabled Bool, text Text) Text {
+            assert number == 42 && enabled
+            text
+        }
+        fn main() {
+            assert output(pair).1
+            assert identity(zero)() == 42
+            assert identity(label)(42, true, "inferred") == "inferred"
+            assert framed(label)(42, true, "middle") == "middle"
+            let explicit = identity[Text, Int, Bool, Text]
+            assert explicit(label)(42, true, "explicit") == "explicit"
+            let contextual fn(fn(Int, Bool, Text) Text) fn(Int, Bool, Text) Text = identity
+            assert contextual(label)(42, true, "contextual") == "contextual"
+            assert comptime { output(pair).0 } == 42
+        }
+        """)
+}
+
+test fn structural_packs_share_arity_across_nominal_nested_and_contextual_inputs() {
+    discard accepted("""
+        record Callback[R, Ts...] {
+            call fn(Ts...) R
+        }
+        fn invoke[R, Ts...](callback Callback[R, Ts...], values (Ts...)) R {
+            callback.call(values...)
+        }
+        fn nested[R, Ts...](callbacks (Bool, fn(Ts...) R), values (Ts...)) R {
+            callbacks.1(values...)
+        }
+        fn apply[R, Ts...](callback fn(Ts...) R, values (Ts...)) R {
+            callback(values...)
+        }
+        fn choose(value Int) Int {
+            value
+        }
+        fn choose(value Bool) Bool {
+            value
+        }
+        fn main() {
+            let callback = Callback[Int, Int] { call = choose }
+            assert invoke(callback, (42,)) == 42
+            assert nested((true, fn(value Int) Int { value }), (42,)) == 42
+            let selected fn(Int) Int = choose
+            assert apply(selected, (42,)) == 42
+            assert apply[Bool, Bool](choose, (true,))
+        }
+        """)
+}
+
+test fn structural_packs_reject_inconsistent_shapes_and_undeclared_evidence() {
+    let declarations = """
+        fn apply[R, Ts...](callback fn(Ts...) R, values (Ts...)) R {
+            callback(values...)
+        }
+        fn number(value Int) Int {
+            value
+        }
+
+        """
+    rejects(concat(declarations, """
+        fn main() {
+            discard apply(number, (true,))
+        }
+        """))
+    rejects(concat(declarations, """
+        fn main() {
+            discard apply(number, (1, 2))
+        }
+        """))
+    rejects(concat(declarations, """
+        fn main() {
+            let callback fn(fn(Int) Int, (Bool,)) Int = apply
+            discard callback
+        }
+        """))
+    rejects("""
+        concept Show {
+            fn show(self Self) Text
+        }
+        impl Show for Int {
+            fn show(self Int) Text {
+                "int"
+            }
+        }
+        fn forbidden[Ts...](callback fn() (Ts...)) Text {
+            callback().0.show()
+        }
+        fn number() (Int,) {
+            (42,)
+        }
+        fn main() {
+            discard forbidden(number)
+        }
+        """)
+    discard accepted("""
+        concept Show {
+            fn show(self Self) Text
+        }
+        impl Show for Int {
+            fn show(self Int) Text {
+                "int"
+            }
+        }
+        fn shown[Ts... Show](callback fn() (Ts...)) Text {
+            callback().0.show()
+        }
+        fn number() (Int,) {
+            (42,)
+        }
+        fn main() {
+            assert shown(number) == "int"
+        }
+        """)
+}
