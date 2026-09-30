@@ -41,20 +41,110 @@ test fn old_reads_only_immutable_entry_scalars() {
     rejects(concat(nested, "fn wrong(value Outer) Int ensures result == old(value.inner.count) { 0 }"))
 }
 
-test fn old_rejects_aliases_calls_and_non_entry_places() {
+test fn old_rejects_aliases_and_non_entry_places() {
     let shared = "record Holder { count Int; values List[Int] }\n"
     let alias = concat(shared, "fn unsafe(value Holder) Int ensures result == old(value.values) { 1 }")
     match checked(source_files(alias)) {
         Result.Err(failed) => {
-            assert failed.diagnostic.message == "old requires an immutable inline scalar parameter path; shared data has no entry snapshot"
+            assert failed.diagnostic.message == "old requires an immutable entry expression; shared data has no entry snapshot"
         }
-        Result.Ok(_) => { assert false }
+        Result.Ok(_) => {
+            assert false
+        }
     }
     rejects(concat(shared, "fn unsafe(value Holder) Int ensures result == old(value.values[0]) { 1 }"))
-    rejects("fn identity(value Int) Int { value }\nfn unsafe(value Int) Int ensures result == old(identity(value)) { value }")
     rejects("fn unsafe(value Int) Int ensures result == old(value + 1) { value }")
     rejects("fn unsafe(value Int) Int ensures result == old(result) { value }")
     rejects("fn unsafe(value Int) Int ensures result == old(other) { let other = value\nother }")
     rejects("fn unsafe(value Int) Int requires old(value) > 0 { value }")
     rejects("fn unsafe(value Int) Int { old(value) }")
+}
+
+test fn old_composes_immutable_aggregates_arithmetic_and_pure_helpers() {
+    discard accepted("""
+        record Pair {
+            count Int
+            active Bool
+        }
+        record Holder {
+            pair Pair
+            shared List[Int]
+        }
+        type Valid = Pair where self.count >= 0
+        fn identity(value Pair) Pair {
+            value
+        }
+        fn first(left Int, right Int) Int {
+            left
+        }
+        fn copy(value Pair) Pair
+        ensures result.count == old(value).count
+        ensures result.active == old(identity(value)).active {
+            value
+        }
+        fn from_holder(value Holder) Int
+        ensures result == old(value.pair).count {
+            value.pair.count
+        }
+        fn from_valid(value Valid) Int
+        ensures result == old(value.count) {
+            value.count
+        }
+        fn computed(value Int, active Bool) Int
+        requires value < 9223372036854775807
+        ensures result == old(first(value, value + 1))
+        ensures result == old((value, active)).0 {
+            value
+        }
+        fn main() {
+            let pair = Pair { count = 2 active = true }
+            assert copy(pair).count == 2
+            assert from_holder(Holder { pair = pair shared = [1] }) == 2
+            assert from_valid(Valid(Pair { count = 2 active = true })) == 2
+            assert computed(2, true) == 2
+        }
+        """)
+    rejects("""
+        record Holder {
+            count Int
+            shared List[Int]
+        }
+        fn whole(value Holder) Int
+        ensures result == old(value).count {
+            value.count
+        }
+        """)
+    // Every helper argument must be defined, even an unused argument.
+    rejects("""
+        fn first(left Int, right Int) Int {
+            left
+        }
+        fn overflow(value Int) Int
+        ensures result == old(first(value, value + 1)) {
+            value
+        }
+        """)
+    rejects("""
+        fn callback(action fn(Int) Int, value Int) Int
+        ensures result == old(action(value)) {
+            value
+        }
+        """)
+    let clock = source_files("""
+        import std.time.now
+        fn external(value Int) Int
+        ensures true || old(now()) == value {
+            value
+        }
+        """)
+    push(clock, source_file("std.time", """
+        intrinsic fn clock_monotonic_ns() Int
+        pub fn now() Int {
+            clock_monotonic_ns()
+        }
+        """, true))
+    assert match checked(clock) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
 }

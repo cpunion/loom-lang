@@ -41,10 +41,15 @@ fn proof_only(value Pair) Bool {
     let marker = 91827365
     marker > 0 && value.first == value.first
 }
+fn entry_pair(value Pair) Pair {
+    let ignored = 81726354
+    discard ignored
+    value
+}
 fn identity(value Pair) Pair
 ensures proof_only(result)
-ensures result.first == value.first
-ensures result.second == value.second
+ensures result.first == old(value).first
+ensures result.second == old(entry_pair(value)).second
 {
     value
 }
@@ -74,10 +79,12 @@ fn main() {
             .unwrap(),
     );
     let source = fs::read_to_string(ir).unwrap();
-    assert!(
-        !source.contains("91827365"),
-        "proof-only helper became a runtime root"
-    );
+    for marker in ["91827365", "81726354"] {
+        assert!(
+            !source.contains(marker),
+            "proof-only helper became a runtime root"
+        );
+    }
     assert!(
         !source.contains("@loom_rt_"),
         "scalar record calls require runtime support"

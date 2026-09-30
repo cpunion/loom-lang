@@ -160,8 +160,10 @@ leaves remain independent; shared siblings supply no content or alias facts.
 Text, Bytes and List parameters can be carried opaquely through contracted
 calls, including generic nominal receivers. Unmodeled heap operations still reject.
 Unsupported or exhausted required proofs reject;
-they never become runtime postcondition checks. `old` currently covers immutable
-parameter scalar paths, not arbitrary entry-state snapshots.
+they never become runtime postcondition checks. `old` composes immutable entry
+parameter paths, aggregates, arithmetic and finite pure helpers, retaining
+definedness obligations. It adds no runtime snapshot and cannot read shared
+mutable storage, callbacks or body-local/result bindings.
 
 Immutable observed record fields can coexist with unobserved mutable siblings.
 Fixed-shape List views retain element identities across removal/regrowth,
