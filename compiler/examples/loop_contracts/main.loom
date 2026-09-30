@@ -82,6 +82,7 @@ fn exercise() {
     assert !stop()
     assert nested(4) == 4
     control_exercise()
+    guard_exercise()
 }
 
 fn main() {

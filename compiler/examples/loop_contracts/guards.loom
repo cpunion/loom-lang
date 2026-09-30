@@ -1,0 +1,54 @@
+fn negative(value Int) Bool {
+    value < 0
+}
+
+fn negative_summary(value Int) Bool
+ensures result == (value < 0)
+{
+    value < 0
+}
+
+fn reach_nonnegative(start Int) Int
+ensures result >= start && result >= 0
+{
+    var value = start
+    while negative(value) {
+        value = value + 1
+    }
+    value
+}
+
+fn summarized_guard(start Int) Int
+ensures result >= 0
+{
+    var value = start
+    while negative_summary(value) {
+        value = value + 1
+    }
+    value
+}
+
+fn guard_exercise() {
+    assert reach_nonnegative(-10) == 0
+    assert reach_nonnegative(0) == 0
+    assert reach_nonnegative(7) == 7
+    assert summarized_guard(-10) == 0
+    assert summarized_guard(5) == 5
+    assert count_with_guard(0) == 0
+    assert count_with_guard(10000) == 10000
+}
+
+fn below(value Int, limit Int) Bool {
+    value < limit
+}
+
+fn count_with_guard(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var value = 0
+    while below(value, limit) {
+        value = value + 1
+    }
+    value
+}

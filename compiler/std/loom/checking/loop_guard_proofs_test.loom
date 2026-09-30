@@ -1,0 +1,129 @@
+test fn loop_guards_use_finite_helpers_and_verified_call_results() {
+    discard accepted("""
+fn negative(value Int) Bool {
+    value < 0
+}
+fn summarized(value Int) Bool
+ensures result == (value < 0)
+{
+    value < 0
+}
+fn identity(value Int) Int {
+    value
+}
+fn advance(start Int) Int
+ensures result >= 0 && result >= start
+{
+    var value = start
+    while negative(value) {
+        value = value + 1
+    }
+    value
+}
+fn with_summary(start Int) Int
+ensures result >= 0
+{
+    var value = start
+    while summarized(value) {
+        value = value + 1
+    }
+    value
+}
+fn comparison(start Int) Int
+ensures result >= 0
+{
+    var value = start
+    while identity(value) < 0 {
+        value = value + 1
+    }
+    value
+}
+fn conjunction(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var value = 0
+    while negative(value - limit) && value < limit {
+        value = value + 1
+    }
+    value
+}
+fn below(value Int, limit Int) Bool {
+    value < limit
+}
+fn count(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var value = 0
+    while below(value, limit) {
+        value = value + 1
+    }
+    value
+}
+""")
+}
+
+test fn loop_guard_calls_do_not_invent_stability_or_hide_wrong_exits() {
+    rejects("""
+fn below(value Int, limit Int) Bool {
+    value < limit
+}
+fn wrong(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var value = 0
+    while below(value, limit) {
+        value = value + 2
+    }
+    value
+}
+""")
+    rejects("""
+fn negative(value Int) Bool {
+    value < 0
+}
+fn wrong(start Int) Int
+ensures result > 0
+{
+    var value = start
+    while negative(value) {
+        value = value + 1
+    }
+    value
+}
+""")
+    rejects("""
+fn opaque(value Bool) Bool
+ensures result || !result
+{
+    !value
+}
+fn wrong(flag Bool) Int
+ensures result == 0
+{
+    while opaque(flag) {
+        return 1
+    }
+    0
+}
+""")
+    rejects("""
+fn positive(value Int) Bool {
+    value > 0
+}
+fn wrong() Int
+ensures result == 0
+{
+    var value = 0
+    while positive({
+        value = 1
+        value
+    }) {
+        break
+    }
+    value
+}
+""")
+}
