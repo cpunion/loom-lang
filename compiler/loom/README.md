@@ -203,6 +203,8 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
   `DependencySource` is `Path(Text)` or `Git(Text, Text, Text)` (URL, full commit
   ID, repository-relative module subdirectory; empty selects the root). It
   parses the supported manifest subset, not general TOML or source resolution.
+  Each dependency has `scope DependencyScope` (`Local` or `Graph`); only the
+  selected project root's graph-scoped entries choose graph-wide source policy.
 - `std.loom.project.load(path, std_root, tests)` returns `Result[Project, Text]`.
   `Project` contains files, module instances, packages and a root package ID. It reads
   the selected directory package and its import closure, not the whole

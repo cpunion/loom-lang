@@ -203,7 +203,11 @@ membership, not sidecars. Distinct source instances retain distinct nominal type
 Resolution defaults to anonymous; an explicit trusted credential helper enables
 private HTTPS sources without persisting credentials or exposing remote output.
 Real loopback HTTPS Git tests cover authenticated fetching, helper failures and
-offline cache reuse. Version normalization and graph-wide fork policy remain open.
+offline cache reuse. Root dependency entries with `scope = "graph"` explicitly
+unify matching declared edges on one path/Git source; transitive declarations
+cannot select another application's graph policy or grant extra imports.
+Effective Git choices are locked per importing edge. Version-range resolution
+and compatible-version normalization remain open.
 
 Opt-in trusted-local object reuse hashes checked input/backend identity and
 always relinks. Frontend reuse binds compiler bytes, loaded sources, modes,

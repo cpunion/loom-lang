@@ -1,5 +1,6 @@
 import std.loom.manifest.Dependency
 import std.loom.manifest.DependencySource
+import std.loom.manifest.DependencyScope
 import std.list.new
 import std.list.get
 import std.list.push
@@ -81,6 +82,34 @@ fn dependency_directory(base Text, path Text) Result[Text, Text] {
     Result.Ok(directory)
 }
 
+// Only the selected root chooses policy for this resolution graph. An imported
+// module's dependencies still work locally; its scope declarations cannot take
+// authority over another application's graph.
+fn graph_dependencies(dependencies List[Dependency]) List[Dependency] {
+    let selected = new[Dependency]()
+    var index = 0
+    while index < length(dependencies) {
+        let dependency = get(dependencies, index)
+        if dependency.scope == DependencyScope.Graph {
+            push(selected, dependency)
+        }
+        index = index + 1
+    }
+    selected
+}
+
+fn selected_dependency(loader Loader, original Dependency, base Text) (Dependency, Text) {
+    var index = 0
+    while index < length(loader.overrides) {
+        let selected = get(loader.overrides, index)
+        if selected.name == original.name {
+            return (selected, loader.resolution.root)
+        }
+        index = index + 1
+    }
+    (original, base)
+}
+
 fn imported_module(loader Loader, owner Int, name Text, comptime fetch Bool) Result[Int, Text] {
     // The standard library is registered first and cannot be replaced by a
     // dependency. Other modules are visible only through the importer's edges.
@@ -93,12 +122,15 @@ fn imported_module(loader Loader, owner Int, name Text, comptime fetch Bool) Res
     }
     var index = 0
     while index < length(source.dependencies) {
-        let dependency = get(source.dependencies, index)
-        if dependency.name == name {
+        let declared = get(source.dependencies, index)
+        if declared.name == name {
+            // Selection never adds an undeclared edge. Path selectors belong to
+            // their declaring root, while locks retain the actual importer.
+            let dependency, origin = selected_dependency(loader, declared, source.base)
             let base = match dependency.source {
                 DependencySource.Path(path) => {
-                    let base = dependency_directory(source.base, path)?
-                    discard source_boundary(loader.resolution, source.base, base)?
+                    let base = dependency_directory(origin, path)?
+                    discard source_boundary(loader.resolution, origin, base)?
                     base
                 }
                 DependencySource.Git(git, rev, subdir) => git_dependency(loader.resolution, source.base, name, git, rev, subdir, fetch)?

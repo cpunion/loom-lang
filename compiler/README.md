@@ -1486,6 +1486,29 @@ Path dependencies inside a Git source may select sibling modules but cannot
 escape that snapshot. Selecting a subdirectory does not bypass validation of
 other repository paths or import dependency tests.
 
+Forks are local by default. The selected root module can explicitly select one
+source for all **declared** edges with that module name, in the dependency itself:
+
+```toml
+[dependencies.codec]
+git = "https://github.com/example/codec-fork.git"
+rev = "0123456789abcdef0123456789abcdef01234567"
+scope = "graph"
+```
+
+`scope = "local"` is the default. Only the selected root's `graph` entries set
+graph-wide policy; imported modules' entries remain local to those modules.
+This never grants an undeclared direct dependency, replaces `std`, or rewrites
+another module's own namespace. A graph-selected path is relative to the root
+manifest, including when replacing an edge inside a Git snapshot. A Git selector
+retains its URL, exact commit and optional `subdir`; all matching edges reuse the
+same nominal module instance. Each importing Git edge locks the effective source.
+Changing that source requires `resolve` before offline use; local path sources
+remain editable and are not made immutable by graph selection. An incompatible
+fork can still fail ordinary type/contract checks. There is no compatibility
+claim based only on its name or version, no implicit version-range resolution,
+and no separate `replace` table.
+
 Snapshots live under the root module's `target/loom-deps`. Every selected snapshot
 is checked against actual regular-file contents and exact directory membership,
 including unexpected files or empty directories, not a trusted sidecar. `resolve`
@@ -1519,7 +1542,7 @@ an already resolved, intact snapshot.
 Git-facing Windows drive/UNC paths use forward slashes without verbatim prefixes;
 Loom's canonical paths and native cwd remain unchanged. Windows Git sessions
 enable its builtin long-path support, not a promise about arbitrary external tools.
-Version ranges and graph-wide fork overrides remain open. Native object and frontend caches
+Version-range resolution and compatible-version normalization remain open. Native object and frontend caches
 are separate, opt-in trusted-local facilities described above.
 Resolution currently assumes a single writer and trusted filesystem ancestors;
 atomic lock replacement is not crash durability or protection from concurrent
@@ -2789,9 +2812,9 @@ old-language support policy. Stage numbers denote bootstrap generations, not
 language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Broader proofs and mutable-alias preservation, general resource transfer into
-Tasks, concurrent TLS directions/general worker APIs, remaining pack combinations, version normalization,
-graph-wide fork policies and complete incremental
-coverage remain open. Semantic-change and deployment tools have bounded working
+Tasks, concurrent TLS directions/general worker APIs, remaining pack combinations,
+version normalization and complete incremental coverage remain open.
+Semantic-change and deployment tools have bounded working
 prototypes, not their general accepted workflows. See the concise
 [status](../docs/project/implementation-status.md) and
 [roadmap](../ROADMAP.md). No complete language or `std` claim is made.

@@ -22,9 +22,15 @@ pub enum DependencySource {
     Git(Text, Text, Text)
 }
 
+pub enum DependencyScope {
+    Local
+    Graph
+}
+
 pub record Dependency {
     name Text
     source DependencySource
+    scope DependencyScope
 }
 
 pub record Module {
@@ -421,6 +427,7 @@ pub fn parse(text Text) Result[Module, Text] {
                         push(dependencies, Dependency {
                                 name = key
                                 source = DependencySource.Path("")
+                                scope = DependencyScope.Local
                             })
                     }
                 }
@@ -470,8 +477,8 @@ pub fn parse(text Text) Result[Module, Text] {
                         return Result.Err("dependencies require [dependencies.<name>] with path or git and rev fields")
                     }
                     if dependency >= 0 {
-                        if key != "path" && key != "git" && key != "rev" && key != "subdir" {
-                            return Result.Err("unsupported dependency field; expected path, or git and rev with optional subdir")
+                        if key != "path" && key != "git" && key != "rev" && key != "subdir" && key != "scope" {
+                            return Result.Err("unsupported dependency field; expected path, or git and rev, with optional subdir/scope")
                         }
                         if contains(seen, concat(section, ".path")) &&
                         (contains(seen, concat(section, ".git")) || contains(seen, concat(section, ".rev")) ||
@@ -480,7 +487,20 @@ pub fn parse(text Text) Result[Module, Text] {
                         }
                         let current = get(dependencies, dependency)
                         let decoded = quoted(value)?
-                        let source = if key == "path" {
+                        var scope = current.scope
+                        if key == "scope" {
+                            if decoded != "local" && decoded != "graph" {
+                                return Result.Err("dependency scope must be local or graph")
+                            }
+                            scope = if decoded == "graph" {
+                                DependencyScope.Graph
+                            } else {
+                                DependencyScope.Local
+                            }
+                        }
+                        let source = if key == "scope" {
+                            current.source
+                        } else if key == "path" {
                             DependencySource.Path(decoded)
                         } else {
                             match current.source {
@@ -511,6 +531,7 @@ pub fn parse(text Text) Result[Module, Text] {
                         set(dependencies, dependency, Dependency {
                                 name = current.name
                                 source = source
+                                scope = scope
                             })
                     } else {
                         if key == "name" {
