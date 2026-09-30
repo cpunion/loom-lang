@@ -194,13 +194,16 @@ See [Tasks and I/O](../../compiler/README.md#source-tasks).
 
 ## Modules, caching and performance
 
-Path and exact public HTTPS Git/fork dependencies support importer-local module
+Path and exact HTTPS Git/fork dependencies support importer-local module
 instances and offline locked builds. Git `subdir` selects a monorepo module and
 binds its exact directory to the lock; modules at the same URL/commit share one
 whole-repository snapshot. Sibling path dependencies stay within that snapshot.
 `resolve` alone fetches sources. Cache validation checks actual bytes and
 membership, not sidecars. Distinct source instances retain distinct nominal types.
-Version normalization, authenticated transport and graph-wide fork policy remain open.
+Resolution defaults to anonymous; an explicit trusted credential helper enables
+private HTTPS sources without persisting credentials or exposing remote output.
+Real loopback HTTPS Git tests cover authenticated fetching, helper failures and
+offline cache reuse. Version normalization and graph-wide fork policy remain open.
 
 Opt-in trusted-local object reuse hashes checked input/backend identity and
 always relinks. Frontend reuse binds compiler bytes, loaded sources, modes,

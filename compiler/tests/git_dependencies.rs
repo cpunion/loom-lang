@@ -8,10 +8,13 @@ use std::{
 };
 
 mod common;
+#[path = "fixtures/git_https.rs"]
+mod git_https;
 use common::success;
 
 const URL: &str = "https://fixture.invalid/seed";
 const SENTINEL: &str = "LOOM_GIT_REMOTE_SENTINEL_secret";
+const AUTH_HEADER: &str = "Authorization: Basic bG9vbTpMT09NX0dJVF9SRU1PVEVfU0VOVElORUxfc2VjcmV0";
 
 fn write(root: &Path, name: &str, contents: impl AsRef<[u8]>) {
     let path = root.join(name);
@@ -163,6 +166,10 @@ impl Fixture {
     }
 
     fn resolve(&self, package: &Path, tests: bool) -> Output {
+        self.resolve_with_credentials(package, tests, false)
+    }
+
+    fn resolve_with_credentials(&self, package: &Path, tests: bool, credentials: bool) -> Output {
         let hostile = self.root().join("hostile-home");
         write(
             &hostile,
@@ -192,6 +199,9 @@ impl Fixture {
             .env("GIT_ASKPASS", "must-not-execute");
         if tests {
             command.arg("--tests");
+        }
+        if credentials {
+            command.arg("--git-credential-tool").arg(&self.tool);
         }
         command.output().unwrap()
     }
@@ -234,6 +244,109 @@ fn rejected(output: &Output, expected: &str) {
     assert!(
         !String::from_utf8_lossy(&output.stderr).contains(SENTINEL),
         "{output:?}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(AUTH_HEADER));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(AUTH_HEADER));
+}
+
+#[test]
+fn explicit_credentials_are_fetch_scoped_redacted_and_unneeded_offline() {
+    let fixture = Fixture::new();
+    let root = fixture.root();
+    let server = git_https::Server::start(root, &fixture.git);
+    let url = &server.url;
+    let app = |name: &str, url: &str| {
+        write(
+            root,
+            &format!("{name}/loom.toml"),
+            format!(
+                "[module]\nname='app'\n[dependencies.seed]\ngit='{url}'\nrev='{}'\n",
+                fixture.revisions[0]
+            ),
+        );
+        write(
+            root,
+            &format!("{name}/main.loom"),
+            "import seed.value\nfn main() { assert value() == 11 }\n",
+        );
+        root.join(name)
+    };
+    fs::write(root.join("requires-auth"), "").unwrap();
+    let anonymous = app("anonymous", url);
+    rejected(
+        &fixture.resolve(&anonymous, false),
+        "remote output was suppressed",
+    );
+    assert!(!root.join("credential.log").exists());
+
+    let authenticated = app("authenticated", url);
+    success(&fixture.resolve_with_credentials(&authenticated, false, true));
+    assert!(
+        server
+            .authenticated
+            .load(std::sync::atomic::Ordering::Relaxed)
+            >= 2
+    );
+    let requests = fs::read(root.join("credential.log")).unwrap();
+    assert_eq!(
+        requests,
+        format!(
+            "protocol=https\nhost={}\npath=seed\n\n",
+            url[8..].split('/').next().unwrap()
+        )
+        .as_bytes()
+    );
+    for (bytes, _) in cached_files(&authenticated).values() {
+        let text = String::from_utf8_lossy(bytes);
+        assert!(!text.contains(SENTINEL) && !text.contains(AUTH_HEADER));
+    }
+    let log = fixture.log();
+    fs::write(root.join("offline"), "").unwrap();
+    fs::write(root.join("credential-mode"), "fail").unwrap();
+    success(&fixture.resolve_with_credentials(&authenticated, false, true));
+    for command in ["check", "test", "run"] {
+        success(&fixture.command(command, &authenticated).output().unwrap());
+    }
+    assert_eq!(fixture.log(), log);
+    assert_eq!(fs::read(root.join("credential.log")).unwrap(), requests);
+    fs::remove_file(root.join("offline")).unwrap();
+
+    for (mode, expected) in [
+        ("fail", "credential tool failed; output was suppressed"),
+        (
+            "scope",
+            "credential tool changed the requested source scope",
+        ),
+        ("empty", "remote output was suppressed"),
+    ] {
+        fs::write(root.join("credential-mode"), mode).unwrap();
+        let package = app(mode, url);
+        rejected(
+            &fixture.resolve_with_credentials(&package, false, true),
+            expected,
+        );
+        assert!(!package.join("loom.lock").exists());
+    }
+    fs::write(root.join("credential-mode"), "ok").unwrap();
+    fs::write(root.join("auth-echo"), "").unwrap();
+    rejected(
+        &fixture.resolve_with_credentials(&app("echo", url), false, true),
+        "remote output was suppressed",
+    );
+    let requests = fs::read(root.join("credential.log")).unwrap();
+    rejected(
+        &fixture.resolve_with_credentials(&app("http", "http://fixture.invalid/seed"), false, true),
+        "HTTPS",
+    );
+    assert_eq!(fs::read(root.join("credential.log")).unwrap(), requests);
+    rejected(
+        &fixture
+            .command("check", &authenticated)
+            .arg("--git-credential-tool")
+            .arg(&fixture.tool)
+            .output()
+            .unwrap(),
+        "only available with resolve",
     );
 }
 

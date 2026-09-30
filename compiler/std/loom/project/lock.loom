@@ -37,6 +37,7 @@ record Snapshot {
 record Resolution {
     root Text
     tool Text
+    credential_tool Text
     locks List[LockedSource]
     snapshots List[Snapshot]
 }

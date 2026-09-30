@@ -191,6 +191,7 @@ test fn production_cycles_still_reject_before_loading_files() {
         resolution = Resolution {
             root = "/app"
             tool = "git"
+            credential_tool = ""
             locks = new[LockedSource]()
             snapshots = new[Snapshot]()
         }
@@ -230,6 +231,7 @@ test fn module_roots_reuse_identity_independently_of_display_names() {
         resolution = Resolution {
             root = "/app"
             tool = "git"
+            credential_tool = ""
             locks = new[LockedSource]()
             snapshots = new[Snapshot]()
         }

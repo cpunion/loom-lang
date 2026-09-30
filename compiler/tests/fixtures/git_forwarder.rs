@@ -5,7 +5,7 @@
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::Write,
+    io::{Read, Write},
     path::Path,
     process::{self, Command},
 };
@@ -13,6 +13,7 @@ use std::{
 const ROOT: &str = env!("LOOM_GIT_FIXTURE_ROOT");
 const GIT: &str = env!("LOOM_GIT_FIXTURE_REAL_GIT");
 const SENTINEL: &str = "LOOM_GIT_REMOTE_SENTINEL_secret";
+const AUTH_HEADER: &str = "Authorization: Basic bG9vbTpMT09NX0dJVF9SRU1PVEVfU0VOVElORUxfc2VjcmV0";
 
 fn require(condition: bool, message: &str) {
     if !condition {
@@ -40,6 +41,43 @@ fn git_path(path: &Path) -> String {
 
 fn main() {
     let root = Path::new(ROOT);
+    let https_url = fs::read_to_string(root.join("https-url")).ok();
+    let source_url = https_url
+        .as_deref()
+        .unwrap_or("https://fixture.invalid/seed");
+    if env::args().skip(1).collect::<Vec<_>>() == ["get"] {
+        let mut request = String::new();
+        std::io::stdin().read_to_string(&mut request).unwrap();
+        require(
+            request
+                == format!(
+                    "protocol=https\nhost={}\npath=seed\n\n",
+                    source_url[8..].split('/').next().unwrap()
+                ),
+            "credential request scope differs",
+        );
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(root.join("credential.log"))
+            .unwrap()
+            .write_all(request.as_bytes())
+            .unwrap();
+        match fs::read_to_string(root.join("credential-mode"))
+            .unwrap_or_default()
+            .as_str()
+        {
+            "fail" => {
+                println!("{SENTINEL}");
+                eprintln!("{AUTH_HEADER}");
+                process::exit(94);
+            }
+            "scope" => println!("host=elsewhere.invalid\nusername=loom\npassword={SENTINEL}\n"),
+            "empty" => {}
+            _ => println!("username=loom\npassword={SENTINEL}\n"),
+        }
+        return;
+    }
     let current = env::current_dir().unwrap().canonicalize().unwrap();
     require(
         current.starts_with(root),
@@ -108,6 +146,9 @@ fn main() {
         "GIT_NO_REPLACE_OBJECTS",
         "GIT_NO_LAZY_FETCH",
         "LC_ALL",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
     ];
     for (name, _) in env::vars_os() {
         require(
@@ -120,6 +161,13 @@ fn main() {
     }
 
     let mut args = env::args().skip(1).collect::<Vec<_>>();
+    require(
+        args.iter().all(|arg| {
+            (!arg.contains(SENTINEL) || arg.starts_with("https://fixture.invalid/failure/"))
+                && !arg.contains(AUTH_HEADER)
+        }),
+        "credential appeared in argv",
+    );
     require(
         args.iter().any(|arg| arg == "--no-pager"),
         "pager not disabled",
@@ -142,6 +190,8 @@ fn main() {
         ("http.emptyAuth", "false"),
         ("http.delegation", "none"),
         ("fetch.fsckObjects", "true"),
+        ("fetch.uriprotocols", ""),
+        ("transfer.bundleURI", "false"),
         ("gc.auto", "0"),
         ("maintenance.auto", "false"),
     ] {
@@ -189,6 +239,32 @@ fn main() {
         process::exit(91);
     }
     let is_fetch = command == "fetch";
+    let authenticated = env::var_os("GIT_CONFIG_COUNT").is_some();
+    if authenticated {
+        require(
+            is_fetch
+                && env::var("GIT_CONFIG_COUNT").as_deref() == Ok("1")
+                && env::var("GIT_CONFIG_KEY_0").as_deref()
+                    == Ok(format!("http.{source_url}.extraHeader").as_str())
+                && env::var("GIT_CONFIG_VALUE_0").as_deref() == Ok(AUTH_HEADER),
+            "credential escaped its fetch scope",
+        );
+    } else {
+        require(
+            env::var_os("GIT_CONFIG_KEY_0").is_none()
+                && env::var_os("GIT_CONFIG_VALUE_0").is_none(),
+            "partial credential environment",
+        );
+    }
+    if is_fetch && https_url.is_none() && root.join("requires-auth").exists() && !authenticated {
+        eprintln!("{SENTINEL}: authentication required");
+        process::exit(95);
+    }
+    if is_fetch && https_url.is_none() && root.join("auth-echo").exists() {
+        println!("{AUTH_HEADER}");
+        eprintln!("{SENTINEL}: echoed authenticated server response");
+        process::exit(96);
+    }
     if command == "init" {
         require(
             args.iter().any(|arg| arg == "--bare"),
@@ -234,15 +310,22 @@ fn main() {
             eprintln!("{SENTINEL}: echoed remote failure");
             process::exit(92);
         }
-        require(
-            args[source] == "https://fixture.invalid/seed",
-            "unexpected fixture source",
-        );
-        args[source] = git_path(&root.join("remote"));
+        require(args[source] == source_url, "unexpected fixture source");
+        if https_url.is_none() {
+            args[source] = git_path(&root.join("remote"));
+        }
     }
     let mut git = Command::new(GIT);
+    if https_url.is_some() {
+        // Trust only this fixture's ephemeral CA, without changing host trust.
+        git.args(["-c", "http.schannelUseSSLCAInfo=true"]);
+        git.args([
+            "-c",
+            &format!("http.sslCAInfo={}", git_path(&root.join("server-ca.pem"))),
+        ]);
+    }
     git.args(args);
-    if is_fetch {
+    if is_fetch && https_url.is_none() {
         // Only this explicitly trusted fixture substitutes a local transport.
         git.env("GIT_ALLOW_PROTOCOL", "file");
     }

@@ -1499,11 +1499,27 @@ The Git tool runs with isolated configuration/home and an allowlisted child
 environment, HTTPS-only transport, verified TLS and no redirects or interactive
 authentication. Remote stdout/stderr never enter diagnostics. `--git-tool` selects
 a trusted executable; Git and host executable/DLL lookup paths must be trusted.
+Resolution is anonymous unless `--git-credential-tool /path/to/helper` explicitly
+selects a trusted, noninteractive executable implementing Git's
+[credential-helper protocol](https://git-scm.com/docs/gitcredentials#_custom_helpers).
+Loom invokes it with the single argument `get`, passing the exact HTTPS host and
+repository path on stdin. There is no shell expansion, automatic discovery,
+`store`/`erase` call or manifest-selected credential tool. The helper inherits its
+ordinary host context and returns UTF-8 `username` and `password` fields; tokens
+can be supplied as passwords. It owns any credential storage or refresh.
+
+The resulting Basic authorization header exists only in the fetch child's
+environment, scoped to the selected URL, never in argv, a config file, lock,
+cache or diagnostic. Redirects, external pack/bundle URLs and dumb HTTP are
+disabled; TLS verification remains mandatory. This is not isolation from a
+trusted Git executable or other processes able to inspect the child environment.
+Helper failures and remote errors suppress their output. Cache hits and ordinary
+offline commands never invoke the helper. No credentials are needed to rebuild
+an already resolved, intact snapshot.
 Git-facing Windows drive/UNC paths use forward slashes without verbatim prefixes;
 Loom's canonical paths and native cwd remain unchanged. Windows Git sessions
 enable its builtin long-path support, not a promise about arbitrary external tools.
-Private-repository authentication, version ranges and graph-wide fork overrides
-remain open. Native object and frontend caches
+Version ranges and graph-wide fork overrides remain open. Native object and frontend caches
 are separate, opt-in trusted-local facilities described above.
 Resolution currently assumes a single writer and trusted filesystem ancestors;
 atomic lock replacement is not crash durability or protection from concurrent
@@ -2774,7 +2790,7 @@ language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Broader proofs and mutable-alias preservation, general resource transfer into
 Tasks, concurrent TLS directions/general worker APIs, remaining pack combinations, version normalization,
-authenticated Git sources, graph-wide fork policies and complete incremental
+graph-wide fork policies and complete incremental
 coverage remain open. Semantic-change and deployment tools have bounded working
 prototypes, not their general accepted workflows. See the concise
 [status](../docs/project/implementation-status.md) and
