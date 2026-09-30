@@ -55,6 +55,7 @@ fn is_integer(comptime choice Choice) Bool {
 fn exercise() {
     static_nominal_scope()
     function_signatures()
+    selected_field_types()
     let Number = comptime {
         choose(true, Int, Float)
     }

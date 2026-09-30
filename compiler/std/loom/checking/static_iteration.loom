@@ -30,6 +30,10 @@ fn value_iteration(context Context, node Node) Result[Node, Failure] {
         return Result.Err(failed)
     }
     let selected = get(context.bindings, binding)
+    let known_type = meta_binding(context, source.value)
+    if known_type >= 0 {
+        return shape_iteration(context, node, known_type)
+    }
     let ty = iteration_type(context, selected)
     if ty < 0 {
         return Result.Err(failed)

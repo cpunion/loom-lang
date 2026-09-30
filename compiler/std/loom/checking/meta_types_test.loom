@@ -168,3 +168,131 @@ test fn selected_patterns_keep_exact_type_arguments_and_abstract_requirements() 
         }
         """)
 }
+
+test fn selected_type_values_support_structural_iteration_without_sample_values() {
+    discard accepted("""
+        record Fields[T] {
+            ready Bool
+            value T
+        }
+        fn of[T]() type {
+            T
+        }
+        fn main() {
+            let Selected = comptime { of[Fields[Int]]() }
+            let actions = comptime map name, Field in Selected {
+                assert name == "ready" || name == "value"
+                fn(value Field) Field {
+                    value
+                }
+            }
+            assert actions.0(true) && actions.1(42) == 42
+            let Tuple = comptime { of[(Text, Bool)]() }
+            var count = 0
+            comptime for index, Field in Tuple {
+                assert comptime { of[Field]() == Field }
+                assert index == count
+                count = count + 1
+            }
+            assert count == 2
+            {
+                let Tuple = (3, 4)
+                var total = 0
+                comptime for value in Tuple {
+                    total = total + value
+                }
+                assert total == 7
+            }
+        }
+        """)
+}
+
+test fn selected_type_iteration_preserves_visibility_and_rejects_non_shapes() {
+    let files = source_files("""
+        import hidden.secret
+        fn main() {
+            let Selected = comptime { secret() }
+            comptime for Field in Selected {
+                discard Field
+            }
+        }
+        """)
+    push(files, source_file("hidden", """
+        record Secret {
+            value Int
+        }
+        pub fn secret() type {
+            Secret
+        }
+        """, false))
+    assert match checked(files) {
+        Result.Err(failed) => failed.diagnostic.message == "cannot inspect a private type from another package"
+        Result.Ok(_) => false
+    }
+    rejects("""
+        fn main() {
+            let Selected = comptime { Int }
+            comptime for Field in Selected {
+                discard Field
+            }
+        }
+        """)
+    rejects("""
+        fn main() {
+            let Selected = comptime { List[Int] }
+            discard comptime map Field in Selected {
+                Field
+            }
+        }
+        """)
+    rejects("""
+        fn missing[T]() {
+            let Selected = comptime { T }
+            comptime for Field in Selected {
+                discard Field
+            }
+        }
+        """)
+}
+
+test fn selected_type_iteration_keeps_current_field_types_after_cache_restoration() {
+    let source = """
+        record Fields {
+            value Int
+            ready Bool
+        }
+        pub fn answer() Int {
+            let Selected = comptime { Fields }
+            let actions = comptime map Field in Selected {
+                fn(value Field) Field {
+                    value
+                }
+            }
+            assert actions.1(true)
+            actions.0(42)
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let cache = restored_definition_cache(initial)
+    let moved = concat("fn unrelated(value List[Bool]) List[Bool] { value }\n", source)
+    assert match cached_source(cache, moved) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    discard restored_definition_cache(cache)
+    let changed = std.text.join(std.text.split(moved, "value Int"), "value Bool")
+    assert match cached_source(cache, changed) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
