@@ -2976,6 +2976,10 @@ LLVM first
 inlines source calls with opaque root-region markers, then lowers one linked
 stack-root frame per remaining native function. Region exits clear inactive
 slots; no marker reaches object code and no root table is copied on entry.
+Optimized builds inline direct primitive forwarders with small scalar guards
+before committing frames, so a checked `std.bytes.push` or `std.list.push` does
+not register a separate frame on every loop iteration. Larger wrappers and
+indirect calls retain ordinary LLVM inlining decisions; O0 stays unforced.
 Transitively nonallocating functions need no frame. Temporary snapshots protect
 managed results only across a later possible allocation; immediate local/return
 handoffs and nonallocating reads need no temporary root. Pending arguments and

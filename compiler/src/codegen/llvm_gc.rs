@@ -18,6 +18,54 @@ impl RootFrame<'_> {
     }
 }
 
+/// Primitive forwarding is already lowered directly. Inline its small source
+/// guard as well, before opaque GC markers distort LLVM's cost estimate.
+pub(super) fn primitive_forwarder(function: &checked::Function) -> bool {
+    let value = match (function.body.statements.as_slice(), &function.body.tail) {
+        ([], Some(value)) => value.as_ref(),
+        ([statement], None) => match &statement.kind {
+            checked::StmtKind::Expr(value)
+            | checked::StmtKind::Discard(value)
+            | checked::StmtKind::Return(Some(value)) => value,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let checked::ExprKind::Primitive(_, args) = &value.kind else {
+        return false;
+    };
+    if args.len() != function.params.len()
+        || !args
+            .iter()
+            .enumerate()
+            .all(|(index, arg)| matches!(arg.kind, checked::ExprKind::Local(id) if id == index))
+    {
+        return false;
+    }
+    fn small_guard(value: &checked::Expr, budget: &mut usize) -> bool {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        match &value.kind {
+            checked::ExprKind::Int(_)
+            | checked::ExprKind::Float(_)
+            | checked::ExprKind::Bool(_)
+            | checked::ExprKind::Local(_) => true,
+            checked::ExprKind::Unary(_, inner) => small_guard(inner, budget),
+            checked::ExprKind::Binary(_, left, right) => {
+                small_guard(left, budget) && small_guard(right, budget)
+            }
+            _ => false,
+        }
+    }
+    let mut budget = 24;
+    function
+        .requires
+        .iter()
+        .all(|guard| small_guard(guard, &mut budget))
+}
+
 /// A function with no transitive allocation has no GC safe point. Keeping
 /// simple Text accessors and scalar helpers root-free matters in lexer loops.
 pub(super) fn allocating_functions(
