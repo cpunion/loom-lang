@@ -4,6 +4,60 @@ mod common;
 use common::{loom, success};
 
 #[test]
+fn independent_nominal_types_do_not_share_a_specialization_budget() {
+    let package = tempfile::tempdir().unwrap();
+    let mut source = (0..4200)
+        .map(|index| format!("record Item_{index} {{\n    value Int\n}}\n"))
+        .collect::<String>();
+    source.push_str(
+        r#"
+concept Value {
+    fn value(self Self) Int
+}
+record Item {}
+concept Source {
+    type Item Value
+    fn first(self Self) Self.Item
+}
+fn read[S Source](source S) Int {
+    source.first().value()
+}
+fn main() {
+    let first = Item_0 { value = 40 }
+    let last = Item_4199 { value = 2 }
+    assert first.value + last.value == 42
+}
+"#,
+    );
+    fs::write(package.path().join("main.loom"), source).unwrap();
+    // Test-only conformances must flow through the declared associated promise
+    // when the production generic body specializes, even in a large project.
+    fs::write(
+        package.path().join("evidence_test.loom"),
+        r#"
+impl Value for Item {
+    fn value(self Item) Int {
+        42
+    }
+}
+impl Source for Bool {
+    type Item = Item
+    fn first(self Bool) Item {
+        Item {}
+    }
+}
+test fn associated_evidence_is_independent_of_unrelated_types() {
+    assert read(true) == 42
+}
+"#,
+    )
+    .unwrap();
+    for command in ["check", "run", "test"] {
+        success(&loom(&[command, package.path().to_str().unwrap()]));
+    }
+}
+
+#[test]
 fn independent_reachable_functions_do_not_share_a_specialization_budget() {
     let package = tempfile::tempdir().unwrap();
     let declarations = (0..1100)

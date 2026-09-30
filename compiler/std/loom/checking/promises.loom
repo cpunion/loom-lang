@@ -58,6 +58,7 @@ fn promised(env Environment, owner Int, obligations List[Requirement], ty Int, c
     // Breadth-first expansion finds finite evidence even if an earlier member
     // generates an unbounded family. Repeated (type, concept) pairs stop cycles.
     var exhausted = false
+    var expanded = 0
     var applications = length(env.family_applications)
     index = 0
     while index < length(pending) {
@@ -65,7 +66,10 @@ fn promised(env Environment, owner Int, obligations List[Requirement], ty Int, c
         if given.ty == ty && given.capability == capability { return concrete_methods(resolution_env, owner, ty, capability) }
         let shape = get(env.types, given.ty)
         if get(relevant, concept_index(env, given.capability)) {
-            if type_depth(env, given.ty) >= 64 || length(env.types) >= 4096 { exhausted = true } else {
+            // Search work belongs to this evidence request. Unrelated types
+            // already interned by other declarations cannot exhaust it.
+            if type_depth(env, given.ty) >= 64 || expanded >= 4096 { exhausted = true } else {
+                expanded = expanded + 1
                 if shape.kind != TypeKind.Parameter && shape.kind != TypeKind.Associated {
                     let declaration = get(env.concepts, concept_index(env, given.capability))
                     var member = 0

@@ -228,8 +228,9 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
         }
         index = index + 1
     }
-    if depth > 64 || length(env.types) >= 4096 {
-        return Result.Err(failure(env, declaration, item.node, "type specialization budget exceeded; expansion must be finite"))
+    // Bound an expanding type chain, not unrelated types in the same build.
+    if depth > 64 {
+        return Result.Err(failure(env, declaration, item.node, "type specialization depth exceeded; expansion must be finite"))
     }
     let kind = if item.node.kind == NodeKind.Record { TypeKind.Record } else {
         if item.node.kind == NodeKind.Enum { TypeKind.Enum } else { TypeKind.Refined }

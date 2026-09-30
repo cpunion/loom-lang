@@ -103,6 +103,10 @@ bounds and do not infer receiver types from projected results.
 Method/implementation packs, multiple packs and universal variadic postcondition proofs
 remain unsupported. Compile-time execution is not proof by sampling.
 
+Independent nominal declarations do not share a global type-count budget.
+Recursive type expansion stays depth-bounded; associated-evidence search has
+a per-request work budget, independent of unrelated interned types.
+
 Typed expression macros receive inferred schemas and return checked hygienic
 Text/AST expressions. Explicit top-level declaration generation runs before
 binding; it is not an implicit fixed-point expansion. Reflection exposes
