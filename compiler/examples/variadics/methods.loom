@@ -1,0 +1,113 @@
+concept Packing {
+    type Item
+
+    fn gather[Ts...](self Self, values Ts...) (Ts...) {
+        values
+    }
+
+    fn pair[Ts...](self Self, values (Ts...)) (Self.Item, (Ts...))
+
+    fn invoke[R, Ts...](self Self, callback fn(Ts...) R, values (Ts...)) R {
+        callback(values...)
+    }
+
+    async fn tasks[Ts...](self Self, values Task[Ts]...) (Task[Ts]...) {
+        values
+    }
+}
+
+concept MethodSource {
+    type Wrap[T]
+}
+
+impl MethodSource for Int {
+    type Wrap[T] = (Int, T)
+}
+
+impl MethodSource for Bool {
+    type Wrap[T] = List[T]
+}
+
+concept MethodProjections {
+    fn keep[Ts...MethodSource](self Self, values Ts.MethodSource.Wrap[Ts]...) (Ts.MethodSource.Wrap[Ts]...)
+}
+
+impl MethodProjections for Bool {
+    fn keep[Us...](self Bool, values Us.MethodSource.Wrap[Us]...) (Us.MethodSource.Wrap[Us]...) {
+        values
+    }
+}
+
+record Packed[X] {
+    value X
+}
+
+impl[X] Packing for Packed[X] {
+    type Item = X
+
+    fn gather[Us...](self Packed[X], values Us...) (Us...) {
+        values
+    }
+
+    fn pair[Us...](self Packed[X], values (Us...)) (X, (Us...)) {
+        (self.value, values)
+    }
+}
+
+impl Packing for Bool {
+    type Item = Bool
+
+    fn pair[Us...](self Bool, values (Us...)) (Bool, (Us...)) {
+        (self, values)
+    }
+}
+
+fn method_forward[S Packing, Ts...](source S, values (Ts...)) (S.Item, (Ts...)) {
+    source.pair(values)
+}
+
+fn exercise_methods() {
+    let projected = true.keep[Int, Bool]((1, 2), [true])
+    assert projected.0.1 == 2 && projected.1[0]
+    let source = Packed {
+        value = "source"
+    }
+    discard source.gather()
+    assert source.gather(1).0 == 1
+    let pair = source.gather(2, "two")
+    assert pair.0 == 2 && pair.1 == "two"
+    assert source.invoke(combine, (2, "callback")) == "callback"
+    assert source.invoke(fn(number Int, text Text) Text {
+            assert number == 2
+            text
+        }, (2, "closure")) == "closure"
+    let static = comptime {
+        method_forward(Packed {
+                value = 3
+            }, (4, true))
+    }
+    assert static.0 == 3 && static.1.0 == 4 && static.1.1
+    let boxed dyn Packing[Item = Text] = source
+    discard boxed.gather()
+    assert boxed.gather(5).0 == 5
+    assert boxed.gather(6, "six").1 == "six"
+    let dynamic = Packing.pair[Int, Bool](boxed, (7, true))
+    assert dynamic.0 == "source" && dynamic.1.0 == 7 && dynamic.1.1
+    let fallback dyn Packing[Item = Bool] = true
+    assert fallback.gather(8, "eight").1 == "eight"
+    assert fallback.pair((9,)).1.0 == 9
+    let shared = [10]
+    let aliases = boxed.gather(shared, shared)
+    aliases.0[0] = 11
+    assert aliases.1[0] == 11
+    let log List[Int] = []
+    take(boxed.gather(mark(log, 1), mark(log, 2), mark(log, 3)), log)
+}
+
+async fn exercise_method_tasks() {
+    let source dyn Packing[Item = Bool] = true
+    let tasks = source.tasks(item(12), item("task")).await
+    assert tasks.0.await == 12
+    assert tasks.1.await == "task"
+    discard source.tasks().await
+}

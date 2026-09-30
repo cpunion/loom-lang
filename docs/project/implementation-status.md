@@ -105,8 +105,14 @@ tuple or nominal patterns; contextual function references and overloads use
 ordinary inference after expansion. The
 [native example](../../compiler/examples/data_packs/functions.loom) covers
 shared captures and once-only input effects, without a runtime pack.
-Method/implementation packs, multiple packs and universal variadic postcondition proofs
-remain unsupported. Compile-time execution is not proof by sampling.
+Method-local packs support default/override methods, ordinary generic impl
+headers, associated projections, structural inference, CTFE and async. Family
+headers match structurally for every arity; selected bodies are checked under
+abstract declared bounds. Dynamic calls use finite ordinary slots, not a new
+runtime pack ABI. The [method example](../../compiler/examples/variadics/methods.loom)
+also checks sharing and once-only effects. Packs in impl headers, multiple packs
+and universal variadic postcondition proofs remain unsupported. Compile-time
+execution is not proof by sampling.
 
 Independent nominal declarations do not share a global type-count budget.
 Recursive type expansion stays depth-bounded; associated-evidence search has

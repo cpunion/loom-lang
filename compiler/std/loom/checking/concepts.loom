@@ -9,6 +9,7 @@ import std.result.Result
 
 record Concept {
     symbol Int
+    ready Bool
     methods List[Int]
     associated List[Int]
     bounds List[List[Int]]
@@ -176,7 +177,8 @@ fn conformances(env Environment) Result[Bool, Failure] {
             }
             let position = concept_index(env, owner)
             let previous = get(env.concepts, position)
-            set(env.concepts, position, Concept { symbol = owner methods = methods associated = previous.associated bounds = previous.bounds })
+            discard validate_method_pack_declarations(env, owner)?
+            set(env.concepts, position, Concept { symbol = owner ready = true methods = methods associated = previous.associated bounds = previous.bounds })
         }
         owner = owner + 1
     }
@@ -213,7 +215,7 @@ fn conformances(env Environment) Result[Bool, Failure] {
             var candidate = 0
             while candidate < length(env.source.symbols) {
                 let method = symbol(env, candidate)
-                if method.owner == owner && method.node.kind == NodeKind.Function {
+                if method.owner == owner && method.node.kind == NodeKind.Function && pack_parameter(method.node) < 0 {
                     let matched = implementation_method(env, header, candidate, expected)?
                     if get(methods, matched.slot) >= 0 {
                         return Result.Err(failure(env, candidate, method.node, "duplicate implementation method for this concept overload"))
@@ -234,6 +236,7 @@ fn conformances(env Environment) Result[Bool, Failure] {
                 index = index + 1
             }
             set(env.implementations, position, Implementation { symbol = owner capability = capability ty = ty methods = methods associated = header.associated state = 2 })
+            discard validate_method_pack_implementation(env, get(env.implementations, position))?
         }
         owner = owner + 1
     }

@@ -11,60 +11,79 @@ fn visible_concept(context Context, capability Int) Bool {
     let target = symbol(context.env, capability)
     let here = symbol(context.env, context.signature.symbol)
     let path = qualify(package_label(context.env.source.modules, context.env.source.packages,
-        get(context.env.source.files, target.file).package), target.name)
+            get(context.env.source.files, target.file).package), target.name)
     let options = candidates(context.env.source, here.file, here.test_only, path)
     var index = 0
     while index < length(options) {
-        if get(options, index) == capability { return true }
+        if get(options, index) == capability {
+            return true
+        }
         index = index + 1
     }
     false
 }
-fn method_matches(env Environment, current Signature, member Text, arity Int, type_count Int) Bool {
+
+fn method_matches(env Environment, id Int, member Text, arity Int, type_count Int, choices List[Int]) Bool {
+    let current = get(env.signatures, id)
     symbol(env, current.symbol).name == member && length(current.params) == arity &&
-        (type_count == 0 || type_count == current.parameters - 1)
+    (type_count == 0 || type_count == current.parameters - 1) && selected_method_pack(env, id, choices)
 }
-fn concept_method(env Environment, capability Concept, member Text, arity Int, type_count Int) Bool {
+
+fn concept_method(env Environment, capability Concept, member Text, arity Int, type_count Int, choices List[Int]) Bool {
     var index = 0
     while index < length(capability.methods) {
-        let current = get(env.signatures, get(capability.methods, index))
-        if method_matches(env, current, member, arity, type_count) { return true }
+        if method_matches(env, get(capability.methods, index), member, arity, type_count, choices) {
+            return true
+        }
         index = index + 1
     }
     false
 }
-fn bound_method(context Context, ty Int, member Text, arity Int, type_count Int) Result[Bool, Failure] {
+
+fn bound_method(context Context, ty Int, member Text, arity Int, type_count Int, choices List[Int]) Result[Bool, Failure] {
     // Evidence preference matters only when concepts compete. Do not search an
     // unbounded associated family to classify an already unambiguous method.
     var index = 0
     var count = 0
     while index < length(context.env.concepts) {
         let capability = get(context.env.concepts, index)
-        if concept_method(context.env, capability, member, arity, type_count) && visible_concept(context, capability.symbol) { count = count + 1 }
+        if concept_method(context.env, capability, member, arity, type_count, choices) && visible_concept(context, capability.symbol) {
+            count = count + 1
+        }
         index = index + 1
     }
-    if count <= 1 { return Result.Ok(false) }
+    if count <= 1 {
+        return Result.Ok(false)
+    }
     index = 0
     while index < length(context.env.concepts) {
         let requirement = get(context.env.concepts, index)
         let methods = requirement.methods
         var method = 0
         while method < length(methods) {
-            let current = get(context.env.signatures, get(methods, method))
-            if visible_concept(context, requirement.symbol) && method_matches(context.env, current, member, arity, type_count) &&
-                evidence(context, ty, requirement.symbol)? { return Result.Ok(true) }
+            if visible_concept(context, requirement.symbol) && method_matches(context.env, get(methods, method), member, arity, type_count, choices) &&
+            evidence(context, ty, requirement.symbol)? {
+                return Result.Ok(true)
+            }
             method = method + 1
         }
         index = index + 1
     }
     Result.Ok(false)
 }
+
 fn method_call(context Context, node Node, source Node, method_name Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[Expr, Failure] {
     let receiver = expr(context, source, -1)?
     method_call_checked(context, node, source, receiver, method_name, types, inputs, selected, expected)
 }
+
 fn method_call_checked(context Context, node Node, source Node, receiver Expr, method_name Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[Expr, Failure] {
-    let bound = if selected >= 0 { false } else { bound_method(context, receiver.ty, method_name, length(inputs.nodes) + 1, length(types))? }
+    let choices = method_pack_selections(context, source, receiver, method_name, types, inputs, selected)?
+    let bound = if selected >= 0 {
+        false
+    } else {
+        bound_method(context, receiver.ty, method_name, length(inputs.nodes) + 1, length(types), choices)?
+    }
     let options = new[Int]()
     var index = 0
     let receiver_type = get(context.env.types, receiver.ty)
@@ -73,42 +92,49 @@ fn method_call_checked(context Context, node Node, source Node, receiver Expr, m
         let declaration = symbol(context.env, capability)
         let here = symbol(context.env, context.signature.symbol)
         if (selected >= 0 && selected != capability) ||
-            (!declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package) {
+        (!declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package) {
             return Result.Err(error(context, node, "the receiver does not expose that concept"))
         }
         let methods = get(context.env.concepts, concept_index(context.env, capability)).methods
         while index < length(methods) {
             let id = get(methods, index)
-            let current = get(context.env.signatures, id)
-            if method_matches(context.env, current, method_name, length(inputs.nodes) + 1, length(types)) { push(options, id) }
+            if method_matches(context.env, id, method_name, length(inputs.nodes) + 1, length(types), choices) {
+                push(options, id)
+            }
             index = index + 1
         }
     } else {
-    index = 0
-    while index < length(context.env.concepts) {
-        let capability = get(context.env.concepts, index)
-        if concept_method(context.env, capability, method_name, length(inputs.nodes) + 1, length(types)) &&
+        index = 0
+        while index < length(context.env.concepts) {
+            let capability = get(context.env.concepts, index)
+            if concept_method(context.env, capability, method_name, length(inputs.nodes) + 1, length(types), choices) &&
             ((selected < 0 && visible_concept(context, capability.symbol) &&
-            (!bound || evidence(context, receiver.ty, capability.symbol)?)) || selected == capability.symbol) {
-            let provided = if receiver_type.kind == TypeKind.Parameter || receiver_type.kind == TypeKind.Associated { -1 } else {
-                implementation(context, receiver.ty, capability.symbol)? }
-            let methods = if provided >= 0 { capability.methods } else {
-                if !concrete(context.env, receiver.ty) && evidence(context, receiver.ty, capability.symbol)? {
-                    capability.methods
-                } else { new[Int]() }
-            }
-            var method = 0
-            while method < length(methods) {
-                let id = get(methods, method)
-                let current = get(context.env.signatures, id)
-                if method_matches(context.env, current, method_name, length(inputs.nodes) + 1, length(types)) {
-                    push(options, id)
+                    (!bound || evidence(context, receiver.ty, capability.symbol)?)) || selected == capability.symbol) {
+                let provided = if receiver_type.kind == TypeKind.Parameter || receiver_type.kind == TypeKind.Associated {
+                    -1
+                } else {
+                    implementation(context, receiver.ty, capability.symbol)?
                 }
-                method = method + 1
+                let methods = if provided >= 0 {
+                    capability.methods
+                } else {
+                    if !concrete(context.env, receiver.ty) && evidence(context, receiver.ty, capability.symbol)? {
+                        capability.methods
+                    } else {
+                        new[Int]()
+                    }
+                }
+                var method = 0
+                while method < length(methods) {
+                    let id = get(methods, method)
+                    if method_matches(context.env, id, method_name, length(inputs.nodes) + 1, length(types), choices) {
+                        push(options, id)
+                    }
+                    method = method + 1
+                }
             }
+            index = index + 1
         }
-        index = index + 1
-    }
     }
     if selected < 0 && receiver_type.kind == TypeKind.Record {
         var field = 0
@@ -125,12 +151,22 @@ fn method_call_checked(context Context, node Node, source Node, receiver Expr, m
                 match indexed {
                     Result.Ok(callee) => {
                         if get(context.env.types, callee.ty).kind == TypeKind.Function {
-                            let methods = if index_type_arguments(context, types) { options } else { new[Int]() }
+                            let methods = if index_type_arguments(context, types) {
+                                options
+                            } else {
+                                new[Int]()
+                            }
                             return field_call(context, node, source, receiver, callee, inputs, methods, types, expected)
                         }
-                        if length(options) == 0 { return call_value(context, node, callee, new[Node](), inputs) }
+                        if length(options) == 0 {
+                            return call_value(context, node, callee, new[Node](), inputs)
+                        }
                     }
-                    Result.Err(failed) => { if length(options) == 0 { return Result.Err(failed) } }
+                    Result.Err(failed) => {
+                        if length(options) == 0 {
+                            return Result.Err(failed)
+                        }
+                    }
                 }
             }
             if current.name == method_name && get(context.env.types, current.ty).kind == TypeKind.Function && length(types) == 0 {

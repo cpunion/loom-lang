@@ -6,9 +6,13 @@ import std.loom.typed.TypeKind
 // An arity of -1 registers a source declaration, without a signature or proof.
 record PackInstance {
     source Int
+    // A method template's original concept declaration; ordinary packs use
+    // their own source. This is not a runtime slot or an arity specialization.
+    declaration Int
     arity Int
     signature Int
-    // 0 = unvisited, 1 = checking, 2 = proved, 3 = queued, 4 =
+    // -2 = method header expansion; 0 = unvisited, 1 = checking,
+    // 2 = proved, 3 = queued, 4 =
     // checked in the current batch but not yet proved with its callees.
     state Int
     depth Int
@@ -110,8 +114,9 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         }
         return Result.Ok(false)
     }
-    if (item.node.kind != NodeKind.Function && !data_pack(item.node)) || item.owner >= 0 || has(item.node, NodeKind.Intrinsic) {
-        return Result.Err(failure(env, owner, item.node, "type packs belong to top-level functions, records or enums"))
+    let member = item.owner >= 0 && (symbol(env, item.owner).node.kind == NodeKind.Concept || symbol(env, item.owner).node.kind == NodeKind.Impl)
+    if (item.node.kind != NodeKind.Function && !data_pack(item.node)) || (item.owner >= 0 && !member) || has(item.node, NodeKind.Intrinsic) {
+        return Result.Err(failure(env, owner, item.node, "type packs belong to functions, concept methods, records or enums"))
     }
     if has(item.node, NodeKind.Ensures) {
         return Result.Err(failure(env, owner, item.node, "variadic postconditions require a proof over every arity; that proof is not supported yet"))
@@ -181,7 +186,7 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
         }
         index = index + 1
     }
-    if has(item.node, NodeKind.Test) || (item.name == "main" && get(env.source.files, item.file).package == env.source.root && !item.test_only) {
+    if has(item.node, NodeKind.Test) || (item.owner < 0 && item.name == "main" && get(env.source.files, item.file).package == env.source.root && !item.test_only) {
         return Result.Err(failure(env, owner, item.node, "main and tests take no parameters and omit the return type"))
     }
     Result.Ok(true)
@@ -680,14 +685,35 @@ fn pack_signature(env Environment, owner Int, arity Int) Result[Int, Failure] {
             name = item.name
             public = false
             test_only = item.test_only
-            owner = owner
+            owner = if item.owner >= 0 {
+                item.owner
+            } else {
+                owner
+            }
         })
     let arguments = abstract_arguments(env, function_parameter_count(env, source))
-    let current = source_signature(env, source, arguments, requirements(env, source, arguments)?)?
-    let selected = length(env.signatures)
-    push(env.signatures, current)
+    let obligations = requirements(env, source, arguments)?
+    let declaration = method_pack_source(env, owner)
+    if declaration >= 0 && declaration != owner {
+        let declared = pack_signature(env, declaration, arity)?
+        discard inherit_member_requirements(env, get(env.signatures, declared).symbol,
+            argument_tail(arguments, method_parameter_prefix(env, source)), obligations)?
+    }
+    let current = source_signature(env, source, arguments, function_requirements(env, source, obligations)?)?
+    let selected = if item.owner >= 0 {
+        register_signature(env, current)?
+    } else {
+        let id = length(env.signatures)
+        push(env.signatures, current)
+        id
+    }
     push(env.packs, PackInstance {
             source = owner
+            declaration = if declaration < 0 {
+                owner
+            } else {
+                declaration
+            }
             arity = arity
             signature = selected
             state = 0
@@ -700,6 +726,7 @@ fn pack_state(env Environment, index Int, state Int, depth Int) {
     let pack = get(env.packs, index)
     set(env.packs, index, PackInstance {
             source = pack.source
+            declaration = pack.declaration
             arity = pack.arity
             signature = pack.signature
             state = state
@@ -787,6 +814,9 @@ fn check_pack_arity(env Environment, signature Int) Result[Bool, Failure] {
         return Result.Ok(false)
     }
     let pack = get(env.packs, index)
+    if pack.state < 0 {
+        return Result.Err(failure(env, pack.source, symbol(env, pack.source).node, "variadic method header is not established"))
+    }
     if pack.state != 0 {
         return Result.Ok(true)
     }
@@ -810,13 +840,17 @@ fn check_pack_arity(env Environment, signature Int) Result[Bool, Failure] {
         let next = get(env.packs, queued)
         pack_state(env, queued, 1, next.depth)
         let current = get(env.signatures, next.signature)
-        match function(env, next.signature, abstract_arguments(env, current.parameters), unknown_constants(current), false) {
-            Result.Ok(_) => {
-                pack_state(env, queued, 4, next.depth)
-            }
-            Result.Err(failed) => {
-                finish_pack_batch(env, false)
-                return Result.Err(failed)
+        if prototype(env, current.symbol) && !has(symbol(env, current.symbol).node, NodeKind.Block) {
+            pack_state(env, queued, 4, next.depth)
+        } else {
+            match function(env, next.signature, abstract_arguments(env, current.parameters), unknown_constants(current), false) {
+                Result.Ok(_) => {
+                    pack_state(env, queued, 4, next.depth)
+                }
+                Result.Err(failed) => {
+                    finish_pack_batch(env, false)
+                    return Result.Err(failed)
+                }
             }
         }
         queued = queued_pack(env)
@@ -864,7 +898,7 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
                 }
             }
             if arity >= 0 {
-                push(choices, pack_signature(context.env, owner, arity)?)
+                push(choices, selected_pack_signature(context.env, owner, arity)?)
             }
         }
         index = index + 1

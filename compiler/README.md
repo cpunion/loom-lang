@@ -1002,7 +1002,16 @@ Unselected arities have not had their bodies verified. Variadic `ensures`
 declarations currently reject even when uncalled: proving selected arities is
 not a proof for every arity. Preconditions currently use fixed scalar parameters,
 not the tuple pack, and retain ordinary checked/runtime boundaries.
-Multiple packs, variadic methods and implementation headers,
+Concept methods accept the same final type pack, including defaults, overrides,
+ordinary generic implementation parameters, structural inference and `async`.
+Implementations may rename the pack and inherit its element requirements, but
+cannot strengthen them. Conformance compares expansion-preserving type schemas,
+not a few sampled arities. A selected arity becomes an ordinary method slot;
+`dyn` dispatch retains only concrete slots used by the build. `Self` remains
+receiver-only in dynamic methods, even inside an empty expansion. See the
+[method-pack example](examples/variadics/methods.loom).
+
+Multiple packs and packs in implementation headers,
 general type-list reflection and richer pack iteration remain open. This
 implementation does not complete the accepted metaprogramming design.
 

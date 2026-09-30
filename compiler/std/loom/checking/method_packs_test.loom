@@ -1,0 +1,115 @@
+fn method_pack_definitions() Text {
+    """
+        concept Packing {
+            type Item
+            fn gather[Ts...](self Self, values Ts...) (Ts...) { values }
+            fn pair[Ts...](self Self, values (Ts...)) (Self.Item, (Ts...))
+        }
+        record Box[X] { value X }
+        impl[X] Packing for Box[X] {
+            type Item = X
+            fn pair[Us...](self Box[X], values (Us...)) (X, (Us...)) {
+                (self.value, values)
+            }
+        }
+        """
+}
+
+test fn method_packs_share_static_dynamic_default_and_structural_inference() {
+    discard accepted(concat(method_pack_definitions(), """
+        fn forward[S Packing, Ts...](source S, values (Ts...)) (S.Item, (Ts...)) {
+            source.pair(values)
+        }
+        fn main() {
+            let source = Box { value = "source" }
+            discard source.gather()
+            assert source.gather(1).0 == 1
+            let boxed dyn Packing[Item = Text] = source
+            let pair = boxed.pair((2, true))
+            assert pair.0 == "source" && pair.1.0 == 2 && pair.1.1
+            assert boxed.gather(3, "three").1 == "three"
+            let constant = comptime { forward(Box { value = 4 }, (5, false)) }
+            assert constant.0 == 4 && !constant.1.1
+        }
+        """))
+}
+
+test fn method_pack_headers_require_universal_matching_without_sampling() {
+    rejects("concept C { fn take[Ts...](self Self, values Ts...) (Ts...) }\nimpl C for Bool { fn take[Us...](self Bool, values Us...) (Bool, Us...) { (self, values...) } }")
+    rejects("concept D {}\nconcept C { fn take[Ts...](self Self, values Ts...) (Ts...) }\nimpl C for Bool { fn take[Us...D](self Bool, values Us...) (Us...) { values } }")
+    rejects("concept C { fn take[Ts...](self Self, values Ts...) (Ts...) }\nimpl C for Bool {}")
+    rejects("concept C { fn take[Ts...](self Self, values Ts...) (Ts...) { values }\nfn take[Us...](self Self, values Us...) (Us...) { values } }")
+    rejects("concept C { fn take[Ts...](self Self, values Ts...) (Ts...) }\nimpl C for Bool { fn take[Us...](self Bool, values Us...) (Us...) requires self { values } }")
+    rejects("concept C { fn take[Ts...](self Self, values (Self, Ts)...) (Ts...) }\nimpl C for Bool { fn take[Us...](self Bool, values (Bool, Us)...) (Us...) { comptime map value in values { value.1 } } }\nfn main() { let boxed dyn C = true\ndiscard boxed.take() }")
+}
+
+test fn method_packs_check_abstract_bodies_and_inherited_element_bounds() {
+    let definitions = """
+        concept Show { fn show(self Self) Int }
+        impl Show for Int { fn show(self Int) Int { self } }
+        concept C { fn sum[Ts...Show](self Self, values Ts...) Int }
+        impl C for Bool {
+            fn sum[Us...](self Bool, values Us...) Int {
+                var total = 0
+                comptime for value in values { total = total + value.show() }
+                total
+            }
+        }
+        """
+    discard accepted(concat(definitions, "fn main() { assert true.sum(1, 2) == 3 }"))
+    rejects(concat(definitions, "fn main() { discard true.sum(1, false) }"))
+    rejects("concept Show { fn show(self Self) Int }\nimpl Show for Int { fn show(self Int) Int { self } }\nconcept C { fn sum[Ts...](self Self, values Ts...) Int }\nimpl C for Bool { fn sum[Us...](self Bool, values Us...) Int { var total = 0\ncomptime for value in values { total = total + value.show() }\ntotal } }\nfn main() { discard true.sum(1) }")
+    discard accepted("""
+        concept A { type Item }
+        concept B { type Item }
+        concept C {
+            fn take[Ts...A](self Self, values Ts.A.Item...) Int
+            fn take[Ts...B](self Self, values List[Ts.B.Item]...) Int
+        }
+        impl A for Int { type Item = Int }
+        impl B for Bool { type Item = Int }
+        impl C for Bool {
+            fn take[Us...](self Bool, values List[Us.B.Item]...) Int { 22 }
+            fn take[Us...](self Bool, values Us.A.Item...) Int { 11 }
+        }
+        fn main() {
+            assert true.take[Int](7) == 11
+            assert true.take[Bool]([8]) == 22
+        }
+        """)
+}
+
+test fn method_pack_slots_restore_by_declaration_and_selected_arity() {
+    let source = concat(method_pack_definitions(), """
+        pub fn answer() Int {
+            let source dyn Packing[Item = Int] = Box { value = 4 }
+            let pair = source.pair((5, true))
+            assert pair.1.1
+            assert source.gather(6).0 == 6
+            pair.0 + pair.1.0
+        }
+        """)
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let cache = restored_definition_cache(initial)
+    assert match cached_source(cache, concat("fn unrelated() {}\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    assert bodies_reused(cache) >= 1
+    discard restored_definition_cache(cache)
+    let invalid = std.text.join(std.text.split(source, "(5, true)"), "(5, 6)")
+    assert match cached_source(cache, invalid) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

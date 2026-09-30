@@ -354,7 +354,7 @@ fn body_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure
     let prior = get(get(reuse.prior, 0).targets, target)
     let owner = body_symbol(reuse, prior.symbol)
     if prior.arity >= 0 {
-        let selected = pack_signature(env, owner, prior.arity)?
+        let selected = selected_pack_signature(env, owner, prior.arity)?
         discard check_pack_arity(env, selected)?
         return schedule(env, selected, body_types(env, reuse, prior.arguments)?, body_constants(env, reuse, prior.constants, owner)?, symbol(env, owner).node)
     }

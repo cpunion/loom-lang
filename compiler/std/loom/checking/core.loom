@@ -335,7 +335,8 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Resu
     while index < length(source.symbols) {
         let item = symbol(env, index)
         if validate_pack(env, index)? {
-            push(env.packs, PackInstance { source = index arity = -1 signature = -1 state = -1 depth = 0 })
+            push(env.packs, PackInstance { source = index declaration = if prototype(env, index) || item.owner < 0 { index } else { -1 }
+                arity = -1 signature = -1 state = -1 depth = 0 })
         }
         if nominal_data(item.node.kind) && !data_pack(item.node) {
             discard data_type(env, index, abstract_arguments(env, length(group(item.node, NodeKind.TypeParameters))), 0)?

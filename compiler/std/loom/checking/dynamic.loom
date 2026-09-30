@@ -46,7 +46,7 @@ fn fill_interface(env Environment, receiver Int) Result[Bool, Failure] {
     if state.initialized || state.filling { return Result.Ok(true) }
     // Signatures can mention dyn before conformance collection has attached
     // their concept's methods. The later fill_interfaces pass initializes it.
-    if length(capability.methods) == 0 && has(symbol(env, capability.symbol).node, NodeKind.Function) {
+    if !capability.ready {
         return Result.Ok(true)
     }
     let methods = new[Method]()
@@ -67,6 +67,7 @@ fn fill_interface(env Environment, receiver Int) Result[Bool, Failure] {
     }
 }
 fn fill_interface_methods(env Environment, receiver Int, capability Concept, methods List[Method], slots List[DynamicSlot]) Result[Bool, Failure] {
+    discard dynamic_method_pack_headers(env, capability.symbol)?
     // Compare complete source signatures, including comptime parameters, before
     // omitting demand-specialized methods from the initial runtime table.
     let headers = new[Method]()
