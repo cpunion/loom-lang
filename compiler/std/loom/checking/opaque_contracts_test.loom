@@ -1,0 +1,107 @@
+test fn contracted_opaque_inputs_contribute_no_scalar_facts() {
+    discard accepted("""
+        fn keep(name Text, bytes Bytes, values List[Int], number Int) Int
+        ensures result == number {
+            number
+        }
+        pub fn forward(name Text, bytes Bytes, values List[Int], number Int) Int
+        ensures result == number {
+            keep(name, bytes, values, number)
+        }
+        """)
+    let files = source_files("""
+        import std.list.length
+        type One = List[Int] where length(self) == 1
+        fn keep(values One, number Int) Int
+        ensures result == number {
+            number
+        }
+        pub fn forward(values One, number Int) Int
+        ensures result == number {
+            keep(values, number)
+        }
+        """)
+    push(files, source_file("std.list", """
+            intrinsic fn list_len[T](values List[T]) Int
+            pub fn length[T](values List[T]) Int {
+                list_len(values)
+            }
+            """, true))
+    assert match checked(files) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            show_failure(fixture_project(files), failed)
+            false
+        }
+    }
+    rejects("""
+        fn peek(values List[Int], number Int) Int
+        ensures result == values[0] {
+            number
+        }
+        """)
+    rejects("""
+        fn snapshot(values List[Int], number Int) Int
+        ensures result == old(values)[0] {
+            number
+        }
+        """)
+    rejects("""
+        fn unmodeled(values List[Int], number Int) Int
+        ensures result == number {
+            values[0] = number
+            number
+        }
+        """)
+}
+
+test fn opaque_and_generic_nominal_receivers_use_declared_method_contracts() {
+    discard accepted(concat(abstract_contract_declarations(), """
+            impl Keep for Text {
+                fn keep(receiver Text, input Int) Int {
+                    input
+                }
+            }
+            impl Keep for Bytes {
+                fn keep(receiver Bytes, input Int) Int {
+                    input
+                }
+            }
+            impl[Item] Keep for List[Item] {
+                fn keep(receiver List[Item], input Int) Int {
+                    input
+                }
+            }
+            record Box[T] {
+                value T
+            }
+            impl[T] Keep for Box[T] {
+                fn keep(receiver Box[T], input Int) Int {
+                    input
+                }
+            }
+            fn from_list[T](source List[T], input Int) Int
+            ensures result == input {
+                source.keep(input)
+            }
+            fn from_box[T](source Box[T], input Int) Int
+            ensures result == input {
+                source.keep(input)
+            }
+            fn from_bytes(source Bytes, input Int) Int
+            ensures result == input {
+                source.keep(input)
+            }
+            fn from_text(source Text, input Int) Int
+            ensures result == input {
+                source.keep(input)
+            }
+            fn main() {
+                assert from_text("opaque", 1) == 1
+                assert from_list([true], 2) == 2
+                assert from_box(Box { value = "field" }, 3) == 3
+                let source dyn Keep = [1]
+                assert source.keep(4) == 4
+            }
+            """))
+}

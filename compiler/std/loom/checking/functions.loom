@@ -84,8 +84,7 @@ fn abstract_method_instance(env Environment, id Int, arguments List[Int]) Bool {
     if id < 0 || !prototype(env, get(env.signatures, id).symbol) || length(arguments) == 0 {
         return false
     }
-    let receiver = get(env.types, get(arguments, 0)).kind
-    receiver == TypeKind.Parameter || receiver == TypeKind.Associated
+    !concrete(env, get(arguments, 0))
 }
 
 fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticValue], node Node) Result[Int, Failure] {
