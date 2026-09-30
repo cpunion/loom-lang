@@ -149,7 +149,8 @@ target/local-toolchain/bin/loom check compiler/examples/wordcount
 ```
 
 The layout is `bin/loom`, `lib/loom/loom-native`, `lib/loom/std`, and the adjacent
-runtime archive (`.exe` / `loom_runtime.lib` on Windows). CLI and editor commands
+core and optional TLS runtime archives (`.exe`, `loom_runtime.lib` and
+`loom_tls.lib` on Windows). CLI and editor commands
 discover these relative to the executable, never the application directory.
 The script compiles a generic-CPU frontend, copies the current Rust bridge/runtime
 and source std, and exercises the relocated toolchain outside the checkout in a
@@ -2615,8 +2616,36 @@ promised across operating systems. These operations report `Address`, `Option`
 or `Shutdown` errors, including stale tokens. See the
 [EOF-delimited request/response example](examples/tcp_half_close/README.md).
 
+`std.net.tls` provides `Connection`, `ClientOptions`, `ServerOptions`, `Trust`
+and typed errors over TLS 1.2/1.3. `connect(host, port)` verifies the host against compiled Mozilla
+roots. The options overload accepts explicit PEM trust roots and ALPN; numeric
+`connect(address, name, options)` separates the TCP endpoint from the verified
+DNS/IP name. `accept(listener, options)` uses the supplied PEM chain and key.
+There is no insecure verifier or system-root lookup. Built-in roots update when
+the toolchain is rebuilt with a newer root package.
+
+Await `read`, `write_bytes` and `shutdown_write`; call `close` in `defer`.
+Reads append bytes, clean TLS EOF returns zero, and truncated TCP EOF fails.
+Write shutdown sends TLS close-notify, not TCP FIN, and preserves receiving.
+This preserves the local receive side, not a promise of more peer data; TLS 1.2
+peers may close both directions. EOF-delimited request/response protocols should
+use TLS 1.3 or an explicit application message delimiter.
+Copies share one connection: overlapping I/O returns `Busy`. Drain child Tasks
+before closing; failed/cancelled operations close the connection so partially
+sent records cannot be reused. Payload contents share TCP's alias rules above.
+`protocol`, `local_address` and `peer_address` query ALPN and numeric endpoints.
+Concurrent read/write directions, mutual TLS and resumption configuration remain
+open. See the [TLS example](examples/tls_loopback/README.md).
+
+The source package owns this policy; Rustls supplies packet processing in the
+optional `libloom_tls.a` (`loom_tls.lib`) beside the core archive. Native linking
+inspects actual object references, so unused TLS imports and ordinary Tasks do
+not retain cryptography. Cached objects use the same selection and relink with
+the current provider. `LOOM_RUNTIME_LIBRARY` selects the core archive and its
+directory; TLS programs require the named sibling provider.
+
 `std.task.deadline` can cancel a connect/read Task; DNS cancellation still drains
-running OS resolution. There is no DNS cache, parallel address racing, TLS,
+running OS resolution. There is no DNS cache, parallel address racing,
 structured OS-error detail or full socket-option surface yet.
 General worker operations also remain open; the
 [accepted design](../docs/rfcs/tasks.md) remains broader.
@@ -2725,7 +2754,7 @@ old-language support policy. Stage numbers denote bootstrap generations, not
 language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Broader proofs and mutable-alias preservation, general resource transfer into
-Tasks, TLS/general worker APIs, remaining pack combinations, version normalization,
+Tasks, concurrent TLS directions/general worker APIs, remaining pack combinations, version normalization,
 authenticated Git sources, graph-wide fork policies and complete incremental
 coverage remain open. Semantic-change and deployment tools have bounded working
 prototypes, not their general accepted workflows. See the concise

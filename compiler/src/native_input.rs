@@ -1054,6 +1054,23 @@ impl Converter<'_> {
                         return Err("checked process capture type mismatch".into());
                     }
                 }
+                if matches!(operation, Primitive::TlsClient | Primitive::TlsServer) {
+                    let text_list =
+                        |ty| matches!(ty, Type::List(id) if self.program.lists[id] == Type::Text);
+                    let valid = if operation == Primitive::TlsClient {
+                        arguments[0].ty == Type::Text
+                            && arguments[1].ty == Type::Bytes
+                            && arguments[2].ty == Type::Int
+                            && text_list(arguments[3].ty)
+                    } else {
+                        arguments[0].ty == Type::Bytes
+                            && arguments[1].ty == Type::Bytes
+                            && text_list(arguments[2].ty)
+                    };
+                    if !valid || ty != Type::Int {
+                        return Err("checked TLS configuration type mismatch".into());
+                    }
+                }
                 let signature: Option<(&[Type], Type)> = match operation {
                     Primitive::BytesGet => Some((&[Type::Bytes, Type::Int], Type::Int)),
                     Primitive::BytesSet => Some((&[Type::Bytes, Type::Int, Type::Int], Type::Unit)),
@@ -1067,13 +1084,18 @@ impl Converter<'_> {
                     | Primitive::SocketConnectStatus
                     | Primitive::SocketClose
                     | Primitive::SocketShutdownWrite
+                    | Primitive::TlsStatus
+                    | Primitive::TlsShutdown
+                    | Primitive::TlsRelease
                     | Primitive::SocketLocalPort => Some((&[Type::Int], Type::Int)),
+                    Primitive::TlsProtocol => Some((&[Type::Int], Type::Text)),
+                    Primitive::TlsOutput => Some((&[Type::Int, Type::Bytes], Type::Int)),
                     Primitive::SocketAddress => Some((&[Type::Int, Type::Int], Type::Text)),
                     Primitive::SocketSetNodelay => Some((&[Type::Int, Type::Int], Type::Int)),
-                    Primitive::SocketRead => {
+                    Primitive::SocketRead | Primitive::TlsRead | Primitive::TlsReceive => {
                         Some((&[Type::Int, Type::Bytes, Type::Int], Type::Int))
                     }
-                    Primitive::SocketWriteBytes => {
+                    Primitive::SocketWriteBytes | Primitive::TlsWrite => {
                         Some((&[Type::Int, Type::Bytes, Type::Int, Type::Int], Type::Int))
                     }
                     Primitive::DirectoryCreate
@@ -1429,6 +1451,16 @@ fn primitive(value: &str) -> Result<Primitive> {
         "socket_address" => P::SocketAddress,
         "socket_set_nodelay" => P::SocketSetNodelay,
         "socket_shutdown_write" => P::SocketShutdownWrite,
+        "tls_client" => P::TlsClient,
+        "tls_server" => P::TlsServer,
+        "tls_receive" => P::TlsReceive,
+        "tls_read" => P::TlsRead,
+        "tls_write" => P::TlsWrite,
+        "tls_output" => P::TlsOutput,
+        "tls_status" => P::TlsStatus,
+        "tls_shutdown" => P::TlsShutdown,
+        "tls_release" => P::TlsRelease,
+        "tls_protocol" => P::TlsProtocol,
         "directory_read" => P::DirectoryRead,
         "path_kind" => P::PathKind,
         "path_canonical" => P::PathCanonical,
@@ -1516,6 +1548,10 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::SocketClose
         | P::SocketLocalPort
         | P::SocketShutdownWrite
+        | P::TlsStatus
+        | P::TlsShutdown
+        | P::TlsRelease
+        | P::TlsProtocol
         | P::PathKind
         | P::DirectoryCreate
         | P::FileRemove
@@ -1554,6 +1590,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskWaitSocket
         | P::PathRename => 2,
         P::SocketAddress | P::SocketSetNodelay => 2,
+        P::TlsOutput => 2,
         P::TextSlice
         | P::BytesSet
         | P::ListSet
@@ -1561,11 +1598,15 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::Write
         | P::WriteBytes
         | P::SocketRead
+        | P::TlsRead
+        | P::TlsReceive
+        | P::TlsServer
         | P::TaskWaitFileWrite
         | P::TaskWaitFileWriteBytes
         | P::TaskCreate
         | P::CleanupEach => 3,
         P::ListRetainRange | P::SocketWriteBytes => 4,
+        P::TlsClient | P::TlsWrite => 4,
         P::TaskWaitProcessCapture => 5,
         P::ProcessCaptureConfigured => 6,
         P::ProcessCaptureInputConfigured => 7,
@@ -1822,7 +1863,7 @@ mod tests {
     }
 
     #[test]
-    fn process_operations_have_exact_wire_types() {
+    fn configured_native_operations_have_exact_wire_types() {
         let stream = |name: &str, params: &[usize], result| {
             let arguments = params
                 .iter()
@@ -1850,6 +1891,15 @@ mod tests {
                 &[4, 3, 2, 1, 4, 3, 3][..],
             ),
             ("env_get", &[2, 3][..]),
+            ("tls_client", &[2, 3, 1, 4][..]),
+            ("tls_server", &[3, 3, 4][..]),
+            ("tls_receive", &[1, 3, 1][..]),
+            ("tls_read", &[1, 3, 1][..]),
+            ("tls_write", &[1, 3, 1, 1][..]),
+            ("tls_output", &[1, 3][..]),
+            ("tls_status", &[1][..]),
+            ("tls_shutdown", &[1][..]),
+            ("tls_release", &[1][..]),
         ] {
             let operation = primitive(name).unwrap();
             let program = decode(&stream(name, params, 1)).unwrap();

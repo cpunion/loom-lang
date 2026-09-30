@@ -1,0 +1,62 @@
+import std.task.cancel
+import std.task.Outcome
+import std.net.tcp.listen
+import std.net.tcp.close_listener
+
+test async fn configuration_errors_do_not_open_a_transport() {
+    let options = ClientOptions {
+        trust = Trust.Certificates(std.bytes.new())
+        protocols = ["loom"]
+    }
+    assert match connect("127.0.0.1:0", "localhost", options).await {
+        Result.Err(error) => error == TlsError.Configuration
+        Result.Ok(_) => false
+    }
+    assert tls_server(std.bytes.new(), std.bytes.new(), ["loom"]) < 0
+    assert tls_client("localhost", std.bytes.new(), 1, [""]) < 0
+}
+
+test async fn cancellation_drains_handshake_and_closes_the_transport() {
+    let listener = match listen("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard close_listener(listener)
+    }
+    let address = match std.net.tcp.local_address(listener) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let connecting = connect(address, "localhost", default_client())
+    let peer = match std.net.tcp.accept(listener).await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            discard cancel(connecting)
+            assert false
+            return
+        }
+    }
+    defer {
+        discard std.net.tcp.close_stream(peer)
+    }
+    let hello = std.bytes.new()
+    assert match std.net.tcp.read(peer, hello, 16384).await {
+        Result.Ok(count) => count > 0
+        Result.Err(_) => false
+    }
+    assert match cancel(connecting) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert match std.net.tcp.read(peer, hello, 16384).await {
+        Result.Ok(count) => count == 0
+        Result.Err(_) => false
+    }
+}

@@ -15,7 +15,7 @@ syntax, APIs and supported proof fragment.
 | Language | Generics, concepts/dyn, associated types, closures, tuples, recursive List-backed data and pattern matching. | Not every accepted generic/pack combination is implemented. |
 | Guarantees | Checked constrained construction, safe weakening, bounded mandatory postconditions and selected invariant-preserving operations. | General loop proofs and mutable-alias preservation remain open. |
 | Metaprogramming | Pure compile-time execution, type/value/function parameters, packs, typed macros, reflection and tracked inputs. | Staging and visibility still apply; no arbitrary compile-time I/O. |
-| Memory/resources/async | Moving GC, lexical cleanup, stackless Tasks, real timers, files, DNS/TCP and tuple/List joins. | Cooperative scheduling; TLS and general worker APIs remain open. |
+| Memory/resources/async | Moving GC, lexical cleanup, stackless Tasks, real timers, files, DNS/TCP/TLS and tuple/List joins. | Cooperative scheduling; concurrent TLS directions and general worker APIs remain open. |
 | Programming tools | Directory tests, recursive test selection, formatter, LSP/VS Code, public parser/analysis libraries. | Public/API rename and broader erroneous-source queries remain open. |
 | Evolution tools | Reviewed single-package semantic merge and a real offline SQLite migration trial. | Bounded prototypes, not general semantic VCS or deployment compatibility proof. |
 
@@ -173,8 +173,16 @@ cancellation reaps the direct child without terminating process trees.
 TCP exposes numeric local/peer endpoints, TCP_NODELAY and write half-close,
 preserving pending receive registrations for EOF-delimited exchanges. Text-to-Bytes
 encoding is source-library policy and returns an independent buffer.
-TLS, general workers, broader socket options/address racing and parallel Loom
-execution are not implemented. See [Tasks and I/O](../../compiler/README.md#source-tasks).
+`std.net.tls` supplies verified client/server streams, custom PEM roots, ALPN,
+binary I/O and TLS close-notify. Rustls owns protocol/cryptography in a separately
+linked provider; Loom owns TCP, suspension and cancellation policy. It verifies
+certificate chains, time and names, and distinguishes truncation from clean EOF.
+The first API serializes I/O per shared connection; cancellation closes that
+connection after draining its transport waits. O0/O2 and moving-GC tests cover
+real encrypted traffic, rejected peers and independent Rustls interoperability.
+Concurrent TLS read/write, mutual TLS, general workers, broader socket options,
+address racing and parallel Loom execution remain open.
+See [Tasks and I/O](../../compiler/README.md#source-tasks).
 
 ## Modules, caching and performance
 

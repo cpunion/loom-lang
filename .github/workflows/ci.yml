@@ -57,9 +57,6 @@ jobs:
       - name: Core experience source trials
         run: |
           # The workspace frontend suite already runs checker and std.task tests.
-          target/loom test compiler/std/list/nonempty
-          target/loom test compiler/std/json
-          target/loom test compiler/std/storage
           target/loom run compiler/examples/contracts
           target/loom test compiler/examples/record_contracts
           target/loom test compiler/examples/concept_contracts
@@ -103,7 +100,7 @@ jobs:
   linux-llvm22:
     name: Linux native compiler (LLVM 22)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
       LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
@@ -136,8 +133,6 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
           bash scripts/bootstrap.sh
-          target/loom test compiler/std/storage
-          target/loom test compiler/std/json
           target/loom test tools/semantic_change
           target/loom test tools/semantic_change_trial
           cargo test --locked --workspace

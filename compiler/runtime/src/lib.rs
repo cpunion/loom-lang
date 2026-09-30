@@ -26,6 +26,7 @@ mod frame_roots_abi;
 #[cfg(test)]
 mod frame_roots_tests;
 mod fs_ops;
+pub mod native;
 mod process_io;
 mod tasks;
 #[cfg(test)]

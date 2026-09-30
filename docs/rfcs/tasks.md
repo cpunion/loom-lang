@@ -202,8 +202,8 @@ tuple value from a literal, binding, or call, evaluates it once, and uses the
 same `all` fault/cancellation policy without requiring a source import. It
 supports empty tuples produced by a type-pack call and singleton `(task,)`;
 source `()` remains invalid. Scalar Task `.await` is unchanged. Tuple elements
-must all be Tasks; arbitrary Awaitable values are not supported. TLS adapters
-and general worker operations remain unfinished requirements.
+must all be Tasks; arbitrary Awaitable values are not supported. General worker
+operations remain unfinished requirements.
 Two-argument homogeneous `any`/`race` calls delegate to their List policies,
 including loser cancellation and cleanup.
 Synchronous I/O still blocks the owner thread.
@@ -236,6 +236,22 @@ token or receive registrations. Finish intended writes before half-close, then
 close the stream after child waits drain. The
 [half-close example](../../compiler/examples/tcp_half_close/README.md) exercises
 EOF-delimited requests and responses with the ordinary source Task machinery.
+
+`std.net.tls` composes TCP Tasks with a Rustls packet engine. Client construction
+always verifies the server's certificate chain, validity period and DNS/IP name.
+Default trust is a compiled Mozilla root set; applications can supply explicit
+PEM roots. Server configuration supplies a PEM chain and private key. Configuration
+is copied into native state before transport suspension. ALPN is optional.
+The engine retains no GC pointers, schedules no I/O and owns no executor.
+Its archive is selected only for emitted TLS references, including cached objects.
+
+The initial `Connection` API permits one active I/O operation across all aliases;
+overlap returns `Busy`, not implicit queueing. Failed or cancelled operations
+drain transport children and retire the connection. `shutdown_write().await`
+flushes close-notify while retaining the receive side; synchronous `close` retires
+the transport and fits `defer`. Unexpected TCP EOF is not a successful TLS EOF.
+Deadlines use ordinary Task cancellation. Concurrent directions, mutual TLS and
+session-resumption policy remain future work, not implicit guarantees.
 
 `std.process.tasks.capture` / `capture_input` submit copied native commands and
 binary input to the same bounded pool. Their source result and configuration

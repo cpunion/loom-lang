@@ -22,8 +22,9 @@ if (existsSync(archive) || existsSync(checksum)) throw new Error("archive or che
 
 const suffix = process.platform === "win32" ? ".exe" : "";
 const runtimeName = process.platform === "win32" ? "loom_runtime.lib" : "libloom_runtime.a";
+const tlsName = process.platform === "win32" ? "loom_tls.lib" : "libloom_tls.a";
 for (const input of ["LICENSE", `bin/loom${suffix}`, `lib/loom/loom-native${suffix}`,
-  `lib/loom/${runtimeName}`, "lib/loom/std"]) {
+  `lib/loom/${runtimeName}`, `lib/loom/${tlsName}`, "lib/loom/std"]) {
   if (!existsSync(join(stage, input))) throw new Error(`incomplete staged toolchain: missing ${input}`);
 }
 
@@ -61,6 +62,14 @@ function addRustNotices(bundle) {
   return true;
 }
 
+function noticeFiles(directory, prefix = "") {
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const name = `${prefix}${entry.name}`;
+    if (entry.isDirectory()) return noticeFiles(join(directory, entry.name), `${name}/`);
+    return entry.isFile() && /^(license|copying|notice|authors)([.-]|$)/i.test(entry.name) ? [name] : [];
+  }).sort();
+}
+
 function addNotices(bundle) {
   const metadata = JSON.parse(run("cargo", ["metadata", "--locked", "--format-version", "1"], root));
   const packages = metadata.packages.filter(pkg => pkg.source !== null)
@@ -76,19 +85,31 @@ function addNotices(bundle) {
     const sourceDir = dirname(pkg.manifest_path);
     const destination = join(licenses, `${pkg.name}-${pkg.version}`);
     mkdirSync(destination);
-    const names = readdirSync(sourceDir).filter(name => /^(license|copying|notice|authors)([.-]|$)/i.test(name) &&
-      statSync(join(sourceDir, name)).isFile()).sort();
-    for (const name of names) copyFileSync(join(sourceDir, name), join(destination, name));
+    // Some dependencies (including ring) reference vendored nested licenses.
+    const names = noticeFiles(sourceDir);
+    for (const name of names) {
+      mkdirSync(dirname(join(destination, name)), { recursive: true });
+      copyFileSync(join(sourceDir, name), join(destination, name));
+    }
+    // The asn1-rs proc-macro tarball omits its project's shared license files.
+    if (pkg.name === "asn1-rs-impl" && names.length === 0) {
+      const parent = metadata.packages.find(item => item.name === "asn1-rs" && item.repository === pkg.repository);
+      if (!parent) throw new Error("missing asn1-rs project license source");
+      for (const name of ["LICENSE-APACHE", "LICENSE-MIT"]) {
+        copyFileSync(join(dirname(parent.manifest_path), name), join(destination, name));
+        names.push(name);
+      }
+    }
     // These two crates publish license metadata without a license file in
     // their crate tarballs. Both offer Apache-2.0; use the exact standard text
     // distributed with their dependency inkwell.
-    if (!names.some(name => /^(license|copying)([.-]|$)/i.test(name)) &&
+    if (!names.some(name => /^(license|copying)([.-]|$)/i.test(basename(name))) &&
         (pkg.name === "inkwell_internals" || pkg.name === "r-efi") &&
         pkg.license.includes("Apache-2.0")) {
       copyFileSync(apacheLicense, join(destination, "LICENSE-APACHE"));
       names.push("LICENSE-APACHE");
     }
-    if (!names.some(name => /^(license|copying)([.-]|$)/i.test(name))) {
+    if (!names.some(name => /^(license|copying)([.-]|$)/i.test(basename(name)))) {
       throw new Error(`${pkg.name} ${pkg.version} has no license text to distribute`);
     }
     rows.push(`| ${pkg.name} | ${pkg.version} | ${pkg.license.replaceAll("|", "\\|")} | ` +
@@ -152,6 +173,7 @@ try {
   if (run(executable, ["sample.txt"], application, { ...environment, LOOM_GC_STRESS: "1" }) !== "2 4 23\n") {
     throw new Error("extracted archive produced incorrect native output");
   }
+  run(loom, ["test", join(installed, "lib/loom/std/net/tls")], application, environment);
 
   mkdirSync(dirname(archive), { recursive: true });
   copyFileSync(temporaryArchive, archive, constants.COPYFILE_EXCL);

@@ -1,10 +1,26 @@
 [workspace]
 resolver = "3"
-members = ["compiler", "compiler/runtime"]
+members = ["compiler", "compiler/runtime", "compiler/tls"]
+
+[workspace.dependencies]
+rustls = { version = "=0.23.45", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-pemfile = "=2.2.0"
+rcgen = "=0.14.10"
 
 # Native Loom code is optimized; its allocation/GC boundary must not run as
 # unoptimized host code during ordinary development. Debug checks stay enabled.
 [profile.dev.package.loom-runtime]
+opt-level = 3
+
+[profile.dev.package.loom-tls]
+opt-level = 3
+
+# Native applications also need optimized packet processing in development builds.
+[profile.dev.package.rustls]
+opt-level = 3
+[profile.dev.package.rustls-webpki]
+opt-level = 3
+[profile.dev.package.ring]
 opt-level = 3
 
 # Cache identities stream the native toolchain, including the loaded LLVM image.

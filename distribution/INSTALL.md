@@ -1,8 +1,10 @@
 # Install a local Loom toolchain archive
 
 This archive contains `bin/loom`, the adjacent `lib/loom/loom-native` bridge,
-`lib/loom/std`, and the native runtime archive. Windows uses `.exe` and
-`loom_runtime.lib` names. `BUILD_INFO.json` records the packaging checkout
+`lib/loom/std`, and the core/TLS native archives. Windows uses `.exe`,
+`loom_runtime.lib` and `loom_tls.lib`; Unix uses `libloom_runtime.a` and
+`libloom_tls.a`. Only programs referencing TLS link the TLS provider.
+`BUILD_INFO.json` records the packaging checkout
 revision and host platform; `THIRD_PARTY_NOTICES.md` and `licenses/` contain
 dependency notices.
 The archive is specific to its build OS and CPU architecture.

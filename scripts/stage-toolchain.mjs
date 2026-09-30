@@ -18,10 +18,12 @@ const output = resolve(args[0]);
 if (existsSync(output)) throw new Error("toolchain destination already exists");
 const suffix = process.platform === "win32" ? ".exe" : "";
 const runtimeName = process.platform === "win32" ? "loom_runtime.lib" : "libloom_runtime.a";
+const tlsName = process.platform === "win32" ? "loom_tls.lib" : "libloom_tls.a";
 const compiler = join(root, `target/loom${suffix}`);
 const native = join(root, `target/debug/loom-native${suffix}`);
 const runtime = join(root, `target/debug/${runtimeName}`);
-for (const input of [compiler, native, runtime]) {
+const tls = join(root, `target/debug/${tlsName}`);
+for (const input of [compiler, native, runtime, tls]) {
   if (!existsSync(input)) throw new Error(`missing ${input}; bootstrap this checkout first`);
 }
 
@@ -67,6 +69,7 @@ try {
   mkdirSync(privateTools, { recursive: true });
   copyFileSync(native, join(privateTools, `loom-native${suffix}`));
   copyFileSync(runtime, join(privateTools, runtimeName));
+  copyFileSync(tls, join(privateTools, tlsName));
   copyTree(join(root, "compiler/std"), join(privateTools, "std"));
   copyFileSync(join(root, "LICENSE"), join(prefix, "LICENSE"));
   const buildEnvironment = { ...process.env, LOOM_TARGET_CPU: "generic", LOOM_OPT_LEVEL: "2" };
@@ -99,6 +102,7 @@ try {
       run(join(app, `wordcount${suffix}`), ["sample.txt"], app, { ...environment, LOOM_GC_STRESS: "1" }) !== expected) {
     throw new Error("relocated native file tool produced the wrong result");
   }
+  run(loom, ["test", join(prefix, "lib/loom/std/net/tls")], app, environment);
   // Check/editor use needs only the frontend and std, not a working LLVM bridge.
   const backend = join(prefix, `lib/loom/loom-native${suffix}`);
   await move(backend, `${backend}.disabled`);

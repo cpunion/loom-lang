@@ -115,6 +115,9 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::Read
         | Primitive::SocketRead
         | Primitive::SocketAddress
+        | Primitive::TlsRead
+        | Primitive::TlsOutput
+        | Primitive::TlsProtocol
         | Primitive::DirectoryRead
         | Primitive::PathCanonical => true,
         Primitive::TaskFailure
@@ -183,6 +186,13 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::SocketLocalPort
         | Primitive::SocketSetNodelay
         | Primitive::SocketShutdownWrite
+        | Primitive::TlsClient
+        | Primitive::TlsServer
+        | Primitive::TlsReceive
+        | Primitive::TlsWrite
+        | Primitive::TlsStatus
+        | Primitive::TlsShutdown
+        | Primitive::TlsRelease
         | Primitive::PathKind
         | Primitive::DirectoryCreate
         | Primitive::PathRename
