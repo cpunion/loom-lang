@@ -42,8 +42,7 @@ fn hint(context Context, pattern Int, arguments List[Int], node Node) Result[Int
     if complete(arguments) { return substitute(context.env, context.signature.symbol, pattern, arguments, node) }
     if concrete(context.env, pattern) { Result.Ok(pattern) } else { Result.Ok(-1) }
 }
-fn data_arguments(context Context, node Node, declaration Int, types List[Node], expected Int) Result[List[Int], Failure] {
-    let count = length(group(symbol(context.env, declaration).node, NodeKind.TypeParameters))
+fn data_arguments(context Context, node Node, declaration Int, types List[Node], expected Int, count Int) Result[List[Int], Failure] {
     let arguments = supplied(context, node, types, count)?
     if length(types) == 0 && expected >= 0 {
         let ty = get(context.env.types, expected)
@@ -56,8 +55,7 @@ fn data_arguments(context Context, node Node, declaration Int, types List[Node],
     }
     Result.Ok(arguments)
 }
-fn template(context Context, declaration Int) Result[Int, Failure] {
-    let count = length(group(symbol(context.env, declaration).node, NodeKind.TypeParameters))
+fn template(context Context, declaration Int, count Int) Result[Int, Failure] {
     data_type(context.env, declaration, abstract_arguments(context.env, count), 0)
 }
 
@@ -141,9 +139,14 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     let declaration = if selected >= 0 { meta_visible(context, node, selected)? } else { find_data(context.env, context.signature.symbol, node, node.value)? }
     if declaration < 0 { return Result.Err(error(context, node, "unknown record type")) }
-    let shape = get(context.env.types, template(context, declaration)?)
+    let desired = if selected >= 0 { selected } else { expected }
+    let source = symbol(context.env, declaration).node
+    let count = if data_pack(source) {
+        data_argument_count(context, node, declaration, child(node, 0).children, desired, plain_inputs(new[Node]()))?
+    } else { length(group(source, NodeKind.TypeParameters)) }
+    let shape = get(context.env.types, template(context, declaration, count)?)
     if shape.kind != TypeKind.Record { return Result.Err(error(context, node, "construction requires a record type")) }
-    let arguments = data_arguments(context, node, declaration, child(node, 0).children, if selected >= 0 { selected } else { expected })?
+    let arguments = data_arguments(context, node, declaration, child(node, 0).children, desired, count)?
     let seen = new[Bool]()
     var index = 0
     while index < length(shape.fields) { push(seen, false)
@@ -209,7 +212,12 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
         find_data(context.env, context.signature.symbol, node, package(node.value))?
     }
     if declaration < 0 { return Result.Err(error(context, node, "unknown enum type")) }
-    let shape = get(context.env.types, template(context, declaration)?)
+    let desired = if selected_type >= 0 { selected_type } else { expected }
+    let source = symbol(context.env, declaration).node
+    let count = if data_pack(source) {
+        data_argument_count(context, node, declaration, types, desired, inputs)?
+    } else { length(group(source, NodeKind.TypeParameters)) }
+    let shape = get(context.env.types, template(context, declaration, count)?)
     if shape.kind != TypeKind.Enum { return Result.Err(error(context, node, "variant construction requires an enum")) }
     var selected = -1
     var index = 0
@@ -220,7 +228,7 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
     if selected < 0 { return Result.Err(error(context, node, "unknown enum variant")) }
     let patterns = get(shape.variants, selected).fields
     if length(patterns) != length(inputs.nodes) { return Result.Err(error(context, node, "enum payload count does not match")) }
-    let arguments = data_arguments(context, node, declaration, types, if selected_type >= 0 { selected_type } else { expected })?
+    let arguments = data_arguments(context, node, declaration, types, desired, count)?
     let values = new[Expr]()
     index = 0
     while index < length(inputs.nodes) {

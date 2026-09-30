@@ -175,7 +175,7 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
     if node.value == "Float" { builtin = 5 }
     if node.value == "type" { builtin = meta_type(env) }
     if node.value == "Unit" { return Result.Err(failure(env, owner, node, "omit Unit; it is not a source type")) }
-    let parameters = type_parameters(env, owner)
+    let parameters = expanded_parameters(env, owner, length(arguments))
     var index = 0
     while index < length(parameters) {
         if node.value == get(parameters, index).value { builtin = get(arguments, index + parameter_offset(env, owner)) }
@@ -207,7 +207,9 @@ fn resolve_bound(env Environment, owner Int, node Node, arguments List[Int], obl
 }
 fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) Result[Int, Failure] {
     let item = symbol(env, declaration)
-    if length(arguments) != length(group(item.node, NodeKind.TypeParameters)) {
+    let pack = pack_parameter(item.node)
+    if (pack < 0 && length(arguments) != length(group(item.node, NodeKind.TypeParameters))) ||
+        (pack >= 0 && (length(arguments) < pack || pack + 1 != length(group(item.node, NodeKind.TypeParameters)))) {
         return Result.Err(failure(env, declaration, item.node, "wrong number of type arguments"))
     }
     var index = 0
@@ -251,9 +253,14 @@ fn expand_type(env Environment, id Int, depth Int) Result[Bool, Failure] {
     let fields = new[Field]()
     let variants = new[Variant]()
     let constraints = new[Expr]()
+    let pack = pack_parameter(item.node)
     var index = 0
     while index < length(item.node.children) {
-        let member = child(item.node, index)
+        let original = child(item.node, index)
+        let member = if pack >= 0 && (original.kind == NodeKind.Field || original.kind == NodeKind.Variant) {
+            let parameter = get(group(item.node, NodeKind.TypeParameters), pack)
+            expand_pack_type(env, declaration, original, parameter.value, length(arguments) - pack, -1, true, 0)?
+        } else { original }
         if member.kind == NodeKind.Field {
             push(fields, Field { name = member.value ty = resolve_bound(env, declaration, child(member, 0), arguments, obligations, depth + 1)? })
         }
@@ -397,6 +404,7 @@ fn layout(env Environment, id Int, states List[Int], owner Int) Result[Bool, Fai
     Result.Ok(true)
 }
 fn layouts(env Environment) Result[Bool, Failure] {
+    discard validate_data_packs(env)?
     let states = new[Int]()
     var index = 0
     while index < length(env.types) { push(states, 0)

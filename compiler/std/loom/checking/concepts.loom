@@ -72,7 +72,7 @@ fn requirements(env Environment, owner Int, arguments List[Int]) Result[List[Req
     if prototype(env, owner) {
         push(obligations, Requirement { ty = get(arguments, 0) capability = symbol(env, owner).owner })
     }
-    let parameters = type_parameters(env, owner)
+    let parameters = expanded_parameters(env, owner, length(arguments))
     var index = 0
     while index < length(parameters) {
         let parameter = get(parameters, index)
