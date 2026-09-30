@@ -16,25 +16,13 @@ fn target_parameters(env Environment, ty Int, seen List[Bool]) Bool {
     }
     true
 }
-fn conformance(env Environment, ty Int, capability Int) Result[Conformance, Failure] {
+fn conformance(env Environment, ty Int, capability Int) Conformance {
+    let implementations = get(env.concepts, concept_index(env, capability)).implementations
     var index = 0
-    while index < length(env.implementations) {
-        let header = get(env.implementations, index)
-        if header.state < 0 && header.capability == capability {
-            let arity = impl_pack_arity(env, header.symbol, child(symbol(env, header.symbol).node, 1), ty, 0)?
-            if arity >= 0 {
-                let selected = materialize_impl_pack(env, index, arity)?
-                let expanded = get(env.implementations, selected)
-                let arguments = impl_arguments(env, expanded, ty)
-                if complete(arguments) {
-                    if get(env.concepts, concept_index(env, capability)).ready {
-                        discard check_impl_packs(env)?
-                    }
-                    return Result.Ok(Conformance { implementation = selected arguments = arguments })
-                }
-            }
-        }
-        if header.state >= 2 && header.capability == capability {
+    while index < length(implementations) {
+        let selected = get(implementations, index)
+        let header = get(env.implementations, selected)
+        if header.state >= 2 {
             let count = length(type_parameters(env, header.symbol))
             // Ordinary exact implementations need no inference scratch space
             // for each nonmatching candidate.
@@ -46,20 +34,20 @@ fn conformance(env Environment, ty Int, capability Int) Result[Conformance, Fail
                 parameter = parameter + 1
             }
             if (count == 0 || infer(env, header.ty, ty, arguments)) && complete(arguments) {
-                return Result.Ok(Conformance { implementation = index arguments = arguments })
+                return Conformance { implementation = selected arguments = arguments }
             }
             }
         }
         index = index + 1
     }
-    Result.Ok(Conformance { implementation = -1 arguments = new[Int]() })
+    Conformance { implementation = -1 arguments = new[Int]() }
 }
 fn admitted(env Environment, owner Int, obligations List[Requirement], ty Int, capability Int) Result[Bool, Failure] {
     admit(env, owner, obligations, ty, capability, new[Requirement](), 0)
 }
 fn concrete_methods(env Environment, owner Int, ty Int, capability Int) Result[Bool, Failure] {
     if !concrete(env, ty) { return Result.Ok(true) }
-    let selected = conformance(env, ty, capability)?
+    let selected = conformance(env, ty, capability)
     if selected.implementation < 0 || length(type_parameters(env, get(env.implementations, selected.implementation).symbol)) == 0 { return Result.Ok(true) }
     let methods = get(env.concepts, concept_index(env, capability)).methods
     let node = symbol(env, owner).node
@@ -94,7 +82,10 @@ fn admit(env Environment, owner Int, obligations List[Requirement], ty Int, capa
     if get(env.types, ty).kind == TypeKind.Parameter || get(env.types, ty).kind == TypeKind.Associated {
         return promised(env, owner, obligations, ty, capability)
     }
-    let selected = conformance(env, ty, capability)?
+    if length(get(env.concepts, concept_index(env, capability)).families) != 0 {
+        discard demand_implementations(env, ty, capability)?
+    }
+    let selected = conformance(env, ty, capability)
     if selected.implementation < 0 { return promised(env, owner, obligations, ty, capability) }
     let header = get(env.implementations, selected.implementation)
     if symbol(env, header.symbol).test_only && !symbol(env, owner).test_only { return promised(env, owner, obligations, ty, capability) }

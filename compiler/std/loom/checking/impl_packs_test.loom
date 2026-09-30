@@ -103,7 +103,7 @@ test fn implementation_packs_reject_overlap_and_missing_abstract_evidence() {
         """
     rejects(body)
     discard accepted(std.text.join(std.text.split(body, "impl[Ts...]"), "impl[Ts...Show]"))
-    rejects("""
+    let growing = """
         record Cells[Ts...] { values (Ts...) }
         concept Grow { fn grow(self Self) Int }
         impl[Ts...] Grow for Cells[Ts...] {
@@ -113,7 +113,11 @@ test fn implementation_packs_reject_overlap_and_missing_abstract_evidence() {
             }
         }
         fn main() { discard Cells { values = (1,) }.grow() }
-        """)
+        """
+    assert match checked(source_files(growing)) {
+        Result.Err(failed) => failed.diagnostic.message == "implementation pack specialization depth exceeded; expansion must be finite"
+        Result.Ok(_) => false
+    }
 }
 
 test fn implementation_pack_bodies_restore_source_and_both_arity_axes() {
