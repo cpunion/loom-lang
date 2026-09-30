@@ -12,9 +12,13 @@ test fn contracted_opaque_inputs_contribute_no_scalar_facts() {
     let files = source_files("""
         import std.list.length
         type One = List[Int] where length(self) == 1
-        pub fn forward(values One, number Int) Int
+        fn keep(values One, number Int) Int
         ensures result == number {
             number
+        }
+        pub fn forward(values One, number Int) Int
+        ensures result == number {
+            keep(values, number)
         }
         """)
     push(files, source_file("std.list", """
