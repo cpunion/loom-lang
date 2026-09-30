@@ -1,0 +1,56 @@
+record Position {
+    current Int
+    active Bool
+}
+
+record Progress {
+    position Position
+    bounds (Int, Bool)
+}
+
+fn aggregate_count(limit Int, active Bool) Progress
+requires limit >= 0
+ensures result.position.current == limit
+ensures result.position.active == active
+ensures result.bounds.0 == limit && result.bounds.1 == active
+{
+    var state = Progress {
+        position = Position {
+            current = 0,
+            active = active
+        },
+        bounds = (limit, active)
+    }
+    while state.position.current < state.bounds.0 {
+        state = Progress {
+            position = Position {
+                current = state.position.current + 1,
+                active = state.position.active
+            },
+            bounds = state.bounds
+        }
+    }
+    state
+}
+
+fn tuple_advance(start (Int, Bool), limit Int) (Int, Bool)
+ensures result.0 >= old(start.0) && result.0 >= limit
+ensures result.1 == start.1
+{
+    var state = start
+    while state.0 < limit {
+        state = (state.0 + 1, state.1)
+    }
+    state
+}
+
+fn aggregate_exercise() {
+    let empty = aggregate_count(0, false)
+    assert empty.position.current == 0 && !empty.position.active
+    let progress = aggregate_count(10000, true)
+    assert progress.position.current == 10000 && progress.position.active
+    assert progress.bounds.0 == 10000 && progress.bounds.1
+    assert tuple_advance((7, false), 3).0 == 7
+    assert tuple_advance((-4, true), 3).0 == 3
+    assert tuple_advance((9223372036854775806, true), 9223372036854775807).0 == 9223372036854775807
+}

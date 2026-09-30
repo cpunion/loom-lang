@@ -1,0 +1,57 @@
+fn aggregate_loop_definitions() Text {
+    """
+        record Position {
+            current Int
+            active Bool
+        }
+        record Progress {
+            position Position
+            bounds (Int, Bool)
+        }
+        fn count(limit Int, active Bool) Progress
+        requires limit >= 0
+        ensures result.position.current == limit
+        ensures result.position.active == active
+        ensures result.bounds.0 == limit && result.bounds.1 == active
+        {
+            var state = Progress {
+                position = Position { current = 0, active = active },
+                bounds = (limit, active)
+            }
+            while state.position.current < state.bounds.0 {
+                state = Progress {
+                    position = Position {
+                        current = state.position.current + 1,
+                        active = state.position.active
+                    },
+                    bounds = state.bounds
+                }
+            }
+            state
+        }
+        """
+}
+
+test fn loop_proofs_infer_each_scalar_leaf_of_rebuilt_inline_aggregates() {
+    discard accepted(aggregate_loop_definitions())
+    discard accepted("""
+        fn advance(start (Int, Bool), limit Int) (Int, Bool)
+        ensures result.0 >= old(start.0) && result.0 >= limit
+        ensures result.1 == start.1
+        {
+            var state = start
+            while state.0 < limit {
+                state = (state.0 + 1, state.1)
+            }
+            state
+        }
+        """)
+}
+
+test fn aggregate_induction_rechecks_zero_iterations_overshoot_and_changed_siblings() {
+    let source = aggregate_loop_definitions()
+    rejects(std.text.join(std.text.split(source, "requires limit >= 0"), ""))
+    rejects(std.text.join(std.text.split(source, "current = state.position.current + 1"), "current = state.position.current + 2"))
+    rejects(std.text.join(std.text.split(source, "active = state.position.active"), "active = !state.position.active"))
+    rejects(std.text.join(std.text.split(source, "bounds = state.bounds"), "bounds = (state.bounds.0 - 1, state.bounds.1)"))
+}

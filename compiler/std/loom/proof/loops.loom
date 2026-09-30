@@ -9,7 +9,7 @@ import std.result.Result
 import std.option.Option
 
 enum LoopCandidate {
-    Entry(Int, Text, Value)
+    Entry(Int, List[Int], Text, Value)
     Guard(Expr)
 }
 
@@ -56,6 +56,30 @@ fn loop_step(proof Verification) Result[Bool, Text] {
     Result.Ok(true)
 }
 
+fn loop_local_type(proof Verification, ty Int, depth Int) Bool {
+    if ty == 1 || ty == 2 {
+        return true
+    }
+    if depth >= 16 || ty < 0 || ty >= length(proof.program.types) {
+        return false
+    }
+    let shape = get(proof.program.types, ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        return loop_local_type(proof, get(shape.fields, 0).ty, depth + 1)
+    }
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple {
+        return false
+    }
+    var index = 0
+    while index < length(shape.fields) {
+        if !loop_local_type(proof, get(shape.fields, index).ty, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
 // Enumerate all writes, including declarations and nested loops. Unknown effects
 // cannot keep stale facts about a local, an alias, or a captured mutable cell.
 fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, depth Int) Result[Bool, Text] {
@@ -81,8 +105,8 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
     }
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         let ty = get(proof.function.locals, expr.index).ty
-        if ty != 1 && ty != 2 {
-            return Result.Err("required loop proof needs scalar local assignments")
+        if !loop_local_type(proof, ty, 0) {
+            return Result.Err("required loop proof needs scalar or scalar-only inline aggregate local assignments")
         }
         set(writes, expr.index, true)
     }
@@ -100,8 +124,19 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
 
 fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] {
     match candidate {
-        LoopCandidate.Entry(index, relation, initial) => {
-            boolean(binary(relation, get(state.locals, index), initial)?)
+        LoopCandidate.Entry(index, path, relation, initial) => {
+            var value = get(state.locals, index)
+            var field = 0
+            while field < length(path) {
+                value = match value {
+                    Value.Record(fields) => get(fields, get(path, field))
+                    _ => {
+                        return Result.Err("loop invariant needs an inline aggregate field")
+                    }
+                }
+                field = field + 1
+            }
+            boolean(binary(relation, value, initial)?)
         }
         LoopCandidate.Guard(expr) => boolean(pure(expr, state)?)
     }
@@ -204,37 +239,56 @@ fn loop_guard_candidates(expr Expr, candidates List[LoopCandidate], entry State)
     Result.Ok(true)
 }
 
-fn loop_candidates(guard Expr, writes List[Bool], entry State) Result[List[LoopCandidate], Text] {
+fn loop_entry_candidates(proof Verification, candidates List[LoopCandidate], index Int, path List[Int], initial Value, entry State) Result[Bool, Text] {
+    discard loop_step(proof)?
+    match initial {
+        Value.Number(term) => {
+            discard add_loop_candidate(candidates, LoopCandidate.Entry(index, path, ">=", initial), entry)?
+            discard add_loop_candidate(candidates, LoopCandidate.Entry(index, path, "<=", initial), entry)?
+            // A nested loop may preserve a scalar range even when the
+            // stronger relation to its symbolic entry value needs
+            // arithmetic outside the difference solver's fragment.
+            if length(term.terms) != 0 {
+                let bounds = range(term, entry.facts)
+                if compare(bounds.low, integer(-9223372036854775808)) > 0 {
+                    discard add_loop_candidate(candidates,
+                        LoopCandidate.Entry(index, path, ">=", Value.Number(constant(bounds.low))), entry)?
+                }
+                if compare(bounds.high, integer(9223372036854775807)) < 0 {
+                    discard add_loop_candidate(candidates,
+                        LoopCandidate.Entry(index, path, "<=", Value.Number(constant(bounds.high))), entry)?
+                }
+            }
+        }
+        Value.Boolean(_) => {
+            discard add_loop_candidate(candidates, LoopCandidate.Entry(index, path, "==", initial), entry)?
+        }
+        Value.Record(fields) => {
+            var field = 0
+            while field < length(fields) {
+                let nested = new[Int]()
+                var part = 0
+                while part < length(path) {
+                    push(nested, get(path, part))
+                    part = part + 1
+                }
+                push(nested, field)
+                discard loop_entry_candidates(proof, candidates, index, nested, get(fields, field), entry)?
+                field = field + 1
+            }
+        }
+        _ => {
+        }
+    }
+    Result.Ok(true)
+}
+
+fn loop_candidates(proof Verification, guard Expr, writes List[Bool], entry State) Result[List[LoopCandidate], Text] {
     let candidates = new[LoopCandidate]()
     var index = 0
     while index < length(writes) {
         if get(writes, index) {
-            let initial = get(entry.locals, index)
-            match initial {
-                Value.Number(term) => {
-                    discard add_loop_candidate(candidates, LoopCandidate.Entry(index, ">=", initial), entry)?
-                    discard add_loop_candidate(candidates, LoopCandidate.Entry(index, "<=", initial), entry)?
-                    // A nested loop may preserve a scalar range even when the
-                    // stronger relation to its symbolic entry value needs
-                    // arithmetic outside the difference solver's fragment.
-                    if length(term.terms) != 0 {
-                        let bounds = range(term, entry.facts)
-                        if compare(bounds.low, integer(-9223372036854775808)) > 0 {
-                            discard add_loop_candidate(candidates,
-                                LoopCandidate.Entry(index, ">=", Value.Number(constant(bounds.low))), entry)?
-                        }
-                        if compare(bounds.high, integer(9223372036854775807)) < 0 {
-                            discard add_loop_candidate(candidates,
-                                LoopCandidate.Entry(index, "<=", Value.Number(constant(bounds.high))), entry)?
-                        }
-                    }
-                }
-                Value.Boolean(_) => {
-                    discard add_loop_candidate(candidates, LoopCandidate.Entry(index, "==", initial), entry)?
-                }
-                _ => {
-                }
-            }
+            discard loop_entry_candidates(proof, candidates, index, new[Int](), get(entry.locals, index), entry)?
         }
         index = index + 1
     }
@@ -242,13 +296,30 @@ fn loop_candidates(guard Expr, writes List[Bool], entry State) Result[List[LoopC
     Result.Ok(candidates)
 }
 
+fn loop_bounds(value Value, entry State) State {
+    var state = entry
+    match value {
+        Value.Record(fields) => {
+            var index = 0
+            while index < length(fields) {
+                state = loop_bounds(get(fields, index), state)
+                index = index + 1
+            }
+        }
+        _ => {
+            state = bounded(value, state)
+        }
+    }
+    state
+}
+
 fn loop_head(proof Verification, writes List[Bool], entry State) State {
     var state = entry
     var index = 0
     while index < length(writes) {
         if get(writes, index) {
-            let value = fresh_result(proof, get(proof.function.locals, index).ty)
-            state = bounded(value, assigned(state, index, value))
+            let value = record_parameter_value(proof, get(proof.function.locals, index).ty, 0)
+            state = loop_bounds(value, assigned(state, index, value))
         }
         index = index + 1
     }
@@ -270,7 +341,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     let guard = get(expr.children, 0)
     let body = get(expr.children, 1)
     let head = loop_head(proof, writes, entry)
-    var candidates = loop_candidates(loop_candidate_guard(proof, guard), writes, entry)?
+    var candidates = loop_candidates(proof, loop_candidate_guard(proof, guard), writes, entry)?
     while true {
         discard loop_step(proof)?
         let assumed = loop_assumptions(head, candidates)?
