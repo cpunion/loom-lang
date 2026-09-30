@@ -240,7 +240,11 @@ EOF-delimited requests and responses with the ordinary source Task machinery.
 `std.net.tls` composes TCP Tasks with a Rustls packet engine. Client construction
 always verifies the server's certificate chain, validity period and DNS/IP name.
 Default trust is a compiled Mozilla root set; applications can supply explicit
-PEM roots. Server configuration supplies a PEM chain and private key. Configuration
+PEM roots. Both sides can supply an explicit PEM chain/key identity. Servers
+select anonymous clients or require a certificate rooted in an explicit client
+CA set; certificate validity and client-auth purpose are verified before accept
+succeeds. A fresh verified peer leaf DER copy is available for application policy,
+not an implicit authorization rule. Configuration
 is copied into native state before transport suspension. ALPN is optional.
 The engine retains no GC pointers, schedules no I/O and owns no executor.
 Its archive is selected only for emitted TLS references, including cached objects.
@@ -250,8 +254,8 @@ overlap returns `Busy`, not implicit queueing. Failed or cancelled operations
 drain transport children and retire the connection. `shutdown_write().await`
 flushes close-notify while retaining the receive side; synchronous `close` retires
 the transport and fits `defer`. Unexpected TCP EOF is not a successful TLS EOF.
-Deadlines use ordinary Task cancellation. Concurrent directions, mutual TLS and
-session-resumption policy remain future work, not implicit guarantees.
+Deadlines use ordinary Task cancellation. Concurrent directions, certificate
+revocation and session-resumption policy remain future work, not implicit guarantees.
 
 `std.process.tasks.capture` / `capture_input` submit copied native commands and
 binary input to the same bounded pool. Their source result and configuration
