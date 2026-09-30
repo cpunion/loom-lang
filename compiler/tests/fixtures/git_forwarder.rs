@@ -319,6 +319,12 @@ fn main() {
     if https_url.is_some() {
         // Trust only this fixture's ephemeral CA, without changing host trust.
         git.args(["-c", "http.schannelUseSSLCAInfo=true"]);
+        if cfg!(windows) {
+            // This ephemeral issuer has no CRL/OCSP service. Disable only its
+            // revocation lookup, not chain/time/name verification. Production
+            // Git arguments above retain the transport's normal verification.
+            git.args(["-c", "http.schannelCheckRevoke=false"]);
+        }
         git.args([
             "-c",
             &format!("http.sslCAInfo={}", git_path(&root.join("server-ca.pem"))),
