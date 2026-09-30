@@ -493,7 +493,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
                 arity = -1
                 if length(inputs.nodes) == length(parameters) {
                     if length(types) != 0 {
-                        if length(options) == 0 {
+                        if length(options) == 0 || structural_pack_position(parameters) < 0 {
                             arity = length(types) - pack
                         } else {
                             // A fixed overload may supply a needed contextual
@@ -506,6 +506,9 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
                         }
                     } else {
                         arity = structural_call_arity(context, inputs, parameters)
+                        if arity < 0 {
+                            arity = pack_result_arity(context.env, declaration, expected)
+                        }
                     }
                 }
             }

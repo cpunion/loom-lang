@@ -105,6 +105,27 @@ fn structural_reference_arity(env Environment, parameters List[Node], shape List
     -1
 }
 
+// An expected result can select the same structural arity as an input. This
+// only discovers length; ordinary inference still checks every type and bound.
+fn pack_result_arity(env Environment, declaration Node, expected Int) Int {
+    if expected < 0 {
+        return -1
+    }
+    var output = expected
+    if has(declaration, NodeKind.Async) {
+        let shape = get(env.types, output)
+        if shape.kind != TypeKind.Task {
+            return -1
+        }
+        output = get(shape.arguments, 0)
+    }
+    let returns = group(declaration, NodeKind.ReturnType)
+    if length(returns) == 0 || !has_type_expansion(get(returns, 0)) {
+        return -1
+    }
+    shape_pack_arity(env, get(returns, 0), output, 0)
+}
+
 fn data_argument_count(context Context, node Node, declaration Int, types List[Node], expected Int, inputs CallInputs) Result[Int, Failure] {
     let source = symbol(context.env, declaration).node
     let prefix = pack_parameter(source)

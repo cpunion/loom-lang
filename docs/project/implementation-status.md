@@ -108,6 +108,12 @@ tuple or nominal patterns; contextual function references and overloads use
 ordinary inference after expansion. The
 [native example](../../compiler/examples/data_packs/functions.loom) covers
 shared captures and once-only input effects, without a runtime pack.
+Packs used only in results or compile-time generation are also accepted. Expected
+results select arity for ordinary/async calls, function references and static/dyn
+methods; explicit arguments select type generators without sample inputs.
+Unknown arity still rejects. The
+[factory example](../../compiler/examples/data_packs/factories.loom) covers these
+paths and shared generated callbacks through native check/build/test/run.
 Method-local packs support default/override methods, ordinary generic impl
 headers, associated projections, structural inference, CTFE and async. Family
 headers match structurally for every arity; selected bodies are checked under

@@ -1,0 +1,114 @@
+import std.meta.of
+
+fn empty_rows[Ts...]() List[(Ts...)] {
+    []
+}
+
+fn framed_rows[Ts...]() List[(Int, Ts...)] {
+    []
+}
+
+fn type_shape[Head, Ts...]() type {
+    of[(Head, Ts...)]()
+}
+
+fn callable_shape[R, Ts...]() type {
+    of[fn(Ts...) R]()
+}
+
+fn counted_readers[Ts...](state List[Int]) (fn(Ts) Ts...) {
+    comptime map T in Ts {
+        fn(value T) T {
+            state[0] = state[0] + 1
+            value
+        }
+    }
+}
+
+concept RowFactory {
+    fn rows[Ts...](self Self) List[(Ts...)] {
+        []
+    }
+
+    fn framed[Ts...](self Self) List[(Int, Ts...)]
+
+    async fn pending[Ts...](self Self) List[(Ts...)] {
+        []
+    }
+}
+
+impl RowFactory for Bool {
+    fn framed[Us...](self Bool) List[(Int, Us...)] {
+        []
+    }
+}
+
+async fn pending_rows[Ts...]() List[(Ts...)] {
+    []
+}
+
+async fn exercise_factories() {
+    let rows List[(Int, Bool)] = empty_rows()
+    push(rows, (42, true))
+    assert rows[0].0 == 42 && rows[0].1
+    let make fn() List[(Text,)] = empty_rows
+    let labels = make()
+    push(labels, ("inferred from the callback result",))
+    assert labels[0].0 != ""
+    let explicit = empty_rows[Int, Text]
+    let named = explicit()
+    push(named, (42, "explicit"))
+    assert named[0].1 == "explicit"
+    let zero List[(Int,)] = framed_rows()
+    assert length(zero) == 0
+
+    let Pair = comptime {
+        type_shape[Int, Bool]()
+    }
+    let pair Pair = (42, true)
+    assert pair.1
+    let Single = comptime {
+        type_shape[Int]()
+    }
+    let single Single = (42,)
+    assert single.0 == 42
+    let Callback = comptime {
+        callable_shape[Int, Bool]()
+    }
+    let callback Callback = fn(flag Bool) Int {
+        if flag {
+            42
+        } else {
+            0
+        }
+    }
+    assert callback(true) == 42
+    let Zero = comptime {
+        callable_shape[Int]()
+    }
+    let no_inputs Zero = fn() Int {
+        42
+    }
+    assert no_inputs() == 42
+
+    let events = [0]
+    let readers (fn(Int) Int, fn(Bool) Bool) = counted_readers(events)
+    assert events[0] == 0
+    assert readers.0(42) == 42 && readers.1(true)
+    assert events[0] == 2
+
+    let factory dyn RowFactory = true
+    let built List[(Int, Bool)] = factory.rows()
+    push(built, pair)
+    assert built[0].1
+    let framed List[(Int,)] = factory.framed()
+    assert length(framed) == 0
+    let pending List[(Int, Text)] = factory.pending().await
+    assert length(pending) == 0
+    let direct List[(Bool,)] = pending_rows().await
+    assert length(direct) == 0
+    let task Task[List[(Int, Bool)]] = pending_rows()
+    assert length(task.await) == 0
+    let async_make fn() Task[List[(Text,)]] = pending_rows
+    assert length(async_make().await) == 0
+}

@@ -317,7 +317,7 @@ fn selected_pack_signature(env Environment, owner Int, arity Int) Result[Int, Fa
     pack_signature(env, owner, arity)
 }
 
-fn method_pack_selections(context Context, source Node, receiver Expr, member Text, types List[Node], inputs CallInputs, selected Int) Result[List[Int], Failure] {
+fn method_pack_selections(context Context, source Node, receiver Expr, member Text, types List[Node], inputs CallInputs, selected Int, expected Int) Result[List[Int], Failure] {
     let choices = new[Int]()
     let all_inputs = input_receiver(inputs, source)
     let shape = get(context.env.types, receiver.ty)
@@ -343,7 +343,12 @@ fn method_pack_selections(context Context, source Node, receiver Expr, member Te
                         if length(types) != 0 {
                             length(types) - prefix
                         } else {
-                            structural_call_arity(context, all_inputs, parameters)
+                            let inferred = structural_call_arity(context, all_inputs, parameters)
+                            if inferred >= 0 {
+                                inferred
+                            } else {
+                                pack_result_arity(context.env, item.node, expected)
+                            }
                         }
                     } else {
                         -1
