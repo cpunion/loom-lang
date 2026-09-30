@@ -110,7 +110,15 @@ headers, associated projections, structural inference, CTFE and async. Family
 headers match structurally for every arity; selected bodies are checked under
 abstract declared bounds. Dynamic calls use finite ordinary slots, not a new
 runtime pack ABI. The [method example](../../compiler/examples/variadics/methods.loom)
-also checks sharing and once-only effects. Packs in impl headers, multiple packs
+also checks sharing and once-only effects. Impl-header packs infer arity from
+nominal, tuple and function target shapes, including nested/repeated expansions.
+Selected arities check methods and associated bindings with abstract elements;
+method-local packs retain their independent arity. Overlap checking preserves
+expansions and conservatively rejects unknown intersections, without sampling.
+Private cache recipes retain the original member and both arities. The
+[impl example](../../compiler/examples/data_packs/implementations.loom) exercises
+native/dyn calls, declared contracts, shared values, CTFE and async payloads.
+Multiple packs in one parameter list
 and universal variadic postcondition proofs remain unsupported. Compile-time
 execution is not proof by sampling.
 

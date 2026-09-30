@@ -102,6 +102,9 @@ fn structural_pack_position(parameters List[Node]) Int {
 fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
     let item = symbol(env, owner)
     let selected = pack_parameter(item.node)
+    if item.node.kind == NodeKind.Impl {
+        return Result.Ok(false)
+    }
     let parameters = group(item.node, NodeKind.Parameters)
     if selected < 0 {
         var index = 0
@@ -208,6 +211,10 @@ fn pack_name(pack Text, index Int) Text {
 // Only type positions substitute a pack name. Runtime identifiers and source
 // spans remain intact; this is typed-declaration elaboration, not text macros.
 fn expand_pack_type(env Environment, owner Int, node Node, pack Text, arity Int, element Int, types Bool, depth Int) Result[Node, Failure] {
+    expand_pack_type_in(env, owner, node, pack, arity, element, types, depth, false)
+}
+
+fn expand_pack_type_in(env Environment, owner Int, node Node, pack Text, arity Int, element Int, types Bool, depth Int, preserve_other_packs Bool) Result[Node, Failure] {
     if depth >= 64 {
         return Result.Err(failure(env, owner, node, "type pack expansion nesting limit exceeded"))
     }
@@ -226,18 +233,18 @@ fn expand_pack_type(env Environment, owner Int, node Node, pack Text, arity Int,
     while index < length(node.children) {
         let child = child(node, index)
         let child_types = type_context || (node.kind == NodeKind.Parameter && index == 0)
-        if child_types && child.kind == NodeKind.Spread {
+        if child_types && child.kind == NodeKind.Spread && (!preserve_other_packs || mentions_pack(get(child.children, 0), pack)) {
             let pattern = get(child.children, 0)
             if !mentions_pack(pattern, pack) {
                 return Result.Err(failure(env, owner, child, "type expansion must use this declaration's pack"))
             }
             var selected = 0
             while selected < arity {
-                push(children, expand_pack_type(env, owner, pattern, pack, arity, selected, true, depth + 1)?)
+                push(children, expand_pack_type_in(env, owner, pattern, pack, arity, selected, true, depth + 1, preserve_other_packs)?)
                 selected = selected + 1
             }
         } else {
-            push(children, expand_pack_type(env, owner, child, pack, arity, element, child_types, depth + 1)?)
+            push(children, expand_pack_type_in(env, owner, child, pack, arity, element, child_types, depth + 1, preserve_other_packs)?)
         }
         index = index + 1
     }
@@ -516,7 +523,7 @@ fn expand_type_iteration(env Environment, owner Int, node Node, pack Text, arity
     let children = new[Node]()
     var index = 0
     var current_shadow = shadowed
-    if node.kind == NodeKind.Function && node.value == "" {
+    if node.kind == NodeKind.Function {
         let parameters = group(node, NodeKind.Parameters)
         while index < length(parameters) {
             current_shadow = current_shadow || get(parameters, index).value == pack

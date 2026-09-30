@@ -302,7 +302,7 @@ fn activate_witnesses(env Environment, retain Bool) Result[Bool, Failure] {
         let witness = get(env.witnesses, index)
         let capability = get(env.interfaces, witness.interface).symbol
         // Witness creation already admitted this exact conformance in its scope.
-        let provided = conformance(env, witness.concrete, capability)
+        let provided = conformance(env, witness.concrete, capability)?
         let implementation = get(env.implementations, provided.implementation)
         let declarations = get(env.concepts, concept_index(env, capability)).methods
         let slots = get(env.dynamic_interfaces, witness.interface).slots

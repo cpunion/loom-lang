@@ -64,7 +64,7 @@ fn method_target(env Environment, id Int, arguments List[Int], constants List[St
     let current = get(env.signatures, id)
     let declaration = symbol(env, current.symbol).node
     let capability = symbol(env, current.symbol).owner
-    let selected = conformance(env, get(arguments, 0), capability)
+    let selected = conformance(env, get(arguments, 0), capability)?
     if selected.implementation < 0 {
         return Result.Err(failure(env, current.symbol, declaration, "concept evidence has no concrete implementation"))
     }
