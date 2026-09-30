@@ -1,0 +1,153 @@
+fn impl_pack_definitions() Text {
+    """
+        record Cells[Head, Ts...] {
+            head Head
+            values (Ts...)
+        }
+        concept Collection {
+            type Items
+            fn items(self Self) Self.Items
+            fn count(self Self) Int
+            ensures result >= 0
+            fn echo[Us...](self Self, values Us...) (Us...) { values }
+            fn mix[Us...](self Self, values (Us...)) (Us...)
+        }
+        impl[Head, Ts...] Collection for Cells[Head, Ts...] {
+            type Items = (Ts...)
+            fn items(self Self) Self.Items { self.values }
+            fn count(self Self) Int {
+                var count = 0
+                comptime for T in Ts { count = count + 1 }
+                count
+            }
+            fn mix[Us...](self Self, values (Us...)) (Us...) { values }
+        }
+        """
+}
+
+test fn implementation_packs_select_abstract_arities_and_keep_associated_types() {
+    discard accepted(concat(impl_pack_definitions(), """
+        fn forward[C Collection](value C) C.Items { value.items() }
+        fn bundle[Us...](values Us...) (Us...) { values }
+        fn main() {
+            let empty = Cells[Bool] { head = true, values = bundle() }
+            assert empty.count() == 0
+            let one = Cells { head = false, values = (42,) }
+            assert one.count() == 1 && forward(one).0 == 42
+            let pair = Cells { head = 1, values = (42, true) }
+            let dynamic dyn Collection[Items = (Int, Bool)] = pair
+            assert dynamic.count() == 2 && dynamic.items().1
+            assert dynamic.echo("yes", 7).1 == 7
+            assert dynamic.mix((true, 8)).1 == 8
+            assert one.mix((9,)).0 == 9
+            let answer = comptime { forward(Cells { head = 1, values = (42, true) }).0 }
+            assert answer == 42
+        }
+        """))
+}
+
+test fn implementation_packs_infer_nested_repeated_and_function_shapes() {
+    discard accepted("""
+        record Box[T] { value T }
+        concept Size { fn size(self Self) Int }
+        impl[Ts...] Size for Box[((Ts...), (Ts...))] {
+            fn size(self Self) Int {
+                var count = 0
+                comptime for T in Ts { count = count + 1 }
+                count
+            }
+        }
+        concept Callable { fn valid(self Self) Bool }
+        impl[Ts...] Callable for fn(Ts...) (Ts...) {
+            fn valid(self Self) Bool { true }
+        }
+        fn identity(a Int, b Bool) (Int, Bool) { (a, b) }
+        fn main() {
+            assert Box { value = ((1, true), (2, false)) }.size() == 2
+            let callback fn(Int, Bool) (Int, Bool) = identity
+            assert callback.valid()
+        }
+        """)
+    rejects("""
+        record Box[T] { value T }
+        concept C { fn check(self Self) Bool }
+        impl[Ts...] C for Box[((Ts...), (Ts...))] {
+            fn check(self Self) Bool { true }
+        }
+        fn main() { discard Box { value = ((1, true), (2, 3)) }.check() }
+        """)
+}
+
+test fn implementation_packs_reject_overlap_and_missing_abstract_evidence() {
+    rejects(concat(impl_pack_definitions(), "impl Collection for Cells[Bool, Int] { type Items = (Int,) }"))
+    rejects("concept C {}\nimpl[Ts...] C for (Int, Ts...) {}\nimpl[Us...] C for (Us..., Bool) {}")
+    discard accepted("concept C {}\nimpl[Ts...] C for (Int, Ts...) {}\nimpl[Us...] C for (Bool, Us...) {}")
+    rejects("concept C {}\nimpl[T, Ts...] C for (Ts...) {}")
+    rejects("concept C { fn required(self Self) Int }\nimpl[Ts...] C for (Ts...) {}")
+    rejects("concept C { fn method(self Self) Int { 1 } }\nimpl[Ts...] C for (Ts...) { fn method(self Self) Int requires true { 1 } }")
+    rejects("concept C {}\nimpl[Ts...] C for (Ts...) { fn absent(self Self) {} }\nfn use[T C](value T) {}\nfn main() { use((1,)) }")
+    let body = """
+        concept Show { fn show(self Self) Int }
+        impl Show for Int { fn show(self Int) Int { self } }
+        record Cells[Ts...] { values (Ts...) }
+        concept Sum { fn sum(self Self) Int }
+        impl[Ts...] Sum for Cells[Ts...] {
+            fn sum(self Self) Int {
+                var count = 0
+                let values = self.values
+                comptime for value in values { count = count + value.show() }
+                count
+            }
+        }
+        fn main() { assert Cells { values = (1, 2) }.sum() == 3 }
+        """
+    rejects(body)
+    discard accepted(std.text.join(std.text.split(body, "impl[Ts...]"), "impl[Ts...Show]"))
+    rejects("""
+        record Cells[Ts...] { values (Ts...) }
+        concept Grow { fn grow(self Self) Int }
+        impl[Ts...] Grow for Cells[Ts...] {
+            fn grow(self Self) Int {
+                let extended = (self.values..., true)
+                Cells { values = extended }.grow()
+            }
+        }
+        fn main() { discard Cells { values = (1,) }.grow() }
+        """)
+}
+
+test fn implementation_pack_bodies_restore_source_and_both_arity_axes() {
+    let source = concat(impl_pack_definitions(), """
+        pub fn answer() Int {
+            let one = Cells { head = false, values = (4,) }
+            let pair dyn Collection[Items = (Int, Bool)] = Cells { head = 1, values = (5, true) }
+            assert one.count() == 1 && pair.count() == 2
+            assert one.mix((true,)).0
+            assert pair.mix((false, 8)).1 == 8
+            pair.items().0 + one.items().0
+        }
+        """)
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let cache = restored_definition_cache(initial)
+    assert match cached_source(cache, concat("fn unrelated() {}\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    assert bodies_reused(cache) >= 5
+    discard restored_definition_cache(cache)
+    let invalid = std.text.join(std.text.split(source, "count = count + 1"), "count = count - 1")
+    assert match cached_source(cache, invalid) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

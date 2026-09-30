@@ -63,10 +63,10 @@ fn association_environment(env Environment, member Int, receiver Int, arguments 
 }
 fn implementation_type(env Environment, index Int, depth Int) Result[Int, Failure] {
     let header = get(env.implementations, index)
-    if header.state == 2 { return Result.Ok(header.ty) }
+    if header.state >= 2 { return Result.Ok(header.ty) }
     let item = symbol(env, header.symbol)
     if header.state == 1 || depth > 64 { return Result.Err(failure(env, header.symbol, item.node, "cyclic implementation target")) }
-    set(env.implementations, index, Implementation { symbol = header.symbol capability = header.capability ty = -1
+    set(env.implementations, index, Implementation { symbol = header.symbol source = header.source arity = header.arity depth = header.depth capability = header.capability ty = -1
         methods = header.methods associated = header.associated state = 1 })
     let parameters = abstract_arguments(env, length(type_parameters(env, header.symbol)))
     let ty = resolve(header_environment(env), header.symbol, child(item.node, 1), parameters, depth + 1)?
@@ -86,7 +86,7 @@ fn implementation_type(env Environment, index Int, depth Int) Result[Int, Failur
         if !get(seen, parameter) { return Result.Err(failure(env, header.symbol, item.node, "every implementation parameter must occur in its target type")) }
         parameter = parameter + 1
     }
-    set(env.implementations, index, Implementation { symbol = header.symbol capability = header.capability ty = ty
+    set(env.implementations, index, Implementation { symbol = header.symbol source = header.source arity = header.arity depth = header.depth capability = header.capability ty = ty
         methods = header.methods associated = header.associated state = 2 })
     Result.Ok(ty)
 }
@@ -151,19 +151,21 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
                 index = index + 1
             }
             if supplied != length(actual) { return Result.Err(failure(env, owner, item.node, "unknown associated type binding")) }
-            push(env.implementations, Implementation { symbol = owner capability = capability ty = -1
-                methods = new[Int]() associated = bindings state = 0 })
+            let pack = pack_parameter(item.node)
+            if pack >= 0 { discard validate_impl_pack(env, owner)? }
+            push(env.implementations, Implementation { symbol = owner source = owner arity = -1 depth = 0 capability = capability ty = -1
+                methods = new[Int]() associated = bindings state = if pack >= 0 { -1 } else { 0 } })
         }
         owner = owner + 1
     }
     var index = 0
     while index < length(env.implementations) {
-        discard implementation_type(env, index, 0)?
+        if get(env.implementations, index).state >= 0 { discard implementation_type(env, index, 0)? }
         let header = get(env.implementations, index)
         var previous = 0
         while previous < index {
             let other = get(env.implementations, previous)
-            if other.capability == header.capability && overlapping(env, other, header)? {
+            if other.capability == header.capability && implementation_overlap(env, other, header)? {
                 return Result.Err(failure(env, header.symbol, symbol(env, header.symbol).node, "overlapping implementations for this concept"))
             }
             previous = previous + 1
@@ -229,7 +231,7 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, argumen
         while get(members, index) != member { index = index + 1 }
         return Result.Ok(get(shape.arguments, index))
     }
-    let selected = conformance(env, receiver, capability)
+    let selected = conformance(env, receiver, capability)?
     let parent = enclosing(env, owner)
     var own = selected.implementation >= 0 && parent >= 0 && symbol(env, parent).node.kind == NodeKind.Impl &&
         get(env.implementations, selected.implementation).symbol == parent

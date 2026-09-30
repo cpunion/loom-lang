@@ -110,20 +110,22 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
                 -1
             }
         }
+        let source = if pack >= 0 { get(env.packs, pack).source } else { value.symbol }
         push(functions, body_copy_function(value))
         push(targets, BodyTarget {
                 symbol = if pack >= 0 {
-                    get(env.packs, pack).source
+                    impl_member_source(env, source)
                 } else if instance.signature < 0 {
                     -1
                 } else {
-                    get(env.signatures, instance.signature).symbol
+                    impl_member_source(env, source)
                 }
                 arity = if pack >= 0 {
                     get(env.packs, pack).arity
                 } else {
                     -1
                 }
+                implementation_arity = if instance.signature < 0 { -1 } else { impl_member_arity(env, source) }
                 prototype = if prototype == value.symbol || (pack >= 0 && prototype == get(env.packs, pack).source) {
                     -1
                 } else {

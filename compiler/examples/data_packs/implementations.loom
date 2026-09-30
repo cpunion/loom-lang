@@ -1,0 +1,78 @@
+record Cells[Head, Ts...] {
+    head Head
+    values (Ts...)
+}
+
+concept Collection {
+    type Items
+    fn items(self Self) Self.Items
+    fn count(self Self) Int
+    ensures result >= 0
+    fn echo[Us...](self Self, values Us...) (Us...) {
+        values
+    }
+    fn mix[Us...](self Self, values (Us...)) (Us...)
+}
+
+impl[Head, Ts...] Collection for Cells[Head, Ts...] {
+    type Items = (Ts...)
+
+    fn items(self Self) Self.Items {
+        self.values
+    }
+
+    fn count(self Self) Int {
+        var count = 0
+        comptime for T in Ts {
+            count = count + 1
+        }
+        count
+    }
+
+    fn mix[Us...](self Self, values (Us...)) (Us...) {
+        values
+    }
+}
+
+fn collect[C Collection](value C) C.Items {
+    value.items()
+}
+
+async fn implementation_packs() {
+    let blank = Cells {
+        head = true,
+        values = packet().values
+    }
+    assert blank.count() == 0
+    let scalar = Cells {
+        head = "scalar",
+        values = (42,)
+    }
+    assert scalar.count() == 1 && collect(scalar).0 == 42
+
+    let constant = comptime {
+        collect(Cells {
+                head = 0,
+                values = (40, 2)
+            })
+    }
+    assert constant.0 + constant.1 == 42
+
+    let shared = [10]
+    let source = Cells {
+        head = shared,
+        values = (shared, true)
+    }
+    let dynamic dyn Collection[Items = (List[Int], Bool)] = source
+    assert dynamic.count() == 2
+    let values = dynamic.items()
+    values.0[0] = 42
+    assert source.head[0] == 42
+    assert dynamic.echo(3).0 == 3
+    assert dynamic.mix((4, "native")).1 == "native"
+    assert scalar.mix((true,)).0
+
+    let resumed = echo(source).await
+    assert resumed.count() == 2 && resumed.items().1
+    assert resumed.mix((5,)).0 == 5
+}

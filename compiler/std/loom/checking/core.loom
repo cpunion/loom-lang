@@ -334,7 +334,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Resu
     var index = 0
     while index < length(source.symbols) {
         let item = symbol(env, index)
-        if validate_pack(env, index)? {
+        if validate_pack(env, index)? && !impl_pack_member(env, index) {
             push(env.packs, PackInstance { source = index declaration = if prototype(env, index) || item.owner < 0 { index } else { -1 }
                 arity = -1 signature = -1 state = -1 depth = 0 })
         }

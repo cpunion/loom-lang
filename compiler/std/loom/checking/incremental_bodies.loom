@@ -3,6 +3,7 @@
 record BodyTarget {
     symbol Int
     arity Int
+    implementation_arity Int
     prototype Int
     arguments List[Int]
     constants List[BodyConstant]
@@ -352,7 +353,7 @@ fn body_types(env Environment, reuse BodyReuse, types List[Int]) Result[List[Int
 
 fn body_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure] {
     let prior = get(get(reuse.prior, 0).targets, target)
-    let owner = body_symbol(reuse, prior.symbol)
+    let owner = impl_member_instance(env, body_symbol(reuse, prior.symbol), prior.implementation_arity)?
     if prior.arity >= 0 {
         let selected = selected_pack_signature(env, owner, prior.arity)?
         discard check_pack_arity(env, selected)?
@@ -437,8 +438,10 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
     }
     let concrete_owner = get(env.signatures, instance.signature).symbol
     let pack = pack_instance(env, instance.signature)
-    let owner = if pack >= 0 { get(env.packs, pack).source } else { concrete_owner }
+    let source = if pack >= 0 { get(env.packs, pack).source } else { concrete_owner }
+    let owner = impl_member_source(env, source)
     let arity = if pack >= 0 { get(env.packs, pack).arity } else { -1 }
+    let implementation_arity = impl_member_arity(env, source)
     if owner >= length(reuse.allowed) || !get(reuse.allowed, owner) {
         return Result.Ok(Option.None)
     }
@@ -455,7 +458,7 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
         let candidate = get(candidates, index)
         let value = get(prior.functions, candidate)
         let target = get(prior.targets, candidate)
-        if target.arity == arity && body_symbol(reuse, target.symbol) == owner &&
+        if target.arity == arity && target.implementation_arity == implementation_arity && body_symbol(reuse, target.symbol) == owner &&
         (std.loom.ast.has(current.node, NodeKind.ExpansionId) ||
             (current.text != "" && current.text == get(prior.definitions.entries, target.symbol).text)) && body_supported(reuse, target, value) &&
         same(body_types(env, reuse, value.arguments)?, instance.arguments) &&

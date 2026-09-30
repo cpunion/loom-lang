@@ -16,6 +16,9 @@ record Concept {
 }
 record Implementation {
     symbol Int
+    source Int
+    arity Int
+    depth Int
     capability Int
     ty Int
     methods List[Int]
@@ -182,64 +185,76 @@ fn conformances(env Environment) Result[Bool, Failure] {
         }
         owner = owner + 1
     }
-    owner = 0
-    while owner < length(env.source.symbols) {
-        let item = symbol(env, owner)
-        if item.node.kind == NodeKind.Impl {
-            let position = implementation_owner(env, owner)
-            let header = get(env.implementations, position)
-            let capability = header.capability
-            let ty = header.ty
-            let expected = get(env.concepts, concept_index(env, capability)).methods
-            let methods = new[Int]()
-            var index = 0
-            while index < length(expected) {
-                let declaration = get(env.signatures, get(expected, index)).symbol
-                let arguments = method_instance_arguments(env, declaration, ty, length(type_parameters(env, owner)))
-                let requirement = signature_in(env, get(expected, index), arguments, item.node, owner)?
-                var previous = 0
-                while previous < index {
-                    let other_declaration = get(env.signatures, get(expected, previous)).symbol
-                    if symbol(env, requirement.symbol).name == symbol(env, other_declaration).name &&
-                        method_parameter_count(env, declaration) == method_parameter_count(env, other_declaration) {
-                        let other = signature_in(env, get(expected, previous), arguments, item.node, owner)?
-                        if same(requirement.params, other.params) {
-                            return Result.Err(failure(env, owner, item.node, "concept method signatures overlap for this implementation"))
-                        }
-                    }
-                    previous = previous + 1
-                }
-                push(methods, -1)
-                index = index + 1
-            }
-            var candidate = 0
-            while candidate < length(env.source.symbols) {
-                let method = symbol(env, candidate)
-                if method.owner == owner && method.node.kind == NodeKind.Function && pack_parameter(method.node) < 0 {
-                    let matched = implementation_method(env, header, candidate, expected)?
-                    if get(methods, matched.slot) >= 0 {
-                        return Result.Err(failure(env, candidate, method.node, "duplicate implementation method for this concept overload"))
-                    }
-                    set(methods, matched.slot, register_signature(env, matched.signature)?)
-                }
-                candidate = candidate + 1
-            }
-            index = 0
-            while index < length(methods) {
-                if get(methods, index) < 0 {
-                    let declaration = get(expected, index)
-                    if !has(symbol(env, get(env.signatures, declaration).symbol).node, NodeKind.Block) {
-                        return Result.Err(failure(env, owner, item.node, "implementation is missing a required concept method"))
-                    }
-                    set(methods, index, declaration)
-                }
-                index = index + 1
-            }
-            set(env.implementations, position, Implementation { symbol = owner capability = capability ty = ty methods = methods associated = header.associated state = 2 })
-            discard validate_method_pack_implementation(env, get(env.implementations, position))?
+    var position = 0
+    while position < length(env.implementations) {
+        if get(env.implementations, position).state == 2 {
+            discard implementation_methods(env, position)?
         }
-        owner = owner + 1
+        position = position + 1
     }
+    Result.Ok(true)
+}
+
+fn implementation_methods(env Environment, position Int) Result[Bool, Failure] {
+    let header = get(env.implementations, position)
+    let owner = header.symbol
+    let item = symbol(env, owner)
+    let capability = header.capability
+    let ty = header.ty
+    let expected = get(env.concepts, concept_index(env, capability)).methods
+    let methods = new[Int]()
+    discard validate_method_pack_implementation(env, header)?
+    var index = 0
+    while index < length(expected) {
+        let declaration = get(env.signatures, get(expected, index)).symbol
+        let arguments = method_instance_arguments(env, declaration, ty, length(type_parameters(env, owner)))
+        let requirement = signature_in(env, get(expected, index), arguments, item.node, owner)?
+        var previous = 0
+        while previous < index {
+            let other_declaration = get(env.signatures, get(expected, previous)).symbol
+            if symbol(env, requirement.symbol).name == symbol(env, other_declaration).name &&
+                method_parameter_count(env, declaration) == method_parameter_count(env, other_declaration) {
+                let other = signature_in(env, get(expected, previous), arguments, item.node, owner)?
+                if same(requirement.params, other.params) {
+                    return Result.Err(failure(env, owner, item.node, "concept method signatures overlap for this implementation"))
+                }
+            }
+            previous = previous + 1
+        }
+        push(methods, -1)
+        index = index + 1
+    }
+    var candidate = 0
+    while candidate < length(env.source.symbols) {
+        let method = symbol(env, candidate)
+        if method.owner == owner && method.node.kind == NodeKind.Function && pack_parameter(method.node) < 0 {
+            let matched = implementation_method(env, header, candidate, expected)?
+            if get(methods, matched.slot) >= 0 {
+                return Result.Err(failure(env, candidate, method.node, "duplicate implementation method for this concept overload"))
+            }
+            set(methods, matched.slot, register_signature(env, matched.signature)?)
+        }
+        candidate = candidate + 1
+    }
+    index = 0
+    while index < length(methods) {
+        if get(methods, index) < 0 {
+            let declaration = get(expected, index)
+            let pack = pack_instance(env, declaration)
+            let binding = if pack < 0 { -1 } else {
+                method_pack_binding(env, owner, get(env.packs, pack).source)
+            }
+            if binding >= 0 {
+                set(methods, index, pack_signature(env, binding, get(env.packs, pack).arity)?)
+            } else if !has(symbol(env, get(env.signatures, declaration).symbol).node, NodeKind.Block) {
+                return Result.Err(failure(env, owner, item.node, "implementation is missing a required concept method"))
+            } else {
+                set(methods, index, declaration)
+            }
+        }
+        index = index + 1
+    }
+    set(env.implementations, position, Implementation { symbol = owner source = header.source arity = header.arity depth = header.depth capability = capability ty = ty methods = methods associated = header.associated state = 3 })
     Result.Ok(true)
 }
 fn evidence(context Context, ty Int, capability Int) Result[Bool, Failure] {
@@ -261,7 +276,7 @@ fn with_evidence(context Context, ty Int, capability Int) Context {
 }
 fn implementation(context Context, ty Int, capability Int) Result[Int, Failure] {
     if !satisfies(context, ty, capability)? { return Result.Ok(-1) }
-    Result.Ok(conformance(context.env, ty, capability).implementation)
+    Result.Ok(conformance(context.env, ty, capability)?.implementation)
 }
 fn satisfies(context Context, ty Int, capability Int) Result[Bool, Failure] {
     admitted(context.env, context.signature.symbol, context.signature.requirements, ty, capability)

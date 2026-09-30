@@ -1,0 +1,602 @@
+// An impl family is selected by target shape, then checked with abstract
+// elements for that arity. Expanded owners are private; source spans and
+// nominal data identities remain those of the original declarations.
+fn impl_pack_member(env Environment, owner Int) Bool {
+    let parent = symbol(env, owner).owner
+    parent >= 0 && symbol(env, parent).node.kind == NodeKind.Impl &&
+    pack_parameter(symbol(env, parent).node) >= 0
+}
+
+fn validate_impl_pack(env Environment, owner Int) Result[Bool, Failure] {
+    let node = symbol(env, owner).node
+    let parameters = group(node, NodeKind.TypeParameters)
+    let pack = pack_parameter(node)
+    if pack + 1 != length(parameters) {
+        return Result.Err(failure(env, owner, node, "declare one type pack, last in the type parameter list"))
+    }
+    if !has_type_expansion(child(node, 1)) {
+        return Result.Err(failure(env, owner, node, "an implementation pack needs a structural target expansion"))
+    }
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if !mentions_pack(child(node, 1), parameter.value) {
+            return Result.Err(failure(env, owner, parameter, "every implementation parameter must occur in its target type"))
+        }
+        var bound = 0
+        while bound < length(parameter.children) {
+            let capability = required_concept(env, owner, child(parameter, bound))?
+            var previous = 0
+            while previous < bound {
+                if required_concept(env, owner, child(parameter, previous))? == capability {
+                    return Result.Err(failure(env, owner, child(parameter, bound), "duplicate concept requirement"))
+                }
+                previous = previous + 1
+            }
+            bound = bound + 1
+        }
+        index = index + 1
+    }
+    discard impl_target_schema(env, owner, child(node, 1), false, 0)?
+    let capability = required_concept(env, owner, child(node, 0))?
+    index = 0
+    while index < length(env.source.symbols) {
+        let member = symbol(env, index)
+        if member.owner == owner {
+            if member.node.kind == NodeKind.Function {
+                if has(member.node, NodeKind.Requires) {
+                    return Result.Err(failure(env, index, member.node, "an implementation cannot add an undeclared precondition"))
+                }
+                var found = false
+                var declaration = 0
+                while declaration < length(env.source.symbols) {
+                    let expected = symbol(env, declaration)
+                    found = found || (expected.owner == capability && expected.node.kind == NodeKind.Function && expected.name == member.name)
+                    declaration = declaration + 1
+                }
+                if !found {
+                    return Result.Err(failure(env, index, member.node, "implementation method signature does not match its concept"))
+                }
+            }
+            let local = group(member.node, NodeKind.TypeParameters)
+            var parameter = 0
+            while parameter < length(local) {
+                var outer = 0
+                while outer < length(parameters) {
+                    if get(local, parameter).value == get(parameters, outer).value {
+                        return Result.Err(failure(env, index, get(local, parameter), "a member type parameter cannot shadow an implementation parameter"))
+                    }
+                    outer = outer + 1
+                }
+                parameter = parameter + 1
+            }
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(env.source.symbols) {
+        let declaration = symbol(env, index)
+        if declaration.owner == capability && declaration.node.kind == NodeKind.Function && !has(declaration.node, NodeKind.Block) {
+            var found = false
+            var member = 0
+            while member < length(env.source.symbols) {
+                let supplied = symbol(env, member)
+                found = found || (supplied.owner == owner && supplied.node.kind == NodeKind.Function && supplied.name == declaration.name)
+                member = member + 1
+            }
+            if !found {
+                return Result.Err(failure(env, owner, node, "implementation is missing a required concept method"))
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+// Keep spreads in the overlap schema. Fixed constructors and the anchored
+// prefix/suffix can prove disjointness; unknown sequence unification rejects
+// conservatively rather than sampling arities or depending on declaration order.
+fn impl_target_schema(env Environment, owner Int, node Node, element Bool, depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, node, "implementation target nesting limit exceeded"))
+    }
+    if node.kind == NodeKind.Spread {
+        let pack = pack_parameter(symbol(env, owner).node)
+        if pack < 0 || !mentions_pack(child(node, 0), get(group(symbol(env, owner).node, NodeKind.TypeParameters), pack).value) {
+            return Result.Err(failure(env, owner, node, "type expansion must use this declaration's pack"))
+        }
+        return Result.Ok(pack_node(node, NodeKind.Spread, "", source_nodes(impl_target_schema(env, owner, child(node, 0), true, depth + 1)?)))
+    }
+    let parameters = group(symbol(env, owner).node, NodeKind.TypeParameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        if pack_root(node, parameter.value) {
+            if node.value != parameter.value || length(node.children) != 0 {
+                return Result.Err(failure(env, owner, node, "implementation targets cannot contain associated projections"))
+            }
+            if parameter.kind == NodeKind.TypePack && !element {
+                return Result.Err(failure(env, owner, node, "expand a type pack with ...; it is not one type"))
+            }
+            return Result.Ok(pack_node(node, NodeKind.Type, "$parameter", new[Node]()))
+        }
+        index = index + 1
+    }
+    let children = new[Node]()
+    if node.kind == NodeKind.FunctionType {
+        let inputs = group(node, NodeKind.Parameters)
+        index = 0
+        while index < length(inputs) {
+            push(children, impl_target_schema(env, owner, get(inputs, index), element, depth + 1)?)
+            index = index + 1
+        }
+        // The result is an anchored last element, even when omitted.
+        let returns = group(node, NodeKind.ReturnType)
+        push(children, if length(returns) == 0 {
+                pack_node(node, NodeKind.Type, "0", new[Node]())
+            } else {
+                impl_target_schema(env, owner, get(returns, 0), element, depth + 1)?
+            })
+        return Result.Ok(pack_node(node, NodeKind.FunctionType, "function", children))
+    }
+    index = 0
+    while index < length(node.children) {
+        push(children, impl_target_schema(env, owner, child(node, index), element, depth + 1)?)
+        index = index + 1
+    }
+    if node.kind == NodeKind.TupleType {
+        return Result.Ok(pack_node(node, node.kind, "tuple", children))
+    }
+    if node.kind != NodeKind.Type {
+        return Result.Err(failure(env, owner, node, "expected an implementation target type pattern"))
+    }
+    let constructor = if node.value == "List" || node.value == "Task" {
+        if length(children) != 1 || child(node, 0).kind == NodeKind.Spread {
+            return Result.Err(failure(env, owner, node, "List and Task require one element type"))
+        }
+        node.value
+    } else {
+        let selected = find_data(env, owner, node, node.value)?
+        if selected >= 0 {
+            let declaration = symbol(env, selected).node
+            let count = length(group(declaration, NodeKind.TypeParameters))
+            if !has_type_expansion(node) && ((data_pack(declaration) && length(children) < count - 1) ||
+                (!data_pack(declaration) && length(children) != count)) {
+                return Result.Err(failure(env, owner, node, "wrong number of type arguments"))
+            }
+            concat("nominal#", std.int.to_text(selected))
+        } else {
+            let ty = resolve_bound(header_environment(env), owner, node, new[Int](), new[Requirement](), 0)?
+            std.int.to_text(ty)
+        }
+    }
+    Result.Ok(pack_node(node, NodeKind.Type, constructor, children))
+}
+
+fn impl_sequence_prefix(nodes List[Node]) Int {
+    var index = 0
+    while index < length(nodes) && get(nodes, index).kind != NodeKind.Spread {
+        index = index + 1
+    }
+    index
+}
+
+fn impl_sequence_suffix(nodes List[Node]) Int {
+    var index = length(nodes)
+    while index > 0 && get(nodes, index - 1).kind != NodeKind.Spread {
+        index = index - 1
+    }
+    length(nodes) - index
+}
+
+fn impl_schemas_overlap(first Node, second Node) Bool {
+    if first.value == "$parameter" || second.value == "$parameter" {
+        return true
+    }
+    if first.kind != second.kind || first.value != second.value {
+        return false
+    }
+    let a = first.children
+    let b = second.children
+    let ap = impl_sequence_prefix(a)
+    let bp = impl_sequence_prefix(b)
+    let af = ap == length(a)
+    let bf = bp == length(b)
+    if af && bf && length(a) != length(b) {
+        return false
+    }
+    let as = if af {
+        0
+    } else {
+        impl_sequence_suffix(a)
+    }
+    let bs = if bf {
+        0
+    } else {
+        impl_sequence_suffix(b)
+    }
+    if (af && length(a) < bp + bs) || (bf && length(b) < ap + as) {
+        return false
+    }
+    var index = 0
+    while index < ap && index < bp {
+        if !impl_schemas_overlap(get(a, index), get(b, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    index = 0
+    let tail_a = if af {
+        length(a)
+    } else {
+        as
+    }
+    let tail_b = if bf {
+        length(b)
+    } else {
+        bs
+    }
+    while index < tail_a && index < tail_b {
+        if !impl_schemas_overlap(get(a, length(a) - index - 1), get(b, length(b) - index - 1)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn implementation_overlap(env Environment, first Implementation, second Implementation) Result[Bool, Failure] {
+    if first.state >= 0 && second.state >= 0 {
+        return overlapping(env, first, second)
+    }
+    let a = if first.state < 0 {
+        impl_target_schema(env, first.symbol, child(symbol(env, first.symbol).node, 1), false, 0)?
+    } else {
+        impl_type_schema(env, first.ty, symbol(env, first.symbol).node)
+    }
+    let b = if second.state < 0 {
+        impl_target_schema(env, second.symbol, child(symbol(env, second.symbol).node, 1), false, 0)?
+    } else {
+        impl_type_schema(env, second.ty, symbol(env, second.symbol).node)
+    }
+    Result.Ok(impl_schemas_overlap(a, b))
+}
+
+fn impl_type_schema(env Environment, ty Int, node Node) Node {
+    let shape = get(env.types, ty)
+    let children = new[Node]()
+    var index = 0
+    while index < length(shape.arguments) {
+        push(children, impl_type_schema(env, get(shape.arguments, index), node))
+        index = index + 1
+    }
+    if shape.kind == TypeKind.Parameter {
+        return pack_node(node, NodeKind.Type, "$parameter", children)
+    }
+    if shape.kind == TypeKind.Tuple {
+        return pack_node(node, NodeKind.TupleType, "tuple", children)
+    }
+    if shape.kind == TypeKind.Function {
+        return pack_node(node, NodeKind.FunctionType, "function", children)
+    }
+    let constructor = if shape.kind == TypeKind.List {
+        "List"
+    } else if shape.kind == TypeKind.Task {
+        "Task"
+    } else if
+    shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
+        concat("nominal#", std.int.to_text(shape.symbol))
+    } else if shape.kind == TypeKind.Dyn {
+        concat("dyn#", std.int.to_text(get(env.interfaces, shape.symbol).symbol))
+    } else {
+        std.int.to_text(ty)
+    }
+    pack_node(node, NodeKind.Type, constructor, children)
+}
+
+fn impl_pack_arity(env Environment, owner Int, node Node, ty Int, depth Int) Result[Int, Failure] {
+    if depth >= 64 {
+        return Result.Ok(-1)
+    }
+    let shape = get(env.types, ty)
+    if node.kind == NodeKind.TupleType && shape.kind != TypeKind.Tuple {
+        return Result.Ok(-1)
+    }
+    if node.kind == NodeKind.FunctionType && shape.kind != TypeKind.Function {
+        return Result.Ok(-1)
+    }
+    if node.kind == NodeKind.Type {
+        if node.value == "List" || node.value == "Task" {
+            if (node.value == "List" && shape.kind != TypeKind.List) ||
+            (node.value == "Task" && shape.kind != TypeKind.Task) {
+                return Result.Ok(-1)
+            }
+        } else {
+            let declaration = find_data(env, owner, node, node.value)?
+            if declaration < 0 || shape.symbol != declaration ||
+            (shape.kind != TypeKind.Record && shape.kind != TypeKind.Enum && shape.kind != TypeKind.Refined) {
+                return Result.Ok(-1)
+            }
+        }
+    }
+    let patterns = if node.kind == NodeKind.FunctionType {
+        group(node, NodeKind.Parameters)
+    } else {
+        node.children
+    }
+    let count = length(shape.arguments) - if node.kind == NodeKind.FunctionType {
+        1
+    } else {
+        0
+    }
+    let direct = sequence_pack_arity(patterns, count)
+    if direct >= 0 {
+        return Result.Ok(direct)
+    }
+    if length(patterns) != count {
+        return Result.Ok(-1)
+    }
+    var index = 0
+    while index < count {
+        if has_type_expansion(get(patterns, index)) {
+            let arity = impl_pack_arity(env, owner, get(patterns, index), get(shape.arguments, index), depth + 1)?
+            if arity >= 0 {
+                return Result.Ok(arity)
+            }
+        }
+        index = index + 1
+    }
+    let returns = group(node, NodeKind.ReturnType)
+    if node.kind == NodeKind.FunctionType && length(returns) != 0 {
+        return impl_pack_arity(env, owner, get(returns, 0), get(shape.arguments, count), depth + 1)
+    }
+    Result.Ok(-1)
+}
+
+fn expand_impl_node(env Environment, owner Int, node Node, pack Text, arity Int, element Int, types Bool, depth Int) Result[Node, Failure] {
+    expand_pack_type_in(env, owner, node, pack, arity, element, types, depth, true)
+}
+
+fn impl_arguments(env Environment, header Implementation, ty Int) List[Int] {
+    let arguments = new[Int]()
+    var index = 0
+    while index < length(type_parameters(env, header.symbol)) {
+        push(arguments, -1)
+        index = index + 1
+    }
+    if !infer(env, header.ty, ty, arguments) {
+        return ints(-1)
+    }
+    arguments
+}
+
+fn materialize_impl_pack(env Environment, template Int, arity Int) Result[Int, Failure] {
+    let header = get(env.implementations, template)
+    var index = 0
+    var count = 0
+    while index < length(env.implementations) {
+        let previous = get(env.implementations, index)
+        if previous.source == header.source && previous.arity >= 0 {
+            if previous.arity == arity {
+                return Result.Ok(index)
+            }
+            count = count + 1
+        }
+        index = index + 1
+    }
+    let item = symbol(env, header.source)
+    var depth = 1
+    index = 0
+    while index < length(env.implementations) {
+        let active = get(env.implementations, index)
+        if active.state == 4 {
+            depth = active.depth + 1
+        }
+        index = index + 1
+    }
+    let pack_work = active_pack(env)
+    if pack_work >= 0 && get(env.packs, pack_work).depth >= depth {
+        depth = get(env.packs, pack_work).depth + 1
+    }
+    if depth > 64 {
+        return Result.Err(failure(env, header.source, item.node, "implementation pack specialization depth exceeded; expansion must be finite"))
+    }
+    if arity > 1024 || count >= 1024 {
+        return Result.Err(failure(env, header.source, item.node, "implementation pack specialization budget exceeded; expansion must be finite"))
+    }
+    let types = group(item.node, NodeKind.TypeParameters)
+    let pack = get(types, length(types) - 1)
+    let parameters = new[Node]()
+    index = 0
+    while index + 1 < length(types) {
+        push(parameters, get(types, index))
+        index = index + 1
+    }
+    index = 0
+    while index < arity {
+        push(parameters, pack_node(pack, NodeKind.Name, pack_name(pack.value, index), pack.children))
+        index = index + 1
+    }
+    let children = new[Node]()
+    index = 0
+    while index < length(item.node.children) {
+        let node = child(item.node, index)
+        if node.kind == NodeKind.TypeParameters {
+            push(children, pack_node(node, node.kind, "", parameters))
+        } else {
+            var expanded = expand_impl_node(env, header.source, node, pack.value, arity, -1, false, 0)?
+            if has_pack_iteration(expanded) {
+                expanded = expand_type_iteration(env, header.source, expanded, pack.value, arity, false, false, 0, ints(0))?
+            }
+            push(children, expanded)
+        }
+        index = index + 1
+    }
+    let owner = length(env.source.symbols)
+    push(env.source.symbols, Symbol {
+            file = item.file
+            node = pack_node(item.node, NodeKind.Impl, item.node.value, children)
+            name = item.name
+            public = false
+            test_only = item.test_only
+            owner = -1
+        })
+    let associated = new[Int]()
+    index = 0
+    while index < length(children) {
+        let member = get(children, index)
+        if member.kind == NodeKind.Function || member.kind == NodeKind.AssociatedType {
+            push(env.source.symbols, Symbol {
+                    file = item.file
+                    node = member
+                    name = member.value
+                    public = false
+                    test_only = item.test_only
+                    owner = owner
+                })
+        }
+        index = index + 1
+    }
+    let member_end = length(env.source.symbols)
+    index = 0
+    while index < length(header.associated) {
+        let original = get(header.associated, index)
+        var binding = original
+        var member = owner + 1
+        while member < member_end {
+            let selected = symbol(env, member)
+            if selected.owner == owner && selected.node.kind == NodeKind.AssociatedType && selected.name == symbol(env, original).name {
+                binding = member
+            }
+            member = member + 1
+        }
+        push(associated, binding)
+        index = index + 1
+    }
+    let selected = length(env.implementations)
+    push(env.implementations, Implementation {
+            symbol = owner
+            source = header.source
+            arity = arity
+            depth = depth
+            capability = header.capability
+            ty = -1
+            methods = new[Int]()
+            associated = associated
+            state = 0
+        })
+    discard implementation_type(env, selected, 0)?
+    index = owner + 1
+    while index < member_end {
+        if validate_pack(env, index)? {
+            push(env.packs, PackInstance {
+                    source = index
+                    declaration = -1
+                    arity = -1
+                    signature = -1
+                    state = -1
+                    depth = 0
+                })
+        }
+        index = index + 1
+    }
+    if get(env.concepts, concept_index(env, header.capability)).ready {
+        discard implementation_methods(env, selected)?
+    }
+    Result.Ok(selected)
+}
+
+fn impl_pack_state(env Environment, index Int, state Int) {
+    let header = get(env.implementations, index)
+    set(env.implementations, index, Implementation {
+            symbol = header.symbol
+            source = header.source
+            arity = header.arity
+            depth = header.depth
+            capability = header.capability
+            ty = header.ty
+            methods = header.methods
+            associated = header.associated
+            state = state
+        })
+}
+
+fn impl_member_arity(env Environment, owner Int) Int {
+    let parent = symbol(env, owner).owner
+    if parent < 0 || symbol(env, parent).node.kind != NodeKind.Impl {
+        return -1
+    }
+    get(env.implementations, implementation_owner(env, parent)).arity
+}
+
+fn impl_member_source(env Environment, owner Int) Int {
+    if impl_member_arity(env, owner) < 0 {
+        return owner
+    }
+    let item = symbol(env, owner)
+    let source = get(env.implementations, implementation_owner(env, item.owner)).source
+    var index = 0
+    while index < length(env.source.symbols) {
+        let member = symbol(env, index)
+        if member.owner == source && member.node.kind == item.node.kind && member.name == item.name &&
+        member.node.span.start == item.node.span.start && member.node.span.end == item.node.span.end &&
+        closure_expansion(member.node) == closure_expansion(item.node) {
+            return index
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn impl_member_instance(env Environment, source Int, arity Int) Result[Int, Failure] {
+    if arity < 0 {
+        return Result.Ok(source)
+    }
+    let item = symbol(env, source)
+    let selected = materialize_impl_pack(env, implementation_owner(env, item.owner), arity)?
+    discard check_impl_packs(env)?
+    let owner = get(env.implementations, selected).symbol
+    var index = 0
+    while index < length(env.source.symbols) {
+        let member = symbol(env, index)
+        if member.owner == owner && member.node.kind == item.node.kind && member.name == item.name &&
+        member.node.span.start == item.node.span.start && member.node.span.end == item.node.span.end &&
+        closure_expansion(member.node) == closure_expansion(item.node) {
+            return Result.Ok(index)
+        }
+        index = index + 1
+    }
+    Result.Err(failure(env, source, item.node, "cached implementation member has no current declaration"))
+}
+
+// Like function packs, check a worklist with abstract elements. A recursive
+// family may discover another arity without retaining native checker frames.
+fn check_impl_packs(env Environment) Result[Bool, Failure] {
+    var index = 0
+    while index < length(env.implementations) {
+        if get(env.implementations, index).arity >= 0 && get(env.implementations, index).state == 4 {
+            return Result.Ok(true)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(env.implementations) {
+        let header = get(env.implementations, index)
+        if header.arity >= 0 && header.state == 3 {
+            impl_pack_state(env, index, 4)
+            discard implementation_types(env, index)?
+            var method = 0
+            while method < length(header.methods) {
+                let id = get(header.methods, method)
+                let signature = get(env.signatures, id)
+                if symbol(env, signature.symbol).owner == header.symbol && pack_instance(env, id) < 0 {
+                    discard function(env, id, abstract_arguments(env, signature.parameters), unknown_constants(signature), false)?
+                }
+                method = method + 1
+            }
+            impl_pack_state(env, index, 5)
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

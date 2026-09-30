@@ -1011,7 +1011,43 @@ not a few sampled arities. A selected arity becomes an ordinary method slot;
 receiver-only in dynamic methods, even inside an empty expansion. See the
 [method-pack example](examples/variadics/methods.loom).
 
-Multiple packs and packs in implementation headers,
+Impl headers also accept one final pack. The target determines its arity:
+
+```loom
+record Cells[Ts...] {
+    values (Ts...)
+}
+
+concept Collection {
+    type Items
+    fn items(self Self) Self.Items
+}
+
+impl[Ts...] Collection for Cells[Ts...] {
+    type Items = (Ts...)
+
+    fn items(self Self) Self.Items {
+        self.values
+    }
+}
+```
+
+Fixed prefixes, nested/repeated tuple or nominal patterns and function types
+use ordinary inference after expansion. Selected arities check every method
+and associated binding with abstract elements and declared requirements, not
+only the caller's concrete types. `comptime for T in Ts` uses the same type
+iteration as function packs. A method-local pack has an independent arity;
+defaults, overrides, CTFE, dyn slots and native Task payloads stay ordinary.
+Incremental recipes retain source identity and both arities, not generated impl
+indices. See the [impl example](examples/data_packs/implementations.loom).
+
+Overlapping impl families reject before a call selects an arity. Fixed
+constructors and anchored prefix/suffix patterns prove disjointness; unknown
+intersections reject conservatively. Bounds or sampled arities do not prove
+disjointness. An impl family's ordinary method contracts are proved at each
+selected arity; unselected arities have not had their bodies verified.
+
+Multiple packs in one parameter list,
 general type-list reflection and richer pack iteration remain open. This
 implementation does not complete the accepted metaprogramming design.
 

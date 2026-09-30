@@ -262,7 +262,7 @@ fn materialize_method_pack(env Environment, owner Int, arity Int) Result[Int, Fa
     var index = 0
     while index < length(env.implementations) {
         let header = get(env.implementations, index)
-        if header.capability == capability {
+        if header.state >= 2 && header.capability == capability {
             let binding = method_pack_binding(env, header.symbol, owner)
             let implementation = if binding < 0 {
                 selected
@@ -279,7 +279,7 @@ fn materialize_method_pack(env Environment, owner Int, arity Int) Result[Int, Fa
     index = 0
     while index < length(env.implementations) {
         let header = get(env.implementations, index)
-        if header.capability == capability {
+        if header.state >= 2 && header.capability == capability {
             push(header.methods, get(bindings, binding))
             binding = binding + 1
         }
@@ -295,7 +295,7 @@ fn check_method_pack_instance(env Environment, selected Int, slot Int, capabilit
     var index = 0
     while index < length(env.implementations) {
         let header = get(env.implementations, index)
-        if header.capability == capability {
+        if header.state >= 2 && header.capability == capability {
             let binding = get(header.methods, slot)
             if binding != selected {
                 discard check_pack_arity(env, binding)?
