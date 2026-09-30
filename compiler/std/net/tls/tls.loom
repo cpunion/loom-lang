@@ -31,14 +31,25 @@ pub enum Trust {
     Certificates(Bytes)
 }
 
+pub record Identity {
+    certificates Bytes
+    private_key Bytes
+}
+
+pub enum ClientAuth {
+    Anonymous
+    Required(Bytes)
+}
+
 pub record ClientOptions {
     trust Trust
+    identity Option[Identity]
     protocols List[Text]
 }
 
 pub record ServerOptions {
-    certificates Bytes
-    private_key Bytes
+    identity Identity
+    client_auth ClientAuth
     protocols List[Text]
 }
 
@@ -53,9 +64,11 @@ pub record Connection {
     state State
 }
 
-intrinsic fn tls_client(name Text, roots Bytes, builtin Int, protocols List[Text]) Int
+intrinsic fn tls_client(name Text, roots Bytes, builtin Int, certificates Bytes, key Bytes, protocols List[Text]) Int
 
-intrinsic fn tls_server(certificates Bytes, key Bytes, protocols List[Text]) Int
+intrinsic fn tls_server(certificates Bytes, key Bytes, roots Bytes, required Int, protocols List[Text]) Int
+
+intrinsic fn tls_peer_certificate(token Int, output Bytes) Int
 
 intrinsic fn tls_receive(token Int, input Bytes, eof Int) Int
 
@@ -76,6 +89,7 @@ intrinsic fn tls_protocol(token Int) Text
 pub fn default_client() ClientOptions {
     ClientOptions {
         trust = Trust.Builtin
+        identity = Option.None
         protocols = std.list.new[Text]()
     }
 }
@@ -192,9 +206,21 @@ async fn handshake(raw std.net.tcp.Stream, token Int) Result[Connection, TlsErro
 }
 
 fn client_engine(name Text, options ClientOptions) Int {
+    let identity = match options.identity {
+        Option.Some(value) => {
+            if length(value.certificates) == 0 || length(value.private_key) == 0 {
+                return -1
+            }
+            value
+        }
+        Option.None => Identity {
+            certificates = std.bytes.new()
+            private_key = std.bytes.new()
+        }
+    }
     match options.trust {
-        Trust.Builtin => tls_client(name, std.bytes.new(), 1, options.protocols)
-        Trust.Certificates(roots) => tls_client(name, roots, 0, options.protocols)
+        Trust.Builtin => tls_client(name, std.bytes.new(), 1, identity.certificates, identity.private_key, options.protocols)
+        Trust.Certificates(roots) => tls_client(name, roots, 0, identity.certificates, identity.private_key, options.protocols)
     }
 }
 
@@ -244,7 +270,10 @@ pub async fn connect(address Text, name Text, options ClientOptions) Result[Conn
 }
 
 pub async fn accept(listener Listener, options ServerOptions) Result[Connection, TlsError] {
-    let token = tls_server(options.certificates, options.private_key, options.protocols)
+    let token = match options.client_auth {
+        ClientAuth.Anonymous => tls_server(options.identity.certificates, options.identity.private_key, std.bytes.new(), 0, options.protocols)
+        ClientAuth.Required(roots) => tls_server(options.identity.certificates, options.identity.private_key, roots, 1, options.protocols)
+    }
     if token < 0 {
         return Result.Err(TlsError.Configuration)
     }
@@ -351,5 +380,22 @@ pub fn protocol(stream Connection) Result[Option[Text], TlsError] {
             Option.None
         } else {
             Option.Some(value)
+        })
+}
+
+// A fresh DER copy of the verified leaf, not an application authorization rule.
+pub fn peer_certificate(stream Connection) Result[Option[Bytes], TlsError] {
+    if get(stream.state.flags, 0) == 2 {
+        return Result.Err(TlsError.Closed)
+    }
+    let output = std.bytes.new()
+    let count = tls_peer_certificate(stream.state.token, output)
+    if count < 0 {
+        return Result.Err(protocol_error(count))
+    }
+    Result.Ok(if count == 0 {
+            Option.None
+        } else {
+            Option.Some(output)
         })
 }

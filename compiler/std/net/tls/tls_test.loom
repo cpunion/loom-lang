@@ -6,14 +6,27 @@ import std.net.tcp.close_listener
 test async fn configuration_errors_do_not_open_a_transport() {
     let options = ClientOptions {
         trust = Trust.Certificates(std.bytes.new())
+        identity = Option.None
         protocols = ["loom"]
     }
     assert match connect("127.0.0.1:0", "localhost", options).await {
         Result.Err(error) => error == TlsError.Configuration
         Result.Ok(_) => false
     }
-    assert tls_server(std.bytes.new(), std.bytes.new(), ["loom"]) < 0
-    assert tls_client("localhost", std.bytes.new(), 1, [""]) < 0
+    assert tls_server(std.bytes.new(), std.bytes.new(), std.bytes.new(), 0, ["loom"]) < 0
+    assert tls_client("localhost", std.bytes.new(), 1, std.bytes.new(), std.bytes.new(), [""]) < 0
+    let empty_identity = ClientOptions {
+        trust = Trust.Builtin
+        identity = Option.Some(Identity {
+                certificates = std.bytes.new()
+                private_key = std.bytes.new()
+            })
+        protocols = ["loom"]
+    }
+    assert match connect("127.0.0.1:0", "localhost", empty_identity).await {
+        Result.Err(error) => error == TlsError.Configuration
+        Result.Ok(_) => false
+    }
 }
 
 test async fn cancellation_drains_handshake_and_closes_the_transport() {

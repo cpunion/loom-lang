@@ -1,4 +1,5 @@
 import std.net.tls.ClientOptions
+import std.net.tls.Identity
 import std.net.tls.Trust
 import std.net.tls.TlsError
 import std.net.tls.connect
@@ -14,18 +15,26 @@ import std.process.arguments
 import std.result.Result
 import std.task.cancel
 import std.task.Outcome
+import std.option.Option
 
-async fn main() {
-    let args = arguments()
-    let roots = match read_bytes(args[1]) {
+fn loaded(path Text) Bytes {
+    match read_bytes(path) {
         Result.Ok(value) => value
         Result.Err(_) => {
             assert false
-            return
+            new()
         }
     }
+}
+
+async fn main() {
+    let args = arguments()
     let stream = match connect(args[2], "localhost", ClientOptions {
-            trust = Trust.Certificates(roots)
+            trust = Trust.Certificates(loaded(args[1]))
+            identity = Option.Some(Identity {
+                    certificates = loaded(args[4])
+                    private_key = loaded(args[5])
+                })
             protocols = ["loom-echo"]
         }).await {
         Result.Ok(value) => value
