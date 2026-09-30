@@ -95,7 +95,7 @@ them to separate lines. Semicolons do not terminate ordinary statements.
 
 The [VS Code development extension](../../editors/vscode/README.md) provides
 highlighting, document formatting, diagnostics, name/member completion, type hovers, definition
-navigation, checked references, local rename and unique private-function rename
+navigation, checked references, local/compile-time-parameter rename and unique private-function rename
 for unsaved buffers. Its
 language server sends source snapshots to the same Loom package/type/contract
 checker; it does not implement another parser or checker in JavaScript.
@@ -110,7 +110,10 @@ search is limited to unique exports of direct dependencies. A resident editor
 session reuses an unchanged checked snapshot across diagnostics, hover and
 navigation after reloading sources and verifying build inputs/options/targets.
 Unchanged ordinary definitions and concrete bodies also reuse checks after edits.
-Public/API rename remains open. Completion
+Compile-time parameter rename records bindings before erasure during an on-demand
+check, without changing executable IR. Every occurrence must be accounted for;
+unobserved branches, packs and untracked captures still reject. Public/API rename
+remains open. Completion
 can recover a missing cursor name/value or unmatched EOF delimiters
 without modifying the source or making normal builds accept it. Other semantic
 queries use concrete body instances. If package checking fails, an independently

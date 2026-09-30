@@ -74,6 +74,9 @@ fn static_type(context Context, index Int) Int {
     return get(context.constants, index).ty
 }
 fn static_expression(context Context, node Node, index Int) Result[Expr, Failure] {
+    if length(get(context.env.inputs, 0).static_queries) != 0 {
+        static_reference(context, node, index)
+    }
     let value = get(context.constants, index)
     let declared = static_type(context, index)
     // Abstract validation cannot learn a generic parameter's incidental type

@@ -1,0 +1,78 @@
+import std.loom.source.Span
+
+record CheckInputs {
+    build BuildInputs
+    static_queries List[StaticReferenceQuery]
+}
+
+record StaticReferenceQuery {
+    owner Int
+    constant Int
+    name Text
+    references List[Span]
+}
+
+// Optional source evidence is recorded before specialization erases a static
+// parameter. No executable expression or cached body carries query metadata.
+fn static_reference(context Context, node Node, constant Int) {
+    let queries = get(context.env.inputs, 0).static_queries
+    let query = get(queries, 0)
+    if context.signature.symbol != query.owner || constant != query.constant ||
+    (node.kind != NodeKind.Name && node.kind != NodeKind.Call) ||
+    slice(node.value, 0, first_dot(node.value)) != query.name {
+        return
+    }
+    let span = Span {
+        start = node.span.start
+        end = node.span.start + std.text.length(query.name)
+    }
+    var index = 0
+    while index < length(query.references) {
+        let previous = get(query.references, index)
+        if previous.start == span.start && previous.end == span.end {
+            return
+        }
+        index = index + 1
+    }
+    push(query.references, span)
+}
+
+// Returns observed uses, not a claim that every source branch was instantiated.
+// A rename must separately account for every occurrence. Failed checks publish
+// nothing; queries use fresh tables and never replay cached executable bodies.
+pub fn static_parameter_references(source std.loom.binding.Program, owner Int, parameter Int, inputs BuildInputs) Result[List[Span], Failure] {
+    let detached = std.loom.binding.Program {
+        files = source.files
+        modules = source.modules
+        packages = source.packages
+        symbols = std.list.clone(source.symbols)
+        root = source.root
+        tests = source.tests
+        scopes = source.scopes
+        file_scopes = source.file_scopes
+    }
+    let env = prepare_with_inputs(detached, inputs)?
+    let item = symbol(env, owner)
+    let parameters = group(item.node, NodeKind.Parameters)
+    if item.node.kind != NodeKind.Function || item.node.value == "" || parameter < 0 ||
+    parameter >= length(parameters) || !has(get(parameters, parameter), NodeKind.Comptime) || pack_parameter(item.node) >= 0 {
+        return Result.Err(failure(env, owner, item.node, "query requires an ordinary compile-time parameter"))
+    }
+    var constant = 0
+    var index = 0
+    while index < parameter {
+        if has(get(parameters, index), NodeKind.Comptime) {
+            constant = constant + 1
+        }
+        index = index + 1
+    }
+    let references = new[Span]()
+    push(get(env.inputs, 0).static_queries, StaticReferenceQuery {
+            owner = owner
+            constant = constant
+            name = get(parameters, parameter).value
+            references = references
+        })
+    discard checked_program(env, new[Bool](), new[Bool](), ints(0))?
+    Result.Ok(references)
+}
