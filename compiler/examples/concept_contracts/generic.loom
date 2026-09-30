@@ -1,3 +1,5 @@
+import std.bytes.new
+
 concept Preserve {
     fn keep(self Self, value Int) Int
     requires value >= 0
@@ -10,6 +12,34 @@ concept Preserve {
 
 impl Preserve for Bool {
     fn keep(receiver Bool, input Int) Int {
+        input
+    }
+}
+
+impl Preserve for Text {
+    fn keep(receiver Text, input Int) Int {
+        input
+    }
+}
+
+impl Preserve for Bytes {
+    fn keep(receiver Bytes, input Int) Int {
+        input
+    }
+}
+
+impl[Item] Preserve for List[Item] {
+    fn keep(receiver List[Item], input Int) Int {
+        input
+    }
+}
+
+record Holder[T] {
+    value T
+}
+
+impl[T] Preserve for Holder[T] {
+    fn keep(receiver Holder[T], input Int) Int {
         input
     }
 }
@@ -31,9 +61,34 @@ ensures result == (input > 0) {
     source.positive(input)
 }
 
+fn from_list[T](source List[T], input Int) Int
+requires input >= 0
+ensures result == input {
+    source.keep(input)
+}
+
+fn from_holder[T](source Holder[T], input Int) Int
+requires input >= 0
+ensures result == input {
+    source.keep(input)
+}
+
 fn generic_exercise() {
     assert preserve(true, 7) == 7
     assert preserve_twice(true, 8) == 8
     assert is_positive(true, 9)
     assert !is_positive(true, 0)
+    assert preserve("opaque", 10) == 10
+    assert from_list([true], 11) == 11
+    assert from_holder(Holder {
+            value = "shared"
+        }, 12) == 12
+    let text dyn Preserve = "erased"
+    let list dyn Preserve = [1]
+    assert preserve_twice(text, 13) == 13
+    assert preserve_twice(list, 14) == 14
+    assert comptime {
+        from_list([1], 15)
+    } == 15
+    assert preserve(new(), 16) == 16
 }

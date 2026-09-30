@@ -80,6 +80,10 @@ fn fresh_result(proof Verification, ty Int) Value {
     set(proof.fresh, 0, identity + 1)
     if ty == 1 { Value.Number(variable(identity)) } else { Value.Boolean(Predicate.Variable(identity)) }
 }
+fn opaque_parameter(kind TypeKind) Bool {
+    kind == TypeKind.Dyn || kind == TypeKind.Parameter || kind == TypeKind.Associated ||
+    kind == TypeKind.Text || kind == TypeKind.Bytes || kind == TypeKind.List
+}
 fn call_scope(state State, values List[Value]) State {
     let locals = new[Value]()
     var index = 0
@@ -306,7 +310,7 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
         // Contracted abstract/dyn arguments contribute no proof facts. Their
         // concrete implementation or hidden witness is never guessed.
         let shape = if ty >= 0 && ty < length(proof.program.types) { get(proof.program.types, ty).kind } else { TypeKind.Unit }
-        let opaque = (shape == TypeKind.Dyn || shape == TypeKind.Parameter || shape == TypeKind.Associated) && length(function.postconditions) != 0
+        let opaque = opaque_parameter(shape) && length(function.postconditions) != 0
         if (!helper_type(proof.program, ty, 0) || ty == 5) && !opaque {
             return Result.Err("body proof helper parameters must be Int, Bool or inline aggregates, apart from contracted opaque arguments")
         }

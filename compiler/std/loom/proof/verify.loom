@@ -132,13 +132,18 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
     if ty == 5 {
         return Result.Err("Float parameters are not supported in required proofs")
     }
+    if ty == 3 || ty == 4 { return Result.Ok(Value.Empty) }
     if ty < 0 || ty >= length(proof.program.types) {
         return Result.Err("required proof currently needs scalar parameters")
     }
     let shape = get(proof.program.types, ty)
     // An abstract receiver may be present without contributing any proof
     // fact. A scalar operation or field projection on Empty still rejects.
-    if shape.kind == TypeKind.Parameter || shape.kind == TypeKind.Associated || shape.kind == TypeKind.Dyn {
+    if opaque_parameter(shape.kind) {
+        return Result.Ok(Value.Empty)
+    }
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
+        opaque_parameter(get(proof.program.types, get(shape.fields, 0).ty).kind) {
         return Result.Ok(Value.Empty)
     }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 1 {
@@ -340,6 +345,9 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
         return Result.Ok(new[Outcome]())
     }
     if expr.kind == ExprKind.Defer {
+        return Result.Ok(outcomes(state, Value.Empty))
+    }
+    if expr.kind == ExprKind.Text || expr.kind == ExprKind.Bytes {
         return Result.Ok(outcomes(state, Value.Empty))
     }
     if expr.kind == ExprKind.Cleanup {

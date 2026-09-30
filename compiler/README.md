@@ -1345,6 +1345,9 @@ Bool and inline record/tuple scalar facts. Unspecified leaves remain independent
 shared siblings supply no content or alias facts. Summaries never guess an
 implementation or enter native code. See the [generic](examples/concept_contracts/generic.loom)
 and [aggregate](examples/concept_contracts/aggregates.loom) contract examples.
+Text, Bytes and List inputs may be carried opaquely in these proofs, including
+generic nominal receivers: a declared scalar guarantee need not inspect them.
+Their contents, mutable aliases and unmodeled operations still provide no evidence.
 Pure static and dynamic calls can also execute inside an isolated `comptime`
 computation.
 

@@ -146,6 +146,8 @@ and inline aggregate concept calls use declared contracts through generic/associ
 not a guessed implementation or hidden receiver knowledge. Private abstract
 summaries are neither executable CTFE bodies nor native functions. Unspecified
 leaves remain independent; shared siblings supply no content or alias facts.
+Text, Bytes and List parameters can be carried opaquely through contracted
+calls, including generic nominal receivers. Unmodeled heap operations still reject.
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` currently covers immutable
 parameter scalar paths, not arbitrary entry-state snapshots.
