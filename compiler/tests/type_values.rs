@@ -26,10 +26,35 @@ fn first_class_types_select_native_types_without_runtime_type_tags() {
     fs::write(
         folder.path().join("main.loom"),
         r#"
+import std.list.length
+import std.meta.parameter_types
+import std.meta.return_type
+import std.option.Option
+
 fn choose(flag Bool) type {
     if flag { Int } else { Text }
 }
+fn unused_callback(value Int, flag Bool) Text {
+    assert false
+    "never called"
+}
+fn unused_no_result() {
+    assert false
+}
 pub fn answer() Int {
+    assert comptime {
+        let parameters = parameter_types(unused_callback)
+        assert length(parameters) == 2 && parameters[0] == Int && parameters[1] == Bool
+        assert length(parameter_types(unused_no_result)) == 0
+        assert match return_type(unused_no_result) {
+            Option.None => true
+            Option.Some(_) => false
+        }
+        match return_type(unused_callback) {
+            Option.Some(output) => output == Text
+            Option.None => false
+        }
+    }
     let Selected = comptime { choose(true) }
     let value Selected = 42
     value
