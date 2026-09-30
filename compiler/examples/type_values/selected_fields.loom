@@ -1,0 +1,47 @@
+import std.reflect.from_fields
+
+record SelectedFields[T] {
+    active Bool
+    data T
+}
+
+fn selected_field_types() {
+    let Shape = comptime {
+        choose(true, of[SelectedFields[List[Int]]](), Int)
+    }
+    let events = [0]
+    let readers = comptime map name, Field in Shape {
+        assert name == "active" || name == "data"
+        fn(value Field) Field {
+            events[0] = events[0] + 1
+            value
+        }
+    }
+    let state = [1]
+    let fields = (readers.0(true), readers.1(state))
+    let value Shape = from_fields(fields)
+    assert events[0] == 2 && value.active
+    state[0] = 42
+    assert value.data[0] == 42
+
+    let Tuple = comptime {
+        of[(Int, Text)]()
+    }
+    var count = 0
+    comptime for index, Field in Tuple {
+        assert comptime {
+            of[Field]() == Field
+        }
+        assert index == count
+        count = count + 1
+    }
+    assert count == 2
+    {
+        let Tuple = (3, 4)
+        var total = 0
+        comptime for item in Tuple {
+            total = total + item
+        }
+        assert total == 7
+    }
+}

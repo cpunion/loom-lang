@@ -898,8 +898,12 @@ When the source name denotes a record or tuple **type**, `comptime for/map`
 instead binds each field's type; no sample value is needed. The optional key is
 still the record field name or tuple index. Value bindings take precedence over
 type names. An unknown generic shape must be selected with `comptime if` before
-iteration. The source is a single name, such as a generic `T` or a non-generic
-record name; it is not an arbitrary type expression.
+iteration. The source is a single name, such as a generic `T`, a non-generic
+record name or an immutable compile-time-selected type binding; it is not an
+arbitrary type expression. Selected types use the same tuple/record shape and
+private-field checks as named types. An inner value binding with the same name
+retains ordinary value iteration. See the
+[selected-field example](examples/type_values/selected_fields.loom).
 
 `std.reflect.from_fields` assembles a visible record from a tuple in field
 declaration order. An expected result type determines the record type:
