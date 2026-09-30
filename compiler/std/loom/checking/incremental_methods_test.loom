@@ -58,8 +58,12 @@ test fn inherited_cached_contracts_follow_their_current_declaration_file() {
                 item
             }
         }
+        fn forward[T Keep](receiver T, value Int) Int
+        ensures result == value {
+            receiver.keep(value)
+        }
         pub fn answer() Int {
-            true.keep(7)
+            forward(true, 7)
         }
         """
     let files = source_files(source)

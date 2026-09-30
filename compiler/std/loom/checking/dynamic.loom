@@ -332,16 +332,58 @@ fn emit_functions(env Environment, retain Bool) Result[List[Function], Failure] 
     emit_functions_reusing(env, retain, no_body_reuse())
 }
 fn emit_functions_reusing(env Environment, retain Bool, bodies BodyReuse) Result[List[Function], Failure] {
+    emit_functions_in(env, retain, bodies, false)
+}
+fn emitted_function(env Environment, function Function) Result[Bool, Failure] {
+    let node = symbol(env, function.symbol).node
+    var index = 0
+    if length(env.interfaces) == 0 {
+        // Ordinary instance arguments already determine the nominal fields.
+        // Only dyn needs a graph walk to activate nested interface slots.
+        while index < length(function.params) {
+            if !concrete(env, get(function.params, index)) {
+                return Result.Err(failure(env, function.symbol, node, "emitted function types must be concrete"))
+            }
+            index = index + 1
+        }
+        if !concrete(env, function.result) {
+            return Result.Err(failure(env, function.symbol, node, "emitted function types must be concrete"))
+        }
+    } else {
+        let seen = new[Int]()
+        while index < length(function.params) {
+            discard emitted_type(env, function.symbol, get(function.params, index), node, seen)?
+            index = index + 1
+        }
+        discard emitted_type(env, function.symbol, function.result, node, seen)?
+    }
+    Result.Ok(true)
+}
+// Only a private proof program may retain abstract call instances. Normal
+// emission and CTFE still require concrete runtime parameters and results.
+fn emit_functions_in(env Environment, retain Bool, bodies BodyReuse, proof Bool) Result[List[Function], Failure] {
     let functions = new[Function]()
     var index = 0
     var more = true
     while more {
         while index < length(env.pending) {
             let instance = get(env.pending, index)
-            match reuse_body(env, bodies, instance)? {
-                Option.Some(value) => { push(functions, value) }
-                Option.None => { push(functions, function(env, instance.signature, instance.arguments, instance.constants, true)?) }
+            if !proof && abstract_method_instance(env, instance.signature, instance.arguments) {
+                let owner = get(env.signatures, instance.signature).symbol
+                return Result.Err(failure(env, owner, symbol(env, owner).node, "emitted function types must be concrete"))
             }
+            let checked = if proof && abstract_method_instance(env, instance.signature, instance.arguments) {
+                declared_method_summary(env, instance.signature, instance.arguments, instance.constants)?
+            } else {
+                match reuse_body(env, bodies, instance)? {
+                    Option.Some(value) => value
+                    Option.None => function(env, instance.signature, instance.arguments, instance.constants, true)?
+                }
+            }
+            if !proof {
+                discard emitted_function(env, checked)?
+            }
+            push(functions, checked)
             index = index + 1
         }
         more = activate_witnesses(env, retain)?

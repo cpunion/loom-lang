@@ -80,12 +80,20 @@ fn method_target(env Environment, id Int, arguments List[Int], constants List[St
         constants = constants })
 }
 
+fn abstract_method_instance(env Environment, id Int, arguments List[Int]) Bool {
+    if id < 0 || !prototype(env, get(env.signatures, id).symbol) || length(arguments) == 0 {
+        return false
+    }
+    let receiver = get(env.types, get(arguments, 0)).kind
+    receiver == TypeKind.Parameter || receiver == TypeKind.Associated
+}
+
 fn schedule(env Environment, id Int, arguments List[Int], constants List[StaticValue], node Node) Result[Int, Failure] {
     let current = get(env.signatures, id)
     // Scheduling has the callee identity, not the caller's source identity.
     // A failure anchored to the declaration must also use that declaration's span.
     let declaration = symbol(env, current.symbol).node
-    if prototype(env, current.symbol) {
+    if prototype(env, current.symbol) && !abstract_method_instance(env, id, arguments) {
         let selected = method_target(env, id, arguments, constants)?
         if selected.signature != id { return schedule(env, selected.signature, selected.arguments, constants, node) }
     }
@@ -597,13 +605,6 @@ fn function_body(env Environment, id Int, arguments List[Int], constants List[St
     let runtime_name = if has(item.node, NodeKind.Intrinsic) { validate_intrinsic(env, id)? } else { "" }
     let current = signature(env, id, arguments, item.node)?
     discard task_signature(env, current, item.node)?
-    if emit && length(env.interfaces) != 0 {
-        let seen = new[Int]()
-        var index = 0
-        while index < length(current.params) { discard emitted_type(env, current.symbol, get(current.params, index), item.node, seen)?
-            index = index + 1 }
-        discard emitted_type(env, current.symbol, current.result, item.node, seen)?
-    }
     let scope = function_scope(env, current, arguments, constants, emit)?
     var context = scope.context
     let body = if runtime_name == "" {

@@ -65,6 +65,7 @@ ensures result == input {
 }
 
 test fn concept_contracts() {
+    generic_exercise()
     assert 1.preserve(3) == 3
     assert 1.echo(4) == 4
     let erased dyn Positive = Parcel {
@@ -80,6 +81,7 @@ test fn concept_contracts() {
 }
 
 fn main() {
+    generic_exercise()
     let erased dyn Positive = Parcel {
         label = "ok"
     }

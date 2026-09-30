@@ -1,0 +1,39 @@
+concept Preserve {
+    fn keep(self Self, value Int) Int
+    requires value >= 0
+    ensures result == value
+    fn positive(self Self, value Int) Bool
+    ensures result == (value > 0) {
+        value > 0
+    }
+}
+
+impl Preserve for Bool {
+    fn keep(receiver Bool, input Int) Int {
+        input
+    }
+}
+
+fn preserve[T Preserve](source T, input Int) Int
+requires input >= 0
+ensures result == input {
+    source.keep(input)
+}
+
+fn preserve_twice[T Preserve](source T, input Int) Int
+requires input >= 0
+ensures result == input {
+    preserve(source, preserve(source, input))
+}
+
+fn is_positive[T Preserve](source T, input Int) Bool
+ensures result == (input > 0) {
+    source.positive(input)
+}
+
+fn generic_exercise() {
+    assert preserve(true, 7) == 7
+    assert preserve_twice(true, 8) == 8
+    assert is_positive(true, 9)
+    assert !is_positive(true, 0)
+}

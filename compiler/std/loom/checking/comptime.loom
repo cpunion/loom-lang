@@ -124,7 +124,10 @@ fn isolated(context Context, node Node, value Expr, boundary Int) Result[Bool, F
     Result.Ok(true)
 }
 fn prepared(stage Context) Result[std.loom.typed.Program, Failure] {
-    let functions = emit_functions(stage.env, false)?
+    prepared_in(stage, false)
+}
+fn prepared_in(stage Context, proof Bool) Result[std.loom.typed.Program, Failure] {
+    let functions = emit_functions_in(stage.env, false, no_body_reuse(), proof)?
     Result.Ok(std.loom.typed.Program { types = stage.env.types functions = functions entry = -1 tests = new[Int]() test_names = new[Text]() exports = new[Int]()
         interfaces = stage.env.interfaces witnesses = stage.env.witnesses })
 }

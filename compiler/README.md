@@ -1339,7 +1339,10 @@ unused functions with generic nominal receivers. An override does not instantiat
 the default body it replaces. The [method example](examples/comptime_parameters/methods.loom)
 combines defaults, recursive static callbacks, Text/Bool options and dynamic calls.
 Bounded synchronous scalar concept method contracts are proved for each
-implementation; required proofs may use a declared dynamic method postcondition.
+implementation; required proofs may use the same declared postconditions through
+abstract generic/associated receivers or `dyn`. These private summaries return
+Int/Bool and never guess an implementation, inspect shared state, or enter native
+code. See the [contract example](examples/concept_contracts/generic.loom).
 Pure static and dynamic calls can also execute inside an isolated `comptime`
 computation.
 

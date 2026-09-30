@@ -3,6 +3,49 @@ mod common;
 use common::success;
 
 #[test]
+fn concept_contracts_compose_without_emitting_abstract_proof_bodies() {
+    let package = "compiler/examples/concept_contracts";
+    for command in ["check", "test", "run"] {
+        success(&common::loom(&[command, package]));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = common::executable(directory.path(), "concept-contracts");
+    let ir = directory.path().join("concepts.ll");
+    for level in ["0", "2"] {
+        success(
+            &common::command(&["build", package])
+                .arg("--output")
+                .arg(&artifact)
+                .arg("--emit-ir")
+                .arg(&ir)
+                .env("LOOM_OPT_LEVEL", level)
+                .output()
+                .unwrap(),
+        );
+        success(
+            &Command::new(&artifact)
+                .env("LOOM_GC_STRESS", "1")
+                .output()
+                .unwrap(),
+        );
+        let llvm = fs::read_to_string(&ir).unwrap();
+        for absent in ["executor", "proof", "universal"] {
+            assert!(
+                !llvm.contains(absent),
+                "private proof machinery leaked: {absent}"
+            );
+        }
+        if level == "0" {
+            assert!(llvm.matches("call i64 @loom.fn.").count() >= 4);
+            assert!(
+                llvm.contains("call i64 %"),
+                "dyn dispatch was replaced by a guessed witness"
+            );
+        }
+    }
+}
+
+#[test]
 fn relational_contracts_share_the_prover_and_preserve_real_faults() {
     let package = "compiler/examples/relational_contracts";
     success(&common::loom(&["check", package]));
