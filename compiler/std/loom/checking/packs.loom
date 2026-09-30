@@ -128,9 +128,6 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
     if selected + 1 != length(types) {
         return Result.Err(failure(env, owner, get(types, selected), "declare one type pack, last in the type parameter list"))
     }
-    if !data_pack(item.node) && !variadic_parameters(parameters) && structural_pack_position(parameters) < 0 {
-        return Result.Err(failure(env, owner, item.node, "a type pack needs a structural parameter or a final variadic parameter"))
-    }
     var clause = 0
     while clause < length(item.node.children) {
         let condition = child(item.node, clause)
@@ -566,7 +563,11 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
     let types = group(declaration, NodeKind.TypeParameters)
     let pack = get(types, length(types) - 1)
     let parameters = group(declaration, NodeKind.Parameters)
-    let values = get(parameters, length(parameters) - 1)
+    let values = if length(parameters) == 0 {
+        declaration
+    } else {
+        get(parameters, length(parameters) - 1)
+    }
     let variadic = variadic_parameters(parameters)
     let static_values = variadic && has(values, NodeKind.Comptime)
     let expanded_types = new[Node]()
@@ -890,19 +891,24 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
             let declaration = symbol(context.env, owner).node
             let parameters = group(declaration, NodeKind.Parameters)
             let variadic = variadic_parameters(parameters)
-            let arity = if desired >= 0 {
+            let arity = if length(types) != 0 {
+                length(types) - pack_parameter(declaration)
+            } else if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments
                 if !variadic {
-                    structural_reference_arity(context.env, parameters, shape)
+                    let inferred = structural_reference_arity(context.env, parameters, shape)
+                    if inferred >= 0 {
+                        inferred
+                    } else if length(shape) == length(parameters) + 1 {
+                        pack_result_arity(context.env, declaration, get(shape, length(shape) - 1))
+                    } else {
+                        -1
+                    }
                 } else {
                     length(shape) - length(parameters)
                 }
             } else {
-                if length(types) != 0 {
-                    length(types) - pack_parameter(declaration)
-                } else {
-                    -1
-                }
+                -1
             }
             if arity >= 0 {
                 push(choices, selected_pack_signature(context.env, owner, arity)?)

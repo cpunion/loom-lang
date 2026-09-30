@@ -969,12 +969,35 @@ let selected = choose((1, true), (2, false), false)
 
 All occurrences must agree on arity and element types. Arity comes from explicit
 type arguments, the final direct variadic argument count, or the first structural
-tuple's type; ordinary checking validates the remaining occurrences. This also
-works for contextual function references. Supply explicit type arguments or a
+tuple's type; an expected result can supply it when the inputs cannot. Ordinary
+checking validates the remaining occurrences. This also works for contextual
+function references. Supply explicit type arguments or a
 prior typed binding when that first tuple needs contextual inference. Arguments
 still evaluate once, left to right; there is no runtime shape dispatch. The
 [shared pack example](examples/variadics/shared.loom) includes mixed structural
 and direct packs, closures, sharing and Task transfer.
+
+A pack need not occur in a value parameter. Factory functions can infer it from
+their expected result, or use explicit type arguments for compile-time generation:
+
+```loom
+fn rows[Ts...]() List[(Ts...)] {
+    []
+}
+
+let values List[(Int, Bool)] = rows()
+let make fn() List[(Text,)] = rows
+let explicit = rows[Int, Bool]
+```
+
+The same rule applies to concept defaults/overrides, dyn methods and async calls;
+an async result is inferred inside its `Task` wrapper. An anchored result such
+as `List[(Int, Ts...)]` can infer an empty pack from `List[(Int,)]`. Without type
+arguments or an informative input/result, the arity is unknown and the use
+rejects. A `type` result alone does not describe the types it will compute: supply
+explicit arguments to such a generator. Explicit arguments take precedence over
+context, and ordinary abstract body checking, element bounds and exact function
+signatures still apply. See the [factory example](examples/data_packs/factories.loom).
 
 `comptime map item in values { expression }` elaborates to an ordered typed
 tuple of lexical block results. Each selected body runs once with its own
@@ -2192,7 +2215,8 @@ and implementation methods support the same parameter forms, including dynamic
 calls; intrinsics do not. Taking a reference to a declaration with static
 parameters still rejects until explicit partial
 specialization can supply a complete function identity. Static value packs use
-the [variadic form](#variadic-functions); general type-valued computation remains later work.
+the [variadic form](#variadic-functions). [Type-valued computation](#first-class-types)
+uses explicit compile-time staging rather than runtime type tags.
 
 ## Compile-time execution
 

@@ -61,6 +61,7 @@ async fn echo[T](value T) T {
 
 async fn exercise() {
     exercise_functions()
+    exercise_factories().await
     associated().await
     implementation_packs().await
     let events List[Int] = []

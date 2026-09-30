@@ -1,0 +1,174 @@
+test fn result_packs_infer_calls_and_function_references_without_sample_inputs() {
+    discard accepted("""
+        fn rows[Ts...]() List[(Ts...)] {
+            []
+        }
+        fn framed[Ts...]() List[(Int, Ts...)] {
+            []
+        }
+        fn of[T]() type {
+            T
+        }
+        fn shape[Head, Ts...]() type {
+            of[(Head, Ts...)]()
+        }
+        fn readers[Ts...]() (fn(Ts) Ts...) {
+            comptime map T in Ts {
+                fn(value T) T {
+                    value
+                }
+            }
+        }
+        fn main() {
+            let values List[(Int, Bool)] = rows()
+            discard values
+            discard rows[Text, Bool]()
+            let make fn() List[(Text,)] = rows
+            discard make()
+            let explicit fn() List[(Int,)] = rows[Int]
+            discard explicit()
+            let empty List[(Int,)] = framed()
+            discard empty
+            let callbacks (fn(Int) Int, fn(Bool) Bool) = readers()
+            assert callbacks.0(42) == 42 && callbacks.1(true)
+            let Pair = comptime { shape[Int, Bool]() }
+            let pair Pair = (42, true)
+            assert pair.1
+            let Single = comptime { shape[Int]() }
+            let single Single = (42,)
+            assert single.0 == 42
+        }
+        """)
+}
+
+test fn result_packs_share_method_default_dynamic_and_async_inference() {
+    discard accepted("""
+        concept Factory {
+            fn rows[Ts...](self Self) List[(Ts...)] {
+                []
+            }
+            fn framed[Ts...](self Self) List[(Int, Ts...)]
+            async fn pending[Ts...](self Self) List[(Ts...)] {
+                []
+            }
+        }
+        impl Factory for Bool {
+            fn framed[Us...](self Bool) List[(Int, Us...)] {
+                []
+            }
+        }
+        async fn rows[Ts...]() List[(Ts...)] {
+            []
+        }
+        async fn main() {
+            let source dyn Factory = true
+            let fixed List[(Int,)] = source.framed()
+            discard fixed
+            let pairs List[(Int, Bool)] = source.rows()
+            discard pairs
+            discard source.rows[Text]()
+            let pending List[(Int, Text)] = source.pending().await
+            discard pending
+            let task Task[List[(Bool,)]] = rows()
+            discard task.await
+            let make fn() Task[List[(Text,)]] = rows
+            discard make().await
+            let direct List[(Int, Text)] = rows().await
+            discard direct
+        }
+        """)
+}
+
+test fn result_packs_reject_missing_inference_mismatches_and_undeclared_bounds() {
+    let declarations = """
+        concept Allowed {}
+        impl Allowed for Int {}
+        fn rows[Ts... Allowed]() List[(Ts...)] {
+            []
+        }
+
+        """
+    discard accepted(concat(declarations, """
+        fn main() {
+            let values List[(Int,)] = rows()
+            discard values
+        }
+        """))
+    rejects(concat(declarations, """
+        fn main() {
+            discard rows()
+        }
+        """))
+    rejects(concat(declarations, """
+        fn main() {
+            let values List[(Int, Bool)] = rows()
+            discard values
+        }
+        """))
+    rejects(concat(declarations, """
+        fn main() {
+            let make fn() List[(Bool,)] = rows[Int]
+            discard make
+        }
+        """))
+    rejects("""
+        fn wrong[Ts...]() List[(Int, Ts...)] {
+            []
+        }
+        fn main() {
+            let values List[(Bool, Text)] = wrong()
+            discard values
+        }
+        """)
+    rejects("""
+        fn callbacks[Ts...]() (fn(Ts) Int...) {
+            comptime map T in Ts {
+                fn(value T) Int {
+                    value + 1
+                }
+            }
+        }
+        fn main() {
+            let actions (fn(Int) Int,) = callbacks()
+            discard actions
+        }
+        """)
+}
+
+test fn result_pack_bodies_restore_by_source_and_arity_after_an_edit() {
+    let source = """
+        fn rows[Ts...]() List[(Int, Ts...)] {
+            []
+        }
+        pub fn answer() Int {
+            let values List[(Int, Bool)] = rows()
+            discard values
+            let make fn() List[(Int,)] = rows
+            discard make()
+            42
+        }
+        """
+    let initial = definition_cache()
+    assert match cached_source(initial, source) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    let cache = restored_definition_cache(initial)
+    assert match cached_source(cache, concat("fn unrelated() {}\n", source)) {
+        Result.Ok(_) => true
+        Result.Err(failed) => {
+            discard write_error(failed.diagnostic.message)
+            false
+        }
+    }
+    assert bodies_reused(cache) >= 3
+    discard restored_definition_cache(cache)
+    let invalid = std.text.join(std.text.split(source, "List[(Int, Bool)]"), "List[(Bool, Bool)]")
+    assert match cached_source(cache, invalid) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}
