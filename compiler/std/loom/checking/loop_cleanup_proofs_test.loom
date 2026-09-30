@@ -1,0 +1,79 @@
+test fn scalar_cleanup_executes_before_loop_backedges_and_break_exits() {
+    discard accepted("""
+fn count(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var i = 0
+    while i < limit {
+        defer {
+            i = i + 1
+        }
+        continue
+    }
+    i
+}
+fn ordered() Int
+ensures result == 4
+{
+    var i = 0
+    while true {
+        defer { i = i + 1 }
+        defer { i = 3 }
+        break
+    }
+    i
+}
+""")
+    rejects("""
+fn wrong() Int
+ensures result >= 0
+{
+    var i = 0
+    while true {
+        defer { i = -1 }
+        i = 1
+        break
+    }
+    i
+}
+""")
+    rejects("""
+fn wrong(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var i = 0
+    while i < limit {
+        defer { i = i + 2 }
+        continue
+    }
+    i
+}
+""")
+}
+
+test fn cleanup_inside_a_loop_preserves_the_return_value_snapshot() {
+    discard accepted("""
+fn snapshot() Int
+ensures result == 7
+{
+    var value = 7
+    while true {
+        defer { value = -1 }
+        return value
+    }
+}
+""")
+    rejects("""
+fn wrong() Int
+ensures result == -1
+{
+    var value = 7
+    while true {
+        defer { value = -1 }
+        return value
+    }
+}
+""")
+}

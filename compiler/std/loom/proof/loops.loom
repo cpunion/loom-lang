@@ -18,13 +18,13 @@ record LoopControl {
     exits List[Outcome]
 }
 
-fn loop_verification(proof Verification, control LoopControl) Verification {
+fn with_loop_control(proof Verification, control Option[LoopControl]) Verification {
     Verification {
         function = proof.function
         program = proof.program
         fresh = proof.fresh
         budget = proof.budget
-        loop_control = Option.Some(control)
+        loop_control = control
     }
 }
 
@@ -71,9 +71,13 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
         if guard || (kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.While &&
             kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
             kind != ExprKind.Assert && kind != ExprKind.Discard && kind != ExprKind.Call &&
-            kind != ExprKind.Break && kind != ExprKind.Continue) {
+            kind != ExprKind.Break && kind != ExprKind.Continue &&
+            kind != ExprKind.Defer && kind != ExprKind.Cleanup) {
             return Result.Err("unsupported effect or control flow in required loop proof")
         }
+    }
+    if (kind == ExprKind.Defer || kind == ExprKind.Cleanup) && expr.text != "" {
+        return Result.Err("required loop proof needs ordinary scalar cleanup")
     }
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         let ty = get(proof.function.locals, expr.index).ty
@@ -221,7 +225,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
         // A nested loop gets a separate context; immutable verification values
         // restore the enclosing target on return. Each inference pass starts
         // fresh, so exits proved using a removed candidate cannot escape.
-        let iteration = loop_verification(proof, control)
+        let iteration = with_loop_control(proof, Option.Some(control))
         let backedges = control.backedges
         let exits = control.exits
         var index = 0

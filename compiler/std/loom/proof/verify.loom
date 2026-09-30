@@ -343,7 +343,8 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
         return Result.Ok(outcomes(state, Value.Empty))
     }
     if expr.kind == ExprKind.Cleanup {
-        return execute(proof, get(expr.children, 0), state, depth - 1)
+        // Cleanup may contain its own loops, but cannot jump to an outer loop.
+        return execute(with_loop_control(proof, Option.None), get(expr.children, 0), state, depth - 1)
     }
     if expr.kind == ExprKind.Block {
         return block(proof, expr, state, depth)

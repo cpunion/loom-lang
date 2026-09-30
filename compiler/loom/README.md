@@ -190,8 +190,9 @@ tree: comments and formatting trivia are discarded, and string token values are
 decoded. Preserve original source when tooling needs its spelling and layout.
 The formatter uses that original text alongside token and AST spans to preserve
 comments and literal spelling; it does not require a separate lossless AST.
-Typed analysis is an opt-in layer below. Typed metaprogramming and identity-aware
-editing remain later library boundaries in the [roadmap](../../ROADMAP.md).
+Typed analysis is an opt-in layer below. Typed macros and checked editor
+operations are available; persistent source identities remain a separate goal
+in the [roadmap](../../ROADMAP.md).
 
 ## Public project and binding libraries
 
@@ -199,7 +200,8 @@ Project analysis is opt-in; in-memory syntax users do not import these layers:
 
 - `std.loom.manifest.parse(text)` returns `Result[Module, Text]`, with module
   name/version metadata and `dependencies List[Dependency]` (`name`, `source`).
-  `DependencySource` is `Path(Text)` or `Git(Text, Text)` (URL, full commit ID). It
+  `DependencySource` is `Path(Text)` or `Git(Text, Text, Text)` (URL, full commit
+  ID, repository-relative module subdirectory; empty selects the root). It
   parses the supported manifest subset, not general TOML or source resolution.
 - `std.loom.project.load(path, std_root, tests)` returns `Result[Project, Text]`.
   `Project` contains files, module instances, packages and a root package ID. It reads

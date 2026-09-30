@@ -1835,7 +1835,8 @@ all survivors. Zero-iteration exits and early returns remain separate proof
 obligations. Branches, nested loops and the existing direct body-call proof rules
 are supported. `break` records the state at that exit; `continue` contributes a
 backedge that must preserve every retained invariant. Nested jumps target the
-nearest loop. Calls in guards, cleanup and heap writes inside a required loop
+nearest loop. Scalar lexical cleanup executes before jumps in its checked order,
+preserving evaluated return snapshots. Calls in guards, resource cleanup and heap writes inside a required loop
 proof currently reject. The bounded
 inference neither unrolls a sample of iterations nor adds runtime invariant
 checks. See the [loop contract example](examples/loop_contracts).

@@ -66,4 +66,32 @@ fn control_exercise() {
     assert count.position == 4 && count.total == 7
     assert nested_jumps(0) == 0
     assert nested_jumps(4) == 6
+    assert deferred_count(4) == 4
+    assert cleanup_snapshot() == 7
+}
+
+fn deferred_count(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var i = 0
+    while i < limit {
+        defer {
+            i = i + 1
+        }
+        continue
+    }
+    i
+}
+
+fn cleanup_snapshot() Int
+ensures result == 7
+{
+    var value = 7
+    while true {
+        defer {
+            value = -1
+        }
+        return value
+    }
 }
