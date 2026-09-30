@@ -143,13 +143,13 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "timer_until_ns" {
         return runtime(0, ints(1), 0)
     }
-    if name == "socket_wait" {
+    if name == "socket_wait" || name == "tls_wait" {
         return runtime(0, two_types(1, 1), 0)
     }
     if name == "socket_listen" || name == "socket_connect" {
         return runtime(0, ints(3), 1)
     }
-    if name == "socket_accept" || name == "socket_connect_status" || name == "socket_close" || name == "socket_local_port" || name == "socket_shutdown_write" {
+    if name == "socket_accept" || name == "socket_connect_status" || name == "socket_close" || name == "socket_local_port" || name == "socket_shutdown_write" || name == "socket_abort" {
         return runtime(0, ints(1), 1)
     }
     if name == "socket_address" {
@@ -171,7 +171,7 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
         push(arguments, intern(env, TypeKind.List, -1, ints(3)))
         return runtime(0, arguments, 1)
     }
-    if name == "tls_status" || name == "tls_shutdown" || name == "tls_release" {
+    if name == "tls_status" || name == "tls_shutdown" || name == "tls_release" || name == "tls_generation" || name == "tls_notify" {
         return runtime(0, ints(1), 1)
     }
     if name == "tls_protocol" {
@@ -410,7 +410,7 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
         }
     }
     if expected.parameters < 0 { return Result.Err(failure(env, current.symbol, item.node, "unknown private runtime intrinsic")) }
-    if has(item.node, NodeKind.Async) != (item.name == "timer_until_ns" || item.name == "socket_wait" || item.name == "task_next" || item.name == "task_next_terminal" || item.name == "task_outcome" || item.name == "async_read" || item.name == "async_write" || item.name == "async_write_bytes" || item.name == "async_open" || item.name == "async_close" || item.name == "async_resolve" || item.name == "async_process_capture") {
+    if has(item.node, NodeKind.Async) != (item.name == "timer_until_ns" || item.name == "socket_wait" || item.name == "tls_wait" || item.name == "task_next" || item.name == "task_next_terminal" || item.name == "task_outcome" || item.name == "async_read" || item.name == "async_write" || item.name == "async_write_bytes" || item.name == "async_open" || item.name == "async_close" || item.name == "async_resolve" || item.name == "async_process_capture") {
         return Result.Err(failure(env, current.symbol, item.node, "intrinsic declaration has an incorrect async modifier"))
     }
     if current.parameters != expected.parameters || !same(current.params, expected.params) || current.result != expected.result {

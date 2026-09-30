@@ -79,4 +79,7 @@ test fn intrinsic_effect_and_type_metadata_cannot_be_changed_by_a_declaration() 
     rejects_timer("intrinsic fn tls_read(token Int, output Text, limit Int) Int", "")
     rejects_timer("intrinsic fn tls_write(token Int, input Bytes, offset Int) Int", "")
     rejects_timer("intrinsic fn tls_protocol(token Int) Bytes", "")
+    rejects_timer("intrinsic fn tls_wait(token Int, generation Int)", "")
+    rejects_timer("async intrinsic fn tls_wait(token Int, generation Text)", "")
+    rejects_timer("async intrinsic fn socket_abort(token Int) Int", "")
 }

@@ -76,6 +76,13 @@ fn certificates(directory: &Path) {
         (0..131_079).map(|i| (i % 256) as u8).collect::<Vec<_>>(),
     )
     .unwrap();
+    fs::write(
+        directory.join("large-payload"),
+        (0..8 * 1024 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -96,7 +103,7 @@ fn tls_roundtrip_verifies_peers_and_survives_moving_gc() {
                 .output()
                 .unwrap(),
         );
-        for mode in ["ok", "wrong-name", "untrusted", "expired"] {
+        for mode in ["ok", "duplex", "wrong-name", "untrusted", "expired"] {
             let output = common::run_task_command(
                 Command::new(&executable)
                     .current_dir(directory.path())
@@ -116,7 +123,7 @@ fn tls_roundtrip_verifies_peers_and_survives_moving_gc() {
             success(&output);
             assert_eq!(
                 output.stdout,
-                if mode == "ok" {
+                if mode == "ok" || mode == "duplex" {
                     b"TLS roundtrip\n".as_slice()
                 } else {
                     b"peer rejected\n".as_slice()
@@ -155,6 +162,13 @@ fn tls_roundtrip_verifies_peers_and_survives_moving_gc() {
                 }
             );
         }
+        // Both peers send beyond their initial socket windows before their
+        // writers finish. Reads must not wait behind those pending writes.
+        success(&common::run_task_command(
+            Command::new(&executable)
+                .current_dir(directory.path())
+                .args(["ca.pem", "cert.pem", "key.pem", "large-payload", "duplex"]),
+        ));
     }
     let cache = directory.path().join("cache");
     for expected in ["miss", "hit"] {
@@ -307,13 +321,25 @@ fn native_peer_distinguishes_tls_eof_truncation_and_cancelled_reads() {
             .output()
             .unwrap(),
         );
-        for mode in ["graceful", "truncated", "busy"] {
+        for mode in [
+            "graceful",
+            "truncated",
+            "busy",
+            "cancel-read",
+            "cancel-write",
+        ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();
             let config = config.clone();
             let client_leaf = client_leaf.clone();
+            let (completed, client_done) = std::sync::mpsc::channel();
             let peer = thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
+                if mode.starts_with("cancel-") {
+                    socket2::SockRef::from(&socket)
+                        .set_recv_buffer_size(4096)
+                        .unwrap();
+                }
                 socket
                     .set_read_timeout(Some(Duration::from_secs(20)))
                     .unwrap();
@@ -329,7 +355,12 @@ fn native_peer_distinguishes_tls_eof_truncation_and_cancelled_reads() {
                 // Acknowledge it before the busy test cancels/closes the socket.
                 stream.write_all(b"pong").unwrap();
                 stream.flush().unwrap();
-                if mode == "busy" {
+                if mode.starts_with("cancel-") {
+                    // Keep the peer's receive window closed until the client
+                    // cancels and drains both directions. No timing-based read
+                    // race can make the pending client write complete early.
+                    client_done.recv_timeout(Duration::from_secs(20)).unwrap();
+                } else if mode == "busy" {
                     assert!(stream.read(&mut request).is_err());
                 } else if mode == "graceful" {
                     connection.send_close_notify();
@@ -341,13 +372,22 @@ fn native_peer_distinguishes_tls_eof_truncation_and_cancelled_reads() {
             });
             let output = common::run_task_command(
                 Command::new(&executable)
-                    .env("LOOM_GC_STRESS", "1")
+                    .env(
+                        "LOOM_GC_STRESS",
+                        if mode.starts_with("cancel-") {
+                            "0"
+                        } else {
+                            "1"
+                        },
+                    )
                     .arg(directory.path().join("ca.pem"))
                     .arg(address.to_string())
                     .arg(mode)
                     .arg(directory.path().join("client.pem"))
-                    .arg(directory.path().join("client-key.pem")),
+                    .arg(directory.path().join("client-key.pem"))
+                    .arg(directory.path().join("large-payload")),
             );
+            let _ = completed.send(());
             success(&output);
             peer.join().unwrap();
         }

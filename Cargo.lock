@@ -307,6 +307,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "sha2",
+ "socket2",
  "tempfile",
  "windows-sys 0.61.2",
 ]

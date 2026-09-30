@@ -16,6 +16,7 @@ import std.result.Result
 import std.task.cancel
 import std.task.Outcome
 import std.option.Option
+import std.time.sleep_ns
 
 fn loaded(path Text) Bytes {
     match read_bytes(path) {
@@ -56,7 +57,43 @@ async fn main() {
         Result.Err(_) => false
     }
     assert to_text(output) == "pong"
-    if args[3] == "busy" {
+    if args[3] == "cancel-read" || args[3] == "cancel-write" {
+        let payload = loaded(args[6])
+        let reading = read(stream, output, 4)
+        let writing = write_bytes(stream, payload)
+        sleep_ns(1000000).await
+        assert match write_bytes(stream, to_bytes("overlap")).await {
+            Result.Err(error) => error == TlsError.Busy
+            Result.Ok(_) => false
+        }
+        assert match close(stream) {
+            Result.Err(error) => error == TlsError.Busy
+            Result.Ok(_) => false
+        }
+        if args[3] == "cancel-read" {
+            assert match cancel(reading) {
+                Outcome.Cancelled => true
+                _ => false
+            }
+            assert match writing.await {
+                Result.Err(_) => true
+                Result.Ok(_) => false
+            }
+        } else {
+            assert match cancel(writing) {
+                Outcome.Cancelled => true
+                _ => false
+            }
+            assert match reading.await {
+                Result.Err(_) => true
+                Result.Ok(_) => false
+            }
+        }
+        assert match peer_address(stream) {
+            Result.Err(error) => error == TlsError.Closed
+            Result.Ok(_) => false
+        }
+    } else if args[3] == "busy" {
         let pending = read(stream, output, 4)
         assert match read(stream, new(), 4).await {
             Result.Err(error) => error == TlsError.Busy

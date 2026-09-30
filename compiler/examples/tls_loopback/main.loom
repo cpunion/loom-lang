@@ -46,7 +46,28 @@ async fn receive_all(stream Connection) Result[Bytes, TlsError] {
     Result.Ok(bytes)
 }
 
-async fn serve(listener Listener, options ServerOptions) Result[Int, TlsError] {
+async fn send_all(stream Connection, payload Bytes) Result[Int, TlsError] {
+    let count = write_bytes(stream, payload).await?
+    discard shutdown_write(stream).await?
+    Result.Ok(count)
+}
+
+async fn exchange(stream Connection, payload Bytes) Result[Int, TlsError] {
+    let receiving = receive_all(stream)
+    let sending = send_all(stream, payload)
+    let outcomes = (sending, receiving).await
+    let count = outcomes.0?
+    let received = outcomes.1?
+    assert count == length(payload) && length(received) == length(payload)
+    var index = 0
+    while index < length(payload) {
+        assert get(received, index) == get(payload, index)
+        index = index + 1
+    }
+    Result.Ok(count)
+}
+
+async fn serve(listener Listener, options ServerOptions, payload Bytes, duplex Bool) Result[Int, TlsError] {
     let stream = accept(listener, options).await?
     defer {
         discard close(stream)
@@ -66,13 +87,16 @@ async fn serve(listener Listener, options ServerOptions) Result[Int, TlsError] {
             Option.None => false
         }
     }
+    if duplex {
+        return exchange(stream, payload).await
+    }
     let request = receive_all(stream).await?
     let count = write_bytes(stream, request).await?
     discard shutdown_write(stream).await?
     Result.Ok(count)
 }
 
-async fn request(address Text, name Text, options ClientOptions, payload Bytes) Result[Int, TlsError] {
+async fn request(address Text, name Text, options ClientOptions, payload Bytes, duplex Bool) Result[Int, TlsError] {
     let stream = connect(address, name, options).await?
     defer {
         discard close(stream)
@@ -98,6 +122,9 @@ async fn request(address Text, name Text, options ClientOptions, payload Bytes) 
     assert match protocol(stream)? {
         Option.Some(value) => value == "loom-echo"
         Option.None => false
+    }
+    if duplex {
+        return exchange(stream, payload).await
     }
     assert write_bytes(stream, payload).await? == length(payload)
     discard shutdown_write(stream).await?
@@ -175,14 +202,16 @@ async fn main() {
             return
         }
     }
-    let server = serve(listener, server_options)
+    let payload = loaded(args[4])
+    let duplex = mode == "duplex"
+    let server = serve(listener, server_options, payload, duplex)
     let client = request(address, if mode == "wrong-name" {
             "wrong.example"
         } else {
             "localhost"
-        }, client_options, loaded(args[4])).await
+        }, client_options, payload, duplex).await
     let served = server.await
-    if mode == "ok" || mode == "mutual" {
+    if mode == "ok" || mode == "mutual" || duplex {
         assert match client {
             Result.Ok(count) => count > 65536
             Result.Err(_) => false

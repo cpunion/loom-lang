@@ -3,6 +3,26 @@
 
 use crate::{List, reserve};
 
+// One-shot owner notification for a native provider. No managed references,
+// callbacks, or OS handles cross this boundary. Cancelled registrations are
+// harmless when a provider later notifies them.
+pub struct Completion {
+    pub(crate) reactor: std::sync::Arc<crate::wait::Reactor>,
+    pub(crate) registration: crate::wait::Registration,
+}
+
+impl Completion {
+    pub fn notify(self) {
+        crate::tasks::notify_completion(self);
+    }
+}
+
+// `ready` is evaluated by the owner before registration, e.g. by comparing a
+// provider generation. This closes the notify-before-registration race.
+pub fn wait_completion(identity: u64, ready: bool) -> Option<Completion> {
+    crate::tasks::provider_completion(identity, ready)
+}
+
 pub fn context<T: Default + 'static, R>(operation: impl FnOnce(&T) -> R) -> R {
     crate::tasks::native_context(operation)
 }
