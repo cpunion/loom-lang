@@ -145,7 +145,7 @@ pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
     }
     let saved = get(cache.state.bodies, 0)
     let output = std.bytes.new()
-    cache_text(output, "loom-definition-snapshot 7")
+    cache_text(output, "loom-definition-snapshot 8")
     cache_bool(output, saved.definitions.tests)
     discard cache_definition_source(output, saved.definitions)?
     cache_int(output, length(saved.definitions.reusable))
@@ -185,7 +185,7 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
         text = text
         cursor = ints(0)
     }
-    if cache_read_text(reader)? != "loom-definition-snapshot 7" {
+    if cache_read_text(reader)? != "loom-definition-snapshot 8" {
         return Result.Err("invalid definition snapshot")
     }
     let tests = cache_read_bool(reader)?

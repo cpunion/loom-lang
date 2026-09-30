@@ -105,7 +105,7 @@ test fn method_pack_slots_restore_by_declaration_and_selected_arity() {
             false
         }
     }
-    assert bodies_reused(cache) >= 1
+    assert bodies_reused(cache) >= 3
     discard restored_definition_cache(cache)
     let invalid = std.text.join(std.text.split(source, "(5, true)"), "(5, 6)")
     assert match cached_source(cache, invalid) {
