@@ -10,6 +10,25 @@ record StaticReferenceQuery {
     constant Int
     name Text
     references List[Span]
+    types List[Text]
+}
+
+// Types are concrete checked parameter types across observed specializations,
+// plus a concrete declaration type when available. No value is exposed.
+pub record StaticParameterInfo {
+    references List[Span]
+    types List[Text]
+}
+
+fn static_query_type(env Environment, types List[Text], ty Int) {
+    if !concrete(env, ty) { return }
+    let label = type_name(env.source, env.types, env.interfaces, ty)
+    var index = 0
+    while index < length(types) {
+        if get(types, index) == label { return }
+        index = index + 1
+    }
+    push(types, label)
 }
 
 // Optional source evidence is recorded before specialization erases a static
@@ -22,6 +41,7 @@ fn static_reference(context Context, node Node, constant Int) {
     slice(node.value, 0, first_dot(node.value)) != query.name {
         return
     }
+    static_query_type(context.env, query.types, static_type(context, constant))
     let span = Span {
         start = node.span.start
         end = node.span.start + std.text.length(query.name)
@@ -40,7 +60,8 @@ fn static_reference(context Context, node Node, constant Int) {
 // Returns observed uses, not a claim that every source branch was instantiated.
 // A rename must separately account for every occurrence. Failed checks publish
 // nothing; queries use fresh tables and never replay cached executable bodies.
-pub fn static_parameter_references(source std.loom.binding.Program, owner Int, parameter Int, inputs BuildInputs) Result[List[Span], Failure] {
+pub fn static_parameter_info(source std.loom.binding.Program, owner Int, parameter Int, inputs BuildInputs) Result[StaticParameterInfo, Failure] {
+    discard expanded_source(source)?
     let detached = std.loom.binding.Program {
         files = source.files
         modules = source.modules
@@ -67,12 +88,22 @@ pub fn static_parameter_references(source std.loom.binding.Program, owner Int, p
         index = index + 1
     }
     let references = new[Span]()
+    let types = new[Text]()
+    index = 0
+    while index < length(env.signatures) {
+        let signature = get(env.signatures, index)
+        if signature.symbol == owner {
+            static_query_type(env, types, get(signature.params, parameter))
+        }
+        index = index + 1
+    }
     push(get(env.inputs, 0).static_queries, StaticReferenceQuery {
             owner = owner
             constant = constant
             name = get(parameters, parameter).value
             references = references
+            types = types
         })
     discard checked_program(env, new[Bool](), new[Bool](), ints(0))?
-    Result.Ok(references)
+    Result.Ok(StaticParameterInfo { references = references types = types })
 }

@@ -88,6 +88,14 @@ fn static_computed(comptime count Int) Int {
     comptime { count + 1 }
 }
 
+fn static_generic[T](comptime sample T) T {
+    sample
+}
+
+fn static_unused(comptime unused_static Int) Int {
+    1
+}
+
 fn static_applied(comptime action fn(Int) Int, value Int) Int {
     action(value)
 }
@@ -141,6 +149,9 @@ fn main() {
     assert unused(3) == 7
     assert static_added(1, 2) == 3
     assert static_computed(4) == 5
+    assert static_generic(7) == 7
+    assert static_generic(true)
+    assert static_unused(9) == 1
     assert static_applied(increment, 3) == 4
     assert static_selected(true, 5) == 5
     assert static_selected(false, 5) == 6
@@ -176,6 +187,7 @@ fn main() {
       ['value Int) Int {\n    let first', 'value', 2],
       ['input Int', 'input', 3],
       ['computed = input', 'computed', 2],
+      ['sample T', 'sample', 2],
     ]) {
       const document = TextDocument.create(uri, 'loom', version, source);
       const start = source.indexOf(fragment) + (fragment.startsWith('-') ? 1 : 0);
@@ -196,6 +208,23 @@ fn main() {
       assert.deepEqual((await client.wait(file, version)).diagnostics, []);
     }
     const document = TextDocument.create(uri, 'loom', version, source);
+    for (const [fragment, declaration, labels] of [
+      ['width + value', 'width Int', ['Int']],
+      ['count + 1', 'count Int', ['Int']],
+      ['action(value)', 'action fn', ['fn(Int) Int']],
+      ['flag Bool', 'flag Bool', ['Bool']],
+      ['sample\n', 'sample T', ['Int', 'Bool']],
+      ['unused_static Int', 'unused_static Int', ['Int']],
+    ]) {
+      const params = { textDocument: { uri }, position: document.positionAt(source.indexOf(fragment)) };
+      const definitions = await client.rpc.sendRequest('textDocument/definition', params);
+      assert.equal(definitions.length, 1, fragment);
+      assert.equal(definitions[0].uri, uri, fragment);
+      assert.deepEqual(definitions[0].range.start,
+        document.positionAt(source.indexOf(`comptime ${declaration}`) + 'comptime '.length), fragment);
+      const hover = await client.rpc.sendRequest('textDocument/hover', params);
+      assert.deepEqual(hover.contents.map(item => item.value).sort(), [...labels].sort(), fragment);
+    }
     const params = { textDocument: { uri }, position: document.positionAt(source.indexOf('amount >=')) };
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...params, newName: 'identity' }), /conflict/);
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {

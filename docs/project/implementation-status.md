@@ -59,9 +59,12 @@ it supplies neither build success nor proof evidence.
 Runtime parameter declarations and match payload/whole bindings retain exact
 checked definition locations. Renames include contracts, preserve shadowing and
 recheck the virtual package. Runtime-local renames also cover selected compile-time
-branches when checked specializations account for every occurrence. Compile-time parameter references/rename use a fresh
+branches when checked specializations account for every occurrence. Compile-time
+parameter hover/navigation/references/rename use a fresh
 optional binding trace before specialization erases uses; values, callbacks and
-covered compile-time blocks/branches work without executable IR metadata.
+covered compile-time blocks/branches work without executable IR metadata. Hover
+retains concrete parameter types and navigation follows the source binding,
+including specialized callbacks.
 Unobserved branches, packs and untracked captures still refuse edits. Public API
 rename and broader recovery/query support remain open.
 

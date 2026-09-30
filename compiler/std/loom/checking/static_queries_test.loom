@@ -9,8 +9,8 @@ fn static_uses(text Text, name Text, parameter Int) List[Span] {
     var owner = 0
     while owner < length(source.symbols) {
         if get(source.symbols, owner).name == name {
-            return match static_parameter_references(source, owner, parameter, build_inputs(no_input_reader)) {
-                Result.Ok(value) => value
+            return match static_parameter_info(source, owner, parameter, build_inputs(no_input_reader)) {
+                Result.Ok(value) => value.references
                 Result.Err(failed) => {
                     discard write_error(failed.diagnostic.message)
                     assert false
@@ -65,4 +65,43 @@ test fn static_queries_observe_real_bindings_before_erasure() {
     assert length(static_uses(text, "applied", 0)) == 1
     assert length(static_uses(text, "selected", 0)) == 1
     assert length(static_uses(text, "selected", 1)) == 2
+}
+
+test fn semantic_queries_require_expanded_declaration_stages() {
+    let source = match bind(fixture_project(source_files("""
+        comptime {}
+        fn selected(comptime value Int) Int {
+            value
+        }
+        fn main() {
+            assert selected(1) == 1
+        }
+        """)), false) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    var owner = 0
+    while owner < length(source.symbols) {
+        let item = get(source.symbols, owner)
+        if item.name == "selected" {
+            match static_parameter_info(source, owner, 0, build_inputs(no_input_reader)) {
+                Result.Ok(_) => { assert false }
+                Result.Err(failed) => {
+                    assert failed.diagnostic.message == "expand_project must run before binding declaration stages"
+                }
+            }
+        }
+        if item.name == "main" {
+            match check_query(source, 0, item.node.span.start) {
+                Result.Ok(_) => { assert false }
+                Result.Err(failed) => {
+                    assert failed.diagnostic.message == "expand_project must run before binding declaration stages"
+                }
+            }
+        }
+        owner = owner + 1
+    }
 }

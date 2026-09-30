@@ -149,12 +149,14 @@ rewrites, unresolved occurrences, name collisions, and invalid identifiers;
 Runtime-local rename also works in compile-time-specialized functions and selected
 branches when checked instances account for every occurrence. Unobserved uses,
 nested closures and compile-time iteration still refuse the edit.
-Compile-time parameter references and rename use an on-demand fresh check that
+Compile-time parameter hover, navigation, references and rename use an on-demand fresh check that
 records actual parameter bindings before constant/function specialization erases
 them. Scalar values, callbacks and covered compile-time blocks/branches work;
 unobserved branches, pack parameters or captures without complete binding evidence
 refuse the edit. This does not add metadata to executable IR or bypass the final
-virtual-package check. Hover/definition still use the checked-body model above.
+virtual-package check. Navigation points to the parameter, not its specialized
+callback target; hover reports concrete checked parameter types across observed
+specializations. Uses erased in unobserved branches still provide no evidence.
 Field, type and public function rename are not yet available. The server
 returns a workspace edit for the
 client to apply; it never writes source files directly.

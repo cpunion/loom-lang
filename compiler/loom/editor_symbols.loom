@@ -4,7 +4,7 @@ import std.loom.analysis.inspect_at
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.ast.has
-import std.loom.checking.static_parameter_references
+import std.loom.checking.static_parameter_info
 import std.loom.lexer.Kind
 import std.loom.lexer.Token
 import std.loom.lexer.lex
@@ -558,6 +558,7 @@ record EditorStaticBinding {
     declaration Location
     scope Span
     references List[Location]
+    types List[Text]
 }
 
 fn editor_parameters(node Node) List[Node] {
@@ -588,7 +589,7 @@ fn editor_static_binding(analysis Analysis, file Int, token Token, tokens List[T
                         Option.Some(value) => value
                         Option.None => { return Option.None }
                     }
-                    let uses = match static_parameter_references(analysis.bindings, owner, parameter, inputs) {
+                    let information = match static_parameter_info(analysis.bindings, owner, parameter, inputs) {
                         Result.Ok(value) => value
                         Result.Err(_) => { return Option.None }
                     }
@@ -596,8 +597,8 @@ fn editor_static_binding(analysis Analysis, file Int, token Token, tokens List[T
                     let references = new[Location]()
                     editor_push_location(references, target)
                     var index = 0
-                    while index < length(uses) {
-                        editor_push_location(references, Location { file = file span = get(uses, index) })
+                    while index < length(information.references) {
+                        editor_push_location(references, Location { file = file span = get(information.references, index) })
                         index = index + 1
                     }
                     if editor_contains(references, Location { file = file span = token.span }) {
@@ -605,6 +606,7 @@ fn editor_static_binding(analysis Analysis, file Int, token Token, tokens List[T
                             declaration = target
                             scope = item.node.span
                             references = references
+                            types = information.types
                         })
                     }
                 }
