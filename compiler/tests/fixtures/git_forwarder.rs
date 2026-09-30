@@ -7,7 +7,7 @@ use std::{
     env, fs,
     io::{Read, Write},
     path::Path,
-    process::{self, Command},
+    process::{self, Command, Stdio},
 };
 
 const ROOT: &str = env!("LOOM_GIT_FIXTURE_ROOT");
@@ -329,5 +329,16 @@ fn main() {
         // Only this explicitly trusted fixture substitutes a local transport.
         git.env("GIT_ALLOW_PROTOCOL", "file");
     }
-    process::exit(git.status().unwrap().code().unwrap_or(93));
+    let output = git.stdin(Stdio::inherit()).output().unwrap();
+    if https_url.is_some() && !output.status.success() {
+        // Test-only transport diagnostics, outside Loom's cache and output.
+        // Never weaken production redaction to diagnose a fixture handshake.
+        let diagnostic = String::from_utf8_lossy(&output.stderr)
+            .replace(SENTINEL, "<fixture-secret>")
+            .replace(AUTH_HEADER, "<fixture-authorization>");
+        fs::write(root.join("transport-error.log"), diagnostic).unwrap();
+    }
+    std::io::stdout().write_all(&output.stdout).unwrap();
+    std::io::stderr().write_all(&output.stderr).unwrap();
+    process::exit(output.status.code().unwrap_or(93));
 }
