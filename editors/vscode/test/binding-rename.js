@@ -75,6 +75,43 @@ fn unused(ignored Int) Int {
     7
 }
 
+fn static_added(comptime width Int, value Int) Int {
+    let first = width + value
+    {
+        let width = 3
+        discard width
+    }
+    first
+}
+
+fn static_computed(comptime count Int) Int {
+    comptime { count + 1 }
+}
+
+fn static_applied(comptime action fn(Int) Int, value Int) Int {
+    action(value)
+}
+
+fn static_selected(comptime flag Bool, comptime amount Int) Int {
+    comptime if flag {
+        amount
+    } else {
+        amount + 1
+    }
+}
+
+fn increment(value Int) Int {
+    value + 1
+}
+
+fn static_partial(comptime chosen Bool, comptime missing Int) Int {
+    comptime if chosen {
+        missing
+    } else {
+        missing + 2
+    }
+}
+
 fn main() {
     scoped guard = Guard { count = 1 }
     assert guard.count == 1
@@ -85,6 +122,12 @@ fn main() {
     assert whole(Option.Some(second)) == 2
     assert Pair { left = first right = second }.add(3) == 4
     assert unused(3) == 7
+    assert static_added(1, 2) == 3
+    assert static_computed(4) == 5
+    assert static_applied(increment, 3) == 4
+    assert static_selected(true, 5) == 5
+    assert static_selected(false, 5) == 6
+    assert static_partial(true, 1) == 1
 }
 `;
   let version = 1;
@@ -105,6 +148,11 @@ fn main() {
       ['extra\n', 'extra', 2],
       ['guard.count', 'guard', 2],
       ['ignored Int', 'ignored', 1],
+      ['width + value', 'width', 2],
+      ['count + 1', 'count', 2],
+      ['action(value)', 'action', 2],
+      ['flag Bool', 'flag', 2],
+      ['amount + 1', 'amount', 3],
     ]) {
       const document = TextDocument.create(uri, 'loom', version, source);
       const start = source.indexOf(fragment) + (fragment.startsWith('-') ? 1 : 0);
@@ -127,6 +175,9 @@ fn main() {
     const document = TextDocument.create(uri, 'loom', version, source);
     const params = { textDocument: { uri }, position: document.positionAt(source.indexOf('amount >=')) };
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', { ...params, newName: 'identity' }), /conflict/);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
+      textDocument: { uri }, position: document.positionAt(source.indexOf('missing Int')), newName: 'renamed',
+    }), /every occurrence of this compile-time parameter/);
     assert.equal(await client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('Option.None') + 7), newName: 'Changed',
     }), null);
@@ -134,7 +185,7 @@ fn main() {
       textDocument: { uri }, position: document.positionAt(source.indexOf('left = chosen')), newName: 'changed',
     }), /checked local bindings/);
     await assert.rejects(fs.readFile(file), { code: 'ENOENT' });
-    console.log('Binding rename smoke passed: parameters/contracts, destructuring, guarded/whole match bindings and method locals.');
+    console.log('Binding rename smoke passed: runtime/static parameters, specialization coverage, contracts, patterns and method locals.');
   } finally {
     await client.close();
     await fs.rm(temporary, { recursive: true, force: true });

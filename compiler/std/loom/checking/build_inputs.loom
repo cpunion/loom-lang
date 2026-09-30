@@ -121,7 +121,7 @@ fn build_call(context Context, node Node, owner Int, value StaticValue) Result[E
         return Result.Ok(expression(ExprKind.Deferred, ty, node, "", -1, new[Expr](), true))
     }
     if name == "target" {
-        let selected = match target_value(get(context.env.inputs, 0), value.text) {
+        let selected = match target_value(get(context.env.inputs, 0).build, value.text) {
             Result.Ok(value) => value
             Result.Err(message) => {
                 return Result.Err(error(context, node, message))
@@ -132,7 +132,7 @@ fn build_call(context Context, node Node, owner Int, value StaticValue) Result[E
     if !valid_build_option(value.text) {
         return Result.Err(error(context, node, "invalid build option name"))
     }
-    let options = get(context.env.inputs, 0).options
+    let options = get(context.env.inputs, 0).build.options
     var index = 0
     while index < length(options) && get(options, index).name != value.text {
         index = index + 1
@@ -175,7 +175,7 @@ fn input_call(context Context, node Node, value StaticValue, binary Bool) Result
         source = source.path
         path = value.text
     }
-    let inputs = get(context.env.inputs, 0)
+    let inputs = get(context.env.inputs, 0).build
     var index = 0
     while index < length(inputs.files) {
         let saved = get(inputs.files, index)

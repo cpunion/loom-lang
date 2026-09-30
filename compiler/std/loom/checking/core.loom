@@ -82,9 +82,9 @@ record TypeState {
 }
 
 record Environment {
-    // Rare build-input metadata stays behind one shared cell rather than
+    // Rare build/query metadata stays behind one shared cell rather than
     // widening every hot checking-context copy with a reader and two lists.
-    inputs List[BuildInputs]
+    inputs List[CheckInputs]
     static_aliases List[StaticAlias]
     packs List[PackInstance]
     closures List[ClosurePlan]
@@ -295,7 +295,7 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
     prepare_with_inputs(source, build_inputs(no_input_reader))
 }
 fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Result[Environment, Failure] {
-    let input_state = new[BuildInputs]()
+    let input_state = new[CheckInputs]()
     let options = match input_options(inputs) {
         Result.Ok(value) => value
         Result.Err(message) => {
@@ -311,7 +311,8 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Resu
                 })
         }
     }
-    push(input_state, BuildInputs {
+    push(input_state, CheckInputs {
+        build = BuildInputs {
             options = options
             targets = inputs.targets
             target_context = inputs.target_context
@@ -319,7 +320,9 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Resu
             files = inputs.files
             requests = inputs.requests
             read = inputs.read
-        })
+        }
+        static_queries = new[StaticReferenceQuery]()
+    })
     let env = Environment { inputs = input_state static_aliases = new[StaticAlias]() packs = new[PackInstance]() closures = new[ClosurePlan]() source = source types = new[Type]() type_states = new[TypeState]() expand_data = true
         has_refinements = refinement_declarations(source) expanding_helpers = false signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() validations = new[Validation]() concepts = new[Concept]() implementations = new[Implementation]()

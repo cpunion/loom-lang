@@ -4,6 +4,7 @@ import std.loom.analysis.inspect_at
 import std.loom.ast.Node
 import std.loom.ast.NodeKind
 import std.loom.ast.has
+import std.loom.checking.static_parameter_references
 import std.loom.lexer.Kind
 import std.loom.lexer.Token
 import std.loom.lexer.lex
@@ -550,6 +551,68 @@ fn editor_rename_output(bindings std.loom.binding.Program, references List[Locat
     }
 }
 
+record EditorStaticBinding {
+    declaration Location
+    scope Span
+    references List[Location]
+}
+
+fn editor_parameters(node Node) List[Node] {
+    var index = 0
+    while index < length(node.children) {
+        let child = get(node.children, index)
+        if child.kind == NodeKind.Parameters {
+            return child.children
+        }
+        index = index + 1
+    }
+    new[Node]()
+}
+
+fn editor_static_binding(analysis Analysis, file Int, token Token, tokens List[Token], inputs BuildInputs) Option[EditorStaticBinding] {
+    var owner = 0
+    while owner < length(analysis.bindings.symbols) {
+        let item = get(analysis.bindings.symbols, owner)
+        if item.file == file && item.node.kind == NodeKind.Function && item.node.value != "" &&
+        item.node.span.start <= token.span.start && token.span.end <= item.node.span.end &&
+        !has(item.node, NodeKind.ExpansionId) {
+            let parameters = editor_parameters(item.node)
+            var parameter = 0
+            while parameter < length(parameters) {
+                let node = get(parameters, parameter)
+                if node.value == token.value && has(node, NodeKind.Comptime) {
+                    let span = match editor_name(tokens, node) {
+                        Option.Some(value) => value
+                        Option.None => { return Option.None }
+                    }
+                    let uses = match static_parameter_references(analysis.bindings, owner, parameter, inputs) {
+                        Result.Ok(value) => value
+                        Result.Err(_) => { return Option.None }
+                    }
+                    let target = Location { file = file span = span }
+                    let references = new[Location]()
+                    editor_push_location(references, target)
+                    var index = 0
+                    while index < length(uses) {
+                        editor_push_location(references, Location { file = file span = get(uses, index) })
+                        index = index + 1
+                    }
+                    if editor_contains(references, Location { file = file span = token.span }) {
+                        return Option.Some(EditorStaticBinding {
+                            declaration = target
+                            scope = item.node.span
+                            references = references
+                        })
+                    }
+                }
+                parameter = parameter + 1
+            }
+        }
+        owner = owner + 1
+    }
+    Option.None
+}
+
 fn editor_symbols(options EditorOptions, analysis Analysis,
     file Int, offset Int, inputs BuildInputs) EditorOutput {
     let bindings = analysis.bindings
@@ -566,6 +629,28 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
         Option.None => {
             return editor_no_symbols(rename)
         }
+    }
+    match editor_static_binding(analysis, file, token, tokens, inputs) {
+        Option.Some(binding) => {
+            if rename {
+                if !editor_valid_new_name(new_name) {
+                    return editor_error("Rename needs a valid non-reserved Loom identifier")
+                }
+                if !editor_covered(analysis, binding.declaration, token.value, binding.scope, binding.references) {
+                    return editor_error("Rename cannot account for every occurrence of this compile-time parameter")
+                }
+                if new_name != token.value && editor_name_conflict(analysis, file, binding.scope, new_name) {
+                    return editor_error("Rename would conflict with a name in this function")
+                }
+                return editor_checked_rename(options, bindings, binding.references, new_name)
+            }
+            return EditorOutput {
+                text = concat("{\"diagnostics\":[],\"declaration\":", concat(editor_location_json(bindings, binding.declaration),
+                    concat(",\"references\":", concat(editor_locations_json(bindings, binding.references), "}\n"))))
+                failed = false
+            }
+        }
+        Option.None => {}
     }
     let target = match editor_selected(analysis, file, offset, token, tokens) {
         Option.Some(value) => value,

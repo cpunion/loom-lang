@@ -146,8 +146,14 @@ one production package-private top-level function across files in the selected p
 every same-spelled token is an exact checked reference and the virtual edits pass
 a full in-memory package check with test files included. It refuses overloads, public functions/import
 rewrites, unresolved occurrences, name collisions, and invalid identifiers;
-local rename additionally refuses nested closures and compile-time branches.
-Field, type, compile-time parameter and public function rename are not yet available. The server
+runtime-local rename additionally refuses nested closures and compile-time branches.
+Compile-time parameter references and rename use an on-demand fresh check that
+records actual parameter bindings before constant/function specialization erases
+them. Scalar values, callbacks and covered compile-time blocks/branches work;
+unobserved branches, pack parameters or captures without complete binding evidence
+refuse the edit. This does not add metadata to executable IR or bypass the final
+virtual-package check. Hover/definition still use the checked-body model above.
+Field, type and public function rename are not yet available. The server
 returns a workspace edit for the
 client to apply; it never writes source files directly.
 
