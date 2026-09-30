@@ -183,13 +183,29 @@ fn member_hints(context Context, value Expr, prefix Text) Result[List[MemberCand
         if visible && satisfies(context, value.ty, capability.symbol)? {
             var method = 0
             while method < length(capability.methods) {
-                let signature = get(env.signatures, get(capability.methods, method))
+                let id = get(capability.methods, method)
+                let signature = get(env.signatures, id)
                 let item = symbol(env, signature.symbol)
-                if starts_with(item.name, prefix) {
+                if pack_instance(env, id) < 0 && starts_with(item.name, prefix) {
                     push(hints, MemberCandidate {
                             name = item.name
                             ty = ""
                             method = signature.symbol
+                        })
+                }
+                method = method + 1
+            }
+            // Suggest a source family once, independent of which arities the
+            // preceding body selected. Generated symbols are not editor IDs.
+            method = 0
+            while method < length(env.packs) {
+                let pack = get(env.packs, method)
+                let item = symbol(env, pack.source)
+                if pack.arity < 0 && item.owner == capability.symbol && starts_with(item.name, prefix) {
+                    push(hints, MemberCandidate {
+                            name = item.name
+                            ty = ""
+                            method = pack.source
                         })
                 }
                 method = method + 1
