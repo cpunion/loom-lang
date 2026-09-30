@@ -35,6 +35,7 @@ fn take(values (Int, Int, Int), log List[Int]) {
 }
 
 fn exercise() {
+    exercise_methods()
     exercise_static()
     exercise_mixed()
     exercise_shared_packs()
@@ -80,6 +81,7 @@ async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) {
 }
 
 async fn exercise_tasks() {
+    exercise_method_tasks().await
     let constants = static_async(42, "async").await
     assert constants.0 == 42 && constants.1 == "async"
     exercise_mixed_tasks().await

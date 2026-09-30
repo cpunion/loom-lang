@@ -118,7 +118,7 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
                 push(bounds, required)
                 member = member + 1
             }
-            push(env.concepts, Concept { symbol = owner methods = new[Int]() associated = members bounds = bounds })
+            push(env.concepts, Concept { symbol = owner ready = false methods = new[Int]() associated = members bounds = bounds })
         }
         owner = owner + 1
     }

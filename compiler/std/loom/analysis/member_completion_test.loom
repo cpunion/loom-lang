@@ -54,6 +54,31 @@ test fn methods_follow_explicit_conformance_generic_bounds_and_dynamic_interface
     assert length(unsatisfied.items) == 0
 }
 
+test fn method_families_complete_once_before_and_after_arity_selection() {
+    let header = """
+        concept Packing {
+            fn gather[Ts...](self Self, values Ts...) (Ts...) { values }
+        }
+        impl Packing for Bool {}
+        """
+    let bodies = [
+        "fn demo(value Bool) { discard value.ga }",
+        "fn demo[S Packing](value S) { discard value.ga }",
+        "fn demo(value dyn Packing) { discard value.ga }",
+        "fn demo(value Bool) { discard value.gather(1)\ndiscard value.gather(2, true)\ndiscard value.ga }",
+        "fn demo(value dyn Packing) { discard value.gather(1)\ndiscard value.gather(2, true)\ndiscard value.ga }"
+    ]
+    var index = 0
+    while index < length(bodies) {
+        let found = member_completion(concat(header, get(bodies, index)), "discard value.ga }", 16)
+        assert length(found.items) == 1
+        let method = get(found.items, 0)
+        assert method.name == "gather" && method.kind == CompletionKind.Method
+        assert std.text.contains(method.detail, "Ts...")
+        index = index + 1
+    }
+}
+
 test fn member_scope_reuses_match_bindings_and_selected_comptime_evidence() {
     let header = "record Box { value Int }\nenum Choice { Some(Box) None }\n"
     let matched = concat(header, "fn main() { match Choice.Some(Box { value = 7 }) { Choice.Some(box) => { discard box.va }\nChoice.None => {} } }")

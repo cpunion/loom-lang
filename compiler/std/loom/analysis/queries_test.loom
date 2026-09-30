@@ -315,6 +315,35 @@ test fn inspections_navigate_static_methods_and_dynamic_concept_signatures() {
     only_type(inspection(analysis, text, "view.read()"), "dyn app.Read")
 }
 
+test fn dynamic_method_family_arities_navigate_to_one_source_declaration() {
+    let text = """
+        concept Packing {
+            fn gather[Ts...](self Self, values Ts...) (Ts...) { values }
+            fn tuple[Ts...](self Self, values (Ts...)) (Ts...) { values }
+        }
+        impl Packing for Bool {}
+        fn main() {
+            let source dyn Packing = true
+            discard source.gather()
+            discard source.gather(1)
+            discard source.gather(2, true)
+            discard source.tuple((3,))
+            discard source.tuple((4, false))
+        }
+        """
+    let analysis = accepted(input(text))
+    let gather = query_offset(text, "fn gather") + 3
+    let tuple = query_offset(text, "fn tuple") + 3
+    let calls = ["gather()", "gather(1)", "gather(2, true)"]
+    var index = 0
+    while index < length(calls) {
+        only_definition(inspection(analysis, text, get(calls, index)), gather, gather + 6)
+        index = index + 1
+    }
+    only_definition(inspection(analysis, text, "tuple((3,))"), tuple, tuple + 5)
+    only_definition(inspection(analysis, text, "tuple((4, false))"), tuple, tuple + 5)
+}
+
 test fn async_method_queries_keep_logical_signatures_and_task_result_types() {
     let text = "concept Read { async fn read(self Self) Int }\nimpl Read for Int { async fn read(self Int) Int { self } }\nasync fn main() { let view dyn Read = 7\nlet task = view.read()\nassert task.await == 7 }"
     let analysis = accepted(input(text))

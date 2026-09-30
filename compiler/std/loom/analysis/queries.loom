@@ -486,9 +486,13 @@ fn dyn_location(analysis SemanticView, report Inspection, value Expr) {
                 let group = get(symbol.node.children, child)
                 if group.kind == NodeKind.Parameters && length(group.children) == length(method.params) + 1 {
                     if selected >= 0 {
-                        return
+                        let previous = get(analysis.bindings.symbols, selected)
+                        if previous.file != symbol.file || !same_span(previous.node.span, symbol.node.span) {
+                            return
+                        }
+                    } else {
+                        selected = index
                     }
-                    selected = index
                 }
                 child = child + 1
             }

@@ -14,9 +14,18 @@ fn body_copy_interfaces(env Environment) List[BodyInterface] {
         var slot = 0
         while slot < length(current) {
             let value = get(current, slot)
+            let pack = pack_instance(env, value.signature)
             push(slots, BodyTarget {
-                    symbol = get(env.signatures, value.signature).symbol
-                    arity = -1
+                    symbol = if pack < 0 {
+                        get(env.signatures, value.signature).symbol
+                    } else {
+                        get(env.packs, pack).source
+                    }
+                    arity = if pack < 0 {
+                        -1
+                    } else {
+                        get(env.packs, pack).arity
+                    }
                     prototype = -1
                     arguments = copy_indices(value.arguments)
                     constants = body_copy_constants(env, value.constants)
@@ -81,9 +90,15 @@ fn body_dynamic_expression(env Environment, reuse BodyReuse, value Expr, owner I
     }
     let slot = body_dynamic_slot(reuse, value)
     let method = body_symbol(reuse, slot.symbol)
-    var signature = 0
-    while signature < length(env.signatures) && get(env.signatures, signature).symbol != method {
-        signature = signature + 1
+    var signature = if slot.arity < 0 {
+        0
+    } else {
+        selected_pack_signature(env, method, slot.arity)?
+    }
+    if slot.arity < 0 {
+        while signature < length(env.signatures) && get(env.signatures, signature).symbol != method {
+            signature = signature + 1
+        }
     }
     if signature == length(env.signatures) {
         return Result.Err(failure(env, owner, node, "cached dynamic call has no current signature"))
@@ -109,6 +124,7 @@ fn cache_interfaces(output Bytes, values List[BodyInterface]) Result[Bool, Text]
         while slot < length(value.slots) {
             let target = get(value.slots, slot)
             cache_int(output, target.symbol)
+            cache_int(output, target.arity)
             cache_ints(output, target.arguments)
             discard cache_constants(output, target.constants)?
             slot = slot + 1
@@ -130,7 +146,7 @@ fn cache_read_interfaces(reader CacheReader) Result[List[BodyInterface], Text] {
         while slot < slot_count {
             push(slots, BodyTarget {
                     symbol = cache_read_int(reader)?
-                    arity = -1
+                    arity = cache_read_int(reader)?
                     prototype = -1
                     arguments = cache_read_ints(reader)?
                     constants = cache_read_constants(reader)?

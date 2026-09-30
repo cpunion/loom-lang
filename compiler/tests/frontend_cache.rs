@@ -470,6 +470,13 @@ fn variadic_instances_reuse_current_expanded_symbols_and_distinct_arities() {
     fs::create_dir(&package).unwrap();
     let path = package.join("main.loom");
     let source = r#"
+concept Gather {
+    fn gather[Ts...](self Self, budget Int, values Ts...) (Ts...)
+    requires budget >= 0 {
+        values
+    }
+}
+impl Gather for Bool {}
 fn bundle[Ts...](items Ts...) (Ts...) {
     items
 }
@@ -490,6 +497,9 @@ fn main() {
     let pair = mapped(bundle(3, true))
     let triple = bundle(1, "two", false)
     assert pair.1 && !triple.2
+    let boxed dyn Gather = true
+    assert boxed.gather(0, pair...).1
+    assert boxed.gather(0, "cached").0 == "cached"
     assert pair.0 + count(triple...) + count(1) == 7
 }
 "#;
@@ -503,7 +513,7 @@ fn main() {
     let reused = cached("emit-checked", &package, &cache, &[]);
     checked(&reused, false);
     let trace = String::from_utf8_lossy(&reused.stderr);
-    assert!(trace.contains(", bodies reused 6"), "{trace}");
+    assert!(trace.contains(", bodies reused 8"), "{trace}");
     // Fresh arity validation may intern abstract placeholders before the cached
     // path recreates concrete types. Those private IDs need not be byte-equal;
     // both native paths must execute every remapped call/layout correctly.

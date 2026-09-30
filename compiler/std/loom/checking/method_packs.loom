@@ -1,0 +1,414 @@
+// Method families keep source identities until a call selects an arity. A
+// schema retains every expansion node: equality is structural substitution
+// for any sequence of types, not agreement on sampled concrete arities.
+fn method_pack_source(env Environment, source Int) Int {
+    var index = 0
+    while index < length(env.packs) {
+        let pack = get(env.packs, index)
+        if pack.source == source && pack.arity < 0 {
+            return pack.declaration
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn method_pack_binding(env Environment, implementation Int, declaration Int) Int {
+    var index = 0
+    while index < length(env.packs) {
+        let pack = get(env.packs, index)
+        if pack.arity < 0 && pack.declaration == declaration && symbol(env, pack.source).owner == implementation {
+            return pack.source
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn method_pack_schema(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], element Bool, depth Int) Result[Node, Failure] {
+    if depth >= 64 {
+        return Result.Err(failure(env, owner, node, "variadic method schema nesting limit exceeded"))
+    }
+    if node.kind == NodeKind.Spread {
+        let pattern = method_pack_schema(env, owner, child(node, 0), arguments, obligations, true, depth + 1)?
+        return Result.Ok(pack_node(node, NodeKind.Spread, "", source_nodes(pattern)))
+    }
+    if !has_type_expansion(node) {
+        let pack = get(group(symbol(env, owner).node, NodeKind.TypeParameters), pack_parameter(symbol(env, owner).node))
+        if !element && mentions_pack(node, pack.value) {
+            return Result.Err(failure(env, owner, node, "expand a type pack with ...; it is not one type"))
+        }
+        let ty = resolve_bound(env, owner, node, arguments, obligations, depth + 1)?
+        return Result.Ok(pack_node(node, NodeKind.Type, std.int.to_text(ty), new[Node]()))
+    }
+    let children = new[Node]()
+    if node.kind == NodeKind.FunctionType {
+        let inputs = new[Node]()
+        let parameters = group(node, NodeKind.Parameters)
+        var index = 0
+        while index < length(parameters) {
+            push(inputs, method_pack_schema(env, owner, get(parameters, index), arguments, obligations, element, depth + 1)?)
+            index = index + 1
+        }
+        push(children, pack_node(node, NodeKind.Parameters, "", inputs))
+        let returns = group(node, NodeKind.ReturnType)
+        let output = if length(returns) == 0 {
+            pack_node(node, NodeKind.Type, "0", new[Node]())
+        } else {
+            method_pack_schema(env, owner, get(returns, 0), arguments, obligations, element, depth + 1)?
+        }
+        push(children, pack_node(node, NodeKind.ReturnType, "", source_nodes(output)))
+        return Result.Ok(pack_node(node, NodeKind.FunctionType, "", children))
+    }
+    var index = 0
+    while index < length(node.children) {
+        push(children, method_pack_schema(env, owner, child(node, index), arguments, obligations, element, depth + 1)?)
+        index = index + 1
+    }
+    if node.kind == NodeKind.TupleType {
+        return Result.Ok(pack_node(node, NodeKind.TupleType, "", children))
+    }
+    if node.kind == NodeKind.Type {
+        let constructor = if node.value == "List" || node.value == "Task" {
+            node.value
+        } else {
+            let selected = find_data(env, owner, node, node.value)?
+            if selected < 0 {
+                return Result.Err(failure(env, owner, node, "cannot establish a variadic method schema for this expanded type constructor"))
+            }
+            concat("nominal#", std.int.to_text(selected))
+        }
+        return Result.Ok(pack_node(node, NodeKind.TypeArguments, constructor, children))
+    }
+    Result.Err(failure(env, owner, node, "expected a variadic method type pattern"))
+}
+
+fn method_pack_header(env Environment, owner Int, arguments List[Int], obligations List[Requirement], output Bool) Result[Node, Failure] {
+    let node = symbol(env, owner).node
+    let children = new[Node]()
+    let parameters = group(node, NodeKind.Parameters)
+    var index = 0
+    while index < length(parameters) {
+        let parameter = get(parameters, index)
+        let ty = method_pack_schema(env, owner, child(parameter, 0), arguments, obligations, false, 0)?
+        push(children, pack_node(parameter, NodeKind.Parameter, if has(parameter, NodeKind.Comptime) {
+                    "static"
+                } else {
+                    "runtime"
+                }, source_nodes(ty)))
+        index = index + 1
+    }
+    if output {
+        let returns = group(node, NodeKind.ReturnType)
+        let ty = if length(returns) == 0 {
+            pack_node(node, NodeKind.Type, "0", new[Node]())
+        } else {
+            method_pack_schema(env, owner, get(returns, 0), arguments, obligations, false, 0)?
+        }
+        push(children, pack_node(node, NodeKind.ReturnType, "", source_nodes(ty)))
+    }
+    Result.Ok(pack_node(node, NodeKind.Parameters, if output && has(node, NodeKind.Async) {
+                "async"
+            } else {
+                "sync"
+            }, children))
+}
+
+fn same_method_pack_schema(left Node, right Node) Bool {
+    if left.kind != right.kind || left.value != right.value || length(left.children) != length(right.children) {
+        return false
+    }
+    var index = 0
+    while index < length(left.children) {
+        if !same_method_pack_schema(child(left, index), child(right, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn validate_method_pack_declarations(env Environment, capability Int) Result[Bool, Failure] {
+    let owners = new[Int]()
+    let schemas = new[Node]()
+    var index = 0
+    while index < length(env.packs) {
+        let pack = get(env.packs, index)
+        if pack.arity < 0 && symbol(env, pack.source).owner == capability {
+            let node = symbol(env, pack.source).node
+            let parameters = group(node, NodeKind.Parameters)
+            if length(parameters) == 0 || child(get(parameters, 0), 0).value != "Self" ||
+            child(get(parameters, 0), 0).kind != NodeKind.Type ||
+            length(child(get(parameters, 0), 0).children) != 0 || has(get(parameters, 0), NodeKind.Comptime) {
+                return Result.Err(failure(env, pack.source, node, "a concept method's first parameter must have type Self and cannot be comptime"))
+            }
+            let arguments = abstract_arguments(env, function_parameter_count(env, pack.source))
+            let obligations = requirements(env, pack.source, arguments)?
+            discard method_pack_header(header_environment(env), pack.source, arguments, obligations, true)?
+            let schema = method_pack_header(header_environment(env), pack.source, arguments, obligations, false)?
+            var previous = 0
+            while previous < length(owners) {
+                let other = get(owners, previous)
+                if symbol(env, other).name == symbol(env, pack.source).name &&
+                method_parameter_count(env, other) == method_parameter_count(env, pack.source) &&
+                same_method_pack_schema(get(schemas, previous), schema) {
+                    return Result.Err(failure(env, pack.source, node, "duplicate variadic method schema"))
+                }
+                previous = previous + 1
+            }
+            push(owners, pack.source)
+            push(schemas, schema)
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn validate_method_pack_implementation(env Environment, header Implementation) Result[Bool, Failure] {
+    let matched = new[Int]()
+    var index = 0
+    while index < length(env.packs) {
+        let pack = get(env.packs, index)
+        if pack.arity < 0 && symbol(env, pack.source).owner == header.symbol {
+            let item = symbol(env, pack.source)
+            if has(item.node, NodeKind.Requires) {
+                return Result.Err(failure(env, pack.source, item.node, "an implementation cannot add an undeclared precondition"))
+            }
+            let prefix = method_parameter_prefix(env, pack.source)
+            let arguments = abstract_arguments(env, function_parameter_count(env, pack.source))
+            var selected = -1
+            var candidate = 0
+            while candidate < length(env.packs) {
+                let source = get(env.packs, candidate)
+                if source.arity < 0 && symbol(env, source.source).owner == header.capability &&
+                symbol(env, source.source).name == item.name &&
+                method_parameter_count(env, source.source) == method_parameter_count(env, pack.source) &&
+                method_bounds_match(env, source.source, pack.source)? {
+                    let expected_arguments = method_instance_arguments(env, source.source, header.ty, prefix)
+                    let expected = method_pack_header(header_environment(env), source.source, expected_arguments, requirements(env, source.source, expected_arguments)?, true)?
+                    let obligations = requirements(env, pack.source, arguments)?
+                    discard inherit_member_requirements(env, source.source, argument_tail(arguments, prefix), obligations)?
+                    let actual = method_pack_header(header_environment(env), pack.source, arguments, function_requirements(env, pack.source, obligations)?, true)
+                    match actual {
+                        Result.Ok(schema) => {
+                            if same_method_pack_schema(expected, schema) {
+                                if selected >= 0 {
+                                    return Result.Err(failure(env, pack.source, item.node, "implementation method matches multiple concept overloads"))
+                                }
+                                selected = source.source
+                            }
+                        }
+                        Result.Err(failed) => {
+                            if !method_trial_missing_evidence(failed) {
+                                return Result.Err(failed)
+                            }
+                        }
+                    }
+                }
+                candidate = candidate + 1
+            }
+            if selected < 0 {
+                return Result.Err(failure(env, pack.source, item.node, "variadic implementation schema does not match its concept or strengthens its requirements"))
+            }
+            var previous = 0
+            while previous < length(matched) {
+                if get(matched, previous) == selected {
+                    return Result.Err(failure(env, pack.source, item.node, "duplicate implementation method for this concept overload"))
+                }
+                previous = previous + 1
+            }
+            push(matched, selected)
+            set(env.packs, index, PackInstance {
+                    source = pack.source
+                    declaration = selected
+                    arity = pack.arity
+                    signature = pack.signature
+                    state = pack.state
+                    depth = pack.depth
+                })
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(env.packs) {
+        let pack = get(env.packs, index)
+        if pack.arity < 0 && symbol(env, pack.source).owner == header.capability &&
+        method_pack_binding(env, header.symbol, pack.source) < 0 && !has(symbol(env, pack.source).node, NodeKind.Block) {
+            return Result.Err(failure(env, header.symbol, symbol(env, header.symbol).node, "implementation is missing a required variadic concept method"))
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn materialize_method_pack(env Environment, owner Int, arity Int) Result[Int, Failure] {
+    let selected = pack_signature(env, owner, arity)?
+    let capability = symbol(env, owner).owner
+    let methods = get(env.concepts, concept_index(env, capability)).methods
+    var slot = 0
+    while slot < length(methods) {
+        if get(methods, slot) == selected {
+            discard check_method_pack_instance(env, selected, slot, capability)?
+            return Result.Ok(selected)
+        }
+        slot = slot + 1
+    }
+    let instance = pack_instance(env, selected)
+    if get(env.packs, instance).state < 0 {
+        return Result.Err(failure(env, owner, symbol(env, owner).node, "recursive variadic method header expansion"))
+    }
+    pack_state(env, instance, -2, 0)
+    let bindings = new[Int]()
+    var index = 0
+    while index < length(env.implementations) {
+        let header = get(env.implementations, index)
+        if header.capability == capability {
+            let binding = method_pack_binding(env, header.symbol, owner)
+            let implementation = if binding < 0 {
+                selected
+            } else {
+                pack_signature(env, binding, arity)?
+            }
+            push(bindings, implementation)
+        }
+        index = index + 1
+    }
+    // Publish aligned ordinary slots only after every header is established.
+    push(methods, selected)
+    var binding = 0
+    index = 0
+    while index < length(env.implementations) {
+        let header = get(env.implementations, index)
+        if header.capability == capability {
+            push(header.methods, get(bindings, binding))
+            binding = binding + 1
+        }
+        index = index + 1
+    }
+    pack_state(env, instance, 0, 0)
+    discard check_method_pack_instance(env, selected, slot, capability)?
+    Result.Ok(selected)
+}
+
+fn check_method_pack_instance(env Environment, selected Int, slot Int, capability Int) Result[Bool, Failure] {
+    discard check_pack_arity(env, selected)?
+    var index = 0
+    while index < length(env.implementations) {
+        let header = get(env.implementations, index)
+        if header.capability == capability {
+            let binding = get(header.methods, slot)
+            if binding != selected {
+                discard check_pack_arity(env, binding)?
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn selected_pack_signature(env Environment, owner Int, arity Int) Result[Int, Failure] {
+    if prototype(env, owner) {
+        return materialize_method_pack(env, owner, arity)
+    }
+    let declaration = method_pack_source(env, owner)
+    if declaration >= 0 && declaration != owner {
+        discard materialize_method_pack(env, declaration, arity)?
+    }
+    pack_signature(env, owner, arity)
+}
+
+fn method_pack_selections(context Context, source Node, receiver Expr, member Text, types List[Node], inputs CallInputs, selected Int) Result[List[Int], Failure] {
+    let choices = new[Int]()
+    let all_inputs = input_receiver(inputs, source)
+    let shape = get(context.env.types, receiver.ty)
+    var index = 0
+    let count = length(context.env.packs)
+    while index < count {
+        let pack = get(context.env.packs, index)
+        let item = symbol(context.env, pack.source)
+        if pack.arity < 0 && prototype(context.env, pack.source) && item.name == member &&
+        ((selected >= 0 && selected == item.owner) || (selected < 0 && visible_concept(context, item.owner))) {
+            let admitted = if shape.kind == TypeKind.Dyn {
+                get(context.env.interfaces, shape.symbol).symbol == item.owner
+            } else {
+                satisfies(context, receiver.ty, item.owner)?
+            }
+            if admitted {
+                let parameters = group(item.node, NodeKind.Parameters)
+                let prefix = pack_parameter(item.node)
+                let arity = if variadic_parameters(parameters) {
+                    length(all_inputs.nodes) - length(parameters) + 1
+                } else {
+                    if length(all_inputs.nodes) == length(parameters) {
+                        if length(types) != 0 {
+                            length(types) - prefix
+                        } else {
+                            structural_call_arity(context, all_inputs, parameters)
+                        }
+                    } else {
+                        -1
+                    }
+                }
+                if arity >= 0 && (length(types) == 0 || length(types) == prefix + arity) {
+                    push(choices, materialize_method_pack(context.env, pack.source, arity)?)
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(choices)
+}
+
+fn selected_method_pack(env Environment, signature Int, choices List[Int]) Bool {
+    if pack_instance(env, signature) < 0 {
+        return true
+    }
+    var index = 0
+    while index < length(choices) {
+        if get(choices, index) == signature {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn dynamic_method_pack_schema(env Environment, node Node, capability Int) Bool {
+    if node.kind == NodeKind.Type {
+        let ty = match std.int.parse(node.value) {
+            Result.Ok(ty) => ty
+            Result.Err(_) => {
+                return false
+            }
+        }
+        return dynamic_member_type(env, ty, capability)
+    }
+    var index = 0
+    while index < length(node.children) {
+        if !dynamic_method_pack_schema(env, child(node, index), capability) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn dynamic_method_pack_headers(env Environment, capability Int) Result[Bool, Failure] {
+    var index = 0
+    while index < length(env.packs) {
+        let pack = get(env.packs, index)
+        if pack.arity < 0 && symbol(env, pack.source).owner == capability {
+            let arguments = abstract_arguments(env, function_parameter_count(env, pack.source))
+            let schema = method_pack_header(header_environment(env), pack.source, arguments, requirements(env, pack.source, arguments)?, true)?
+            var member = 1
+            while member < length(schema.children) {
+                if !dynamic_method_pack_schema(env, child(schema, member), capability) {
+                    return Result.Err(failure(env, pack.source, symbol(env, pack.source).node, "dyn concept methods may use Self only as the receiver"))
+                }
+                member = member + 1
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}

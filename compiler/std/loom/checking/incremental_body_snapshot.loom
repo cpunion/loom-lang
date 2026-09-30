@@ -96,8 +96,20 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
     while index < length(program.functions) {
         let value = get(program.functions, index)
         let instance = get(env.pending, index)
-        let pack = if instance.signature >= 0 { pack_instance(env, instance.signature) } else { -1 }
-        let prototype = if instance.signature >= 0 && pack < 0 { method_declaration(env, value.symbol) } else { -1 }
+        let pack = if instance.signature >= 0 {
+            pack_instance(env, instance.signature)
+        } else {
+            -1
+        }
+        let prototype = if pack >= 0 {
+            get(env.packs, pack).declaration
+        } else {
+            if instance.signature >= 0 {
+                method_declaration(env, value.symbol)
+            } else {
+                -1
+            }
+        }
         push(functions, body_copy_function(value))
         push(targets, BodyTarget {
                 symbol = if pack >= 0 {
@@ -107,8 +119,16 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
                 } else {
                     get(env.signatures, instance.signature).symbol
                 }
-                arity = if pack >= 0 { get(env.packs, pack).arity } else { -1 }
-                prototype = if prototype == value.symbol { -1 } else { prototype }
+                arity = if pack >= 0 {
+                    get(env.packs, pack).arity
+                } else {
+                    -1
+                }
+                prototype = if prototype == value.symbol || (pack >= 0 && prototype == get(env.packs, pack).source) {
+                    -1
+                } else {
+                    prototype
+                }
                 arguments = copy_indices(instance.arguments)
                 constants = body_copy_constants(env, instance.constants)
             })
