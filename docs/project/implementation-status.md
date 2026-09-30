@@ -92,8 +92,9 @@ live Task or scoped-resource obligations.
 
 Compile-time execution uses a bounded evaluator over the checked model, with
 pure functions, loops, recursion and fresh shared graphs. Type values remain
-compile-time-only. Source `std.meta` exposes a known function's ordered parameter
-types and optional return type through ordinary Loom helpers; callbacks are not
+compile-time-only. Source `std.meta` exposes a function value or declared function
+type's ordered parameter types and optional return type through ordinary Loom
+helpers and library `Signature` conformance; callbacks are not
 executed, captured data is not inspected, and an omitted result is `None`, not
 `Unit`. Static scalar/immutable-aggregate/function parameters,
 selected branches, function/data type packs and fixed-shape `comptime for/map` share

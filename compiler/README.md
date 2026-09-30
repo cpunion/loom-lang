@@ -945,6 +945,16 @@ type may feed the usual annotation/construction boundary. An unresolved overload
 still needs an annotation or explicit specialization. See the
 [function-signature example](examples/type_values/signatures.loom).
 
+The zero-argument overloads `parameter_types[fn(Int, Bool) Text]()` and
+`return_type[fn(Int, Bool) Text]()` inspect a declared function type without a
+callback value. Source `std.meta.Signature` supplies associated `Parameters`
+(an ordered tuple) and `Output`; an ordinary impl family covers function types,
+including zero parameters and omitted results. Other types need explicit library
+conformance, and non-tuple `Parameters` reject during compile-time evaluation.
+This is composable library metadata, not proof that an arbitrary conforming value
+is callable. The callback overloads delegate to the same implementation. Neither
+form adds compiler intrinsics, runtime type tags or native metadata helpers.
+
 A structural parameter takes one tuple argument and one runtime tuple
 parameter. It may have fixed fields around one expanded pattern, such as
 `values (Int, Pattern[Ts]..., Text)`. The pack arity is the argument's statically

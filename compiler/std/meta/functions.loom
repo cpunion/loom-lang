@@ -1,26 +1,14 @@
-import std.list.push
-import std.list.new
 import std.option.Option
-import std.reflect.describe
-import std.reflect.Kind
 
 // Function values supply their statically known signature, not their body or
 // captured state. The result contains compile-time-only type identities.
 pub fn parameter_types[R, Ts...](callback fn(Ts...) R) List[type] {
     discard callback
-    let types = new[type]()
-    comptime for T in Ts {
-        push(types, T)
-    }
-    types
+    parameter_types[fn(Ts...) R]()
 }
 
 // An omitted return type is not a source type value.
 pub fn return_type[R, Ts...](callback fn(Ts...) R) Option[type] {
     discard callback
-    comptime if describe[R]().types[0].kind == Kind.NoResult {
-        Option.None
-    } else {
-        Option.Some(R)
-    }
+    return_type[fn(Ts...) R]()
 }

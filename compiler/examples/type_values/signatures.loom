@@ -24,7 +24,21 @@ fn function_signatures() {
     }
     assert signature_ok
     assert comptime {
+        let parameters = parameter_types[fn(Int, Text) Bool]()
+        assert length(parameters) == 2
+        assert parameters[0] == Int && parameters[1] == Text
+        match return_type[fn(Int, Text) Bool]() {
+            Option.Some(output) => output == Bool
+            Option.None => false
+        }
+    }
+    assert comptime {
         assert length(parameter_types(described_no_result)) == 0
+        assert length(parameter_types[fn()]()) == 0
+        assert match return_type[fn()]() {
+            Option.None => true
+            Option.Some(_) => false
+        }
         match return_type(described_no_result) {
             Option.None => true
             Option.Some(_) => false
