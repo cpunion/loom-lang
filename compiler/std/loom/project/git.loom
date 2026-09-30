@@ -432,7 +432,7 @@ fn snapshot_module(root Text, subdir Text) Result[Text, Text] {
     Result.Ok(directory)
 }
 
-fn git_dependency(resolution Resolution, base Text, name Text, git Text, rev Text, subdir Text, comptime fetch Bool) Result[Text, Text] {
+fn git_dependency(resolution Resolution, base Text, name Text, git Text, rev Text, subdir Text, request Text, version Text, comptime fetch Bool) Result[Text, Text] {
     let owner = source_owner(resolution, base)?
     let index = lock_index(resolution.locks, owner, name)
     comptime if !fetch {
@@ -440,7 +440,7 @@ fn git_dependency(resolution Resolution, base Text, name Text, git Text, rev Tex
             return Result.Err("Git dependency is not locked; run loom resolve")
         }
         let locked = get(resolution.locks, index)
-        if locked.git != git || locked.rev != rev || locked.subdir != subdir {
+        if locked.git != git || locked.rev != rev || locked.subdir != subdir || locked.request != request || locked.version != version {
             return Result.Err("Git dependency changed from loom.lock; run loom resolve")
         }
     }
@@ -455,6 +455,9 @@ fn git_dependency(resolution Resolution, base Text, name Text, git Text, rev Tex
     }
     let source = resolved_snapshot(resolution, git, rev, expected, fetch)?
     let directory = snapshot_module(source.base, subdir)?
+    if version != "" && read_module(directory)?.version != version {
+        return Result.Err("selected SemVer tag does not match module.version")
+    }
     let locked = LockedSource {
         owner = owner
         name = name
@@ -462,6 +465,11 @@ fn git_dependency(resolution Resolution, base Text, name Text, git Text, rev Tex
         rev = rev
         tree = source.tree
         subdir = subdir
+        request = request
+        version = version
+    }
+    if lock_index(resolution.plan.used, owner, name) < 0 {
+        push(resolution.plan.used, locked)
     }
     if index < 0 {
         push(resolution.locks, locked)

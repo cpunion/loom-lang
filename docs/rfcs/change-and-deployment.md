@@ -27,6 +27,11 @@ source, and behavior-affecting configuration requirements. Normalization selects
 a permitted version, without proving different versions behaviorally equivalent
 or prescribing a selection algorithm.
 
+The first version source is Git SemVer 2.0.0 tags, explicitly resolved to commits
+and verified snapshots. `std.semver` owns range policy; normal builds use the
+locked selection offline. This selects permitted versions, not proof of an API's
+behavioral compatibility.
+
 - Overlapping version requirements may share an instance.
 - Disjoint requirements may retain separate instances.
 - Ordinary builds use the locked graph without silently refreshing or deduplicating

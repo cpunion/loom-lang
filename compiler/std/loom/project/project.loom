@@ -47,8 +47,16 @@ pub record Project {
     root Int
 }
 
+pub record ResolutionReport {
+    project Project
+    dependencies Int
+    instances Int
+    changed Int
+}
+
 record ModuleRoot {
     name Text
+    version Text
     base Text
     dependencies List[Dependency]
 }
@@ -172,6 +180,7 @@ fn module_root(directory Text) Result[ModuleRoot, Text] {
         if next == current {
             return Result.Ok(ModuleRoot {
                     name = ""
+                    version = ""
                     base = directory
                     dependencies = new[Dependency]()
                 })
@@ -250,10 +259,14 @@ pub fn select_source(tree Node, tests Bool) Node {
 }
 
 fn contains_await(node Node) Bool {
-    if node.kind == NodeKind.Await { return true }
+    if node.kind == NodeKind.Await {
+        return true
+    }
     var index = 0
     while index < length(node.children) {
-        if contains_await(get(node.children, index)) { return true }
+        if contains_await(get(node.children, index)) {
+            return true
+        }
         index = index + 1
     }
     false
@@ -278,8 +291,13 @@ fn visit_import(loader Loader, source Int, spelling Text, depth Int, comptime fe
                         while item < length(file.tree.children) {
                             let node = get(file.tree.children, item)
                             if node.kind == NodeKind.Import && package(node.value) == spelling {
-                                push(loader.failures, LoadFailure { path = file.path
-                                    diagnostic = Diagnostic { span = node.span message = message } })
+                                push(loader.failures, LoadFailure {
+                                        path = file.path
+                                        diagnostic = Diagnostic {
+                                            span = node.span
+                                            message = message
+                                        }
+                                    })
                                 return Result.Err(message)
                             }
                             item = item + 1
@@ -330,7 +348,7 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
         let name = get(names, index)
         let path = join_path(directory, name)
         let test_only = ends_with(name, "_test.loom")
-        if ends_with(name, ".loom") &&(!test_only || tests) {
+        if ends_with(name, ".loom") && (!test_only || tests) {
             let physical = is_file(path)
             let identity = if physical && length(loader.overlays) != 0 {
                 canonical(path)?
@@ -433,18 +451,43 @@ fn visit(loader Loader, id Int, directory Text, tests Bool, depth Int, comptime 
 // Only the selected root package contributes tests. Imports are directory
 // packages; compiler-owned intrinsic trust comes from each canonical file path.
 pub fn load(path Text, std_root Text, tests Bool) Result[Project, Text] {
-    load_selected(path, std_root, tests, false, "git", "", new[OverlayFile](), new[LoadFailure]())
+    load_selected(path, std_root, tests, new[OverlayFile](), new[LoadFailure]())
 }
 
 // Resolve only this package's import closure. Tests are opt-in just as in load;
 // unrelated lock entries survive so resolving one package does not unlock others.
-pub fn resolve(path Text, std_root Text, tests Bool, git_tool Text) Result[Project, Text] {
+pub fn resolve(path Text, std_root Text, tests Bool, git_tool Text) Result[ResolutionReport, Text] {
     resolve(path, std_root, tests, git_tool, "")
 }
 
 // The explicitly selected host credential tool is never read from a manifest.
-pub fn resolve(path Text, std_root Text, tests Bool, git_tool Text, credential_tool Text) Result[Project, Text] {
-    load_selected(path, std_root, tests, true, git_tool, credential_tool, new[OverlayFile](), new[LoadFailure]())
+pub fn resolve(path Text, std_root Text, tests Bool, git_tool Text, credential_tool Text) Result[ResolutionReport, Text] {
+    let initial, root, directory = prepare_loader(path, std_root, git_tool, credential_tool, new[OverlayFile](), new[LoadFailure]())?
+    let loader = resolve_versions(initial, root, directory, tests)?
+    let used = loader.resolution.plan.used
+    var changed = 0
+    var index = 0
+    while index < length(used) {
+        let current = get(used, index)
+        let previous = lock_index(initial.resolution.locks, current.owner, current.name)
+        if previous < 0 {
+            changed = changed + 1
+        } else {
+            let prior = get(initial.resolution.locks, previous)
+            if prior.git != current.git || prior.rev != current.rev || prior.subdir != current.subdir ||
+            prior.request != current.request || prior.version != current.version {
+                changed = changed + 1
+            }
+        }
+        index = index + 1
+    }
+    discard publish_lock(loader.resolution)?
+    Result.Ok(ResolutionReport {
+            project = loaded_project(loader, root)
+            dependencies = length(used)
+            instances = instance_count(used)
+            changed = changed
+        })
 }
 
 fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text, overlays List[OverlayFile], failures List[LoadFailure]) Result[(Loader, Int, Text), Text] {
@@ -461,6 +504,7 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
     let module = if discovered.name == "" && inside(directory, standard) {
         ModuleRoot {
             name = "std"
+            version = ""
             base = standard
             dependencies = new[Dependency]()
         }
@@ -474,6 +518,7 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
         credential_tool = credential_tool
         locks = read_lock(module.base)?
         snapshots = new[Snapshot]()
+        plan = empty_plan()
     }
     let loader = Loader {
         files = files
@@ -489,6 +534,7 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
     }
     discard register_module(loader, ModuleRoot {
             name = "std"
+            version = ""
             base = standard
             dependencies = new[Dependency]()
         })?
@@ -497,12 +543,13 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
     Result.Ok((loader, root, directory))
 }
 
-fn load_selected(path Text, std_root Text, tests Bool, comptime fetch Bool, git_tool Text, credential_tool Text, overlays List[OverlayFile], failures List[LoadFailure]) Result[Project, Text] {
-    let loader, root, directory = prepare_loader(path, std_root, git_tool, credential_tool, overlays, failures)?
-    discard visit(loader, root, directory, tests, 0, fetch)?
-    comptime if fetch {
-        discard publish_lock(loader.resolution)?
-    }
+fn load_selected(path Text, std_root Text, tests Bool, overlays List[OverlayFile], failures List[LoadFailure]) Result[Project, Text] {
+    let loader, root, directory = prepare_loader(path, std_root, "git", "", overlays, failures)?
+    discard visit(loader, root, directory, tests, 0, false)?
+    Result.Ok(loaded_project(loader, root))
+}
+
+fn loaded_project(loader Loader, root Int) Project {
     let modules = new[ModuleInstance]()
     var index = 0
     while index < length(loader.modules) {
@@ -513,10 +560,10 @@ fn load_selected(path Text, std_root Text, tests Bool, comptime fetch Bool, git_
             })
         index = index + 1
     }
-    Result.Ok(Project {
-            files = loader.files
-            modules = modules
-            packages = loader.packages
-            root = root
-        })
+    Project {
+        files = loader.files
+        modules = modules
+        packages = loader.packages
+        root = root
+    }
 }

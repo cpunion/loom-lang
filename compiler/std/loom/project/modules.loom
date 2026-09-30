@@ -23,6 +23,7 @@ fn read_module(directory Text) Result[ModuleRoot, Text] {
     }
     Result.Ok(ModuleRoot {
             name = module.name
+            version = module.version
             base = directory
             dependencies = module.dependencies
         })
@@ -133,8 +134,15 @@ fn imported_module(loader Loader, owner Int, name Text, comptime fetch Bool) Res
                     discard source_boundary(loader.resolution, origin, base)?
                     base
                 }
-                DependencySource.Git(git, rev, subdir) => git_dependency(loader.resolution, source.base, name, git, rev, subdir, fetch)?
+                DependencySource.Git(git, rev, subdir) => {
+                    let request = dependency_request(declared, dependency)
+                    let version, selected = dependency_revision(loader.resolution, source.base, declared, dependency, request, fetch)?
+                    git_dependency(loader.resolution, source.base, name, git, selected, subdir, request, version, fetch)?
+                }
             }
+            let module = read_module(base)?
+            discard module_requirement(module, declared.version)?
+            discard module_requirement(module, dependency.version)?
             var existing = 0
             while existing < length(loader.modules) {
                 let module = get(loader.modules, existing)
@@ -146,7 +154,6 @@ fn imported_module(loader Loader, owner Int, name Text, comptime fetch Bool) Res
                 }
                 existing = existing + 1
             }
-            let module = read_module(base)?
             if module.name != name {
                 return Result.Err(concat("dependency name does not match module.name: ", name))
             }

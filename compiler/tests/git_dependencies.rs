@@ -120,6 +120,33 @@ impl Fixture {
         self.temporary.path()
     }
 
+    fn publish_version(&self, version: &str, value: i32, annotated: bool) -> String {
+        write(
+            self.root(),
+            "remote/loom.toml",
+            format!("[module]\nname='seed'\nversion='{version}'\n"),
+        );
+        write(
+            self.root(),
+            "remote/main.loom",
+            format!(
+                "pub record Token {{\n    value Int\n}}\n\npub fn make() Token {{\n    Token {{ value = {value} }}\n}}\n\npub fn value() Int {{\n    {value}\n}}\n"
+            ),
+        );
+        self.git(&["-C", "remote", "add", "."]);
+        self.git(&["-C", "remote", "commit", "--quiet", "-m", version]);
+        let tag = format!("v{version}");
+        if annotated {
+            self.git(&["-C", "remote", "tag", "-a", &tag, "-m", version]);
+        } else {
+            self.git(&["-C", "remote", "tag", &tag]);
+        }
+        String::from_utf8(self.git(&["-C", "remote", "rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
     fn git(&self, arguments: &[&str]) -> Output {
         let mut command = Command::new(&self.git);
         command.current_dir(self.root()).env_clear();
@@ -857,13 +884,13 @@ test fn nested_modules() {
     let lock = fs::read_to_string(&lock_path).unwrap();
     assert_eq!(
         lock.lines()
-            .filter(|line| line.ends_with("\tpackages/one"))
+            .filter(|line| line.split('\t').nth(5) == Some("packages/one"))
             .count(),
         2
     );
     assert_eq!(
         lock.lines()
-            .filter(|line| line.ends_with("\tpackages/two"))
+            .filter(|line| line.split('\t').nth(5) == Some("packages/two"))
             .count(),
         1
     );
@@ -963,4 +990,235 @@ fn failed_git_resolution_suppresses_echoed_remote_data_and_leaves_no_lock() {
             .next()
             .is_none()
     );
+}
+
+#[test]
+fn semver_overlap_normalizes_nominal_instances_and_disjoint_versions_stay_separate() {
+    let fixture = Fixture::new();
+    let root = fixture.root();
+    let older = fixture.publish_version("1.2.9", 12, true);
+    let latest = fixture.publish_version("1.9.0", 19, false);
+    let next_major = fixture.publish_version("2.0.0", 20, false);
+    let app = root.join("app");
+    write(
+        root,
+        "app/loom.toml",
+        "[module]\nname='app'\n[dependencies.left]\npath='../left'\n[dependencies.right]\npath='../right'\n[dependencies.unused]\ngit='https://fixture.invalid/never'\nversion='^9'\n",
+    );
+    for (name, range) in [("left", "^1"), ("right", "~1.2")] {
+        write(
+            root,
+            &format!("{name}/loom.toml"),
+            format!(
+                "[module]\nname='{name}'\n[dependencies.seed]\ngit='{URL}'\nversion='{range}'\n"
+            ),
+        );
+        write(
+            root,
+            &format!("{name}/main.loom"),
+            "import seed.Token\nimport seed.make\nimport seed.value\npub fn token() Token {\n    make()\n}\npub fn extract(value Token) Int {\n    value.value\n}\npub fn answer() Int {\n    seed.value()\n}\n",
+        );
+    }
+    write(
+        root,
+        "app/main.loom",
+        "import left.token\nimport right.extract\nimport left.answer\nimport right.answer\nfn main() {\n    assert right.extract(left.token()) == 12\n    assert left.answer() == 12 && right.answer() == 12\n}\ntest fn normalized() {\n    main()\n}\n",
+    );
+    let resolved = fixture.resolve(&app, true);
+    success(&resolved);
+    assert_eq!(
+        resolved.stdout,
+        b"resolved 2 Git edges into 1 source instances; 2 changed edges\n"
+    );
+    let lock_path = app.join("loom.lock");
+    let lock = fs::read_to_string(&lock_path).unwrap();
+    let entries = lock.lines().skip(1).collect::<Vec<_>>();
+    assert_eq!(entries.len(), 2, "{lock}");
+    assert!(entries.iter().all(|line| {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        fields[3] == older && fields[7] == "1.2.9"
+    }));
+    let log = fixture.log();
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.starts_with("ls-remote\t"))
+            .count(),
+        1
+    );
+    assert!(!log.contains("fixture.invalid/never"));
+    write(root, "offline", "locked commands must not discover tags");
+    for mode in ["check", "run", "test"] {
+        success(&fixture.command(mode, &app).output().unwrap());
+    }
+    let artifact = common::executable(root, "semver-normalized");
+    success(
+        &fixture
+            .command("build", &app)
+            .arg("--output")
+            .arg(&artifact)
+            .output()
+            .unwrap(),
+    );
+    success(&Command::new(&artifact).output().unwrap());
+    assert_eq!(fixture.log(), log);
+    assert_eq!(fs::read_to_string(&lock_path).unwrap(), lock);
+
+    write(
+        root,
+        "right/loom.toml",
+        format!("[module]\nname='right'\n[dependencies.seed]\ngit='{URL}'\nversion='^2'\n"),
+    );
+    rejected(
+        &fixture.command("check", &app).output().unwrap(),
+        "changed from loom.lock",
+    );
+    assert_eq!(fs::read_to_string(&lock_path).unwrap(), lock);
+    fs::remove_file(root.join("offline")).unwrap();
+    success(&fixture.resolve(&app, false));
+    let split_lock = fs::read_to_string(&lock_path).unwrap();
+    assert!(
+        split_lock.contains(&latest) && split_lock.contains(&next_major),
+        "{split_lock}"
+    );
+    rejected(
+        &fixture.command("check", &app).output().unwrap(),
+        "expected seed.Token",
+    );
+    write(
+        root,
+        "app/main.loom",
+        "import left.answer\nimport right.answer\nfn main() {\n    assert left.answer() == 19 && right.answer() == 20\n}\n",
+    );
+    success(&fixture.command("run", &app).output().unwrap());
+}
+
+#[test]
+fn semver_backtracks_transitive_requirements_and_graph_forks_cannot_bypass_them() {
+    let fixture = Fixture::new();
+    let root = fixture.root();
+    write(
+        root,
+        "remote/helper/loom.toml",
+        "[module]\nname='helper'\nversion='1.0.0'\n",
+    );
+    write(
+        root,
+        "remote/helper/main.loom",
+        "pub fn value() Int {\n    31\n}\n",
+    );
+    let mut older = String::new();
+    for (version, range) in [("1.0.0", "^1"), ("1.1.0", "^2")] {
+        write(
+            root,
+            "remote/loom.toml",
+            format!(
+                "[module]\nname='seed'\nversion='{version}'\n[dependencies.helper]\npath='helper'\nversion='{range}'\n"
+            ),
+        );
+        write(
+            root,
+            "remote/main.loom",
+            "import helper.value\npub fn value() Int {\n    helper.value()\n}\n",
+        );
+        fixture.git(&["-C", "remote", "add", "."]);
+        fixture.git(&["-C", "remote", "commit", "--quiet", "-m", version]);
+        fixture.git(&["-C", "remote", "tag", &format!("v{version}")]);
+        if older.is_empty() {
+            older = String::from_utf8(fixture.git(&["-C", "remote", "rev-parse", "HEAD"]).stdout)
+                .unwrap()
+                .trim()
+                .to_owned();
+        }
+    }
+    let app = root.join("app");
+    write(
+        root,
+        "app/loom.toml",
+        format!("[module]\nname='app'\n[dependencies.seed]\ngit='{URL}'\nversion='^1'\n"),
+    );
+    write(
+        root,
+        "app/main.loom",
+        "import seed.value\nfn main() {\n    assert value() == 31\n}\n",
+    );
+    success(&fixture.resolve(&app, false));
+    success(&fixture.command("run", &app).output().unwrap());
+    let lock_path = app.join("loom.lock");
+    let lock = fs::read_to_string(&lock_path).unwrap();
+    assert!(lock.contains(&older));
+    write(
+        root,
+        "app/loom.toml",
+        format!(
+            "[module]\nname='app'\n[dependencies.seed]\ngit='{URL}'\nversion='^2'\nscope='graph'\n[dependencies.left]\npath='../left'\n"
+        ),
+    );
+    write(
+        root,
+        "left/loom.toml",
+        format!("[module]\nname='left'\n[dependencies.seed]\ngit='{URL}'\nversion='^1'\n"),
+    );
+    write(
+        root,
+        "left/main.loom",
+        "import seed.value\npub fn answer() Int {\n    value()\n}\n",
+    );
+    write(
+        root,
+        "app/main.loom",
+        "import left.answer\nfn main() {\n    assert answer() == 31\n}\n",
+    );
+    rejected(&fixture.resolve(&app, false), "no SemVer tag satisfies");
+    assert_eq!(fs::read_to_string(&lock_path).unwrap(), lock);
+}
+
+#[test]
+fn authenticated_semver_discovery_is_scoped_and_redacts_untrusted_advertisements() {
+    let fixture = Fixture::new();
+    let root = fixture.root();
+    let revision = fixture.publish_version("1.0.0", 17, true);
+    let server = git_https::Server::start(root, &fixture.git);
+    let url = &server.url;
+    let app = root.join("app");
+    write(
+        root,
+        "app/loom.toml",
+        format!("[module]\nname='app'\n[dependencies.seed]\ngit='{url}'\nversion='^1'\n"),
+    );
+    write(
+        root,
+        "app/main.loom",
+        "import seed.value\nfn main() {\n    assert value() == 17\n}\n",
+    );
+    write(root, "requires-auth", "private tags and objects");
+    rejected(
+        &fixture.resolve(&app, false),
+        "remote output was suppressed",
+    );
+    assert!(!app.join("loom.lock").exists());
+    success(&fixture.resolve_with_credentials(&app, false, true));
+    assert!(
+        server
+            .authenticated
+            .load(std::sync::atomic::Ordering::Relaxed)
+            >= 2
+    );
+    let lock = fs::read(app.join("loom.lock")).unwrap();
+    assert!(String::from_utf8_lossy(&lock).contains(&revision));
+    assert!(!String::from_utf8_lossy(&lock).contains(SENTINEL));
+    let credentials = fs::read_to_string(root.join("credential.log")).unwrap();
+    assert_eq!(credentials.matches("protocol=https").count(), 2);
+    write(root, "offline", "build from the locked commit only");
+    success(&fixture.command("run", &app).output().unwrap());
+    fs::remove_file(root.join("offline")).unwrap();
+    write(
+        root,
+        "tag-advertisement",
+        format!("{SENTINEL}\n{AUTH_HEADER}\n"),
+    );
+    rejected(
+        &fixture.resolve_with_credentials(&app, false, true),
+        "remote output was suppressed",
+    );
+    assert_eq!(fs::read(app.join("loom.lock")).unwrap(), lock);
 }

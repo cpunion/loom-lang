@@ -1,0 +1,387 @@
+import std.result.Result
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.text.byte
+import std.text.slice
+import std.text.length
+
+pub record Version {
+    major Text
+    minor Text
+    patch Text
+    prerelease Text
+    metadata Text
+}
+
+enum Operator {
+    Caret
+    Tilde
+    Exact
+    Greater
+    GreaterEqual
+    Less
+    LessEqual
+    Prefix
+}
+
+record Comparator {
+    operator Operator
+    version Version
+    precision Int
+}
+
+pub record Requirement {
+    comparators List[Comparator]
+}
+
+fn pieces(text Text, separator Int) List[Text] {
+    let values = new[Text]()
+    var offset = 0
+    var start = 0
+    while offset < length(text) {
+        if byte(text, offset) == separator {
+            push(values, slice(text, start, offset))
+            start = offset + 1
+        }
+        offset = offset + 1
+    }
+    push(values, slice(text, start, offset))
+    values
+}
+
+fn digits(text Text) Bool {
+    if text == "" {
+        return false
+    }
+    var index = 0
+    while index < length(text) {
+        if byte(text, index) < 48 || byte(text, index) > 57 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn number(text Text) Bool {
+    digits(text) && (length(text) == 1 || byte(text, 0) != 48)
+}
+
+fn identifiers(text Text, numeric Bool) Bool {
+    let values = pieces(text, 46)
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        if value == "" || (numeric && digits(value) && !number(value)) {
+            return false
+        }
+        var offset = 0
+        while offset < length(value) {
+            let current = byte(value, offset)
+            if !((current >= 48 && current <= 57) || (current >= 65 && current <= 90) ||
+                (current >= 97 && current <= 122) || current == 45) {
+                return false
+            }
+            offset = offset + 1
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn version_parts(text Text, partial Bool) Result[(Version, Int), Text] {
+    var core_end = 0
+    while core_end < length(text) && byte(text, core_end) != 45 && byte(text, core_end) != 43 {
+        core_end = core_end + 1
+    }
+    let core = pieces(slice(text, 0, core_end), 46)
+    let precision = length(core)
+    if precision > 3 || (!partial && precision != 3) {
+        return Result.Err("expected a SemVer version")
+    }
+    var index = 0
+    while index < precision {
+        if !number(get(core, index)) {
+            return Result.Err("invalid SemVer numeric component")
+        }
+        index = index + 1
+    }
+    var offset = core_end
+    var prerelease = ""
+    var metadata = ""
+    if offset < length(text) && byte(text, offset) == 45 {
+        let start = offset + 1
+        offset = start
+        while offset < length(text) && byte(text, offset) != 43 {
+            offset = offset + 1
+        }
+        prerelease = slice(text, start, offset)
+        if precision != 3 || !identifiers(prerelease, true) {
+            return Result.Err("invalid SemVer prerelease")
+        }
+    }
+    if offset < length(text) {
+        metadata = slice(text, offset + 1, length(text))
+        if precision != 3 || !identifiers(metadata, false) {
+            return Result.Err("invalid SemVer build metadata")
+        }
+    }
+    Result.Ok((Version {
+                major = get(core, 0)
+                minor = if precision > 1 {
+                    get(core, 1)
+                } else {
+                    "0"
+                }
+                patch = if precision > 2 {
+                    get(core, 2)
+                } else {
+                    "0"
+                }
+                prerelease = prerelease
+                metadata = metadata
+            }, precision))
+}
+
+pub fn parse_version(text Text) Result[Version, Text] {
+    let version, ignored_count = version_parts(text, false)?
+    Result.Ok(version)
+}
+
+// Numeric components are kept as decimal strings: SemVer has no integer-size
+// limit, and comparing their lengths avoids overflow even on hostile tags.
+fn lexical(left Text, right Text) Int {
+    var index = 0
+    while index < length(left) && index < length(right) {
+        if byte(left, index) < byte(right, index) {
+            return -1
+        }
+        if byte(left, index) > byte(right, index) {
+            return 1
+        }
+        index = index + 1
+    }
+    if length(left) < length(right) {
+        return -1
+    }
+    if length(left) > length(right) {
+        return 1
+    }
+    0
+}
+
+fn numeric(left Text, right Text) Int {
+    if length(left) < length(right) {
+        return -1
+    }
+    if length(left) > length(right) {
+        return 1
+    }
+    lexical(left, right)
+}
+
+pub fn compare(left Version, right Version) Int {
+    let major = numeric(left.major, right.major)
+    if major != 0 {
+        return major
+    }
+    let minor = numeric(left.minor, right.minor)
+    if minor != 0 {
+        return minor
+    }
+    let patch = numeric(left.patch, right.patch)
+    if patch != 0 {
+        return patch
+    }
+    if left.prerelease == right.prerelease {
+        return 0
+    }
+    if left.prerelease == "" {
+        return 1
+    }
+    if right.prerelease == "" {
+        return -1
+    }
+    let a = pieces(left.prerelease, 46)
+    let b = pieces(right.prerelease, 46)
+    var index = 0
+    while index < length(a) && index < length(b) {
+        let x = get(a, index)
+        let y = get(b, index)
+        let x_number = digits(x)
+        let y_number = digits(y)
+        if x_number && !y_number {
+            return -1
+        }
+        if !x_number && y_number {
+            return 1
+        }
+        let order = if x_number {
+            numeric(x, y)
+        } else {
+            lexical(x, y)
+        }
+        if order != 0 {
+            return order
+        }
+        index = index + 1
+    }
+    if length(a) < length(b) {
+        return -1
+    }
+    if length(a) > length(b) {
+        return 1
+    }
+    0
+}
+
+fn trim(text Text) Text {
+    var start = 0
+    var end = length(text)
+    while start < end && (byte(text, start) == 32 || byte(text, start) == 9) {
+        start = start + 1
+    }
+    while end > start && (byte(text, end - 1) == 32 || byte(text, end - 1) == 9) {
+        end = end - 1
+    }
+    slice(text, start, end)
+}
+
+fn comparator(text Text) Result[Comparator, Text] {
+    if text == "" {
+        return Result.Err("empty SemVer comparator")
+    }
+    var operator = Operator.Caret
+    var offset = 0
+    let first = byte(text, 0)
+    if first == 94 {
+        offset = 1
+    }
+    if first == 126 {
+        operator = Operator.Tilde
+        offset = 1
+    }
+    if first == 61 {
+        operator = Operator.Exact
+        offset = 1
+    }
+    if first == 62 || first == 60 {
+        offset = 1
+        let equal = length(text) > 1 && byte(text, 1) == 61
+        if equal {
+            offset = 2
+        }
+        operator = if first == 62 {
+            if equal {
+                Operator.GreaterEqual
+            } else {
+                Operator.Greater
+            }
+        } else {
+            if equal {
+                Operator.LessEqual
+            } else {
+                Operator.Less
+            }
+        }
+    }
+    let operand = trim(slice(text, offset, length(text)))
+    let fields = pieces(operand, 46)
+    let precision = length(fields)
+    if operand == "*" || operand == "x" || operand == "X" {
+        if offset != 0 {
+            return Result.Err("wildcards cannot have a SemVer operator")
+        }
+        let version, ignored_count = version_parts("0", true)?
+        return Result.Ok(Comparator {
+                operator = Operator.Prefix
+                version = version
+                precision = 0
+            })
+    }
+    let last = get(fields, precision - 1)
+    if last == "*" || last == "x" || last == "X" {
+        if offset != 0 || precision < 2 || precision > 3 {
+            return Result.Err("invalid SemVer wildcard")
+        }
+        let prefix = slice(operand, 0, length(operand) - length(last) - 1)
+        let version, count = version_parts(prefix, true)?
+        return Result.Ok(Comparator {
+                operator = Operator.Prefix
+                version = version
+                precision = count
+            })
+    }
+    let version, count = version_parts(operand, true)?
+    if operator != Operator.Caret && operator != Operator.Tilde && count != 3 {
+        return Result.Err("ordered and exact SemVer comparators require major.minor.patch")
+    }
+    Result.Ok(Comparator {
+            operator = operator
+            version = version
+            precision = count
+        })
+}
+
+// A bare version is a caret requirement. Commas intersect comparators; there
+// are no implicit OR, hyphen ranges or arbitrary tag/branch selectors.
+pub fn requirement(text Text) Result[Requirement, Text] {
+    let values = pieces(text, 44)
+    let comparators = new[Comparator]()
+    var index = 0
+    while index < length(values) {
+        push(comparators, comparator(trim(get(values, index)))?)
+        index = index + 1
+    }
+    Result.Ok(Requirement {
+            comparators = comparators
+        })
+}
+
+fn accepts(item Comparator, value Version) Bool {
+    let bound = item.version
+    let order = compare(value, bound)
+    match item.operator {
+        Operator.Exact => order == 0,
+        Operator.Greater => order > 0,
+        Operator.GreaterEqual => order >= 0,
+        Operator.Less => order < 0,
+        Operator.LessEqual => order <= 0,
+        Operator.Prefix => item.precision == 0 || (value.major == bound.major &&
+            (item.precision == 1 || value.minor == bound.minor)),
+        Operator.Tilde => order >= 0 && value.major == bound.major &&
+        (item.precision == 1 || value.minor == bound.minor),
+        Operator.Caret => {
+            if order < 0 || value.major != bound.major {
+                return false
+            }
+            if bound.major != "0" || item.precision == 1 {
+                return true
+            }
+            if value.minor != bound.minor {
+                return false
+            }
+            bound.minor != "0" || item.precision == 2 || value.patch == bound.patch
+        }
+    }
+}
+
+pub fn matches(requirement Requirement, value Version) Bool {
+    var prerelease = value.prerelease == ""
+    var index = 0
+    while index < length(requirement.comparators) {
+        let item = get(requirement.comparators, index)
+        if !accepts(item, value) {
+            return false
+        }
+        let bound = item.version
+        if bound.prerelease != "" && value.major == bound.major && value.minor == bound.minor &&
+        value.patch == bound.patch {
+            prerelease = true
+        }
+        index = index + 1
+    }
+    prerelease
+}

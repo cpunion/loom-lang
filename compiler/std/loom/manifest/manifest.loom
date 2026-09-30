@@ -13,10 +13,12 @@ import std.text.slice
 import std.text.concat
 import std.text.from_codepoint
 import std.text.starts_with
+import std.semver.parse_version
+import std.semver.requirement
 
-// Paths remain relative to the declaring manifest. Git sources pin a full
-// commit object ID and repository-relative module directory (empty for root).
-// Project loading resolves sources and verifies module names.
+// Paths remain relative to the declaring manifest. Git carries a URL, full
+// commit ID (empty when Dependency.version selects tags), and module directory.
+// Project loading resolves sources and checks module names/version requirements.
 pub enum DependencySource {
     Path(Text)
     Git(Text, Text, Text)
@@ -31,6 +33,7 @@ pub record Dependency {
     name Text
     source DependencySource
     scope DependencyScope
+    version Text
 }
 
 pub record Module {
@@ -261,6 +264,10 @@ pub fn valid_git(url Text, rev Text) Bool {
     git_url(url) && git_revision(rev)
 }
 
+pub fn valid_git_url(url Text) Bool {
+    git_url(url)
+}
+
 // Empty selects the repository root. Other selectors retain exact spelling:
 // no absolute paths, dot segments, alternate separators or control bytes.
 pub fn valid_git_subdir(value Text) Bool {
@@ -377,7 +384,7 @@ fn quoted(value Text) Result[Text, Text] {
 }
 
 // This subset is explicit: module/dependency tables, bare keys, integers and
-// single-line quoted strings. Dependencies use path or HTTPS Git plus full rev.
+// single-line quoted strings. Git selects a full rev or a SemVer requirement.
 // Other TOML forms and dependency sources reject without echoing input values.
 pub fn parse(text Text) Result[Module, Text] {
     var offset = 0
@@ -428,6 +435,7 @@ pub fn parse(text Text) Result[Module, Text] {
                                 name = key
                                 source = DependencySource.Path("")
                                 scope = DependencyScope.Local
+                                version = ""
                             })
                     }
                 }
@@ -474,11 +482,11 @@ pub fn parse(text Text) Result[Module, Text] {
                     }
                 } else {
                     if section == "dependencies" {
-                        return Result.Err("dependencies require [dependencies.<name>] with path or git and rev fields")
+                        return Result.Err("dependencies require [dependencies.<name>] with path or Git fields")
                     }
                     if dependency >= 0 {
-                        if key != "path" && key != "git" && key != "rev" && key != "subdir" && key != "scope" {
-                            return Result.Err("unsupported dependency field; expected path, or git and rev, with optional subdir/scope")
+                        if key != "path" && key != "git" && key != "rev" && key != "subdir" && key != "scope" && key != "version" {
+                            return Result.Err("unsupported dependency field; expected path or git, rev/version, subdir and scope")
                         }
                         if contains(seen, concat(section, ".path")) &&
                         (contains(seen, concat(section, ".git")) || contains(seen, concat(section, ".rev")) ||
@@ -498,7 +506,7 @@ pub fn parse(text Text) Result[Module, Text] {
                                 DependencyScope.Local
                             }
                         }
-                        let source = if key == "scope" {
+                        let source = if key == "scope" || key == "version" {
                             current.source
                         } else if key == "path" {
                             DependencySource.Path(decoded)
@@ -532,6 +540,11 @@ pub fn parse(text Text) Result[Module, Text] {
                                 name = current.name
                                 source = source
                                 scope = scope
+                                version = if key == "version" {
+                                    decoded
+                                } else {
+                                    current.version
+                                }
                             })
                     } else {
                         if key == "name" {
@@ -554,11 +567,21 @@ pub fn parse(text Text) Result[Module, Text] {
     if !segment(name) || name == "std" {
         return Result.Err("module.name must be a lowercase package identifier other than std")
     }
+    if contains(seen, "module.version") {
+        discard std.semver.parse_version(version)?
+    }
     var index = 0
     while index < length(dependencies) {
         let current = get(dependencies, index)
         if current.name == name {
             return Result.Err("a dependency cannot shadow its own module name")
+        }
+        if current.version != "" {
+            discard std.semver.requirement(current.version)?
+        } else {
+            if contains(seen, concat("dependencies.", concat(current.name, ".version"))) {
+                return Result.Err("dependency version requirement cannot be empty")
+            }
         }
         match current.source {
             DependencySource.Path(path) => {
@@ -570,7 +593,11 @@ pub fn parse(text Text) Result[Module, Text] {
                 if !git_url(url) {
                     return Result.Err("git dependency requires a supported HTTPS repository URL")
                 }
-                if !git_revision(rev) {
+                if contains(seen, concat("dependencies.", concat(current.name, ".rev"))) &&
+                contains(seen, concat("dependencies.", concat(current.name, ".version"))) {
+                    return Result.Err("Git dependency must select either rev or version, not both")
+                }
+                if current.version == "" && !git_revision(rev) {
                     return Result.Err("git dependency rev must be a full 40 or 64 character lowercase hexadecimal commit ID")
                 }
                 if !valid_git_subdir(subdir) {

@@ -352,8 +352,9 @@ fn execute(args List[Text]) Result[Text, Text] {
 
 fn execute_package(selected Options) Result[Text, Text] {
     if selected.command == "resolve" {
-        discard resolve(selected.path, selected.std_root, selected.tests, selected.git_tool, selected.credential_tool)?
-        return Result.Ok("resolved package dependencies\n")
+        let report = resolve(selected.path, selected.std_root, selected.tests, selected.git_tool, selected.credential_tool)?
+        return Result.Ok(concat("resolved ", concat(to_text(report.dependencies), concat(" Git edges into ",
+                        concat(to_text(report.instances), concat(" source instances; ", concat(to_text(report.changed), " changed edges\n")))))))
     }
     let prepared = prepared(selected)?
     if selected.command == "check" {

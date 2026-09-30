@@ -26,7 +26,7 @@ that location; source blobs are read by their tree object IDs.
 
 Import-bearing packages require an explicit offline project context. This must
 be the exact base package in a named module with `loom.toml` and a regular
-`loom.lock` (an empty lock is `loom-lock 2` followed by a newline). The tool
+`loom.lock` (an empty lock is `loom-lock 3` followed by a newline). The tool
 loads the production and test import closures without resolving or fetching
 dependencies, checks both the merged and baseline packages against them, and
 includes selected source bytes, module manifests, lock bytes, resolved import

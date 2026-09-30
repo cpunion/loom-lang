@@ -230,8 +230,13 @@ Real loopback HTTPS Git tests cover authenticated fetching, helper failures and
 offline cache reuse. Root dependency entries with `scope = "graph"` explicitly
 unify matching declared edges on one path/Git source; transitive declarations
 cannot select another application's graph policy or grant extra imports.
-Effective Git choices are locked per importing edge. Version-range resolution
-and compatible-version normalization remain open.
+Effective Git choices are locked per importing edge. Explicit SemVer resolution
+discovers lightweight/annotated tags, checks module versions and both original
+and graph-selected requirements, and searches candidate-dependent import closures.
+Overlapping ranges prefer a shared source instance; disjoint ranges retain distinct
+nominal types. Locks pin requests, labels, commits and verified content. Ordinary
+commands remain offline. `std.semver` owns parsing/range policy; no runtime or
+host-language resolver is added. Conflicting-graph search can be combinatorial.
 
 Opt-in trusted-local object reuse hashes checked input/backend identity and
 always relinks. Frontend reuse binds compiler bytes, loaded sources, modes,

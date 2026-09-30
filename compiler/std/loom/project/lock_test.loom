@@ -6,6 +6,8 @@ fn lock_fixture() LockedSource {
         rev = "0123456789012345678901234567890123456789"
         tree = hashed("snapshot")
         subdir = ""
+        request = hashed("request")
+        version = ""
     }
 }
 
@@ -20,6 +22,8 @@ test fn lock_roundtrip_is_deterministic_and_source_checked() {
         rev = entry.rev
         tree = entry.tree
         subdir = "packages/another"
+        request = entry.request
+        version = ""
     }
     push(locks, other)
     let decoded = match parse_lock(encode_lock(locks)) {
@@ -37,12 +41,12 @@ test fn lock_roundtrip_is_deterministic_and_source_checked() {
     let invalid = new[Text]()
     push(invalid, "")
     push(invalid, "loom-lock 1\n")
-    push(invalid, "loom-lock 2")
+    push(invalid, "loom-lock 3")
     push(invalid, concat(encode_lock(locks), "\n"))
     push(locks, entry)
     // Manually repeat the encoded line: encoding deliberately canonicalizes.
     let line = get(parts(encode_lock(decoded), 10), 1)
-    push(invalid, concat("loom-lock 2\n", concat(line, concat("\n", concat(line, "\n")))))
+    push(invalid, concat("loom-lock 3\n", concat(line, concat("\n", concat(line, "\n")))))
     set(locks, 2, LockedSource {
             owner = entry.owner
             name = "third"
@@ -50,6 +54,8 @@ test fn lock_roundtrip_is_deterministic_and_source_checked() {
             rev = entry.rev
             tree = hashed("different bytes")
             subdir = ""
+            request = entry.request
+            version = ""
         })
     push(invalid, encode_lock(locks))
     set(locks, 2, LockedSource {
@@ -59,6 +65,8 @@ test fn lock_roundtrip_is_deterministic_and_source_checked() {
             rev = entry.rev
             tree = entry.tree
             subdir = ""
+            request = entry.request
+            version = ""
         })
     push(invalid, encode_lock(locks))
     set(locks, 2, LockedSource {
@@ -68,6 +76,8 @@ test fn lock_roundtrip_is_deterministic_and_source_checked() {
             rev = entry.rev
             tree = entry.tree
             subdir = "../escape"
+            request = entry.request
+            version = ""
         })
     push(invalid, encode_lock(locks))
     var index = 0
@@ -104,6 +114,7 @@ test fn lock_owners_are_location_independent_and_git_paths_are_contained() {
         credential_tool = ""
         locks = new[LockedSource]()
         snapshots = new[Snapshot]()
+        plan = empty_plan()
     }
     let second = Resolution {
         root = "/two/app"
@@ -111,6 +122,7 @@ test fn lock_owners_are_location_independent_and_git_paths_are_contained() {
         credential_tool = ""
         locks = new[LockedSource]()
         snapshots = new[Snapshot]()
+        plan = empty_plan()
     }
     assert match source_owner(first, "/one/codec") {
         Result.Ok(a) => match source_owner(second, "/two/codec") {
