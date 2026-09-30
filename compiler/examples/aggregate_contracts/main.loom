@@ -25,7 +25,7 @@ ensures result.second == value.second
 
 fn forward(value Pair, first Int) Pair
 ensures result.first == first
-ensures result.second == old(value.second)
+ensures result.second == old(value).second
 {
     replace(value, first)
 }
@@ -64,7 +64,7 @@ ensures result.active == value.active
 }
 
 fn tuple(value (Int, Bool)) (Int, Bool)
-ensures result.0 == old(value.0)
+ensures result.0 == old(value).0
 ensures result.1 == value.1
 {
     value

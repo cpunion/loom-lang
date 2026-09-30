@@ -2012,9 +2012,15 @@ summary does not inherit stronger facts from its implementation. Shared fields
 can pass through an aggregate but their contents remain opaque; this is not a
 shared-state invariant or alias-mutation proof. Predicate helpers still evaluate
 every argument and initializer, including an unused field that could overflow.
-`old(value.count)` and `old(value.0)` can denote immutable scalar paths through
-entry record/tuple parameters; shared-data snapshots and arbitrary entry
-expressions remain unsupported.
+`old` denotes immutable entry expressions: parameter paths, immutable aggregates,
+arithmetic and finite pure helpers can compose (`old(value).count`,
+`old(identity(value)).0`). Every operand must be entry-derived and immutable;
+an immutable field can be selected beside an unobserved shared sibling, but
+`old` of a whole aggregate containing shared mutable storage rejects. Helper
+arguments and predicate arithmetic still require definedness, even when a
+helper ignores an argument. No entry computation or snapshot allocation enters
+native code. Callback parameters, result/body-local references and shared-data
+snapshots remain unsupported; this is not general heap-entry reasoning.
 See the [aggregate contract example](examples/aggregate_contracts/main.loom).
 
 Required postconditions reuse the integer difference propagation used at

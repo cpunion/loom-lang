@@ -466,9 +466,9 @@ fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
     }
     Result.Err(error(context, node, "contracts require scalar predicates and pure helper calls"))
 }
-// Parameters cannot be rebound. A scalar parameter or scalar field reached
-// through immutable record values therefore has the same logical entry value
-// at every normal return. Shared containers are intentionally not snapshots.
+// Parameters cannot be rebound. Immutable entry expressions denote the same
+// value at normal return; their helpers and definedness still need the ordinary
+// mandatory proof. This does not snapshot shared mutable storage.
 fn old_parameter(context Context, node Node) Bool {
     let parameters = group(symbol(context.env, context.signature.symbol).node, NodeKind.Parameters)
     let root = slice(node.value, 0, first_dot(node.value))
@@ -487,6 +487,9 @@ fn old_place(context Context, node Node) Bool {
 }
 
 fn old_inline_path(context Context, value Expr) Bool {
+    if value.kind == ExprKind.Coerce {
+        return old_inline_path(context, get(value.children, 0))
+    }
     if value.kind == ExprKind.Local {
         return value.index >= 0 && value.index < length(context.locals) &&
             !get(context.locals, value.index).mutable
@@ -497,6 +500,40 @@ fn old_inline_path(context Context, value Expr) Bool {
         return (kind == TypeKind.Record || kind == TypeKind.Tuple) && old_inline_path(context, receiver)
     }
     false
+}
+
+fn old_entry_expression(context Context, node Node, depth Int) Result[Bool, Failure] {
+    if depth >= 64 {
+        return Result.Err(error(context, node, "old entry expression nesting limit exceeded"))
+    }
+    if old_place(context, node) {
+        let value = expr(context, node, -1)?
+        return Result.Ok(old_inline_path(context, value) && inline_constraint_base(context.env, value.ty, 0))
+    }
+    if node.kind == NodeKind.Integer || node.kind == NodeKind.Float ||
+    node.kind == NodeKind.Bool || node.kind == NodeKind.Text {
+        return Result.Ok(true)
+    }
+    let call = node.kind == NodeKind.Call
+    if call && lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 {
+        return Result.Ok(false)
+    }
+    if !call && node.kind != NodeKind.Unary && node.kind != NodeKind.Binary &&
+    node.kind != NodeKind.Tuple && node.kind != NodeKind.Select && node.kind != NodeKind.Construct {
+        return Result.Ok(false)
+    }
+    let operands = if call { child(node, 1).children } else { node.children }
+    var index = if node.kind == NodeKind.Construct { 1 } else { 0 }
+    while index < length(operands) {
+        let operand = get(operands, index)
+        let input = if node.kind == NodeKind.Construct { child(operand, 0) } else { operand }
+        if !old_entry_expression(context, input, depth + 1)? {
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    let value = expr(context, node, -1)?
+    Result.Ok(inline_constraint_base(context.env, value.ty, 0))
 }
 
 fn has_old(node Node) Bool {
@@ -513,13 +550,8 @@ fn old_contract(context Context, node Node, kind NodeKind) Result[Node, Failure]
     if node.kind == NodeKind.Old {
         if kind != NodeKind.Ensures { return Result.Err(error(context, node, "old is only valid in ensures")) }
         let argument = child(node, 0)
-        if !old_place(context, argument) {
-            return Result.Err(error(context, node, "old requires a parameter or scalar record field"))
-        }
-        let value = expr(context, argument, -1)?
-        let ty = base_type(context.env, value.ty)
-        if (ty != 1 && ty != 2) || !old_inline_path(context, value) {
-            return Result.Err(error(context, node, "old requires an immutable inline scalar parameter path; shared data has no entry snapshot"))
+        if !old_entry_expression(context, argument, 0)? {
+            return Result.Err(error(context, node, "old requires an immutable entry expression; shared data has no entry snapshot"))
         }
         return Result.Ok(argument)
     }
