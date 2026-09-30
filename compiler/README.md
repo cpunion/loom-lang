@@ -1003,6 +1003,14 @@ arities are not verified. Instances retain the original nominal declaration;
 no runtime pack or per-arity nominal type is introduced. See the
 [native data-pack example](examples/data_packs/main.loom).
 
+Pack elements can also project associated types: `(Ts.Item...)` and
+`(Ts.Concept.Family[Ts]...)` expand with each receiver and its family arguments.
+The pack must declare the required concepts; ordinary ambiguity, visibility and
+family-domain checks still apply. Associated results do not identify their
+receivers: infer `Ts` from another field/parameter, or provide explicit type
+arguments. See the [associated pack example](examples/data_packs/associated.loom)
+for compile-time evaluation, enum payloads and shared data across suspension.
+
 Records also support `let Packet { value = item, .. } = packet` and the same
 form with `var`. Named fields can reorder and nest record/tuple bindings; generic
 arguments follow the initializer type. List every field or use `..` explicitly,

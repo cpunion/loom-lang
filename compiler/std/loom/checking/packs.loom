@@ -26,8 +26,13 @@ fn pack_parameter(node Node) Int {
     -1
 }
 
+fn pack_root(node Node, name Text) Bool {
+    (node.kind == NodeKind.Type || node.kind == NodeKind.Name) &&
+    (node.value == name || (first_dot(node.value) == length(name) && std.text.starts_with(node.value, name)))
+}
+
 fn mentions_pack(node Node, name Text) Bool {
-    if (node.kind == NodeKind.Type || node.kind == NodeKind.Name) && node.value == name {
+    if pack_root(node, name) {
         return true
     }
     var index = 0
@@ -196,11 +201,14 @@ fn expand_pack_type(env Environment, owner Int, node Node, pack Text, arity Int,
         return Result.Err(failure(env, owner, node, "type pack expansion nesting limit exceeded"))
     }
     let type_context = types || node.kind == NodeKind.Type || node.kind == NodeKind.TupleType || node.kind == NodeKind.FunctionType || node.kind == NodeKind.TypeArguments
-    if type_context && (node.kind == NodeKind.Type || node.kind == NodeKind.Name) && node.value == pack {
+    var value = node.value
+    if type_context && pack_root(node, pack) {
         if element < 0 {
             return Result.Err(failure(env, owner, node, "expand a type pack with ...; it is not one type"))
         }
-        return Result.Ok(pack_node(node, node.kind, pack_name(pack, element), node.children))
+        // Preserve a projection's concept qualifier and expand its family
+        // arguments below, e.g. Ts.C.Family[Ts] becomes $Ts0.C.Family[$Ts0].
+        value = concat(pack_name(pack, element), slice(node.value, length(pack), length(node.value)))
     }
     let children = new[Node]()
     var index = 0
@@ -222,7 +230,7 @@ fn expand_pack_type(env Environment, owner Int, node Node, pack Text, arity Int,
         }
         index = index + 1
     }
-    Result.Ok(pack_node(node, node.kind, node.value, children))
+    Result.Ok(pack_node(node, node.kind, value, children))
 }
 
 fn pack_contract(node Node, name Text) Bool {

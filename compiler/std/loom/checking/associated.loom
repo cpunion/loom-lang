@@ -264,7 +264,7 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
     if std.text.starts_with(first, "$type#") {
         receiver = resolve_bound(env, owner, pack_node(node, NodeKind.Type, first, new[Node]()), arguments, obligations, depth + 1)?
     }
-    let parameters = type_parameters(env, owner)
+    let parameters = expanded_parameters(env, owner, length(arguments))
     var index = 0
     while index < length(parameters) {
         if get(parameters, index).value == first { receiver = get(arguments, index + parameter_offset(env, owner)) }

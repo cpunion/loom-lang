@@ -98,7 +98,9 @@ ordinary typing. Heterogeneous tuple packs are not runtime-sized Lists.
 Record/enum packs infer arity from structural initializers, preserve nominal
 identity and check selected arities with abstract elements. Recursive data,
 Task payloads, compile-time values and incremental restoration use the same
-typed aggregate path. Method/implementation packs, multiple packs and universal variadic postcondition proofs
+typed aggregate path. Elementwise associated types/families retain declared
+bounds and do not infer receiver types from projected results.
+Method/implementation packs, multiple packs and universal variadic postcondition proofs
 remain unsupported. Compile-time execution is not proof by sampling.
 
 Typed expression macros receive inferred schemas and return checked hygienic
