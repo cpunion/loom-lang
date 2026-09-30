@@ -1,0 +1,178 @@
+import std.list.new
+import std.list.push
+import std.list.set
+import std.list.transfer.append
+import std.text.starts_with
+import std.task.first_ok
+import std.task.Outcome
+import std.task.deadline.after_ns
+import std.time.sleep_ns
+
+intrinsic fn fault_text(message Text)
+
+pub record ConnectOptions {
+    attempt_delay_ns Int
+    timeout_ns Int
+    parallelism Int
+}
+
+pub fn connect_options() ConnectOptions {
+    ConnectOptions {
+        attempt_delay_ns = 250000000
+        timeout_ns = 30000000000
+        parallelism = 2
+    }
+}
+
+fn valid_options(options ConnectOptions) Bool {
+    options.attempt_delay_ns >= 0 && options.attempt_delay_ns <= 9223372036854775807 / 16 &&
+    options.parallelism >= 1 && options.parallelism <= 16
+}
+
+// Retain resolver preference and each family's internal order while giving the
+// other family an early slot. The owned snapshot is unaffected by caller edits.
+fn dial_addresses(addresses List[Text]) List[Text] {
+    let first = new[Text]()
+    let second = new[Text]()
+    let ordered = new[Text]()
+    if length(addresses) == 0 {
+        return ordered
+    }
+    let preferred_v6 = starts_with(get(addresses, 0), "[")
+    var index = 0
+    while index < length(addresses) {
+        let address = get(addresses, index)
+        if starts_with(address, "[") == preferred_v6 {
+            push(first, address)
+        } else {
+            push(second, address)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(first) || index < length(second) {
+        if index < length(first) {
+            push(ordered, get(first, index))
+        }
+        if index < length(second) {
+            push(ordered, get(second, index))
+        }
+        index = index + 1
+    }
+    ordered
+}
+
+async fn dial_worker(addresses List[Text], opened List[Stream], next List[Int], delay Int) Result[Int, TcpError] {
+    if get(next, 0) >= length(addresses) {
+        return Result.Err(TcpError.Connect)
+    }
+    if delay > 0 {
+        sleep_ns(delay).await
+    }
+    while get(next, 0) < length(addresses) {
+        let index = get(next, 0)
+        std.list.set(next, 0, index + 1)
+        let token = socket_connect(get(addresses, index))
+        if token >= 0 {
+            // Register ownership before the first suspension, not when a
+            // successful child result is eventually extracted by its parent.
+            let slot = length(opened)
+            push(opened, Stream {
+                    state = State {
+                        token = token
+                    }
+                })
+            if connected(token).await {
+                return Result.Ok(slot)
+            }
+            discard socket_close(token)
+        }
+    }
+    Result.Err(TcpError.Connect)
+}
+
+async fn dial_race(addresses List[Text], options ConnectOptions, opened List[Stream]) Result[Int, TcpError] {
+    let ordered = dial_addresses(addresses)
+    let count = if length(ordered) < options.parallelism {
+        length(ordered)
+    } else {
+        options.parallelism
+    }
+    var workers = new[Task[Result[Int, TcpError]]]()
+    let next = [0]
+    var index = 0
+    while index < count {
+        workers = append(workers, dial_worker(ordered, opened, next, index * options.attempt_delay_ns))
+        index = index + 1
+    }
+    match first_ok(workers).await {
+        Result.Ok(index) => Result.Ok(index)
+        Result.Err(_) => Result.Err(TcpError.Connect)
+    }
+}
+
+async fn dial_host(host Text, port Int, options ConnectOptions, opened List[Stream]) Result[Int, TcpError] {
+    let addresses = match std.net.dns.resolve(host, port).await {
+        Result.Ok(values) => values
+        Result.Err(_) => {
+            return Result.Err(TcpError.Resolve)
+        }
+    }
+    dial_race(addresses, options, opened).await
+}
+
+fn close_dialed(opened List[Stream], retained Int) {
+    var index = 0
+    while index < length(opened) {
+        if index != retained {
+            discard close_stream(get(opened, index))
+        }
+        index = index + 1
+    }
+}
+
+fn dial_outcome(value Outcome[Result[Int, TcpError]]) Result[Int, TcpError] {
+    match value {
+        Outcome.Completed(value) => value
+        Outcome.Cancelled => Result.Err(TcpError.Timeout)
+        Outcome.Faulted(error) => {
+            // Do not turn programming/cleanup faults into connection errors.
+            fault_text(error.message)
+        }
+    }
+}
+
+// Race numeric endpoints with bounded concurrency. The deadline requests
+// cancellation of all attempts. Losers (including already-completed sockets) close
+// before the winning stream leaves this task. Cancellation has the same drain.
+pub async fn connect_any(addresses List[Text], options ConnectOptions) Result[Stream, TcpError] {
+    let duration = options.timeout_ns
+    if !valid_options(options) || duration < 0 {
+        return Result.Err(TcpError.Option)
+    }
+    let opened = new[Stream]()
+    var retained = -1
+    defer {
+        close_dialed(opened, retained)
+    }
+    let index = dial_outcome(after_ns(dial_race(addresses, options, opened), duration).await)?
+    retained = index
+    Result.Ok(get(opened, index))
+}
+
+// The total deadline also covers DNS. A running OS lookup must finish before
+// cancellation drains; timeout is a cancellation deadline, not a hard return bound.
+pub async fn connect(host Text, port Int, options ConnectOptions) Result[Stream, TcpError] {
+    let duration = options.timeout_ns
+    if !valid_options(options) || duration < 0 {
+        return Result.Err(TcpError.Option)
+    }
+    let opened = new[Stream]()
+    var retained = -1
+    defer {
+        close_dialed(opened, retained)
+    }
+    let index = dial_outcome(after_ns(dial_host(host, port, options, opened), duration).await)?
+    retained = index
+    Result.Ok(get(opened, index))
+}

@@ -18,8 +18,8 @@ async fn exchange() Result[Int, TcpError] {
     defer {
         discard close_listener(listener)
     }
-    // Resolution may return ::1 before 127.0.0.1. The source connect policy
-    // closes any failed attempt and tries the next address.
+    // Resolution may return ::1 before 127.0.0.1. Source policy interleaves
+    // address families and closes all losing attempts before returning.
     let client = connect("localhost", local_port(listener)?).await?
     defer {
         discard close_stream(client)
