@@ -2617,7 +2617,7 @@ or `Shutdown` errors, including stale tokens. See the
 [EOF-delimited request/response example](examples/tcp_half_close/README.md).
 
 `std.net.tls` provides `Connection`, `ClientOptions`, `ServerOptions`, `Trust`
-and typed errors. `connect(host, port)` verifies the host against compiled Mozilla
+and typed errors over TLS 1.2/1.3. `connect(host, port)` verifies the host against compiled Mozilla
 roots. The options overload accepts explicit PEM trust roots and ALPN; numeric
 `connect(address, name, options)` separates the TCP endpoint from the verified
 DNS/IP name. `accept(listener, options)` uses the supplied PEM chain and key.
@@ -2627,6 +2627,9 @@ the toolchain is rebuilt with a newer root package.
 Await `read`, `write_bytes` and `shutdown_write`; call `close` in `defer`.
 Reads append bytes, clean TLS EOF returns zero, and truncated TCP EOF fails.
 Write shutdown sends TLS close-notify, not TCP FIN, and preserves receiving.
+This preserves the local receive side, not a promise of more peer data; TLS 1.2
+peers may close both directions. EOF-delimited request/response protocols should
+use TLS 1.3 or an explicit application message delimiter.
 Copies share one connection: overlapping I/O returns `Busy`. Drain child Tasks
 before closing; failed/cancelled operations close the connection so partially
 sent records cannot be reused. Payload contents share TCP's alias rules above.

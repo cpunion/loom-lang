@@ -184,25 +184,30 @@ fn native_peer_distinguishes_tls_eof_truncation_and_cancelled_reads() {
     certificates(directory.path());
     let chain = fs::read(directory.path().join("cert.pem")).unwrap();
     let key = fs::read(directory.path().join("key.pem")).unwrap();
-    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        rustls_pemfile::certs(&mut chain.as_slice())
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap(),
-        rustls_pemfile::private_key(&mut key.as_slice())
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    config.alpn_protocols = vec![b"loom-echo".to_vec()];
-    let config = Arc::new(config);
     let executable = common::executable(directory.path(), "peer");
-    for level in ["0", "2"] {
+    // The loopback test covers both optimization levels with the default TLS
+    // negotiation; these interoperability profiles also exercise TLS 1.2.
+    for (level, version) in [
+        ("0", &rustls::version::TLS12),
+        ("2", &rustls::version::TLS13),
+    ] {
+        let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[version])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            rustls_pemfile::certs(&mut chain.as_slice())
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            rustls_pemfile::private_key(&mut key.as_slice())
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        config.alpn_protocols = vec![b"loom-echo".to_vec()];
+        let config = Arc::new(config);
         success(
             &common::command(&[
                 "build",
