@@ -380,13 +380,25 @@ fn emit_checked(
     // These opaque markers preserve managed snapshots through the early pass.
     if optimization != OptimizationLevel::None {
         let always_inline = Attribute::get_named_enum_kind_id("alwaysinline");
-        for id in &reachable {
-            if gc::primitive_forwarder(&program.functions[*id]) {
-                functions[*id].unwrap().add_attribute(
-                    AttributeLoc::Function,
-                    context.create_enum_attribute(always_inline, 0),
-                );
+        let mut forwarders = BTreeSet::new();
+        loop {
+            let before = forwarders.len();
+            for id in &reachable {
+                if !forwarders.contains(id)
+                    && gc::primitive_forwarder(&program.functions[*id], &forwarders)
+                {
+                    forwarders.insert(*id);
+                }
             }
+            if forwarders.len() == before {
+                break;
+            }
+        }
+        for id in forwarders {
+            functions[id].unwrap().add_attribute(
+                AttributeLoc::Function,
+                context.create_enum_attribute(always_inline, 0),
+            );
         }
         module
             .run_passes(

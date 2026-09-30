@@ -457,6 +457,22 @@ fn guarded_primitive_forwarders_share_the_callers_gc_frame() {
             ),
         )],
         body: checked::Block {
+            statements: vec![statement(S::Expr(value(
+                Type::Unit,
+                E::Call(2, vec![local(Type::Bytes, 0), local(Type::Int, 1)]),
+            )))],
+            tail: None,
+            falls_through: true,
+        },
+        span: Span::default(),
+    });
+    program.functions.push(checked::Function {
+        name: "bytes_push".into(),
+        params: vec![Type::Bytes, Type::Int],
+        result: Type::Unit,
+        locals: vec![Type::Bytes, Type::Int],
+        requires: vec![],
+        body: checked::Block {
             statements: vec![effect(
                 Primitive::BytesPush,
                 vec![local(Type::Bytes, 0), local(Type::Int, 1)],

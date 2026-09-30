@@ -20,7 +20,10 @@ impl RootFrame<'_> {
 
 /// Primitive forwarding is already lowered directly. Inline its small source
 /// guard as well, before opaque GC markers distort LLVM's cost estimate.
-pub(super) fn primitive_forwarder(function: &checked::Function) -> bool {
+pub(super) fn primitive_forwarder(
+    function: &checked::Function,
+    forwarders: &BTreeSet<usize>,
+) -> bool {
     let value = match (function.body.statements.as_slice(), &function.body.tail) {
         ([], Some(value)) => value.as_ref(),
         ([statement], None) => match &statement.kind {
@@ -31,8 +34,10 @@ pub(super) fn primitive_forwarder(function: &checked::Function) -> bool {
         },
         _ => return false,
     };
-    let checked::ExprKind::Primitive(_, args) = &value.kind else {
-        return false;
+    let args = match &value.kind {
+        checked::ExprKind::Primitive(_, args) => args,
+        checked::ExprKind::Call(target, args) if forwarders.contains(target) => args,
+        _ => return false,
     };
     if args.len() != function.params.len()
         || !args
