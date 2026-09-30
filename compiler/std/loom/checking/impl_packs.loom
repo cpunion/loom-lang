@@ -370,6 +370,26 @@ fn impl_arguments(env Environment, header Implementation, ty Int) List[Int] {
     arguments
 }
 
+// Admission/dispatch demand only this concept's families. Ordinary lookup is
+// a pure read over its resolved headers, with no expansion or error wrapper.
+fn demand_implementations(env Environment, ty Int, capability Int) Result[Bool, Failure] {
+    let protocol = get(env.concepts, concept_index(env, capability))
+    var index = 0
+    while index < length(protocol.families) {
+        let source = get(protocol.families, index)
+        let header = get(env.implementations, source)
+        let arity = impl_pack_arity(env, header.symbol, child(symbol(env, header.symbol).node, 1), ty, 0)?
+        if arity >= 0 {
+            let selected = materialize_impl_pack(env, source, arity)?
+            if complete(impl_arguments(env, get(env.implementations, selected), ty)) && protocol.ready {
+                discard check_impl_packs(env)?
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
 fn materialize_impl_pack(env Environment, template Int, arity Int) Result[Int, Failure] {
     let header = get(env.implementations, template)
     var index = 0
@@ -474,6 +494,7 @@ fn materialize_impl_pack(env Environment, template Int, arity Int) Result[Int, F
         index = index + 1
     }
     let selected = length(env.implementations)
+    push(get(env.concepts, concept_index(env, header.capability)).implementations, selected)
     push(env.implementations, Implementation {
             symbol = owner
             source = header.source

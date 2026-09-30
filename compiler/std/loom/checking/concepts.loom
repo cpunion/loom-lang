@@ -10,6 +10,8 @@ import std.result.Result
 record Concept {
     symbol Int
     ready Bool
+    implementations List[Int]
+    families List[Int]
     methods List[Int]
     associated List[Int]
     bounds List[List[Int]]
@@ -181,7 +183,7 @@ fn conformances(env Environment) Result[Bool, Failure] {
             let position = concept_index(env, owner)
             let previous = get(env.concepts, position)
             discard validate_method_pack_declarations(env, owner)?
-            set(env.concepts, position, Concept { symbol = owner ready = true methods = methods associated = previous.associated bounds = previous.bounds })
+            set(env.concepts, position, Concept { symbol = owner ready = true implementations = previous.implementations families = previous.families methods = methods associated = previous.associated bounds = previous.bounds })
         }
         owner = owner + 1
     }
@@ -276,7 +278,7 @@ fn with_evidence(context Context, ty Int, capability Int) Context {
 }
 fn implementation(context Context, ty Int, capability Int) Result[Int, Failure] {
     if !satisfies(context, ty, capability)? { return Result.Ok(-1) }
-    Result.Ok(conformance(context.env, ty, capability)?.implementation)
+    Result.Ok(conformance(context.env, ty, capability).implementation)
 }
 fn satisfies(context Context, ty Int, capability Int) Result[Bool, Failure] {
     admitted(context.env, context.signature.symbol, context.signature.requirements, ty, capability)

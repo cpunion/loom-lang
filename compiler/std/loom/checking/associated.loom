@@ -118,7 +118,7 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
                 push(bounds, required)
                 member = member + 1
             }
-            push(env.concepts, Concept { symbol = owner ready = false methods = new[Int]() associated = members bounds = bounds })
+            push(env.concepts, Concept { symbol = owner ready = false implementations = new[Int]() families = new[Int]() methods = new[Int]() associated = members bounds = bounds })
         }
         owner = owner + 1
     }
@@ -153,6 +153,8 @@ fn conformance_headers(env Environment) Result[Bool, Failure] {
             if supplied != length(actual) { return Result.Err(failure(env, owner, item.node, "unknown associated type binding")) }
             let pack = pack_parameter(item.node)
             if pack >= 0 { discard validate_impl_pack(env, owner)? }
+            let protocol = get(env.concepts, concept_index(env, capability))
+            push(if pack >= 0 { protocol.families } else { protocol.implementations }, length(env.implementations))
             push(env.implementations, Implementation { symbol = owner source = owner arity = -1 depth = 0 capability = capability ty = -1
                 methods = new[Int]() associated = bindings state = if pack >= 0 { -1 } else { 0 } })
         }
@@ -231,7 +233,10 @@ fn associated_type(env Environment, owner Int, member Int, receiver Int, argumen
         while get(members, index) != member { index = index + 1 }
         return Result.Ok(get(shape.arguments, index))
     }
-    let selected = conformance(env, receiver, capability)?
+    if length(get(env.concepts, concept_index(env, capability)).families) != 0 {
+        discard demand_implementations(env, receiver, capability)?
+    }
+    let selected = conformance(env, receiver, capability)
     let parent = enclosing(env, owner)
     var own = selected.implementation >= 0 && parent >= 0 && symbol(env, parent).node.kind == NodeKind.Impl &&
         get(env.implementations, selected.implementation).symbol == parent
