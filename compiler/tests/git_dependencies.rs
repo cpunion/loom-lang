@@ -375,6 +375,180 @@ fn cached_files(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, SystemTime)> {
 }
 
 #[test]
+fn root_graph_forks_unify_declared_edges_without_granting_imports() {
+    let fixture = Fixture::new();
+    let root = fixture.root();
+    let app = root.join("app");
+    let mut revisions = Vec::new();
+    for value in [11, 29] {
+        write(
+            root,
+            "remote/main.loom",
+            format!(
+                r#"pub record Token {{
+    value Int
+}}
+
+pub fn make() Token {{
+    Token {{ value = {value} }}
+}}
+"#
+            ),
+        );
+        fixture.git(&["-C", "remote", "add", "."]);
+        fixture.git(&[
+            "-C",
+            "remote",
+            "commit",
+            "--quiet",
+            "-m",
+            "nominal fork fixture",
+        ]);
+        let revision = fixture.git(&["-C", "remote", "rev-parse", "HEAD"]);
+        revisions.push(
+            String::from_utf8(revision.stdout)
+                .unwrap()
+                .trim()
+                .to_owned(),
+        );
+    }
+    for (name, revision) in ["left", "right"].into_iter().zip(&revisions) {
+        write(
+            root,
+            &format!("{name}/loom.toml"),
+            format!(
+                r#"[module]
+name = '{name}'
+[dependencies.seed]
+git = '{URL}'
+rev = '{revision}'
+scope = 'graph'
+"#
+            ),
+        );
+    }
+    write(
+        root,
+        "left/main.loom",
+        r#"import seed.Token
+import seed.make
+
+pub fn token() Token {
+    make()
+}
+"#,
+    );
+    write(
+        root,
+        "right/main.loom",
+        r#"import seed.Token
+
+pub fn take(value Token) Int {
+    value.value
+}
+"#,
+    );
+    write(
+        root,
+        "app/main.loom",
+        r#"import left.token
+import right.take
+
+fn main() {
+    assert take(token()) == 29
+}
+
+test fn selected_fork() {
+    main()
+}
+"#,
+    );
+    let manifest = |selection: &str| {
+        format!(
+            r#"[module]
+name = 'app'
+[dependencies.left]
+path = '../left'
+[dependencies.right]
+path = '../right'
+[dependencies.seed]
+{selection}
+"#
+        )
+    };
+    let git_selection = format!("git='{URL}'\nrev='{}'", revisions[1]);
+    write(root, "app/loom.toml", manifest(&git_selection));
+    success(&fixture.resolve(&app, false));
+    // Transitive scope declarations have no authority over this root. Local
+    // fork identities remain distinct even though both records have one field.
+    assert!(
+        !fixture
+            .command("check", &app)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let fetched = fixture.log();
+    assert_eq!(
+        fetched
+            .lines()
+            .filter(|line| line.starts_with("fetch\t"))
+            .count(),
+        2
+    );
+
+    write(
+        root,
+        "app/loom.toml",
+        manifest(&format!("{git_selection}\nscope='graph'")),
+    );
+    let original_lock = fs::read(app.join("loom.lock")).unwrap();
+    rejected(
+        &fixture.command("check", &app).output().unwrap(),
+        "changed from loom.lock",
+    );
+    assert_eq!(fs::read(app.join("loom.lock")).unwrap(), original_lock);
+    success(&fixture.resolve(&app, false));
+    success(&fixture.command("check", &app).output().unwrap());
+    success(&fixture.command("test", &app).output().unwrap());
+    let artifact = common::executable(root, "fork-app");
+    success(
+        &fixture
+            .command("build", &app)
+            .arg("--output")
+            .arg(&artifact)
+            .output()
+            .unwrap(),
+    );
+    success(&Command::new(&artifact).output().unwrap());
+    success(&fixture.command("run", &app).output().unwrap());
+    let lock = fs::read_to_string(app.join("loom.lock")).unwrap();
+    assert_eq!(
+        lock.lines()
+            .filter(|line| line.contains(&revisions[1]))
+            .count(),
+        2
+    );
+    assert!(!lock.contains(&revisions[0]));
+    assert_eq!(fixture.log(), fetched); // The chosen source was already verified.
+
+    // A root path selector uses the root's directory, not each importing module.
+    write(
+        root,
+        "app/loom.toml",
+        manifest("scope='graph'\npath='../remote'"),
+    );
+    success(&fixture.command("run", &app).output().unwrap());
+    assert_eq!(fixture.log(), fetched);
+    write(root, "left/loom.toml", "[module]\nname='left'\n");
+    rejected(
+        &fixture.command("check", &app).output().unwrap(),
+        "not a declared direct dependency",
+    );
+}
+
+#[test]
 fn pinned_git_instances_survive_native_commands_and_verified_offline_cache_repairs() {
     let fixture = Fixture::new();
     let root = fixture.root();

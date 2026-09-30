@@ -61,6 +61,7 @@ record Loader {
     active List[Int]
     complete List[Int]
     resolution Resolution
+    overrides List[Dependency]
     overlays List[OverlayFile]
     failures List[LoadFailure]
 }
@@ -482,6 +483,7 @@ fn prepare_loader(path Text, std_root Text, git_tool Text, credential_tool Text,
         active = new[Int]()
         complete = new[Int]()
         resolution = resolution
+        overrides = graph_dependencies(module.dependencies)
         overlays = overlays
         failures = failures
     }
