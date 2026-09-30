@@ -1978,9 +1978,12 @@ unit-coefficient differences; it does not assume hypothetical source arithmetic
 is defined or solve general nonlinear constraints. It adds no runtime mechanism.
 See the [relational contract example](examples/relational_contracts).
 
-Scalar `while` bodies can prove normal-return contracts through inferred
-invariants, without new annotations. The prover freshens every written Int/Bool
-local and proposes entry/range bounds and weakened relational guards. Each candidate
+`while` bodies with Int/Bool locals or scalar-only inline records/tuples can
+prove normal-return contracts through inferred invariants, without new annotations.
+The prover freshens every scalar leaf of written locals and proposes per-path
+entry/range bounds and weakened relational guards. Whole-value reconstruction
+does not retain stale sibling fields; shared containers and other unsupported
+leaves are not admitted as written aggregate locals. Each candidate
 must hold on entry and on every symbolic backedge; removing a candidate rechecks
 all survivors. Zero-iteration exits and early returns remain separate proof
 obligations. Branches, nested loops and the existing direct-call proof rules
@@ -1994,7 +1997,8 @@ but contributes no assumed facts and every candidate still needs induction.
 Resource cleanup and heap writes inside a
 required loop proof currently reject. The bounded
 inference neither unrolls a sample of iterations nor adds runtime invariant
-checks. See the [loop contract example](examples/loop_contracts).
+checks. See the [loop contract example](examples/loop_contracts), including
+[nested aggregate state](examples/loop_contracts/aggregates.loom).
 
 Immutable input refinements contribute their supported predicates to required
 proofs without a duplicate `requires` or runtime check:

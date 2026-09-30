@@ -140,7 +140,7 @@ Predicates may call pure functions, but cannot rely on external mutable state.
 
 Every declared `ensures` requires a static proof. Current reasoning includes
 scalar/inline-aggregate identities, guarded preconditions/assertions, bounded
-integer difference relations, input-type invariants, inferred scalar loop
+integer difference relations, input-type invariants, inferred scalar/inline-aggregate loop
 invariants, finite pure helpers and verified callee summaries. Synchronous dyn calls use declared method contracts,
 not hidden receiver knowledge. Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` currently covers immutable
@@ -154,9 +154,10 @@ Length-only predicates permit element writes, and bounded preservation proofs
 admit some appends. Content-dependent predicates retain read-only storage.
 There is no implicit copy, monitor or alias-triggered runtime failure.
 
-Scalar loops infer entry/guard bounds and check inductiveness to a fixed point;
+Scalar and scalar-only inline aggregate loops infer entry/guard bounds and check inductiveness to a fixed point;
 zero-iteration paths and early returns retain separate obligations. This supports
-scalar assignments, branches, nested loops, break/continue paths and existing
+whole-value record/tuple reassignment with independently fresh scalar leaves,
+branches, nested loops, break/continue paths and existing
 direct-call proof rules. Scalar lexical cleanup retains its checked order and
 return snapshots. Guard calls use fresh checked results, not stable syntactic
 invariant terms. Resource cleanup and heap mutation remain unsupported. See the
