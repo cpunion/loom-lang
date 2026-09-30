@@ -9,12 +9,14 @@ import std.list.get
 import std.list.push
 import std.list.length
 import std.result.Result
+import std.option.Option
 
 record Verification {
     function Function
     program Program
     fresh List[Int]
     budget List[Int]
+    loop_control Option[LoopControl]
 }
 
 record RecordPath {
@@ -351,6 +353,9 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     }
     if expr.kind == ExprKind.While {
         return loop_outcomes(proof, expr, state, depth)
+    }
+    if expr.kind == ExprKind.Break || expr.kind == ExprKind.Continue {
+        return loop_jump(proof, expr, state)
     }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary {
         return operation(proof, expr, state, depth)

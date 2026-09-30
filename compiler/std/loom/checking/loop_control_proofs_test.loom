@@ -1,0 +1,124 @@
+test fn break_exits_preserve_the_state_at_the_jump() {
+    discard accepted("""
+fn reach(limit Int) Int
+ensures result >= limit && result >= 0
+{
+    var i = 0
+    while true {
+        if i >= limit {
+            break
+        }
+        i = i + 1
+    }
+    i
+}
+""")
+    rejects("""
+fn wrong() Int
+ensures result >= 0
+{
+    var i = 0
+    while true {
+        i = -1
+        break
+    }
+    i
+}
+""")
+    // The first inference pass assumes i <= 0. Its unreachable break must be
+    // reconsidered after that candidate fails on the normal backedge.
+    rejects("""
+fn wrong() Int
+ensures result <= 0
+{
+    var i = 0
+    while true {
+        if i > 0 {
+            break
+        }
+        i = i + 1
+    }
+    i
+}
+""")
+}
+
+test fn continue_paths_must_preserve_every_inferred_invariant() {
+    discard accepted("""
+record Count {
+    position Int
+    total Int
+}
+fn count(limit Int) Count
+requires limit >= 0
+ensures result.position == limit && result.total >= 0
+{
+    var i = 0
+    var total = 0
+    while i < limit {
+        i = i + 1
+        if i < 3 {
+            continue
+        }
+        total = total + i
+    }
+    Count {
+        position = i
+        total = total
+    }
+}
+""")
+    rejects("""
+fn wrong(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var i = 0
+    while i < limit {
+        if i < 2 {
+            i = i + 2
+            continue
+        }
+        i = i + 1
+    }
+    i
+}
+""")
+}
+
+test fn nested_jumps_cannot_skip_the_enclosing_loop_tail() {
+    rejects("""
+fn wrong(limit Int) Int
+ensures result >= 0
+{
+    var i = 0
+    while i < limit {
+        var j = 0
+        while j < 1 {
+            j = j + 1
+            break
+        }
+        i = -1
+        return i
+    }
+    0
+}
+""")
+    rejects("""
+fn wrong(limit Int) Int
+ensures result >= 0
+{
+    var i = 0
+    while i < limit {
+        var j = 0
+        while j < 1 {
+            j = j + 1
+            continue
+        }
+        i = -1
+        return i
+    }
+    0
+}
+""")
+}

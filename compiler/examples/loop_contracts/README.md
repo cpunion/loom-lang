@@ -14,8 +14,10 @@ and preserved by every symbolic backedge. Removing one candidate triggers a
 recheck of the others. Zero-iteration exits are checked separately.
 
 The current subset includes Int/Bool local assignments, branches, early returns
-and nested loops. Direct body calls reuse verified summaries or finite pure
-expansion. Unsupported effects, calls in guards, cleanup and break/continue
+and nested loops. `break` preserves the state at its exit; `continue` must
+preserve the invariant at its backedge. Both target the nearest loop, including
+during each inference recheck. Direct body calls reuse verified summaries or finite pure
+expansion. Unsupported effects, calls in guards, cleanup and heap mutation
 reject in a required proof. Unknown proofs remain build errors;
 there are no generated loop-invariant checks, termination promises or proofs
 that arithmetic cannot fault. List sorting/permutation proofs remain separate
