@@ -1061,11 +1061,15 @@ impl Converter<'_> {
                         arguments[0].ty == Type::Text
                             && arguments[1].ty == Type::Bytes
                             && arguments[2].ty == Type::Int
-                            && text_list(arguments[3].ty)
+                            && arguments[3].ty == Type::Bytes
+                            && arguments[4].ty == Type::Bytes
+                            && text_list(arguments[5].ty)
                     } else {
                         arguments[0].ty == Type::Bytes
                             && arguments[1].ty == Type::Bytes
-                            && text_list(arguments[2].ty)
+                            && arguments[2].ty == Type::Bytes
+                            && arguments[3].ty == Type::Int
+                            && text_list(arguments[4].ty)
                     };
                     if !valid || ty != Type::Int {
                         return Err("checked TLS configuration type mismatch".into());
@@ -1089,7 +1093,9 @@ impl Converter<'_> {
                     | Primitive::TlsRelease
                     | Primitive::SocketLocalPort => Some((&[Type::Int], Type::Int)),
                     Primitive::TlsProtocol => Some((&[Type::Int], Type::Text)),
-                    Primitive::TlsOutput => Some((&[Type::Int, Type::Bytes], Type::Int)),
+                    Primitive::TlsOutput | Primitive::TlsPeerCertificate => {
+                        Some((&[Type::Int, Type::Bytes], Type::Int))
+                    }
                     Primitive::SocketAddress => Some((&[Type::Int, Type::Int], Type::Text)),
                     Primitive::SocketSetNodelay => Some((&[Type::Int, Type::Int], Type::Int)),
                     Primitive::SocketRead | Primitive::TlsRead | Primitive::TlsReceive => {
@@ -1461,6 +1467,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "tls_shutdown" => P::TlsShutdown,
         "tls_release" => P::TlsRelease,
         "tls_protocol" => P::TlsProtocol,
+        "tls_peer_certificate" => P::TlsPeerCertificate,
         "directory_read" => P::DirectoryRead,
         "path_kind" => P::PathKind,
         "path_canonical" => P::PathCanonical,
@@ -1590,7 +1597,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskWaitSocket
         | P::PathRename => 2,
         P::SocketAddress | P::SocketSetNodelay => 2,
-        P::TlsOutput => 2,
+        P::TlsOutput | P::TlsPeerCertificate => 2,
         P::TextSlice
         | P::BytesSet
         | P::ListSet
@@ -1600,13 +1607,14 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::SocketRead
         | P::TlsRead
         | P::TlsReceive
-        | P::TlsServer
         | P::TaskWaitFileWrite
         | P::TaskWaitFileWriteBytes
         | P::TaskCreate
         | P::CleanupEach => 3,
         P::ListRetainRange | P::SocketWriteBytes => 4,
-        P::TlsClient | P::TlsWrite => 4,
+        P::TlsWrite => 4,
+        P::TlsClient => 6,
+        P::TlsServer => 5,
         P::TaskWaitProcessCapture => 5,
         P::ProcessCaptureConfigured => 6,
         P::ProcessCaptureInputConfigured => 7,
@@ -1891,8 +1899,9 @@ mod tests {
                 &[4, 3, 2, 1, 4, 3, 3][..],
             ),
             ("env_get", &[2, 3][..]),
-            ("tls_client", &[2, 3, 1, 4][..]),
-            ("tls_server", &[3, 3, 4][..]),
+            ("tls_client", &[2, 3, 1, 3, 3, 4][..]),
+            ("tls_server", &[3, 3, 3, 1, 4][..]),
+            ("tls_peer_certificate", &[1, 3][..]),
             ("tls_receive", &[1, 3, 1][..]),
             ("tls_read", &[1, 3, 1][..]),
             ("tls_write", &[1, 3, 1, 1][..]),

@@ -3,7 +3,7 @@
 //! Rust-owned protocol state; managed input is copied before returning.
 
 use loom_runtime::native::{self, bytes as buffer_bytes, text as text_bytes};
-use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{
     ClientConfig, ClientConnection, Connection, RootCertStore, ServerConfig, ServerConnection,
 };
@@ -47,19 +47,33 @@ fn roots(pem: &[u8], builtin: bool) -> Result<Arc<RootCertStore>, i64> {
     Ok(Arc::new(roots))
 }
 
+fn private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, i64> {
+    rustls_pemfile::private_key(&mut &pem[..])
+        .map_err(|_| PROTOCOL)?
+        .ok_or(PROTOCOL)
+}
+
 fn client(
     name: &str,
     pem: &[u8],
     builtin: bool,
+    chain: &[u8],
+    key: &[u8],
     protocols: Vec<Vec<u8>>,
 ) -> Result<Connection, i64> {
     let name = ServerName::try_from(name.to_owned()).map_err(|_| PROTOCOL)?;
-    let mut config =
+    let builder =
         ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_safe_default_protocol_versions()
             .map_err(|_| PROTOCOL)?
-            .with_root_certificates(roots(pem, builtin)?)
-            .with_no_client_auth();
+            .with_root_certificates(roots(pem, builtin)?);
+    let mut config = if chain.is_empty() && key.is_empty() {
+        builder.with_no_client_auth()
+    } else {
+        builder
+            .with_client_auth_cert(certificates(chain)?, private_key(key)?)
+            .map_err(|_| PROTOCOL)?
+    };
     config.alpn_protocols = protocols;
     // Default verifier, time validation, no early data, no key log and no
     // dangerous bypass. Certificate/hostname failures remain terminal errors.
@@ -68,17 +82,31 @@ fn client(
         .map_err(|_| PROTOCOL)
 }
 
-fn server(chain: &[u8], key: &[u8], protocols: Vec<Vec<u8>>) -> Result<Connection, i64> {
-    let key = rustls_pemfile::private_key(&mut &key[..])
-        .map_err(|_| PROTOCOL)?
-        .ok_or(PROTOCOL)?;
-    let mut config =
+fn server(
+    chain: &[u8],
+    key: &[u8],
+    client_roots: &[u8],
+    required: bool,
+    protocols: Vec<Vec<u8>>,
+) -> Result<Connection, i64> {
+    let builder =
         ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_safe_default_protocol_versions()
-            .map_err(|_| PROTOCOL)?
-            .with_no_client_auth()
-            .with_single_cert(certificates(chain)?, key)
             .map_err(|_| PROTOCOL)?;
+    let builder = if required {
+        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+            roots(client_roots, false)?,
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .build()
+        .map_err(|_| PROTOCOL)?;
+        builder.with_client_cert_verifier(verifier)
+    } else {
+        builder.with_no_client_auth()
+    };
+    let mut config = builder
+        .with_single_cert(certificates(chain)?, private_key(key)?)
+        .map_err(|_| PROTOCOL)?;
     config.alpn_protocols = protocols;
     ServerConnection::new(Arc::new(config))
         .map(Connection::Server)
@@ -96,7 +124,10 @@ impl Session {
         loop {
             let count = self.connection.read_tls(&mut input).map_err(|_| PROTOCOL)?;
             self.connection.process_new_packets().map_err(|error| {
-                if matches!(error, rustls::Error::InvalidCertificate(_)) {
+                if matches!(
+                    error,
+                    rustls::Error::InvalidCertificate(_) | rustls::Error::NoCertificatesPresented
+                ) {
                     PEER
                 } else {
                     PROTOCOL
@@ -193,6 +224,8 @@ unsafe extern "C-unwind" fn loom_rt_tls_client(
     name: *const u8,
     roots: *const u8,
     builtin: i64,
+    chain: *const u8,
+    key: *const u8,
     alpn: *const u8,
 ) -> i64 {
     if builtin != 0 && builtin != 1 {
@@ -206,6 +239,8 @@ unsafe extern "C-unwind" fn loom_rt_tls_client(
                 std::str::from_utf8_unchecked(text_bytes(name)),
                 buffer_bytes(roots),
                 builtin == 1,
+                buffer_bytes(chain),
+                buffer_bytes(key),
                 alpn,
             )
         })
@@ -220,12 +255,25 @@ unsafe extern "C-unwind" fn loom_rt_tls_client(
 unsafe extern "C-unwind" fn loom_rt_tls_server(
     chain: *const u8,
     key: *const u8,
+    roots: *const u8,
+    required: i64,
     alpn: *const u8,
 ) -> i64 {
+    if required != 0 && required != 1 {
+        return PROTOCOL;
+    }
     // SAFETY: Live checked Bytes/List[Text]; the resulting engine retains no
     // managed pointers. No keys, certificates or remote errors are formatted.
     let connection = unsafe {
-        protocols(alpn).and_then(|alpn| server(buffer_bytes(chain), buffer_bytes(key), alpn))
+        protocols(alpn).and_then(|alpn| {
+            server(
+                buffer_bytes(chain),
+                buffer_bytes(key),
+                buffer_bytes(roots),
+                required == 1,
+                alpn,
+            )
+        })
     };
     connection.map_or_else(
         |error| error,
@@ -261,6 +309,27 @@ unsafe fn append_output(pointer: *mut u8, output: Result<Vec<u8>, i64>) -> i64 {
     };
     // SAFETY: Rooted managed output, independent native input and no table borrow.
     unsafe { native::append(pointer, &bytes) }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C-unwind" fn loom_rt_tls_peer_certificate(token: i64, buffer: *mut u8) -> i64 {
+    let output = native::context::<Sessions, _>(|sessions| {
+        sessions
+            .with(token, |session| {
+                if session.connection.is_handshaking() {
+                    return Err(PROTOCOL);
+                }
+                Ok(session
+                    .connection
+                    .peer_certificates()
+                    .and_then(|chain| chain.first())
+                    .map_or_else(Vec::new, |leaf| leaf.as_ref().to_vec()))
+            })
+            .unwrap_or(Err(CLOSED))
+    });
+    // SAFETY: Rooted managed output; the fresh DER copy no longer borrows the
+    // engine when appending can move managed objects.
+    unsafe { append_output(buffer, output) }
 }
 
 #[unsafe(no_mangle)]

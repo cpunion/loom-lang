@@ -182,13 +182,15 @@ TCP exposes numeric local/peer endpoints, TCP_NODELAY and write half-close,
 preserving pending receive registrations for EOF-delimited exchanges. Text-to-Bytes
 encoding is source-library policy and returns an independent buffer.
 `std.net.tls` supplies verified client/server streams, custom PEM roots, ALPN,
-binary I/O and TLS close-notify. Rustls owns protocol/cryptography in a separately
+binary I/O, required mutual certificate authentication and TLS close-notify.
+Client/server identities and trust are explicit; verified peer leaf certificates
+can be copied as DER for application policy. Rustls owns protocol/cryptography in a separately
 linked provider; Loom owns TCP, suspension and cancellation policy. It verifies
 certificate chains, time and names, and distinguishes truncation from clean EOF.
 The first API serializes I/O per shared connection; cancellation closes that
 connection after draining its transport waits. O0/O2 and moving-GC tests cover
 real encrypted traffic, rejected peers and independent Rustls interoperability.
-Concurrent TLS read/write, mutual TLS, general workers, broader socket options,
+Concurrent TLS read/write, revocation policy, general workers, broader socket options,
 address racing and parallel Loom execution remain open.
 See [Tasks and I/O](../../compiler/README.md#source-tasks).
 

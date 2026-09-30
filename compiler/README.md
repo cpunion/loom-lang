@@ -2674,11 +2674,18 @@ promised across operating systems. These operations report `Address`, `Option`
 or `Shutdown` errors, including stale tokens. See the
 [EOF-delimited request/response example](examples/tcp_half_close/README.md).
 
-`std.net.tls` provides `Connection`, `ClientOptions`, `ServerOptions`, `Trust`
+`std.net.tls` provides `Connection`, `ClientOptions`, `ServerOptions`, `Trust`,
+`Identity` and `ClientAuth`
 and typed errors over TLS 1.2/1.3. `connect(host, port)` verifies the host against compiled Mozilla
 roots. The options overload accepts explicit PEM trust roots and ALPN; numeric
 `connect(address, name, options)` separates the TCP endpoint from the verified
-DNS/IP name. `accept(listener, options)` uses the supplied PEM chain and key.
+DNS/IP name. `Identity { certificates, private_key }` holds a PEM chain and key.
+Client options select `Option.None` or `Option.Some(identity)`; server options
+require an identity and select `ClientAuth.Anonymous` or
+`ClientAuth.Required(client_ca_pem)`. Required authentication rejects missing,
+untrusted, expired and wrong-purpose client certificates before accepting the
+connection. Empty/malformed configuration fails before transport I/O; it does
+not silently select anonymous access. Client and server trust roots are separate.
 There is no insecure verifier or system-root lookup. Built-in roots update when
 the toolchain is rebuilt with a newer root package.
 
@@ -2692,7 +2699,11 @@ Copies share one connection: overlapping I/O returns `Busy`. Drain child Tasks
 before closing; failed/cancelled operations close the connection so partially
 sent records cannot be reused. Payload contents share TCP's alias rules above.
 `protocol`, `local_address` and `peer_address` query ALPN and numeric endpoints.
-Concurrent read/write directions, mutual TLS and resumption configuration remain
+`peer_certificate` returns a fresh DER copy of the verified leaf as
+`Result[Option[Bytes], TlsError]`; anonymous clients have no leaf. Certificate
+authentication does not assign application roles or interpret client names.
+No CRL/OCSP policy is exposed yet; trusted issuance is not a revocation guarantee.
+Concurrent read/write directions and resumption configuration remain
 open. See the [TLS example](examples/tls_loopback/README.md).
 
 The source package owns this policy; Rustls supplies packet processing in the

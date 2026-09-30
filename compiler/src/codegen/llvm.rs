@@ -885,6 +885,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::TlsShutdown => ("tls_shutdown", Some(i64_type.into())),
             Primitive::TlsRelease => ("tls_release", Some(i64_type.into())),
             Primitive::TlsProtocol => ("tls_protocol", Some(pointer.into())),
+            Primitive::TlsPeerCertificate => ("tls_peer_certificate", Some(i64_type.into())),
             Primitive::DirectoryRead => ("directory_read", Some(i64_type.into())),
             Primitive::PathKind => ("path_kind", Some(i64_type.into())),
             Primitive::PathCanonical => ("path_canonical", Some(i64_type.into())),

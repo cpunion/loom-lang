@@ -120,6 +120,7 @@ pub enum Primitive {
     TlsShutdown,
     TlsRelease,
     TlsProtocol,
+    TlsPeerCertificate,
     DirectoryRead,
     PathKind,
     PathCanonical,

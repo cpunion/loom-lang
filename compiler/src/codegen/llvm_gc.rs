@@ -118,6 +118,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TlsRead
         | Primitive::TlsOutput
         | Primitive::TlsProtocol
+        | Primitive::TlsPeerCertificate
         | Primitive::DirectoryRead
         | Primitive::PathCanonical => true,
         Primitive::TaskFailure

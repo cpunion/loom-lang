@@ -1,4 +1,7 @@
-use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose};
+use rcgen::{
+    BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+    KeyUsagePurpose,
+};
 use std::{fs, path::Path, process::Command};
 mod common;
 use common::success;
@@ -9,6 +12,8 @@ fn certificates(directory: &Path) {
     let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
     ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+    ca.distinguished_name
+        .push(rcgen::DnType::CommonName, "Loom server fixture root");
     let key = KeyPair::generate().unwrap();
     fs::write(
         directory.join("ca.pem"),
@@ -31,6 +36,41 @@ fn certificates(directory: &Path) {
     )
     .unwrap();
     fs::write(directory.join("key.pem"), leaf_key.serialize_pem()).unwrap();
+    let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+    ca.distinguished_name
+        .push(rcgen::DnType::CommonName, "Loom client fixture root");
+    let key = KeyPair::generate().unwrap();
+    fs::write(
+        directory.join("client-ca.pem"),
+        ca.self_signed(&key).unwrap().pem(),
+    )
+    .unwrap();
+    let issuer = Issuer::new(ca, key);
+    let key = KeyPair::generate().unwrap();
+    let mut leaf = CertificateParams::new(Vec::<String>::new()).unwrap();
+    leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    fs::write(
+        directory.join("client.pem"),
+        leaf.signed_by(&key, &issuer).unwrap().pem(),
+    )
+    .unwrap();
+    fs::write(directory.join("client-key.pem"), key.serialize_pem()).unwrap();
+    leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    fs::write(
+        directory.join("client-purpose.pem"),
+        leaf.signed_by(&key, &issuer).unwrap().pem(),
+    )
+    .unwrap();
+    leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    leaf.not_before = rcgen::date_time_ymd(2000, 1, 1);
+    leaf.not_after = rcgen::date_time_ymd(2001, 1, 1);
+    fs::write(
+        directory.join("client-expired.pem"),
+        leaf.signed_by(&key, &issuer).unwrap().pem(),
+    )
+    .unwrap();
     fs::write(
         directory.join("payload"),
         (0..131_079).map(|i| (i % 256) as u8).collect::<Vec<_>>(),
@@ -77,6 +117,38 @@ fn tls_roundtrip_verifies_peers_and_survives_moving_gc() {
             assert_eq!(
                 output.stdout,
                 if mode == "ok" {
+                    b"TLS roundtrip\n".as_slice()
+                } else {
+                    b"peer rejected\n".as_slice()
+                }
+            );
+        }
+        for (mode, roots, certificate) in [
+            ("mutual", "client-ca.pem", "client.pem"),
+            ("missing-client", "client-ca.pem", "client.pem"),
+            ("untrusted-client", "ca.pem", "client.pem"),
+            ("expired-client", "client-ca.pem", "client-expired.pem"),
+            ("purpose-client", "client-ca.pem", "client-purpose.pem"),
+        ] {
+            let output = common::run_task_command(
+                Command::new(&executable)
+                    .current_dir(directory.path())
+                    .env("LOOM_GC_STRESS", "1")
+                    .args([
+                        "ca.pem",
+                        "cert.pem",
+                        "key.pem",
+                        "payload",
+                        mode,
+                        roots,
+                        certificate,
+                        "client-key.pem",
+                    ]),
+            );
+            success(&output);
+            assert_eq!(
+                output.stdout,
+                if mode == "mutual" {
                     b"TLS roundtrip\n".as_slice()
                 } else {
                     b"peer rejected\n".as_slice()
@@ -184,6 +256,22 @@ fn native_peer_distinguishes_tls_eof_truncation_and_cancelled_reads() {
     certificates(directory.path());
     let chain = fs::read(directory.path().join("cert.pem")).unwrap();
     let key = fs::read(directory.path().join("key.pem")).unwrap();
+    let client_ca = fs::read(directory.path().join("client-ca.pem")).unwrap();
+    let client_leaf = fs::read(directory.path().join("client.pem")).unwrap();
+    let client_leaf = rustls_pemfile::certs(&mut client_leaf.as_slice())
+        .next()
+        .unwrap()
+        .unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in rustls_pemfile::certs(&mut client_ca.as_slice()) {
+        roots.add(certificate.unwrap()).unwrap();
+    }
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(roots),
+        Arc::new(rustls::crypto::ring::default_provider()),
+    )
+    .build()
+    .unwrap();
     let executable = common::executable(directory.path(), "peer");
     // The loopback test covers both optimization levels with the default TLS
     // negotiation; these interoperability profiles also exercise TLS 1.2.
@@ -196,7 +284,7 @@ fn native_peer_distinguishes_tls_eof_truncation_and_cancelled_reads() {
         ))
         .with_protocol_versions(&[version])
         .unwrap()
-        .with_no_client_auth()
+        .with_client_cert_verifier(verifier.clone())
         .with_single_cert(
             rustls_pemfile::certs(&mut chain.as_slice())
                 .collect::<Result<Vec<_>, _>>()
@@ -223,6 +311,7 @@ fn native_peer_distinguishes_tls_eof_truncation_and_cancelled_reads() {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();
             let config = config.clone();
+            let client_leaf = client_leaf.clone();
             let peer = thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
@@ -248,13 +337,16 @@ fn native_peer_distinguishes_tls_eof_truncation_and_cancelled_reads() {
                         connection.write_tls(&mut socket).unwrap();
                     }
                 }
+                assert_eq!(connection.peer_certificates().unwrap()[0], client_leaf);
             });
             let output = common::run_task_command(
                 Command::new(&executable)
                     .env("LOOM_GC_STRESS", "1")
                     .arg(directory.path().join("ca.pem"))
                     .arg(address.to_string())
-                    .arg(mode),
+                    .arg(mode)
+                    .arg(directory.path().join("client.pem"))
+                    .arg(directory.path().join("client-key.pem")),
             );
             success(&output);
             peer.join().unwrap();
