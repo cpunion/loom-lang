@@ -284,6 +284,12 @@ latency from 2462 ms to 1543 ms and peak RSS from 2485 MiB to 1448 MiB. The latt
 run's uncached path used 1953 ms and 854 MiB: cache reuse still costs memory, and
 small packages can be slower. Caching remains opt-in. These are measured cases,
 not a universal speedup or completion of the performance goal.
+Separately, five alternating fresh-process checks of the same compiler sources
+measured 2749 ms / 779 MiB before and 1188 ms / 486 MiB after removing repeated
+trusted `Result` discovery and package-label allocations. No incremental cache
+was enabled. Verified source shapes are reused only within the current check;
+an edited binding snapshot validates them again. This is one macOS workload,
+not a latency or memory guarantee for other projects.
 See [native benchmarks](../../benchmarks/basic/README.md) separately; compiler
 latency is not interpreter or application runtime performance.
 
