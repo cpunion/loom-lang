@@ -700,6 +700,13 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
 
 fn editor_checked_rename(options EditorOptions, bindings std.loom.binding.Program,
     references List[Location], new_name Text) EditorOutput {
+    var index = 0
+    while index < length(references) {
+        if get(bindings.files, get(references, index).file).package != bindings.root {
+            return editor_error("Rename target is outside the selected package")
+        }
+        index = index + 1
+    }
     let overlays = match editor_private_overlays(options, bindings, references, new_name) {
         Option.Some(value) => value
         Option.None => {

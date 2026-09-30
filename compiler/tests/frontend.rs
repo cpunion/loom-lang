@@ -34,6 +34,62 @@ fn source_compiler(compiler: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn rename_does_not_offer_dependency_edits_outside_its_checked_overlays() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::create_dir(directory.path().join("library")).unwrap();
+    fs::write(
+        directory.path().join("loom.toml"),
+        "[module]\nname = 'rename'\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("main.loom"),
+        r#"
+import rename.library.identity
+import rename.library.runtime
+
+fn main() {
+    assert identity(2) == 2
+    assert runtime(3) == 3
+}
+"#,
+    )
+    .unwrap();
+    let library = directory.path().join("library/main.loom");
+    let text = r#"
+pub fn identity(comptime amount Int) Int {
+    amount
+}
+
+pub fn runtime(value Int) Int {
+    value
+}
+"#;
+    fs::write(&library, text).unwrap();
+    for name in ["amount", "value"] {
+        let output = source_compiler(
+            &common::compiler(),
+            &[
+                "editor-rename",
+                directory.path().to_str().unwrap(),
+                "--at",
+                library.to_str().unwrap(),
+                &text.find(name).unwrap().to_string(),
+                "--to",
+                "renamed",
+                "--tests",
+            ],
+        );
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("outside the selected package"),
+            "{name}: {output:?}"
+        );
+    }
+    assert_eq!(fs::read_to_string(library).unwrap(), text);
+}
+
+#[test]
 fn init_creates_a_runnable_project_without_overwriting_one() {
     let temporary = tempfile::tempdir().unwrap();
     let compiler = common::compiler();

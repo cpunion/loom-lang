@@ -16,9 +16,6 @@ record StaticReferenceQuery {
 // parameter. No executable expression or cached body carries query metadata.
 fn static_reference(context Context, node Node, constant Int) {
     let queries = get(context.env.inputs, 0).static_queries
-    if length(queries) == 0 {
-        return
-    }
     let query = get(queries, 0)
     if context.signature.symbol != query.owner || constant != query.constant ||
     (node.kind != NodeKind.Name && node.kind != NodeKind.Call) ||
