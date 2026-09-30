@@ -236,16 +236,16 @@ fn native_peer_distinguishes_tls_eof_truncation_and_cancelled_reads() {
                 let mut request = [0; 4];
                 stream.read_exact(&mut request).unwrap();
                 assert_eq!(&request, b"ping");
+                // A completed client write need not have reached this reader.
+                // Acknowledge it before the busy test cancels/closes the socket.
+                stream.write_all(b"pong").unwrap();
+                stream.flush().unwrap();
                 if mode == "busy" {
                     assert!(stream.read(&mut request).is_err());
-                } else {
-                    stream.write_all(b"pong").unwrap();
-                    stream.flush().unwrap();
-                    if mode == "graceful" {
-                        connection.send_close_notify();
-                        while connection.wants_write() {
-                            connection.write_tls(&mut socket).unwrap();
-                        }
+                } else if mode == "graceful" {
+                    connection.send_close_notify();
+                    while connection.wants_write() {
+                        connection.write_tls(&mut socket).unwrap();
                     }
                 }
             });

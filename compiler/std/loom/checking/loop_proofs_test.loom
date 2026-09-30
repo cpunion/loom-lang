@@ -1,0 +1,249 @@
+test fn scalar_loops_prove_bounds_by_induction() {
+    discard accepted("""
+fn count(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var i = 0
+    while i < limit {
+        i = i + 1
+    }
+    i
+}
+fn descend(start Int, limit Int) Int
+ensures result <= start && result <= limit
+{
+    var i = start
+    while i > limit {
+        i = i - 1
+    }
+    i
+}
+fn sum(limit Int) Int
+ensures result >= 0
+{
+    var i = 0
+    var total = 0
+    while i < limit {
+        total = total + i
+        i = i + 1
+    }
+    total
+}
+""")
+}
+
+test fn loop_inference_rechecks_survivors_and_early_returns() {
+    // total <= 0 appears preserved while the rejected i <= 0 is assumed.
+    rejects("""
+fn wrong(limit Int) Int
+ensures result <= 0
+{
+    var i = 0
+    var total = 0
+    while i < limit {
+        total = total + i
+        i = i + 1
+    }
+    total
+}
+""")
+    rejects("""
+fn wrong(limit Int) Int
+ensures result == 0
+{
+    var i = 0
+    while i < limit {
+        if i > 0 {
+            return i
+        }
+        i = i + 1
+    }
+    0
+}
+""")
+    discard accepted("""
+fn early(limit Int) Int
+ensures result >= 0
+{
+    var i = 0
+    while i < limit {
+        if i > 4 {
+            return i
+        }
+        i = i + 1
+    }
+    i
+}
+""")
+}
+
+test fn loop_bounds_do_not_hide_zero_iterations_overshoot_or_writes() {
+    rejects("""
+fn wrong(limit Int) Int
+ensures result == limit
+{
+    var i = 0
+    while i < limit {
+        i = i + 1
+    }
+    i
+}
+""")
+    rejects("""
+fn wrong(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var i = 0
+    while i < limit {
+        i = i + 2
+    }
+    i
+}
+""")
+    rejects("""
+fn wrong(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var remaining = limit
+    var i = 0
+    while i < remaining {
+        i = i + 1
+        remaining = remaining - 1
+    }
+    i
+}
+""")
+    rejects("""
+fn wrong(limit Int) Int
+ensures result >= 0
+{
+    var i = 0
+    while i < limit {
+        i = -1
+        return i
+    }
+    i
+}
+""")
+}
+
+test fn nested_loops_and_short_circuit_guards_keep_independent_facts() {
+    discard accepted("""
+fn nested(limit Int) Int
+requires limit >= 0
+ensures result >= 0
+{
+    var i = 0
+    var total = 0
+    while i < limit {
+        var j = 0
+        while j < i {
+            total = total + j
+            j = j + 1
+        }
+        i = i + 1
+    }
+    total
+}
+fn bounded(limit Int, cap Int) Int
+requires limit >= 0 && cap >= 0
+ensures result <= limit && result <= cap
+{
+    var i = 0
+    while i < limit && i < cap {
+        i = i + 1
+    }
+    i
+}
+""")
+    rejects("""
+fn wrong(limit Int) Int
+ensures result <= limit
+{
+    var i = 0
+    while i < limit || i < 5 {
+        i = i + 1
+    }
+    i
+}
+""")
+}
+
+test fn loop_proofs_retain_definedness_and_reject_unknown_effects() {
+    rejects("""
+fn wrong(limit Int) Int
+requires limit >= 0
+ensures result + 1 > result
+{
+    var i = 0
+    while i < limit {
+        i = i + 1
+    }
+    i
+}
+""")
+    rejects("""
+fn wrong(limit Int) Int
+ensures result == 0
+{
+    var i = 0
+    while i < limit {
+        defer { i = -1 }
+        i = i + 1
+    }
+    i
+}
+""")
+    rejects("""
+fn wrong(limit Int) Int
+ensures result == 0
+{
+    var i = 0
+    while i < limit {
+        i = i + 1
+        break
+    }
+    i
+}
+""")
+}
+
+test fn loop_body_calls_reuse_verified_summaries_without_inventing_bounds() {
+    discard accepted("""
+fn step(value Int) Int
+ensures result == value + 1
+{
+    value + 1
+}
+fn count(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var i = 0
+    while i < limit {
+        i = step(i)
+    }
+    i
+}
+""")
+    rejects("""
+fn step(value Int) Int
+ensures result >= value
+{
+    value + 2
+}
+fn wrong(limit Int) Int
+requires limit >= 0
+ensures result == limit
+{
+    var i = 0
+    while i < limit {
+        i = step(i)
+    }
+    i
+}
+""")
+}
