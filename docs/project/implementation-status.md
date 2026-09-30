@@ -100,6 +100,11 @@ identity and check selected arities with abstract elements. Recursive data,
 Task payloads, compile-time values and incremental restoration use the same
 typed aggregate path. Elementwise associated types/families retain declared
 bounds and do not infer receiver types from projected results.
+Function packs also infer arity from callback parameters/results and nested
+tuple or nominal patterns; contextual function references and overloads use
+ordinary inference after expansion. The
+[native example](../../compiler/examples/data_packs/functions.loom) covers
+shared captures and once-only input effects, without a runtime pack.
 Method/implementation packs, multiple packs and universal variadic postcondition proofs
 remain unsupported. Compile-time execution is not proof by sampling.
 

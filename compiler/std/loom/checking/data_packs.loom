@@ -49,6 +49,10 @@ fn shape_pack_arity(env Environment, pattern Node, ty Int, depth Int) Int {
         return -1
     }
     let shape = get(env.types, base_type(env, ty))
+    if (pattern.kind == NodeKind.TupleType && shape.kind != TypeKind.Tuple) ||
+    (pattern.kind == NodeKind.FunctionType && shape.kind != TypeKind.Function) {
+        return -1
+    }
     let patterns = if pattern.kind == NodeKind.FunctionType {
         group(pattern, NodeKind.Parameters)
     } else {
@@ -79,6 +83,24 @@ fn shape_pack_arity(env Environment, pattern Node, ty Int, depth Int) Int {
         if length(returns) != 0 {
             return shape_pack_arity(env, get(returns, 0), get(shape.arguments, count), depth + 1)
         }
+    }
+    -1
+}
+
+fn structural_reference_arity(env Environment, parameters List[Node], shape List[Int]) Int {
+    if length(shape) != length(parameters) + 1 {
+        return -1
+    }
+    var index = 0
+    while index < length(parameters) {
+        let pattern = child(get(parameters, index), 0)
+        if has_type_expansion(pattern) {
+            let arity = shape_pack_arity(env, pattern, get(shape, index), 0)
+            if arity >= 0 {
+                return arity
+            }
+        }
+        index = index + 1
     }
     -1
 }

@@ -1,0 +1,66 @@
+fn wrap[R, Ts...](callback fn(Ts...) R) Callback[R, Ts...] {
+    Callback {
+        call = callback
+    }
+}
+
+fn apply_callback[R, Ts...](callback Callback[R, Ts...], arguments (Ts...)) R {
+    callback.call(arguments...)
+}
+
+fn framed_callback[R, Ts...](callback fn(Int, Ts..., Text) R) fn(Int, Ts..., Text) R {
+    callback
+}
+
+fn tuple_result[Ts...](callback fn() (Ts...)) (Ts...) {
+    callback()
+}
+
+fn make_pair() (Int, Bool) {
+    (42, true)
+}
+
+fn observe(events List[Int]) fn(Int) Int {
+    push(events, 1)
+    fn(value Int) Int {
+        push(events, 2)
+        value
+    }
+}
+
+fn nested_callback[R, Ts...](callbacks (Bool, fn(Ts...) R), arguments (Ts...)) R {
+    assert callbacks.0
+    callbacks.1(arguments...)
+}
+
+fn exercise_functions() {
+    let callback = wrap(format)
+    assert apply_callback(callback, (42, "wrapped")) == "wrapped"
+    let explicit = wrap[Text, Int, Text]
+    assert explicit(format).call(42, "explicit") == "explicit"
+    let contextual fn(fn(Int, Text) Text) Callback[Text, Int, Text] = wrap
+    assert contextual(format).call(42, "contextual") == "contextual"
+
+    let framed = framed_callback(format)
+    assert framed(42, "empty middle") == "empty middle"
+    let selected = nested_callback((true, format), (42, "nested"))
+    assert selected == "nested"
+    let pair = tuple_result(make_pair)
+    assert pair.0 == 42 && pair.1
+    assert comptime {
+        apply_callback(wrap(format), (42, "compile time"))
+    } == "compile time"
+
+    let events List[Int] = []
+    let observed = wrap(observe(events))
+    assert length(events) == 1 && events[0] == 1
+    assert observed.call(42) == 42
+    assert length(events) == 2 && events[1] == 2
+
+    let values = [1]
+    let read = wrap(fn(index Int) Int {
+            values[index]
+        })
+    values[0] = 42
+    assert read.call(0) == 42
+}

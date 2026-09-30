@@ -15,46 +15,68 @@ import std.list.length
 import std.result.Result
 
 fn supplied(context Context, node Node, values List[Node], count Int) Result[List[Int], Failure] {
-    if length(values) != 0 && length(values) != count { return Result.Err(error(context, node, "wrong number of type arguments")) }
+    if length(values) != 0 && length(values) != count {
+        return Result.Err(error(context, node, "wrong number of type arguments"))
+    }
     let output = new[Int]()
     var index = 0
     while index < count {
-        push(output, if length(values) == 0 { -1 } else { context_type(context, get(values, index))? })
+        push(output, if length(values) == 0 {
+                -1
+            } else {
+                context_type(context, get(values, index))?
+            })
         index = index + 1
     }
     Result.Ok(output)
 }
+
 // Method calls infer Self from the receiver; explicit arguments describe only
 // the method's own parameters, independent of the selected implementation.
 fn supplied_call(context Context, node Node, values List[Node], current Signature) Result[List[Int], Failure] {
-    if !prototype(context.env, current.symbol) { return supplied(context, node, values, current.parameters) }
+    if !prototype(context.env, current.symbol) {
+        return supplied(context, node, values, current.parameters)
+    }
     Result.Ok(member_arguments(ints(-1), supplied(context, node, values, current.parameters - 1)?))
 }
+
 fn complete(arguments List[Int]) Bool {
     var index = 0
     while index < length(arguments) {
-        if get(arguments, index) < 0 { return false }
+        if get(arguments, index) < 0 {
+            return false
+        }
         index = index + 1
     }
     true
 }
+
 fn hint(context Context, pattern Int, arguments List[Int], node Node) Result[Int, Failure] {
-    if complete(arguments) { return substitute(context.env, context.signature.symbol, pattern, arguments, node) }
-    if concrete(context.env, pattern) { Result.Ok(pattern) } else { Result.Ok(-1) }
+    if complete(arguments) {
+        return substitute(context.env, context.signature.symbol, pattern, arguments, node)
+    }
+    if concrete(context.env, pattern) {
+        Result.Ok(pattern)
+    } else {
+        Result.Ok(-1)
+    }
 }
+
 fn data_arguments(context Context, node Node, declaration Int, types List[Node], expected Int, count Int) Result[List[Int], Failure] {
     let arguments = supplied(context, node, types, count)?
     if length(types) == 0 && expected >= 0 {
         let ty = get(context.env.types, expected)
         if ty.symbol == declaration && (ty.kind == TypeKind.Record || ty.kind == TypeKind.Enum || ty.kind == TypeKind.Refined) {
             var index = 0
-            while index < count { set(arguments, index, get(ty.arguments, index))
+            while index < count {
+                set(arguments, index, get(ty.arguments, index))
                 index = index + 1
             }
         }
     }
     Result.Ok(arguments)
 }
+
 fn template(context Context, declaration Int, count Int) Result[Int, Failure] {
     data_type(context.env, declaration, abstract_arguments(context.env, count), 0)
 }
@@ -70,7 +92,11 @@ fn pending_resource_exit(value Expr, loops Int) Bool {
     }
     var index = 0
     while index < length(value.children) {
-        let nested = if value.kind == ExprKind.While && index == 1 { loops + 1 } else { loops }
+        let nested = if value.kind == ExprKind.While && index == 1 {
+            loops + 1
+        } else {
+            loops
+        }
         if pending_resource_exit(get(value.children, index), nested) {
             return true
         }
@@ -104,19 +130,35 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
     var index = 0
     while index < length(fields) {
         let field = get(fields, index)
-        let source = Node { kind = NodeKind.Name value = "" span = field.span children = new[Node]() }
-        let value = if kind == ExprKind.Record { get(field.children, 0) } else { field }
+        let source = Node {
+            kind = NodeKind.Name
+            value = ""
+            span = field.span
+            children = new[Node]()
+        }
+        let value = if kind == ExprKind.Record {
+            get(field.children, 0)
+        } else {
+            field
+        }
         if active && pending_resource_exit(value, 0) {
             return Result.Err(error(context, source, "a resource field cannot precede return, ?, loop exit or await during aggregate construction"))
         }
         let resource = must_scope(context, field.ty)?
         let local = length(context.locals)
-        push(context.locals, Local { name = "" ty = field.ty mutable = false is_scoped = resource })
+        push(context.locals, Local {
+                name = ""
+                ty = field.ty
+                mutable = false
+                is_scoped = resource
+            })
         push(body, expression(ExprKind.Let, 0, source, "", local, expressions(value), value.falls))
         let reference = atom(ExprKind.Local, field.ty, source, local)
         push(rebuilt, if kind == ExprKind.Record {
                 expression(ExprKind.Field, field.ty, source, "", field.index, expressions(reference), true)
-            } else { reference })
+            } else {
+                reference
+            })
         if resource {
             discard pending_scope(context, source, reference, body, flags, cleanups)?
             active = true
@@ -124,7 +166,12 @@ fn pending_aggregate(context Context, node Node, ty Int, kind ExprKind, selected
         index = index + 1
     }
     let aggregate_local = length(context.locals)
-    push(context.locals, Local { name = "" ty = ty mutable = false is_scoped = false })
+    push(context.locals, Local {
+            name = ""
+            ty = ty
+            mutable = false
+            is_scoped = false
+        })
     let assembled = expression(kind, ty, node, "resource-pending-transfer", selected, rebuilt, true)
     push(body, expression(ExprKind.Let, 0, node, "", aggregate_local, expressions(assembled), true))
     pending_disarm(context, node, body, flags, cleanups)
@@ -137,35 +184,60 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
     if selected >= 0 && length(child(node, 0).children) != 0 {
         return Result.Err(error(context, node, "a type value is not a generic type constructor"))
     }
-    let declaration = if selected >= 0 { meta_visible(context, node, selected)? } else { find_data(context.env, context.signature.symbol, node, node.value)? }
-    if declaration < 0 { return Result.Err(error(context, node, "unknown record type")) }
-    let desired = if selected >= 0 { selected } else { expected }
+    let declaration = if selected >= 0 {
+        meta_visible(context, node, selected)?
+    } else {
+        find_data(context.env, context.signature.symbol, node, node.value)?
+    }
+    if declaration < 0 {
+        return Result.Err(error(context, node, "unknown record type"))
+    }
+    let desired = if selected >= 0 {
+        selected
+    } else {
+        expected
+    }
     let source = symbol(context.env, declaration).node
     let count = if data_pack(source) {
         data_argument_count(context, node, declaration, child(node, 0).children, desired, plain_inputs(new[Node]()))?
-    } else { length(group(source, NodeKind.TypeParameters)) }
+    } else {
+        length(group(source, NodeKind.TypeParameters))
+    }
     let shape = get(context.env.types, template(context, declaration, count)?)
-    if shape.kind != TypeKind.Record { return Result.Err(error(context, node, "construction requires a record type")) }
+    if shape.kind != TypeKind.Record {
+        return Result.Err(error(context, node, "construction requires a record type"))
+    }
     let arguments = data_arguments(context, node, declaration, child(node, 0).children, desired, count)?
     let seen = new[Bool]()
     var index = 0
-    while index < length(shape.fields) { push(seen, false)
+    while index < length(shape.fields) {
+        push(seen, false)
         index = index + 1
     }
     let fields = new[Expr]()
     let update = child(node, length(node.children) - 1).kind == NodeKind.Spread
-    let end = length(node.children) - if update { 1 } else { 0 }
+    let end = length(node.children) - if update {
+        1
+    } else {
+        0
+    }
     index = 1
     while index < end {
         let member = child(node, index)
         var field = -1
         var search = 0
         while search < length(shape.fields) {
-            if get(shape.fields, search).name == member.value { field = search }
+            if get(shape.fields, search).name == member.value {
+                field = search
+            }
             search = search + 1
         }
-        if field < 0 { return Result.Err(error(context, member, "unknown record field")) }
-        if get(seen, field) { return Result.Err(error(context, member, "duplicate record initializer")) }
+        if field < 0 {
+            return Result.Err(error(context, member, "unknown record field"))
+        }
+        if get(seen, field) {
+            return Result.Err(error(context, member, "duplicate record initializer"))
+        }
         set(seen, field, true)
         let pattern = get(shape.fields, field).ty
         let value = expr(context, child(member, 0), hint(context, pattern, arguments, member)?)?
@@ -176,8 +248,12 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
     if update {
         return updated_record(context, node, declaration, shape, arguments, seen, fields)
     }
-    if length(fields) != length(shape.fields) { return Result.Err(error(context, node, "initialize every record field")) }
-    if !complete(arguments) { return Result.Err(error(context, node, "cannot infer record type arguments")) }
+    if length(fields) != length(shape.fields) {
+        return Result.Err(error(context, node, "initialize every record field"))
+    }
+    if !complete(arguments) {
+        return Result.Err(error(context, node, "cannot infer record type arguments"))
+    }
     index = 0
     while index < length(fields) {
         let field = get(fields, index)
@@ -203,31 +279,50 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     Result.Ok(expression(ExprKind.Record, ty, node, "", -1, fields, all_fall(fields)))
 }
+
 fn variant(context Context, node Node, types List[Node], inputs CallInputs, expected Int) Result[Expr, Failure] {
     let selected_type = meta_constructor_type(context, node, package(node.value))?
     if selected_type >= 0 && length(types) != 0 {
         return Result.Err(error(context, node, "a type value is not a generic type constructor"))
     }
-    let declaration = if selected_type >= 0 { meta_visible(context, node, selected_type)? } else {
+    let declaration = if selected_type >= 0 {
+        meta_visible(context, node, selected_type)?
+    } else {
         find_data(context.env, context.signature.symbol, node, package(node.value))?
     }
-    if declaration < 0 { return Result.Err(error(context, node, "unknown enum type")) }
-    let desired = if selected_type >= 0 { selected_type } else { expected }
+    if declaration < 0 {
+        return Result.Err(error(context, node, "unknown enum type"))
+    }
+    let desired = if selected_type >= 0 {
+        selected_type
+    } else {
+        expected
+    }
     let source = symbol(context.env, declaration).node
     let count = if data_pack(source) {
         data_argument_count(context, node, declaration, types, desired, inputs)?
-    } else { length(group(source, NodeKind.TypeParameters)) }
+    } else {
+        length(group(source, NodeKind.TypeParameters))
+    }
     let shape = get(context.env.types, template(context, declaration, count)?)
-    if shape.kind != TypeKind.Enum { return Result.Err(error(context, node, "variant construction requires an enum")) }
+    if shape.kind != TypeKind.Enum {
+        return Result.Err(error(context, node, "variant construction requires an enum"))
+    }
     var selected = -1
     var index = 0
     while index < length(shape.variants) {
-        if get(shape.variants, index).name == name(node.value) { selected = index }
+        if get(shape.variants, index).name == name(node.value) {
+            selected = index
+        }
         index = index + 1
     }
-    if selected < 0 { return Result.Err(error(context, node, "unknown enum variant")) }
+    if selected < 0 {
+        return Result.Err(error(context, node, "unknown enum variant"))
+    }
     let patterns = get(shape.variants, selected).fields
-    if length(patterns) != length(inputs.nodes) { return Result.Err(error(context, node, "enum payload count does not match")) }
+    if length(patterns) != length(inputs.nodes) {
+        return Result.Err(error(context, node, "enum payload count does not match"))
+    }
     let arguments = data_arguments(context, node, declaration, types, desired, count)?
     let values = new[Expr]()
     index = 0
@@ -239,7 +334,9 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
         push(values, value)
         index = index + 1
     }
-    if !complete(arguments) { return Result.Err(error(context, node, "cannot infer enum type arguments")) }
+    if !complete(arguments) {
+        return Result.Err(error(context, node, "cannot infer enum type arguments"))
+    }
     index = 0
     while index < length(values) {
         let target = substitute(context.env, declaration, get(patterns, index), arguments, node)?
@@ -256,18 +353,36 @@ fn variant(context Context, node Node, types List[Node], inputs CallInputs, expe
         index = index + 1
     }
     Result.Ok(empty_inputs(context, inputs, node,
-        expression(ExprKind.Variant, ty, node, "", selected, values, all_fall(values))))
+            expression(ExprKind.Variant, ty, node, "", selected, values, all_fall(values))))
 }
-// Arity discovery is a type probe, not a saved runtime tuple expansion. Keep
+
+// Arity discovery is a type probe, not a saved runtime argument expansion. Keep
 // its locals/queues private until overload selection decides the input phase.
-fn tuple_pack_arity(context Context, inputs CallInputs, position Int) Result[Int, Failure] {
-    let node = get(inputs.nodes, position)
-    let value = match saved_input(inputs, position) {
-        Option.Some(saved) => saved,
-        Option.None => static_probe(context, node, -1)?
+fn structural_call_arity(context Context, inputs CallInputs, parameters List[Node]) Int {
+    var index = 0
+    while index < length(parameters) {
+        let pattern = child(get(parameters, index), 0)
+        if has_type_expansion(pattern) {
+            let probed Result[Expr, Failure] = match saved_input(inputs, index) {
+                Option.Some(saved) => Result.Ok(saved)
+                Option.None => static_probe(context, get(inputs.nodes, index), -1)
+            }
+            match probed {
+                Result.Ok(value) => {
+                    let arity = shape_pack_arity(context.env, pattern, value.ty, 0)
+                    if arity >= 0 {
+                        return arity
+                    }
+                }
+                // A callback or empty aggregate may need a contextual hint.
+                // Another input can select the arity before ordinary inference.
+                Result.Err(_) => {
+                }
+            }
+        }
+        index = index + 1
     }
-    let shape = get(context.env.types, value.ty)
-    Result.Ok(if shape.kind == TypeKind.Tuple { length(shape.arguments) } else { -1 })
+    -1
 }
 
 fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
@@ -275,10 +390,14 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let inputs = call_inputs(context, child(node, 1).children)?
     let first = slice(node.value, 0, first_dot(node.value))
     if lookup(context, first) < 0 && parameter_name(context, first) {
-        if package(node.value) != "" { return variant(context, node, types, inputs, expected) }
+        if package(node.value) != "" {
+            return variant(context, node, types, inputs, expected)
+        }
         let selected = meta_constructor_type(context, node, first)?
         let declaration = meta_visible(context, node, selected)?
-        if length(types) != 0 { return Result.Err(error(context, node, "a type value is not a generic type constructor")) }
+        if length(types) != 0 {
+            return Result.Err(error(context, node, "a type value is not a generic type constructor"))
+        }
         if get(context.env.types, selected).kind == TypeKind.Refined {
             return constrained(context, node, declaration, meta_arguments(context, node, selected), inputs)
         }
@@ -288,29 +407,47 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         let selected = meta_binding(context, first)
         if selected >= 0 {
             let declaration = meta_visible(context, node, selected)?
-            if package(node.value) != "" { return variant(context, node, types, inputs, expected) }
-            if length(types) != 0 { return Result.Err(error(context, node, "a type value is not a generic type constructor")) }
+            if package(node.value) != "" {
+                return variant(context, node, types, inputs, expected)
+            }
+            if length(types) != 0 {
+                return Result.Err(error(context, node, "a type value is not a generic type constructor"))
+            }
             if get(context.env.types, selected).kind == TypeKind.Refined {
                 return constrained(context, node, declaration, meta_arguments(context, node, selected), inputs)
             }
             return Result.Err(error(context, node, "use a record or enum constructor for the selected type"))
         }
         if package(node.value) == "" {
-            let callee = Node { kind = NodeKind.Name value = node.value span = node.span children = new[Node]() }
+            let callee = Node {
+                kind = NodeKind.Name
+                value = node.value
+                span = node.span
+                children = new[Node]()
+            }
             let value = expr(context, callee, -1)?
             if length(types) != 0 && (get(context.env.types, value.ty).kind == TypeKind.List || value.ty == 4) {
                 return call_value(context, node, index_read(context, node, value, types)?, new[Node](), inputs)
             }
-            if get(context.env.types, value.ty).kind != TypeKind.Function { return Result.Err(error(context, node, "a local value is not callable")) }
+            if get(context.env.types, value.ty).kind != TypeKind.Function {
+                return Result.Err(error(context, node, "a local value is not callable"))
+            }
             return call_value(context, node, value, types, inputs)
         }
-        let receiver = Node { kind = NodeKind.Name value = package(node.value) span = node.span children = new[Node]() }
+        let receiver = Node {
+            kind = NodeKind.Name
+            value = package(node.value)
+            span = node.span
+            children = new[Node]()
+        }
         return method_call(context, node, receiver, name(node.value), types, inputs, -1, expected)
     }
     if length(context.env.concepts) != 0 && package(node.value) != "" {
         let capability = concept_named(context.env, context.signature.symbol, node, package(node.value))?
         if capability >= 0 {
-            if length(inputs.nodes) == 0 { return Result.Err(error(context, node, "a concept method call needs a receiver")) }
+            if length(inputs.nodes) == 0 {
+                return Result.Err(error(context, node, "a concept method call needs a receiver"))
+            }
             return method_call_checked(context, node, get(inputs.nodes, 0), input_value(context, inputs, 0, -1, false)?,
                 name(node.value), types, input_tail(inputs), capability, expected)
         }
@@ -337,7 +474,9 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         let signature = get(context.env.signatures, index)
         var candidate = 0
         while candidate < length(available) {
-            if get(available, candidate) == signature.symbol && length(signature.params) == length(inputs.nodes) && (length(types) == 0 || length(types) == signature.parameters) { push(options, index) }
+            if get(available, candidate) == signature.symbol && length(signature.params) == length(inputs.nodes) && (length(types) == 0 || length(types) == signature.parameters) {
+                push(options, index)
+            }
             candidate = candidate + 1
         }
         index = index + 1
@@ -353,27 +492,20 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
             if !variadic_parameters(parameters) {
                 arity = -1
                 if length(inputs.nodes) == length(parameters) {
-                    let position = tuple_pack_position(parameters)
                     if length(types) != 0 {
                         if length(options) == 0 {
                             arity = length(types) - pack
                         } else {
                             // A fixed overload may supply a needed contextual
                             // hint, such as List[T] for an empty list inside a
-                            // block. Probe privately before adding a tuple
+                            // block. Probe privately before adding a structural
                             // contender that would remove that single hint.
-                            let source = get(inputs.nodes, position)
-                            match static_probe(context, source, -1) {
-                                Result.Ok(value) => {
-                                    if get(context.env.types, value.ty).kind == TypeKind.Tuple {
-                                        arity = length(types) - pack
-                                    }
-                                }
-                                Result.Err(_) => {}
+                            if structural_call_arity(context, inputs, parameters) >= 0 {
+                                arity = length(types) - pack
                             }
                         }
                     } else {
-                        arity = tuple_pack_arity(context, inputs, position)? - tuple_pack_fixed(get(parameters, position))
+                        arity = structural_call_arity(context, inputs, parameters)
                     }
                 }
             }
@@ -385,15 +517,24 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     }
     invoke(context, node, options, types, inputs, new[Expr](), expected)
 }
+
 fn invoke(context Context, node Node, options List[Int], types List[Node], inputs CallInputs, prefix List[Expr], expected Int) Result[Expr, Failure] {
     let values = new[Expr]()
     let probes = new[Bool]()
     let probing = static_options(context, options)
     var index = 0
-    while index < length(prefix) { push(values, input_effects(context, inputs, index, get(inputs.nodes, index), get(prefix, index)))
-        if probing { push(probes, false) }
-        index = index + 1 }
-    let inferred = if length(options) == 1 { supplied_call(context, node, types, get(context.env.signatures, get(options, 0)))? } else { new[Int]() }
+    while index < length(prefix) {
+        push(values, input_effects(context, inputs, index, get(inputs.nodes, index), get(prefix, index)))
+        if probing {
+            push(probes, false)
+        }
+        index = index + 1
+    }
+    let inferred = if length(options) == 1 {
+        supplied_call(context, node, types, get(context.env.signatures, get(options, 0)))?
+    } else {
+        new[Int]()
+    }
     if length(options) == 1 {
         var previous = 0
         while previous < length(prefix) {
@@ -408,7 +549,9 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
         }
         let probe = probing && static_position(context, options, index)
         let value = input_value(context, inputs, index, expected_argument, probe)?
-        if probing { push(probes, probe) }
+        if probing {
+            push(probes, probe)
+        }
         push(values, value)
         if length(options) == 1 {
             discard infer(context.env, get(get(context.env.signatures, get(options, 0)).params, index), value.ty, inferred)
@@ -419,12 +562,14 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
     let value = invoke_selected(context, node, choose_overload(context, node, matches)?, inputs, values, probes)?
     Result.Ok(empty_inputs(context, inputs, node, value))
 }
+
 record OverloadSet {
     candidates List[Instance]
     widening List[Bool]
     exact Bool
     missing_requirement Bool
 }
+
 fn matching_overloads(context Context, node Node, options List[Int], types List[Node], values List[Expr], expected Int) Result[OverloadSet, Failure] {
     let matches = new[Instance]()
     let widening = new[Bool]()
@@ -444,9 +589,17 @@ fn matching_overloads(context Context, node Node, options List[Int], types List[
         }
         if matched && !complete(args) && expected >= 0 {
             let result_hint = if async_signature(context.env, candidate_signature) {
-                if get(context.env.types, expected).kind == TypeKind.Task { get(get(context.env.types, expected).arguments, 0) } else { -1 }
-            } else { expected }
-            if result_hint >= 0 { discard infer(context.env, candidate_signature.result, result_hint, args) }
+                if get(context.env.types, expected).kind == TypeKind.Task {
+                    get(get(context.env.types, expected).arguments, 0)
+                } else {
+                    -1
+                }
+            } else {
+                expected
+            }
+            if result_hint >= 0 {
+                discard infer(context.env, candidate_signature.result, result_hint, args)
+            }
         }
         if matched && complete(args) {
             if satisfies_arguments(context, candidate_signature, args, node)? {
@@ -455,35 +608,55 @@ fn matching_overloads(context Context, node Node, options List[Int], types List[
                     let target = substitute(context.env, candidate_signature.symbol, get(candidate_signature.params, argument), args, node)?
                     let value = get(values, argument)
                     if value.ty != target {
-                        if can_widen(context, value.ty, target)? { widened = true } else { matched = false }
+                        if can_widen(context, value.ty, target)? {
+                            widened = true
+                        } else {
+                            matched = false
+                        }
                     }
                     argument = argument + 1
                 }
                 if matched {
-                    push(matches, Instance { signature = id arguments = args constants = new[StaticValue]() })
+                    push(matches, Instance {
+                            signature = id
+                            arguments = args
+                            constants = new[StaticValue]()
+                        })
                     push(widening, widened)
                     exact = exact || !widened
                 }
-            } else { missing_requirement = true }
+            } else {
+                missing_requirement = true
+            }
         }
         index = index + 1
     }
-    Result.Ok(OverloadSet { candidates = matches widening = widening exact = exact missing_requirement = missing_requirement })
+    Result.Ok(OverloadSet {
+            candidates = matches
+            widening = widening
+            exact = exact
+            missing_requirement = missing_requirement
+        })
 }
+
 fn choose_overload(context Context, node Node, matches OverloadSet) Result[Instance, Failure] {
     var selected = -1
     var index = 0
     while index < length(matches.candidates) {
         if !matches.exact || !get(matches.widening, index) {
-            if selected >= 0 { return Result.Err(error(context, node, "ambiguous overload; qualify the call or supply type arguments")) }
+            if selected >= 0 {
+                return Result.Err(error(context, node, "ambiguous overload; qualify the call or supply type arguments"))
+            }
             selected = index
         }
         index = index + 1
     }
     if selected < 0 {
         return Result.Err(error(context, node, if matches.missing_requirement {
-            "type argument needs an explicit implementation of the required concept"
-        } else { "no accessible overload matches these arguments" }))
+                    "type argument needs an explicit implementation of the required concept"
+                } else {
+                    "no accessible overload matches these arguments"
+                }))
     }
     Result.Ok(get(matches.candidates, selected))
 }
@@ -495,11 +668,17 @@ fn choose_overload(context Context, node Node, matches OverloadSet) Result[Insta
 fn saved_tuple_prepared(inputs CallInputs, signature Signature, position Int) Bool {
     let saved = match saved_input(inputs, position) {
         Option.Some(value) => value,
-        Option.None => { return true }
+        Option.None => {
+            return true
+        }
     }
-    if saved.kind != ExprKind.Field || length(saved.children) != 1 { return false }
+    if saved.kind != ExprKind.Field || length(saved.children) != 1 {
+        return false
+    }
     let source = get(saved.children, 0)
-    if source.kind != ExprKind.Local { return false }
+    if source.kind != ExprKind.Local {
+        return false
+    }
     var index = 0
     while index < position {
         if !is_static(signature, index) {
@@ -507,10 +686,13 @@ fn saved_tuple_prepared(inputs CallInputs, signature Signature, position Int) Bo
                 Option.Some(candidate) => {
                     if candidate.kind == ExprKind.Block && length(candidate.children) > 0 {
                         let first = get(candidate.children, 0)
-                        if first.kind == ExprKind.Let && first.index == source.index { return true }
+                        if first.kind == ExprKind.Let && first.index == source.index {
+                            return true
+                        }
                     }
                 }
-                Option.None => {}
+                Option.None => {
+                }
             }
         }
         index = index + 1
@@ -519,11 +701,17 @@ fn saved_tuple_prepared(inputs CallInputs, signature Signature, position Int) Bo
 }
 
 fn invoke_selected(context Context, node Node, instance Instance, inputs CallInputs, values List[Expr], probes List[Bool]) Result[Expr, Failure] {
-    if length(context.env.packs) != 0 { discard check_pack_arity(context.env, instance.signature)? }
+    if length(context.env.packs) != 0 {
+        discard check_pack_arity(context.env, instance.signature)?
+    }
     let signature = get(context.env.signatures, instance.signature)
     let constants = new[StaticValue]()
     let filtered = has_static(signature)
-    let runtime_values = if filtered { new[Expr]() } else { values }
+    let runtime_values = if filtered {
+        new[Expr]()
+    } else {
+        values
+    }
     var index = 0
     while index < length(values) {
         let target = substitute(context.env, context.signature.symbol, get(signature.params, index), instance.arguments, node)?
@@ -545,15 +733,24 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
                         return Result.Err(error(context, input, "a comptime function field cannot split a saved tuple's captured environment"))
                     }
                 }
-                Option.None => {}
+                Option.None => {
+                }
             }
             push(constants, value)
-            if value.storage >= 0 { push(runtime_values, static_environment_argument(context, input, value)?) }
+            if value.storage >= 0 {
+                push(runtime_values, static_environment_argument(context, input, value)?)
+            }
         } else {
-            let value = if length(probes) != 0 && get(probes, index) { input_value(context, inputs, index, target, false)? } else {
+            let value = if length(probes) != 0 && get(probes, index) {
+                input_value(context, inputs, index, target, false)?
+            } else {
                 typed(context, input, get(values, index), target)?
             }
-            if filtered { push(runtime_values, value) } else { set(runtime_values, index, value) }
+            if filtered {
+                push(runtime_values, value)
+            } else {
+                set(runtime_values, index, value)
+            }
         }
         index = index + 1
     }
@@ -579,12 +776,14 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
             // arguments remain abstract. Do not guess for evidence-only types,
             // or validate a default body that an implementation overrides.
             if kind != TypeKind.Parameter && kind != TypeKind.Associated && kind != TypeKind.Dyn &&
-                conformance(context.env, receiver, symbol(context.env, signature.symbol).owner).implementation >= 0 {
+            conformance(context.env, receiver, symbol(context.env, signature.symbol).owner).implementation >= 0 {
                 let target = method_target(context.env, instance.signature, instance.arguments, constants)?
                 discard validate_static(context.env, target.signature, constants, symbol(context.env, get(context.env.signatures, target.signature).symbol).node)?
             }
         }
-    } else { discard validate_static(context.env, instance.signature, constants, node)? }
+    } else {
+        discard validate_static(context.env, instance.signature, constants, node)?
+    }
     var resource_argument = 0
     while resource_argument < length(runtime_values) {
         discard resource_receiver(context, node, get(runtime_values, resource_argument))?
@@ -605,11 +804,23 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
         // A private suspension primitive is not a separately scheduled Task.
         // Await unwraps this temporary Task type; task flow rejects any escape.
         return Result.Ok(expression(ExprKind.Suspend, output, node, validate_intrinsic(context.env, instance.signature)?, -1,
-            runtime_values, all_fall(runtime_values)))
+                runtime_values, all_fall(runtime_values)))
     }
-    let target = if context.emit { schedule(context.env, instance.signature, instance.arguments, constants, node)? } else { -1 }
+    let target = if context.emit {
+        schedule(context.env, instance.signature, instance.arguments, constants, node)?
+    } else {
+        -1
+    }
     let returns = !(has(symbol(context.env, signature.symbol).node, NodeKind.Intrinsic) &&
         symbol(context.env, signature.symbol).name == "fault_text")
-    Result.Ok(expression(if asynchronous { ExprKind.TaskCall } else { ExprKind.Call }, output, node,
-        if asynchronous { task_creation_message(context, node) } else { "" }, target, runtime_values, returns && all_fall(runtime_values)))
+    Result.Ok(expression(if asynchronous {
+                ExprKind.TaskCall
+            } else {
+                ExprKind.Call
+            }, output, node,
+            if asynchronous {
+                task_creation_message(context, node)
+            } else {
+                ""
+            }, target, runtime_values, returns && all_fall(runtime_values)))
 }

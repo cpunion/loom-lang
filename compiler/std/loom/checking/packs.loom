@@ -45,8 +45,8 @@ fn mentions_pack(node Node, name Text) Bool {
     false
 }
 
-// A structural pack takes one tuple argument. Each expanded type pattern
-// shares the same arity after subtracting its fixed prefix and suffix fields.
+// Direct tuple expansions retain their one-expansion rule. Nested function
+// and nominal patterns use the same type elaboration and ordinary inference.
 fn tuple_pack_expansion(parameter Node) Int {
     let ty = child(parameter, 0)
     if ty.kind != NodeKind.TupleType {
@@ -66,22 +66,28 @@ fn tuple_pack_parameter(parameter Node) Bool {
     tuple_pack_expansion(parameter) >= 0
 }
 
-fn tuple_pack_fixed(parameter Node) Int {
-    if tuple_pack_parameter(parameter) {
-        length(child(parameter, 0).children) - 1
-    } else {
-        0
+fn has_type_expansion(node Node) Bool {
+    if node.kind == NodeKind.Spread {
+        return true
     }
+    var index = 0
+    while index < length(node.children) {
+        if has_type_expansion(child(node, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
 }
 
 fn variadic_parameters(parameters List[Node]) Bool {
     length(parameters) != 0 && child(get(parameters, length(parameters) - 1), 0).kind == NodeKind.Spread
 }
 
-fn tuple_pack_position(parameters List[Node]) Int {
+fn structural_pack_position(parameters List[Node]) Int {
     var index = 0
     while index < length(parameters) {
-        if tuple_pack_parameter(get(parameters, index)) {
+        if has_type_expansion(child(get(parameters, index), 0)) {
             return index
         }
         index = index + 1
@@ -114,8 +120,8 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
     if selected + 1 != length(types) {
         return Result.Err(failure(env, owner, get(types, selected), "declare one type pack, last in the type parameter list"))
     }
-    if !data_pack(item.node) && !variadic_parameters(parameters) && tuple_pack_position(parameters) < 0 {
-        return Result.Err(failure(env, owner, item.node, "a type pack needs a structural tuple parameter or a final variadic parameter"))
+    if !data_pack(item.node) && !variadic_parameters(parameters) && structural_pack_position(parameters) < 0 {
+        return Result.Err(failure(env, owner, item.node, "a type pack needs a structural parameter or a final variadic parameter"))
     }
     var clause = 0
     while clause < length(item.node.children) {
@@ -124,8 +130,8 @@ fn validate_pack(env Environment, owner Int) Result[Bool, Failure] {
             var index = 0
             while index < length(parameters) {
                 let parameter = get(parameters, index)
-                if (tuple_pack_parameter(parameter) || child(parameter, 0).kind == NodeKind.Spread) && pack_contract(condition, parameter.value) {
-                    return Result.Err(failure(env, owner, condition, "variadic preconditions currently use fixed scalar parameters, not the tuple pack"))
+                if has_type_expansion(child(parameter, 0)) && pack_contract(condition, parameter.value) {
+                    return Result.Err(failure(env, owner, condition, "variadic preconditions currently use fixed scalar parameters, not pack-bearing values"))
                 }
                 index = index + 1
             }
@@ -296,7 +302,11 @@ fn iteration_key(node Node, statements List[Node], value Text, named Bool) {
     let key = part(node, NodeKind.IterationKey)
     if key >= 0 {
         let binding = child(node, key)
-        let kind = if named { NodeKind.Text } else { NodeKind.Integer }
+        let kind = if named {
+            NodeKind.Text
+        } else {
+            NodeKind.Integer
+        }
         push(statements, pack_binding(binding, binding.value, pack_node(binding, kind, value, new[Node]()), true))
     }
 }
@@ -395,8 +405,10 @@ fn bind_iteration_pattern(node Node, binding Text, selected Text, depth Int) Nod
         index = index + 1
     }
     pack_node(node, node.kind, if typed && refers {
-        concat(selected, slice(node.value, length(binding), length(node.value)))
-    } else { node.value }, children)
+            concat(selected, slice(node.value, length(binding), length(node.value)))
+        } else {
+            node.value
+        }, children)
 }
 
 fn bind_type_iteration(node Node, binding Text, selected Text, shadowed Bool, type_shadowed Bool, depth Int) Node {
@@ -425,7 +437,11 @@ fn bind_type_iteration(node Node, binding Text, selected Text, shadowed Bool, ty
         // Pattern names declare new values; their guards/bodies use the outer
         // type binding, and an identically named value shadows Name uses.
         if (node.kind == NodeKind.Arm || node.kind == NodeKind.Destructure) && index == 0 {
-            push(children, if type_shadowed { member } else { bind_iteration_pattern(member, binding, selected, depth + 1) })
+            push(children, if type_shadowed {
+                    member
+                } else {
+                    bind_iteration_pattern(member, binding, selected, depth + 1)
+                })
         } else {
             let member_shadow = if node.kind == NodeKind.Arm && index > 0 {
                 current_shadow || pack_pattern_binds(child(node, 0), binding)
@@ -448,9 +464,17 @@ fn bind_type_iteration(node Node, binding Text, selected Text, shadowed Bool, ty
         // A generated closure body embeds type references. Do not reuse its
         // source symbol for another type at the same source span/ordinal.
         let marker = part(node, NodeKind.ExpansionId)
-        let identity = concat(if marker < 0 { "" } else { child(node, marker).value }, selected)
+        let identity = concat(if marker < 0 {
+                ""
+            } else {
+                child(node, marker).value
+            }, selected)
         let value = pack_node(node, NodeKind.ExpansionId, identity, new[Node]())
-        if marker < 0 { push(children, value) } else { set(children, marker, value) }
+        if marker < 0 {
+            push(children, value)
+        } else {
+            set(children, marker, value)
+        }
     }
     pack_node(node, node.kind, value, children)
 }
@@ -547,7 +571,11 @@ fn pack_declaration(env Environment, owner Int, arity Int) Result[Node, Failure]
     let expanded_params = new[Node]()
     index = 0
     var type_shadowed = false
-    while index < length(parameters) - if variadic { 1 } else { 0 } {
+    while index < length(parameters) - if variadic {
+        1
+    } else {
+        0
+    } {
         push(expanded_params, expand_pack_type(env, owner, get(parameters, index), pack.value, arity, -1, false, 0)?)
         type_shadowed = type_shadowed || get(parameters, index).value == pack.value
         index = index + 1
@@ -824,14 +852,7 @@ fn pack_references(context Context, options List[Int], types List[Node], desired
             let arity = if desired >= 0 {
                 let shape = get(context.env.types, desired).arguments
                 if !variadic {
-                    let position = tuple_pack_position(parameters)
-                    if length(shape) == length(parameters) + 1 &&
-                    get(context.env.types, get(shape, position)).kind == TypeKind.Tuple {
-                        length(get(context.env.types, get(shape, position)).arguments) -
-                        tuple_pack_fixed(get(parameters, position))
-                    } else {
-                        -1
-                    }
+                    structural_reference_arity(context.env, parameters, shape)
                 } else {
                     length(shape) - length(parameters)
                 }

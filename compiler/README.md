@@ -788,19 +788,24 @@ runtime evaluation. A tuple of Tasks can be awaited directly; this uses
 
 ### Variadic functions
 
-An ordinary top-level function can declare one final type pack. Structural tuple
-parameters may expand it at any parameter position; a direct variadic value
+An ordinary top-level function can declare one final type pack. Structural
+tuple, function and nominal parameters may expand it at any parameter position;
+a direct variadic value
 parameter must be last. Type patterns expand elementwise; the named value pack
 is an immutable tuple.
 
 ```loom
-pub fn pack[Ts...](values Ts...) (Ts...) { values }
+pub fn pack[Ts...](values Ts...) (Ts...) {
+    values
+}
 
 fn forward[R, Ts...](callback fn(Ts...) R, values Ts...) R {
     callback(values...)
 }
 
-async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) { values }
+async fn task_pack[Ts...](values Task[Ts]...) (Task[Ts]...) {
+    values
+}
 
 let pair = pack(1, "two")
 let empty = pack()
@@ -814,6 +819,27 @@ function references select the same ordinary signature. A pack bound such as
 checks the body with independent abstract element types and only the declared
 bounds, before concrete instantiation. Zero-element packs produce an inferred
 empty tuple, not a no-result expression; source `()` and `Unit` remain unavailable.
+
+A structural parameter can supply arity without a direct value pack. This
+includes a callback's parameter list or returned tuple, nested tuples and
+nominal type arguments. An input with a known shape supplies arity; ordinary
+inference then checks every occurrence, fixed field, element type and declared
+bound. An overloaded callback still needs an exact contextual function type:
+use explicit type arguments or bind it to an annotated function value first.
+
+```loom
+fn callback[R, Ts...](value fn(Ts...) R) fn(Ts...) R {
+    value
+}
+
+fn apply[R, Ts...](value fn(Ts...) R, arguments (Ts...)) R {
+    value(arguments...)
+}
+```
+
+The [function-pattern example](examples/data_packs/functions.loom) exercises
+callback wrappers, nested inference, contextual function references, CTFE,
+shared captures and once-only argument evaluation through native commands.
 
 The compiler elaborates each selected arity into ordinary type parameters and
 native parameters, with a local tuple binding for runtime packs. There is no runtime
