@@ -1,4 +1,5 @@
 import std.list.push
+import std.list.new
 import std.option.Option
 import std.reflect.describe
 import std.reflect.Kind
@@ -7,7 +8,7 @@ import std.reflect.Kind
 // captured state. The result contains compile-time-only type identities.
 pub fn parameter_types[R, Ts...](callback fn(Ts...) R) List[type] {
     discard callback
-    let types List[type] = []
+    let types = new[type]()
     comptime for T in Ts {
         push(types, T)
     }

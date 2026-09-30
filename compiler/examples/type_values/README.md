@@ -10,6 +10,9 @@ The keyword `type` names compile-time type identity, not a runtime tag or a
 reflection descriptor. Ordinary pure functions can accept and return it, store
 it in compile-time data, and select it with loops and conditionals.
 `std.meta.of[T]()` also accepts tuple/function/dynamic type syntax.
+The same keyword works in explicit generic arguments (`new[type]()`) and as
+the compile-time identity of `type` itself; it is still reserved as a name and
+cannot become a native value or an index.
 `std.meta.parameter_types(callback)` returns the ordered `List[type]` inputs of
 a known function value. `std.meta.return_type(callback)` returns `Option[type]`:
 `None` for an omitted result, without exposing a `Unit` type. These ordinary

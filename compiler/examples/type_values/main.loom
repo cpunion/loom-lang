@@ -1,4 +1,6 @@
 import std.list.length
+import std.list.new
+import std.list.push
 import std.meta.of
 import std.meta.list
 
@@ -72,6 +74,12 @@ fn exercise() {
     assert text == "chosen"
     assert comptime {
         choose(true, Text, Int) == Text
+    }
+    assert comptime {
+        let types = new[type]()
+        push(types, Int)
+        push(types, type)
+        types[0] == Int && types[1] == of[type]()
     }
     let Pair = comptime {
         of[(Int, Text)]()

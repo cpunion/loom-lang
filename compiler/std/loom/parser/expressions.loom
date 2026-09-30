@@ -188,7 +188,7 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
     if word(cursor, "fn") || word(cursor, "async") {
         return fields(cursor, function_expression(cursor)?)
     }
-    if word(cursor, "dyn") {
+    if word(cursor, "dyn") || word(cursor, "type") {
         return fields(cursor, type_ref(cursor)?)
     }
     if word(cursor, "comptime") {

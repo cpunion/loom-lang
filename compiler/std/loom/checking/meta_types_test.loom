@@ -18,6 +18,34 @@ test fn type_values_flow_through_pure_functions_and_select_concrete_types() {
         """)
 }
 
+test fn meta_type_identity_uses_the_ordinary_generic_path() {
+    discard accepted("""
+        fn identity[T](value T) T {
+            value
+        }
+        fn main() {
+            assert comptime {
+                let types List[type] = [identity[type](Int), type]
+                types[0] == Int && types[1] == type
+            }
+        }
+        """)
+    rejects("""
+        fn main() {
+            let values = [1, 2]
+            discard values[type]
+        }
+        """)
+    rejects("""
+        pub fn exposed() type {
+            type
+        }
+        fn main() {
+            discard exposed()
+        }
+        """)
+}
+
 test fn selected_types_do_not_grant_private_construction_access() {
     let files = source_files("""
         import hidden.secret
