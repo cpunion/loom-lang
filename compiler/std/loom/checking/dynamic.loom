@@ -334,6 +334,31 @@ fn emit_functions(env Environment, retain Bool) Result[List[Function], Failure] 
 fn emit_functions_reusing(env Environment, retain Bool, bodies BodyReuse) Result[List[Function], Failure] {
     emit_functions_in(env, retain, bodies, false)
 }
+fn emitted_function(env Environment, function Function) Result[Bool, Failure] {
+    let node = symbol(env, function.symbol).node
+    var index = 0
+    if length(env.interfaces) == 0 {
+        // Ordinary instance arguments already determine the nominal fields.
+        // Only dyn needs a graph walk to activate nested interface slots.
+        while index < length(function.params) {
+            if !concrete(env, get(function.params, index)) {
+                return Result.Err(failure(env, function.symbol, node, "emitted function types must be concrete"))
+            }
+            index = index + 1
+        }
+        if !concrete(env, function.result) {
+            return Result.Err(failure(env, function.symbol, node, "emitted function types must be concrete"))
+        }
+    } else {
+        let seen = new[Int]()
+        while index < length(function.params) {
+            discard emitted_type(env, function.symbol, get(function.params, index), node, seen)?
+            index = index + 1
+        }
+        discard emitted_type(env, function.symbol, function.result, node, seen)?
+    }
+    Result.Ok(true)
+}
 // Only a private proof program may retain abstract call instances. Normal
 // emission and CTFE still require concrete runtime parameters and results.
 fn emit_functions_in(env Environment, retain Bool, bodies BodyReuse, proof Bool) Result[List[Function], Failure] {
@@ -356,14 +381,7 @@ fn emit_functions_in(env Environment, retain Bool, bodies BodyReuse, proof Bool)
                 }
             }
             if !proof {
-                let declaration = symbol(env, checked.symbol).node
-                let seen = new[Int]()
-                var parameter = 0
-                while parameter < length(checked.params) {
-                    discard emitted_type(env, checked.symbol, get(checked.params, parameter), declaration, seen)?
-                    parameter = parameter + 1
-                }
-                discard emitted_type(env, checked.symbol, checked.result, declaration, seen)?
+                discard emitted_function(env, checked)?
             }
             push(functions, checked)
             index = index + 1
