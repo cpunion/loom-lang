@@ -157,7 +157,10 @@ fn editor_unsafe_body(node Node) Bool {
     var index = 0
     while index < length(node.children) {
         let child = get(node.children, index)
-        if child.kind == NodeKind.Function || child.kind == NodeKind.Comptime ||
+        // A static parameter marker or selected branch does not invalidate
+        // runtime binding evidence. editor_covered still requires every use
+        // to be accounted for across the actual checked specializations.
+        if child.kind == NodeKind.Function ||
         child.kind == NodeKind.ComptimeFor || child.kind == NodeKind.ComptimeMap ||
         editor_unsafe_body(child) {
             return true

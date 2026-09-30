@@ -112,6 +112,23 @@ fn static_partial(comptime chosen Bool, comptime missing Int) Int {
     }
 }
 
+fn runtime_selected(comptime chosen Bool, input Int) Int {
+    comptime if chosen {
+        let computed = input + 1
+        computed
+    } else {
+        input + 2
+    }
+}
+
+fn runtime_partial(comptime chosen Bool, pending Int) Int {
+    comptime if chosen {
+        pending
+    } else {
+        pending + 2
+    }
+}
+
 fn main() {
     scoped guard = Guard { count = 1 }
     assert guard.count == 1
@@ -128,6 +145,9 @@ fn main() {
     assert static_selected(true, 5) == 5
     assert static_selected(false, 5) == 6
     assert static_partial(true, 1) == 1
+    assert runtime_selected(true, 1) == 2
+    assert runtime_selected(false, 1) == 3
+    assert runtime_partial(true, 1) == 1
 }
 `;
   let version = 1;
@@ -153,6 +173,9 @@ fn main() {
       ['action(value)', 'action', 2],
       ['flag Bool', 'flag', 2],
       ['amount + 1', 'amount', 3],
+      ['value Int) Int {\n    let first', 'value', 2],
+      ['input Int', 'input', 3],
+      ['computed = input', 'computed', 2],
     ]) {
       const document = TextDocument.create(uri, 'loom', version, source);
       const start = source.indexOf(fragment) + (fragment.startsWith('-') ? 1 : 0);
@@ -178,6 +201,9 @@ fn main() {
     await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('missing Int')), newName: 'renamed',
     }), /every occurrence of this compile-time parameter/);
+    await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
+      textDocument: { uri }, position: document.positionAt(source.indexOf('pending Int')), newName: 'renamed',
+    }), /every occurrence of this local binding/);
     assert.equal(await client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('Option.None') + 7), newName: 'Changed',
     }), null);

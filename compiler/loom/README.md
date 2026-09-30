@@ -110,6 +110,8 @@ search is limited to unique exports of direct dependencies. A resident editor
 session reuses an unchanged checked snapshot across diagnostics, hover and
 navigation after reloading sources and verifying build inputs/options/targets.
 Unchanged ordinary definitions and concrete bodies also reuse checks after edits.
+Runtime-local rename accepts selected compile-time branches only when checked
+specializations account for every source occurrence; unobserved uses reject.
 Compile-time parameter rename records bindings before erasure during an on-demand
 check, without changing executable IR. Every occurrence must be accounted for;
 unobserved branches, packs and untracked captures still reject. Public/API rename

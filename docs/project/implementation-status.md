@@ -58,7 +58,8 @@ revalidating loaded source and observed inputs. Completion recovery is virtual;
 it supplies neither build success nor proof evidence.
 Runtime parameter declarations and match payload/whole bindings retain exact
 checked definition locations. Renames include contracts, preserve shadowing and
-recheck the virtual package. Compile-time parameter references/rename use a fresh
+recheck the virtual package. Runtime-local renames also cover selected compile-time
+branches when checked specializations account for every occurrence. Compile-time parameter references/rename use a fresh
 optional binding trace before specialization erases uses; values, callbacks and
 covered compile-time blocks/branches work without executable IR metadata.
 Unobserved branches, packs and untracked captures still refuse edits. Public API

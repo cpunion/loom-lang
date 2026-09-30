@@ -146,7 +146,9 @@ one production package-private top-level function across files in the selected p
 every same-spelled token is an exact checked reference and the virtual edits pass
 a full in-memory package check with test files included. It refuses overloads, public functions/import
 rewrites, unresolved occurrences, name collisions, and invalid identifiers;
-runtime-local rename additionally refuses nested closures and compile-time branches.
+Runtime-local rename also works in compile-time-specialized functions and selected
+branches when checked instances account for every occurrence. Unobserved uses,
+nested closures and compile-time iteration still refuse the edit.
 Compile-time parameter references and rename use an on-demand fresh check that
 records actual parameter bindings before constant/function specialization erases
 them. Scalar values, callbacks and covered compile-time blocks/branches work;
