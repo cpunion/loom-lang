@@ -172,7 +172,7 @@ ensures result <= limit
 """)
 }
 
-test fn loop_proofs_retain_definedness_and_reject_unknown_effects() {
+test fn loop_proofs_retain_definedness_and_reject_wrong_exits() {
     rejects("""
 fn wrong(limit Int) Int
 requires limit >= 0
@@ -180,18 +180,6 @@ ensures result + 1 > result
 {
     var i = 0
     while i < limit {
-        i = i + 1
-    }
-    i
-}
-""")
-    rejects("""
-fn wrong(limit Int) Int
-ensures result == 0
-{
-    var i = 0
-    while i < limit {
-        defer { i = -1 }
         i = i + 1
     }
     i

@@ -13,6 +13,7 @@ import std.list.push
 import std.list.set
 import std.list.length
 import std.result.Result
+import std.option.Option
 
 record CallArguments {
     state State
@@ -32,7 +33,13 @@ fn verification(function Function, program Program) Verification {
     push(fresh, length(function.locals))
     let budget = new[Int]()
     push(budget, 4096)
-    Verification { function = function program = program fresh = fresh budget = budget }
+    Verification {
+        function = function
+        program = program
+        fresh = fresh
+        budget = budget
+        loop_control = Option.None
+    }
 }
 fn snapshot_values(values List[Value], value Value) List[Value] {
     let copied = new[Value]()

@@ -6,10 +6,45 @@ import std.list.set
 import std.list.push
 import std.list.length
 import std.result.Result
+import std.option.Option
 
 enum LoopCandidate {
     Entry(Int, Text, Value)
     Guard(Expr)
+}
+
+record LoopControl {
+    backedges List[Outcome]
+    exits List[Outcome]
+}
+
+fn with_loop_control(proof Verification, control Option[LoopControl]) Verification {
+    Verification {
+        function = proof.function
+        program = proof.program
+        fresh = proof.fresh
+        budget = proof.budget
+        loop_control = control
+    }
+}
+
+fn loop_jump(proof Verification, expr Expr, state State) Result[List[Outcome], Text] {
+    match proof.loop_control {
+        Option.Some(control) => {
+            let output = if expr.kind == ExprKind.Break {
+                control.exits
+            } else {
+                control.backedges
+            }
+            discard add_outcome(output, Outcome {
+                    state = state
+                    value = Value.Empty
+                })?
+            // A jump cannot execute the remaining expressions in its block.
+            Result.Ok(new[Outcome]())
+        }
+        Option.None => Result.Err("loop control requires an enclosing proof loop")
+    }
 }
 
 fn loop_step(proof Verification) Result[Bool, Text] {
@@ -35,9 +70,14 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
     if !scalar {
         if guard || (kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.While &&
             kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
-            kind != ExprKind.Assert && kind != ExprKind.Discard && kind != ExprKind.Call) {
+            kind != ExprKind.Assert && kind != ExprKind.Discard && kind != ExprKind.Call &&
+            kind != ExprKind.Break && kind != ExprKind.Continue &&
+            kind != ExprKind.Defer && kind != ExprKind.Cleanup) {
             return Result.Err("unsupported effect or control flow in required loop proof")
         }
+    }
+    if (kind == ExprKind.Defer || kind == ExprKind.Cleanup) && expr.text != "" {
+        return Result.Err("required loop proof needs ordinary scalar cleanup")
     }
     if kind == ExprKind.Let || kind == ExprKind.Assign {
         let ty = get(proof.function.locals, expr.index).ty
@@ -178,13 +218,21 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
         discard loop_step(proof)?
         let assumed = loop_assumptions(head, candidates)?
         let conditions = execute(proof, guard, assumed, depth - 1)?
-        let backedges = new[Outcome]()
-        let exits = new[Outcome]()
+        let control = LoopControl {
+            backedges = new[Outcome]()
+            exits = new[Outcome]()
+        }
+        // A nested loop gets a separate context; immutable verification values
+        // restore the enclosing target on return. Each inference pass starts
+        // fresh, so exits proved using a removed candidate cannot escape.
+        let iteration = with_loop_control(proof, Option.Some(control))
+        let backedges = control.backedges
+        let exits = control.exits
         var index = 0
         while index < length(conditions) {
             let condition = get(conditions, index)
             let fact = boolean(condition.value)?
-            discard append(backedges, execute(proof, body, assume(condition.state, fact), depth - 1)?)?
+            discard append(backedges, execute(iteration, body, assume(condition.state, fact), depth - 1)?)?
             discard add_outcome(exits, Outcome {
                     state = assume(condition.state, not(fact))
                     value = Value.Empty

@@ -1833,8 +1833,11 @@ local and proposes entry/range bounds and weakened relational guards. Each candi
 must hold on entry and on every symbolic backedge; removing a candidate rechecks
 all survivors. Zero-iteration exits and early returns remain separate proof
 obligations. Branches, nested loops and the existing direct body-call proof rules
-are supported. Calls in guards, cleanup, heap writes and break/continue inside a
-required loop proof currently reject. The bounded
+are supported. `break` records the state at that exit; `continue` contributes a
+backedge that must preserve every retained invariant. Nested jumps target the
+nearest loop. Scalar lexical cleanup executes before jumps in its checked order,
+preserving evaluated return snapshots. Calls in guards, resource cleanup and heap writes inside a required loop
+proof currently reject. The bounded
 inference neither unrolls a sample of iterations nor adds runtime invariant
 checks. See the [loop contract example](examples/loop_contracts).
 
@@ -2427,7 +2430,7 @@ Labels and values on loop-control statements are not supported. A `comptime`
 block evaluates its own loops and cannot jump into a runtime loop; a selected
 `comptime if` branch is ordinary code at its insertion point. Loop execution is
 supported at compile time. Required proofs support inferred scalar invariants,
-but not general loop contracts or break/continue in a proved loop.
+including break/continue paths, but not general loop contracts.
 The [loops example](examples/loops/main.loom) includes same-package unit tests.
 
 ## Source Tasks

@@ -9,12 +9,14 @@ import std.list.get
 import std.list.push
 import std.list.length
 import std.result.Result
+import std.option.Option
 
 record Verification {
     function Function
     program Program
     fresh List[Int]
     budget List[Int]
+    loop_control Option[LoopControl]
 }
 
 record RecordPath {
@@ -341,7 +343,8 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
         return Result.Ok(outcomes(state, Value.Empty))
     }
     if expr.kind == ExprKind.Cleanup {
-        return execute(proof, get(expr.children, 0), state, depth - 1)
+        // Cleanup may contain its own loops, but cannot jump to an outer loop.
+        return execute(with_loop_control(proof, Option.None), get(expr.children, 0), state, depth - 1)
     }
     if expr.kind == ExprKind.Block {
         return block(proof, expr, state, depth)
@@ -351,6 +354,9 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     }
     if expr.kind == ExprKind.While {
         return loop_outcomes(proof, expr, state, depth)
+    }
+    if expr.kind == ExprKind.Break || expr.kind == ExprKind.Continue {
+        return loop_jump(proof, expr, state)
     }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary {
         return operation(proof, expr, state, depth)

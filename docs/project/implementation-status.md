@@ -129,8 +129,10 @@ There is no implicit copy, monitor or alias-triggered runtime failure.
 
 Scalar loops infer entry/guard bounds and check inductiveness to a fixed point;
 zero-iteration paths and early returns retain separate obligations. This supports
-scalar assignments, branches, nested loops and existing direct-call proof rules,
-not calls in guards, cleanup, break/continue or heap mutation. See the
+scalar assignments, branches, nested loops, break/continue paths and existing
+direct-call proof rules. Scalar lexical cleanup retains its checked order and
+return snapshots; calls in guards, resource cleanup and heap mutation remain
+unsupported. See the
 [native loop example](../../compiler/examples/loop_contracts).
 
 General content-preserving mutation, strengthening existing mutable alias graphs,
