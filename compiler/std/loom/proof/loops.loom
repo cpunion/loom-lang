@@ -114,9 +114,23 @@ fn loop_candidates(guard Expr, writes List[Bool], entry State) Result[List[LoopC
         if get(writes, index) {
             let initial = get(entry.locals, index)
             match initial {
-                Value.Number(_) => {
+                Value.Number(term) => {
                     discard add_loop_candidate(candidates, LoopCandidate.Entry(index, ">=", initial), entry)?
                     discard add_loop_candidate(candidates, LoopCandidate.Entry(index, "<=", initial), entry)?
+                    // A nested loop may preserve a scalar range even when the
+                    // stronger relation to its symbolic entry value needs
+                    // arithmetic outside the difference solver's fragment.
+                    if length(term.terms) != 0 {
+                        let bounds = range(term, entry.facts)
+                        if compare(bounds.low, integer(-9223372036854775808)) > 0 {
+                            discard add_loop_candidate(candidates,
+                                LoopCandidate.Entry(index, ">=", Value.Number(constant(bounds.low))), entry)?
+                        }
+                        if compare(bounds.high, integer(9223372036854775807)) < 0 {
+                            discard add_loop_candidate(candidates,
+                                LoopCandidate.Entry(index, "<=", Value.Number(constant(bounds.high))), entry)?
+                        }
+                    }
                 }
                 Value.Boolean(_) => {
                     discard add_loop_candidate(candidates, LoopCandidate.Entry(index, "==", initial), entry)?

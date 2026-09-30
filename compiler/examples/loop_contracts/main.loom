@@ -53,6 +53,22 @@ ensures !result
     running
 }
 
+fn nested(limit Int) Int
+ensures result >= 0
+{
+    var i = 0
+    var total = 0
+    while i < limit {
+        var j = 0
+        while j < i {
+            total = total + j
+            j = j + 1
+        }
+        i = i + 1
+    }
+    total
+}
+
 fn exercise() {
     assert count(0) == 0
     assert count(10000) == 10000
@@ -63,6 +79,7 @@ fn exercise() {
     assert sum_before(-3) == 0
     assert sum_before(10) == 45
     assert !stop()
+    assert nested(4) == 4
 }
 
 fn main() {

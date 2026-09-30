@@ -8,7 +8,7 @@ target/loom run compiler/examples/loop_contracts
 ```
 
 The compiler proves the declared normal-return contracts by induction, not by
-testing a finite number of iterations. It proposes scalar entry bounds and
+testing a finite number of iterations. It proposes scalar entry/range bounds and
 weakened continuation bounds, then retains only predicates established on entry
 and preserved by every symbolic backedge. Removing one candidate triggers a
 recheck of the others. Zero-iteration exits are checked separately.

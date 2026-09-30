@@ -1829,7 +1829,7 @@ See the [relational contract example](examples/relational_contracts).
 
 Scalar `while` bodies can prove normal-return contracts through inferred
 invariants, without new annotations. The prover freshens every written Int/Bool
-local and proposes entry bounds and weakened relational guards. Each candidate
+local and proposes entry/range bounds and weakened relational guards. Each candidate
 must hold on entry and on every symbolic backedge; removing a candidate rechecks
 all survivors. Zero-iteration exits and early returns remain separate proof
 obligations. Branches, nested loops and the existing direct body-call proof rules
