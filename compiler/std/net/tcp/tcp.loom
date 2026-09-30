@@ -23,6 +23,7 @@ pub enum TcpError {
     Listen
     Resolve
     Connect
+    Timeout
     Port
     Accept
     Read
@@ -86,44 +87,34 @@ pub async fn connect(address Text) Result[Stream, TcpError] {
             discard socket_close(token)
         }
     }
+    if !connected(token).await {
+        return Result.Err(TcpError.Connect)
+    }
+    transferred = true
+    Result.Ok(Stream {
+            state = State {
+                token = token
+            }
+        })
+}
+
+async fn connected(token Int) Bool {
     while true {
         let status = socket_connect_status(token)
         if status == 0 {
-            transferred = true
-            return Result.Ok(Stream {
-                    state = State {
-                        token = token
-                    }
-                })
+            return true
         }
         if status != -2 {
-            return Result.Err(TcpError.Connect)
+            return false
         }
         socket_wait(token, 2).await
     }
 }
 
-// Resolve a host, then try each address in OS order. Failed attempts close
-// before the next one starts. No implicit timeout or parallel address racing.
+// Default hostname policy: interleaved families, two staggered attempts and a
+// 30-second total cancellation deadline. Pass ConnectOptions to choose policy.
 pub async fn connect(host Text, port Int) Result[Stream, TcpError] {
-    let addresses = match std.net.dns.resolve(host, port).await {
-        Result.Ok(values) => values
-        Result.Err(_) => {
-            return Result.Err(TcpError.Resolve)
-        }
-    }
-    var index = 0
-    while index < std.list.length(addresses) {
-        match connect(std.list.get(addresses, index)).await {
-            Result.Ok(stream) => {
-                return Result.Ok(stream)
-            }
-            Result.Err(_) => {
-            }
-        }
-        index = index + 1
-    }
-    Result.Err(TcpError.Connect)
+    connect(host, port, connect_options()).await
 }
 
 pub fn local_port(listener Listener) Result[Int, TcpError] {

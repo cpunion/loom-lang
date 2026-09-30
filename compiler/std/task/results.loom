@@ -1,0 +1,34 @@
+import std.result.Result
+
+// First Ok, cancelling and draining the rest. Ordinary errors are collected in
+// input order if all fail; execution/cleanup faults still fail the whole join.
+// Empty input returns Err([]). As with race, unselected completed values are
+// not resource finalizers: their external resources remain the caller's duty.
+pub async fn first_ok[T, E](tasks List[Task[Result[T, E]]]) Result[T, List[E]] {
+    let batch = watch(tasks)
+    var pending = batch.slots
+    var remaining = batch.count
+    var errors = new[Option[E]]()
+    var index = 0
+    while index < remaining {
+        errors = append(errors, Option.None)
+        index = index + 1
+    }
+    while remaining > 0 {
+        let index = task_next().await
+        let task, rest = take_slot(pending, index)
+        pending = rest
+        match completed(task_outcome(task).await) {
+            Result.Ok(value) => {
+                drain(pending, false)
+                return Result.Ok(value)
+            }
+            Result.Err(error) => {
+                errors = put_slot(errors, index, error)
+            }
+        }
+        remaining = remaining - 1
+    }
+    drain(pending, false)
+    Result.Err(filled(errors))
+}

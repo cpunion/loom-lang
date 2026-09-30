@@ -57,6 +57,7 @@ Join policy belongs to Loom `std`, over narrow task primitives:
 | `settled` | All task outcomes in input order, without early cancellation. |
 | `any` | First completed value; failure if none completes successfully. |
 | `race` | First terminal outcome. |
+| `first_ok` | First `Result.Ok`; otherwise ordinary errors in input order. Execution/cleanup faults fail the join. |
 
 `any` and `race` cancel and drain remaining children before returning. Tuple
 `all`/`settled` preserve heterogeneous element types; `any`/`race` require a
@@ -65,6 +66,10 @@ transfer the whole set's obligations. Empty `all`/`settled` lists produce empty
 results; `any`/`race` require a nonempty input. `(a(), b()).await` is tuple-all
 sugar, implemented through the trusted source `std.task.all` tuple overload;
 ordinary names and shadowing do not select its policy.
+`first_ok` accepts a List of homogeneous Result Tasks and returns
+`Result[T, List[E]]`; empty input is `Err([])`. It cancels/drains remaining
+children on success. It does not turn discarded completed values into external
+resource finalizers; resource-producing races must retain explicit cleanup.
 
 ## Implementation boundary
 
@@ -225,10 +230,15 @@ for resource-bearing Task results.
 hosts-file entries. Native workers snapshot Text inputs and return numeric socket
 addresses; the owner copies bytes through the shared completion operation. Loom
 constructs the address List and owns error policy. `std.net.tcp.connect(host, port)`
-resolves then tries addresses in OS order, closing failed attempts. The numeric
-single-argument connect path does not resolve. There is no built-in DNS cache,
-connection timeout, or parallel address racing. Running OS resolution cannot be
-interrupted and may delay cancellation drain.
+interleaves families with bounded, staggered workers over a shared address queue.
+Defaults are two pending attempts, a 250 ms worker delay and a 30-second total
+cancellation deadline. `ConnectOptions` configures these; `connect_any` accepts
+numeric endpoints without DNS. The parent records sockets before suspension,
+then drains workers and closes every loser, including completed connections.
+All-failed, resolution, invalid-option and deadline failures remain distinct.
+The numeric single-argument connect path adds neither DNS nor a deadline.
+No DNS cache is provided. Running OS resolution cannot be interrupted and may
+delay cancellation drain beyond the deadline.
 
 TCP local/peer endpoint queries return numeric Text. `set_nodelay` controls the
 native TCP_NODELAY option; `shutdown_write` ends sending without revoking the

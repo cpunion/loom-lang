@@ -10,7 +10,7 @@ fn source_dns_and_hostname_connect_use_completion_under_moving_gc() {
     let package = "compiler/examples/hostname_connect";
     success(&common::loom(&["check", package]));
     for level in ["0", "2"] {
-        for tests in ["compiler/std/net/dns", package] {
+        for tests in ["compiler/std/net/dns", "compiler/std/net/tcp", package] {
             eprintln!("O{level}: {tests}");
             success(
                 &common::command(&["test", tests, "--no-run"])

@@ -188,6 +188,10 @@ cancellation reaps the direct child without terminating process trees.
 TCP exposes numeric local/peer endpoints, TCP_NODELAY and write half-close,
 preserving pending receive registrations for EOF-delimited exchanges. Text-to-Bytes
 encoding is source-library policy and returns an independent buffer.
+Hostname connections interleave address families with configurable bounded
+concurrency, stagger and a total cancellation deadline. Numeric address races
+share that source policy. Sockets are registered before suspension, so completed
+losers and unextracted child results cannot escape cancellation cleanup.
 `std.net.tls` supplies verified client/server streams, custom PEM roots, ALPN,
 binary I/O, required mutual certificate authentication and TLS close-notify.
 Client/server identities and trust are explicit; verified peer leaf certificates
@@ -200,7 +204,7 @@ retires the connection and its socket waits, waking the other direction to fail.
 O0/O2 tests include simultaneous 8 MiB transfers, moving-GC traffic, rejected peers,
 and independent Rustls interoperability with both-direction cancellation under
 backpressure. Revocation policy, general workers, broader socket options,
-address racing and parallel Loom execution remain open.
+and parallel Loom execution remain open.
 See [Tasks and I/O](../../compiler/README.md#source-tasks).
 
 ## Modules, caching and performance

@@ -2654,10 +2654,19 @@ exercises O0/O2, forced GC, close, and cancellation.
 
 `std.net.dns.resolve(host, port).await` returns numeric socket addresses in OS
 resolver order, including hosts-file entries, as `Result[List[Text], ResolveError]`.
-`std.net.tcp.connect(host, port).await` tries those addresses sequentially and
-closes failed attempts. Resolution failures return `TcpError.Resolve`; exhausting
-the addresses returns `TcpError.Connect`. The single-argument `connect` and
-`listen` still take only numeric `host:port` or `[IPv6]:port` addresses.
+`std.net.tcp.connect(host, port).await` interleaves address families, preserving
+the first family's preference and order within each family. Defaults allow two
+pending attempts, start the second worker after 250 ms, and request cancellation
+after 30 seconds including DNS. Failed attempts advance immediately through a
+shared address queue. `connect(host, port, ConnectOptions)` overrides
+`attempt_delay_ns`, `timeout_ns` and `parallelism` (1–16); `connect_options()`
+returns the defaults. `connect_any(addresses, options)` uses the same policy on
+a snapshot of numeric endpoints. Losers, including already-completed sockets,
+close before returning the winner; cancellation drains waits before closing.
+Resolution failures return `TcpError.Resolve`, exhausted attempts `Connect`,
+deadline cancellation `Timeout`, and invalid options `Option`.
+The single-argument `connect` and `listen` still take only numeric `host:port`
+or `[IPv6]:port` addresses and add no deadline.
 DNS shares the bounded file I/O worker pool and completion queue. Native workers
 never retain managed pointers; cancellation drains any running OS lookup before
 cleanup. See the [hostname example](examples/hostname_connect).
@@ -2720,7 +2729,7 @@ the current provider. `LOOM_RUNTIME_LIBRARY` selects the core archive and its
 directory; TLS programs require the named sibling provider.
 
 `std.task.deadline` can cancel a connect/read Task; DNS cancellation still drains
-running OS resolution. There is no DNS cache, parallel address racing,
+running OS resolution. There is no DNS cache,
 structured OS-error detail or full socket-option surface yet.
 General worker operations also remain open; the
 [accepted design](../docs/rfcs/tasks.md) remains broader.
@@ -2750,6 +2759,11 @@ now use one-time completion registration and indexed transfer. They support
 dynamic counts, no-result payloads and returned Tasks, draining losing subtrees
 before return. Cleanup faults fail an otherwise successful join; existing primary
 faults retain precedence. See the [join example](examples/task_joins).
+`std.task.first_ok` accepts `List[Task[Result[T, E]]]`, skipping ordinary errors
+until an `Ok` arrives. If all fail, it returns errors in input order; empty input
+returns `Err([])`. Execution/cleanup faults still fail the join. Discarded
+completed values do not close external resources; resource-producing races need
+explicit cleanup, as in the TCP source policy.
 Heterogeneous tuple `all/settled` accept arbitrary arity and preserve input
 order without a per-element helper chain. A statically typed tuple of Tasks can
 also use `.await`, which follows source `std.task.all` policy.

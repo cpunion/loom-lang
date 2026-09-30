@@ -1,0 +1,171 @@
+import std.task.cancel
+import std.time.sleep_ms
+
+test fn address_racing_interleaves_families_without_aliasing_the_input() {
+    let source = ["[::1]:1", "[::1]:2", "127.0.0.1:3", "127.0.0.1:4", "127.0.0.1:5"]
+    let ordered = dial_addresses(source)
+    assert ordered[0] == source[0] && ordered[1] == source[2]
+    assert ordered[2] == source[1] && ordered[3] == source[3] && ordered[4] == source[4]
+    push(source, "[::1]:6")
+    assert length(ordered) == 5
+    assert dial_addresses(["127.0.0.1:1", "[::1]:2"])[0] == "127.0.0.1:1"
+}
+
+fn immediate_options() ConnectOptions {
+    ConnectOptions {
+        attempt_delay_ns = 0
+        timeout_ns = 10000000000
+        parallelism = 4
+    }
+}
+
+async fn raced_fixture() Result[Int, TcpError] {
+    let listener = listen("127.0.0.1:0").await?
+    defer {
+        discard close_listener(listener)
+    }
+    let address = local_address(listener)?
+    let opened = new[Stream]()
+    defer {
+        close_dialed(opened, -1)
+    }
+    let index = dial_race([address, address, address, address], immediate_options(), opened).await?
+    assert length(opened) > 1
+    close_dialed(opened, index)
+    var slot = 0
+    while slot < length(opened) {
+        assert (socket_address(get(opened, slot).state.token, 0) != "") == (slot == index)
+        slot = slot + 1
+    }
+    let selected = get(opened, index)
+    discard write_bytes(selected, to_bytes("winner")).await?
+    discard shutdown_write(selected)?
+    var winners = 0
+    // Every accepted loser must reach EOF too; retaining even one completed
+    // losing socket would block here (the outer fixture has a deadline).
+    while true {
+        let token = socket_accept(listener.state.token)
+        if token == -2 {
+            break
+        }
+        assert token >= 0
+        let peer = Stream {
+            state = State {
+                token = token
+            }
+        }
+        defer {
+            discard close_stream(peer)
+        }
+        let bytes = std.bytes.new()
+        while read(peer, bytes, 64).await? > 0 {
+        }
+        if std.bytes.length(bytes) != 0 {
+            assert std.bytes.to_text(bytes) == "winner"
+            winners = winners + 1
+        }
+    }
+    Result.Ok(winners)
+}
+
+test async fn address_race_closes_every_losing_socket_before_returning() {
+    assert match after_ns(raced_fixture(), 10000000000).await {
+        Outcome.Completed(Result.Ok(winners)) => winners == 1
+        _ => false
+    }
+}
+
+async fn cancelled_dial(address Text, opened List[Stream]) {
+    defer {
+        close_dialed(opened, -1)
+    }
+    let worker = dial_worker([address], opened, [0], 0)
+    sleep_ms(10000).await
+    discard worker.await
+}
+
+test async fn cancellation_closes_registered_sockets_even_before_result_extraction() {
+    let listener = match listen("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard close_listener(listener)
+    }
+    let address = match local_address(listener) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let opened = new[Stream]()
+    let pending = cancelled_dial(address, opened)
+    while length(opened) == 0 {
+        sleep_ms(1).await
+    }
+    assert match cancel(pending) {
+        Outcome.Cancelled => true
+        _ => false
+    }
+    assert socket_address(get(opened, 0).state.token, 0) == ""
+}
+
+test async fn public_race_falls_back_and_reports_invalid_or_exhausted_inputs() {
+    let listener = match listen("127.0.0.1:0").await {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    defer {
+        discard close_listener(listener)
+    }
+    let address = match local_address(listener) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    match connect_any(["invalid", address], immediate_options()).await {
+        Result.Ok(stream) => {
+            assert match peer_address(stream) {
+                Result.Ok(value) => value == address
+                Result.Err(_) => false
+            }
+            discard close_stream(stream)
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+    assert match connect_any([], immediate_options()).await {
+        Result.Err(TcpError.Connect) => true
+        _ => false
+    }
+    assert match connect_any(["invalid"], immediate_options()).await {
+        Result.Err(TcpError.Connect) => true
+        _ => false
+    }
+    let invalid = ConnectOptions {
+        parallelism = 0,
+        ..immediate_options()
+    }
+    assert match connect_any([address], invalid).await {
+        Result.Err(TcpError.Option) => true
+        _ => false
+    }
+    let expired = ConnectOptions {
+        timeout_ns = 0,
+        ..immediate_options()
+    }
+    assert match connect_any([address], expired).await {
+        Result.Err(TcpError.Timeout) => true
+        _ => false
+    }
+}
