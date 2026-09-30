@@ -1,6 +1,8 @@
 import std.list.length
 import std.result.Result
 import std.result.ConstraintError
+import std.text.concat
+import std.time.sleep_ms
 
 type Tag = Text where self == "ready"
 
@@ -100,12 +102,15 @@ ensures result
 }
 
 async fn exercise() {
-    let value = "é😀"
+    let value = concat("é", "😀")
     assert relay(value) == value
     assert tagged(Tag("ready")) == "ready"
-    assert match checked_tag(relay("ready")) {
-        Result.Ok(tag) => tagged(tag) == "ready"
-        Result.Err(_) => false
+    let ready = match checked_tag(relay(concat("rea", "dy"))) {
+        Result.Ok(tag) => tag
+        Result.Err(_) => {
+            assert false
+            Tag("ready")
+        }
     }
     assert match checked_tag(relay("wrong")) {
         Result.Err(_) => true
@@ -123,6 +128,8 @@ async fn exercise() {
     }
     let alias = copied(original)
     original.items[0] = 9
+    sleep_ms(1).await
+    assert tagged(ready) == "ready"
     assert alias.label == value && alias.items[0] == 9
     assert length(alias.items) == 2
     assert preserved(value).await == value
