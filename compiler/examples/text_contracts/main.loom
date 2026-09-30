@@ -78,6 +78,27 @@ ensures result == value
     receiver.keep(value)
 }
 
+fn linked(first Text, middle Text, last Text) Text
+requires first == middle && middle == last
+ensures result == first
+{
+    last
+}
+
+fn separated(first Text, middle Text, last Text) Text
+requires first == middle && middle != last
+ensures result != first
+{
+    last
+}
+
+fn distinct_bytes(value Text) Bool
+requires value == "é"
+ensures result
+{
+    value != "é"
+}
+
 async fn exercise() {
     let value = "é😀"
     assert relay(value) == value
@@ -93,6 +114,9 @@ async fn exercise() {
     assert generic(1, value) == value
     let receiver dyn Keep = 1
     assert dynamic(receiver, value) == value
+    assert linked(value, relay(value), value) == value
+    assert separated(value, value, "different") != value
+    assert distinct_bytes("é")
     let original = Message {
         label = value
         items = [1, 2]

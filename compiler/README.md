@@ -2048,8 +2048,10 @@ emitted function keeps its ordinary calls and original locals.
 
 Immutable Text identities, exact literals and established `==`/`!=` facts also
 participate in these proofs, including `old`, finite helpers, Text refinements
-and declared generic/dyn concept summaries. Different unknown Text values do
-not imply unequal contents. Text concatenation, length and substring reasoning
+and declared generic/dyn concept summaries. Established equalities compose
+transitively; known inequality propagates across equal values. Different unknown
+Text values do not imply unequal contents, and inequality is not transitive.
+Disjunctive facts do not establish either alternative. Text concatenation, length and substring reasoning
 remain unsupported. See the [native Text example](examples/text_contracts).
 
 Aggregate summaries compose through nested calls, field projections and

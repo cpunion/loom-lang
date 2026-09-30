@@ -273,3 +273,56 @@ test fn text_refinements_fold_literals_and_keep_unknown_construction_checked() {
         }
         """)
 }
+
+test fn text_equality_closure_preserves_content_relations_not_disjunctions() {
+    discard accepted("""
+        fn linked(first Text, middle Text, last Text) Text
+        requires first == middle && middle == last
+        ensures result == first
+        {
+            last
+        }
+        fn separated(first Text, middle Text, last Text) Text
+        requires first == middle && middle != last
+        ensures result != first
+        {
+            last
+        }
+        fn literal(value Text) Bool
+        requires value == "é"
+        ensures result
+        {
+            value != "é"
+        }
+        fn cycle(first Text, second Text, last Text) Text
+        requires first == second && second == first && last == second
+        ensures result == first
+        {
+            last
+        }
+        """)
+    rejects("""
+        fn alternatives(first Text, middle Text, last Text) Text
+        requires first == middle || middle == last
+        ensures result == first
+        {
+            last
+        }
+        """)
+    rejects("""
+        fn distinct(first Text, middle Text, last Text) Text
+        requires first != middle && middle != last
+        ensures result != first
+        {
+            last
+        }
+        """)
+    rejects("""
+        fn disconnected(first Text, second Text, third Text, last Text) Text
+        requires first == second && second == first && third == last
+        ensures result == first
+        {
+            last
+        }
+        """)
+}

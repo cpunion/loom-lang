@@ -175,7 +175,9 @@ summaries are neither executable CTFE bodies nor native functions. Unspecified
 leaves remain independent; shared siblings supply no content or alias facts.
 Immutable Text values, exact literals and established equality facts participate
 in required proofs, including Text leaves beside shared siblings. Distinct unknown
-values never imply unequal contents; concatenation/length/substring reasoning is
+values never imply unequal contents. Established equality chains and inequalities
+between equal-value classes compose; disjunctions and unequal chains supply no
+invented equality or inequality. Concatenation/length/substring reasoning is
 not implemented. Bytes and List parameters can be carried opaquely through
 contracted calls, including generic nominal receivers. Unmodeled heap operations still reject.
 Unsupported or exhausted required proofs reject;
