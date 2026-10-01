@@ -90,7 +90,7 @@ fn query(node Node, token Token, tokens List[Token]) Option[Query] {
         index = index + 1
     }
     let kind = node.kind
-    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.Construct || kind == NodeKind.Type ||
+    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.Construct || kind == NodeKind.Type || kind == NodeKind.RecordPattern ||
     (kind == NodeKind.Pattern && node.value != token.value) {
         var segment = -1
         var count = 0
@@ -724,17 +724,22 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
         definitions = new[Location]()
     }
     var index = 0
-    if target.node.kind == NodeKind.Type {
-        while index < length(analysis.data.types) {
-            let shape = get(analysis.data.types, index)
-            if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
-                let declaration = get(analysis.bindings.symbols, shape.symbol)
-                if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
+    while index < length(analysis.data.types) {
+        let shape = get(analysis.data.types, index)
+        if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
+            let declaration = get(analysis.bindings.symbols, shape.symbol)
+            if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
+                if target.node.kind == NodeKind.Type {
                     inspect_data_header(analysis, report, shape, target)
                 }
+                var predicate = 0
+                while predicate < length(shape.constraint) {
+                    inspect_constraint_field(analysis, report, target, get(shape.constraint, predicate))
+                    predicate = predicate + 1
+                }
             }
-            index = index + 1
         }
+        index = index + 1
     }
     index = 0
     while index < length(analysis.data.functions) {
@@ -744,6 +749,10 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
             let types_before = length(report.types)
             let locations_before = length(report.definitions)
             inspect_function_header(analysis, report, function, target)
+            if target.node.kind == NodeKind.RecordPattern ||
+            (target.node.kind == NodeKind.Field && source_pattern_member(declaration.node, target.node.span)) {
+                inspect_pattern_projection(analysis, report, function, target, function.body)
+            }
             inspect_tree(analysis, report, function, target, function.body, -1)
             var clause = 0
             while clause < length(function.preconditions) {

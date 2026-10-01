@@ -1,0 +1,82 @@
+// Field identities are the source member locations already used by checked
+// receiver/initializer queries. They are not new package symbols.
+fn editor_field_owner(analysis Analysis, target Location, spelling Text) Int {
+    let source = get(analysis.bindings.files, target.file)
+    if source.test_only {
+        return -1
+    }
+    let tokens = match lex(source.text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return -1
+        }
+    }
+    var index = 0
+    while index < length(analysis.bindings.symbols) {
+        let symbol = get(analysis.bindings.symbols, index)
+        if symbol.file == target.file && symbol.owner < 0 && symbol.node.kind == NodeKind.Record &&
+        !symbol.test_only && !has(symbol.node, NodeKind.ExpansionId) {
+            var field = 0
+            while field < length(symbol.node.children) {
+                let member = get(symbol.node.children, field)
+                if member.kind == NodeKind.Field && member.value == spelling {
+                    match editor_name(tokens, member) {
+                        Option.Some(span) => {
+                            if editor_same_span(span, target.span) {
+                                return index
+                            }
+                        }
+                        Option.None => {
+                        }
+                    }
+                }
+                field = field + 1
+            }
+        }
+        index = index + 1
+    }
+    -1
+}
+
+fn editor_other_binding(analysis Analysis, file Int, token Token, tokens List[Token], target Option[Location]) Bool {
+    match inspect_at(analysis, file, token.span.start) {
+        Option.Some(found) => {
+            length(found.definitions) == 1 && match target {
+                Option.Some(location) => !editor_same_location(get(found.definitions, 0), location)
+                Option.None => true
+            }
+        }
+        Option.None => editor_declaration(get(analysis.bindings.files, file).tree, tokens, token.span)
+    }
+}
+
+// Even a package that has not loaded the owner may contain structural field
+// accesses in a deferred branch. It supplies no evidence for a partial edit.
+fn editor_field_unobserved(analysis Analysis, spelling Text) Bool {
+    var file = 0
+    while file < length(analysis.bindings.files) {
+        let source = get(analysis.bindings.files, file)
+        if source.package == analysis.bindings.root {
+            if editor_generated(source.tree) || std.loom.checking.has_declaration_stages(analysis.source, true) {
+                return true
+            }
+            let tokens = match lex(source.text) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return true
+                }
+            }
+            var index = 0
+            while index < length(tokens) {
+                let token = get(tokens, index)
+                if token.kind == Kind.Name && token.value == spelling &&
+                !editor_other_binding(analysis, file, token, tokens, Option.None) {
+                    return true
+                }
+                index = index + 1
+            }
+        }
+        file = file + 1
+    }
+    false
+}

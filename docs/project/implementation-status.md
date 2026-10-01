@@ -16,7 +16,7 @@ syntax, APIs and supported proof fragment.
 | Guarantees | Checked constrained construction, safe weakening, bounded mandatory postconditions and selected invariant-preserving operations. | General loop proofs and mutable-alias preservation remain open. |
 | Metaprogramming | Pure compile-time execution, type/value/function parameters, packs, typed macros, reflection and tracked inputs. | Staging and visibility still apply; no arbitrary compile-time I/O. |
 | Memory/resources/async | Moving GC, lexical cleanup, stackless Tasks, real timers, files, DNS/TCP/TLS and tuple/List joins. | Cooperative scheduling; general worker APIs remain open. |
-| Programming tools | Directory tests, recursive test selection, formatter, LSP/VS Code, public parser/analysis libraries. | Type/field and external-consumer API edits, broader erroneous-source queries remain open. |
+| Programming tools | Directory tests, formatter, LSP/VS Code, public parser/analysis libraries, checked function/type/record-field edits. | Unaccounted/generated uses, concept and external-consumer API edits, broader erroneous-source queries remain open. |
 | Evolution tools | Reviewed single-package semantic merge and a real offline SQLite migration trial. | Bounded prototypes, not general semantic VCS or deployment compatibility proof. |
 
 ## Build and programming experience
@@ -76,7 +76,11 @@ including specialized callbacks.
 Concrete annotations navigate through checked types and package bindings, not
 same-spelled specialized parameters. Private nominal types use the existing
 test-inclusive package edit check. Unobserved branches, packs, type aliases and
-unaligned annotations still refuse edits. Field/concept rename,
+unaligned annotations still refuse edits. Record fields now use checked
+receiver/initializer identities, including updates, explicit destructuring,
+contracts and type-constraint templates. Distinct field owners and locals stay
+unchanged; unaccounted labels or structural accesses in any module package block
+the edit. Concept rename,
 external-consumer API migration and broader recovery/query support remain open.
 
 Public `std.loom` syntax, fragment parsing, project/binding and typed-analysis

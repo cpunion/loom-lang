@@ -69,10 +69,14 @@ fn editor_name(tokens List[Token], node Node) Option[Span] {
 }
 
 fn editor_declaration(node Node, tokens List[Token], target Span) Bool {
+    editor_declaration_node(node, tokens, target, NodeKind.File)
+}
+
+fn editor_declaration_node(node Node, tokens List[Token], target Span, parent NodeKind) Bool {
     let kind = node.kind
     if kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum ||
     kind == NodeKind.Refined || kind == NodeKind.Concept || kind == NodeKind.Let ||
-    kind == NodeKind.Var || kind == NodeKind.Parameter || kind == NodeKind.Field ||
+    kind == NodeKind.Var || kind == NodeKind.Parameter || (kind == NodeKind.Field && parent == NodeKind.Record) ||
     kind == NodeKind.Variant || kind == NodeKind.AssociatedType {
         match editor_name(tokens, node) {
             Option.Some(span) => {
@@ -86,7 +90,7 @@ fn editor_declaration(node Node, tokens List[Token], target Span) Bool {
     }
     var index = 0
     while index < length(node.children) {
-        if editor_declaration(get(node.children, index), tokens, target) {
+        if editor_declaration_node(get(node.children, index), tokens, target, kind) {
             return true
         }
         index = index + 1
@@ -341,7 +345,7 @@ fn editor_name_conflict(analysis Analysis, file Int, scope Span, name Text) Bool
 // Private declarations cannot be imported by another package. Keep this
 // strictly to one ordinary declaration in the selected package. Public edits
 // use module-wide package checks instead.
-fn editor_top_declaration(analysis Analysis, target Location, spelling Text, public Bool) Bool {
+fn editor_declaration_authority(analysis Analysis, target Location, public Bool) Bool {
     let files = analysis.bindings.files
     let root = analysis.bindings.root
     let package = get(files, target.file).package
@@ -349,6 +353,15 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
     get(analysis.bindings.packages, package).instance != get(analysis.bindings.packages, root).instance {
         return false
     }
+    true
+}
+
+fn editor_top_declaration(analysis Analysis, target Location, spelling Text, public Bool) Bool {
+    if !editor_declaration_authority(analysis, target, public) {
+        return false
+    }
+    let files = analysis.bindings.files
+    let package = get(files, target.file).package
     var matches = 0
     var selected = false
     var index = 0
@@ -383,7 +396,7 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
 
 // An unaccounted same-spelled token could be an unchecked use (for example in
 // an uninstantiated body). Refuse the edit even if an ordinary check succeeds.
-fn editor_private_covered(analysis Analysis, spelling Text, references List[Location]) Bool {
+fn editor_private_covered(analysis Analysis, target Location, spelling Text, references List[Location]) Bool {
     let files = analysis.bindings.files
     let root = analysis.bindings.root
     var index = 0
@@ -411,7 +424,9 @@ fn editor_private_covered(analysis Analysis, spelling Text, references List[Loca
                         file = file
                         span = token.span
                     }) {
-                    return false
+                    if !editor_other_binding(analysis, file, token, tokens, Option.Some(target)) {
+                        return false
+                    }
                 }
                 index = index + 1
             }
@@ -689,7 +704,10 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
         }
     }
     let references = editor_references(analysis, target, token.value)
-    if editor_top_declaration(analysis, target, token.value, true) {
+    let field_owner = editor_field_owner(analysis, target, token.value)
+    let public_field = field_owner >= 0 && get(bindings.symbols, field_owner).public &&
+        editor_declaration_authority(analysis, target, true)
+    if editor_top_declaration(analysis, target, token.value, true) || public_field {
         return editor_public_symbols(options, analysis, target, token.value, inputs)
     }
     if rename {
@@ -709,13 +727,15 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
             Option.None => {
             }
         }
-        if !editor_top_declaration(analysis, target, token.value, false) {
-            return editor_error("Rename supports checked local bindings and parameters, or one top-level function or nominal type in the selected module")
+        let private_field = field_owner >= 0 && !get(bindings.symbols, field_owner).public &&
+            editor_declaration_authority(analysis, target, false)
+        if !editor_top_declaration(analysis, target, token.value, false) && !private_field {
+            return editor_error("Rename supports checked local bindings and parameters, one top-level function or nominal type, or a record field in the selected module")
         }
         if !options.tests {
             return editor_error("Private declaration rename requires --tests to account for test-file uses")
         }
-        if !editor_private_covered(analysis, token.value, references) {
+        if !editor_private_covered(analysis, target, token.value, references) {
             return editor_error("Rename cannot account for every occurrence of this private declaration")
         }
         if new_name != token.value && editor_private_conflict(analysis, new_name) {

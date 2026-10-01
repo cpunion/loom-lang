@@ -17,6 +17,9 @@ fn header_shadowed(analysis SemanticView, owner Int, spelling Text) Bool {
     var current = owner
     while current >= 0 {
         let symbol = get(analysis.bindings.symbols, current)
+        if root == "Self" && (symbol.node.kind == NodeKind.Concept || symbol.node.kind == NodeKind.Impl) {
+            return true
+        }
         var index = 0
         while index < length(symbol.node.children) {
             let group = get(symbol.node.children, index)
@@ -99,6 +102,25 @@ fn inspect_function_header(analysis SemanticView, report Inspection, function Fu
     if symbol.node.value == "" || (symbol.owner >= 0 &&
         get(analysis.bindings.symbols, symbol.owner).node.kind == NodeKind.Function) {
         return
+    }
+    var owner = function.symbol
+    while owner >= 0 {
+        let scope = get(analysis.bindings.symbols, owner)
+        var group = 0
+        while group < length(scope.node.children) {
+            let parameters = get(scope.node.children, group)
+            if parameters.kind == NodeKind.TypeParameters {
+                var parameter = 0
+                while parameter < length(parameters.children) {
+                    if get(parameters.children, parameter).kind == NodeKind.TypePack {
+                        return
+                    }
+                    parameter = parameter + 1
+                }
+            }
+            group = group + 1
+        }
+        owner = scope.owner
     }
     var index = 0
     while index < length(symbol.node.children) {
