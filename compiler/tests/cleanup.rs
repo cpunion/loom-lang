@@ -29,10 +29,38 @@ fn lexical_cleanup_preserves_native_results_with_scope_only_registration() {
 
     fs::write(
         package.path().join("main.loom"),
-        "fn explicit() Int { var x = 3\ndefer { x = 9 }\nreturn x }\n\
-         fn implicit() Int { var x = 4\ndefer { x = 8 }\nx }\n\
-         fn nested() Int { var x = 1\n{ defer { x = x + 2 }\nx = 3 }\nx }\n\
-         fn main() { assert explicit() == 3 && implicit() == 4 && nested() == 5 }",
+        r#"
+fn explicit() Int {
+    var x = 3
+    defer { x = 9 }
+    return x
+}
+fn implicit() Int {
+    var x = 4
+    defer { x = 8 }
+    x
+}
+fn nested() Int {
+    var x = 1
+    {
+        defer { x = x + 2 }
+        x = 3
+    }
+    x
+}
+fn cleanup() {
+}
+fn verified(value Int) Int
+ensures result == value
+{
+    defer { cleanup() }
+    value
+}
+fn main() {
+    assert explicit() == 3 && implicit() == 4 && nested() == 5
+    assert verified(7) == 7
+}
+"#,
     )
     .unwrap();
     let executable = common::executable(package.path(), "scalar-cleanup");
@@ -72,9 +100,19 @@ fn cleanup_rejects_escaping_control_flow_and_keeps_required_proofs() {
          }\nfn main() { discard guarded() }",
         "fn main() { defer { discard later }\nlet later = 1\ndiscard later }",
         "fn unproved() Int ensures result == 1 { defer {}\n0 }\nfn main() {}",
-        "fn cleanup() {}\n\
-         fn unsupported(value Int) Int ensures result == value { defer { cleanup() }\nvalue }\n\
-         fn main() {}",
+        r#"
+fn cleanup(values List[Int]) {
+    values[0] = 9
+}
+fn unproved(values List[Int])
+ensures values[0] == 7
+{
+    values[0] = 7
+    defer { cleanup(values) }
+}
+fn main() {
+}
+"#,
     ] {
         fs::write(package.path().join("main.loom"), text).unwrap();
         let output = loom(&["check", package.path().to_str().unwrap()]);
