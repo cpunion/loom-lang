@@ -1,0 +1,144 @@
+import std.list.length
+import std.result.Result
+import std.result.ConstraintError
+import std.text.concat
+import std.time.sleep_ms
+
+type Tag = Text where self == "ready"
+
+record Message {
+    label Text
+    items List[Int]
+}
+
+fn equal_bytes(left Text, right Text) Bool {
+    // This helper appears only in proofs, not runtime reachability.
+    let proof_marker = 91827365
+    proof_marker > 0 && left == right
+}
+
+fn entry_text(value Text) Text {
+    let entry_marker = 81726354
+    discard entry_marker
+    value
+}
+
+fn identity(value Text) Text
+ensures equal_bytes(result, old(entry_text(value)))
+{
+    value
+}
+
+fn relay(value Text) Text
+ensures result == old(value)
+{
+    identity(identity(value))
+}
+
+fn tagged(value Tag) Text
+ensures result == "ready"
+{
+    value
+}
+
+fn copied(value Message) Message
+ensures result.label == old(value.label)
+{
+    value
+}
+
+async fn preserved(value Text) Text
+ensures result == old(value)
+{
+    relay(value)
+}
+
+fn checked_tag(value Text) Result[Tag, ConstraintError] {
+    Tag(value)
+}
+
+concept Keep {
+    fn keep(self Self, value Text) Text
+    ensures result == old(value)
+}
+
+impl Keep for Int {
+    fn keep(self Int, value Text) Text {
+        value
+    }
+}
+
+fn generic[T Keep](receiver T, value Text) Text
+ensures result == value
+{
+    receiver.keep(value)
+}
+
+fn dynamic(receiver dyn Keep, value Text) Text
+ensures result == value
+{
+    receiver.keep(value)
+}
+
+fn linked(first Text, middle Text, last Text) Text
+requires first == middle && middle == last
+ensures result == first
+{
+    last
+}
+
+fn separated(first Text, middle Text, last Text) Text
+requires first == middle && middle != last
+ensures result != first
+{
+    last
+}
+
+fn distinct_bytes(value Text) Bool
+requires value == "é"
+ensures result
+{
+    value != "é"
+}
+
+async fn exercise() {
+    let value = concat("é", "😀")
+    assert relay(value) == value
+    assert tagged(Tag("ready")) == "ready"
+    let ready = match checked_tag(relay(concat("rea", "dy"))) {
+        Result.Ok(tag) => tag
+        Result.Err(_) => {
+            assert false
+            Tag("ready")
+        }
+    }
+    assert match checked_tag(relay("wrong")) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert generic(1, value) == value
+    let receiver dyn Keep = 1
+    assert dynamic(receiver, value) == value
+    assert linked(value, relay(value), value) == value
+    assert separated(value, value, "different") != value
+    assert distinct_bytes("é")
+    let original = Message {
+        label = value
+        items = [1, 2]
+    }
+    let alias = copied(original)
+    original.items[0] = 9
+    sleep_ms(1).await
+    assert tagged(ready) == "ready"
+    assert alias.label == value && alias.items[0] == 9
+    assert length(alias.items) == 2
+    assert preserved(value).await == value
+}
+
+async fn main() {
+    exercise().await
+}
+
+test async fn immutable_text_preserves_values_and_shared_siblings() {
+    exercise().await
+}

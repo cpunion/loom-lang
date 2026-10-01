@@ -21,13 +21,31 @@ record CallArguments {
 }
 
 fn empty_proof_program() Program {
-    Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() test_names = new[Text]()
-        exports = new[Int]() interfaces = new[Interface]() witnesses = new[Witness]() }
+    Program {
+        types = new[Type]()
+        functions = new[Function]()
+        entry = -1
+        tests = new[Int]()
+        test_names = new[Text]()
+        exports = new[Int]()
+        interfaces = new[Interface]()
+        witnesses = new[Witness]()
+    }
 }
+
 fn proof_program_with_types(types List[Type]) Program {
-    Program { types = types functions = new[Function]() entry = -1 tests = new[Int]() test_names = new[Text]()
-        exports = new[Int]() interfaces = new[Interface]() witnesses = new[Witness]() }
+    Program {
+        types = types
+        functions = new[Function]()
+        entry = -1
+        tests = new[Int]()
+        test_names = new[Text]()
+        exports = new[Int]()
+        interfaces = new[Interface]()
+        witnesses = new[Witness]()
+    }
 }
+
 fn verification(function Function, program Program) Verification {
     let fresh = new[Int]()
     push(fresh, length(function.locals))
@@ -41,17 +59,24 @@ fn verification(function Function, program Program) Verification {
         loop_control = Option.None
     }
 }
+
 fn snapshot_values(values List[Value], value Value) List[Value] {
     let copied = new[Value]()
     var index = 0
-    while index < length(values) { push(copied, get(values, index))
-        index = index + 1 }
+    while index < length(values) {
+        push(copied, get(values, index))
+        index = index + 1
+    }
     push(copied, value)
     copied
 }
+
 fn call_arguments(proof Verification, call Expr, state State, depth Int) Result[List[CallArguments], Text] {
     var paths = new[CallArguments]()
-    push(paths, CallArguments { state = state values = new[Value]() })
+    push(paths, CallArguments {
+            state = state
+            values = new[Value]()
+        })
     var index = 0
     while index < length(call.children) {
         let next = new[CallArguments]()
@@ -61,11 +86,16 @@ fn call_arguments(proof Verification, call Expr, state State, depth Int) Result[
             let values = execute(proof, get(call.children, index), earlier.state, depth - 1)?
             var value = 0
             while value < length(values) {
-                if length(next) >= 4096 { return Result.Err("proof path budget exhausted") }
+                if length(next) >= 4096 {
+                    return Result.Err("proof path budget exhausted")
+                }
                 let current = get(values, value)
                 // Keep the evaluated value, not its source expression: a later
                 // argument may assign a mutable caller local that it read.
-                push(next, CallArguments { state = current.state values = snapshot_values(earlier.values, current.value) })
+                push(next, CallArguments {
+                        state = current.state
+                        values = snapshot_values(earlier.values, current.value)
+                    })
                 value = value + 1
             }
             path = path + 1
@@ -75,40 +105,68 @@ fn call_arguments(proof Verification, call Expr, state State, depth Int) Result[
     }
     Result.Ok(paths)
 }
+
 fn fresh_result(proof Verification, ty Int) Value {
     let identity = get(proof.fresh, 0)
     set(proof.fresh, 0, identity + 1)
-    if ty == 1 { Value.Number(variable(identity)) } else { Value.Boolean(Predicate.Variable(identity)) }
+    if ty == 3 {
+        return Value.Text(TextValue.Variable(identity))
+    }
+    if ty == 1 {
+        Value.Number(variable(identity))
+    } else {
+        Value.Boolean(Predicate.Variable(identity))
+    }
 }
+
 fn opaque_parameter(kind TypeKind) Bool {
     kind == TypeKind.Dyn || kind == TypeKind.Parameter || kind == TypeKind.Associated ||
     kind == TypeKind.Text || kind == TypeKind.Bytes || kind == TypeKind.List
 }
+
 fn opaque_argument(program Program, ty Int, depth Int) Bool {
-    if depth >= 16 || ty < 0 || ty >= length(program.types) { return false }
+    if depth >= 16 || ty < 0 || ty >= length(program.types) {
+        return false
+    }
     let shape = get(program.types, ty)
-    if opaque_parameter(shape.kind) { return true }
+    if opaque_parameter(shape.kind) {
+        return true
+    }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
         return opaque_argument(program, get(shape.fields, 0).ty, depth + 1)
     }
     false
 }
+
 fn call_scope(state State, values List[Value]) State {
     let locals = new[Value]()
     var index = 0
-    while index < length(state.locals) { push(locals, get(state.locals, index))
-        index = index + 1 }
+    while index < length(state.locals) {
+        push(locals, get(state.locals, index))
+        index = index + 1
+    }
     index = 0
-    while index < length(values) { push(locals, get(values, index))
-        index = index + 1 }
-    State { locals = locals facts = state.facts }
+    while index < length(values) {
+        push(locals, get(values, index))
+        index = index + 1
+    }
+    State {
+        locals = locals
+        facts = state.facts
+    }
 }
+
 fn caller_state(state State, boundary Int) State {
     let locals = new[Value]()
     var index = 0
-    while index < boundary { push(locals, get(state.locals, index))
-        index = index + 1 }
-    State { locals = locals facts = state.facts }
+    while index < boundary {
+        push(locals, get(state.locals, index))
+        index = index + 1
+    }
+    State {
+        locals = locals
+        facts = state.facts
+    }
 }
 
 // These facts are established by real entry/arithmetic checks, or by a callee's
@@ -123,14 +181,22 @@ fn established_checks(proof Verification, checks List[Evaluation], state State, 
             return Result.Err("body helper proof expansion budget exhausted")
         }
         if check.required || !total_scalar(check.value) {
-            let value = if check.required { check.value } else {
+            let value = if check.required {
+                check.value
+            } else {
                 proof_expr(check.value, ExprKind.Binary, 2, "==", -1, proof_children(check.value, check.value))
             }
             let predicate = guarded_value(check.guard, value)
-            if !bounded_contract(predicate) { return Result.Err("body helper proof expansion budget exhausted") }
+            if !bounded_contract(predicate) {
+                return Result.Err("body helper proof expansion budget exhausted")
+            }
             let children = new[Expr]()
             push(children, predicate)
-            let step = proof_expr(predicate, if check.required { ExprKind.Assert } else { ExprKind.Discard }, 0, "", -1, children)
+            let step = proof_expr(predicate, if check.required {
+                    ExprKind.Assert
+                } else {
+                    ExprKind.Discard
+                }, 0, "", -1, children)
             let next = new[Outcome]()
             var path = 0
             while path < length(paths) {
@@ -143,6 +209,7 @@ fn established_checks(proof Verification, checks List[Evaluation], state State, 
     }
     Result.Ok(paths)
 }
+
 fn summary_conditions(context Expansion, function Function, conditions List[Expr], bindings List[ExpansionBinding]) Result[Bool, Text] {
     var index = 0
     while index < length(conditions) {
@@ -154,15 +221,21 @@ fn summary_conditions(context Expansion, function Function, conditions List[Expr
     }
     Result.Ok(true)
 }
+
 fn mentions_result(value Expr, result_local Int) Bool {
-    if value.kind == ExprKind.Local && value.index == result_local { return true }
+    if value.kind == ExprKind.Local && value.index == result_local {
+        return true
+    }
     var index = 0
     while index < length(value.children) {
-        if mentions_result(get(value.children, index), result_local) { return true }
+        if mentions_result(get(value.children, index), result_local) {
+            return true
+        }
         index = index + 1
     }
     false
 }
+
 fn same_result_path(left Expr, right Expr) Bool {
     if left.kind == ExprKind.Coerce {
         return same_result_path(get(left.children, 0), right)
@@ -180,22 +253,26 @@ fn same_result_path(left Expr, right Expr) Bool {
 }
 
 fn result_definition(value Expr, path Expr, result_local Int, output List[Expr]) {
-    if length(output) != 0 { return }
+    if length(output) != 0 {
+        return
+    }
     if value.kind == ExprKind.Binary && value.text == "&&" {
         result_definition(get(value.children, 0), path, result_local, output)
         result_definition(get(value.children, 1), path, result_local, output)
-    } else { if value.kind == ExprKind.Binary && value.text == "==" {
-        var index = 0
-        while index < 2 {
-            let left = get(value.children, index)
-            let right = get(value.children, 1 - index)
-            if same_result_path(left, path) && !mentions_result(right, result_local) {
-                push(output, right)
-                return
+    } else {
+        if value.kind == ExprKind.Binary && value.text == "==" {
+            var index = 0
+            while index < 2 {
+                let left = get(value.children, index)
+                let right = get(value.children, 1 - index)
+                if same_result_path(left, path) && !mentions_result(right, result_local) {
+                    push(output, right)
+                    return
+                }
+                index = index + 1
             }
-            index = index + 1
         }
-    } }
+    }
 }
 
 fn summarized_value(context Expansion, function Function, path Expr, snapshot Expr, bindings List[ExpansionBinding], depth Int) Result[Expr, Text] {
@@ -204,7 +281,9 @@ fn summarized_value(context Expansion, function Function, path Expr, snapshot Ex
     var index = 0
     while index < length(function.postconditions) {
         let condition = get(function.postconditions, index)
-        if !bounded_contract(condition) { return Result.Err("body helper proof expansion budget exhausted") }
+        if !bounded_contract(condition) {
+            return Result.Err("body helper proof expansion budget exhausted")
+        }
         result_definition(condition, path, function.result_local, definitions)
         index = index + 1
     }
@@ -241,6 +320,7 @@ fn summarized_value(context Expansion, function Function, path Expr, snapshot Ex
     }
     Result.Ok(proof_expr(path, ExprKind.Record, path.ty, "", -1, fields))
 }
+
 fn applied_call(proof Verification, call Expr, function Function, arguments CallArguments, depth Int) Result[List[Outcome], Text] {
     let boundary = length(arguments.state.locals)
     var state = call_scope(arguments.state, arguments.values)
@@ -250,10 +330,19 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
     while index < length(function.params) {
         let reference = proof_expr(call, ExprKind.Local, get(function.params, index), "", boundary + index, new[Expr]())
         push(expressions, reference)
-        push(bindings, ExpansionBinding { local = index value = reference })
+        push(bindings, ExpansionBinding {
+                local = index
+                value = reference
+            })
         index = index + 1
     }
-    let context = Expansion { program = proof.program list_lengths = false budget = proof.budget active = new[Int]() checks = new[Evaluation]() }
+    let context = Expansion {
+        program = proof.program
+        list_lengths = false
+        budget = proof.budget
+        active = new[Int]()
+        checks = new[Evaluation]()
+    }
     discard expansion_step(context, 0)?
     let summary = length(function.postconditions) != 0
     var value = proof_bool(call, false)
@@ -264,7 +353,10 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         push(state.locals, result_value)
         state = bounded(result_value, state)
         let reference = proof_expr(call, ExprKind.Local, function.result, "", boundary + length(function.params), new[Expr]())
-        push(bindings, ExpansionBinding { local = function.result_local value = reference })
+        push(bindings, ExpansionBinding {
+                local = function.result_local
+                value = reference
+            })
         discard summary_conditions(context, function, function.preconditions, bindings)?
         discard summary_conditions(context, function, function.postconditions, bindings)?
         // Verified equalities define individual scalar leaves. Reconstruct only
@@ -272,7 +364,9 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         // and shared storage stays opaque. The native call remains unchanged.
         let path = proof_expr(call, ExprKind.Local, function.result, "", function.result_local, new[Expr]())
         value = summarized_value(context, function, path, reference, bindings, 0)?
-        if !bounded_contract(value) { return Result.Err("body helper proof expansion budget exhausted") }
+        if !bounded_contract(value) {
+            return Result.Err("body helper proof expansion budget exhausted")
+        }
     } else {
         // The call's actual arguments have already executed once. Expand only
         // their immutable snapshot references and the finite scalar helper.
@@ -280,12 +374,17 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         index = 0
         while index < length(expressions) {
             let reference = get(expressions, index)
-            push(references, ExpansionBinding { local = reference.index value = reference })
+            push(references, ExpansionBinding {
+                    local = reference.index
+                    value = reference
+                })
             index = index + 1
         }
         let prepared = proof_expr(call, ExprKind.Call, call.ty, call.text, call.index, expressions)
         value = expanded_call(context, prepared, proof_bool(call, true), references, proof.function.locals, false, 0, 0)?
-        if !bounded_contract(value) { return Result.Err("body helper proof expansion budget exhausted") }
+        if !bounded_contract(value) {
+            return Result.Err("body helper proof expansion budget exhausted")
+        }
     }
     let paths = established_checks(proof, context.checks, state, depth)?
     let output = new[Outcome]()
@@ -297,7 +396,10 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
             var item = 0
             while item < length(results) {
                 let returned = get(results, item)
-                discard add_outcome(output, Outcome { state = caller_state(returned.state, boundary) value = returned.value })?
+                discard add_outcome(output, Outcome {
+                        state = caller_state(returned.state, boundary)
+                        value = returned.value
+                    })?
                 item = item + 1
             }
         }
@@ -305,6 +407,7 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
     }
     Result.Ok(output)
 }
+
 fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[Outcome], Text] {
     if call.index < 0 || call.index >= length(proof.program.functions) {
         return Result.Err("body proof call has no checked helper instance")
@@ -320,7 +423,7 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
         // concrete implementation or hidden witness is never guessed.
         let opaque = opaque_argument(proof.program, ty, 0) && length(function.postconditions) != 0
         if (!helper_type(proof.program, ty, 0) || ty == 5) && !opaque {
-            return Result.Err("body proof helper parameters must be Int, Bool or inline aggregates, apart from contracted opaque arguments")
+            return Result.Err("body proof helper parameters must be Int, Bool, Text or inline aggregates, apart from contracted opaque arguments")
         }
         index = index + 1
     }

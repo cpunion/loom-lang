@@ -160,7 +160,8 @@ without runtime argument slots.
 ## Constraints and required proofs
 
 Construction returns the refined value when established statically; an unknown
-value predicate uses checked Result construction. Safe weakening and supported
+value predicate uses checked Result construction, including immutable Text
+refinements with byte equality. Safe weakening and supported
 implications avoid redundant checks while retaining input evaluation and faults.
 Predicates may call pure functions, but cannot rely on external mutable state.
 
@@ -172,8 +173,13 @@ and inline aggregate concept calls use declared contracts through generic/associ
 not a guessed implementation or hidden receiver knowledge. Private abstract
 summaries are neither executable CTFE bodies nor native functions. Unspecified
 leaves remain independent; shared siblings supply no content or alias facts.
-Text, Bytes and List parameters can be carried opaquely through contracted
-calls, including generic nominal receivers. Unmodeled heap operations still reject.
+Immutable Text values, exact literals and established equality facts participate
+in required proofs, including Text leaves beside shared siblings. Distinct unknown
+values never imply unequal contents. Established equality chains and inequalities
+between equal-value classes compose; disjunctions and unequal chains supply no
+invented equality or inequality. Concatenation/length/substring reasoning is
+not implemented. Bytes and List parameters can be carried opaquely through
+contracted calls, including generic nominal receivers. Unmodeled heap operations still reject.
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining

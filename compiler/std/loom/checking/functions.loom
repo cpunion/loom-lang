@@ -433,7 +433,7 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
 }
 
 fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
-    if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool { return Result.Ok(true) }
+    if node.kind == NodeKind.Integer || node.kind == NodeKind.Float || node.kind == NodeKind.Bool || node.kind == NodeKind.Text { return Result.Ok(true) }
     if node.kind == NodeKind.Name {
         if package(node.value) == "" || lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 {
             return Result.Ok(true)

@@ -1,0 +1,86 @@
+// Immutable content equalities form finite classes of logical values. Follow
+// only established equality facts, never disjunctions or native pointer identity.
+fn distinct_text_literals(left TextValue, right TextValue) Bool {
+    match left {
+        TextValue.Literal(text) => match right {
+            TextValue.Literal(other) => text != other
+            _ => false
+        }
+        _ => false
+    }
+}
+
+fn text_member(values List[TextValue], value TextValue) Bool {
+    var index = 0
+    while index < length(values) {
+        if same_text(get(values, index), value) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn text_class(value TextValue, facts List[Predicate]) List[TextValue] {
+    let values = new[TextValue]()
+    push(values, value)
+    var current = 0
+    while current < length(values) {
+        let known = get(values, current)
+        var index = 0
+        while index < length(facts) {
+            match get(facts, index) {
+                Predicate.TextEqual(left, right) => {
+                    if same_text(known, left) && !text_member(values, right) {
+                        push(values, right)
+                    }
+                    if same_text(known, right) && !text_member(values, left) {
+                        push(values, left)
+                    }
+                }
+                _ => {
+                }
+            }
+            index = index + 1
+        }
+        current = current + 1
+    }
+    values
+}
+
+fn text_distinct(left TextValue, right TextValue, facts List[Predicate]) Bool {
+    let first = text_class(left, facts)
+    let second = text_class(right, facts)
+    var index = 0
+    while index < length(first) {
+        let a = get(first, index)
+        var other = 0
+        while other < length(second) {
+            let b = get(second, other)
+            if distinct_text_literals(a, b) {
+                return true
+            }
+            other = other + 1
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(facts) {
+        match get(facts, index) {
+            Predicate.Not(values) => match get(values, 0) {
+                Predicate.TextEqual(a, b) => {
+                    if (text_member(first, a) && text_member(second, b)) ||
+                    (text_member(first, b) && text_member(second, a)) {
+                        return true
+                    }
+                }
+                _ => {
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    false
+}

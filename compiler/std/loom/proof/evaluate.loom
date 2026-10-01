@@ -8,36 +8,59 @@ import std.list.set
 import std.result.Result
 
 fn boolean(value Value) Result[Predicate, Text] {
-    match value { Value.Boolean(predicate) => Result.Ok(predicate), _ => Result.Err("expected a proof predicate") }
+    match value {
+        Value.Boolean(predicate) => Result.Ok(predicate),
+        _ => Result.Err("expected a proof predicate")
+    }
 }
+
 fn unary(operator Text, value Value) Result[Value, Text] {
     match value {
         Value.Number(term) => {
-            if operator == "-" { return Result.Ok(Value.Number(scale(term, integer(-1)))) }
+            if operator == "-" {
+                return Result.Ok(Value.Number(scale(term, integer(-1))))
+            }
             Result.Err("unsupported proof unary operation")
         }
         Value.Boolean(predicate) => {
-            if operator == "!" { return Result.Ok(Value.Boolean(not(predicate))) }
+            if operator == "!" {
+                return Result.Ok(Value.Boolean(not(predicate)))
+            }
             Result.Err("unsupported proof unary operation")
         }
         _ => Result.Err("unsupported proof unary operand")
     }
 }
+
 fn numeric(operator Text, a Linear, b Linear) Result[Value, Text] {
-    if operator == "+" { return Result.Ok(Value.Number(add(a, b))) }
-    if operator == "-" { return Result.Ok(Value.Number(add(a, scale(b, integer(-1))))) }
+    if operator == "+" {
+        return Result.Ok(Value.Number(add(a, b)))
+    }
+    if operator == "-" {
+        return Result.Ok(Value.Number(add(a, scale(b, integer(-1)))))
+    }
     if operator == "*" {
-        if length(a.terms) == 0 { return Result.Ok(Value.Number(scale(b, a.constant))) }
-        if length(b.terms) == 0 { return Result.Ok(Value.Number(scale(a, b.constant))) }
+        if length(a.terms) == 0 {
+            return Result.Ok(Value.Number(scale(b, a.constant)))
+        }
+        if length(b.terms) == 0 {
+            return Result.Ok(Value.Number(scale(a, b.constant)))
+        }
     }
     if operator == "/" || operator == "%" {
-        if length(a.terms) != 0 || length(b.terms) != 0 { return Result.Err("nonconstant proof division") }
+        if length(a.terms) != 0 || length(b.terms) != 0 {
+            return Result.Err("nonconstant proof division")
+        }
         let left = machine(a.constant)?
         let right = machine(b.constant)?
         if right == 0 || (left == -9223372036854775808 && right == -1) {
             return Result.Err("undefined proof division")
         }
-        let value = if operator == "/" { left / right } else { left % right }
+        let value = if operator == "/" {
+            left / right
+        } else {
+            left % right
+        }
         return Result.Ok(Value.Number(constant(integer(value))))
     }
     if operator == "==" || operator == "!=" || operator == "<" || operator == "<=" || operator == ">" || operator == ">=" {
@@ -45,17 +68,33 @@ fn numeric(operator Text, a Linear, b Linear) Result[Value, Text] {
     }
     Result.Err("unsupported nonlinear proof arithmetic")
 }
+
 fn logical(operator Text, a Predicate, b Predicate) Result[Value, Text] {
-    if operator == "&&" { return Result.Ok(Value.Boolean(Predicate.And(predicates(a, b)))) }
-    if operator == "||" { return Result.Ok(Value.Boolean(Predicate.Or(predicates(a, b)))) }
+    if operator == "&&" {
+        return Result.Ok(Value.Boolean(Predicate.And(predicates(a, b))))
+    }
+    if operator == "||" {
+        return Result.Ok(Value.Boolean(Predicate.Or(predicates(a, b))))
+    }
     if operator == "==" || operator == "!=" {
-        let equal = if same(a, b) { Predicate.Constant(true) } else {
-            if same(a, not(b)) { Predicate.Constant(false) } else { Predicate.Equal(predicates(a, b)) }
+        let equal = if same(a, b) {
+            Predicate.Constant(true)
+        } else {
+            if same(a, not(b)) {
+                Predicate.Constant(false)
+            } else {
+                Predicate.Equal(predicates(a, b))
+            }
         }
-        return Result.Ok(Value.Boolean(if operator == "==" { equal } else { not(equal) }))
+        return Result.Ok(Value.Boolean(if operator == "==" {
+                    equal
+                } else {
+                    not(equal)
+                }))
     }
     Result.Err("unsupported proof Boolean operation")
 }
+
 fn binary(operator Text, a Value, b Value) Result[Value, Text] {
     match a {
         Value.Number(left) => match b {
@@ -66,22 +105,63 @@ fn binary(operator Text, a Value, b Value) Result[Value, Text] {
             Value.Boolean(right) => logical(operator, left, right)
             _ => Result.Err("proof operands differ")
         }
+        Value.Text(left) => match b {
+            Value.Text(right) => {
+                if operator != "==" && operator != "!=" {
+                    return Result.Err("unsupported Text proof operation")
+                }
+                // Equal immutable symbolic values have equal bytes. Distinct
+                // identities are not evidence of inequality: parameters may
+                // contain the same Text, even with different native storage.
+                if distinct_text_literals(left, right) {
+                    return Result.Ok(Value.Boolean(Predicate.Constant(operator == "!=")))
+                }
+                if same_text(left, right) {
+                    return Result.Ok(Value.Boolean(Predicate.Constant(operator == "==")))
+                }
+                let equal = Predicate.TextEqual(left, right)
+                Result.Ok(Value.Boolean(if operator == "==" {
+                            equal
+                        } else {
+                            not(equal)
+                        }))
+            }
+            _ => Result.Err("proof operands differ")
+        }
         _ => Result.Err("unsupported proof operand")
     }
 }
+
 fn pure(expr Expr, state State) Result[Value, Text] {
-    if expr.ty == 5 { return Result.Err("Float expressions are not supported in required proofs") }
-    if expr.kind == ExprKind.Integer { return Result.Ok(Value.Number(constant(decimal(expr.text)))) }
-    if expr.kind == ExprKind.Bool { return Result.Ok(Value.Boolean(Predicate.Constant(expr.text == "true"))) }
-    if expr.kind == ExprKind.Local { return Result.Ok(get(state.locals, expr.index)) }
-    if expr.kind == ExprKind.Coerce { return pure(get(expr.children, 0), state) }
+    if expr.ty == 5 {
+        return Result.Err("Float expressions are not supported in required proofs")
+    }
+    if expr.kind == ExprKind.Integer {
+        return Result.Ok(Value.Number(constant(decimal(expr.text))))
+    }
+    if expr.kind == ExprKind.Bool {
+        return Result.Ok(Value.Boolean(Predicate.Constant(expr.text == "true")))
+    }
+    if expr.kind == ExprKind.Text {
+        return Result.Ok(Value.Text(TextValue.Literal(expr.text)))
+    }
+    if expr.kind == ExprKind.Local {
+        return Result.Ok(get(state.locals, expr.index))
+    }
+    if expr.kind == ExprKind.Coerce {
+        return pure(get(expr.children, 0), state)
+    }
     if expr.kind == ExprKind.Field {
         match pure(get(expr.children, 0), state)? {
             Value.Record(fields) => {
-                if expr.index < 0 || expr.index >= length(fields) { return Result.Err("invalid proof record field") }
+                if expr.index < 0 || expr.index >= length(fields) {
+                    return Result.Err("invalid proof record field")
+                }
                 return Result.Ok(get(fields, expr.index))
             }
-            _ => { return Result.Err("field proof requires a scalar record") }
+            _ => {
+                return Result.Err("field proof requires a scalar record")
+            }
         }
     }
     if expr.kind == ExprKind.Record {
@@ -102,13 +182,19 @@ fn pure(expr Expr, state State) Result[Value, Text] {
         }
         return Result.Ok(Value.Record(fields))
     }
-    if expr.kind == ExprKind.Unary { return unary(expr.text, pure(get(expr.children, 0), state)?) }
+    if expr.kind == ExprKind.Unary {
+        return unary(expr.text, pure(get(expr.children, 0), state)?)
+    }
     if expr.kind == ExprKind.Binary {
         let left = pure(get(expr.children, 0), state)?
         if expr.text == "&&" || expr.text == "||" {
             let fact = boolean(left)?
             let and = expr.text == "&&"
-            if holds(if and { not(fact) } else { fact }, state.facts) {
+            if holds(if and {
+                    not(fact)
+                } else {
+                    fact
+                }, state.facts) {
                 return Result.Ok(Value.Boolean(Predicate.Constant(!and)))
             }
         }
@@ -116,6 +202,7 @@ fn pure(expr Expr, state State) Result[Value, Text] {
     }
     Result.Err("unsupported expression in required proof")
 }
+
 fn bounded(value Value, state State) State {
     match value {
         Value.Number(term) => {
@@ -132,10 +219,12 @@ fn bounded(value Value, state State) State {
 fn defined(expr Expr, state State) Result[Bool, Text] {
     // Checked literals and stable scalar reads cannot fault. Do not rescan
     // the entire fact set for contradictions at every leaf of a predicate.
-    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Local {
+    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text || expr.kind == ExprKind.Local {
         return Result.Ok(true)
     }
-    if holds(Predicate.Constant(false), state.facts) { return Result.Ok(true) }
+    if holds(Predicate.Constant(false), state.facts) {
+        return Result.Ok(true)
+    }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || expr.kind == ExprKind.Field {
         discard defined(get(expr.children, 0), state)?
     }
@@ -152,22 +241,28 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
         var branch = state
         if expr.text == "&&" || expr.text == "||" {
             let fact = boolean(pure(left, state)?)?
-            branch = difference_facts(assume(state, if expr.text == "&&" { fact } else { not(fact) }))
+            branch = difference_facts(assume(state, if expr.text == "&&" {
+                        fact
+                    } else {
+                        not(fact)
+                    }))
         }
         discard defined(get(expr.children, 1), branch)?
     }
     if (expr.kind == ExprKind.Unary && expr.text == "-") ||
-        (expr.kind == ExprKind.Binary && (expr.text == "+" || expr.text == "-" || expr.text == "*" || expr.text == "/" || expr.text == "%")) {
+    (expr.kind == ExprKind.Binary && (expr.text == "+" || expr.text == "-" || expr.text == "*" || expr.text == "/" || expr.text == "%")) {
         let value = pure(expr, state)?
         match value {
             Value.Number(term) => {
                 let bounds = range(term, state.facts)
                 if compare(bounds.low, bounds.high) <= 0 &&
-                    (compare(bounds.low, integer(-9223372036854775808)) < 0 || compare(bounds.high, integer(9223372036854775807)) > 0) {
+                (compare(bounds.low, integer(-9223372036854775808)) < 0 || compare(bounds.high, integer(9223372036854775807)) > 0) {
                     return Result.Err("postcondition arithmetic is not proved defined")
                 }
             }
-            _ => { return Result.Err("expected scalar proof arithmetic") }
+            _ => {
+                return Result.Err("expected scalar proof arithmetic")
+            }
         }
     }
     Result.Ok(true)

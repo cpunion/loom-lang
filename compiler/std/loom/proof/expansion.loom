@@ -28,7 +28,7 @@ record Expansion {
     checks List[Evaluation]
 }
 
-fn scalar_type(ty Int) Bool { ty == 1 || ty == 2 || ty == 5 }
+fn scalar_type(ty Int) Bool { ty == 1 || ty == 2 || ty == 3 || ty == 5 }
 fn helper_type(program Program, ty Int, depth Int) Bool {
     if scalar_type(ty) {
         return true
@@ -212,7 +212,7 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
         }
         return Result.Err("helper expression has an unbound local")
     }
-    if value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool { return Result.Ok(value) }
+    if value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text { return Result.Ok(value) }
     if value.kind == ExprKind.Call { return expanded_call(context, value, guard, bindings, locals, self, calls, depth + 1) }
     if context.list_lengths && value.kind == ExprKind.Intrinsic && value.text == "list_len" && length(value.children) == 1 {
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
@@ -256,7 +256,7 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
 // Primitive Float arithmetic is total IEEE arithmetic. Keep evaluation metadata
 // separate from equality: a successfully evaluated NaN is not equal to itself.
 fn total_scalar(value Expr) Bool {
-    if value.kind == ExprKind.Local || value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool { return true }
+    if value.kind == ExprKind.Local || value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text { return true }
     if value.kind != ExprKind.Unary && value.kind != ExprKind.Binary && value.kind != ExprKind.If &&
         value.kind != ExprKind.Field && value.kind != ExprKind.Record { return false }
     var index = 0
