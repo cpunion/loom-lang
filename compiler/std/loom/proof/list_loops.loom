@@ -37,9 +37,37 @@ fn loop_extent_writes(proof Verification, value Expr, entry State, modified List
     Result.Ok(true)
 }
 
-fn loop_extents(proof Verification, value Expr, entry State) Result[State, Text] {
+fn loop_list_type(proof Verification, ty Int, depth Int) Bool {
+    if depth >= 16 || ty < 0 || ty >= length(proof.program.types) {
+        return false
+    }
+    let shape = get(proof.program.types, ty)
+    if shape.kind == TypeKind.List {
+        return true
+    }
+    var index = 0
+    while index < length(shape.fields) {
+        if loop_list_type(proof, get(shape.fields, index).ty, depth + 1) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn loop_extents(proof Verification, value Expr, entry State, writes List[Bool]) Result[State, Text] {
     if length(entry.extents) == 0 || extent_preserving(proof.program, value) {
         return Result.Ok(entry)
+    }
+    // Rebinding can change which handle a resize targets on any iteration.
+    // Without a points-to invariant, freshen all possibly reachable extents;
+    // never resolve that target using only the pre-loop local value.
+    var index = 0
+    while index < length(proof.function.locals) {
+        if get(writes, index) && loop_list_type(proof, get(proof.function.locals, index).ty, 0) {
+            return Result.Ok(forget_extents(proof, entry))
+        }
+        index = index + 1
     }
     let modified = new[Int]()
     discard loop_extent_writes(proof, value, entry, modified, 64)?

@@ -23,7 +23,13 @@ the caller's own `old` remains unchanged. Pure helper observations retain their
 entry preconditions and arithmetic obligations. No entry snapshot is allocated
 at runtime.
 
+`buffers.loom` alternates two buffers through nested reversal loops. Rebinding
+List locals, including inline record/tuple fields, preserves only inductively
+proved length relations, not handle identity. Loops that combine rebinding with
+resizing conservatively forget heap facts before induction. One buffer is the
+input: later passes may update it, and the result is not promised to be fresh.
+
 The sorting example proves only its stated length contract. Its concrete order
 and element checks are runtime tests, not sortedness/permutation proofs. General
-content proofs, element snapshots and List-local reassignment in proof loops
-remain unsupported. No postcondition helper is emitted into the native program.
+content proofs and element snapshots remain unsupported. No postcondition helper
+is emitted into the native program.
