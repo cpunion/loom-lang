@@ -443,7 +443,7 @@ fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
         return method_call(context, node, receiver, name(node.value), types, inputs, -1, expected)
     }
     if length(context.env.concepts) != 0 && package(node.value) != "" {
-        let capability = concept_named(context.env, context.signature.symbol, node, package(node.value))?
+        let capability = referenced_concept(context.env, context.signature.symbol, node, package(node.value), 0)?
         if capability >= 0 {
             if length(inputs.nodes) == 0 {
                 return Result.Err(error(context, node, "a concept method call needs a receiver"))

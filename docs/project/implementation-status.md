@@ -16,7 +16,7 @@ syntax, APIs and supported proof fragment.
 | Guarantees | Checked constrained construction, safe weakening, bounded mandatory postconditions and selected invariant-preserving operations. | General loop proofs and mutable-alias preservation remain open. |
 | Metaprogramming | Pure compile-time execution, type/value/function parameters, packs, typed macros, reflection and tracked inputs. | Staging and visibility still apply; no arbitrary compile-time I/O. |
 | Memory/resources/async | Moving GC, lexical cleanup, stackless Tasks, real timers, files, DNS/TCP/TLS and tuple/List joins. | Cooperative scheduling; general worker APIs remain open. |
-| Programming tools | Directory tests, formatter, LSP/VS Code, public parser/analysis libraries, checked function/type/record-field edits. | Unaccounted/generated uses, concept and external-consumer API edits, broader erroneous-source queries remain open. |
+| Programming tools | Directory tests, formatter, LSP/VS Code, public parser/analysis libraries, checked function/type/concept/record-field edits. | Unaccounted/generated uses, external-consumer API edits and broader erroneous-source queries remain open. |
 | Evolution tools | Reviewed single-package semantic merge and a real offline SQLite migration trial. | Bounded prototypes, not general semantic VCS or deployment compatibility proof. |
 
 ## Build and programming experience
@@ -53,8 +53,8 @@ explicitly discarded, and Task/MustScope obligations cannot be discarded.
 The [VS Code extension](../../editors/vscode/README.md) uses the real compiler
 for unsaved diagnostics, formatting, hover/navigation, name/member/import
 completion, checked import fixes, parameter/local-pattern rename and checked
-function/type rename. One public top-level function, record, enum or constrained
-type can be renamed throughout its local module, including import declarations,
+function/type/concept rename. One public top-level function, record, enum,
+constrained type or concept can be renamed throughout its local module, including import declarations,
 checked signatures and field/payload annotations, constructors, enum patterns,
 qualified calls, callbacks, embedded
 tests and unopened test files. Each directory retains its private test scope;
@@ -80,8 +80,11 @@ unaligned annotations still refuse edits. Record fields now use checked
 receiver/initializer identities, including updates, explicit destructuring,
 contracts and type-constraint templates. Distinct field owners and locals stay
 unchanged; unaccounted labels or structural accesses in any module package block
-the edit. Concept rename,
-external-consumer API migration and broader recovery/query support remain open.
+the edit. Concept rename uses a lazy checker trace for bounds, `impl`, `dyn`,
+associated-type qualifiers, `implements` guards and explicit method calls.
+Each package must account for its own references, including tests; unvisited
+branches refuse edits. The trace stays outside executable IR and build caches.
+External-consumer API migration and broader recovery/query support remain open.
 
 Public `std.loom` syntax, fragment parsing, project/binding and typed-analysis
 libraries are the same implementation used by the compiler. In-memory syntax

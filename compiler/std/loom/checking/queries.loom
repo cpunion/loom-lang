@@ -16,6 +16,7 @@ pub record CheckedQuery {
     types List[Type]
     interfaces List[Interface]
     functions List[Function]
+    concepts List[ConceptReference]
 }
 
 fn query_templates(env Environment) Result[Bool, Failure] {
@@ -23,7 +24,7 @@ fn query_templates(env Environment) Result[Bool, Failure] {
     while index < length(env.signatures) {
         let current = get(env.signatures, index)
         if pack_instance(env, index) < 0 && (current.parameters != 0 || has_static(current)) &&
-            (!prototype(env, current.symbol) || has(symbol(env, current.symbol).node, NodeKind.Block)) {
+        (!prototype(env, current.symbol) || has(symbol(env, current.symbol).node, NodeKind.Block)) {
             discard function(env, index, abstract_arguments(env, current.parameters), unknown_constants(current), false)?
         }
         index = index + 1
@@ -44,7 +45,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int) Result
 
 pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs BuildInputs) Result[CheckedQuery, Failure] {
     discard expanded_source(source)?
-    let env = prepare_with_inputs(source, inputs)?
+    let env = prepare_with_inputs(source, inputs, true)?
     discard query_templates(env)?
     var selected = -1
     var index = 0
@@ -52,13 +53,20 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
         let current = get(env.signatures, index)
         let item = symbol(env, current.symbol)
         if item.file == file && offset >= item.node.span.start && offset < item.node.span.end {
-            if current.parameters == 0 && !has_static(current) && has(item.node, NodeKind.Block) { selected = index }
+            if current.parameters == 0 && !has_static(current) && has(item.node, NodeKind.Block) {
+                selected = index
+            }
         }
         index = index + 1
     }
     if selected < 0 {
         discard layouts(env)?
-        return Result.Ok(CheckedQuery { types = env.types interfaces = env.interfaces functions = new[Function]() })
+        return Result.Ok(CheckedQuery {
+                types = env.types
+                interfaces = env.interfaces
+                functions = new[Function]()
+                concepts = get(env.inputs, 0).concept_references
+            })
     }
     let current = get(env.signatures, selected)
     discard schedule(env, selected, new[Int](), new[StaticValue](), symbol(env, current.symbol).node)?
@@ -66,5 +74,10 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
     // methods too, while retaining no unrelated application roots.
     let functions = emit_functions(env, true)?
     discard layouts(env)?
-    Result.Ok(CheckedQuery { types = env.types interfaces = env.interfaces functions = functions })
+    Result.Ok(CheckedQuery {
+            types = env.types
+            interfaces = env.interfaces
+            functions = functions
+            concepts = get(env.inputs, 0).concept_references
+        })
 }

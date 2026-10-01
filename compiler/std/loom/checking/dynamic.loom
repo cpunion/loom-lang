@@ -175,7 +175,7 @@ fn emitted_type(env Environment, owner Int, ty Int, node Node, seen List[Int]) R
     Result.Ok(true)
 }
 fn dynamic_type(env Environment, owner Int, node Node, arguments List[Int], obligations List[Requirement], depth Int) Result[Int, Failure] {
-    let capability = concept_named(env, owner, node, node.value)?
+    let capability = referenced_concept(env, owner, node, node.value, 0)?
     if capability < 0 { return Result.Err(failure(env, owner, node, "expected an accessible concept")) }
     let members = get(env.concepts, concept_index(env, capability)).associated
     let bindings = new[Int]()

@@ -90,7 +90,7 @@ fn query(node Node, token Token, tokens List[Token]) Option[Query] {
         index = index + 1
     }
     let kind = node.kind
-    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.Construct || kind == NodeKind.Type || kind == NodeKind.RecordPattern ||
+    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.Construct || kind == NodeKind.Type || kind == NodeKind.DynType || kind == NodeKind.RecordPattern ||
     (kind == NodeKind.Pattern && node.value != token.value) {
         var segment = -1
         var count = 0
@@ -102,7 +102,9 @@ fn query(node Node, token Token, tokens List[Token]) Option[Query] {
             if current.span.start >= node.span.end {
                 scanning = false
             } else if current.span.start >= node.span.start {
-                if current.kind == Kind.Name {
+                if kind == NodeKind.DynType && current.span.start == node.span.start && current.value == "dyn" {
+                    // The contextual keyword is not a path segment.
+                } else if current.kind == Kind.Name {
                     if same_span(current.span, token.span) {
                         segment = count
                     }
@@ -654,7 +656,7 @@ fn inspect_tree(analysis SemanticView, report Inspection, function Function, tar
 
 // Uses actual checked instances, never spelling-only resolution. Results merge
 // every concrete instance; locations and type labels are deduplicated. Whitespace,
-// comments, punctuation and uninstantiated bodies have no result.
+// comments, punctuation and uses without checked binding evidence have no result.
 // Match bindings and lowered checked constructors have types but no location. Dynamic calls
 // navigate to a unique concept signature, never a speculative implementation;
 // overloaded signatures not distinguished by name/arity omit the location.
@@ -668,14 +670,23 @@ pub fn inspect_at(analysis Analysis, file Int, offset Int) Option[Inspection] {
         }
         index = index + 1
     }
-    inspect_view(SemanticView {
-            bindings = analysis.bindings
-            data = CheckedQuery {
-                types = analysis.program.types
-                interfaces = analysis.program.interfaces
-                functions = analysis.program.functions
+    let view = SemanticView {
+        bindings = analysis.bindings
+        data = CheckedQuery {
+            types = analysis.program.types
+            interfaces = analysis.program.interfaces
+            functions = analysis.program.functions
+            concepts = if length(analysis.concepts) == 0 {
+                new[std.loom.checking.ConceptReference]()
+            } else {
+                get(analysis.concepts, 0)
             }
-        }, file, offset)
+        }
+    }
+    match inspect_view(view, file, offset) {
+        Option.Some(found) => Option.Some(found)
+        Option.None => inspect_concept_at(analysis, view, file, offset)
+    }
 }
 
 // A fresh, isolated check of the containing concrete function and its call
@@ -722,6 +733,10 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
         span = token.span
         types = new[Text]()
         definitions = new[Location]()
+    }
+    inspect_concept_references(analysis, report, target, file, analysis.data.concepts)
+    if length(report.definitions) > 0 {
+        return Option.Some(report)
     }
     var index = 0
     while index < length(analysis.data.types) {

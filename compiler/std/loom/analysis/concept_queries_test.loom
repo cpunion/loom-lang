@@ -1,0 +1,72 @@
+fn concept_query_source() Text {
+    """
+        concept Read {
+            type Item
+            fn read(self Self) Self.Item
+        }
+        impl Read for Int {
+            type Item = Int
+            fn read(self Int) Int {
+                self
+            }
+        }
+        record Box[T Read] {
+            value T
+        }
+        concept Nested {
+            type Source Read
+        }
+        fn uncalled[T Read](value T) T.Read.Item {
+            Read.read(value)
+        }
+        fn optional[T](value T) Int {
+            comptime if T implements Read {
+                discard Read.read(value)
+                1
+            } else {
+                0
+            }
+        }
+        fn main() {
+            let value dyn Read[Item = Int] = 7
+            assert value.read() == 7
+            assert optional(7) == 1
+            let Read = 8
+            assert Read.read() == 8
+        }
+        """
+}
+
+test fn concept_queries_keep_checked_headers_templates_dyn_and_qualified_calls() {
+    let text = concept_query_source()
+    let analysis = accepted(input(text))
+    let symbols = length(analysis.bindings.symbols)
+    let declared = query_offset(text, "Read {")
+    let uses = ["Read for", "Read]", "Read\n}", "Read](value", "Read.Item", "Read.read(value)",
+        "Read {\n        discard", "Read.read(value)\n        1", "Read[Item"]
+    var index = 0
+    while index < length(uses) {
+        let found = inspection(analysis, text, get(uses, index))
+        only_definition(found, declared, declared + 4)
+        index = index + 1
+    }
+    // The trace is snapshot-local, reused and does not append to public bindings.
+    assert length(analysis.concepts) == 1
+    assert length(analysis.bindings.symbols) == symbols
+    let local = query_offset(text, "Read =")
+    only_definition(inspection(analysis, text, "Read.read()"), local, local + 4)
+}
+
+test fn independent_concept_queries_keep_global_checks_and_hide_failed_bodies() {
+    let source = concept_query_source()
+    let text = concat(source, "\nfn broken() {\n    let wrong Int = true\n}\n")
+    let bindings = query_bindings(input(text))
+    let declared = query_offset(text, "Read {")
+    only_definition(independent_found(bindings, text, "Read[Item"), declared, declared + 4)
+    only_definition(independent_found(bindings, text, "Read.Item"), declared, declared + 4)
+    let invalid = concat(source, "\nimpl Read for Bool {\n    type Item = Missing\n}\n")
+    assert match inspect_independent(query_bindings(input(invalid)), 0, query_offset(invalid, "Read[Item")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+}

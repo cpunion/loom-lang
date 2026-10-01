@@ -280,7 +280,7 @@ fn projection(env Environment, owner Int, node Node, arguments List[Int], obliga
     if receiver < 0 { return Result.Ok(-1) }
     let rest = slice(node.value, split + 1, length(node.value))
     let qualifier = package(rest)
-    let selected = if qualifier == "" { -1 } else { concept_named(env, owner, node, qualifier)? }
+    let selected = if qualifier == "" { -1 } else { referenced_concept(env, owner, node, qualifier, 1)? }
     if qualifier != "" && selected < 0 { return Result.Err(failure(env, owner, node, "unknown associated type concept qualifier")) }
     let parent = enclosing(env, owner)
     var own = -1
