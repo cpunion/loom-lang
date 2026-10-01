@@ -1,0 +1,78 @@
+import std.list.length
+
+record FrameBox {
+    values List[Int]
+}
+
+fn write_box(box FrameBox, index Int, item Int)
+ensures box.values[index] == item
+{
+    let alias = box.values
+    put(alias, index, item)
+}
+
+fn keep_other(values List[Int], first Int, second Int) Int
+requires first >= 0 && first < length(values)
+requires second >= 0 && second < length(values) && first != second
+ensures result == old(values[first])
+{
+    write_box(FrameBox {
+            values = values
+        }, second, 9)
+    values[first]
+}
+
+fn paint_tail(values List[Int], flag Bool) Int
+ensures result == 0
+{
+    defer {
+        values[2] = 9
+    }
+    if flag {
+        values[1] = 7
+    } else {
+        values[2] = 8
+    }
+    0
+}
+
+fn repeated_tail(values List[Int], turns Int) Int
+requires length(values) >= 3
+ensures result == old(values[0])
+{
+    var turn = 0
+    while turn < turns {
+        discard paint_tail(values, turn == 2)
+        turn = turn + 1
+    }
+    values[0]
+}
+
+fn touch_tail(values List[Int]) {
+    values[1] = 7
+}
+
+fn keep_without_contract(values List[Int]) Int
+requires length(values) >= 2
+ensures result == old(values[0])
+{
+    touch_tail(values)
+    values[0]
+}
+
+fn frame_contracts() {
+    let values = [3, 5, 7]
+    assert keep_without_contract(values) == 3
+    assert values[1] == 7
+    assert keep_other(values, 0, 1) == 3
+    assert values[1] == 9
+    assert repeated_tail(values, 0) == 3
+    assert repeated_tail(values, 5) == 3
+    assert values[1] == 7 && values[2] == 9
+    assert keep_other(values, 2, 0) == 9
+    assert values[0] == 9
+}
+
+test fn call_frames_preserve_actual_untouched_elements() {
+    frame_contracts()
+}

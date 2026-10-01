@@ -1,0 +1,176 @@
+record ElementWrite {
+    identity Int
+    // Empty means any index of this handle, not an absent write.
+    index Value
+}
+
+// Only immutable locals and inline calculations identify a stable write target.
+// Heap reads, call results and mutable locals cannot stand for their entry values
+// after another write, branch, loop iteration or deferred action.
+fn frame_value_expression(value Expr, budget List[Int], depth Int) Bool {
+    if depth >= 32 || !conjunction_step(budget) {
+        return false
+    }
+    let kind = value.kind
+    if kind != ExprKind.Local && kind != ExprKind.Integer && kind != ExprKind.Bool &&
+    kind != ExprKind.Text && kind != ExprKind.Field && kind != ExprKind.Record &&
+    kind != ExprKind.Coerce && kind != ExprKind.Unary && kind != ExprKind.Binary {
+        return false
+    }
+    var index = 0
+    while index < length(value.children) {
+        if !frame_value_expression(get(value.children, index), budget, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn frame_value(value Expr, locals List[Value], entry State, budget List[Int]) Value {
+    if !frame_value_expression(value, budget, 0) {
+        return Value.Empty
+    }
+    match pure(value, State {
+            locals = locals
+            facts = entry.facts
+            extents = entry.extents
+        }) {
+        Result.Ok(value) => value
+        Result.Err(_) => Value.Empty
+    }
+}
+
+fn frame_function(program Program, function Function, inputs List[Value], entry State,
+    writes List[ElementWrite], budget List[Int], depth Int) Bool {
+    if depth >= 32 || !conjunction_step(budget) || function.is_async ||
+    length(function.params) != length(inputs) || length(function.locals) > 256 {
+        return false
+    }
+    if function.runtime_name != "" {
+        if function.runtime_name == "list_set" && length(inputs) == 3 {
+            return frame_write(inputs, writes)
+        }
+        return function.runtime_name == "list_get" || function.runtime_name == "list_len" ||
+        function.runtime_name == "list_new" || function.runtime_name == "text_len"
+    }
+    let locals = new[Value]()
+    var index = 0
+    while index < length(function.locals) {
+        push(locals, if index < length(inputs) && !get(function.locals, index).mutable {
+                get(inputs, index)
+            } else {
+                Value.Empty
+            })
+        index = index + 1
+    }
+    frame_expression(program, function, function.body, locals, entry, writes, budget, depth + 1)
+}
+
+fn frame_write(inputs List[Value], writes List[ElementWrite]) Bool {
+    match get(inputs, 0) {
+        Value.List(identity) => {
+            push(writes, ElementWrite {
+                    identity = identity
+                    index = get(inputs, 1)
+                })
+            true
+        }
+        _ => false
+    }
+}
+
+fn frame_expression(program Program, function Function, value Expr, locals List[Value],
+    entry State, writes List[ElementWrite], budget List[Int], depth Int) Bool {
+    if depth >= 32 || !conjunction_step(budget) || length(value.arms) != 0 {
+        return false
+    }
+    // The caller first establishes extent_preserving for the entire body.
+    // Visit all branches and cleanup bodies: this is a may-write union, not
+    // execution or a proof that an apparently unreachable write can be ignored.
+    var index = 0
+    while index < length(value.children) {
+        if !frame_expression(program, function, get(value.children, index), locals,
+            entry, writes, budget, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    if value.kind == ExprKind.Let && !get(function.locals, value.index).mutable {
+        set(locals, value.index, frame_value(get(value.children, 0), locals, entry, budget))
+    }
+    if value.kind == ExprKind.Call ||
+    (value.kind == ExprKind.Intrinsic && value.text == "list_set") {
+        let inputs = new[Value]()
+        index = 0
+        while index < length(value.children) {
+            push(inputs, frame_value(get(value.children, index), locals, entry, budget))
+            index = index + 1
+        }
+        if value.kind == ExprKind.Intrinsic {
+            return length(inputs) == 3 && frame_write(inputs, writes)
+        }
+        if value.index < 0 || value.index >= length(program.functions) {
+            return false
+        }
+        return frame_function(program, get(program.functions, value.index), inputs,
+            entry, writes, budget, depth + 1)
+    }
+    true
+}
+
+fn framed_elements(entry State, writes List[ElementWrite]) State {
+    var state = entry
+    var index = 0
+    while index < length(writes) {
+        let write = get(writes, index)
+        let target = match list_state(write.identity, entry) {
+            Result.Ok(target) => target
+            Result.Err(_) => {
+                return forget_elements(entry)
+            }
+        }
+        var position = 0
+        while position < length(state.extents) {
+            let extent = get(state.extents, position)
+            if extent_overlap(extent, target) {
+                let cells = new[ListCell]()
+                var cell = 0
+                while cell < length(extent.cells) {
+                    let observed = get(extent.cells, cell)
+                    let separate = match write.index {
+                        Value.Number(written) => extent.identity == target.identity &&
+                        index_relation("!=", observed.index, written, entry)
+                        _ => false
+                    }
+                    if separate {
+                        push(cells, observed)
+                    }
+                    cell = cell + 1
+                }
+                state = with_cells(extent.identity, cells, state)
+            }
+            position = position + 1
+        }
+        index = index + 1
+    }
+    state
+}
+
+fn preserved_call_elements(program Program, function Function, boundary Int,
+    entry State, current State) State {
+    let inputs = new[Value]()
+    var index = 0
+    while index < length(function.params) {
+        push(inputs, get(entry.locals, boundary + index))
+        index = index + 1
+    }
+    let budget = new[Int]()
+    push(budget, 256)
+    let writes = new[ElementWrite]()
+    if !frame_function(program, function, inputs, entry, writes, budget, 0) {
+        // Optional precision must never turn an unknown effect into a frame rule.
+        return current
+    }
+    preserved_elements(framed_elements(entry, writes), current)
+}

@@ -83,6 +83,19 @@ ensures result >= old(values[0])
     }
     values[0]
 }
+fn frame_write(values List[Int]) Int
+ensures result == 0
+{
+    values[1] = 7
+    0
+}
+fn frame_user(values List[Int]) Int
+requires length(values) >= 2
+ensures result == old(values[0])
+{
+    discard frame_write(values)
+    values[0]
+}
 fn main() {
     let values List[Int] = []
     assert twice(values) == 0
@@ -90,6 +103,7 @@ fn main() {
     assert elements(values) == 0
     assert values[0] == 9
     assert increase(values, 2) == 11
+    assert frame_user(values) == 11
 }
 "#;
     fs::write(&path, source).unwrap();
@@ -105,8 +119,14 @@ fn main() {
         .trim()
         .parse()
         .unwrap();
-    assert!(bodies >= 6, "{trace}");
+    assert!(bodies >= 8, "{trace}");
     checked(&cached("run", &package, &cache, &[]), true);
+    // The callee's declared contract stays true, but its write footprint changes.
+    // A caller cannot retain proof of the previously untouched element.
+    fs::write(&path, source.replace("values[1] = 7", "values[0] = 7")).unwrap();
+    let invalid_frame = cached("check", &package, &cache, &[]);
+    assert!(!invalid_frame.status.success());
+    assert!(String::from_utf8_lossy(&invalid_frame.stderr).contains("postcondition"));
     // Reused entry/cell observations are not a proof of the edited loop body.
     fs::write(
         &path,

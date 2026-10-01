@@ -1,0 +1,212 @@
+test fn list_call_frames_preserve_separate_indices_and_allocations() {
+    list_length_contract("""
+        import std.list.length
+        fn put(values List[Int], index Int, item Int)
+        ensures values[index] == item
+        {
+            values[index] = item
+        }
+        record Box {
+            values List[Int]
+        }
+        fn wrap(box Box, index Int, item Int)
+        ensures box.values[index] == item
+        {
+            let alias = box.values
+            put(alias, index, item)
+        }
+        fn separate(values List[Int], first Int, second Int) Int
+        requires first >= 0 && first < length(values)
+        requires second >= 0 && second < length(values) && first != second
+        ensures result == old(values[first])
+        {
+            wrap(Box { values = values }, second, 9)
+            values[first]
+        }
+        fn allocated(values List[Int], index Int) Int
+        ensures result == 7
+        {
+            let fresh = [7]
+            put(values, index, 9)
+            fresh[0]
+        }
+        fn touch(values List[Int], index Int) {
+            values[index] = 9
+        }
+        fn no_result_contract(values List[Int]) Int
+        requires length(values) >= 2
+        ensures result == old(values[0])
+        {
+            touch(values, 1)
+            values[0]
+        }
+        fn paint_prefix(values List[Int], turns Int) Int
+        ensures result == 0
+        {
+            var index = 0
+            while index < turns {
+                values[index] = 9
+                index = index + 1
+            }
+            0
+        }
+        fn isolated(values List[Int], turns Int) Int
+        ensures result == 7
+        {
+            let fresh = [7]
+            discard paint_prefix(values, turns)
+            fresh[0]
+        }
+        """, true)
+}
+
+test fn list_call_frames_compose_with_loops_branches_and_cleanup() {
+    list_length_contract("""
+        import std.list.length
+        fn paint(values List[Int], flag Bool) Int
+        ensures result == 0
+        {
+            defer {
+                values[2] = 9
+            }
+            if flag {
+                values[1] = 7
+            } else {
+                values[2] = 8
+            }
+            0
+        }
+        fn repeat(values List[Int], turns Int) Int
+        requires length(values) >= 3
+        ensures result == old(values[0])
+        {
+            var turn = 0
+            while turn < turns {
+                discard paint(values, turn == 2)
+                turn = turn + 1
+            }
+            values[0]
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        fn paint(values List[Int], flag Bool) Int
+        ensures result == 0
+        {
+            if flag {
+                values[1] = 7
+            } else {
+                values[0] = 8
+            }
+            0
+        }
+        fn unsafe(values List[Int], flag Bool) Int
+        requires length(values) >= 2
+        ensures result == old(values[0])
+        {
+            discard paint(values, flag)
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        fn change(values List[Int], turns Int) Int
+        ensures result == 0
+        {
+            var alias = [0]
+            var turn = 0
+            while turn < turns {
+                alias[0] = 9
+                alias = values
+                turn = turn + 1
+            }
+            0
+        }
+        fn unsafe(values List[Int]) Int
+        ensures result == 7
+        {
+            values[0] = 7
+            discard change(values, 2)
+            values[0]
+        }
+        """, false)
+}
+
+test fn list_call_frames_forget_unknown_indices_aliases_and_deferred_rebindings() {
+    list_length_contract("""
+        fn change(values List[Int]) {
+            values[0] = 9
+        }
+        fn unsafe(values List[Int]) Int
+        ensures result == 7
+        {
+            values[0] = 7
+            change(values)
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        fn change(values List[Int], index Int) Int
+        ensures result == 0
+        {
+            values[index] = 9
+            0
+        }
+        fn unsafe(values List[Int], index Int) Int
+        ensures result == 7
+        {
+            values[0] = 7
+            discard change(values, index)
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        fn change(values List[Int]) Int
+        ensures result == 0
+        {
+            values[0] = 9
+            0
+        }
+        fn unsafe(left List[Int], right List[Int]) Int
+        ensures result == 7
+        {
+            left[0] = 7
+            discard change(right)
+            left[0]
+        }
+        """, false)
+    list_length_contract("""
+        fn change(values List[Int]) Int
+        ensures result == 0
+        {
+            var index = 1
+            defer {
+                values[index] = 9
+            }
+            index = 0
+            0
+        }
+        fn unsafe(values List[Int]) Int
+        ensures result == 7
+        {
+            values[0] = 7
+            discard change(values)
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        fn change(values List[Int], nested List[List[Int]]) Int
+        ensures result == 0
+        {
+            let alias = nested[0]
+            alias[0] = 9
+            0
+        }
+        fn unsafe(values List[Int]) Int
+        ensures result == 7
+        {
+            values[0] = 7
+            discard change(values, [values])
+            values[0]
+        }
+        """, false)
+}
