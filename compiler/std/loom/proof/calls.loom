@@ -110,11 +110,7 @@ fn fresh_result(proof Verification, ty Int) Value {
     let identity = get(proof.fresh, 0)
     set(proof.fresh, 0, identity + 1)
     if ty == 3 {
-        return Value.Text(TextValue {
-                id = identity
-                text = ""
-                known = false
-            })
+        return Value.Text(TextValue.Variable(identity))
     }
     if ty == 1 {
         Value.Number(variable(identity))

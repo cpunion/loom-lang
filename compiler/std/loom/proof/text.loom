@@ -1,5 +1,15 @@
 // Immutable content equalities form finite classes of logical values. Follow
 // only established equality facts, never disjunctions or native pointer identity.
+fn distinct_text_literals(left TextValue, right TextValue) Bool {
+    match left {
+        TextValue.Literal(text) => match right {
+            TextValue.Literal(other) => text != other
+            _ => false
+        }
+        _ => false
+    }
+}
+
 fn text_member(values List[TextValue], value TextValue) Bool {
     var index = 0
     while index < length(values) {
@@ -20,9 +30,7 @@ fn text_class(value TextValue, facts List[Predicate]) List[TextValue] {
         var index = 0
         while index < length(facts) {
             match get(facts, index) {
-                Predicate.TextEqual(terms) => {
-                    let left = get(terms, 0)
-                    let right = get(terms, 1)
+                Predicate.TextEqual(left, right) => {
                     if same_text(known, left) && !text_member(values, right) {
                         push(values, right)
                     }
@@ -49,7 +57,7 @@ fn text_distinct(left TextValue, right TextValue, facts List[Predicate]) Bool {
         var other = 0
         while other < length(second) {
             let b = get(second, other)
-            if a.known && b.known && a.text != b.text {
+            if distinct_text_literals(a, b) {
                 return true
             }
             other = other + 1
@@ -60,9 +68,7 @@ fn text_distinct(left TextValue, right TextValue, facts List[Predicate]) Bool {
     while index < length(facts) {
         match get(facts, index) {
             Predicate.Not(values) => match get(values, 0) {
-                Predicate.TextEqual(terms) => {
-                    let a = get(terms, 0)
-                    let b = get(terms, 1)
+                Predicate.TextEqual(a, b) => {
                     if (text_member(first, a) && text_member(second, b)) ||
                     (text_member(first, b) && text_member(second, a)) {
                         return true

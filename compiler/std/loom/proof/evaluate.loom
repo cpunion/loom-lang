@@ -113,20 +113,13 @@ fn binary(operator Text, a Value, b Value) Result[Value, Text] {
                 // Equal immutable symbolic values have equal bytes. Distinct
                 // identities are not evidence of inequality: parameters may
                 // contain the same Text, even with different native storage.
-                if left.known && right.known {
-                    return Result.Ok(Value.Boolean(Predicate.Constant(if operator == "==" {
-                                    left.text == right.text
-                                } else {
-                                    left.text != right.text
-                                })))
+                if distinct_text_literals(left, right) {
+                    return Result.Ok(Value.Boolean(Predicate.Constant(operator == "!=")))
                 }
                 if same_text(left, right) {
                     return Result.Ok(Value.Boolean(Predicate.Constant(operator == "==")))
                 }
-                let terms = new[TextValue]()
-                push(terms, left)
-                push(terms, right)
-                let equal = Predicate.TextEqual(terms)
+                let equal = Predicate.TextEqual(left, right)
                 Result.Ok(Value.Boolean(if operator == "==" {
                             equal
                         } else {
@@ -150,11 +143,7 @@ fn pure(expr Expr, state State) Result[Value, Text] {
         return Result.Ok(Value.Boolean(Predicate.Constant(expr.text == "true")))
     }
     if expr.kind == ExprKind.Text {
-        return Result.Ok(Value.Text(TextValue {
-                    id = -1
-                    text = expr.text
-                    known = true
-                }))
+        return Result.Ok(Value.Text(TextValue.Literal(expr.text)))
     }
     if expr.kind == ExprKind.Local {
         return Result.Ok(get(state.locals, expr.index))

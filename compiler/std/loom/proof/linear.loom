@@ -121,10 +121,10 @@ fn same(a Predicate, b Predicate) Bool {
             Predicate.Variable(other) => id == other,
             _ => false
         }
-        Predicate.TextEqual(left) => match b {
-            Predicate.TextEqual(right) =>
-            (same_text(get(left, 0), get(right, 0)) && same_text(get(left, 1), get(right, 1))) ||
-            (same_text(get(left, 0), get(right, 1)) && same_text(get(left, 1), get(right, 0)))
+        Predicate.TextEqual(left, right) => match b {
+            Predicate.TextEqual(first, second) =>
+            (same_text(left, first) && same_text(right, second)) ||
+            (same_text(left, second) && same_text(right, first))
             _ => false
         }
         Predicate.Compare(relation, value) => match b {
@@ -151,10 +151,15 @@ fn same(a Predicate, b Predicate) Bool {
 }
 
 fn same_text(left TextValue, right TextValue) Bool {
-    left.known == right.known && if left.known {
-        left.text == right.text
-    } else {
-        left.id == right.id
+    match left {
+        TextValue.Literal(text) => match right {
+            TextValue.Literal(other) => text == other
+            _ => false
+        }
+        TextValue.Variable(id) => match right {
+            TextValue.Variable(other) => id == other
+            _ => false
+        }
     }
 }
 
@@ -343,9 +348,9 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
     match predicate {
         Predicate.Constant(value) => value
         Predicate.Compare(_, _) => false
-        Predicate.TextEqual(values) => text_member(text_class(get(values, 0), facts), get(values, 1))
+        Predicate.TextEqual(left, right) => text_member(text_class(left, facts), right)
         Predicate.Not(values) => match get(values, 0) {
-            Predicate.TextEqual(terms) => text_distinct(get(terms, 0), get(terms, 1), facts)
+            Predicate.TextEqual(left, right) => text_distinct(left, right, facts)
             _ => false
         }
         Predicate.And(values) => holds(get(values, 0), facts) && holds(get(values, 1), facts)

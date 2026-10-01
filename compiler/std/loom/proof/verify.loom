@@ -133,11 +133,7 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
         return Result.Err("Float parameters are not supported in required proofs")
     }
     if ty == 3 {
-        return Result.Ok(Value.Text(TextValue {
-                    id = id
-                    text = ""
-                    known = false
-                }))
+        return Result.Ok(Value.Text(TextValue.Variable(id)))
     }
     if ty == 4 {
         return Result.Ok(Value.Empty)
@@ -148,11 +144,7 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
     let shape = get(proof.program.types, ty)
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
     get(proof.program.types, get(shape.fields, 0).ty).kind == TypeKind.Text {
-        return Result.Ok(Value.Text(TextValue {
-                    id = id
-                    text = ""
-                    known = false
-                }))
+        return Result.Ok(Value.Text(TextValue.Variable(id)))
     }
     // An abstract receiver may be present without contributing any proof
     // fact. A scalar operation or field projection on Empty still rejects.

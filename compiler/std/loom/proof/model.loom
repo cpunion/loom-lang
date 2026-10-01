@@ -14,10 +14,9 @@ record Linear {
     terms List[Term]
 }
 
-record TextValue {
-    id Int
-    text Text
-    known Bool
+enum TextValue {
+    Literal(Text)
+    Variable(Int)
 }
 
 enum Predicate {
@@ -28,8 +27,7 @@ enum Predicate {
     Not(List[Predicate])
     And(List[Predicate])
     Or(List[Predicate])
-    // Keep Text-specific storage out of every numeric predicate's inline layout.
-    TextEqual(List[TextValue])
+    TextEqual(TextValue, TextValue)
 }
 
 enum Value {
