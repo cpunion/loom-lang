@@ -132,9 +132,9 @@ keeps the original bindings and never guesses from names. After a successful
 whole-package check, all differing types and targets from checked generic instances
 are retained.
 
-This is checked-body navigation, not a complete symbol index. References use
+This is checked navigation, not a complete symbol index. References use
 exact definition spans from checked uses and can include the declaration. One
-public top-level function in the current module also includes import declarations
+public top-level function, nominal type or concept in the current module also includes import declarations
 and uses in other directory packages and their private tests. They omit
 uninstantiated bodies, unchecked syntax and ambiguous targets. A package error suppresses references and rename until the
 whole package checks; hover and definition retain their independent-function
