@@ -205,8 +205,10 @@ non-aliasing evidence. Unmodeled heap operations still reject. See the
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining
-definedness obligations. It adds no runtime snapshot and cannot read shared
-mutable storage, callbacks or body-local/result bindings.
+definedness obligations. List entry lengths, including pure helper observations,
+survive mutation and compose using each callee's invocation state. Only scalar
+proof snapshots are created, with no runtime allocation. It cannot snapshot
+element contents or use callbacks or body-local/result bindings.
 
 Immutable observed record fields can coexist with unobserved mutable siblings.
 Fixed-shape List views retain element identities across removal/regrowth,

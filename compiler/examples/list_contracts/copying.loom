@@ -3,6 +3,7 @@ import std.list.get
 
 fn copied[T](values List[T]) List[T]
 ensures length(result) == length(values)
+ensures length(result) == old(length(values))
 {
     let output = new[T]()
     var index = 0

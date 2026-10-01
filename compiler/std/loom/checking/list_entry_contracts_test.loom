@@ -1,0 +1,233 @@
+test fn old_list_lengths_survive_mutation_and_compose_at_each_call() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn extent[T](values List[T]) Int {
+            length(values)
+        }
+        fn append[T](values List[T], value T) Int
+        ensures result == old(extent(values))
+        ensures length(values) == old(length(values)) + 1
+        {
+            let before = length(values)
+            push(values, value)
+            before
+        }
+        fn twice(values List[Int]) Int
+        ensures result == old(length(values))
+        ensures length(values) == old(length(values)) + 2
+        {
+            let first = append(values, 1)
+            let second = append(values, 2)
+            assert second == first + 1
+            first
+        }
+        record Holder {
+            values List[Int]
+        }
+        fn field(value Holder) Int
+        ensures result == old(length(value.values)) + 1
+        {
+            discard append(value.values, 0)
+            length(value.values)
+        }
+        fn main() {
+            let values = [5]
+            assert twice(values) == 1
+            assert field(Holder { values = values }) == 4
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn reread(values List[Int]) Int
+        ensures result == old(length(values))
+        {
+            push(values, 0)
+            length(values)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn append(values List[Int])
+        ensures length(values) == old(length(values)) + 1
+        {
+            push(values, 0)
+        }
+        fn stale(values List[Int]) Int
+        ensures result == old(length(values))
+        {
+            append(values)
+            append(values)
+            length(values)
+        }
+        """, false)
+}
+
+test fn old_observation_keeps_guards_and_eager_helper_obligations() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn positive_size(values List[Int]) Int
+        requires length(values) > 0
+        {
+            length(values)
+        }
+        fn remember(values List[Int]) Int
+        ensures result == old(length(values))
+        ensures old(length(values)) == 0 || old(positive_size(values)) == result
+        {
+            let before = length(values)
+            push(values, 0)
+            before
+        }
+        fn main() {
+            assert remember([]) == 0
+            assert remember([1]) == 1
+        }
+        """, true)
+    // A later append cannot discharge a helper's entry-state precondition.
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn positive_size(values List[Int]) Int
+        requires length(values) > 0
+        {
+            length(values)
+        }
+        fn wrong(values List[Int]) Int
+        ensures result == old(positive_size(values))
+        {
+            let before = length(values)
+            push(values, 0)
+            before
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn first(left Int, right Int) Int {
+            left
+        }
+        fn overflow(values List[Int]) Int
+        ensures result == old(first(length(values), length(values) + 1))
+        {
+            length(values)
+        }
+        """, false)
+    // Observation helpers must actually be pure, even under a false guard.
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn mutate(values List[Int]) Int {
+            push(values, 0)
+            length(values)
+        }
+        fn wrong(values List[Int]) Int
+        ensures true || old(mutate(values)) == result
+        {
+            0
+        }
+        """, false)
+}
+
+test fn old_lengths_do_not_invent_alias_or_contents_facts() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn shared(left List[Int], right List[Int]) Int
+        ensures result == old(length(left))
+        {
+            let before = length(left)
+            push(right, 0)
+            before
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn shared(left List[Int], right List[Int])
+        ensures length(left) == old(length(left))
+        {
+            push(right, 0)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.get
+        import std.list.length
+        fn element(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == old(get(values, 0))
+        {
+            get(values, 0)
+        }
+        """, false)
+}
+
+test fn old_summary_entry_follows_all_arguments_and_declared_dyn_contracts() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn mutate(values List[Int]) Int
+        ensures length(values) == old(length(values)) + 1
+        ensures result == 0
+        {
+            push(values, 0)
+            0
+        }
+        fn observe(values List[Int], ignored Int) Int
+        ensures result == old(length(values))
+        {
+            length(values)
+        }
+        fn later_argument(values List[Int]) Int
+        ensures result == old(length(values)) + 1
+        {
+            observe(values, mutate(values))
+        }
+        concept Append {
+            fn add(self Self, values List[Int]) Int
+            ensures result == old(length(values))
+            ensures length(values) == old(length(values)) + 1
+        }
+        impl Append for Bool {
+            fn add(receiver Bool, input List[Int]) Int {
+                let before = length(input)
+                push(input, 7)
+                before
+            }
+        }
+        fn dynamic(receiver dyn Append, values List[Int]) Int
+        ensures result == old(length(values))
+        ensures length(values) == old(length(values)) + 1
+        {
+            receiver.add(values)
+        }
+        fn main() {
+            assert later_argument([]) == 1
+            let receiver dyn Append = true
+            assert dynamic(receiver, []) == 0
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn mutate(values List[Int]) Int
+        ensures length(values) == old(length(values)) + 1
+        ensures result == 0
+        {
+            push(values, 0)
+            0
+        }
+        fn observe(values List[Int], ignored Int) Int
+        ensures result == old(length(values))
+        {
+            length(values)
+        }
+        fn premature_snapshot(values List[Int]) Int
+        ensures result == old(length(values))
+        {
+            observe(values, mutate(values))
+        }
+        """, false)
+}

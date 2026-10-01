@@ -46,7 +46,7 @@ test fn old_rejects_aliases_and_non_entry_places() {
     let alias = concat(shared, "fn unsafe(value Holder) Int ensures result == old(value.values) { 1 }")
     match checked(source_files(alias)) {
         Result.Err(failed) => {
-            assert failed.diagnostic.message == "old requires an immutable entry expression; shared data has no entry snapshot"
+            assert failed.diagnostic.message == "old requires an immutable entry value or a supported pure observation"
         }
         Result.Ok(_) => {
             assert false

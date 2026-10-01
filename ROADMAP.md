@@ -87,7 +87,8 @@ offline builds across anonymous/authenticated sources. Version labels are not
 behavioral compatibility proofs.
 
 Stateful List length proofs now cover append, indexing and length preservation
-through loops. This is groundwork for the sorting story below, not proof of
+through loops, with per-invocation `old(length(values))` observations. This is
+groundwork for the sorting story below, not proof of
 ordering, permutation or general heap contents.
 
 Use these complete acceptance stories, rather than a count of syntax features:

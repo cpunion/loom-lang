@@ -17,7 +17,13 @@ are distinct from earlier handles; inner elements retain sharing. The loop's
 output-length/index equality is checked inductively, including zero iterations.
 Later unknown handles and opaque calls can still reach those allocations.
 
+`entry.loom` proves append against `old(length(values))`, without an explicit
+size parameter. Two consecutive calls use different invocation-entry lengths;
+the caller's own `old` remains unchanged. Pure helper observations retain their
+entry preconditions and arithmetic obligations. No entry snapshot is allocated
+at runtime.
+
 The sorting example proves only its stated length contract. Its concrete order
 and element checks are runtime tests, not sortedness/permutation proofs. General
-content proofs, mutable `old` snapshots and List-local reassignment in proof loops
+content proofs, element snapshots and List-local reassignment in proof loops
 remain unsupported. No postcondition helper is emitted into the native program.
