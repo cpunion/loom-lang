@@ -128,6 +128,21 @@ fn main() {
     assert.equal(Object.values(privateEdit.changes).flat().length, 5);
     assert.deepEqual(Object.keys(privateEdit.changes).sort(), ['private/main.loom', 'private/main_test.loom']
       .map(name => URI.file(path.join(folder, name)).toString()).sort());
+    const tree = `${source.replace('fn main() {', `fn main() {
+    let wrong Int = true
+    discard wrong`)}
+record Tree {
+    children List[Tree]
+}
+`;
+    await client.change(app, tree, 2);
+    assert.ok((await client.wait(app, 2)).diagnostics.length > 0);
+    const recursive = await client.rpc.sendRequest('textDocument/definition', at(app, tree, 'Tree]'));
+    assert.equal(recursive.length, 1);
+    const inline = tree.replace('children List[Tree]', 'children Tree');
+    await client.change(app, inline, 3);
+    assert.deepEqual(await client.rpc.sendRequest('textDocument/definition', at(app, inline, 'Tree\n}')), []);
+    await client.change(app, source, 4);
     for (const [name, text] of sources) assert.equal(await fs.readFile(path.join(folder, name), 'utf8'), text);
     // Apply the exact returned edit only in this temporary project, then run
     // the ordinary compiler/test/native pipeline on the resulting sources.
