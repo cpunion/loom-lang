@@ -38,20 +38,19 @@ fn read_element_outcomes(proof Verification, ty Int, identity Int, index Linear,
             }
             changed = false
         }
-        if position == 0 {
-            break
-        }
-        position = position - 1
-        let cell = get(cells, position)
-        if index_relation("==", cell.index, index, state) {
-            let guard = observation_guard(cell.valid, state)
-            if !loop_holds(not(guard), state) {
-                discard add_outcome(output, Outcome {
-                        state = bounded(cell.value, difference_facts(assume(state, guard)))
-                        value = cell.value
-                    })?
-                state = difference_facts(assume(state, not(guard)))
-                changed = true
+        if position > 0 {
+            position = position - 1
+            let cell = get(cells, position)
+            if index_relation("==", cell.index, index, state) {
+                let guard = observation_guard(cell.valid, state)
+                if !loop_holds(not(guard), state) {
+                    discard add_outcome(output, Outcome {
+                            state = bounded(cell.value, difference_facts(assume(state, guard)))
+                            value = cell.value
+                        })?
+                    state = difference_facts(assume(state, not(guard)))
+                    changed = true
+                }
             }
         }
     }
