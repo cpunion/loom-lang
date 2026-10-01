@@ -1,0 +1,150 @@
+test fn loop_elements_prove_numeric_bounds_and_storage_conservation() {
+    list_length_contract("""
+        import std.list.length
+        fn increase(values List[Int], turns Int) Int
+        requires length(values) > 0 && values[0] >= 0
+        ensures result >= old(values[0])
+        {
+            var turn = 0
+            while turn < turns {
+                values[0] = values[0] + 1
+                turn = turn + 1
+            }
+            values[0]
+        }
+        fn reset(values List[Int], turns Int) Int
+        requires length(values) > 0 && values[0] >= 0
+        ensures result >= 0
+        {
+            var turn = 0
+            while turn < turns {
+                values[0] = 7
+                turn = turn + 1
+            }
+            values[0]
+        }
+        fn transfer(values List[Int], turns Int)
+        requires length(values) >= 2
+        requires values[0] >= 0 && values[0] <= 100
+        requires values[1] >= 0 && values[1] <= 100
+        ensures values[0] + values[1] == old(values[0] + values[1])
+        ensures values[0] >= 0 && values[1] >= 0
+        {
+            var turn = 0
+            while turn < turns && values[0] > 0 && values[1] < 100 {
+                values[0] = values[0] - 1
+                values[1] = values[1] + 1
+                turn = turn + 1
+            }
+        }
+        """, true)
+}
+
+test fn loop_elements_recheck_failed_candidates_and_later_iterations() {
+    list_length_contract("""
+        import std.list.length
+        fn later(values List[Int], turns Int) Int
+        requires length(values) > 0 && values[0] >= 0
+        ensures result >= 0
+        {
+            var turn = 0
+            while turn < turns {
+                values[0] = if turn == 2 { -1 } else { 1 }
+                turn = turn + 1
+            }
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn mutually_dependent(values List[Int], turns Int)
+        requires length(values) >= 2 && values[0] == 0 && values[1] == 0
+        ensures values[0] == 0
+        {
+            var turn = 0
+            while turn < turns {
+                values[0] = values[1]
+                values[1] = 1
+                turn = turn + 1
+            }
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn alias(left List[Int], right List[Int], turns Int)
+        requires length(left) > 0 && length(right) > 0 && left[0] >= 0
+        ensures left[0] >= 0
+        {
+            var turn = 0
+            while turn < turns {
+                right[0] = -1
+                turn = turn + 1
+            }
+        }
+        """, false)
+}
+
+test fn loop_elements_cover_cleanup_jumps_and_inline_values() {
+    list_length_contract("""
+        import std.list.length
+        fn jumps(values List[Int], turns Int) Int
+        requires length(values) > 0 && values[0] >= 0
+        ensures result >= old(values[0])
+        {
+            var turn = 0
+            while turn < turns {
+                turn = turn + 1
+                defer {
+                    values[0] = values[0] + 1
+                }
+                if turn == 2 { continue }
+                if turn == 5 && turns == 5 { break }
+                if turn == 7 { return values[0] }
+            }
+            values[0]
+        }
+        record Pair {
+            count Int
+            label Text
+        }
+        fn untouched(values List[Text], turns Int) Text
+        requires length(values) >= 2
+        ensures result == old(values[0])
+        {
+            var turn = 0
+            while turn < turns {
+                values[1] = "changed"
+                turn = turn + 1
+            }
+            values[0]
+        }
+        fn records(values List[Pair], turns Int)
+        requires length(values) > 0 && values[0].count >= 0
+        ensures values[0].count >= 0
+        ensures values[0].label == old(values[0].label)
+        {
+            var turn = 0
+            while turn < turns {
+                values[0] = Pair {
+                    count = values[0].count + 1
+                    label = values[0].label
+                }
+                turn = turn + 1
+            }
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        fn cleanup(values List[Int])
+        requires length(values) > 0 && values[0] >= 0
+        ensures values[0] >= 0
+        {
+            while true {
+                defer {
+                    values[0] = -1
+                }
+                break
+            }
+        }
+        """, false)
+}

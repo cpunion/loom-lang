@@ -202,7 +202,11 @@ Input length refinements supply entry facts; callee preconditions are not reused
 as post-call heap facts. Element observations now track literals, appends, writes
 and repeated reads at proved-equal indices, bounded to 64 per handle. Other
 indices survive writes only with proved inequality; unknown handle overlap,
-opaque calls and possibly mutating loops discard content facts. Indexed entry
+opaque calls discard content facts. Mutating loops use fresh element values and
+retain only entry/backedge-proved bounds and source-contract relations when
+lengths are preserved. Lost candidates trigger dependent rechecks; ordinary
+cleanup and loop jumps retain their order. This covers bounded element counters
+and two-element sum conservation, not arbitrary-index array invariants. Indexed entry
 checks and storage postconditions compose; hypothetical postcondition reads
 must prove bounds and have an established observation. Unknown reads never
 supply non-aliasing evidence. Immutable entry-element snapshots require entry

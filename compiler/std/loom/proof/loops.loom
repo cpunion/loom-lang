@@ -13,6 +13,7 @@ enum LoopCandidate {
     Guard(Expr)
     ExtentLocal(Int, Int)
     EntryExtent(Int, List[Int], Text, Linear)
+    Element(Int, Linear, Text, Value)
 }
 
 record LoopControl {
@@ -59,7 +60,7 @@ fn loop_step(proof Verification) Result[Bool, Text] {
 }
 
 fn loop_local_type(proof Verification, ty Int, depth Int) Bool {
-    if ty == 1 || ty == 2 {
+    if ty == 1 || ty == 2 || ty == 3 {
         return true
     }
     if depth >= 16 || ty < 0 || ty >= length(proof.program.types) {
@@ -93,7 +94,7 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
         return Result.Err("loop proof depth budget exhausted")
     }
     let kind = expr.kind
-    let scalar = kind == ExprKind.Integer || kind == ExprKind.Bool || kind == ExprKind.Local ||
+    let scalar = kind == ExprKind.Integer || kind == ExprKind.Bool || kind == ExprKind.Text || kind == ExprKind.Local ||
     kind == ExprKind.Unary || kind == ExprKind.Binary || kind == ExprKind.Coerce ||
     kind == ExprKind.Field || kind == ExprKind.Record || kind == ExprKind.List
     if !scalar && kind != ExprKind.Call &&
@@ -130,6 +131,8 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
 
 fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] {
     match candidate {
+        LoopCandidate.Element(identity, index, relation, initial) =>
+            boolean(binary(relation, known_element(identity, index, state)?, initial)?)
         LoopCandidate.Entry(index, path, relation, initial) => {
             var value = get(state.locals, index)
             var field = 0
@@ -289,6 +292,9 @@ fn loop_entry_candidates(proof Verification, candidates List[LoopCandidate], ind
         Value.Boolean(_) => {
             discard add_loop_candidate(candidates, LoopCandidate.Entry(index, path, "==", initial), entry)?
         }
+        Value.Text(_) => {
+            discard add_loop_candidate(candidates, LoopCandidate.Entry(index, path, "==", initial), entry)?
+        }
         Value.List(identity) => {
             let size = list_extent(identity, entry)?
             discard add_loop_candidate(candidates, LoopCandidate.EntryExtent(index, path, ">=", size), entry)?
@@ -383,9 +389,17 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     var candidates = loop_candidates(proof, loop_candidate_guard(proof, guard), writes, entry)?
     var storage = loop_extents(proof, expr, entry, writes)?
     if length(storage.extents) != 0 && !elements_preserving(proof.program, expr) {
-        storage = forget_elements(storage)
+        if extent_preserving(proof.program, expr) {
+            storage = loop_element_head(proof, storage)?
+            discard loop_element_candidates(proof, candidates, entry)?
+        } else {
+            // Changing extents can invalidate entry indices. Do not create
+            // hypothetical in-bounds cells or infer an opaque call's effects.
+            storage = forget_elements(storage)
+        }
     }
     let head = loop_head(proof, writes, storage)
+    candidates = available_loop_candidates(candidates, head)
     while true {
         discard loop_step(proof)?
         let assumed = loop_assumptions(head, candidates)?
@@ -419,7 +433,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             var edge = 0
             while edge < length(backedges) && preserved {
                 let state = get(backedges, edge).state
-                preserved = loop_holds(loop_predicate(candidate, state)?, state)
+                preserved = loop_candidate_preserved(candidate, state)
                 edge = edge + 1
             }
             if preserved {
