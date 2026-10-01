@@ -2118,9 +2118,14 @@ Entry predicates retain facts from their actual reads and bounds checks;
 postcondition indexing must prove bounds without assuming a new check succeeds.
 Literal elements, appended values, indexed writes and repeated reads establish
 bounded observations (at most 64 per handle). Writes retain other indices only
-with proved inequality; distinct unknown handles can still alias. Calls that
-might change contents forget observations unless a verified postcondition supplies
-new facts. Mutating loops freshen their observed elements before induction.
+with proved inequality; distinct unknown handles can still alias. Contracted
+length-preserving calls can retain untouched observations using a bounded union
+of their checked bodies' possible writes. Immutable parameter/inline aliases and
+nested helpers compose; every branch and ordinary cleanup body contributes.
+Only a proved-disjoint index on the same handle or allocation-separated storage
+is framed. Mutable locals, heap-derived targets, recursion and opaque effects
+supply no guessed separation. Written elements still need verified postconditions
+for new facts. Mutating loops freshen their observed elements before induction.
 Scalar values previously read remain snapshots. Contracted functions without a
 return value compose through their storage postconditions. Unknown post-state
 elements without an established read/write reject.

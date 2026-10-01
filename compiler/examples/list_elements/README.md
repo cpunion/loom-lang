@@ -24,6 +24,14 @@ checks. Failed candidates are removed and their dependents rechecked. The native
 trial also checks `continue`, `break`, and return-value snapshots with block
 cleanup. Length-changing loops and unknown alias writes remain conservative.
 
+`frames.loom` keeps observations of untouched elements across contracted helper
+calls, including parameter forwarding, immutable inline aliases, branches, loops
+and ordinary cleanup. A bounded body analysis unions all possible writes. Only
+proved-disjoint indices of the same handle, or allocation-separated handles,
+retain their observations. Mutable indices, heap-derived handles and opaque or
+recursive effects never acquire a guessed write footprint. Written values still
+need declared postconditions; the frame analysis does not execute helper bodies.
+
 `old(values[index])` and pure helper reads snapshot immutable element values
 before the body. Bounds must be proved at entry, even under a conditional
 postcondition. Consecutive calls each use their own entry, not stale contents

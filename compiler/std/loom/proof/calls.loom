@@ -401,7 +401,12 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         let current = if stable_contents {
             preserved_elements(captured.entry, captured.state)
         } else {
-            captured.state
+            if stable && length(state.extents) != 0 {
+                preserved_call_elements(proof.program, function, boundary,
+                    captured.entry, captured.state)
+            } else {
+                captured.state
+            }
         }
         discard append(output, call_results(proof, captured.expression, snapshots,
                 current, boundary, depth)?)?

@@ -92,7 +92,9 @@ groundwork for the sorting story below. Bounded indexed observations now cover
 read/write relations, immutable entry-element snapshots and conservative alias
 invalidation. Length-preserving loops can retain proved element bounds and
 storage conservation relations through induction; this is not quantified
-ordering, permutation or general heap reasoning.
+ordering, permutation or general heap reasoning. Bounded call-write analysis
+preserves untouched observations across extracted helpers without assuming
+unknown indices or handles are disjoint.
 
 Use these complete acceptance stories, rather than a count of syntax features:
 
