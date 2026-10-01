@@ -3,6 +3,8 @@ import std.loom.source.Span
 record CheckInputs {
     build BuildInputs
     static_queries List[StaticReferenceQuery]
+    concept_queries Bool
+    concept_references List[ConceptReference]
     // Trusted source shapes are fixed within this binding/type snapshot.
     result_shapes List[ResultShape]
     constraint_errors List[Int]

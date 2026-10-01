@@ -616,6 +616,7 @@ fn main() {
     await privateRenameSmoke(executable, stdRoot);
     await require('./public-rename').publicRenameSmoke(executable, stdRoot);
     await require('./type-rename').typeRenameSmoke(executable, stdRoot);
+    await require('./concept-rename').conceptRenameSmoke(executable, stdRoot);
     await require('./field-rename').fieldRenameSmoke(executable, stdRoot);
     await require('./binding-rename').bindingRenameSmoke(executable, stdRoot);
     await buildInputSmoke(executable, stdRoot);

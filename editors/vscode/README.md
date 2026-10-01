@@ -2,7 +2,7 @@
 
 A small development extension: highlighting, brackets/comments, unsaved-buffer
 diagnostics, name/member completion, checked type hover, go to definition, find references,
-checked local and module-wide function/type rename, import quick fixes, and document
+checked local and module-wide function/type/concept rename, import quick fixes, and document
 formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
 Loom. A resident compiler reuses unchanged checked snapshots for diagnostics,
@@ -145,10 +145,10 @@ record and match bindings in ordinary named functions and methods. Contracts
 and guarded arms use the same local identities as bodies; field labels and
 enum variants are not local bindings. Every local edit is checked again in an
 in-memory package before it is offered. It also renames
-one production package-private top-level function or nominal type across files in the selected package when
+one production package-private top-level function, nominal type or concept across files in the selected package when
 every same-spelled token is an exact checked reference and the virtual edits pass
 a full in-memory package check with test files included. One public top-level
-function, record, enum or constrained type can be renamed throughout the current
+function, record, enum, constrained type or concept can be renamed throughout the current
 module, updating imports and checked references. Function edits include bare and
 qualified calls and callbacks; type edits include aligned function signatures,
 record fields, enum payloads, local annotations, constructors and enum patterns.
@@ -177,7 +177,15 @@ Fields of public records use the same module-wide test-inclusive edit check;
 private records stay within their package. Distinct checked locals and other
 records' fields are not edited. Unchecked same-spelled accesses or constructor
 labels refuse edits, even in a module package that has not imported the owner.
-Concept rename is not yet available. Type aliases, unobserved type
+Concept references use an on-demand, snapshot-local checker trace, including
+generic and associated-type bounds, `impl`, `dyn`, qualified associated types,
+`implements` conditions and explicit concept method calls. It distinguishes
+local receivers from concept qualifiers before lowering erases those names.
+The trace is reused within an unchanged analysis, never added to executable IR
+or replayed from cached bodies. Each package must account for its own references;
+an unvisited compile-time branch still refuses rename. Ordinary compilation does
+not collect this evidence.
+Type aliases, unobserved type
 applications and generated or unaligned annotations without complete checked
 binding evidence refuse type edits. The server
 returns a workspace edit for the

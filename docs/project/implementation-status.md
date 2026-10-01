@@ -53,8 +53,8 @@ explicitly discarded, and Task/MustScope obligations cannot be discarded.
 The [VS Code extension](../../editors/vscode/README.md) uses the real compiler
 for unsaved diagnostics, formatting, hover/navigation, name/member/import
 completion, checked import fixes, parameter/local-pattern rename and checked
-function/type rename. One public top-level function, record, enum or constrained
-type can be renamed throughout its local module, including import declarations,
+function/type/concept rename. One public top-level function, record, enum,
+constrained type or concept can be renamed throughout its local module, including import declarations,
 checked signatures and field/payload annotations, constructors, enum patterns,
 qualified calls, callbacks, embedded
 tests and unopened test files. Each directory retains its private test scope;
@@ -80,8 +80,11 @@ unaligned annotations still refuse edits. Record fields now use checked
 receiver/initializer identities, including updates, explicit destructuring,
 contracts and type-constraint templates. Distinct field owners and locals stay
 unchanged; unaccounted labels or structural accesses in any module package block
-the edit. Concept rename,
-external-consumer API migration and broader recovery/query support remain open.
+the edit. Concept rename uses a lazy checker trace for bounds, `impl`, `dyn`,
+associated-type qualifiers, `implements` guards and explicit method calls.
+Each package must account for its own references, including tests; unvisited
+branches refuse edits. The trace stays outside executable IR and build caches.
+External-consumer API migration and broader recovery/query support remain open.
 
 Public `std.loom` syntax, fragment parsing, project/binding and typed-analysis
 libraries are the same implementation used by the compiler. In-memory syntax

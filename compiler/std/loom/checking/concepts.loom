@@ -69,7 +69,7 @@ fn required_concept(env Environment, owner Int, node Node) Result[Int, Failure] 
     if length(node.children) != 0 {
         return Result.Err(failure(env, owner, node, "concepts do not yet take type arguments"))
     }
-    let selected = concept_named(env, owner, node, node.value)?
+    let selected = referenced_concept(env, owner, node, node.value, 0)?
     if selected < 0 { return Result.Err(failure(env, owner, node, "expected an accessible concept")) }
     Result.Ok(selected)
 }

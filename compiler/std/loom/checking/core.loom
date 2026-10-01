@@ -408,6 +408,10 @@ fn prepare(source std.loom.binding.Program) Result[Environment, Failure] {
 }
 
 fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Result[Environment, Failure] {
+    prepare_with_inputs(source, inputs, false)
+}
+
+fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, concept_queries Bool) Result[Environment, Failure] {
     let input_state = new[CheckInputs]()
     let options = match input_options(inputs) {
         Result.Ok(value) => value
@@ -435,6 +439,8 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs) Resu
                 read = inputs.read
             }
             static_queries = new[StaticReferenceQuery]()
+            concept_queries = concept_queries
+            concept_references = new[ConceptReference]()
             result_shapes = new[ResultShape]()
             constraint_errors = new[Int]()
         })

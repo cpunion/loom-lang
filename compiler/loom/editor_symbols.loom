@@ -371,7 +371,7 @@ fn editor_top_declaration(analysis Analysis, target Location, spelling Text, pub
         get(files, symbol.file).package == package {
             matches = matches + 1
             let kind = symbol.node.kind
-            if (kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum || kind == NodeKind.Refined) &&
+            if (kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum || kind == NodeKind.Refined || kind == NodeKind.Concept) &&
             symbol.file == target.file && symbol.public == public && !symbol.test_only && !std.loom.ast.has(symbol.node, NodeKind.ExpansionId) &&
             !get(files, symbol.file).test_only {
                 match lex(get(files, symbol.file).text) {
@@ -706,7 +706,7 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
     let references = editor_references(analysis, target, token.value)
     let field_owner = editor_field_owner(analysis, target, token.value)
     let public_field = field_owner >= 0 && get(bindings.symbols, field_owner).public &&
-        editor_declaration_authority(analysis, target, true)
+    editor_declaration_authority(analysis, target, true)
     if editor_top_declaration(analysis, target, token.value, true) || public_field {
         return editor_public_symbols(options, analysis, target, token.value, inputs)
     }
@@ -728,9 +728,9 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
             }
         }
         let private_field = field_owner >= 0 && !get(bindings.symbols, field_owner).public &&
-            editor_declaration_authority(analysis, target, false)
+        editor_declaration_authority(analysis, target, false)
         if !editor_top_declaration(analysis, target, token.value, false) && !private_field {
-            return editor_error("Rename supports checked local bindings and parameters, one top-level function or nominal type, or a record field in the selected module")
+            return editor_error("Rename supports checked local bindings and parameters, one top-level function, nominal type or concept, or a record field in the selected module")
         }
         if !options.tests {
             return editor_error("Private declaration rename requires --tests to account for test-file uses")

@@ -45,6 +45,8 @@ pub record Analysis {
     inputs List[BuildInput]
     options List[BuildOption]
     targets List[BuildOption]
+    // Lazy query evidence; never attached to executable IR or definition caches.
+    concepts List[List[std.loom.checking.ConceptReference]]
 }
 pub record Expression {
     function Int
@@ -87,6 +89,7 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
             inputs = files
             options = detached.options
             targets = detached.targets
+            concepts = new[List[std.loom.checking.ConceptReference]]()
         })
 }
 
