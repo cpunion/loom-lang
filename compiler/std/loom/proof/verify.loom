@@ -119,8 +119,8 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
     var index = 0
     while index < length(shape.fields) {
         let field = get(shape.fields, index)
-        // A nested record has immutable scalar leaves. Shared containers and
-        // other unsupported leaves stay opaque; their aliases gain no facts.
+        // Inline scalar leaves keep values; List leaves keep shared handles.
+        // Unmodeled contents and other unsupported leaves remain opaque.
         push(fields, record_parameter_value(proof, field.ty, depth + 1))
         index = index + 1
     }
