@@ -84,7 +84,7 @@ fn known_element(identity Int, index Linear, state State) Result[Value, Text] {
     while position > 0 {
         position = position - 1
         let cell = get(cells, position)
-        if index_relation("==", cell.index, index, state) {
+        if loop_holds(cell.valid, state) && index_relation("==", cell.index, index, state) {
             return Result.Ok(cell.value)
         }
     }
@@ -94,6 +94,10 @@ fn known_element(identity Int, index Linear, state State) Result[Value, Text] {
 // Bounded observations, not a copy of the runtime container. Evicting an old
 // observation only loses proof precision; it never assumes a value or alias.
 fn remember_element(identity Int, index Linear, value Value, state State) Result[State, Text] {
+    remember_observation(identity, index, value, Predicate.Constant(true), state)
+}
+
+fn remember_observation(identity Int, index Linear, value Value, valid Predicate, state State) Result[State, Text] {
     let previous = list_state(identity, state)?.cells
     let cells = new[ListCell]()
     var position = if length(previous) >= 64 {
@@ -108,6 +112,7 @@ fn remember_element(identity Int, index Linear, value Value, state State) Result
     push(cells, ListCell {
             index = index
             value = value
+            valid = valid
         })
     Result.Ok(with_cells(identity, cells, state))
 }

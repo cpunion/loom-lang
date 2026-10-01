@@ -42,6 +42,7 @@ enum Value {
 record ListCell {
     index Linear
     value Value
+    valid Predicate
 }
 
 record ListExtent {

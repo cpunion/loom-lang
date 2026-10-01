@@ -1,0 +1,31 @@
+test fn entry_scopes_keep_results_unavailable_across_snapshots() {
+    let entry = State {
+        locals = [Value.Number(constant(integer(3)))]
+        facts = new[Predicate]()
+        extents = new[ListExtent]()
+    }
+    let current = State {
+        locals = [Value.Number(constant(integer(99))), Value.Number(constant(integer(7)))]
+        facts = new[Predicate]()
+        extents = new[ListExtent]()
+    }
+    let snapshot = [Value.Number(constant(integer(9)))]
+    let before = call_scope(entry_scope(entry, current), snapshot)
+    let after = call_scope(current, snapshot)
+    let aligned = entry_scope(before, after)
+    assert length(aligned.locals) == 3
+    assert match get(aligned.locals, 0) {
+        Value.Number(value) => index_relation("==", value, constant(integer(3)), aligned)
+        _ => false
+    }
+    assert match get(aligned.locals, 1) {
+        Value.Empty => true
+        _ => false
+    }
+    assert match get(aligned.locals, 2) {
+        Value.Number(value) => index_relation("==", value, constant(integer(9)), aligned)
+        _ => false
+    }
+    assert !loop_holds(Predicate.Constant(false), guarded_entry(
+            operation("==", local(1), literal("0")), aligned))
+}

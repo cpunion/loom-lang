@@ -81,12 +81,32 @@ fn immutable_snapshot(value Value) Bool {
 // state, then place the scalar snapshot in the post-call proof scope. These
 // locals are private to verification and never enter Function.locals or MIR.
 fn capture_entry(proof Verification, value Expr, entry State, current State) Result[EntrySnapshot, Text] {
+    capture_guarded_entry(proof, value, proof_bool(value, true), entry, current)
+}
+
+fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
+    entry State, current State) Result[EntrySnapshot, Text] {
     let children = new[Expr]()
     var state = current
     var before = entry
     var index = 0
     while index < length(value.children) {
-        let captured = capture_entry(proof, get(value.children, index), before, state)?
+        var next = guard
+        if (value.kind == ExprKind.Binary && index == 1 &&
+            (value.text == "&&" || value.text == "||")) ||
+        (value.kind == ExprKind.If && index > 0) {
+            let positive = if value.kind == ExprKind.If {
+                index == 1
+            } else {
+                value.text == "&&"
+            }
+            next = proof_and(guard, if positive {
+                    get(children, 0)
+                } else {
+                    proof_not(get(children, 0))
+                })
+        }
+        let captured = capture_guarded_entry(proof, get(value.children, index), next, before, state)?
         push(children, captured.expression)
         state = captured.state
         before = captured.entry
@@ -95,11 +115,7 @@ fn capture_entry(proof Verification, value Expr, entry State, current State) Res
     if entry_length_expression(value) || entry_element_expression(value) {
         // Nested snapshots use the extended proof scope, but exclusively the
         // invocation's heap and facts. Later appends cannot justify old reads.
-        let view = State {
-            locals = state.locals
-            facts = before.facts
-            extents = before.extents
-        }
+        let view = entry_scope(before, state)
         let read = proof_expr(value, ExprKind.Intrinsic, value.ty,
             if entry_length_expression(value) {
                 "list_len"
@@ -108,15 +124,7 @@ fn capture_entry(proof Verification, value Expr, entry State, current State) Res
             }, -1, children)
         var observed = Value.Empty
         if entry_element_expression(value) {
-            discard element_defined(read, view)?
-            let inputs = new[Value]()
-            push(inputs, pure(get(children, 0), view)?)
-            push(inputs, pure(get(children, 1), view)?)
-            let outcome = list_operation_outcome(proof, "list_get", value.ty,
-                CallArguments {
-                    state = view
-                    values = inputs
-                })?
+            let outcome = entry_element(proof, read, guard, view)?
             observed = outcome.value
             before = outcome.state
             if !immutable_snapshot(observed) {
@@ -124,13 +132,26 @@ fn capture_entry(proof Verification, value Expr, entry State, current State) Res
             }
         } else {
             observed = pure(read, view)?
+            before = view
         }
         let values = new[Value]()
         push(values, observed)
+        // Entry lengths already have bounds in both states. Repeated clauses
+        // must not copy those same facts into every private snapshot scope.
+        let after_scope = call_scope(state, values)
+        let before_scope = call_scope(before, values)
         return Result.Ok(EntrySnapshot {
                 expression = proof_expr(value, ExprKind.Local, value.ty, "", length(state.locals), new[Expr]())
-                state = bounded(observed, call_scope(state, values))
-                entry = before
+                state = if entry_element_expression(value) {
+                    bounded(observed, after_scope)
+                } else {
+                    after_scope
+                }
+                entry = if entry_element_expression(value) {
+                    bounded(observed, before_scope)
+                } else {
+                    before_scope
+                }
             })
     }
     Result.Ok(EntrySnapshot {

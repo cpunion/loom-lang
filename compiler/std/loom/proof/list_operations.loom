@@ -35,15 +35,13 @@ fn forwarded_list_operation(program Program, function Function, depth Int) Text 
     forwarded_list_operation(program, get(program.functions, body.index), depth + 1)
 }
 
-fn list_operation_outcome(proof Verification, name Text, ty Int, inputs CallArguments) Result[Outcome, Text] {
+fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArguments) Result[List[Outcome], Text] {
     var state = inputs.state
     if name == "list_new" && length(inputs.values) == 0 {
         let value = record_parameter_value(proof, ty, 0)
         return match value {
-            Value.List(identity) => Result.Ok(Outcome {
-                    state = with_extent(identity, constant(integer(0)), true, state)
-                    value = value
-                })
+            Value.List(identity) => Result.Ok(outcomes(
+                    with_extent(identity, constant(integer(0)), true, state), value))
             _ => Result.Err("List allocation proof requires a List result")
         }
     }
@@ -58,10 +56,7 @@ fn list_operation_outcome(proof Verification, name Text, ty Int, inputs CallArgu
     }
     let size = list_extent(identity, state)?
     if name == "list_len" && length(inputs.values) == 1 {
-        return Result.Ok(Outcome {
-                state = state
-                value = Value.Number(size)
-            })
+        return Result.Ok(outcomes(state, Value.Number(size)))
     }
     if name == "list_push" && length(inputs.values) == 2 {
         // Other handles may alias this receiver. Only exact handle copies keep
@@ -71,11 +66,8 @@ fn list_operation_outcome(proof Verification, name Text, ty Int, inputs CallArgu
         let previous = list_state(identity, state)?
         let after = forget_modified_extents(proof, state, modified)
         let grown = with_extent(identity, add(size, constant(integer(1))), previous.allocated, after)
-        return Result.Ok(Outcome {
-                state = remember_element(identity, size, get(inputs.values, 1),
-                    with_cells(identity, previous.cells, grown))?
-                value = Value.Empty
-            })
+        return Result.Ok(outcomes(remember_element(identity, size, get(inputs.values, 1),
+                    with_cells(identity, previous.cells, grown))?, Value.Empty))
     }
     if (name == "list_get" && length(inputs.values) == 2) ||
     (name == "list_set" && length(inputs.values) == 3) {
@@ -90,26 +82,9 @@ fn list_operation_outcome(proof Verification, name Text, ty Int, inputs CallArgu
         state = assume(assume(state, Predicate.Compare(">=", index)),
             Predicate.Compare("<", add(index, scale(size, integer(-1)))))
         if name == "list_get" {
-            match known_element(identity, index, state) {
-                Result.Ok(value) => {
-                    return Result.Ok(Outcome {
-                            state = bounded(value, state)
-                            value = value
-                        })
-                }
-                Result.Err(_) => {
-                }
-            }
-            let value = record_parameter_value(proof, ty, 0)
-            return Result.Ok(Outcome {
-                    state = remember_element(identity, index, value, bounded(value, state))?
-                    value = value
-                })
+            return read_element_outcomes(proof, ty, identity, index, state)
         }
-        return Result.Ok(Outcome {
-                state = written_element(identity, index, get(inputs.values, 2), state)?
-                value = Value.Empty
-            })
+        return Result.Ok(outcomes(written_element(identity, index, get(inputs.values, 2), state)?, Value.Empty))
     }
     Result.Err("unsupported List operation in required proof")
 }
@@ -119,7 +94,7 @@ fn execute_list_operation(proof Verification, expr Expr, name Text, state State,
     let output = new[Outcome]()
     var index = 0
     while index < length(inputs) {
-        discard add_outcome(output, list_operation_outcome(proof, name, expr.ty, get(inputs, index))?)?
+        discard append(output, list_operation_outcomes(proof, name, expr.ty, get(inputs, index))?)?
         index = index + 1
     }
     Result.Ok(output)

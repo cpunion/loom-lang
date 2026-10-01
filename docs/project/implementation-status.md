@@ -233,7 +233,9 @@ pure helper observations,
 survive mutation and compose using each callee's invocation state. Only scalar
 and inline proof snapshots are created, with no runtime allocation. It cannot snapshot
 mutable element handles or use callbacks or body-local/result bindings. Entry
-element bounds must hold unconditionally, even in a guarded postcondition.
+element bounds may use immutable entry guards from short-circuit clauses and
+pure helper branches. Post-state storage and results cannot justify entry reads;
+conditional observations remain conditional after growth and across calls.
 
 Immutable observed record fields can coexist with unobserved mutable siblings.
 Fixed-shape List views retain element identities across removal/regrowth,

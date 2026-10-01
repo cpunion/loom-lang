@@ -96,14 +96,28 @@ ensures result == old(values[0])
     discard frame_write(values)
     values[0]
 }
+fn optional(values List[Int]) Int
+ensures old(length(values)) == 0 || result == old(values[0])
+ensures old(length(values)) != 0 || result == 0
+{
+    if length(values) == 0 {
+        return 0
+    }
+    let before = values[0]
+    values[0] = 13
+    before
+}
 fn main() {
     let values List[Int] = []
+    assert optional(values) == 0
     assert twice(values) == 0
     assert twice(values) == 2
     assert elements(values) == 0
     assert values[0] == 9
     assert increase(values, 2) == 11
     assert frame_user(values) == 11
+    assert optional(values) == 11
+    assert values[0] == 13
 }
 "#;
     fs::write(&path, source).unwrap();
@@ -121,6 +135,15 @@ fn main() {
         .unwrap();
     assert!(bodies >= 8, "{trace}");
     checked(&cached("run", &package, &cache, &[]), true);
+    // Replacing an entry guard with post-state length must not reuse its proof.
+    fs::write(
+        &path,
+        source.replace("old(length(values)) == 0 ||", "length(values) == 0 ||"),
+    )
+    .unwrap();
+    let invalid_guard = cached("check", &package, &cache, &[]);
+    assert!(!invalid_guard.status.success());
+    assert!(String::from_utf8_lossy(&invalid_guard.stderr).contains("bounds"));
     // The callee's declared contract stays true, but its write footprint changes.
     // A caller cannot retain proof of the previously untouched element.
     fs::write(&path, source.replace("values[1] = 7", "values[0] = 7")).unwrap();

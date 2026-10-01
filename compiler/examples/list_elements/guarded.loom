@@ -1,0 +1,78 @@
+fn guarded_take(values List[Int], item Int) Int
+ensures old(length(values)) == 0 || result == old(values[0])
+ensures old(length(values)) != 0 || result == 0
+{
+    if length(values) == 0 {
+        return 0
+    }
+    let before = values[0]
+    values[0] = item
+    before
+}
+
+fn guarded_relay(values List[Int]) Int
+ensures old(length(values)) == 0 || result == old(values[0])
+ensures old(length(values)) != 0 || result == 0
+{
+    guarded_take(values, 9)
+}
+
+fn guarded_repeat(values List[Int]) Int
+ensures old(length(values)) == 0 || result == old(values[0])
+{
+    let first = guarded_take(values, 7)
+    assert length(values) == 0 || guarded_take(values, 9) == 7
+    first
+}
+
+fn guarded_pick(values List[Int], index Int) Int
+ensures index < 0 || index >= old(length(values)) || result == old(values[index])
+{
+    if index < 0 || index >= length(values) {
+        return 0
+    }
+    values[index]
+}
+
+fn guarded_append(values List[Int], index Int) Int
+requires index >= 0
+ensures index >= old(length(values)) || result == old(values[index])
+ensures length(values) == old(length(values)) + 1
+ensures values[old(length(values))] == 7
+{
+    push(values, 7)
+    if index < length(values) {
+        return values[index]
+    }
+    0
+}
+
+fn guarded_allocated() Int
+ensures result == 7
+{
+    let values List[Int] = []
+    discard guarded_append(values, 0)
+    values[0]
+}
+
+fn guarded_entries() {
+    let empty List[Int] = []
+    assert guarded_relay(empty) == 0
+    assert guarded_repeat(empty) == 0
+    assert length(empty) == 0
+    let values = [3, 5]
+    assert guarded_relay(values) == 3
+    assert values[0] == 9
+    assert guarded_repeat(values) == 9
+    assert guarded_pick(values, -1) == 0
+    assert guarded_pick(values, 1) == 5
+    assert guarded_pick(values, 2) == 0
+    assert guarded_append(values, 1) == 5
+    assert guarded_append(values, 3) == 7
+    assert guarded_append(values, 20) == 0
+    assert guarded_allocated() == 7
+}
+
+test fn guarded_entry_observations() {
+    guarded_entries()
+}

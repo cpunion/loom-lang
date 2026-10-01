@@ -1,0 +1,63 @@
+// A native read may be in bounds after growth without having existed at entry.
+// Split only relevant conditional observations; keep the ordinary read fast.
+fn observation_guard(valid Predicate, state State) Predicate {
+    match valid {
+        Predicate.And(parts) => {
+            if loop_holds(get(parts, 0), state) {
+                return get(parts, 1)
+            }
+            if loop_holds(get(parts, 1), state) {
+                return get(parts, 0)
+            }
+        }
+        _ => {
+        }
+    }
+    valid
+}
+
+fn read_element_outcomes(proof Verification, ty Int, identity Int, index Linear,
+    entry State) Result[List[Outcome], Text] {
+    let output = new[Outcome]()
+    var state = entry
+    let cells = list_state(identity, state)?.cells
+    var position = length(cells)
+    var changed = true
+    while changed || position > 0 {
+        if changed {
+            match known_element(identity, index, state) {
+                Result.Ok(value) => {
+                    discard add_outcome(output, Outcome {
+                            state = bounded(value, state)
+                            value = value
+                        })?
+                    return Result.Ok(output)
+                }
+                Result.Err(_) => {
+                }
+            }
+            changed = false
+        }
+        if position > 0 {
+            position = position - 1
+            let cell = get(cells, position)
+            if index_relation("==", cell.index, index, state) {
+                let guard = observation_guard(cell.valid, state)
+                if !loop_holds(not(guard), state) {
+                    discard add_outcome(output, Outcome {
+                            state = bounded(cell.value, difference_facts(assume(state, guard)))
+                            value = cell.value
+                        })?
+                    state = difference_facts(assume(state, not(guard)))
+                    changed = true
+                }
+            }
+        }
+    }
+    let value = record_parameter_value(proof, ty, 0)
+    discard add_outcome(output, Outcome {
+            state = remember_element(identity, index, value, bounded(value, state))?
+            value = value
+        })?
+    Result.Ok(output)
+}
