@@ -30,6 +30,16 @@ test fn list_call_frames_preserve_separate_indices_and_allocations() {
             put(values, index, 9)
             fresh[0]
         }
+        fn touch(values List[Int], index Int) {
+            values[index] = 9
+        }
+        fn no_result_contract(values List[Int]) Int
+        requires length(values) >= 2
+        ensures result == old(values[0])
+        {
+            touch(values, 1)
+            values[0]
+        }
         fn paint_prefix(values List[Int], turns Int) Int
         ensures result == 0
         {
@@ -122,6 +132,18 @@ test fn list_call_frames_compose_with_loops_branches_and_cleanup() {
 }
 
 test fn list_call_frames_forget_unknown_indices_aliases_and_deferred_rebindings() {
+    list_length_contract("""
+        fn change(values List[Int]) {
+            values[0] = 9
+        }
+        fn unsafe(values List[Int]) Int
+        ensures result == 7
+        {
+            values[0] = 7
+            change(values)
+            values[0]
+        }
+        """, false)
     list_length_contract("""
         fn change(values List[Int], index Int) Int
         ensures result == 0

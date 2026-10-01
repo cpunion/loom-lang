@@ -438,7 +438,7 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         checks = new[Evaluation]()
     }
     discard expansion_step(context, 0)?
-    if length(function.postconditions) != 0 {
+    if length(function.postconditions) != 0 || function.result == 0 {
         return applied_summary(proof, call, function, state, bindings, boundary, depth)
     }
     // Arguments already ran once. Only snapshot references and a finite pure
@@ -494,8 +494,11 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
     if primitive != "" {
         return execute_list_operation(proof, call, primitive, state, depth)
     }
-    let contracted_unit = function.result == 0 && length(function.postconditions) != 0
-    if function.runtime_name != "" || (!helper_type(proof.program, function.result, 0) && !contracted_unit) || function.result == 5 || length(function.params) != length(call.children) {
+    // A no-result helper needs no invented result specification. A finite
+    // checked effect footprint can frame its storage; no body value is assumed.
+    let framed_unit = function.result == 0 && (length(function.postconditions) != 0 ||
+        extent_preserving(proof.program, function.body))
+    if function.runtime_name != "" || (!helper_type(proof.program, function.result, 0) && !framed_unit) || function.result == 5 || length(function.params) != length(call.children) {
         return Result.Err("body proof needs a checked scalar or inline aggregate source function")
     }
     var index = 0

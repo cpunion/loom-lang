@@ -48,8 +48,22 @@ ensures result == old(values[0])
     values[0]
 }
 
+fn touch_tail(values List[Int]) {
+    values[1] = 7
+}
+
+fn keep_without_contract(values List[Int]) Int
+requires length(values) >= 2
+ensures result == old(values[0])
+{
+    touch_tail(values)
+    values[0]
+}
+
 fn frame_contracts() {
     let values = [3, 5, 7]
+    assert keep_without_contract(values) == 3
+    assert values[1] == 7
     assert keep_other(values, 0, 1) == 3
     assert values[1] == 9
     assert repeated_tail(values, 0) == 3

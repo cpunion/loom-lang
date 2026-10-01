@@ -207,7 +207,9 @@ untouched observations using bounded may-write analysis of their checked bodies,
 including immutable parameter/inline aliases, nested calls and ordinary cleanup.
 All branches contribute writes; mutable locals and heap-derived targets are
 unknown. Changed helper bodies invalidate dependent cached proofs, even when
-their declared contracts stay unchanged. Mutating loops use fresh element values and
+their declared contracts stay unchanged. No-result helpers with finite checked
+effects need no additional contract to frame untouched storage.
+Mutating loops use fresh element values and
 retain only entry/backedge-proved bounds and source-contract relations when
 lengths are preserved. Lost candidates trigger dependent rechecks; ordinary
 cleanup and loop jumps retain their order. This covers bounded element counters

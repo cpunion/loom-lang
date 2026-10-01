@@ -2125,7 +2125,8 @@ nested helpers compose; every branch and ordinary cleanup body contributes.
 Only a proved-disjoint index on the same handle or allocation-separated storage
 is framed. Mutable locals, heap-derived targets, recursion and opaque effects
 supply no guessed separation. Written elements still need verified postconditions
-for new facts. Mutating loops freshen their observed elements before induction.
+for new facts. No-result source helpers with finite checked effects need no extra
+contract to frame untouched storage. Mutating loops freshen their observed elements before induction.
 Scalar values previously read remain snapshots. Contracted functions without a
 return value compose through their storage postconditions. Unknown post-state
 elements without an established read/write reject.
