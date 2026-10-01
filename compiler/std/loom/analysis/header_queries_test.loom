@@ -1,0 +1,103 @@
+test fn checked_headers_navigate_nominal_types_inside_compound_signatures() {
+    let text = """
+        record Item {
+            count Int
+        }
+        record Box[T] {
+            value T
+        }
+        pub fn select(value Box[Item], pair (Item, List[Item]), read fn(Item) Item) Item {
+            discard value
+            read(pair.0)
+        }
+        """
+    let analysis = accepted(input(text))
+    let item = query_offset(text, "Item {")
+    let box = query_offset(text, "Box[T]")
+    let references = ["Item], pair", "Item, List", "Item]), read", "Item) Item", "Item) Item {", "Item {\n    discard"]
+    var index = 0
+    while index < length(references) {
+        let found = inspection(analysis, text, get(references, index))
+        only_type(found, "app.Item")
+        only_definition(found, item, item + 4)
+        index = index + 1
+    }
+    let constructor = inspection(analysis, text, "Box[Item]")
+    only_type(constructor, "app.Box[app.Item]")
+    only_definition(constructor, box, box + 3)
+}
+
+test fn specialized_header_parameters_do_not_guess_same_spelled_nominal_definitions() {
+    let text = """
+        record Item {
+            count Int
+        }
+        fn identity[Item](value Item) Item {
+            value
+        }
+        fn main() {
+            let value = Item { count = 7 }
+            assert identity(value).count == 7
+        }
+        """
+    let analysis = accepted(input(text))
+    let locations = ["Item) Item", "Item {\n    value"]
+    var index = 0
+    while index < length(locations) {
+        assert match inspect_at(analysis, 0, query_offset(text, get(locations, index))) {
+            Option.None => true
+            Option.Some(found) => length(found.definitions) == 0
+        }
+        index = index + 1
+    }
+}
+
+test fn data_and_local_annotations_use_checked_nominal_identities() {
+    let text = """
+        record Item {
+            count Int
+        }
+        record Envelope {
+            item Item
+            history List[Item]
+        }
+        enum Choice {
+            Some(Item)
+            Empty
+        }
+        type Positive = Item where self.count > 0
+        fn positive(value Positive) Item {
+            value
+        }
+        fn main() {
+            let current Item = Item { count = 7 }
+            var saved List[Item] = [current]
+            discard saved
+            discard Envelope { item = current, history = [current] }
+            let choice Choice = Choice.Some(current)
+            assert match choice {
+                Choice.Some(item) => item.count == 7
+                Choice.Empty => false
+            }
+        }
+        """
+    let analysis = accepted(input(text))
+    let item = query_offset(text, "Item {")
+    let references = ["Item\n    history", "Item]\n}", "Item)\n    Empty", "Item where", "Item =", "Item] ="]
+    var index = 0
+    while index < length(references) {
+        let found = inspection(analysis, text, get(references, index))
+        only_type(found, "app.Item")
+        only_definition(found, item, item + 4)
+        index = index + 1
+    }
+    let choice = query_offset(text, "Choice {")
+    let variants = ["Choice.Some(current)", "Choice.Some(item)", "Choice.Empty =>"]
+    index = 0
+    while index < length(variants) {
+        let found = inspection(analysis, text, get(variants, index))
+        only_type(found, "app.Choice")
+        only_definition(found, choice, choice + 6)
+        index = index + 1
+    }
+}

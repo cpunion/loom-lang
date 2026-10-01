@@ -1,0 +1,256 @@
+import std.loom.binding.candidates
+import std.loom.typed.Type
+
+fn header_root(spelling Text) Text {
+    var part = 0
+    while part < length(spelling) && std.text.byte(spelling, part) != 46 {
+        part = part + 1
+    }
+    std.text.slice(spelling, 0, part)
+}
+
+// Header queries use checked signature types, not a second type resolver.
+// Lexical type parameters and compile-time type bindings must never acquire
+// the definition of a same-spelled nominal type after specialization.
+fn header_shadowed(analysis SemanticView, owner Int, spelling Text) Bool {
+    let root = header_root(spelling)
+    var current = owner
+    while current >= 0 {
+        let symbol = get(analysis.bindings.symbols, current)
+        var index = 0
+        while index < length(symbol.node.children) {
+            let group = get(symbol.node.children, index)
+            var item = 0
+            while item < length(group.children) &&
+            (group.kind == NodeKind.TypeParameters || group.kind == NodeKind.Parameters) {
+                let parameter = get(group.children, item)
+                if parameter.value == root && (group.kind == NodeKind.TypeParameters || has(parameter, NodeKind.Comptime)) {
+                    return true
+                }
+                item = item + 1
+            }
+            index = index + 1
+        }
+        current = symbol.owner
+    }
+    false
+}
+
+fn inspect_header_type(analysis SemanticView, report Inspection, target Query,
+    owner Int, node Node, ty Int, depth Int) {
+    if depth >= 64 || !inside(node.span, target.token.span.start) || ty < 0 || ty >= length(analysis.data.types) {
+        return
+    }
+    let shape = get(analysis.data.types, ty)
+    if node.kind == NodeKind.Type && same_span(node.span, target.node.span) && target.segment + 1 == target.segments {
+        if header_shadowed(analysis, owner, node.value) {
+            return
+        }
+        add_type(report, query_type_name(analysis, ty))
+        if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
+            let scope = get(analysis.bindings.symbols, owner)
+            let choices = std.loom.binding.candidates(analysis.bindings, scope.file, scope.test_only, node.value)
+            var index = 0
+            while index < length(choices) {
+                let candidate = get(choices, index)
+                if candidate == shape.symbol {
+                    let declared = get(analysis.bindings.symbols, candidate)
+                    declaration(analysis, report, declared.file, declared.node)
+                }
+                index = index + 1
+            }
+        }
+        return
+    }
+    if (node.kind == NodeKind.Type || node.kind == NodeKind.TupleType) && length(node.children) == length(shape.arguments) {
+        var index = 0
+        while index < length(node.children) {
+            inspect_header_type(analysis, report, target, owner, get(node.children, index), get(shape.arguments, index), depth + 1)
+            index = index + 1
+        }
+    }
+    if node.kind == NodeKind.FunctionType && shape.kind == TypeKind.Function {
+        var index = 0
+        while index < length(node.children) {
+            let group = get(node.children, index)
+            if group.kind == NodeKind.Parameters && length(group.children) + 1 == length(shape.arguments) {
+                var item = 0
+                while item < length(group.children) {
+                    inspect_header_type(analysis, report, target, owner, get(group.children, item), get(shape.arguments, item), depth + 1)
+                    item = item + 1
+                }
+            }
+            if group.kind == NodeKind.ReturnType && length(group.children) == 1 && length(shape.arguments) > 0 {
+                inspect_header_type(analysis, report, target, owner, get(group.children, 0),
+                    get(shape.arguments, length(shape.arguments) - 1), depth + 1)
+            }
+            index = index + 1
+        }
+    }
+}
+
+fn inspect_function_header(analysis SemanticView, report Inspection, function Function, target Query) {
+    if target.node.kind != NodeKind.Type {
+        return
+    }
+    let symbol = get(analysis.bindings.symbols, function.symbol)
+    // Captures and static packs can change the runtime parameter layout. Only
+    // aligned source/runtime groups supply positional evidence in this slice.
+    if symbol.node.value == "" || (symbol.owner >= 0 &&
+        get(analysis.bindings.symbols, symbol.owner).node.kind == NodeKind.Function) {
+        return
+    }
+    var index = 0
+    while index < length(symbol.node.children) {
+        let group = get(symbol.node.children, index)
+        if group.kind == NodeKind.Parameters && length(group.children) == length(function.params) {
+            var item = 0
+            while item < length(group.children) {
+                let parameter = get(group.children, item)
+                if length(parameter.children) > 0 && !has(parameter, NodeKind.Comptime) {
+                    inspect_header_type(analysis, report, target, function.symbol, get(parameter.children, 0),
+                        get(function.params, item), 0)
+                }
+                item = item + 1
+            }
+        }
+        if group.kind == NodeKind.ReturnType && length(group.children) == 1 {
+            inspect_header_type(analysis, report, target, function.symbol, get(group.children, 0), function.result, 0)
+        }
+        index = index + 1
+    }
+}
+
+fn inspect_data_header(analysis SemanticView, report Inspection, shape Type, target Query) {
+    let symbol = get(analysis.bindings.symbols, shape.symbol)
+    var index = 0
+    while index < length(symbol.node.children) {
+        let member = get(symbol.node.children, index)
+        if member.kind == NodeKind.Field && length(member.children) == 1 {
+            var field = 0
+            while field < length(shape.fields) {
+                let checked = get(shape.fields, field)
+                if checked.name == member.value {
+                    inspect_header_type(analysis, report, target, shape.symbol, get(member.children, 0), checked.ty, 0)
+                }
+                field = field + 1
+            }
+        }
+        if member.kind == NodeKind.Variant {
+            var variant = 0
+            while variant < length(shape.variants) {
+                let checked = get(shape.variants, variant)
+                if checked.name == member.value && length(member.children) == length(checked.fields) {
+                    var field = 0
+                    while field < length(member.children) {
+                        inspect_header_type(analysis, report, target, shape.symbol,
+                            get(member.children, field), get(checked.fields, field), 0)
+                        field = field + 1
+                    }
+                }
+                variant = variant + 1
+            }
+        }
+        if shape.kind == TypeKind.Refined && member.kind == NodeKind.Type && length(shape.fields) == 1 {
+            inspect_header_type(analysis, report, target, shape.symbol, member, get(shape.fields, 0).ty, 0)
+        }
+        index = index + 1
+    }
+}
+
+// A local compile-time type alias may have the same spelling and concrete type
+// as a package declaration. Without its binding trace, omit that annotation.
+fn header_local_shadowed(node Node, spelling Text, before Int) Bool {
+    if node.span.start >= before {
+        return false
+    }
+    if (node.kind == NodeKind.Let || node.kind == NodeKind.Var || node.kind == NodeKind.Scoped) && node.value == spelling {
+        return true
+    }
+    var index = 0
+    while index < length(node.children) {
+        if header_local_shadowed(get(node.children, index), spelling, before) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn inspect_local_header(analysis SemanticView, report Inspection, function Function, target Query, value Expr) {
+    if target.node.kind != NodeKind.Type || value.kind != ExprKind.Let || value.index < 0 {
+        return
+    }
+    let symbol = get(analysis.bindings.symbols, function.symbol)
+    if symbol.owner >= 0 && get(analysis.bindings.symbols, symbol.owner).node.kind == NodeKind.Function {
+        return
+    }
+    if header_local_shadowed(symbol.node, header_root(target.node.value), target.node.span.start) {
+        return
+    }
+    match source_binding(symbol.node, value.span) {
+        Option.Some(node) => {
+            if length(node.children) == 2 {
+                inspect_header_type(analysis, report, target, function.symbol, get(node.children, 0),
+                    source_local_type(analysis, get(function.locals, value.index).ty), 0)
+            }
+        }
+        Option.None => {
+        }
+    }
+}
+
+fn nominal_body_location(analysis SemanticView, report Inspection, function Function, target Query, ty Int, path Text) {
+    let symbol = get(analysis.bindings.symbols, function.symbol)
+    if header_shadowed(analysis, function.symbol, path) ||
+    header_local_shadowed(symbol.node, header_root(path), target.node.span.start) ||
+    (symbol.owner >= 0 && get(analysis.bindings.symbols, symbol.owner).node.kind == NodeKind.Function) {
+        return
+    }
+    let shape = get(analysis.data.types, ty)
+    let choices = std.loom.binding.candidates(analysis.bindings, symbol.file, symbol.test_only, path)
+    var index = 0
+    while index < length(choices) {
+        if get(choices, index) == shape.symbol {
+            symbol_location(analysis, report, shape.symbol)
+        }
+        index = index + 1
+    }
+}
+
+fn inspect_variant_type(analysis SemanticView, report Inspection, function Function, target Query, ty Int) {
+    if get(analysis.data.types, ty).kind != TypeKind.Enum || target.segment + 2 != target.segments {
+        return
+    }
+    var end = length(target.node.value) - 1
+    while end >= 0 && std.text.byte(target.node.value, end) != 46 {
+        end = end - 1
+    }
+    if end > 0 {
+        add_type(report, query_type_name(analysis, ty))
+        nominal_body_location(analysis, report, function, target, ty, std.text.slice(target.node.value, 0, end))
+    }
+}
+
+fn inspect_variant_pattern(analysis SemanticView, report Inspection, function Function, target Query, value Expr) {
+    if target.node.kind != NodeKind.Pattern || value.kind != ExprKind.Match || length(value.children) != 1 {
+        return
+    }
+    let symbol = get(analysis.bindings.symbols, function.symbol)
+    var index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        if arm.variant >= 0 && length(arm.body) == 1 {
+            match source_arm(symbol.node, get(arm.body, 0).span) {
+                Option.Some(node) => {
+                    if same_span(get(node.children, 0).span, target.node.span) {
+                        inspect_variant_type(analysis, report, function, target, get(value.children, 0).ty)
+                    }
+                }
+                Option.None => {
+                }
+            }
+        }
+        index = index + 1
+    }
+}

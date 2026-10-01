@@ -53,8 +53,10 @@ explicitly discarded, and Task/MustScope obligations cannot be discarded.
 The [VS Code extension](../../editors/vscode/README.md) uses the real compiler
 for unsaved diagnostics, formatting, hover/navigation, name/member/import
 completion, checked import fixes, parameter/local-pattern rename and checked
-function rename. One public top-level function can be renamed throughout its
-local module, including import declarations, qualified calls, callbacks, embedded
+function/type rename. One public top-level function, record, enum or constrained
+type can be renamed throughout its local module, including import declarations,
+checked signatures and field/payload annotations, constructors, enum patterns,
+qualified calls, callbacks, embedded
 tests and unopened test files. Each directory retains its private test scope;
 the complete virtual edit is checked before offering it. Nested modules and
 directory aliases are excluded, as in recursive tests. Unknown occurrences,
@@ -71,8 +73,11 @@ optional binding trace before specialization erases uses; values, callbacks and
 covered compile-time blocks/branches work without executable IR metadata. Hover
 retains concrete parameter types and navigation follows the source binding,
 including specialized callbacks.
-Unobserved branches, packs and untracked captures still refuse edits. Type/field
-rename, external-consumer API migration and broader recovery/query support remain open.
+Concrete annotations navigate through checked types and package bindings, not
+same-spelled specialized parameters. Private nominal types use the existing
+test-inclusive package edit check. Unobserved branches, packs, type aliases and
+unaligned annotations still refuse edits. Field/concept rename,
+external-consumer API migration and broader recovery/query support remain open.
 
 Public `std.loom` syntax, fragment parsing, project/binding and typed-analysis
 libraries are the same implementation used by the compiler. In-memory syntax
