@@ -402,7 +402,7 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
             let value = record_parameter_value(proof, expr.ty, 0)
             let state = match value {
                 Value.List(identity) => with_extent(identity,
-                    constant(integer(length(expr.children))), get(inputs, index).state)
+                    constant(integer(length(expr.children))), true, get(inputs, index).state)
                 _ => get(inputs, index).state
             }
             discard add_outcome(output, Outcome {

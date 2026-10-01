@@ -42,6 +42,7 @@ enum Value {
 record ListExtent {
     identity Int
     size Linear
+    allocated Bool
 }
 
 record State {

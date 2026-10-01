@@ -5,23 +5,27 @@ fn list_length_expression(value Expr) Bool {
     value.ty == 1 && length(value.children) == 1
 }
 
-fn list_extent(identity Int, state State) Result[Linear, Text] {
+fn list_state(identity Int, state State) Result[ListExtent, Text] {
     var index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)
         if extent.identity == identity {
-            return Result.Ok(extent.size)
+            return Result.Ok(extent)
         }
         index = index + 1
     }
     Result.Err("List length proof has no current state")
 }
 
+fn list_extent(identity Int, state State) Result[Linear, Text] {
+    Result.Ok(list_state(identity, state)?.size)
+}
+
 fn extent_bounds(size Linear, state State) State {
     assume(bounded(Value.Number(size), state), Predicate.Compare(">=", size))
 }
 
-fn with_extent(identity Int, size Linear, state State) State {
+fn with_extent(identity Int, size Linear, allocated Bool, state State) State {
     let extents = new[ListExtent]()
     var index = 0
     while index < length(state.extents) {
@@ -34,6 +38,7 @@ fn with_extent(identity Int, size Linear, state State) State {
     push(extents, ListExtent {
             identity = identity
             size = size
+            allocated = allocated
         })
     extent_bounds(size, State {
             locals = state.locals
@@ -46,7 +51,7 @@ fn list_bounds(value Value, state State) State {
     match value {
         Value.List(identity) => match list_extent(identity, state) {
             Result.Ok(_) => state
-            Result.Err(_) => with_extent(identity, variable(identity), state)
+            Result.Err(_) => with_extent(identity, variable(identity), false, state)
         }
         Value.Record(fields) => {
             var bounded = state
@@ -65,15 +70,57 @@ fn list_bounds(value Value, state State) State {
 // inside a dyn receiver. Retain facts about past scalar reads, but give every
 // handle a fresh current extent. Different handles are not assumed disjoint.
 fn forget_extents(proof Verification, state State) State {
+    let modified = new[Int]()
+    push(modified, -1)
+    forget_modified_extents(proof, state, modified)
+}
+
+// A newly allocated header is distinct from every handle that already existed.
+// A later unknown read/return may alias that allocation; different logical IDs
+// alone never prove disjointness. IDs come from the shared monotonic counter.
+fn extent_overlap(left ListExtent, right ListExtent) Bool {
+    if left.identity == right.identity {
+        return true
+    }
+    if left.allocated && (right.allocated || left.identity > right.identity) {
+        return false
+    }
+    if right.allocated && right.identity > left.identity {
+        return false
+    }
+    true
+}
+
+fn extent_modified(extent ListExtent, state State, modified List[Int]) Bool {
+    var index = 0
+    while index < length(modified) {
+        match list_state(get(modified, index), state) {
+            Result.Ok(target) => {
+                if extent_overlap(extent, target) {
+                    return true
+                }
+            }
+            Result.Err(_) => {
+                return true
+            }
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn forget_modified_extents(proof Verification, state State, modified List[Int]) State {
     var current = state
     var index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)
-        match fresh_result(proof, 1) {
-            Value.Number(size) => {
-                current = with_extent(extent.identity, size, current)
-            }
-            _ => {
+        if extent_modified(extent, state, modified) {
+            match fresh_result(proof, 1) {
+                Value.Number(size) => {
+                    current = with_extent(extent.identity, size, extent.allocated, current)
+                }
+                _ => {
+                }
             }
         }
         index = index + 1

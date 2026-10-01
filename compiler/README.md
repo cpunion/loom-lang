@@ -2073,13 +2073,16 @@ append updates it and forgets other possibly overlapping extents. Indexed reads
 return fresh unknown elements and preserve length; writes establish no content
 facts. Successful accesses retain ordinary bounds checks and normal-return
 semantics. A scalar length already read is an immutable snapshot.
+New allocations are disjoint from earlier handles, but a later unknown read or
+return may alias them. Copy loops can infer output-length/index equalities;
+these are proposals checked on entry and every backedge, not trusted templates.
 
 Calls with a checked extent-preserving body retain lengths. Opaque summaries
 can change all reachable Lists, including through hidden dyn aliases: their
 preconditions describe entry, and only their postconditions supply post-call
 facts. No distinct-parameter or distinct-result non-aliasing promise is inferred.
 Pure helpers and supported List length refinements compose with generic functions
-and inline fields. Extent-changing loops freshen lengths at the inductive head;
+and inline fields. Extent-changing loops freshen affected lengths at the inductive head;
 all retained invariants still require entry/backedge proofs. See the
 [List contract example](examples/list_contracts), which proves length preservation
 during an actual sorting loop, **not** sortedness or permutation. General element

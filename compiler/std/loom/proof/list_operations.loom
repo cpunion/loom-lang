@@ -41,7 +41,7 @@ fn list_operation_outcome(proof Verification, name Text, ty Int, inputs CallArgu
         let value = record_parameter_value(proof, ty, 0)
         return match value {
             Value.List(identity) => Result.Ok(Outcome {
-                    state = with_extent(identity, constant(integer(0)), state)
+                    state = with_extent(identity, constant(integer(0)), true, state)
                     value = value
                 })
             _ => Result.Err("List allocation proof requires a List result")
@@ -66,9 +66,12 @@ fn list_operation_outcome(proof Verification, name Text, ty Int, inputs CallArgu
     if name == "list_push" && length(inputs.values) == 2 {
         // Other handles may alias this receiver. Only exact handle copies keep
         // the precise update; every possibly overlapping extent is forgotten.
-        let after = forget_extents(proof, state)
+        let modified = new[Int]()
+        push(modified, identity)
+        let allocated = list_state(identity, state)?.allocated
+        let after = forget_modified_extents(proof, state, modified)
         return Result.Ok(Outcome {
-                state = with_extent(identity, add(size, constant(integer(1))), after)
+                state = with_extent(identity, add(size, constant(integer(1))), allocated, after)
                 value = Value.Empty
             })
     }

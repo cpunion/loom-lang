@@ -195,6 +195,9 @@ List lengths belong to the current proof state: exact aliases share extent
 updates, while unknown overlap and opaque calls forget current-length facts.
 Scalar reads remain snapshots. Length helpers, literals/allocation, indexed
 reads/writes and append compose with generic/inline values and bounded loops.
+Fresh allocations are disjoint from existing handles; later unknown reads or
+returns may alias them. Copy loops infer output-length/index equalities and
+check them inductively, preserving input extents only with that separation.
 Input length refinements supply entry facts; callee preconditions are not reused
 as post-call heap facts. Element reads supply fresh unknowns, not content or
 non-aliasing evidence. Unmodeled heap operations still reject. See the
@@ -217,7 +220,7 @@ Scalar and scalar-only inline aggregate loops infer entry/guard bounds and check
 zero-iteration paths and early returns retain separate obligations. This supports
 whole-value record/tuple reassignment with independently fresh scalar leaves,
 branches, nested loops, break/continue paths and existing
-direct-call proof rules. List extent-changing loops freshen shared lengths before
+direct-call proof rules. List extent-changing loops freshen affected lengths before
 checking inductiveness. Scalar lexical cleanup retains its checked order and
 return snapshots. Guard calls use fresh checked results, not stable syntactic
 invariant terms. Resource cleanup and general heap-content proofs remain unsupported. See the
