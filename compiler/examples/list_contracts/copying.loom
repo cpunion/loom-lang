@@ -1,0 +1,32 @@
+import std.list.new
+import std.list.get
+
+fn copied[T](values List[T]) List[T]
+ensures length(result) == length(values)
+{
+    let output = new[T]()
+    var index = 0
+    while index < length(values) {
+        push(output, get(values, index))
+        index = index + 1
+    }
+    output
+}
+
+async fn exercise_copies() {
+    let shared = [7]
+    let source = [shared, shared]
+    let output = copied(source)
+    assert count(output) == 2 && count(source) == 2
+    push(output, [9])
+    assert count(output) == 3 && count(source) == 2
+    sleep_ms(1).await
+    output[0][0] = 8
+    assert source[1][0] == 8
+    let empty List[Int] = []
+    assert count(copied(empty)) == 0
+}
+
+test async fn copying_proves_shape_and_retains_element_sharing() {
+    exercise_copies().await
+}

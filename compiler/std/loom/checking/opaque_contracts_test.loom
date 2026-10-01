@@ -1,4 +1,4 @@
-test fn contracted_opaque_inputs_contribute_no_scalar_facts() {
+test fn contracted_inputs_expose_only_modeled_facts() {
     discard accepted("""
         fn keep(name Text, bytes Bytes, values List[Int], number Int) Int
         ensures result == number {

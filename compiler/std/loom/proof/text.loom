@@ -11,7 +11,7 @@ fn text_length(value TextValue) Linear {
 
 fn text_length_expression(value Expr) Bool {
     value.kind == ExprKind.Intrinsic && value.text == "text_len" &&
-        value.ty == 1 && length(value.children) == 1
+    value.ty == 1 && length(value.children) == 1
 }
 
 fn text_bounds(value Value, state State) State {
@@ -55,8 +55,8 @@ fn implication_initial(premise Expr, conclusion Expr) State {
         })
     bounded(get(locals, 0), State {
             locals = locals
-        facts = new[Predicate]()
-        extents = new[ListExtent]()
+            facts = new[Predicate]()
+            extents = new[ListExtent]()
         })
 }
 

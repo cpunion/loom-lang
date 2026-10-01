@@ -1,0 +1,124 @@
+test fn fresh_list_loops_prove_length_without_input_non_aliasing_promises() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.new
+        import std.list.push
+        import std.list.get
+        fn copied[T](values List[T]) List[T]
+        ensures length(result) == length(values)
+        {
+            let output = new[T]()
+            var index = 0
+            while index < length(values) {
+                push(output, get(values, index))
+                index = index + 1
+            }
+            output
+        }
+        fn fresh(values List[Int]) Int
+        ensures result == length(values)
+        {
+            let before = length(values)
+            let output = [0]
+            push(output, 1)
+            before
+        }
+        fn main() {
+            assert length(copied([1, 2, 3])) == 3
+            assert fresh([1, 2]) == 2
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        import std.list.new
+        import std.list.push
+        import std.list.get
+        fn doubled(values List[Int]) List[Int]
+        ensures length(result) == length(values)
+        {
+            let output = new[Int]()
+            var index = 0
+            while index < length(values) {
+                push(output, get(values, index))
+                push(output, get(values, index))
+                index = index + 1
+            }
+            output
+        }
+        """, false)
+}
+
+test fn later_unknown_handles_can_alias_earlier_allocations() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        import std.list.get
+        fn hidden() Int
+        ensures result == 1
+        {
+            let original = [1]
+            let nested = [original]
+            let unknown = get(nested, 0)
+            push(unknown, 2)
+            length(original)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        import std.list.get
+        fn hidden_loop(limit Int) Int
+        ensures result == 1
+        {
+            let original = [1]
+            let nested = [original]
+            let unknown = get(nested, 0)
+            var index = 0
+            while index < limit {
+                push(unknown, 2)
+                index = index + 1
+            }
+            length(original)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        import std.list.get
+        fn saved() Int
+        ensures result == 1
+        {
+            let original = [1]
+            let size = length(original)
+            let nested = [original]
+            push(get(nested, 0), 2)
+            size
+        }
+        """, true)
+}
+
+test fn opaque_calls_can_reach_locally_allocated_lists() {
+    list_length_contract(concat(list_changer(), """
+        fn escaped(receiver dyn Changer) Int
+        ensures result == 1
+        {
+            let output = [1]
+            discard receiver.touch(output)
+            length(output)
+        }
+        """), false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn copied_handle(values List[Int], before Int) Int
+        requires length(values) == before
+        ensures result == before + 1
+        {
+            let output = [1]
+            let alias = values
+            push(output, 2)
+            push(alias, 3)
+            length(values)
+        }
+        """, true)
+}
