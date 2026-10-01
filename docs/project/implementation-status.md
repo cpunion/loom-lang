@@ -177,7 +177,12 @@ Predicates may call pure functions, but cannot rely on external mutable state.
 Every declared `ensures` requires a static proof. Current reasoning includes
 scalar/inline-aggregate identities, guarded preconditions/assertions, bounded
 integer difference relations, input-type invariants, inferred scalar/inline-aggregate loop
-invariants, finite pure helpers and verified callee summaries. Synchronous scalar
+invariants, finite pure helpers and verified callee summaries. Finite helpers
+support local reassignment, conditional expression operands and
+short-circuit writes while retaining prior value snapshots and evaluation
+obligations, including overwritten calculations. This adds no runtime proof
+state and does not treat shared-storage mutation as pure.
+Synchronous scalar
 and inline aggregate concept calls use declared contracts through generic/associated or dyn receivers,
 not a guessed implementation or hidden receiver knowledge. Private abstract
 summaries are neither executable CTFE bodies nor native functions. Unspecified

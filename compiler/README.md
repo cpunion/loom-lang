@@ -2014,13 +2014,13 @@ during optional folding is not proof of validity or rejection; ordinary runtime
 fault behavior remains. Explicit `comptime` faults still reject compilation.
 
 Refinement-to-refinement implication also expands direct, acyclic scalar helpers
-with immutable locals, `if/else` and early body returns. It uses each checked
+with local bindings/reassignment, `if/else` and early body returns. It uses each checked
 specialization in its defining scope and preserves eager arguments, unused
 calculations, short-circuit guards and helper preconditions as proof obligations.
 For example, replacing `self >= 0` above with `nonnegative(self)` can still remove
 the check when `nonnegative` returns `value >= 0`. A helper returning `true` after
 `let unused = value + 1` cannot discard a possible overflow. Unsupported helper
-loops/mutation, indirect calls or exhausted expansion retain runtime checks.
+loops/shared-storage mutation, indirect calls or exhausted expansion retain runtime checks.
 General implications over shared mutable contents remain open; supported
 immutable input invariants and flow facts are described below.
 
@@ -2029,13 +2029,17 @@ proved; unknown or unsupported proofs reject the build, including for functions
 outside the emitted entry closure. There is no runtime postcondition fallback.
 
 Function contracts can reuse direct, acyclic helpers over scalars and inline
-records/tuples, with immutable locals and conditional bodies. The [contract example](examples/contracts/README.md)
+records/tuples, with local bindings/reassignment and conditional bodies. The [contract example](examples/contracts/README.md)
 shows a predicate with its own `requires`: proving its returned Boolean alone is
 not enough; the caller must also establish that requirement. Expansion preserves
 multiple parameters, branch/short-circuit guards, eager arguments and unused
 arithmetic. Scalar choices normalize into bounded Boolean clauses for contracts;
 body-call proofs reuse typed branches. Assertions inside a helper are obligations
 in a postcondition, not assumed facts.
+Local assignments replace symbolic values without changing earlier observations.
+Expression blocks and short-circuit operands preserve evaluation order and merge
+only executed local writes. Overwriting a calculation does not erase its fault
+obligations. This does not admit shared-storage mutation or general helper loops.
 Helpers used only by `ensures` do not enter native reachability. Their actual
 bodies and own contracts are still checked in their defining scope, including
 when the caller is unused. Verified postconditions retain call-free checked
@@ -2242,7 +2246,7 @@ provides a fact only after that assertion succeeds; the compiler never inserts
 an assertion to rescue a failed postcondition proof. Postcondition arithmetic
 must itself be defined within `Int` bounds.
 
-Helper loops/mutation, returns inside helper operands, recursive proof dependencies,
+Helper loops/shared-storage mutation, returns inside helper operands, recursive proof dependencies,
 dynamic calls without a usable declared scalar contract, indirect calls,
 nonlinear arithmetic and nonconstant division remain outside this
 proof fragment. Required Float proofs remain unsupported, while pure Float entry

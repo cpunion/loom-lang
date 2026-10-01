@@ -15,6 +15,11 @@ constant. `bounded` reuses a predicate with multiple parameters, branch conditio
 and early returns. `lower` proves its result from both branches of `minimum`,
 without requiring a separate contract on the helper.
 
+`locals.loom` uses ordinary `var` bindings in pure helpers: a minimum selection,
+eager argument snapshots, conditional operand writes and short-circuit writes.
+The same rules prove `local_widen` without a second construction check. These
+are proof-time substitutions, not runtime storage or implicit copies.
+
 `forward` proves its own result contract from `good`'s verified contract. The
 ordinary call still executes at runtime; proof analysis does not replace it.
 Direct scalar calls without a postcondition can instead use the bounded pure
@@ -29,10 +34,12 @@ This proof fragment supports direct scalar calls and synchronous `dyn` concept
 calls with a declared scalar postcondition, not general function-body
 verification. A `dyn` proof uses that declaration, never the concrete witness.
 Calls without a usable result contract need bounded, nonrecursive scalar helper
-bodies with immutable locals, `if/else` and early returns from body or branch
-blocks. Returns inside operands, mutation, loops and indirect calls remain
-unsupported for helper expansion. Branches retain their evaluation guards;
-eager arguments, discarded arithmetic and assertions still create proof
+bodies with local bindings/reassignment, `if/else` and early returns from body or
+branch blocks. Reassignment cannot change earlier reads; expression blocks and
+short-circuit operands merge only executed writes. Shared-storage mutation,
+returns inside operands, cleanup, loops and indirect calls remain unsupported
+for helper expansion. Branches retain their evaluation guards;
+eager arguments, overwritten/discarded arithmetic and assertions still create proof
 obligations. Expansion and conditional normalization have finite budgets.
 Arithmetic that executed in a body may rely on its runtime overflow check having
 passed. Arithmetic written only in `ensures` must still be proved safe.

@@ -15,11 +15,13 @@ record ExpansionBinding {
     local Int
     value Expr
 }
+
 record Evaluation {
     guard Expr
     value Expr
     required Bool
 }
+
 record Expansion {
     program Program
     list_lengths Bool
@@ -28,7 +30,10 @@ record Expansion {
     checks List[Evaluation]
 }
 
-fn scalar_type(ty Int) Bool { ty == 1 || ty == 2 || ty == 3 || ty == 5 }
+fn scalar_type(ty Int) Bool {
+    ty == 1 || ty == 2 || ty == 3 || ty == 5
+}
+
 fn helper_type(program Program, ty Int, depth Int) Bool {
     if scalar_type(ty) {
         return true
@@ -67,60 +72,114 @@ fn expanded_field(context Expansion, field Expr, value Expr, depth Int) Result[E
     push(children, value)
     Result.Ok(proof_expr(field, ExprKind.Field, field.ty, "", field.index, children))
 }
+
 fn expansion_step(context Expansion, depth Int) Result[Bool, Text] {
-    if depth >= 64 || get(context.budget, 0) == 0 { return Result.Err("helper proof expansion budget exhausted") }
+    if depth >= 64 || get(context.budget, 0) == 0 {
+        return Result.Err("helper proof expansion budget exhausted")
+    }
     set(context.budget, 0, get(context.budget, 0) - 1)
     Result.Ok(true)
 }
+
 fn proof_expr(source Expr, kind ExprKind, ty Int, text Text, index Int, children List[Expr]) Expr {
-    Expr { kind = kind ty = ty span = source.span text = text index = index
-        children = children arms = new[Arm]() falls = true }
+    Expr {
+        kind = kind
+        ty = ty
+        span = source.span
+        text = text
+        index = index
+        children = children
+        arms = new[Arm]()
+        falls = true
+    }
 }
+
 fn proof_bool(source Expr, value Bool) Expr {
-    proof_expr(source, ExprKind.Bool, 2, if value { "true" } else { "false" }, -1, new[Expr]())
+    proof_expr(source, ExprKind.Bool, 2, if value {
+            "true"
+        } else {
+            "false"
+        }, -1, new[Expr]())
 }
+
 fn is_bool(value Expr, truth Bool) Bool {
-    value.kind == ExprKind.Bool && value.text == (if truth { "true" } else { "false" })
+    value.kind == ExprKind.Bool && value.text == (if truth {
+            "true"
+        } else {
+            "false"
+        })
 }
+
 fn proof_children(left Expr, right Expr) List[Expr] {
     let children = new[Expr]()
     push(children, left)
     push(children, right)
     children
 }
+
 fn proof_not(value Expr) Expr {
-    if value.kind == ExprKind.Bool { return proof_bool(value, value.text != "true") }
-    if value.kind == ExprKind.Unary && value.text == "!" { return get(value.children, 0) }
+    if value.kind == ExprKind.Bool {
+        return proof_bool(value, value.text != "true")
+    }
+    if value.kind == ExprKind.Unary && value.text == "!" {
+        return get(value.children, 0)
+    }
     let children = new[Expr]()
     push(children, value)
     proof_expr(value, ExprKind.Unary, 2, "!", -1, children)
 }
+
 fn proof_and(left Expr, right Expr) Expr {
-    if is_bool(left, true) { return right }
-    if is_bool(right, true) || is_bool(left, false) { return left }
+    if is_bool(left, true) {
+        return right
+    }
+    if is_bool(right, true) || is_bool(left, false) {
+        return left
+    }
     proof_expr(left, ExprKind.Binary, 2, "&&", -1, proof_children(left, right))
 }
+
 fn guarded_value(guard Expr, value Expr) Expr {
-    if is_bool(guard, true) { return value }
-    if is_bool(guard, false) { return proof_bool(guard, true) }
-    if is_bool(value, true) { return value }
-    if is_bool(value, false) { return proof_not(guard) }
+    if is_bool(guard, true) {
+        return value
+    }
+    if is_bool(guard, false) {
+        return proof_bool(guard, true)
+    }
+    if is_bool(value, true) {
+        return value
+    }
+    if is_bool(value, false) {
+        return proof_not(guard)
+    }
     proof_expr(guard, ExprKind.Binary, 2, "||", -1, proof_children(proof_not(guard), value))
 }
+
 fn evaluated(context Expansion, guard Expr, value Expr, required Bool) Result[Bool, Text] {
-    if length(context.checks) >= 256 { return Result.Err("helper evaluation budget exhausted") }
-    push(context.checks, Evaluation { guard = guard value = value required = required })
+    if length(context.checks) >= 256 {
+        return Result.Err("helper evaluation budget exhausted")
+    }
+    push(context.checks, Evaluation {
+            guard = guard
+            value = value
+            required = required
+        })
     Result.Ok(true)
 }
+
 fn scalar_operator(value Expr) Bool {
-    if value.kind == ExprKind.Unary { return value.text == "-" || value.text == "!" || value.text == "~" }
+    if value.kind == ExprKind.Unary {
+        return value.text == "-" || value.text == "!" || value.text == "~"
+    }
     value.text == "+" || value.text == "-" || value.text == "*" || value.text == "/" || value.text == "%" ||
-        value.text == "==" || value.text == "!=" || value.text == "<" || value.text == "<=" || value.text == ">" || value.text == ">=" ||
-        value.text == "&&" || value.text == "||" || value.text == "&" || value.text == "|" || value.text == "^"
+    value.text == "==" || value.text == "!=" || value.text == "<" || value.text == "<=" || value.text == ">" || value.text == ">=" ||
+    value.text == "&&" || value.text == "||" || value.text == "&" || value.text == "|" || value.text == "^"
 }
 
 fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int) Result[Expr, Text] {
-    if value.index < 0 || value.index >= length(context.program.functions) || calls >= 32 { return Result.Err("helper has no bounded checked instance") }
+    if value.index < 0 || value.index >= length(context.program.functions) || calls >= 32 {
+        return Result.Err("helper has no bounded checked instance")
+    }
     let function = get(context.program.functions, value.index)
     if function.runtime_name == "list_get" && length(function.params) == 2 &&
     proof_list_type(context.program, get(function.params, 0)) && length(value.children) == 2 {
@@ -130,14 +189,14 @@ fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[Expans
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
     }
     if function.runtime_name == "list_len" && function.result == 1 &&
-        length(function.params) == 1 && proof_list_type(context.program, get(function.params, 0)) &&
-        length(value.children) == 1 {
+    length(function.params) == 1 && proof_list_type(context.program, get(function.params, 0)) &&
+    length(value.children) == 1 {
         let children = new[Expr]()
         push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
         return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, "list_len", -1, children))
     }
     if function.runtime_name == "text_len" && function.result == 1 &&
-        length(function.params) == 1 && get(function.params, 0) == 3 && length(value.children) == 1 {
+    length(function.params) == 1 && get(function.params, 0) == 3 && length(value.children) == 1 {
         let children = new[Expr]()
         push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
         return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, "text_len", -1, children))
@@ -147,7 +206,9 @@ fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[Expans
     }
     var index = 0
     while index < calls {
-        if get(context.active, index) == value.index { return Result.Err("recursive helper proof is unsupported") }
+        if get(context.active, index) == value.index {
+            return Result.Err("recursive helper proof is unsupported")
+        }
         index = index + 1
     }
     let arguments = new[ExpansionBinding]()
@@ -160,10 +221,17 @@ fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[Expans
             return Result.Err("helper parameters must be scalars or inline aggregates")
         }
         let argument = expanded(context, get(value.children, index), guard, bindings, locals, self, calls, depth + 1)?
-        push(arguments, ExpansionBinding { local = index value = argument })
+        push(arguments, ExpansionBinding {
+                local = index
+                value = argument
+            })
         index = index + 1
     }
-    if calls == length(context.active) { push(context.active, value.index) } else { set(context.active, calls, value.index) }
+    if calls == length(context.active) {
+        push(context.active, value.index)
+    } else {
+        set(context.active, calls, value.index)
+    }
     index = 0
     while index < length(function.preconditions) {
         let condition = expanded(context, get(function.preconditions, index), guard, arguments, function.locals, false, calls + 1, depth + 1)?
@@ -174,15 +242,18 @@ fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[Expans
     // assumptions for this expansion; only the actual body supplies its value.
     expanded_block(context, function.body, guard, arguments, function.locals, false, calls + 1, depth + 1, true)
 }
+
 fn expanded_block(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int, returns Bool) Result[Expr, Text] {
     discard expansion_step(context, depth)?
-    if value.kind != ExprKind.Block || length(value.children) == 0 { return Result.Err("helper needs a scalar body") }
+    if value.kind != ExprKind.Block || length(value.children) == 0 {
+        return Result.Err("helper needs a scalar body")
+    }
     // Keep the common straight-line path free of path lists; control-flow helpers
     // use the same expression expansion and guarded evaluation obligations.
     var scan = 0
     while scan < length(value.children) {
         let member = get(value.children, scan)
-        if member.kind == ExprKind.If || (member.kind == ExprKind.Return && scan + 1 < length(value.children)) || member.kind == ExprKind.Assert {
+        if member.kind == ExprKind.If || member.kind == ExprKind.Block || (member.kind == ExprKind.Return && scan + 1 < length(value.children)) || member.kind == ExprKind.Assert {
             return expanded_branches(context, value, guard, bindings, locals, self, calls, depth + 1, returns)
         }
         scan = scan + 1
@@ -191,30 +262,40 @@ fn expanded_block(context Expansion, value Expr, guard Expr, bindings List[Expan
     while index < length(value.children) {
         let member = get(value.children, index)
         let last = index + 1 == length(value.children)
-        if member.kind == ExprKind.Let {
-            if member.index < 0 || member.index >= length(locals) || get(locals, member.index).mutable || last {
-                return Result.Err("helper locals must be immutable scalar bindings")
+        if member.kind == ExprKind.Let || member.kind == ExprKind.Assign {
+            if last {
+                return Result.Err("helper body has no scalar result")
             }
-            let item = expanded(context, get(member.children, 0), guard, bindings, locals, self, calls, depth + 1)?
-            push(bindings, ExpansionBinding { local = member.index value = item })
-        } else { if member.kind == ExprKind.Discard && !last {
-            discard expanded(context, get(member.children, 0), guard, bindings, locals, self, calls, depth + 1)?
+            discard expanded_binding(context, member, guard, bindings, locals, self, calls, depth + 1)?
         } else {
-            if !last { return Result.Err("helper control flow is unsupported") }
-            if member.kind == ExprKind.Return && returns && length(member.children) == 1 {
-                return expanded(context, get(member.children, 0), guard, bindings, locals, self, calls, depth + 1)
+            if member.kind == ExprKind.Discard && !last {
+                discard expanded(context, get(member.children, 0), guard, bindings, locals, self, calls, depth + 1)?
+            } else {
+                if !last {
+                    return Result.Err("helper control flow is unsupported")
+                }
+                if member.kind == ExprKind.Return && returns && length(member.children) == 1 {
+                    return expanded(context, get(member.children, 0), guard, bindings, locals, self, calls, depth + 1)
+                }
+                return expanded(context, member, guard, bindings, locals, self, calls, depth + 1)
             }
-            return expanded(context, member, guard, bindings, locals, self, calls, depth + 1)
-        } }
+        }
         index = index + 1
     }
     Result.Err("helper body has no scalar result")
 }
+
 fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int) Result[Expr, Text] {
     discard expansion_step(context, depth)?
-    if value.kind == ExprKind.Block { return expanded_block(context, value, guard, bindings, locals, self, calls, depth + 1, false) }
-    if value.kind == ExprKind.If { return expanded_branches(context, value, guard, bindings, locals, self, calls, depth + 1, false) }
-    if length(value.arms) != 0 { return Result.Err("helper expression has unsupported match paths") }
+    if value.kind == ExprKind.Block {
+        return expanded_block(context, value, guard, bindings, locals, self, calls, depth + 1, false)
+    }
+    if value.kind == ExprKind.If {
+        return expanded_branches(context, value, guard, bindings, locals, self, calls, depth + 1, false)
+    }
+    if length(value.arms) != 0 {
+        return Result.Err("helper expression has unsupported match paths")
+    }
     if value.kind == ExprKind.Intrinsic && value.text == "contract_old" && length(value.children) == 1 {
         return expanded_entry(context, value, guard, bindings, locals, self, calls, depth + 1)
     }
@@ -223,17 +304,27 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
         while index > 0 {
             index = index - 1
             let binding = get(bindings, index)
-            if binding.local == value.index { return Result.Ok(binding.value) }
+            if binding.local == value.index {
+                return Result.Ok(binding.value)
+            }
         }
         if self && value.index == 0 {
             return Result.Ok(proof_expr(value, ExprKind.Local,
-                if context.list_lengths && proof_list_type(context.program, value.ty) { 1 } else { value.ty },
-                "self", 0, new[Expr]()))
+                    if context.list_lengths && proof_list_type(context.program, value.ty) {
+                        1
+                    } else {
+                        value.ty
+                    },
+                    "self", 0, new[Expr]()))
         }
         return Result.Err("helper expression has an unbound local")
     }
-    if value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text { return Result.Ok(value) }
-    if value.kind == ExprKind.Call { return expanded_call(context, value, guard, bindings, locals, self, calls, depth + 1) }
+    if value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text {
+        return Result.Ok(value)
+    }
+    if value.kind == ExprKind.Call {
+        return expanded_call(context, value, guard, bindings, locals, self, calls, depth + 1)
+    }
     if list_read_expression(value) {
         return expanded_read(context, value, guard, bindings, locals, self, calls, depth + 1)
     }
@@ -254,7 +345,9 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
         push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
         return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, value.text, -1, children))
     }
-    if value.kind == ExprKind.Coerce { return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1) }
+    if value.kind == ExprKind.Coerce {
+        return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
+    }
     if value.kind == ExprKind.Field {
         let receiver = expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?
         return expanded_field(context, value, receiver, depth + 1)
@@ -272,7 +365,9 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
         }
         return Result.Ok(proof_expr(value, ExprKind.Record, value.ty, "", -1, fields))
     }
-    if !scalar_type(value.ty) { return Result.Err("helper expression is not a primitive scalar or inline aggregate") }
+    if !scalar_type(value.ty) {
+        return Result.Err("helper expression is not a primitive scalar or inline aggregate")
+    }
     if (value.kind != ExprKind.Unary && value.kind != ExprKind.Binary) || !scalar_operator(value) {
         return Result.Err("unsupported helper proof expression")
     }
@@ -280,10 +375,28 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     let left = expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?
     push(children, left)
     if value.kind == ExprKind.Binary {
-        let next = if value.text == "&&" { proof_and(guard, left) } else {
-            if value.text == "||" { proof_and(guard, proof_not(left)) } else { guard }
+        let next = if value.text == "&&" {
+            proof_and(guard, left)
+        } else {
+            if value.text == "||" {
+                proof_and(guard, proof_not(left))
+            } else {
+                guard
+            }
         }
-        push(children, expanded(context, get(value.children, 1), next, bindings, locals, self, calls, depth + 1)?)
+        if (value.text == "&&" || value.text == "||") && helper_writes(get(value.children, 1)) {
+            // The right operand may rebind helper locals, but only on the
+            // evaluated path. Earlier operands already hold immutable values.
+            let right = clone(bindings)
+            push(children, expanded(context, get(value.children, 1), next, right, locals, self, calls, depth + 1)?)
+            join_bindings(bindings, right, if value.text == "&&" {
+                    left
+                } else {
+                    proof_not(left)
+                })
+        } else {
+            push(children, expanded(context, get(value.children, 1), next, bindings, locals, self, calls, depth + 1)?)
+        }
     }
     let output = proof_expr(value, value.kind, value.ty, value.text, -1, children)
     discard evaluated(context, guard, output, false)?
@@ -293,51 +406,68 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
 // Primitive Float arithmetic is total IEEE arithmetic. Keep evaluation metadata
 // separate from equality: a successfully evaluated NaN is not equal to itself.
 fn total_scalar(value Expr) Bool {
-    if value.kind == ExprKind.Local || value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text { return true }
+    if value.kind == ExprKind.Local || value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text {
+        return true
+    }
     if value.kind != ExprKind.Unary && value.kind != ExprKind.Binary && value.kind != ExprKind.If &&
-        value.kind != ExprKind.Field && value.kind != ExprKind.Record && !text_length_expression(value) &&
-        !list_length_expression(value) && !entry_length_expression(value) { return false }
+    value.kind != ExprKind.Field && value.kind != ExprKind.Record && !text_length_expression(value) &&
+    !list_length_expression(value) && !entry_length_expression(value) {
+        return false
+    }
     var index = 0
     while index < length(value.children) {
-        if !total_scalar(get(value.children, index)) { return false }
+        if !total_scalar(get(value.children, index)) {
+            return false
+        }
         index = index + 1
     }
-    if value.ty == 1 && (value.text == "+" || value.text == "-" || value.text == "*" || value.text == "/" || value.text == "%") { return false }
+    if value.ty == 1 && (value.text == "+" || value.text == "-" || value.text == "*" || value.text == "/" || value.text == "%") {
+        return false
+    }
     true
 }
+
 fn bounded_expression(value Expr) Bool {
     let budget = new[Int]()
     push(budget, 256)
     scalar_structure(value, budget, 0)
 }
+
 fn bounded_evaluations(context Expansion) Bool {
     var index = 0
     while index < length(context.checks) {
         let check = get(context.checks, index)
-        if !bounded_contract(check.guard) || !bounded_contract(check.value) { return false }
+        if !bounded_contract(check.guard) || !bounded_contract(check.value) {
+            return false
+        }
         index = index + 1
     }
     true
 }
+
 fn exact_expression(left Expr, right Expr) Bool {
     let budget = new[Int]()
     push(budget, 512)
     same_structure(left, right, budget)
 }
+
 fn known_evaluation(premise Expr, goal Evaluation, source List[Evaluation]) Bool {
     var index = 0
     while index < length(source) {
         let known = get(source, index)
         if (!goal.required || known.required) && exact_expression(goal.value, known.value) &&
-            (is_bool(known.guard, true) || exact_expression(goal.guard, known.guard) || implies(premise, guarded_value(goal.guard, known.guard))) {
+        (is_bool(known.guard, true) || exact_expression(goal.guard, known.guard) || implies(premise, guarded_value(goal.guard, known.guard))) {
             return true
         }
         index = index + 1
     }
     false
 }
+
 fn evaluation_proved(premise Expr, guard Expr, value Expr, required Bool) Result[Bool, Text] {
-    let predicate = if required { value } else {
+    let predicate = if required {
+        value
+    } else {
         proof_expr(value, ExprKind.Binary, 2, "==", -1, proof_children(value, value))
     }
     let condition = normalized_predicate(guarded_value(guard, predicate))?
@@ -346,34 +476,59 @@ fn evaluation_proved(premise Expr, guard Expr, value Expr, required Bool) Result
     discard defined(condition, state)?
     postcondition_holds(condition, state, 256)
 }
+
 fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengths Bool) Result[Bool, Text] {
     let budget = new[Int]()
     push(budget, 1024)
-    let source = Expansion { program = program list_lengths = list_lengths budget = budget active = new[Int]() checks = new[Evaluation]() }
+    let source = Expansion {
+        program = program
+        list_lengths = list_lengths
+        budget = budget
+        active = new[Int]()
+        checks = new[Evaluation]()
+    }
     let left = normalized_predicate(expanded(source, premise, proof_bool(premise, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
-    let target = Expansion { program = program list_lengths = list_lengths budget = budget active = new[Int]() checks = new[Evaluation]() }
+    let target = Expansion {
+        program = program
+        list_lengths = list_lengths
+        budget = budget
+        active = new[Int]()
+        checks = new[Evaluation]()
+    }
     let right = normalized_predicate(expanded(target, conclusion, proof_bool(conclusion, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
     // Parameter substitution can share a small DAG whose unfolded tree is huge.
     // Bound every expression before unbudgeted symbolic/definedness traversal.
-    if !bounded_expression(left) || !bounded_expression(right) || !bounded_evaluations(source) || !bounded_evaluations(target) { return Result.Ok(false) }
+    if !bounded_expression(left) || !bounded_expression(right) || !bounded_evaluations(source) || !bounded_evaluations(target) {
+        return Result.Ok(false)
+    }
     var facts = left
     var index = 0
     while index < length(source.checks) {
         let check = get(source.checks, index)
-        if check.required { facts = proof_and(facts, normalized_predicate(guarded_value(check.guard, check.value))?) }
+        if check.required {
+            facts = proof_and(facts, normalized_predicate(guarded_value(check.guard, check.value))?)
+        }
         index = index + 1
     }
-    if !bounded_expression(facts) { return Result.Ok(false) }
+    if !bounded_expression(facts) {
+        return Result.Ok(false)
+    }
     index = 0
     while index < length(target.checks) {
         let check = get(target.checks, index)
         if !is_bool(check.guard, false) && !known_evaluation(facts, check, source.checks) {
             if check.required {
                 if !implies(facts, normalized_predicate(guarded_value(check.guard, check.value))?) &&
-                    !evaluation_proved(facts, check.guard, check.value, true)? { return Result.Ok(false) }
-            } else { if !total_scalar(check.value) {
-                if !evaluation_proved(facts, check.guard, check.value, false)? { return Result.Ok(false) }
-            } }
+                !evaluation_proved(facts, check.guard, check.value, true)? {
+                    return Result.Ok(false)
+                }
+            } else {
+                if !total_scalar(check.value) {
+                    if !evaluation_proved(facts, check.guard, check.value, false)? {
+                        return Result.Ok(false)
+                    }
+                }
+            }
         }
         index = index + 1
     }
@@ -383,25 +538,34 @@ fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengt
 // Inputs belong to this prepared Program and use canonical self local 0. This
 // optional query never turns unsupported forms or failed preparation into facts.
 pub fn implies_with_helpers(program Program, premise Expr, conclusion Expr) Bool {
-    match helper_implication(program, premise, conclusion, false) { Result.Ok(proved) => proved, Result.Err(_) => false }
+    match helper_implication(program, premise, conclusion, false) {
+        Result.Ok(proved) => proved,
+        Result.Err(_) => false
+    }
 }
 
 // Expansion validates the scalar grammar. This bounds its substituted trees
 // without imposing refinement implication's canonical self-local identity.
 fn contract_size(value Expr, budget List[Int], depth Int) Bool {
-    if depth >= 64 || !conjunction_step(budget) { return false }
+    if depth >= 64 || !conjunction_step(budget) {
+        return false
+    }
     var index = 0
     while index < length(value.children) {
-        if !contract_size(get(value.children, index), budget, depth + 1) { return false }
+        if !contract_size(get(value.children, index), budget, depth + 1) {
+            return false
+        }
         index = index + 1
     }
     true
 }
+
 fn bounded_contract(value Expr) Bool {
     let budget = new[Int]()
     push(budget, 256)
     contract_size(value, budget, 0)
 }
+
 fn contract_at(value Expr, source Expr) Expr {
     let children = new[Expr]()
     var index = 0
@@ -411,6 +575,7 @@ fn contract_at(value Expr, source Expr) Expr {
     }
     proof_expr(source, value.kind, value.ty, value.text, value.index, children)
 }
+
 fn contract_clause(output List[Expr], value Expr, source Expr) Result[Bool, Text] {
     let predicate = normalized_predicate(value)?
     if length(output) >= 1024 {
@@ -419,25 +584,36 @@ fn contract_clause(output List[Expr], value Expr, source Expr) Result[Bool, Text
     push(output, contract_at(predicate, source))
     Result.Ok(true)
 }
+
 fn evaluated_bounds(value Expr) Expr {
     let low = proof_expr(value, ExprKind.Integer, 1, "-9223372036854775808", -1, new[Expr]())
     let high = proof_expr(value, ExprKind.Integer, 1, "9223372036854775807", -1, new[Expr]())
     proof_and(proof_expr(value, ExprKind.Binary, 2, ">=", -1, proof_children(value, low)),
         proof_expr(value, ExprKind.Binary, 2, "<=", -1, proof_children(value, high)))
 }
+
 fn contract_predicates(program Program, locals List[Local], inputs List[Expr], entry Bool, budget List[Int]) Result[List[Expr], Text] {
     let output = new[Expr]()
     let bindings = new[ExpansionBinding]()
     var index = 0
     while index < length(locals) && length(inputs) > 0 {
         let reference = proof_expr(get(inputs, 0), ExprKind.Local, get(locals, index).ty, "", index, new[Expr]())
-        push(bindings, ExpansionBinding { local = index value = reference })
+        push(bindings, ExpansionBinding {
+                local = index
+                value = reference
+            })
         index = index + 1
     }
     index = 0
     while index < length(inputs) {
         let input = get(inputs, index)
-        let context = Expansion { program = program list_lengths = false budget = budget active = new[Int]() checks = new[Evaluation]() }
+        let context = Expansion {
+            program = program
+            list_lengths = false
+            budget = budget
+            active = new[Int]()
+            checks = new[Evaluation]()
+        }
         let predicate = expanded(context, input, proof_bool(input, true), bindings, locals, false, 0, 0)?
         var check_index = 0
         while check_index < length(context.checks) {
@@ -447,21 +623,23 @@ fn contract_predicates(program Program, locals List[Local], inputs List[Expr], e
             }
             if check.required {
                 discard contract_clause(output, guarded_value(check.guard, check.value), input)?
-            } else { if !total_scalar(check.value) {
-                if entry {
-                    // An entry predicate has already run. Successful checked
-                    // arithmetic supplies bounds only on the path that ran it.
-                    if check.value.ty == 1 {
-                        discard contract_clause(output, guarded_value(check.guard, evaluated_bounds(check.value)), input)?
+            } else {
+                if !total_scalar(check.value) {
+                    if entry {
+                        // An entry predicate has already run. Successful checked
+                        // arithmetic supplies bounds only on the path that ran it.
+                        if check.value.ty == 1 {
+                            discard contract_clause(output, guarded_value(check.guard, evaluated_bounds(check.value)), input)?
+                        }
+                    } else {
+                        // This value has not executed. Reflexive equality asks the
+                        // existing verifier to prove its evaluation defined first,
+                        // including arguments and discarded helper calculations.
+                        let defined_value = proof_expr(check.value, ExprKind.Binary, 2, "==", -1, proof_children(check.value, check.value))
+                        discard contract_clause(output, guarded_value(check.guard, defined_value), input)?
                     }
-                } else {
-                    // This value has not executed. Reflexive equality asks the
-                    // existing verifier to prove its evaluation defined first,
-                    // including arguments and discarded helper calculations.
-                    let defined_value = proof_expr(check.value, ExprKind.Binary, 2, "==", -1, proof_children(check.value, check.value))
-                    discard contract_clause(output, guarded_value(check.guard, defined_value), input)?
                 }
-            } }
+            }
             check_index = check_index + 1
         }
         discard contract_clause(output, predicate, input)?
@@ -469,14 +647,26 @@ fn contract_predicates(program Program, locals List[Local], inputs List[Expr], e
     }
     Result.Ok(output)
 }
+
 fn expanded_contracts(program Program, function Function) Result[Function, Text] {
     let budget = new[Int]()
     push(budget, 4096)
     let preconditions = contract_predicates(program, function.locals, function.preconditions, true, budget)?
     let postconditions = contract_predicates(program, function.locals, function.postconditions, false, budget)?
-    Result.Ok(Function { is_async = function.is_async symbol = function.symbol arguments = function.arguments params = function.params result = function.result
-        locals = function.locals preconditions = preconditions postconditions = postconditions result_local = function.result_local
-        body = function.body runtime_name = function.runtime_name span = function.span })
+    Result.Ok(Function {
+            is_async = function.is_async
+            symbol = function.symbol
+            arguments = function.arguments
+            params = function.params
+            result = function.result
+            locals = function.locals
+            preconditions = preconditions
+            postconditions = postconditions
+            result_local = function.result_local
+            body = function.body
+            runtime_name = function.runtime_name
+            span = function.span
+        })
 }
 
 // The checked predicate belongs to this prepared closure and uses self local 0.

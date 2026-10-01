@@ -1,7 +1,8 @@
 import std.list.clone
 
 // Temporary expansion paths, not native control flow or assumed proof facts.
-// Bindings hold immutable substituted values; each branch owns its binding list.
+// Each branch owns its binding list. Rebinding replaces an immutable expression,
+// never expressions already captured by guards, arguments or previous reads.
 record HelperPath {
     guard Expr
     bindings List[ExpansionBinding]
@@ -9,16 +10,91 @@ record HelperPath {
     returned Bool
 }
 
+fn helper_writes(value Expr) Bool {
+    if value.kind == ExprKind.Assign {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if helper_writes(get(value.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn expanded_binding(context Expansion, value Expr, guard Expr,
+    bindings List[ExpansionBinding], locals List[Local], self Bool,
+    calls Int, depth Int) Result[Bool, Text] {
+    if value.index < 0 || value.index >= length(locals) || length(value.children) != 1 {
+        return Result.Err("helper binding has no checked local")
+    }
+    if value.kind == ExprKind.Assign && !get(locals, value.index).mutable {
+        return Result.Err("helper assignment requires a mutable local")
+    }
+    let item = expanded(context, get(value.children, 0), guard,
+        bindings, locals, self, calls, depth + 1)?
+    let binding = ExpansionBinding {
+        local = value.index
+        value = item
+    }
+    if value.kind == ExprKind.Let {
+        push(bindings, binding)
+        return Result.Ok(true)
+    }
+    var index = length(bindings)
+    while index > 0 {
+        index = index - 1
+        if get(bindings, index).local == value.index {
+            set(bindings, index, binding)
+            return Result.Ok(true)
+        }
+    }
+    Result.Err("helper assignment has an unbound local")
+}
+
+fn binding_choice(condition Expr, yes Expr, no Expr) Expr {
+    if is_bool(condition, true) {
+        return yes
+    }
+    if is_bool(condition, false) {
+        return no
+    }
+    if exact_expression(yes, no) {
+        return yes
+    }
+    proof_choice(condition, yes, no)
+}
+
+// Branch environments retain the incoming prefix; block-local bindings cannot
+// escape. Unchanged values need no new conditional nodes.
+fn join_bindings(bindings List[ExpansionBinding], branch List[ExpansionBinding], guard Expr) {
+    var index = 0
+    while index < length(bindings) {
+        let prior = get(bindings, index)
+        set(bindings, index, ExpansionBinding {
+                local = prior.local
+                value = binding_choice(guard, get(branch, index).value, prior.value)
+            })
+        index = index + 1
+    }
+}
+
 fn helper_path(paths List[HelperPath], value HelperPath) Result[Bool, Text] {
-    if length(paths) >= 256 { return Result.Err("helper branch expansion budget exhausted") }
+    if length(paths) >= 256 {
+        return Result.Err("helper branch expansion budget exhausted")
+    }
     push(paths, value)
     Result.Ok(true)
 }
+
 fn helper_paths(value HelperPath) List[HelperPath] {
     let paths = new[HelperPath]()
     push(paths, value)
     paths
 }
+
 fn helper_branch(context Expansion, value Expr, path HelperPath, locals List[Local], self Bool, calls Int, depth Int, returns Bool) Result[List[HelperPath], Text] {
     discard expansion_step(context, depth)?
     if value.kind == ExprKind.Block {
@@ -29,7 +105,9 @@ fn helper_branch(context Expansion, value Expr, path HelperPath, locals List[Loc
             var branch = 0
             while branch < length(paths) {
                 let prior = get(paths, branch)
-                if prior.returned { discard helper_path(next, prior)? } else {
+                if prior.returned {
+                    discard helper_path(next, prior)?
+                } else {
                     let values = helper_branch(context, get(value.children, index), prior, locals, self, calls, depth + 1, returns)?
                     var item = 0
                     while item < length(values) {
@@ -49,12 +127,22 @@ fn helper_branch(context Expansion, value Expr, path HelperPath, locals List[Loc
         let paths = new[HelperPath]()
         var branch = 1
         while branch <= 2 {
-            let guard = proof_and(path.guard, if branch == 1 { condition } else { proof_not(condition) })
-            let start = HelperPath { guard = guard bindings = clone(path.bindings)
-                value = proof_expr(value, ExprKind.Block, 0, "", -1, new[Expr]()) returned = false }
+            let guard = proof_and(path.guard, if branch == 1 {
+                    condition
+                } else {
+                    proof_not(condition)
+                })
+            let start = HelperPath {
+                guard = guard
+                bindings = clone(path.bindings)
+                value = proof_expr(value, ExprKind.Block, 0, "", -1, new[Expr]())
+                returned = false
+            }
             let values = if branch < length(value.children) {
                 helper_branch(context, get(value.children, branch), start, locals, self, calls, depth + 1, returns)?
-            } else { helper_paths(start) }
+            } else {
+                helper_paths(start)
+            }
             var item = 0
             while item < length(values) {
                 discard helper_path(paths, get(values, item))?
@@ -65,48 +153,106 @@ fn helper_branch(context Expansion, value Expr, path HelperPath, locals List[Loc
         return Result.Ok(paths)
     }
     if value.kind == ExprKind.Return {
-        if !returns || length(value.children) != 1 { return Result.Err("return inside a helper operand is unsupported") }
-        let result_value = expanded(context, get(value.children, 0), path.guard, path.bindings, locals, self, calls, depth + 1)?
-        return Result.Ok(helper_paths(HelperPath { guard = path.guard bindings = path.bindings value = result_value returned = true }))
-    }
-    if value.kind == ExprKind.Let || value.kind == ExprKind.Discard || value.kind == ExprKind.Assert {
-        if value.kind == ExprKind.Let && (value.index < 0 || value.index >= length(locals) || get(locals, value.index).mutable) {
-            return Result.Err("helper locals must be immutable scalar bindings")
+        if !returns || length(value.children) != 1 {
+            return Result.Err("return inside a helper operand is unsupported")
         }
         let result_value = expanded(context, get(value.children, 0), path.guard, path.bindings, locals, self, calls, depth + 1)?
-        let bindings = if value.kind == ExprKind.Let { clone(path.bindings) } else { path.bindings }
-        if value.kind == ExprKind.Let { push(bindings, ExpansionBinding { local = value.index value = result_value }) }
-        if value.kind == ExprKind.Assert { discard evaluated(context, path.guard, result_value, true)? }
-        return Result.Ok(helper_paths(HelperPath { guard = path.guard bindings = bindings
-            value = proof_expr(value, ExprKind.Block, 0, "", -1, new[Expr]()) returned = false }))
+        return Result.Ok(helper_paths(HelperPath {
+                    guard = path.guard
+                    bindings = path.bindings
+                    value = result_value
+                    returned = true
+                }))
+    }
+    if value.kind == ExprKind.Let || value.kind == ExprKind.Assign {
+        let bindings = clone(path.bindings)
+        discard expanded_binding(context, value, path.guard, bindings, locals, self, calls, depth + 1)?
+        return Result.Ok(helper_paths(HelperPath {
+                    guard = path.guard
+                    bindings = bindings
+                    value = proof_expr(value, ExprKind.Block, 0, "", -1, new[Expr]())
+                    returned = false
+                }))
+    }
+    if value.kind == ExprKind.Discard || value.kind == ExprKind.Assert {
+        let result_value = expanded(context, get(value.children, 0), path.guard, path.bindings, locals, self, calls, depth + 1)?
+        if value.kind == ExprKind.Assert {
+            discard evaluated(context, path.guard, result_value, true)?
+        }
+        return Result.Ok(helper_paths(HelperPath {
+                    guard = path.guard
+                    bindings = path.bindings
+                    value = proof_expr(value, ExprKind.Block, 0, "", -1, new[Expr]())
+                    returned = false
+                }))
     }
     let result_value = expanded(context, value, path.guard, path.bindings, locals, self, calls, depth + 1)?
-    Result.Ok(helper_paths(HelperPath { guard = path.guard bindings = path.bindings value = result_value returned = false }))
+    Result.Ok(helper_paths(HelperPath {
+                guard = path.guard
+                bindings = path.bindings
+                value = result_value
+                returned = false
+            }))
 }
+
 fn proof_choice(condition Expr, yes Expr, no Expr) Expr {
-    if is_bool(condition, true) { return yes }
-    if is_bool(condition, false) { return no }
+    if is_bool(condition, true) {
+        return yes
+    }
+    if is_bool(condition, false) {
+        return no
+    }
     if yes.kind == ExprKind.Bool && no.kind == ExprKind.Bool {
-        if yes.text == no.text { return yes }
-        return if is_bool(yes, true) { condition } else { proof_not(condition) }
+        if yes.text == no.text {
+            return yes
+        }
+        return if is_bool(yes, true) {
+            condition
+        } else {
+            proof_not(condition)
+        }
     }
     let children = proof_children(condition, yes)
     push(children, no)
     proof_expr(condition, ExprKind.If, yes.ty, "", -1, children)
 }
+
 fn expanded_branches(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int, returns Bool) Result[Expr, Text] {
-    let start = HelperPath { guard = guard bindings = bindings
-        value = proof_expr(value, ExprKind.Block, 0, "", -1, new[Expr]()) returned = false }
+    let start = HelperPath {
+        guard = guard
+        bindings = clone(bindings)
+        value = proof_expr(value, ExprKind.Block, 0, "", -1, new[Expr]())
+        returned = false
+    }
     let paths = helper_branch(context, value, start, locals, self, calls, depth + 1, returns)?
-    if length(paths) == 0 { return Result.Err("helper body has no scalar result") }
+    if length(paths) == 0 {
+        return Result.Err("helper body has no scalar result")
+    }
     var index = length(paths) - 1
     var output = get(paths, index).value
-    if !helper_type(context.program, output.ty, 0) { return Result.Err("helper body has no scalar or inline aggregate result") }
+    if !helper_type(context.program, output.ty, 0) {
+        return Result.Err("helper body has no scalar or inline aggregate result")
+    }
     while index > 0 {
         index = index - 1
         let path = get(paths, index)
-        if path.value.ty != output.ty { return Result.Err("helper paths need matching scalar results") }
+        if path.value.ty != output.ty {
+            return Result.Err("helper paths need matching scalar results")
+        }
         output = proof_choice(path.guard, path.value, output)
+    }
+    if !returns && helper_writes(value) {
+        // Expression operands continue in their enclosing scope. Merge their
+        // local writes as values, rather than choosing one branch's environment.
+        index = length(paths) - 1
+        let merged = clone(bindings)
+        join_bindings(merged, get(paths, index).bindings, proof_bool(value, true))
+        while index > 0 {
+            index = index - 1
+            let path = get(paths, index)
+            join_bindings(merged, path.bindings, path.guard)
+        }
+        join_bindings(bindings, merged, proof_bool(value, true))
     }
     Result.Ok(output)
 }
