@@ -136,10 +136,22 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
         }
         let values = new[Value]()
         push(values, observed)
+        // Entry lengths already have bounds in both states. Repeated clauses
+        // must not copy those same facts into every private snapshot scope.
+        let after_scope = call_scope(state, values)
+        let before_scope = call_scope(before, values)
         return Result.Ok(EntrySnapshot {
                 expression = proof_expr(value, ExprKind.Local, value.ty, "", length(state.locals), new[Expr]())
-                state = bounded(observed, call_scope(state, values))
-                entry = bounded(observed, call_scope(before, values))
+                state = if entry_element_expression(value) {
+                    bounded(observed, after_scope)
+                } else {
+                    after_scope
+                }
+                entry = if entry_element_expression(value) {
+                    bounded(observed, before_scope)
+                } else {
+                    before_scope
+                }
             })
     }
     Result.Ok(EntrySnapshot {
