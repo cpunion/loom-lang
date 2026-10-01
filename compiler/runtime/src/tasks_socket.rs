@@ -491,8 +491,36 @@ mod tests {
             assert_eq!(sockets.configure_stream(listener, |_| Ok(())), -1);
             let mut peer = TcpStream::connect(address).unwrap();
             peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            let accepted = sockets.accept(listener);
-            assert!(accepted > listener);
+            // Client connect completion does not guarantee that a nonblocking
+            // listener is already readable. Follow the source accept loop,
+            // retaining its handle until each one-shot registration retires.
+            let listener_lease = sockets.get(listener).unwrap();
+            let reactor = Reactor::new().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let accepted = loop {
+                let remaining = deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .expect("listener did not become readable");
+                // SAFETY: listener_lease outlives the registration and reactor.
+                let registration = unsafe {
+                    reactor
+                        .register(listener_lease.source(i64::from(READABLE)).unwrap(), 1)
+                        .unwrap()
+                };
+                reactor.wait(Some(remaining)).unwrap();
+                let ready = reactor.pop_ready().expect("listener readiness timed out");
+                assert_eq!(ready.registration, registration);
+                let accepted = sockets.accept(listener);
+                if accepted != -2 {
+                    break accepted;
+                }
+            };
+            drop(reactor);
+            drop(listener_lease);
+            assert!(
+                accepted > listener,
+                "accept returned {accepted} on {binding}"
+            );
             assert_eq!(sockets.address(accepted, false), Some(address));
             assert_eq!(
                 sockets.address(accepted, true),
