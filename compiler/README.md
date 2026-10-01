@@ -2246,10 +2246,11 @@ provides a fact only after that assertion succeeds; the compiler never inserts
 an assertion to rescue a failed postcondition proof. Postcondition arithmetic
 must itself be defined within `Int` bounds.
 
-Helper loops/shared-storage mutation, returns inside helper operands, recursive proof dependencies,
-dynamic calls without a usable declared scalar contract, indirect calls,
-nonlinear arithmetic and nonconstant division remain outside this
-proof fragment. Required Float proofs remain unsupported, while pure Float entry
+Pure-helper expansion still excludes loops, shared-storage mutation, cleanup and
+returns inside operands; verified callee summaries use the separate rules above.
+Recursive proof dependencies, dynamic calls without a usable declared contract,
+indirect calls, nonlinear arithmetic and nonconstant division remain outside
+this proof fragment. Required Float proofs remain unsupported, while pure Float entry
 predicates can run normally. Solver work is bounded; exhaustion is a diagnostic,
 not permission to trust an obligation. These are normal-return guarantees, not
 proofs of termination or absence of runtime faults.
