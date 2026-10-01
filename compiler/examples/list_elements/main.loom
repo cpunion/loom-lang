@@ -68,6 +68,20 @@ ensures values[0] == 9
     first
 }
 
+fn observe(values List[Int]) Int
+requires length(values) > 0
+ensures result == old(values[0])
+{
+    values[0]
+}
+
+fn readonly(values List[Int]) Int
+requires length(values) > 0
+ensures result == values[0]
+{
+    observe(values)
+}
+
 fn text_slot(values List[Text], index Int, text Text) Text
 ensures result == text
 {
@@ -96,6 +110,7 @@ async fn main() {
     assert values[0] == 1 && values[1] == 7
     assert twice(values) == 1
     assert values[0] == 9
+    assert readonly(values) == 9
     assert text_slot(["before"], 0, "after") == "after"
     assert literal() == 9
 }

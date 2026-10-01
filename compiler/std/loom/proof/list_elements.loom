@@ -63,6 +63,21 @@ fn forget_elements(state State) State {
     }
 }
 
+// A structurally read-only call cannot invalidate observations captured for
+// its own old clauses. Preserve them without replacing fresh result handles.
+fn preserved_elements(entry State, current State) State {
+    var state = current
+    var index = 0
+    while index < length(entry.extents) {
+        let extent = get(entry.extents, index)
+        if length(extent.cells) != 0 {
+            state = with_cells(extent.identity, extent.cells, state)
+        }
+        index = index + 1
+    }
+    state
+}
+
 fn known_element(identity Int, index Linear, state State) Result[Value, Text] {
     let cells = list_state(identity, state)?.cells
     var position = length(cells)

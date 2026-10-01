@@ -10,6 +10,18 @@ test fn old_elements_are_immutable_snapshots_at_each_invocation() {
             values[index] = item
             before
         }
+        fn observe(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == old(values[0])
+        {
+            values[0]
+        }
+        fn readonly(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == values[0]
+        {
+            observe(values)
+        }
         fn twice(values List[Int]) Int
         requires length(values) > 0
         ensures result == old(values[0])
@@ -67,6 +79,7 @@ test fn old_elements_are_immutable_snapshots_at_each_invocation() {
             saved
         }
         fn main() {
+            assert readonly([3]) == 3
             assert twice([3]) == 3
             assert swapped() == 7
             let pair = Pair {

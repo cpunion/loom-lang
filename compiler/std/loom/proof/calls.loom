@@ -339,6 +339,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
     var index = 0
     while index < length(paths) {
         var before = get(paths, index).state
+        let stable_contents = stable && length(before.extents) != 0 && elements_preserving(proof.program, function.body)
         // Preconditions describe entry. Keep their scalar snapshots, never
         // re-evaluate them as facts about storage after an opaque call.
         var after = if stable {
@@ -346,7 +347,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         } else {
             forget_extents(proof, before)
         }
-        if stable && length(before.extents) != 0 && !elements_preserving(proof.program, function.body) {
+        if stable && length(before.extents) != 0 && !stable_contents {
             after = forget_elements(after)
         }
         let result_value = record_parameter_value(proof, function.result, 0)
@@ -397,8 +398,13 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
             check_index = check_index + 1
         }
         let captured = capture_entry(proof, value, before, after)?
+        let current = if stable_contents {
+            preserved_elements(captured.entry, captured.state)
+        } else {
+            captured.state
+        }
         discard append(output, call_results(proof, captured.expression, snapshots,
-                captured.state, boundary, depth)?)?
+                current, boundary, depth)?)?
         index = index + 1
     }
     Result.Ok(output)
