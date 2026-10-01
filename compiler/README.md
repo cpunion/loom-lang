@@ -423,6 +423,12 @@ or automatic eviction is promised. `LOOM_NATIVE_TIMINGS` reports
 counts after whole-closure misses, plus a reason if a definition snapshot cannot
 be exported. This is not a remote proof/artifact exchange.
 
+One-shot CLI misses use `std.loom.checking.check_project_snapshot`: serialization
+finishes before the mutable result escapes, then temporary cache references are
+retired. Resident editor hosts use `check_project_cached`, whose private source
+and body copies remain isolated from returned ASTs and programs. Both paths
+keep the same invalidation, source-backed export and host trust checks.
+
 Hashing has a fixed cost, so this remains opt-in. Measure a project with
 `node scripts/benchmark-compiler.mjs --compare-frontend --check-only`; the harness
 records the initial miss separately and alternates warm cached/uncached samples.
@@ -445,6 +451,8 @@ To measure edits instead of unchanged whole-closure hits:
 
 ```sh
 node scripts/benchmark-compiler.mjs --compare-edits --check-only --runs 3 --sizes 10,50,200
+# Compare independently cached compilers on identical edits:
+node scripts/benchmark-compiler.mjs --compare-edits --check-only --baseline /path/to/old/loom --runs 5
 ```
 
 Each pair checks identical copied source after changing one private helper.
@@ -454,24 +462,21 @@ are recorded separately. This isolates a local edit; it does not represent a
 public API change. Snapshot I/O and copying can outweigh saved checking, especially
 for small programs; a positive reuse count alone is not evidence of a speedup.
 
-The [2026-09-30 edit baseline](../benchmarks/compiler/results/2026-09-30-macos-arm64-source-edits.json)
-found that snapshot overhead still outweighed reuse on these workloads:
+The [2026-10-01 paired comparison](../benchmarks/compiler/results/2026-10-01-macos-arm64-one-shot-snapshot.json)
+measured the same edited inputs with two O2 compilers and independent caches:
 
-| Edited package | Uncached check | Incremental check |
+| Edited package | Before | One-shot snapshots |
 | --- | ---: | ---: |
-| Scalar example | 8.56 ms | 32.51 ms |
-| Compiler | 1,850.45 ms | 2,462.01 ms |
-| 200 generated helpers | 32.32 ms | 85.50 ms |
+| Data example | 28.79 ms | 28.98 ms |
+| Compiler | 1,824.85 ms | 1,569.39 ms |
+| 200 generated helpers | 74.21 ms | 66.50 ms |
 
-The compiler case reused 1,588 definition checks and 2,582 bodies, but peak RSS
-grew from 822 MiB to 2,485 MiB. These are three-sample macOS arm64 medians with
-warm OS caches. After removing temporary numeric Texts and redundant private AST
-copies, the [same edit benchmark](../benchmarks/compiler/results/2026-09-30-macos-arm64-snapshot-allocation.json)
-measured 1,543 ms and 1,448 MiB for the compiler's incremental check, versus
-1,953 ms uncached in that run. Relative to the earlier cached baseline, latency
-fell 37% and peak RSS 42%; source changes add four reusable definitions/bodies.
-Small examples still favor the default uncached path. These are local-edit
-measurements, not arbitrary dependency changes or native build speedups.
+The compiler case reused the same 1,739 definition checks and 2,833 bodies.
+Removing copies needed only by resident hosts reduced latency about 14% and
+peak RSS from 1,362 to 1,150 MiB (about 16%). These are five alternating
+fresh-process macOS arm64 medians, not arbitrary dependency changes or native
+build speedups. Disk restoration and writeback still cost memory and time;
+positive reuse counts alone do not justify enabling caching by default.
 Tracked files, explicit options and observed target properties bind both levels
 of reuse. Backend objects are still whole-closure, not per-definition. Ordinary
 compile-time execution cannot read arbitrary I/O.

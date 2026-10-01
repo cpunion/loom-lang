@@ -3,6 +3,33 @@ import std.loom.project.Package
 import std.loom.project.PackageImport
 import std.loom.project.select_source
 
+pub record SnapshotCheck {
+    checked CachedCheck
+    snapshot Option[Text]
+}
+
+// A one-shot host check serializes before exposing its mutable result. Only
+// persistent in-memory consumers need detached source and body IR copies.
+// Retire the temporary aliases before returning, even if export is unavailable.
+pub fn check_project_snapshot(project Project, tests Bool, inputs BuildInputs, cache DefinitionCache) Result[SnapshotCheck, Failure] {
+    let checked = check_project_reusing(project, tests, inputs, cache, false)?
+    let snapshot = match export_definition_cache(cache) {
+        Result.Ok(value) => Option.Some(value)
+        Result.Err(_) => Option.None
+    }
+    let state = definition_state(cache)
+    set(cache.state, 0, DefinitionCacheState {
+            basis = new[DefinitionBasis]()
+            hits = state.hits
+            bodies = new[BodyBasis]()
+            body_hits = state.body_hits
+        })
+    Result.Ok(SnapshotCheck {
+            checked = checked
+            snapshot = snapshot
+        })
+}
+
 fn cache_project(output Bytes, project Project) Result[Bool, Text] {
     cache_int(output, project.root)
     cache_int(output, length(project.modules))
@@ -140,10 +167,10 @@ fn cache_read_project(reader CacheReader) Result[Project, Text] {
 // Same-compiler host snapshots only. The private state cannot be replaced by a
 // mutable returned AST/Program. Exporting it does not export a portable proof.
 pub fn export_definition_cache(cache DefinitionCache) Result[Text, Text] {
-    if length(cache.state.bodies) != 1 {
+    if length(definition_state(cache).bodies) != 1 {
         return Result.Err("no successful definition cache")
     }
-    let saved = get(cache.state.bodies, 0)
+    let saved = get(definition_state(cache).bodies, 0)
     let output = std.bytes.new()
     cache_text(output, "loom-definition-snapshot 9")
     cache_bool(output, saved.definitions.tests)
@@ -244,8 +271,8 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
         return Result.Err("trailing definition snapshot data")
     }
     let cache = definition_cache()
-    push(cache.state.basis, basis)
-    push(cache.state.bodies, BodyBasis {
+    push(definition_state(cache).basis, basis)
+    push(definition_state(cache).bodies, BodyBasis {
             definitions = basis
             types = types
             targets = targets

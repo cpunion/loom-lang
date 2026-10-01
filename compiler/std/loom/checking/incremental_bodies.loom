@@ -57,10 +57,10 @@ fn copy_indices(values List[Int]) List[Int] {
 }
 
 fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) BodyReuse {
-    if length(cache.state.bodies) == 0 || length(allowed) == 0 {
+    if length(definition_state(cache).bodies) == 0 || length(allowed) == 0 {
         return no_body_reuse()
     }
-    let prior = get(cache.state.bodies, 0)
+    let prior = get(definition_state(cache).bodies, 0)
     let changed = std.map.new[Text, Bool]()
     let matches = definition_matches(prior.definitions, basis, changed)
     let symbols = new[Int]()
@@ -125,14 +125,14 @@ fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) 
         index = index + 1
     }
     BodyReuse {
-        prior = cache.state.bodies
+        prior = definition_state(cache).bodies
         current = basis.entries
         allowed = allowed
         symbols = symbols
         types = types
         functions = functions
         changed = changed
-        hits = cache.state.body_hits
+        hits = definition_state(cache).body_hits
     }
 }
 

@@ -1,4 +1,4 @@
-import std.loom.checking.export_definition_cache
+import std.loom.checking.check_project_snapshot
 import std.loom.checking.import_trusted_definition_cache
 
 // One last successful definition basis per selected closure/configuration.
@@ -50,17 +50,17 @@ fn prepare_incremental(options Options, project Project, inputs BuildInputs, ide
     let prefix = concat("loom-definition-cache 1\n", concat(key, "\n"))
     let path = join_path(root, concat(key, ".ldef"))
     let cache = definition_load(path, prefix, project, inputs)
-    let checked = match check_project_cached(project, options.command == "test", inputs, cache) {
-        Result.Ok(value) => value.program
+    let checked = match check_project_snapshot(project, options.command == "test", inputs, cache) {
+        Result.Ok(value) => value
         Result.Err(failed) => {
             return Result.Err(diagnostic(project.files, failed))
         }
     }
     cache_trace(concat("definitions reused ", concat(to_text(definitions_reused(cache)),
                 concat(", bodies reused ", to_text(bodies_reused(cache))))))
-    let prepared = prepare_checked(options, project, inputs, checked)
-    match export_definition_cache(cache) {
-        Result.Ok(snapshot) => {
+    let prepared = prepare_checked(options, project, inputs, checked.checked.program)
+    match checked.snapshot {
+        Option.Some(snapshot) => {
             frontend_publish(root, path, prefix, Prepared {
                     inputs = prepared.inputs
                     targets = prepared.targets
@@ -70,8 +70,8 @@ fn prepare_incremental(options Options, project Project, inputs BuildInputs, ide
                     project = project
                 })
         }
-        Result.Err(message) => {
-            cache_trace(concat("definition snapshot unavailable: ", message))
+        Option.None => {
+            cache_trace("definition snapshot unavailable")
         }
     }
     Result.Ok(prepared)

@@ -301,12 +301,13 @@ remain conservative. Failed checks do not publish evidence. Native objects are
 still whole-closure, and trusted-local snapshots are not portable proof artifacts.
 
 The [edited-source benchmark](../../compiler/README.md#frontend-cache) uses
-fresh processes and requires a whole-closure miss. On the recorded macOS compiler
-workload, removing redundant snapshot allocations reduced cached edit median
-latency from 2462 ms to 1543 ms and peak RSS from 2485 MiB to 1448 MiB. The latter
-run's uncached path used 1953 ms and 854 MiB: cache reuse still costs memory, and
-small packages can be slower. Caching remains opt-in. These are measured cases,
-not a universal speedup or completion of the performance goal.
+fresh processes and requires a whole-closure miss. One-shot CLI checks serialize
+and retire temporary source/body aliases before returning mutable results;
+resident editor caches still keep isolated copies. Five alternating pairs of
+O2 compilers on identical edited macOS inputs measured 1825/1569 ms and
+1362/1150 MiB before/after. Disk restoration and writeback remain expensive,
+especially for small packages; caching stays opt-in. This is not a universal
+speedup or completion of the compiler-latency goal.
 Separately, five alternating fresh-process checks of the same compiler sources
 measured 2749 ms / 779 MiB before and 1188 ms / 486 MiB after removing repeated
 trusted `Result` discovery and package-label allocations. No incremental cache

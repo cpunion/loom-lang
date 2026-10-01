@@ -93,6 +93,9 @@ fn cache_field(reader CacheReader) Result[Span, Text] {
 
 fn cache_read_text(reader CacheReader) Result[Text, Text] {
     let span = cache_field(reader)?
+    if span.start == span.end {
+        return Result.Ok("")
+    }
     Result.Ok(std.text.slice(reader.text, span.start, span.end))
 }
 

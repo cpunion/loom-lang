@@ -25,6 +25,7 @@ for (let index = 0; index < args.length; index += 1) {
     console.log(`Usage: node scripts/benchmark-compiler.mjs [options]
   --compiler path  Compiler executable (default: target/loom)
   --baseline path  Pair candidate checks with this compiler; requires --check-only
+                   With --compare-edits, compare two independently cached compilers
   --output path    JSON report (default: target/performance/compiler.json)
   --runs N         Fresh measured processes per case, 1..20 (default: 3)
   --extended       Add startup, test --no-run, and generated package growth
@@ -43,9 +44,10 @@ still load/parse sources and verify dependencies; native emission is unchanged.
 and requires a whole-closure miss with actual definition/body reuse. Both variants
 check identical edited source. This measures an isolated edit, not a public API
 change; source files in the checkout are never edited.
---baseline checks
-the same inputs with both compilers, warming each once and alternating measured
-baseline/candidate order. It cannot be combined with --compare-cache.
+--baseline checks the same inputs with both compilers, warming each once and
+alternating measured baseline/candidate order. With --compare-edits, both use
+separate frontend caches and must miss after every edit. Otherwise neither uses
+a cache. It cannot be combined with --compare-cache or --compare-frontend.
 Generated packages exercise multiple files, an imported package, records,
 generic calls and Lists. Outside --check-only, their tests compile without
 running. Native phase timings, CPU time, and OS peak RSS are reported separately.
@@ -70,8 +72,8 @@ if (!Number.isInteger(runs) || runs < 1 || runs > 20) throw new Error("--runs mu
 if (baseline && !checkOnly) throw new Error("--baseline requires --check-only");
 if (compareCache && (baseline || checkOnly)) throw new Error("--compare-cache cannot be combined with --baseline or --check-only");
 if (compareFrontend && (baseline || compareCache)) throw new Error("--compare-frontend cannot be combined with --baseline or --compare-cache");
-if (compareEdits && (!checkOnly || baseline || compareCache || compareFrontend)) {
-  throw new Error("--compare-edits requires --check-only and cannot be combined with another comparison");
+if (compareEdits && (!checkOnly || compareCache || compareFrontend)) {
+  throw new Error("--compare-edits requires --check-only and cannot be combined with another cache comparison");
 }
 if (sizes.length > 8 || new Set(sizes).size !== sizes.length ||
     sizes.some(size => !Number.isInteger(size) || size < 1 || size > 512)) {
@@ -131,7 +133,9 @@ const report = {
   checkOnly,
   generatedSizes: extended ? sizes : [],
   host: { os: platform(), release: release(), arch: arch(), cpu: cpus()[0]?.model },
-  method: compareEdits
+  method: compareEdits && baseline
+    ? "fresh processes; copied packages; one private helper changes each pair; identical source per baseline/candidate pair; independent frontend caches; alternating order; initial misses separate; whole-closure hits forbidden; definition/body reuse required"
+    : compareEdits
     ? "fresh processes; copied packages; one private helper changes each pair; identical source per uncached/incremental pair; alternating order; initial miss separate; whole-closure hits forbidden; definition/body reuse required"
     : baseline
     ? "fresh processes; same source inputs; one warmup per compiler per case; paired samples alternate baseline/candidate order; sample indexes identify pairs; no incremental compiler cache"
@@ -273,21 +277,31 @@ function benchmark(name, mode, packagePath, generated) {
     const probe = join(copied, "benchmark_edit_probe.loom");
     const edit = revision => writeFileSync(probe, `fn benchmark_edit_probe() Int {\n    ${revision}\n}\n`);
     edit(0);
-    const cache = join(temporary, `cache-${report.cases.length}`);
-    measure(mode, copied);
-    const firstMiss = measure(mode, copied, cache, "miss");
-    display(firstMiss, "initial miss (observation)");
+    const compilers = baseline ? [baseline, compiler] : [compiler, compiler];
+    const caches = [baseline ? join(temporary, `baseline-cache-${report.cases.length}`) : null,
+      join(temporary, `cache-${report.cases.length}`)];
+    const firstMiss = compilers.map((executable, variant) => {
+      const sample = measure(mode, copied, caches[variant], caches[variant] ? "miss" : null, executable);
+      if (caches[variant]) display(sample, baseline
+        ? `${variant ? "candidate" : "baseline"} initial miss (observation)`
+        : "initial miss (observation)");
+      return sample;
+    });
     let revision = -1;
     const { samples, positions } = pairedSamples((variant, pair) => {
       if (revision !== pair) { edit(pair + 1); revision = pair; }
-      const sample = measure(mode, copied, variant ? cache : null, variant ? "miss" : null);
-      if (variant && (!(sample.definitionsReused > 0) || !(sample.bodiesReused > 0))) {
+      const sample = measure(mode, copied, caches[variant], caches[variant] ? "miss" : null, compilers[variant]);
+      if (caches[variant] && (!(sample.definitionsReused > 0) || !(sample.bodiesReused > 0))) {
         throw new Error(`${name}: edited check did not reuse definitions and bodies`);
       }
       return sample;
     });
-    record(samples[0], { variant: "uncached-edit", samplePositions: positions[0] });
-    record(samples[1], { variant: "incremental-edit", flags: ["--frontend-cache", cache], samplePositions: positions[1], firstMiss });
+    for (const variant of [0, 1]) record(samples[variant], {
+      variant: baseline ? `${variant ? "candidate" : "baseline"}-incremental-edit`
+        : variant ? "incremental-edit" : "uncached-edit",
+      flags: caches[variant] ? ["--frontend-cache", caches[variant]] : [],
+      samplePositions: positions[variant], ...(caches[variant] ? { firstMiss: firstMiss[variant] } : {}),
+    });
     return;
   }
   if (baseline) {
