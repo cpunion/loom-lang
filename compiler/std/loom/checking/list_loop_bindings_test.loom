@@ -1,0 +1,150 @@
+test fn loop_list_rebindings_preserve_proved_lengths_not_handle_identity() {
+    list_length_contract("""
+        import std.list.length
+        fn swap[T](left List[T], right List[T], turns Int) List[T]
+        requires length(left) == length(right)
+        ensures length(result) == old(length(left))
+        {
+            var source = left
+            var target = right
+            var turn = 0
+            while turn < turns {
+                let previous = source
+                source = target
+                target = previous
+                turn = turn + 1
+            }
+            source
+        }
+        fn replace(values List[Int], turns Int) Int
+        requires length(values) == 2
+        ensures result == 2
+        {
+            var current = values
+            var turn = 0
+            while turn < turns {
+                current = [3, 4]
+                turn = turn + 1
+            }
+            length(current)
+        }
+        fn main() {
+            assert length(swap([1], [2], 3)) == 1
+            assert replace([1, 2], 0) == 2
+            assert replace([1, 2], 3) == 2
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        fn unequal(left List[Int], right List[Int], turns Int) Int
+        ensures result == length(left)
+        {
+            var current = left
+            var turn = 0
+            while turn < turns {
+                current = right
+                turn = turn + 1
+            }
+            length(current)
+        }
+        """, false)
+}
+
+test fn rebound_lists_inside_inline_aggregates_keep_inductive_shape_facts() {
+    list_length_contract("""
+        import std.list.length
+        record Buffers {
+            current List[Int]
+            next List[Int]
+            turn Int
+        }
+        fn exchanged(left List[Int], right List[Int], turns Int) List[Int]
+        requires length(left) == length(right)
+        ensures length(result) == old(length(left))
+        {
+            var buffers = Buffers { current = left next = right turn = 0 }
+            while buffers.turn < turns {
+                buffers = Buffers {
+                    current = buffers.next
+                    next = buffers.current
+                    turn = buffers.turn + 1
+                }
+                if buffers.turn == 2 {
+                    continue
+                }
+                if buffers.turn >= 5 {
+                    break
+                }
+            }
+            buffers.current
+        }
+        """, true)
+    // The zero-iteration path is not allowed to assume the replacement ran.
+    list_length_contract("""
+        import std.list.length
+        fn skipped(values List[Int], turns Int) Int
+        ensures result == 1
+        {
+            var current = values
+            var turn = 0
+            while turn < turns {
+                current = [1]
+                turn = turn + 1
+            }
+            length(current)
+        }
+        """, false)
+}
+
+test fn resize_targets_cannot_be_resolved_from_pre_loop_bindings() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn changed_target(turns Int) Int
+        ensures result == 1
+        {
+            let original = [1]
+            var target = [0]
+            var turn = 0
+            while turn < turns {
+                push(target, 7)
+                target = original
+                turn = turn + 1
+            }
+            length(original)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn growing(values List[Int], turns Int) Int
+        ensures result == old(length(values))
+        {
+            var current = values
+            var turn = 0
+            while turn < turns {
+                current = values
+                push(current, 7)
+                turn = turn + 1
+            }
+            length(current)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn saved(values List[Int], turns Int) Int
+        ensures result == old(length(values))
+        {
+            let size = length(values)
+            var current = values
+            var turn = 0
+            while turn < turns {
+                current = values
+                push(current, 7)
+                turn = turn + 1
+            }
+            size
+        }
+        """, true)
+}

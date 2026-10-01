@@ -1,0 +1,39 @@
+// Alternate source/output buffers without changing either shape. The contract
+// proves shape only; the concrete reversals below are ordinary runtime tests.
+// One buffer is the input, so later passes may update it and return its alias.
+fn reverse_passes(values List[Int], passes Int) List[Int]
+ensures length(result) == old(length(values))
+{
+    var output = copied(values)
+    var source = values
+    var pass = 0
+    while pass < passes {
+        var index = 0
+        while index < length(source) {
+            output[index] = source[length(source) - 1 - index]
+            index = index + 1
+        }
+        let previous = source
+        source = output
+        output = previous
+        pass = pass + 1
+    }
+    source
+}
+
+async fn exercise_buffers() {
+    let input = [2, 4, 6]
+    let reversed = reverse_passes(input, 1)
+    sleep_ms(1).await
+    assert reversed[0] == 6 && reversed[1] == 4 && reversed[2] == 2
+    let restored = reverse_passes(input, 2)
+    assert restored[0] == 2 && restored[1] == 4 && restored[2] == 6
+    assert length(reverse_passes(input, 0)) == 3
+    assert length(reverse_passes([], 3)) == 0
+    reversed[0] = 9
+    assert input[0] == 2
+}
+
+test async fn alternating_buffers_preserve_length_through_nested_loops() {
+    exercise_buffers().await
+}

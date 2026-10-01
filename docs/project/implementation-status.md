@@ -218,9 +218,12 @@ Length-only predicates permit element writes, and bounded preservation proofs
 admit some appends. Content-dependent predicates retain read-only storage.
 There is no implicit copy, monitor or alias-triggered runtime failure.
 
-Scalar and scalar-only inline aggregate loops infer entry/guard bounds and check inductiveness to a fixed point;
-zero-iteration paths and early returns retain separate obligations. This supports
-whole-value record/tuple reassignment with independently fresh scalar leaves,
+Scalar, List and supported inline aggregate loops infer entry/guard bounds and
+check inductiveness to a fixed point. Rebound List leaves supply length bounds,
+not retained handle identities. Mixing
+rebinding with possible resizing freshens all tracked extents before induction.
+Zero-iteration paths and early returns retain separate obligations. This supports
+whole-value record/tuple reassignment with independently fresh leaves,
 branches, nested loops, break/continue paths and existing
 direct-call proof rules. List extent-changing loops freshen affected lengths before
 checking inductiveness. Scalar lexical cleanup retains its checked order and

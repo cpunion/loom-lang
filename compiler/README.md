@@ -2086,8 +2086,8 @@ and inline fields. Extent-changing loops freshen affected lengths at the inducti
 all retained invariants still require entry/backedge proofs. See the
 [List contract example](examples/list_contracts), which proves length preservation
 during an actual sorting loop, **not** sortedness or permutation. General element
-relationships, element-content snapshots and List-local reassignment in proof loops
-remain unsupported. These proof states add no native object metadata.
+relationships and element-content snapshots remain unsupported. These proof
+states add no native object metadata.
 
 Aggregate summaries compose through nested calls, field projections and
 whole-value updates. Unconditional proved equalities such as
@@ -2127,12 +2127,15 @@ unit-coefficient differences; it does not assume hypothetical source arithmetic
 is defined or solve general nonlinear constraints. It adds no runtime mechanism.
 See the [relational contract example](examples/relational_contracts).
 
-`while` bodies with Int/Bool locals or scalar-only inline records/tuples can
+`while` bodies with Int/Bool/List locals or supported inline records/tuples can
 prove normal-return contracts through inferred invariants, without new annotations.
-The prover freshens every scalar leaf of written locals and proposes per-path
-entry/range bounds and weakened relational guards. Whole-value reconstruction
-does not retain stale sibling fields; shared containers and other unsupported
-leaves are not admitted as written aggregate locals. Each candidate
+The prover freshens scalar leaves and List handles of written locals, then
+proposes per-path entry/range bounds, List length bounds and weakened relational
+guards. Rebinding a List preserves no handle identity. If a loop can both rebind
+handles and resize storage, all tracked extents are freshened before induction;
+its initial binding cannot identify every later resize target. Whole-value
+reconstruction does not retain stale sibling fields. Other unsupported leaves
+are not admitted as written aggregate locals. Each candidate
 must hold on entry and on every symbolic backedge; removing a candidate rechecks
 all survivors. Zero-iteration exits and early returns remain separate proof
 obligations. Branches, nested loops and the existing direct-call proof rules
