@@ -2,7 +2,7 @@
 
 A small development extension: highlighting, brackets/comments, unsaved-buffer
 diagnostics, name/member completion, checked type hover, go to definition, find references,
-checked local and module-wide function rename, import quick fixes, and document
+checked local and module-wide function/type rename, import quick fixes, and document
 formatting. The
 language server runs the Loom compiler; JavaScript does not parse or type-check
 Loom. A resident compiler reuses unchanged checked snapshots for diagnostics,
@@ -144,11 +144,14 @@ record and match bindings in ordinary named functions and methods. Contracts
 and guarded arms use the same local identities as bodies; field labels and
 enum variants are not local bindings. Every local edit is checked again in an
 in-memory package before it is offered. It also renames
-one production package-private top-level function across files in the selected package when
+one production package-private top-level function or nominal type across files in the selected package when
 every same-spelled token is an exact checked reference and the virtual edits pass
 a full in-memory package check with test files included. One public top-level
-function can be renamed throughout the current module, updating imports, bare
-calls, qualified calls and callback references. Each directory is checked as its
+function, record, enum or constrained type can be renamed throughout the current
+module, updating imports and checked references. Function edits include bare and
+qualified calls and callbacks; type edits include aligned function signatures,
+record fields, enum payloads, local annotations, constructors and enum patterns.
+Each directory is checked as its
 own test root, including unopened tests and file-backed unsaved snapshots. The
 virtual edit must pass every selected package's type and contract checks before
 it is offered. Discovery uses the recursive test boundary: nested modules,
@@ -167,13 +170,17 @@ refuse the edit. This does not add metadata to executable IR or bypass the final
 virtual-package check. Navigation points to the parameter, not its specialized
 callback target; hover reports concrete checked parameter types across observed
 specializations. Uses erased in unobserved branches still provide no evidence.
-Field and type rename are not yet available. The server
+Field and concept rename are not yet available. Type aliases, unobserved type
+applications and generated or unaligned annotations without complete checked
+binding evidence refuse type edits. The server
 returns a workspace edit for the
 client to apply; it never writes source files directly.
 
 Checked runtime parameter and match-binding declarations have hover and
-definition evidence even when unused. Type annotations, uninstantiated bodies,
-and folded code without source identity still have no result.
+definition evidence even when unused. Concrete type annotations use checked
+signature and data types; generic/comptime parameters never navigate to a
+same-spelled nominal declaration. Imports navigate through package bindings.
+Uninstantiated bodies and folded code without source identity still have no result.
 Dynamic calls navigate to concept declarations, not a guessed runtime
 implementation; ambiguous concept overloads omit the definition.
 Closure parameters and captured bindings navigate through checked source

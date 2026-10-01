@@ -341,11 +341,7 @@ fn editor_name_conflict(analysis Analysis, file Int, scope Span, name Text) Bool
 // Private declarations cannot be imported by another package. Keep this
 // strictly to one ordinary declaration in the selected package. Public edits
 // use module-wide package checks instead.
-fn editor_private_function(analysis Analysis, target Location, spelling Text) Bool {
-    editor_top_function(analysis, target, spelling, false)
-}
-
-fn editor_top_function(analysis Analysis, target Location, spelling Text, public Bool) Bool {
+fn editor_top_declaration(analysis Analysis, target Location, spelling Text, public Bool) Bool {
     let files = analysis.bindings.files
     let root = analysis.bindings.root
     let package = get(files, target.file).package
@@ -358,10 +354,12 @@ fn editor_top_function(analysis Analysis, target Location, spelling Text, public
     var index = 0
     while index < length(analysis.bindings.symbols) {
         let symbol = get(analysis.bindings.symbols, index)
-        if symbol.owner < 0 && symbol.node.kind == NodeKind.Function && symbol.name == spelling &&
+        if symbol.owner < 0 && symbol.name == spelling &&
         get(files, symbol.file).package == package {
             matches = matches + 1
-            if symbol.file == target.file && symbol.public == public && !symbol.test_only && !std.loom.ast.has(symbol.node, NodeKind.ExpansionId) &&
+            let kind = symbol.node.kind
+            if (kind == NodeKind.Function || kind == NodeKind.Record || kind == NodeKind.Enum || kind == NodeKind.Refined) &&
+            symbol.file == target.file && symbol.public == public && !symbol.test_only && !std.loom.ast.has(symbol.node, NodeKind.ExpansionId) &&
             !get(files, symbol.file).test_only {
                 match lex(get(files, symbol.file).text) {
                     Result.Ok(tokens) => {
@@ -691,7 +689,7 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
         }
     }
     let references = editor_references(analysis, target, token.value)
-    if editor_top_function(analysis, target, token.value, true) {
+    if editor_top_declaration(analysis, target, token.value, true) {
         return editor_public_symbols(options, analysis, target, token.value, inputs)
     }
     if rename {
@@ -711,14 +709,14 @@ fn editor_symbols(options EditorOptions, analysis Analysis,
             Option.None => {
             }
         }
-        if !editor_private_function(analysis, target, token.value) {
-            return editor_error("Rename supports checked local bindings and parameters, or one top-level function in the selected module")
+        if !editor_top_declaration(analysis, target, token.value, false) {
+            return editor_error("Rename supports checked local bindings and parameters, or one top-level function or nominal type in the selected module")
         }
         if !options.tests {
-            return editor_error("Private function rename requires --tests to account for test-file uses")
+            return editor_error("Private declaration rename requires --tests to account for test-file uses")
         }
         if !editor_private_covered(analysis, token.value, references) {
-            return editor_error("Rename cannot account for every occurrence of this private function")
+            return editor_error("Rename cannot account for every occurrence of this private declaration")
         }
         if new_name != token.value && editor_private_conflict(analysis, new_name) {
             return editor_error("Rename would conflict with a name in the package or import closure")

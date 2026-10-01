@@ -1,7 +1,7 @@
 import std.loom.binding.candidates
 import std.loom.project.name
 
-// Public function edits cover this module, not external consumers or dependency
+// Public declaration edits cover this module, not external consumers or dependency
 // snapshots. Each directory keeps its own private test scope and checked IDs.
 fn editor_import_selected(analysis Analysis, file Int, token Token, tokens List[Token]) Option[Location] {
     let declarations = get(analysis.bindings.files, file).tree.children
@@ -132,8 +132,8 @@ fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
             return Result.Ok(true)
         }
     }
-    if !editor_top_function(analysis, target, spelling, true) {
-        return Result.Err("Public function rename requires one ordinary declaration, not overloads or generated declarations")
+    if !editor_top_declaration(analysis, target, spelling, true) {
+        return Result.Err("Public rename requires one ordinary top-level function or nominal type, not overloads or generated declarations")
     }
     let references = editor_references(analysis, target, spelling)
     var file = 0
@@ -144,7 +144,7 @@ fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
         if source.package == analysis.bindings.root {
             let visible = editor_public_visible(analysis, file, target, spelling)
             if name != "" && (editor_generated(source.tree) || std.loom.checking.has_declaration_stages(analysis.source, true)) {
-                return Result.Err("Public function rename cannot account for generated source references")
+                return Result.Err("Public rename cannot account for generated source references")
             }
             let tokens = match lex(source.text) {
                 Result.Ok(value) => value
@@ -176,7 +176,7 @@ fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
                     if reference {
                         if !std.text.starts_with(source.path, join_path(module, "")) ||
                         !editor_public_edit(edits, source.path, source.text, token.span) {
-                            return Result.Err("Public function rename cannot edit an external or changing source file")
+                            return Result.Err("Public rename cannot edit an external or changing source file")
                         }
                     } else if visible && name != "" {
                         // A distinct checked binding is not a reference. Unknown
@@ -187,7 +187,7 @@ fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
                             Option.None => editor_declaration(source.tree, tokens, token.span)
                         }
                         if !known_other {
-                            return Result.Err("Rename cannot account for every occurrence of this public function")
+                            return Result.Err("Rename cannot account for every occurrence of this public declaration")
                         }
                     }
                 }
@@ -269,7 +269,7 @@ fn editor_public_symbols(options EditorOptions, initial Analysis, target Locatio
         return editor_error("Rename needs a valid non-reserved Loom identifier")
     }
     if !options.tests {
-        return editor_error("Public function queries require --tests to account for every package's tests")
+        return editor_error("Public declaration queries require --tests to account for every package's tests")
     }
     let root = get(initial.bindings.packages, initial.bindings.root)
     let module = get(initial.bindings.modules, root.instance).source

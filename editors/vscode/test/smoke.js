@@ -303,7 +303,7 @@ async function privateRenameSmoke(executable, stdRoot) {
     await client.change(file, source, 3);
     await client.change(helperTest, savedTest, 3);
     assert.deepEqual((await client.wait(file, 3)).diagnostics, []);
-    await assert.rejects(renameAt('utility'), /every occurrence of this private function/);
+    await assert.rejects(renameAt('utility'), /every occurrence of this private declaration/);
 
     await client.change(helper, 'pub fn helper() Int { 7 }\n', 4);
     await client.change(file, source, 4);
@@ -615,6 +615,7 @@ fn main() {
     await directDependencyAutoImportSmoke(executable, stdRoot);
     await privateRenameSmoke(executable, stdRoot);
     await require('./public-rename').publicRenameSmoke(executable, stdRoot);
+    await require('./type-rename').typeRenameSmoke(executable, stdRoot);
     await require('./binding-rename').bindingRenameSmoke(executable, stdRoot);
     await buildInputSmoke(executable, stdRoot);
     await buildOptionSmoke(executable, stdRoot);

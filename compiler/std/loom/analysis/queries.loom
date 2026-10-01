@@ -90,7 +90,8 @@ fn query(node Node, token Token, tokens List[Token]) Option[Query] {
         index = index + 1
     }
     let kind = node.kind
-    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.Construct || kind == NodeKind.Type {
+    if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.MacroCall || kind == NodeKind.Construct || kind == NodeKind.Type ||
+    (kind == NodeKind.Pattern && node.value != token.value) {
         var segment = -1
         var count = 0
         var active = false
@@ -98,7 +99,9 @@ fn query(node Node, token Token, tokens List[Token]) Option[Query] {
         index = 0
         while index < length(tokens) && scanning {
             let current = get(tokens, index)
-            if current.span.start >= node.span.start {
+            if current.span.start >= node.span.end {
+                scanning = false
+            } else if current.span.start >= node.span.start {
                 if current.kind == Kind.Name {
                     if same_span(current.span, token.span) {
                         segment = count
@@ -559,6 +562,9 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
         return
     }
     let final = target.segment + 1 == target.segments
+    if path && value.kind == ExprKind.Variant {
+        inspect_variant_type(analysis, report, function, target, value.ty)
+    }
     if final && (path || kind == NodeKind.MethodCall) {
         if value.kind == ExprKind.Call || value.kind == ExprKind.FunctionRef || value.kind == ExprKind.TaskCall {
             if value.index >= 0 {
@@ -581,7 +587,12 @@ fn inspect_expression(analysis SemanticView, report Inspection, function Functio
     (path && final && value.kind == ExprKind.Variant) ||
     (kind == NodeKind.Call && final && value.kind == ExprKind.Coerce && get(analysis.data.types, value.ty).kind == TypeKind.Refined) {
         add_type(report, query_type_name(analysis, value.ty))
-        symbol_location(analysis, report, get(analysis.data.types, value.ty).symbol)
+        if value.kind == ExprKind.Variant {
+            // The final segment is a variant, not the nominal type name.
+            symbol_location(analysis, report, get(analysis.data.types, value.ty).symbol)
+        } else {
+            nominal_body_location(analysis, report, function, target, value.ty, target.node.value)
+        }
         return
     }
     if (kind == NodeKind.Await && value.kind == ExprKind.Await) ||
@@ -614,6 +625,8 @@ fn inspect_tree(analysis SemanticView, report Inspection, function Function, tar
         }
         return
     }
+    inspect_local_header(analysis, report, function, target, value)
+    inspect_variant_pattern(analysis, report, function, target, value)
     inspect_expression(analysis, report, function, target, value, parent_type)
     if value.kind == ExprKind.FunctionRef && same_span(value.span, target.node.span) {
         return
@@ -711,12 +724,26 @@ fn inspect_view(analysis SemanticView, file Int, offset Int) Option[Inspection] 
         definitions = new[Location]()
     }
     var index = 0
+    if target.node.kind == NodeKind.Type {
+        while index < length(analysis.data.types) {
+            let shape = get(analysis.data.types, index)
+            if shape.kind == TypeKind.Record || shape.kind == TypeKind.Enum || shape.kind == TypeKind.Refined {
+                let declaration = get(analysis.bindings.symbols, shape.symbol)
+                if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
+                    inspect_data_header(analysis, report, shape, target)
+                }
+            }
+            index = index + 1
+        }
+    }
+    index = 0
     while index < length(analysis.data.functions) {
         let function = get(analysis.data.functions, index)
         let declaration = get(analysis.bindings.symbols, function.symbol)
         if declaration.file == file && inside(declaration.node.span, offset) && !macro_generated(declaration.node) {
             let types_before = length(report.types)
             let locations_before = length(report.definitions)
+            inspect_function_header(analysis, report, function, target)
             inspect_tree(analysis, report, function, target, function.body, -1)
             var clause = 0
             while clause < length(function.preconditions) {

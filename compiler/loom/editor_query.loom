@@ -95,6 +95,18 @@ fn editor_bound_inspection(analysis Analysis, file Int, offset Int, inputs Build
                         }
                         Option.None => {}
                     }
+                    match editor_import_selected(analysis, file, token, tokens) {
+                        Option.Some(location) => {
+                            let definitions = new[Location]()
+                            std.list.push(definitions, location)
+                            return Option.Some(Inspection {
+                                span = token.span
+                                types = new[Text]()
+                                definitions = definitions
+                            })
+                        }
+                        Option.None => {}
+                    }
                 }
                 Option.None => {}
             }
