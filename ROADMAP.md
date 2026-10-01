@@ -88,8 +88,9 @@ behavioral compatibility proofs.
 
 Stateful List length proofs now cover append, indexing and length preservation
 through loops, with per-invocation `old(length(values))` observations. This is
-groundwork for the sorting story below, not proof of
-ordering, permutation or general heap contents.
+groundwork for the sorting story below. Bounded indexed observations now cover
+read/write relations, immutable entry-element snapshots and conservative alias
+invalidation, not quantified ordering, permutation or general heap contents.
 
 Use these complete acceptance stories, rather than a count of syntax features:
 

@@ -3,6 +3,11 @@ fn entry_length_expression(value Expr) Bool {
     value.ty == 1 && length(value.children) == 1
 }
 
+fn entry_element_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "entry_list_get" &&
+    length(value.children) == 2
+}
+
 // Snapshot mutable observations, not their surrounding arithmetic. This keeps
 // short-circuit guards and eager helper-argument definedness in the contract.
 fn entry_reads(value Expr) Expr {
@@ -16,7 +21,11 @@ fn entry_reads(value Expr) Expr {
         if list_length_expression(value) {
             "entry_list_len"
         } else {
-            value.text
+            if list_read_expression(value) {
+                "entry_list_get"
+            } else {
+                value.text
+            }
         },
         value.index, children)
 }
@@ -46,33 +55,88 @@ fn expanded_entry(context Expansion, value Expr, guard Expr,
 record EntrySnapshot {
     expression Expr
     state State
+    entry State
+}
+
+fn immutable_snapshot(value Value) Bool {
+    match value {
+        Value.Number(_) => true
+        Value.Boolean(_) => true
+        Value.Text(_) => true
+        Value.Record(fields) => {
+            var index = 0
+            while index < length(fields) {
+                if !immutable_snapshot(get(fields, index)) {
+                    return false
+                }
+                index = index + 1
+            }
+            true
+        }
+        _ => false
+    }
 }
 
 // Entry/current may differ for a callee summary. Read from its own invocation
 // state, then place the scalar snapshot in the post-call proof scope. These
 // locals are private to verification and never enter Function.locals or MIR.
-fn capture_entry(value Expr, entry State, current State) Result[EntrySnapshot, Text] {
-    if entry_length_expression(value) {
-        let read = proof_expr(value, ExprKind.Intrinsic, 1, "list_len", -1, value.children)
-        let values = new[Value]()
-        push(values, pure(read, entry)?)
-        return Result.Ok(EntrySnapshot {
-                expression = proof_expr(value, ExprKind.Local, 1, "", length(current.locals), new[Expr]())
-                state = call_scope(current, values)
-            })
-    }
+fn capture_entry(proof Verification, value Expr, entry State, current State) Result[EntrySnapshot, Text] {
     let children = new[Expr]()
     var state = current
+    var before = entry
     var index = 0
     while index < length(value.children) {
-        let captured = capture_entry(get(value.children, index), entry, state)?
+        let captured = capture_entry(proof, get(value.children, index), before, state)?
         push(children, captured.expression)
         state = captured.state
+        before = captured.entry
         index = index + 1
+    }
+    if entry_length_expression(value) || entry_element_expression(value) {
+        // Nested snapshots use the extended proof scope, but exclusively the
+        // invocation's heap and facts. Later appends cannot justify old reads.
+        let view = State {
+            locals = state.locals
+            facts = before.facts
+            extents = before.extents
+        }
+        let read = proof_expr(value, ExprKind.Intrinsic, value.ty,
+            if entry_length_expression(value) {
+                "list_len"
+            } else {
+                "list_get"
+            }, -1, children)
+        var observed = Value.Empty
+        if entry_element_expression(value) {
+            discard element_defined(read, view)?
+            let inputs = new[Value]()
+            push(inputs, pure(get(children, 0), view)?)
+            push(inputs, pure(get(children, 1), view)?)
+            let outcome = list_operation_outcome(proof, "list_get", value.ty,
+                CallArguments {
+                    state = view
+                    values = inputs
+                })?
+            observed = outcome.value
+            before = outcome.state
+            if !immutable_snapshot(observed) {
+                return Result.Err("old List elements require immutable scalar or inline values")
+            }
+        } else {
+            observed = pure(read, view)?
+        }
+        let values = new[Value]()
+        push(values, observed)
+        return Result.Ok(EntrySnapshot {
+                expression = proof_expr(value, ExprKind.Local, value.ty, "", length(state.locals), new[Expr]())
+                state = bounded(observed, call_scope(state, values))
+                entry = before
+            })
     }
     Result.Ok(EntrySnapshot {
             expression = proof_expr(value, value.kind, value.ty, value.text, value.index, children)
             state = state
+            entry = before
         })
 }
 
@@ -81,19 +145,28 @@ record EntryConditions {
     state State
 }
 
-fn capture_conditions(conditions List[Expr], entry State) Result[EntryConditions, Text] {
+fn capture_conditions(proof Verification, conditions List[Expr], entry State) Result[EntryConditions, Text] {
     let output = new[Expr]()
     var state = entry
+    var before = entry
     var index = 0
     while index < length(conditions) {
-        let captured = capture_entry(get(conditions, index), entry, state)?
+        let captured = capture_entry(proof, get(conditions, index), before, state)?
         push(output, captured.expression)
         state = captured.state
+        before = captured.entry
         index = index + 1
     }
     Result.Ok(EntryConditions {
             conditions = output
-            state = state
+            // Root verification has not executed the body yet. Its first read
+            // must agree with these entry observations; call summaries must not
+            // copy them into a potentially modified post-call heap.
+            state = State {
+                locals = state.locals
+                facts = state.facts
+                extents = before.extents
+            }
         })
 }
 

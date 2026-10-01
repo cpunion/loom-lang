@@ -122,6 +122,10 @@ fn scalar_operator(value Expr) Bool {
 fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int) Result[Expr, Text] {
     if value.index < 0 || value.index >= length(context.program.functions) || calls >= 32 { return Result.Err("helper has no bounded checked instance") }
     let function = get(context.program.functions, value.index)
+    if function.runtime_name == "list_get" && length(function.params) == 2 &&
+    proof_list_type(context.program, get(function.params, 0)) && length(value.children) == 2 {
+        return expanded_read(context, value, guard, bindings, locals, self, calls, depth + 1)
+    }
     if context.list_lengths && function.runtime_name == "list_len" && length(value.children) == 1 {
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
     }
@@ -230,6 +234,18 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     }
     if value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text { return Result.Ok(value) }
     if value.kind == ExprKind.Call { return expanded_call(context, value, guard, bindings, locals, self, calls, depth + 1) }
+    if list_read_expression(value) {
+        return expanded_read(context, value, guard, bindings, locals, self, calls, depth + 1)
+    }
+    if entry_element_expression(value) {
+        let children = new[Expr]()
+        var index = 0
+        while index < length(value.children) {
+            push(children, expanded(context, get(value.children, index), guard, bindings, locals, self, calls, depth + 1)?)
+            index = index + 1
+        }
+        return Result.Ok(proof_expr(value, ExprKind.Intrinsic, value.ty, value.text, -1, children))
+    }
     if context.list_lengths && value.kind == ExprKind.Intrinsic && value.text == "list_len" && length(value.children) == 1 {
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
     }

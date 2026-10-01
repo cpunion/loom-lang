@@ -39,6 +39,7 @@ fn with_extent(identity Int, size Linear, allocated Bool, state State) State {
             identity = identity
             size = size
             allocated = allocated
+            cells = new[ListCell]()
         })
     extent_bounds(size, State {
             locals = state.locals
@@ -130,7 +131,7 @@ fn forget_modified_extents(proof Verification, state State, modified List[Int]) 
 
 // Only checked, finite extent-preserving operations retain caller heap facts.
 // Abstract summaries, recursion and unknown operations supply no frame rule.
-fn preserves_extents(program Program, value Expr, budget List[Int], depth Int) Bool {
+fn preserves_list_state(program Program, value Expr, budget List[Int], contents Bool, depth Int) Bool {
     if depth >= 32 || !conjunction_step(budget) {
         return false
     }
@@ -143,11 +144,11 @@ fn preserves_extents(program Program, value Expr, budget List[Int], depth Int) B
         if function.runtime_name != "" {
             if function.runtime_name != "list_len" && function.runtime_name != "text_len" &&
             function.runtime_name != "list_new" && function.runtime_name != "list_get" &&
-            function.runtime_name != "list_set" {
+            (contents || function.runtime_name != "list_set") {
                 return false
             }
         } else {
-            if !preserves_extents(program, function.body, budget, depth + 1) {
+            if !preserves_list_state(program, function.body, budget, contents, depth + 1) {
                 return false
             }
         }
@@ -162,7 +163,7 @@ fn preserves_extents(program Program, value Expr, budget List[Int], depth Int) B
         kind != ExprKind.Break && kind != ExprKind.Continue &&
         !list_length_expression(value) && !text_length_expression(value) &&
         !(kind == ExprKind.Intrinsic && (value.text == "list_new" ||
-                value.text == "list_get" || value.text == "list_set")) {
+                value.text == "list_get" || (!contents && value.text == "list_set"))) {
             return false
         }
     }
@@ -171,7 +172,7 @@ fn preserves_extents(program Program, value Expr, budget List[Int], depth Int) B
     }
     var index = 0
     while index < length(value.children) {
-        if !preserves_extents(program, get(value.children, index), budget, depth + 1) {
+        if !preserves_list_state(program, get(value.children, index), budget, contents, depth + 1) {
             return false
         }
         index = index + 1
@@ -182,5 +183,11 @@ fn preserves_extents(program Program, value Expr, budget List[Int], depth Int) B
 fn extent_preserving(program Program, value Expr) Bool {
     let budget = new[Int]()
     push(budget, 256)
-    preserves_extents(program, value, budget, 0)
+    preserves_list_state(program, value, budget, false, 0)
+}
+
+fn elements_preserving(program Program, value Expr) Bool {
+    let budget = new[Int]()
+    push(budget, 256)
+    preserves_list_state(program, value, budget, true, 0)
 }

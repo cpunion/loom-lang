@@ -67,7 +67,8 @@ fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int
             }
         }
     }
-    // Shared contents remain opaque. A length predicate is an entry fact;
+    // Content type invariants do not supply indexed observations here.
+    // A length predicate is an entry fact;
     // mutation or opaque calls must not retain it for a fresh current extent.
     state
 }

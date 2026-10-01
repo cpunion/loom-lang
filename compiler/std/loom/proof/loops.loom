@@ -381,7 +381,11 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     let guard = get(expr.children, 0)
     let body = get(expr.children, 1)
     var candidates = loop_candidates(proof, loop_candidate_guard(proof, guard), writes, entry)?
-    let head = loop_head(proof, writes, loop_extents(proof, expr, entry, writes)?)
+    var storage = loop_extents(proof, expr, entry, writes)?
+    if length(storage.extents) != 0 && !elements_preserving(proof.program, expr) {
+        storage = forget_elements(storage)
+    }
+    let head = loop_head(proof, writes, storage)
     while true {
         discard loop_step(proof)?
         let assumed = loop_assumptions(head, candidates)?

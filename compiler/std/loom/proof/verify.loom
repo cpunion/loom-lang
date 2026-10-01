@@ -394,16 +394,28 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     }
     if expr.kind == ExprKind.List {
         // Every initializer runs once, in order, before the fresh handle and
-        // exact extent exist. Element contents are deliberately not modeled.
-        let inputs = block(proof, expr, state, depth)?
+        // exact extent exist. Keep the evaluated initializer values, not reads
+        // of their source locals after a later initializer changed them.
+        let inputs = call_arguments(proof, expr, state, depth)?
         let output = new[Outcome]()
         var index = 0
         while index < length(inputs) {
             let value = record_parameter_value(proof, expr.ty, 0)
-            let state = match value {
+            var state = match value {
                 Value.List(identity) => with_extent(identity,
                     constant(integer(length(expr.children))), true, get(inputs, index).state)
                 _ => get(inputs, index).state
+            }
+            match value {
+                Value.List(identity) => {
+                    let values = get(inputs, index).values
+                    var item = 0
+                    while item < length(values) {
+                        state = remember_element(identity, constant(integer(item)), get(values, item), state)?
+                        item = item + 1
+                    }
+                }
+                _ => {}
             }
             discard add_outcome(output, Outcome {
                     state = state
@@ -521,12 +533,18 @@ fn verify_body(proof Verification) Result[Bool, Text] {
         }
         index = index + 1
     }
+    let entries = established_entry(proof, state)?
     index = 0
-    while index < length(function.preconditions) {
-        state = assume(state, boolean(pure(get(function.preconditions, index), state)?)?)
+    while index < length(entries) {
+        discard verify_entered(proof, get(entries, index).state)?
         index = index + 1
     }
-    let captured = capture_conditions(function.postconditions, state)?
+    Result.Ok(true)
+}
+
+fn verify_entered(proof Verification, state State) Result[Bool, Text] {
+    let function = proof.function
+    let captured = capture_conditions(proof, function.postconditions, state)?
     let observed_function = snapshot_function(function, captured.conditions)
     let prepared = Verification {
         function = observed_function
@@ -536,7 +554,7 @@ fn verify_body(proof Verification) Result[Bool, Text] {
         loop_control = proof.loop_control
     }
     let exits = execute(prepared, function.body, captured.state, 256)?
-    index = 0
+    var index = 0
     while index < length(exits) {
         let exit = get(exits, index)
         discard returned(observed_function, exit.state, exit.value)?

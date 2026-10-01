@@ -121,7 +121,7 @@ pub enum ExprKind {
 // Defer/Cleanup index a function-local cleanup registration and retain its one
 // body child with the owner's Local IDs. Only Cleanup executes that body.
 // Assert.text is a static source diagnostic, or empty for source-less IR.
-// Intrinsic contract_old / entry_list_len occur only in postcondition metadata.
+// Intrinsic contract_old / entry_list_len / entry_list_get occur only in postcondition metadata.
 // They preserve entry observations until verification, never native operations.
 // TaskCall/Await/Suspend exist only before coroutine lowering. Suspend names a
 // checked private async operation and contains its already-typed arguments.

@@ -39,10 +39,16 @@ enum Value {
     List(Int)
 }
 
+record ListCell {
+    index Linear
+    value Value
+}
+
 record ListExtent {
     identity Int
     size Linear
     allocated Bool
+    cells List[ListCell]
 }
 
 record State {

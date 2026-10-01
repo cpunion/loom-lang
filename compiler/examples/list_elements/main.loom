@@ -1,0 +1,105 @@
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+import std.time.sleep_ms
+
+fn proof_slot(values List[Int], index Int) Int {
+    let proof_only_marker = 81364279
+    discard proof_only_marker
+    values[index]
+}
+
+fn put(values List[Int], index Int, item Int)
+ensures proof_slot(values, index) == item
+{
+    set(values, index, item)
+}
+
+fn forwarded(values List[Int], index Int, item Int) Int
+ensures result == item
+{
+    put(values, index, item)
+    get(values, index)
+}
+
+fn swap(values List[Int], first Int, second Int) (Int, Int)
+requires first != second
+ensures values[first] == result.1 && values[second] == result.0
+{
+    let left = values[first]
+    let right = values[second]
+    values[first] = right
+    values[second] = left
+    (left, right)
+}
+
+fn swap_in_place(values List[Int], first Int, second Int)
+requires first >= 0 && first < length(values)
+requires second >= 0 && second < length(values)
+requires first != second
+ensures values[first] == old(values[second])
+ensures values[second] == old(values[first])
+{
+    let left = values[first]
+    let right = values[second]
+    values[first] = right
+    values[second] = left
+}
+
+fn replace(values List[Int], index Int, item Int) Int
+requires index >= 0 && index < length(values)
+ensures result == old(proof_slot(values, index))
+ensures values[index] == item
+{
+    let before = values[index]
+    values[index] = item
+    before
+}
+
+fn twice(values List[Int]) Int
+requires length(values) > 0
+ensures result == old(values[0])
+ensures values[0] == 9
+{
+    let first = replace(values, 0, 7)
+    let second = replace(values, 0, 9)
+    assert second == 7
+    first
+}
+
+fn text_slot(values List[Text], index Int, text Text) Text
+ensures result == text
+{
+    values[index] = text
+    values[index]
+}
+
+fn literal() Int
+ensures result == 9
+{
+    let values = [3, 7]
+    push(values, 9)
+    assert values[0] == 3
+    values[2]
+}
+
+async fn main() {
+    let values = [1, 2, 3]
+    let alias = values
+    assert forwarded(values, 1, 7) == 7
+    let previous = swap(alias, 0, 1)
+    assert previous.0 == 1 && previous.1 == 7
+    sleep_ms(1).await
+    assert values[0] == 7 && values[1] == 1 && values[2] == 3
+    swap_in_place(alias, 0, 1)
+    assert values[0] == 1 && values[1] == 7
+    assert twice(values) == 1
+    assert values[0] == 9
+    assert text_slot(["before"], 0, "after") == "after"
+    assert literal() == 9
+}
+
+test async fn indexed_contracts_compose_through_shared_storage_and_calls() {
+    main().await
+}
