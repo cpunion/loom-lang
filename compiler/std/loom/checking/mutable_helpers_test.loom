@@ -93,7 +93,9 @@ test fn pure_helper_operands_merge_only_executed_local_writes() {
             current == flag && chosen == if flag { 9 } else { 7 }
         }
         pub fn verified(flag Bool) Bool
-        ensures operands(flag) && short_circuit(flag) && changed_guard(flag)
+        ensures operands(flag)
+        ensures short_circuit(flag)
+        ensures changed_guard(flag)
         {
             flag
         }

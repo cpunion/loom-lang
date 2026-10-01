@@ -46,9 +46,29 @@ fn conditional_write(flag Bool) Bool {
     left == flag && right == !flag
 }
 
+fn guard_updates(flag Bool) Bool {
+    var current = flag
+    let chosen = if {
+        current = !current
+        current
+    } {
+        current = false
+        7
+    } else {
+        current = true
+        9
+    }
+    current == flag && chosen == if flag {
+        9
+    } else {
+        7
+    }
+}
+
 fn local_identity(flag Bool) Bool
 ensures result == flag
 ensures operand_order(flag) && conditional_write(flag)
+ensures guard_updates(flag)
 {
     flag
 }
@@ -76,6 +96,7 @@ fn mutable_helpers() {
     assert !local_identity(false)
     assert operand_order(true) && operand_order(false)
     assert conditional_write(true) && conditional_write(false)
+    assert guard_updates(true) && guard_updates(false)
     assert local_widen(PositiveLocal(7)) == 7
     assert comptime {
         local_lower(7, 3) == 3 && local_identity(true)
