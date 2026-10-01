@@ -30,7 +30,8 @@ fn loop_element_head(proof Verification, entry State) Result[State, Text] {
             let cell = get(extent.cells, position)
             if immutable_snapshot(cell.value) {
                 let value = fresh_loop_element(proof, cell.value)
-                state = remember_element(extent.identity, cell.index, value, loop_bounds(value, state))?
+                state = remember_observation(extent.identity, cell.index, value,
+                    cell.valid, loop_bounds(value, state))?
             }
             position = position + 1
         }

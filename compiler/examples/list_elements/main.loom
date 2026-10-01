@@ -101,6 +101,7 @@ ensures result == 9
 async fn main() {
     loop_contracts()
     frame_contracts()
+    guarded_entries()
     let values = [1, 2, 3]
     let alias = values
     assert forwarded(values, 1, 7) == 7

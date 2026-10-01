@@ -391,7 +391,8 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         while check_index < length(context.checks) {
             let check = get(context.checks, check_index)
             let guard = capture_entry(proof, check.guard, before, after)?
-            let observed = capture_entry(proof, check.value, guard.entry, guard.state)?
+            let observed = capture_guarded_entry(proof, check.value, guard.expression,
+                guard.entry, guard.state)?
             after = observed.state
             before = observed.entry
             discard evaluated(snapshots, guard.expression, observed.expression, check.required)?

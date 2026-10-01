@@ -36,7 +36,11 @@ to preserve untouched storage.
 
 `old(values[index])` and pure helper reads snapshot immutable element values
 before the body. Bounds must be proved at entry, even under a conditional
-postcondition. Consecutive calls each use their own entry, not stale contents
+postcondition, but may use that condition's immutable entry guards.
+`guarded.loom` covers empty inputs, optional indexed reads, mutation and append:
+`old(length(values)) == 0 || result == old(values[0])` needs no nonempty
+precondition. Post-state length or result guards cannot justify an entry read.
+Consecutive calls each use their own entry, not stale contents
 from a previous invocation. No mutable element handles are snapshotted.
 
 The bounded model retains at most 64 observations per handle. Unknown elements

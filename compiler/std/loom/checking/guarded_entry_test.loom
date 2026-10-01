@@ -1,0 +1,189 @@
+test fn guarded_old_reads_support_empty_inputs_and_call_summaries() {
+    list_length_contract("""
+        import std.list.length
+        fn take(values List[Int], item Int) Int
+        ensures old(length(values)) == 0 || result == old(values[0])
+        ensures old(length(values)) != 0 || result == 0
+        {
+            if length(values) == 0 {
+                return 0
+            }
+            let before = values[0]
+            values[0] = item
+            before
+        }
+        fn relay(values List[Int]) Int
+        ensures old(length(values)) == 0 || result == old(values[0])
+        ensures old(length(values)) != 0 || result == 0
+        {
+            take(values, 9)
+        }
+        fn repeat(values List[Int]) Int
+        ensures old(length(values)) == 0 || result == old(values[0])
+        {
+            let first = take(values, 7)
+            assert length(values) == 0 || take(values, 9) == 7
+            first
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        fn pick(values List[Int], index Int) Int
+        ensures index < 0 || index >= old(length(values)) || result == old(values[index])
+        {
+            if index < 0 || index >= length(values) {
+                return 0
+            }
+            values[index]
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        record Item {
+            label Text
+            count Int
+        }
+        fn first(values List[Item]) Text {
+            if length(values) == 0 {
+                ""
+            } else {
+                values[0].label
+            }
+        }
+        fn replace(values List[Item]) Text
+        ensures result == old(first(values))
+        {
+            let before = first(values)
+            if length(values) > 0 {
+                values[0] = Item {
+                    label = "changed"
+                    count = 9
+                }
+            }
+            before
+        }
+        """, true)
+}
+
+test fn guarded_old_reads_do_not_assume_return_state_or_export_bounds() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn after_growth(values List[Int]) Int
+        ensures length(values) == 0 || result == old(values[0])
+        {
+            push(values, 7)
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn result_after_snapshot(values List[Int]) Int
+        ensures old(length(values)) >= 0
+        ensures result == 0 || result == old(values[0])
+        {
+            if length(values) == 0 {
+                return 0
+            }
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn result_guard(values List[Int]) Int
+        ensures result == 0 || result == old(values[0])
+        {
+            if length(values) == 0 {
+                return 0
+            }
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn leaked_bounds(values List[Int]) Int
+        ensures old(length(values)) == 0 || result == old(values[0])
+        ensures old(length(values)) > 0
+        {
+            if length(values) == 0 {
+                return 0
+            }
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn wrong(values List[Int]) Int
+        ensures old(length(values)) == 0 || result == old(values[0])
+        {
+            if length(values) == 0 {
+                return 0
+            }
+            values[0] = 9
+            values[0]
+        }
+        """, false)
+}
+
+test fn guarded_old_reads_preserve_partial_observations_without_new_alias_facts() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn append(values List[Int], index Int) Int
+        requires index >= 0
+        ensures index >= old(length(values)) || result == old(values[index])
+        ensures length(values) == old(length(values)) + 1
+        ensures values[old(length(values))] == 7
+        {
+            push(values, 7)
+            if index < length(values) {
+                return values[index]
+            }
+            0
+        }
+        fn allocated() Int
+        ensures result == 7
+        {
+            let values List[Int] = []
+            discard append(values, 0)
+            values[0]
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        fn alias(left List[Int], right List[Int]) Int
+        ensures old(length(left)) == 0 || result == old(left[0])
+        {
+            if length(left) == 0 {
+                return 0
+            }
+            right[0] = 9
+            left[0]
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn different_indices(values List[Int], left Int, right Int) Int
+        requires left >= 0 && left < length(values)
+        requires right >= 0 && right < length(values)
+        ensures left != right || result == old(values[right])
+        ensures result == old(values[left])
+        {
+            values[right]
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn first(left Int, right Int) Int {
+            left
+        }
+        fn eager(values List[Int]) Int
+        ensures old(length(values)) == 0 || result == old(first(values[0], values[length(values)]))
+        {
+            if length(values) == 0 {
+                return 0
+            }
+            values[0]
+        }
+        """, false)
+}

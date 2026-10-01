@@ -2136,8 +2136,12 @@ return value compose through their storage postconditions. Unknown post-state
 elements without an established read/write reject.
 `old(values[index])` and `old(get(values, index))` snapshot immutable scalar or
 inline element values, including through finite pure helpers. Each index must
-be proved in bounds at entry, even under a conditional postcondition; a later
-read, write or append cannot supply that proof. Snapshotting mutable element
+be proved in bounds on the entry paths where it is observed. Short-circuit
+clauses and helper branches can supply immutable entry guards, for example
+`ensures old(length(values)) == 0 || result == old(values[0])`.
+Unmarked `length(values)`, `result`, and later reads/writes cannot justify an
+entry access. Guarded bounds are not unconditional facts; an append does not
+give a new element an entry value. Snapshotting mutable element
 handles is unsupported. Entry snapshots are shared across clauses and use each
 callee's invocation state, never its modified post-call storage. This permits
 an in-place swap contract without a synthetic return value:

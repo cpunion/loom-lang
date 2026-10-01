@@ -1,0 +1,93 @@
+// Caller results are not entry values. Keep their slots empty while aligning
+// the private snapshot scope; later captured observations fill only new slots.
+fn entry_scope(entry State, current State) State {
+    let locals = clone(entry.locals)
+    while length(locals) < length(current.locals) {
+        push(locals, Value.Empty)
+    }
+    State {
+        locals = locals
+        facts = entry.facts
+        extents = entry.extents
+    }
+}
+
+// An unmarked heap read is a post-state expression, even when its spelling
+// matches an entry read. Only immutable terms may guard an entry observation.
+fn entry_guard_expression(value Expr) Bool {
+    if value.kind != ExprKind.Local && value.kind != ExprKind.Integer &&
+    value.kind != ExprKind.Bool && value.kind != ExprKind.Text &&
+    value.kind != ExprKind.Unary && value.kind != ExprKind.Binary &&
+    value.kind != ExprKind.Coerce && value.kind != ExprKind.Field &&
+    !text_length_expression(value) {
+        return false
+    }
+    var index = 0
+    while index < length(value.children) {
+        if !entry_guard_expression(get(value.children, index)) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn guarded_entry(guard Expr, entry State) State {
+    if guard.kind == ExprKind.Binary && guard.text == "&&" {
+        return guarded_entry(get(guard.children, 1),
+            guarded_entry(get(guard.children, 0), entry))
+    }
+    if entry_guard_expression(guard) {
+        match defined(guard, entry) {
+            Result.Ok(_) => match pure(guard, entry) {
+                Result.Ok(value) => match value {
+                    Value.Boolean(fact) => {
+                        return difference_facts(assume(entry, fact))
+                    }
+                    _ => {
+                    }
+                }
+                Result.Err(_) => {
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    entry
+}
+
+fn entry_element(proof Verification, read Expr, guard Expr, entry State) Result[Outcome, Text] {
+    let guarded = guarded_entry(guard, entry)
+    if !loop_holds(Predicate.Constant(false), guarded) {
+        discard element_defined(read, guarded)?
+    }
+    let location = element_location(read, entry)?
+    let valid = Predicate.And(predicates(
+            Predicate.Compare(">=", location.index),
+            Predicate.Compare("<", add(location.index,
+                    scale(list_extent(location.identity, entry)?, integer(-1))))))
+    // Read validity may establish index equality, but a surrounding guard may
+    // not. Never export hypothetical bounds/guards into the function entry.
+    let available = difference_facts(assume(entry, valid))
+    match known_element(location.identity, location.index, available) {
+        Result.Ok(value) => {
+            return Result.Ok(Outcome {
+                    state = entry
+                    value = value
+                })
+        }
+        Result.Err(_) => {
+        }
+    }
+    let value = record_parameter_value(proof, read.ty, 0)
+    Result.Ok(Outcome {
+            state = remember_observation(location.identity, location.index, value,
+                if loop_holds(valid, entry) {
+                    Predicate.Constant(true)
+                } else {
+                    valid
+                }, entry)?
+            value = value
+        })
+}
