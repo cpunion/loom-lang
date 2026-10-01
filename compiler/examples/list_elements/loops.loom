@@ -1,0 +1,82 @@
+import std.list.length
+
+fn increase(values List[Int], turns Int) Int
+requires length(values) > 0 && values[0] >= 0
+ensures result >= old(values[0])
+{
+    var turn = 0
+    while turn < turns {
+        values[0] = values[0] + 1
+        turn = turn + 1
+    }
+    values[0]
+}
+
+fn transfer(values List[Int], turns Int)
+requires length(values) >= 2
+requires values[0] >= 0 && values[0] <= 100
+requires values[1] >= 0 && values[1] <= 100
+ensures values[0] + values[1] == old(values[0] + values[1])
+ensures values[0] >= 0 && values[1] >= 0
+{
+    var turn = 0
+    while turn < turns && values[0] > 0 && values[1] < 100 {
+        values[0] = values[0] - 1
+        values[1] = values[1] + 1
+        turn = turn + 1
+    }
+}
+
+fn loop_contracts() {
+    let values = [7, 3]
+    transfer(values, 4)
+    assert values[0] == 3 && values[1] == 7
+    assert increase(values, 2) == 5
+    transfer(values, 0)
+    assert values[0] == 5 && values[1] == 7
+    assert jumps([7], 2) == 9
+    assert jumps([1], 5) == 6
+    let early = [1]
+    assert jumps(early, 8) == 7
+    assert early[0] == 8
+    assert untouched(["kept", "before"], 5) == "kept"
+}
+
+fn untouched(values List[Text], turns Int) Text
+requires length(values) >= 2
+ensures result == old(values[0])
+{
+    var turn = 0
+    while turn < turns {
+        values[1] = "changed"
+        turn = turn + 1
+    }
+    values[0]
+}
+
+fn jumps(values List[Int], turns Int) Int
+requires length(values) > 0 && values[0] >= 0
+ensures result >= old(values[0])
+{
+    var turn = 0
+    while turn < turns {
+        turn = turn + 1
+        defer {
+            values[0] = values[0] + 1
+        }
+        if turn == 2 {
+            continue
+        }
+        if turn == 5 && turns == 5 {
+            break
+        }
+        if turn == 7 {
+            return values[0]
+        }
+    }
+    values[0]
+}
+
+test fn loop_storage_contracts_hold_across_actual_mutations() {
+    loop_contracts()
+}

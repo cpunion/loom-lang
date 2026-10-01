@@ -13,9 +13,16 @@ them; another index survives a write only with proved inequality, and another
 handle only with proved allocation separation.
 
 Entry checks execute normally. Postcondition indexing must separately prove
-bounds; it cannot assume a hypothetical runtime check passed. Opaque calls and
-possibly mutating loops forget element observations even if lengths survive.
+bounds; it cannot assume a hypothetical runtime check passed. Opaque calls
+forget element observations even if lengths survive.
 Scalar values already read remain snapshots.
+
+`loops.loom` proves a nondecreasing element and conservation of two elements'
+sum while transferring values between them. Mutating loop heads use fresh values;
+element bounds and source-contract candidates must survive entry and backedge
+checks. Failed candidates are removed and their dependents rechecked. The native
+trial also checks `continue`, `break`, and return-value snapshots with block
+cleanup. Length-changing loops and unknown alias writes remain conservative.
 
 `old(values[index])` and pure helper reads snapshot immutable element values
 before the body. Bounds must be proved at entry, even under a conditional

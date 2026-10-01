@@ -72,12 +72,24 @@ ensures result == old(values[0])
     assert replace(values, 9) == 7
     first
 }
+fn increase(values List[Int], turns Int) Int
+requires length(values) > 0 && values[0] >= 0
+ensures result >= old(values[0])
+{
+    var turn = 0
+    while turn < turns {
+        values[0] = values[0] + 1
+        turn = turn + 1
+    }
+    values[0]
+}
 fn main() {
     let values List[Int] = []
     assert twice(values) == 0
     assert twice(values) == 2
     assert elements(values) == 0
     assert values[0] == 9
+    assert increase(values, 2) == 11
 }
 "#;
     fs::write(&path, source).unwrap();
@@ -93,8 +105,17 @@ fn main() {
         .trim()
         .parse()
         .unwrap();
-    assert!(bodies >= 5, "{trace}");
+    assert!(bodies >= 6, "{trace}");
     checked(&cached("run", &package, &cache, &[]), true);
+    // Reused entry/cell observations are not a proof of the edited loop body.
+    fs::write(
+        &path,
+        source.replace("values[0] = values[0] + 1", "values[0] = values[0] - 1"),
+    )
+    .unwrap();
+    let invalid_loop = cached("check", &package, &cache, &[]);
+    assert!(!invalid_loop.status.success());
+    assert!(String::from_utf8_lossy(&invalid_loop.stderr).contains("postcondition"));
     // The helper edit invalidates dependent summaries, not just its body.
     fs::write(
         &path,

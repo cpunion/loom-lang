@@ -2118,8 +2118,9 @@ Entry predicates retain facts from their actual reads and bounds checks;
 postcondition indexing must prove bounds without assuming a new check succeeds.
 Literal elements, appended values, indexed writes and repeated reads establish
 bounded observations (at most 64 per handle). Writes retain other indices only
-with proved inequality; distinct unknown handles can still alias. Calls or
-loops that might change contents forget observations even when lengths survive.
+with proved inequality; distinct unknown handles can still alias. Calls that
+might change contents forget observations unless a verified postcondition supplies
+new facts. Mutating loops freshen their observed elements before induction.
 Scalar values previously read remain snapshots. Contracted functions without a
 return value compose through their storage postconditions. Unknown post-state
 elements without an established read/write reject.
@@ -2148,6 +2149,21 @@ ensures values[second] == old(values[first])
 
 This is not quantified array reasoning. See the
 [indexed List example](examples/list_elements).
+
+Length-preserving loops can infer bounds/equalities for observed Int, Bool and
+Text elements, and scalar field relations in immutable inline elements. Source
+pre/postconditions may propose storage conservation laws; they are not assumed
+merely because they are declared. Every candidate must hold at the loop entry
+and all backedges. Removing one candidate rechecks its dependents, early returns
+and exits. This covers incrementing a nonnegative element and transferring a
+bounded amount between two elements while conserving their sum. Ordinary block
+cleanup runs before `continue`/`break` checks and preserves return snapshots.
+
+These observations refer to fixed entry indices, not an entire array. Extent-
+changing loops and opaque effects still forget contents. Mutable element handles
+are not snapshotted; a possibly overlapping write removes evidence. The existing
+64-candidate budget bounds inference, and no loop termination claim is inferred.
+See [loop examples](examples/list_elements/loops.loom).
 
 Required postconditions reuse the integer difference propagation used at
 refinement boundaries: `requires value > lower && lower >= 0` can establish

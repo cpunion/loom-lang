@@ -90,7 +90,9 @@ Stateful List length proofs now cover append, indexing and length preservation
 through loops, with per-invocation `old(length(values))` observations. This is
 groundwork for the sorting story below. Bounded indexed observations now cover
 read/write relations, immutable entry-element snapshots and conservative alias
-invalidation, not quantified ordering, permutation or general heap contents.
+invalidation. Length-preserving loops can retain proved element bounds and
+storage conservation relations through induction; this is not quantified
+ordering, permutation or general heap reasoning.
 
 Use these complete acceptance stories, rather than a count of syntax features:
 

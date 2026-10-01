@@ -1,0 +1,142 @@
+// Length-preserving loops may carry observations at entry indices. Each value
+// is fresh at the inductive head: no old contents survive merely because the
+// handle or index is unchanged. Mutable element handles remain opaque.
+fn fresh_loop_element(proof Verification, value Value) Value {
+    match value {
+        Value.Number(_) => fresh_result(proof, 1)
+        Value.Boolean(_) => fresh_result(proof, 2)
+        Value.Text(_) => fresh_result(proof, 3)
+        Value.Record(fields) => {
+            let output = new[Value]()
+            var index = 0
+            while index < length(fields) {
+                push(output, fresh_loop_element(proof, get(fields, index)))
+                index = index + 1
+            }
+            Value.Record(output)
+        }
+        _ => Value.Empty
+    }
+}
+
+fn loop_element_head(proof Verification, entry State) Result[State, Text] {
+    var state = forget_elements(entry)
+    var index = 0
+    while index < length(entry.extents) {
+        let extent = get(entry.extents, index)
+        var position = 0
+        while position < length(extent.cells) {
+            discard loop_step(proof)?
+            let cell = get(extent.cells, position)
+            if immutable_snapshot(cell.value) {
+                let value = fresh_loop_element(proof, cell.value)
+                state = remember_element(extent.identity, cell.index, value, loop_bounds(value, state))?
+            }
+            position = position + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(state)
+}
+
+// Optional proposals never become axioms: they must hold at entry and after
+// every backedge. Stop proposing at the existing finite candidate budget.
+fn propose_element_candidate(candidates List[LoopCandidate], candidate LoopCandidate, entry State) {
+    if length(candidates) >= 64 {
+        return
+    }
+    match loop_predicate(candidate, entry) {
+        Result.Ok(fact) => {
+            if loop_holds(fact, entry) {
+                push(candidates, candidate)
+            }
+        }
+        Result.Err(_) => {
+        }
+    }
+}
+
+fn loop_element_clauses(clauses List[Expr], candidates List[LoopCandidate], entry State) {
+    var index = 0
+    while index < length(clauses) && length(candidates) < 64 {
+        let clause = get(clauses, index)
+        if contains_list_read(clause) && loop_call_free(clause) {
+            propose_element_candidate(candidates, LoopCandidate.Guard(clause), entry)
+        }
+        index = index + 1
+    }
+}
+
+fn loop_element_candidates(proof Verification, candidates List[LoopCandidate], entry State) Result[Bool, Text] {
+    // Source contracts often express a useful conservation law. A result local
+    // or a fact established only later is unavailable here and is not assumed.
+    loop_element_clauses(proof.function.postconditions, candidates, entry)
+    loop_element_clauses(proof.function.preconditions, candidates, entry)
+    var index = 0
+    while index < length(entry.extents) && length(candidates) < 64 {
+        let extent = get(entry.extents, index)
+        var position = 0
+        while position < length(extent.cells) && length(candidates) < 64 {
+            discard loop_step(proof)?
+            let cell = get(extent.cells, position)
+            match cell.value {
+                Value.Number(term) => {
+                    propose_element_candidate(candidates,
+                        LoopCandidate.Element(extent.identity, cell.index, ">=", cell.value), entry)
+                    propose_element_candidate(candidates,
+                        LoopCandidate.Element(extent.identity, cell.index, "<=", cell.value), entry)
+                    if length(term.terms) != 0 {
+                        let bounds = range(term, entry.facts)
+                        if compare(bounds.low, integer(-9223372036854775808)) > 0 {
+                            propose_element_candidate(candidates,
+                                LoopCandidate.Element(extent.identity, cell.index, ">=", Value.Number(constant(bounds.low))), entry)
+                        }
+                        if compare(bounds.high, integer(9223372036854775807)) < 0 {
+                            propose_element_candidate(candidates,
+                                LoopCandidate.Element(extent.identity, cell.index, "<=", Value.Number(constant(bounds.high))), entry)
+                        }
+                    }
+                }
+                Value.Boolean(_) => {
+                    propose_element_candidate(candidates,
+                        LoopCandidate.Element(extent.identity, cell.index, "==", cell.value), entry)
+                }
+                Value.Text(_) => {
+                    propose_element_candidate(candidates,
+                        LoopCandidate.Element(extent.identity, cell.index, "==", cell.value), entry)
+                }
+                _ => {
+                }
+            }
+            position = position + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn available_loop_candidates(candidates List[LoopCandidate], head State) List[LoopCandidate] {
+    let output = new[LoopCandidate]()
+    var index = 0
+    while index < length(candidates) {
+        let candidate = get(candidates, index)
+        match loop_predicate(candidate, head) {
+            Result.Ok(_) => {
+                push(output, candidate)
+            }
+            Result.Err(_) => {
+            }
+        }
+        index = index + 1
+    }
+    output
+}
+
+fn loop_candidate_preserved(candidate LoopCandidate, state State) Bool {
+    match loop_predicate(candidate, state) {
+        Result.Ok(fact) => loop_holds(fact, state)
+        // A write through a possible alias may have forgotten the cell. Losing
+        // an observation rejects this proposal, not the rest of the inference.
+        Result.Err(_) => loop_holds(Predicate.Constant(false), state)
+    }
+}
