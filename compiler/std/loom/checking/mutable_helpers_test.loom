@@ -1,0 +1,237 @@
+test fn pure_helper_locals_keep_snapshots_across_rebinding_and_branches() {
+    discard accepted("""
+        record Pair {
+            count Int
+            label Text
+        }
+        fn minimum(left Int, right Int) Int {
+            var chosen = left
+            if right < chosen {
+                chosen = right
+            }
+            chosen
+        }
+        fn snapshots(value Int) Bool {
+            var pair = Pair { count = value label = "before" }
+            let saved = pair
+            {
+                pair = Pair { count = 0 label = "after" }
+                var value = 9
+                value = 7
+                assert value == 7
+            }
+            saved.count == value && saved.label == "before" &&
+                pair.count == 0 && pair.label == "after"
+        }
+        fn guarded(value Int) Bool {
+            var valid = false
+            if value < 0 {
+                return valid
+            }
+            valid = true
+            valid
+        }
+        pub fn lower(left Int, right Int) Int
+        ensures result <= left && result <= right
+        {
+            minimum(left, right)
+        }
+        pub fn keep(value Int) Int
+        requires value >= 0
+        ensures snapshots(result) && guarded(result)
+        {
+            value
+        }
+        """)
+}
+
+test fn pure_helper_operands_merge_only_executed_local_writes() {
+    discard accepted("""
+        fn first(left Int, right Int) Int {
+            left
+        }
+        fn operands(flag Bool) Bool {
+            var current = 1
+            let saved = first(current, {
+                current = 2
+                current
+            })
+            let chosen = if flag {
+                current = 7
+                current
+            } else {
+                current = 9
+                current
+            }
+            saved == 1 && chosen == current
+        }
+        fn short_circuit(flag Bool) Bool {
+            var left = false
+            var right = false
+            discard flag && {
+                left = true
+                true
+            }
+            discard flag || {
+                right = true
+                true
+            }
+            left == flag && right == !flag
+        }
+        fn changed_guard(flag Bool) Bool {
+            var current = flag
+            let chosen = if {
+                current = !current
+                current
+            } {
+                current = false
+                7
+            } else {
+                current = true
+                9
+            }
+            current == flag && chosen == if flag { 9 } else { 7 }
+        }
+        pub fn verified(flag Bool) Bool
+        ensures operands(flag)
+        ensures short_circuit(flag)
+        ensures changed_guard(flag)
+        {
+            flag
+        }
+        """)
+    rejects("""
+        fn skipped(flag Bool) Bool {
+            var changed = false
+            discard flag && {
+                changed = true
+                true
+            }
+            changed
+        }
+        pub fn wrong(flag Bool) Bool
+        ensures skipped(flag)
+        {
+            flag
+        }
+        """)
+    rejects("""
+        fn first(left Int, right Int) Int {
+            left
+        }
+        fn eager() Bool {
+            var value = 1
+            first(value, {
+                value = 2
+                value
+            }) == 2
+        }
+        pub fn wrong() Bool
+        ensures eager()
+        {
+            true
+        }
+        """)
+}
+
+test fn overwritten_helper_values_keep_evaluation_obligations() {
+    let helper = """
+        fn touched(value Int) Bool {
+            var scratch = value
+            scratch = scratch + 1
+            scratch = 0
+            scratch == 0
+        }
+        """
+    discard accepted(concat(helper, """
+        pub fn safe(value Int) Int
+        requires value < 9223372036854775807
+        ensures touched(result)
+        {
+            value
+        }
+        """))
+    rejects(concat(helper, """
+        pub fn overflow(value Int) Int
+        ensures touched(result)
+        {
+            value
+        }
+        """))
+    discard accepted("""
+        fn skipped(value Int) Bool {
+            var safe = true
+            discard value < 9223372036854775807 && {
+                var scratch = value
+                scratch = scratch + 1
+                safe = scratch > value
+                true
+            }
+            safe
+        }
+        pub fn guarded(value Int) Int
+        ensures skipped(result)
+        {
+            value
+        }
+        """)
+    rejects("""
+        fn assertion(value Int) Bool {
+            var saved = value
+            assert saved > 0
+            saved = 0
+            saved == 0
+        }
+        pub fn wrong(value Int) Int
+        ensures assertion(result)
+        {
+            value
+        }
+        """)
+    rejects("""
+        fn overwritten(value Int) Bool {
+            var saved = value >= 0
+            saved = false
+            saved
+        }
+        pub fn wrong(value Int) Int
+        requires value >= 0
+        ensures overwritten(result)
+        {
+            value
+        }
+        """)
+}
+
+test fn mutable_pure_predicates_remove_only_proved_conversion_checks() {
+    let program = accepted("""
+        fn nonnegative(value Int) Bool {
+            var accepted = false
+            if value >= 0 {
+                accepted = true
+            }
+            accepted
+        }
+        type Positive = Int where self > 0
+        type Nonnegative = Int where nonnegative(self)
+        pub fn widen(value Positive) Nonnegative {
+            Nonnegative(value)
+        }
+        """)
+    assert length(program.functions) == 1
+    assert get(get(program.functions, 0).body.children, 0).kind == ExprKind.Coerce
+    rejects("""
+        fn positive(value Int) Bool {
+            var accepted = false
+            if value > 0 {
+                accepted = true
+            }
+            accepted
+        }
+        type Nonnegative = Int where self >= 0
+        type Positive = Int where positive(self)
+        pub fn strengthen(value Nonnegative) Positive {
+            Positive(value)
+        }
+        """)
+}

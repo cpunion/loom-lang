@@ -1,0 +1,108 @@
+fn local_minimum(left Int, right Int) Int {
+    var chosen = left
+    if right < chosen {
+        chosen = right
+    }
+    chosen
+}
+
+fn local_lower(left Int, right Int) Int
+ensures result <= left && result <= right
+{
+    local_minimum(left, right)
+}
+
+fn first_argument(left Int, right Int) Int {
+    left
+}
+
+fn operand_order(flag Bool) Bool {
+    var current = 1
+    let saved = first_argument(current, {
+            current = 2
+            current
+        })
+    let chosen = if flag {
+        current = 7
+        current
+    } else {
+        current = 9
+        current
+    }
+    saved == 1 && chosen == current
+}
+
+fn conditional_write(flag Bool) Bool {
+    var left = false
+    var right = false
+    discard flag && {
+        left = true
+        true
+    }
+    discard flag || {
+        right = true
+        true
+    }
+    left == flag && right == !flag
+}
+
+fn guard_updates(flag Bool) Bool {
+    var current = flag
+    let chosen = if {
+        current = !current
+        current
+    } {
+        current = false
+        7
+    } else {
+        current = true
+        9
+    }
+    current == flag && chosen == if flag {
+        9
+    } else {
+        7
+    }
+}
+
+fn local_identity(flag Bool) Bool
+ensures result == flag
+ensures operand_order(flag) && conditional_write(flag)
+ensures guard_updates(flag)
+{
+    flag
+}
+
+fn nonnegative_local(value Int) Bool {
+    var valid = false
+    if value >= 0 {
+        valid = true
+    }
+    valid
+}
+
+type PositiveLocal = Int where self > 0
+
+type NonnegativeLocal = Int where nonnegative_local(self)
+
+fn local_widen(value PositiveLocal) NonnegativeLocal {
+    NonnegativeLocal(value)
+}
+
+fn mutable_helpers() {
+    assert local_lower(7, 3) == 3
+    assert local_lower(3, 7) == 3
+    assert local_identity(true)
+    assert !local_identity(false)
+    assert operand_order(true) && operand_order(false)
+    assert conditional_write(true) && conditional_write(false)
+    assert guard_updates(true) && guard_updates(false)
+    assert local_widen(PositiveLocal(7)) == 7
+    assert comptime {
+        local_lower(7, 3) == 3 && local_identity(true)
+    }
+}
+
+test fn mutable_contract_helpers() {
+    mutable_helpers()
+}

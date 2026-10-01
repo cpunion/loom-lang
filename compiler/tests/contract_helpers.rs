@@ -7,13 +7,25 @@ fn contract_helpers_prove_postconditions_without_leaking_proof_only_targets() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("main.loom");
     let definitions = r#"
-fn positive(value Int) Bool { value > 0 }
-fn proof_only(value Int) Bool requires value > 0 {
-    if value < 0 { return false }
-    let marker = 91827365
+fn positive(value Int) Bool {
+    value > 0
+}
+fn proof_only(value Int) Bool
+requires value > 0
+{
+    if value < 0 {
+        return false
+    }
+    var marker = 91827364
+    marker = marker + 1
     marker > 0
 }
-fn good(value Int) Int requires positive(value) ensures proof_only(result) { value }
+fn good(value Int) Int
+requires positive(value)
+ensures proof_only(result)
+{
+    value
+}
 "#;
     let artifact = common::executable(directory.path(), "contracts");
     let ir_path = directory.path().join("contracts.ll");
@@ -51,7 +63,7 @@ fn good(value Int) Int requires positive(value) ensures proof_only(result) { val
             );
             let ir = fs::read_to_string(&ir_path).unwrap();
             assert!(
-                !ir.contains("91827365"),
+                !ir.contains("91827364") && !ir.contains("91827365"),
                 "ensures-only helper entered runtime reachability"
             );
             let output = Command::new(&artifact).output().unwrap();
@@ -63,6 +75,25 @@ fn good(value Int) Int requires positive(value) ensures proof_only(result) { val
             }
         }
     }
+    // A proof-only helper edit must invalidate the caller, including after an
+    // unrelated edit reused its checked body from the frontend cache.
+    let cache = directory.path().join("cache");
+    let cached = || {
+        common::command(&["check", directory.path().to_str().unwrap()])
+            .arg("--frontend-cache")
+            .arg(&cache)
+            .output()
+            .unwrap()
+    };
+    let valid_source = format!("{definitions}\nfn main() {{ assert good(7) == 7 }}");
+    fs::write(&source, &valid_source).unwrap();
+    success(&cached());
+    fs::write(&source, format!("fn unrelated() {{}}\n{valid_source}")).unwrap();
+    success(&cached());
+    fs::write(&source, valid_source.replace("marker > 0", "marker < 0")).unwrap();
+    let changed = cached();
+    assert!(!changed.status.success());
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("postcondition"));
     fs::write(
         source,
         "fn admitted(value Int) Bool requires value > 0 { true }\nfn bad(value Int) Int ensures admitted(result) { value }\nfn main() { discard bad(7) }",
