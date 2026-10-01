@@ -123,7 +123,10 @@ fn binary(operator Text, a Value, b Value) Result[Value, Text] {
                 if same_text(left, right) {
                     return Result.Ok(Value.Boolean(Predicate.Constant(operator == "==")))
                 }
-                let equal = Predicate.TextEqual(left, right)
+                let terms = new[TextValue]()
+                push(terms, left)
+                push(terms, right)
+                let equal = Predicate.TextEqual(terms)
                 Result.Ok(Value.Boolean(if operator == "==" {
                             equal
                         } else {

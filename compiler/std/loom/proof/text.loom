@@ -20,7 +20,9 @@ fn text_class(value TextValue, facts List[Predicate]) List[TextValue] {
         var index = 0
         while index < length(facts) {
             match get(facts, index) {
-                Predicate.TextEqual(left, right) => {
+                Predicate.TextEqual(terms) => {
+                    let left = get(terms, 0)
+                    let right = get(terms, 1)
                     if same_text(known, left) && !text_member(values, right) {
                         push(values, right)
                     }
@@ -58,7 +60,9 @@ fn text_distinct(left TextValue, right TextValue, facts List[Predicate]) Bool {
     while index < length(facts) {
         match get(facts, index) {
             Predicate.Not(values) => match get(values, 0) {
-                Predicate.TextEqual(a, b) => {
+                Predicate.TextEqual(terms) => {
+                    let a = get(terms, 0)
+                    let b = get(terms, 1)
                     if (text_member(first, a) && text_member(second, b)) ||
                     (text_member(first, b) && text_member(second, a)) {
                         return true

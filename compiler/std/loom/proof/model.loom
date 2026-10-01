@@ -28,7 +28,8 @@ enum Predicate {
     Not(List[Predicate])
     And(List[Predicate])
     Or(List[Predicate])
-    TextEqual(TextValue, TextValue)
+    // Keep Text-specific storage out of every numeric predicate's inline layout.
+    TextEqual(List[TextValue])
 }
 
 enum Value {
