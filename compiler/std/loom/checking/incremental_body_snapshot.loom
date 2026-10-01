@@ -1,4 +1,5 @@
-// Detach every mutable list before returning a checked program to callers.
+// Resident caches detach mutable lists before returning a checked program.
+// One-shot hosts serialize and retire borrowed bodies before returning instead.
 // Nominal type definitions will be rebuilt in the next environment; snapshots
 // retain only the shape needed to validate and rekey a cached concrete body.
 fn body_copy_expressions(values List[Expr]) List[Expr] {
@@ -59,7 +60,7 @@ fn body_copy_function(value Function) Function {
     }
 }
 
-fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, program std.loom.typed.Program) {
+fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, program std.loom.typed.Program, detach Bool) {
     let types = new[Type]()
     var index = 0
     while index < length(program.types) {
@@ -102,10 +103,10 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
         functions = functions
         interfaces = body_copy_interfaces(env)
     }
-    if length(cache.state.bodies) == 0 {
-        push(cache.state.bodies, saved)
+    if length(definition_state(cache).bodies) == 0 {
+        push(definition_state(cache).bodies, saved)
     } else {
-        set(cache.state.bodies, 0, saved)
+        set(definition_state(cache).bodies, 0, saved)
     }
     index = 0
     while index < length(program.functions) {
@@ -130,7 +131,11 @@ fn save_bodies(cache DefinitionCache, basis DefinitionBasis, env Environment, pr
         } else {
             value.symbol
         }
-        push(functions, body_copy_function(value))
+        push(functions, if detach {
+                body_copy_function(value)
+            } else {
+                value
+            })
         push(targets, BodyTarget {
                 symbol = if pack >= 0 {
                     impl_member_source(env, source)

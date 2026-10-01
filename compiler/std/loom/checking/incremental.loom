@@ -13,7 +13,7 @@ import std.option.Option
 // Only successful checks can populate this private state. Public mutable ASTs
 // and typed programs are never themselves accepted as cached proof evidence.
 pub record DefinitionCache {
-    state DefinitionCacheState
+    state List[DefinitionCacheState]
 }
 
 record DefinitionCacheState {
@@ -54,22 +54,28 @@ pub record CachedCheck {
 }
 
 pub fn definition_cache() DefinitionCache {
-    DefinitionCache {
-        state = DefinitionCacheState {
+    let state = new[DefinitionCacheState]()
+    push(state, DefinitionCacheState {
             basis = new[DefinitionBasis]()
             hits = ints(0)
             bodies = new[BodyBasis]()
             body_hits = ints(0)
-        }
+        })
+    DefinitionCache {
+        state = state
     }
 }
 
+fn definition_state(cache DefinitionCache) DefinitionCacheState {
+    get(cache.state, 0)
+}
+
 pub fn definitions_reused(cache DefinitionCache) Int {
-    get(cache.state.hits, 0)
+    get(definition_state(cache).hits, 0)
 }
 
 pub fn bodies_reused(cache DefinitionCache) Int {
-    get(cache.state.body_hits, 0)
+    get(definition_state(cache).body_hits, 0)
 }
 
 // Ignore locations while comparing, not by allocating another normalized AST.
@@ -169,9 +175,11 @@ fn definition_basis_from(source std.loom.binding.Program, original Project) Defi
                 node = node
                 span = item.node.span
                 text = if item.node.span.start >= 0 && item.node.span.end <= std.text.length(file.text) &&
-                    item.node.span.start < item.node.span.end {
+                item.node.span.start < item.node.span.end {
                     std.text.slice(file.text, item.node.span.start, item.node.span.end)
-                } else { "" }
+                } else {
+                    ""
+                }
             })
         push(reusable, false)
         index = index + 1
@@ -368,10 +376,10 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
         push(reuse.bodies, false)
         index = index + 1
     }
-    if length(cache.state.basis) == 0 {
+    if length(definition_state(cache).basis) == 0 {
         return reuse
     }
-    let previous = get(cache.state.basis, 0)
+    let previous = get(definition_state(cache).basis, 0)
     if !definition_context(previous, basis) {
         return reuse
     }
@@ -442,28 +450,41 @@ fn definition_reuse(source std.loom.binding.Program, basis DefinitionBasis, cach
 }
 
 pub fn check_project_cached(project Project, tests Bool, inputs BuildInputs, cache DefinitionCache) Result[CachedCheck, Failure] {
-    // Bind an owned snapshot ourselves; mutable public binding indexes are not
-    // a reusable authority boundary. Failed checks never replace the last basis.
+    check_project_reusing(project, tests, inputs, cache, true)
+}
+
+fn check_project_reusing(project Project, tests Bool, inputs BuildInputs, cache DefinitionCache, detach Bool) Result[CachedCheck, Failure] {
+    // Bind an owned source snapshot; persistent caches also detach returned
+    // bindings. Failed checks never replace the last successful basis.
     let original = snapshot(project)
     let source = bind(expand_project(original, tests, inputs)?, tests)?
-    let basis = definition_basis(source)?
+    let basis = if detach {
+        definition_basis(source)?
+    } else {
+        definition_basis_from(source, Project {
+                files = source.files
+                modules = source.modules
+                packages = source.packages
+                root = source.root
+            })
+    }
     if has_declaration_stages(original, tests) {
-        // CachedCheck.source is public mutable data. Keep an independent raw
-        // source basis so generated snapshots cannot be minted from edited ASTs.
-        push(basis.original, snapshot(original))
+        // Resident caches detach public mutable source; one-shot hosts serialize
+        // and retire the basis before returning it to their caller.
+        push(basis.original, if detach { snapshot(original) } else { original })
     }
     // Expansion always reruns with current tracked inputs before matching. The
     // resulting declarations, not a prior generator result, define reuse.
     let reuse = definition_reuse(source, basis, cache)
     let env = prepare_with_inputs(source, inputs)?
     let bodies = body_reuse(cache, basis, reuse.bodies)
-    let program = checked_program_reusing(env, reuse.checks, basis.reusable, cache.state.hits, bodies)?
-    save_bodies(cache, basis, env, program)
-    if length(cache.state.basis) == 0 {
-        push(cache.state.basis, basis)
+    let program = checked_program_reusing(env, reuse.checks, basis.reusable, definition_state(cache).hits, bodies)?
+    save_bodies(cache, basis, env, program, detach)
+    if length(definition_state(cache).basis) == 0 {
+        push(definition_state(cache).basis, basis)
     }
     else {
-        set(cache.state.basis, 0, basis)
+        set(definition_state(cache).basis, 0, basis)
     }
     Result.Ok(CachedCheck {
             source = original

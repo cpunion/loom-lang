@@ -1,6 +1,67 @@
 import std.text.join
 import std.text.split
 
+test fn one_shot_snapshots_serialize_before_public_mutation_and_retire_body_aliases() {
+    let source = """
+        pub fn answer() Int
+        {
+            7
+        }
+        pub fn guarded() Int
+        ensures result == 7
+        {
+            answer()
+        }
+        """
+    let cache = definition_cache()
+    let saved = match check_project_snapshot(fixture_project(source_files(source)), false,
+        build_inputs(no_input_reader), cache) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert length(definition_state(cache).bodies) == 0
+    assert length(definition_state(cache).basis) == 0
+    let text = match saved.snapshot {
+        Option.Some(value) => value
+        Option.None => {
+            assert false
+            return
+        }
+    }
+    let answer = get(saved.checked.program.functions, cached_function(saved.checked, "answer"))
+    set(answer.body.children, 0, expression(ExprKind.Integer, 1,
+            get(saved.checked.bindings.symbols, answer.symbol).node, "99", -1, new[Expr](), true))
+    assert cached_answer(saved.checked) == 99
+    let restored = match import_trusted_definition_cache(text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    let current = match cached_source(restored, concat("fn unrelated() {}\n", source)) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert cached_answer(current) == 7 && bodies_reused(restored) >= 1
+    let invalid = join(split(source, "\n    7\n"), "\n    8\n")
+    assert match check_project_snapshot(fixture_project(source_files(invalid)), false,
+        build_inputs(no_input_reader), restored) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match cached_source(restored, source) {
+        Result.Ok(value) => cached_answer(value) == 7
+        Result.Err(_) => false
+    }
+}
+
 test fn staged_instances_rekey_constants_and_keep_specializations_distinct() {
     let source = """
         record Plan {
