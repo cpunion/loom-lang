@@ -42,6 +42,10 @@ test fn one_shot_snapshots_serialize_before_public_mutation_and_retire_body_alia
             return
         }
     }
+    assert match export_definition_cache(restored) {
+        Result.Ok(value) => value == text
+        Result.Err(_) => false
+    }
     let current = match cached_source(restored, concat("fn unrelated() {}\n", source)) {
         Result.Ok(value) => value
         Result.Err(_) => {
@@ -247,6 +251,15 @@ test fn definition_snapshots_require_source_backed_syntax_and_complete_encoding(
     assert match export_definition_cache(cache) {
         Result.Err(_) => true
         Result.Ok(_) => false
+    }
+    let one_shot = definition_cache()
+    assert match check_project_snapshot(source, false, build_inputs(no_input_reader), one_shot) {
+        Result.Ok(value) => match value.snapshot {
+            Option.None => length(definition_state(one_shot).basis) == 0 &&
+                length(definition_state(one_shot).bodies) == 0
+            Option.Some(_) => false
+        }
+        Result.Err(_) => false
     }
     assert match cached_source(cache, "fn value() Int { 3 }") {
         Result.Ok(_) => true
