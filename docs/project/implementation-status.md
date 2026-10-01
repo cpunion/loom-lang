@@ -199,16 +199,25 @@ Fresh allocations are disjoint from existing handles; later unknown reads or
 returns may alias them. Copy loops infer output-length/index equalities and
 check them inductively, preserving input extents only with that separation.
 Input length refinements supply entry facts; callee preconditions are not reused
-as post-call heap facts. Element reads supply fresh unknowns, not content or
-non-aliasing evidence. Unmodeled heap operations still reject. See the
+as post-call heap facts. Element observations now track literals, appends, writes
+and repeated reads at proved-equal indices, bounded to 64 per handle. Other
+indices survive writes only with proved inequality; unknown handle overlap,
+opaque calls and possibly mutating loops discard content facts. Indexed entry
+checks and storage postconditions compose; hypothetical postcondition reads
+must prove bounds and have an established observation. Unknown reads never
+supply non-aliasing evidence. Immutable entry-element snapshots require entry
+bounds and survive writes, including through per-invocation summaries. Quantified
+contents remain open. See the [indexed example](../../compiler/examples/list_elements) and
 [List contract example](../../compiler/examples/list_contracts).
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining
-definedness obligations. List entry lengths, including pure helper observations,
+definedness obligations. List entry lengths and immutable elements, including
+pure helper observations,
 survive mutation and compose using each callee's invocation state. Only scalar
-proof snapshots are created, with no runtime allocation. It cannot snapshot
-element contents or use callbacks or body-local/result bindings.
+and inline proof snapshots are created, with no runtime allocation. It cannot snapshot
+mutable element handles or use callbacks or body-local/result bindings. Entry
+element bounds must hold unconditionally, even in a guarded postcondition.
 
 Immutable observed record fields can coexist with unobserved mutable siblings.
 Fixed-shape List views retain element identities across removal/regrowth,

@@ -36,14 +36,14 @@ fn lifted_operation(value Expr, left Expr, right Expr, budget List[Int], depth I
         return Result.Ok(proof_choice(left, if and { right } else { proof_bool(value, true) },
             if and { proof_bool(value, false) } else { right }))
     }
-    if value.kind == ExprKind.Binary && right.kind == ExprKind.If {
+    if (value.kind == ExprKind.Binary || list_read_expression(value) || entry_element_expression(value)) && right.kind == ExprKind.If {
         let yes = lifted_operation(value, left, get(right.children, 1), budget, depth + 1)?
         let no = lifted_operation(value, left, get(right.children, 2), budget, depth + 1)?
         return Result.Ok(proof_choice(get(right.children, 0), yes, no))
     }
     let children = new[Expr]()
     push(children, left)
-    if value.kind == ExprKind.Binary { push(children, right) }
+    if value.kind == ExprKind.Binary || list_read_expression(value) || entry_element_expression(value) { push(children, right) }
     Result.Ok(proof_expr(value, value.kind, value.ty, value.text, value.index, children))
 }
 fn lifted_choices(value Expr, budget List[Int], depth Int) Result[Expr, Text] {
@@ -55,7 +55,7 @@ fn lifted_choices(value Expr, budget List[Int], depth Int) Result[Expr, Text] {
         let no = lifted_choices(get(value.children, 2), budget, depth + 1)?
         return lifted_choice(left, yes, no, budget, depth + 1)
     }
-    let right = if value.kind == ExprKind.Binary { lifted_choices(get(value.children, 1), budget, depth + 1)? } else { left }
+    let right = if value.kind == ExprKind.Binary || list_read_expression(value) || entry_element_expression(value) { lifted_choices(get(value.children, 1), budget, depth + 1)? } else { left }
     lifted_operation(value, left, right, budget, depth + 1)
 }
 fn choice_predicate(value Expr, budget List[Int], depth Int) Result[Expr, Text] {

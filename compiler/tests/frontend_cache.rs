@@ -30,7 +30,7 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
-fn entry_length_contracts_survive_edited_body_cache_reuse() {
+fn entry_storage_contracts_survive_edited_body_cache_reuse() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");
     let cache = directory.path().join("cache");
@@ -55,10 +55,29 @@ ensures length(values) == old(length(values)) + 2
     assert append(values) == first + 1
     first
 }
+fn replace(values List[Int], item Int) Int
+requires length(values) > 0
+ensures result == old(values[0])
+ensures values[0] == item
+{
+    let before = values[0]
+    values[0] = item
+    before
+}
+fn elements(values List[Int]) Int
+requires length(values) > 0
+ensures result == old(values[0])
+{
+    let first = replace(values, 7)
+    assert replace(values, 9) == 7
+    first
+}
 fn main() {
     let values List[Int] = []
     assert twice(values) == 0
     assert twice(values) == 2
+    assert elements(values) == 0
+    assert values[0] == 9
 }
 "#;
     fs::write(&path, source).unwrap();
@@ -74,7 +93,7 @@ fn main() {
         .trim()
         .parse()
         .unwrap();
-    assert!(bodies >= 3, "{trace}");
+    assert!(bodies >= 5, "{trace}");
     checked(&cached("run", &package, &cache, &[]), true);
     // The helper edit invalidates dependent summaries, not just its body.
     fs::write(

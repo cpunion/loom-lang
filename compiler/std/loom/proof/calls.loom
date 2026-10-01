@@ -338,13 +338,17 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
     let output = new[Outcome]()
     var index = 0
     while index < length(paths) {
-        let before = get(paths, index).state
+        var before = get(paths, index).state
+        let stable_contents = stable && length(before.extents) != 0 && elements_preserving(proof.program, function.body)
         // Preconditions describe entry. Keep their scalar snapshots, never
         // re-evaluate them as facts about storage after an opaque call.
         var after = if stable {
             before
         } else {
             forget_extents(proof, before)
+        }
+        if stable && length(before.extents) != 0 && !stable_contents {
+            after = forget_elements(after)
         }
         let result_value = record_parameter_value(proof, function.result, 0)
         let result_values = new[Value]()
@@ -386,15 +390,21 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         var check_index = 0
         while check_index < length(context.checks) {
             let check = get(context.checks, check_index)
-            let guard = capture_entry(check.guard, before, after)?
-            let observed = capture_entry(check.value, before, guard.state)?
+            let guard = capture_entry(proof, check.guard, before, after)?
+            let observed = capture_entry(proof, check.value, guard.entry, guard.state)?
             after = observed.state
+            before = observed.entry
             discard evaluated(snapshots, guard.expression, observed.expression, check.required)?
             check_index = check_index + 1
         }
-        let captured = capture_entry(value, before, after)?
+        let captured = capture_entry(proof, value, before, after)?
+        let current = if stable_contents {
+            preserved_elements(captured.entry, captured.state)
+        } else {
+            captured.state
+        }
         discard append(output, call_results(proof, captured.expression, snapshots,
-                captured.state, boundary, depth)?)?
+                current, boundary, depth)?)?
         index = index + 1
     }
     Result.Ok(output)
@@ -479,7 +489,8 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
     if primitive != "" {
         return execute_list_operation(proof, call, primitive, state, depth)
     }
-    if function.runtime_name != "" || !helper_type(proof.program, function.result, 0) || function.result == 5 || length(function.params) != length(call.children) {
+    let contracted_unit = function.result == 0 && length(function.postconditions) != 0
+    if function.runtime_name != "" || (!helper_type(proof.program, function.result, 0) && !contracted_unit) || function.result == 5 || length(function.params) != length(call.children) {
         return Result.Err("body proof needs a checked scalar or inline aggregate source function")
     }
     var index = 0

@@ -2070,8 +2070,9 @@ List lengths are stateful, unlike immutable Text lengths. `std.list.length`,
 List literals, `std.list.new`, indexing, `std.list.get/set` and `std.list.push`
 participate in required proofs. Exact local aliases share the same extent;
 append updates it and forgets other possibly overlapping extents. Indexed reads
-return fresh unknown elements and preserve length; writes establish no content
-facts. Successful accesses retain ordinary bounds checks and normal-return
+reuse established element observations, or supply arbitrary values for unknown
+elements. Writes establish their indexed value and forget possibly overlapping
+observations. Successful accesses retain ordinary bounds checks and normal-return
 semantics. A scalar length already read is an immutable snapshot.
 New allocations are disjoint from earlier handles, but a later unknown read or
 return may alias them. Copy loops can infer output-length/index equalities;
@@ -2086,16 +2087,16 @@ and inline fields. Extent-changing loops freshen affected lengths at the inducti
 all retained invariants still require entry/backedge proofs. See the
 [List contract example](examples/list_contracts), which proves length preservation
 during an actual sorting loop, **not** sortedness or permutation. General element
-relationships and element-content snapshots remain unsupported. These proof
-states add no native object metadata.
+relationships beyond bounded indexed observations remain unsupported. These
+proof states add no native object metadata.
 
 Aggregate summaries compose through nested calls, field projections and
 whole-value updates. Unconditional proved equalities such as
 `ensures result.count == value.count` preserve that field's exact value;
 unspecified fields and independent calls retain separate unknowns. A weak
 summary does not inherit stronger facts from its implementation. Shared fields
-can pass through an aggregate but their contents remain opaque; this is not a
-shared-state invariant or alias-mutation proof. Predicate helpers still evaluate
+can pass through an aggregate; indexed List observations follow the same alias
+invalidation rules. This is not a general shared-state invariant proof. Predicate helpers still evaluate
 every argument and initializer, including an unused field that could overflow.
 `old` denotes immutable entry expressions: parameter paths, immutable aggregates,
 arithmetic and finite pure helpers can compose (`old(value).count`,
@@ -2108,9 +2109,45 @@ an immutable field can be selected beside an unobserved shared sibling, but
 `old` of a whole aggregate containing shared mutable storage rejects. Helper
 arguments and predicate arithmetic still require definedness, even when a
 helper ignores an argument. No entry computation or snapshot allocation enters
-native code. Callback parameters, result/body-local references and List element
-snapshots remain unsupported; this is not general heap-entry reasoning.
+native code. Callback parameters and result/body-local references remain
+unsupported; this is not general heap-entry reasoning.
 See the [aggregate contract example](examples/aggregate_contracts/main.loom).
+
+Required List contracts also admit `get(values, index)` and `values[index]`.
+Entry predicates retain facts from their actual reads and bounds checks;
+postcondition indexing must prove bounds without assuming a new check succeeds.
+Literal elements, appended values, indexed writes and repeated reads establish
+bounded observations (at most 64 per handle). Writes retain other indices only
+with proved inequality; distinct unknown handles can still alias. Calls or
+loops that might change contents forget observations even when lengths survive.
+Scalar values previously read remain snapshots. Contracted functions without a
+return value compose through their storage postconditions. Unknown post-state
+elements without an established read/write reject.
+`old(values[index])` and `old(get(values, index))` snapshot immutable scalar or
+inline element values, including through finite pure helpers. Each index must
+be proved in bounds at entry, even under a conditional postcondition; a later
+read, write or append cannot supply that proof. Snapshotting mutable element
+handles is unsupported. Entry snapshots are shared across clauses and use each
+callee's invocation state, never its modified post-call storage. This permits
+an in-place swap contract without a synthetic return value:
+
+```loom
+fn swap(values List[Int], first Int, second Int)
+requires first >= 0 && first < std.list.length(values)
+requires second >= 0 && second < std.list.length(values)
+requires first != second
+ensures values[first] == old(values[second])
+ensures values[second] == old(values[first])
+{
+    let left = values[first]
+    let right = values[second]
+    values[first] = right
+    values[second] = left
+}
+```
+
+This is not quantified array reasoning. See the
+[indexed List example](examples/list_elements).
 
 Required postconditions reuse the integer difference propagation used at
 refinement boundaries: `requires value > lower && lower >= 0` can establish
@@ -2168,7 +2205,8 @@ ensures result > 0
 The same applies to inline
 record invariants and refined leaves inside records/tuples. Facts belong to the
 actual symbolic value, not the spelling or slot of `self` in the template.
-Shared contents remain opaque. Int/Bool predicates use the existing bounded
+Element-content type invariants are not imported as indexed observations.
+Int/Bool predicates use the existing bounded
 fragment. If direct facts are insufficient, acyclic pure predicate helpers expand
 in a private checked closure, retaining their guarded preconditions and successful
 checked calculations. This does not add runtime calls or change construction

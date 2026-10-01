@@ -1,0 +1,243 @@
+fn list_read_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "list_get" && length(value.children) == 2
+}
+
+fn contains_list_read(value Expr) Bool {
+    if list_read_expression(value) {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if contains_list_read(get(value.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn index_relation(relation Text, left Linear, right Linear, state State) Bool {
+    let fact = Predicate.Compare(relation, add(left, scale(right, integer(-1))))
+    holds(fact, state.facts) || difference_holds(fact, state.facts)
+}
+
+fn element_cells(extent ListExtent, cells List[ListCell]) ListExtent {
+    ListExtent {
+        identity = extent.identity
+        size = extent.size
+        allocated = extent.allocated
+        cells = cells
+    }
+}
+
+fn with_cells(identity Int, cells List[ListCell], state State) State {
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        push(extents, if extent.identity == identity {
+                element_cells(extent, cells)
+            } else {
+                extent
+            })
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+    }
+}
+
+fn forget_elements(state State) State {
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        push(extents, element_cells(get(state.extents, index), new[ListCell]()))
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+    }
+}
+
+// A structurally read-only call cannot invalidate observations captured for
+// its own old clauses. Preserve them without replacing fresh result handles.
+fn preserved_elements(entry State, current State) State {
+    var state = current
+    var index = 0
+    while index < length(entry.extents) {
+        let extent = get(entry.extents, index)
+        if length(extent.cells) != 0 {
+            state = with_cells(extent.identity, extent.cells, state)
+        }
+        index = index + 1
+    }
+    state
+}
+
+fn known_element(identity Int, index Linear, state State) Result[Value, Text] {
+    let cells = list_state(identity, state)?.cells
+    var position = length(cells)
+    while position > 0 {
+        position = position - 1
+        let cell = get(cells, position)
+        if index_relation("==", cell.index, index, state) {
+            return Result.Ok(cell.value)
+        }
+    }
+    Result.Err("List element proof needs an established read or write at this index")
+}
+
+// Bounded observations, not a copy of the runtime container. Evicting an old
+// observation only loses proof precision; it never assumes a value or alias.
+fn remember_element(identity Int, index Linear, value Value, state State) Result[State, Text] {
+    let previous = list_state(identity, state)?.cells
+    let cells = new[ListCell]()
+    var position = if length(previous) >= 64 {
+        length(previous) - 63
+    } else {
+        0
+    }
+    while position < length(previous) {
+        push(cells, get(previous, position))
+        position = position + 1
+    }
+    push(cells, ListCell {
+            index = index
+            value = value
+        })
+    Result.Ok(with_cells(identity, cells, state))
+}
+
+// A write keeps other indices only with proved inequality. Another handle may
+// be an alias, so its observations must be forgotten unless allocation proves
+// separation. Previously read scalar values remain immutable snapshots.
+fn written_element(identity Int, index Linear, value Value, state State) Result[State, Text] {
+    let target = list_state(identity, state)?
+    let extents = new[ListExtent]()
+    var position = 0
+    while position < length(state.extents) {
+        let extent = get(state.extents, position)
+        let cells = new[ListCell]()
+        if extent.identity == identity {
+            var cell = 0
+            while cell < length(extent.cells) {
+                let previous = get(extent.cells, cell)
+                if index_relation("!=", previous.index, index, state) {
+                    push(cells, previous)
+                }
+                cell = cell + 1
+            }
+            push(extents, element_cells(extent, cells))
+        } else {
+            push(extents, if extent_overlap(extent, target) {
+                    element_cells(extent, cells)
+                } else {
+                    extent
+                })
+        }
+        position = position + 1
+    }
+    remember_element(identity, index, value,
+        State {
+            locals = state.locals
+            facts = state.facts
+            extents = extents
+        })
+}
+
+record ElementLocation {
+    identity Int
+    index Linear
+}
+
+fn element_location(value Expr, state State) Result[ElementLocation, Text] {
+    let identity = match pure(get(value.children, 0), state)? {
+        Value.List(identity) => identity
+        _ => {
+            return Result.Err("List element proof needs a tracked handle")
+        }
+    }
+    let index = match pure(get(value.children, 1), state)? {
+        Value.Number(index) => index
+        _ => {
+            return Result.Err("List element proof needs an Int index")
+        }
+    }
+    Result.Ok(ElementLocation {
+            identity = identity
+            index = index
+        })
+}
+
+fn element_defined(value Expr, state State) Result[Bool, Text] {
+    discard defined(get(value.children, 0), state)?
+    discard defined(get(value.children, 1), state)?
+    let location = element_location(value, state)?
+    if !index_relation(">=", location.index, constant(integer(0)), state) ||
+    !index_relation("<", location.index, list_extent(location.identity, state)?, state) {
+        return Result.Err("postcondition List index is not proved in bounds")
+    }
+    Result.Ok(true)
+}
+
+fn expanded_read(context Expansion, value Expr, guard Expr,
+    bindings List[ExpansionBinding], locals List[Local], self Bool,
+    calls Int, depth Int) Result[Expr, Text] {
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, expanded(context, get(value.children, index), guard,
+                bindings, locals, self, calls, depth + 1)?)
+        index = index + 1
+    }
+    let read = proof_expr(value, ExprKind.Intrinsic, value.ty, "list_get", -1, children)
+    // A read's obligation is bounds, not reflexive element equality: inline
+    // records and opaque leaves need not support an equality proof. Keep this
+    // obligation even when a helper ignores the read's resulting value.
+    let zero = proof_expr(value, ExprKind.Integer, 1, "0", -1, new[Expr]())
+    let receiver = new[Expr]()
+    push(receiver, get(children, 0))
+    let size = proof_expr(value, ExprKind.Intrinsic, 1, "list_len", -1, receiver)
+    let position = get(children, 1)
+    let lower = proof_expr(value, ExprKind.Binary, 2, ">=", -1, proof_children(position, zero))
+    let upper = proof_expr(value, ExprKind.Binary, 2, "<", -1, proof_children(position, size))
+    discard evaluated(context, guard, proof_and(lower, upper), true)?
+    Result.Ok(read)
+}
+
+// Entry predicates have actually executed, including their bounds checks and
+// short circuits. Materialize reads only along their normal-return paths.
+fn established_entry(proof Verification, state State) Result[List[Outcome], Text] {
+    let conditions = proof.function.preconditions
+    var reads = false
+    var index = 0
+    while index < length(conditions) {
+        reads = reads || contains_list_read(get(conditions, index))
+        index = index + 1
+    }
+    if !reads {
+        var current = state
+        index = 0
+        while index < length(conditions) {
+            current = assume(current, boolean(pure(get(conditions, index), current)?)?)
+            index = index + 1
+        }
+        return Result.Ok(outcomes(current, Value.Empty))
+    }
+    let checks = new[Evaluation]()
+    index = 0
+    while index < length(conditions) {
+        let condition = get(conditions, index)
+        push(checks, Evaluation {
+                guard = proof_bool(condition, true)
+                value = condition
+                required = true
+            })
+        index = index + 1
+    }
+    established_checks(proof, checks, state, 256)
+}

@@ -31,5 +31,6 @@ input: later passes may update it, and the result is not promised to be fresh.
 
 The sorting example proves only its stated length contract. Its concrete order
 and element checks are runtime tests, not sortedness/permutation proofs. General
-content proofs and element snapshots remain unsupported. No postcondition helper
-is emitted into the native program.
+content proofs remain unsupported; bounded indexed reads/writes and immutable
+entry-element snapshots have their own [example](../list_elements). No
+postcondition helper is emitted into the native program.

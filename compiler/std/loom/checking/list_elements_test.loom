@@ -1,0 +1,218 @@
+test fn list_element_proofs_follow_reads_writes_and_literal_values() {
+    list_length_contract("""
+        import std.list.get
+        import std.list.set
+        import std.list.push
+        import std.list.length
+        fn read(values List[Int], index Int) Int
+        ensures result == get(values, index)
+        {
+            get(values, index)
+        }
+        fn write(values List[Int], index Int, item Int)
+        ensures values[index] == item
+        {
+            set(values, index, item)
+        }
+        fn forward(values List[Int], index Int, item Int) Int
+        ensures result == item
+        {
+            write(values, index, item)
+            get(values, index)
+        }
+        fn literals() Int
+        ensures result == 9
+        {
+            let values = [7, 8]
+            push(values, 9)
+            assert get(values, 0) == 7
+            get(values, 2)
+        }
+        fn update(values List[Int], item Int) Int
+        ensures values[0] == item && result == item
+        {
+            values[0] = item
+            item
+        }
+        fn initializer_order() Int
+        ensures result == 7
+        {
+            let original = [7]
+            let values = [original[0], update(original, 9)]
+            assert original[0] == 9
+            values[0]
+        }
+        fn nested_alias() Int
+        ensures result == 9
+        {
+            let original = [7]
+            let nested = [original]
+            get(nested, 0)[0] = 9
+            original[0]
+        }
+        fn main() {
+            assert read([3], 0) == 3
+            assert forward([1], 0, 9) == 9
+            assert literals() == 9
+            assert initializer_order() == 7
+            assert nested_alias() == 9
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.get
+        import std.list.set
+        fn wrong(values List[Int], index Int, item Int)
+        ensures get(values, index) == item
+        {
+            set(values, index, item + 1)
+        }
+        """, false)
+}
+
+test fn element_writes_require_index_separation_and_handle_separation() {
+    list_length_contract("""
+        import std.list.get
+        import std.list.set
+        fn separate(values List[Int], first Int, second Int) Int
+        requires first != second
+        ensures result == 7
+        {
+            set(values, first, 7)
+            set(values, second, 9)
+            get(values, first)
+        }
+        fn fresh(values List[Int], index Int) Int
+        ensures result == 7
+        {
+            set(values, index, 7)
+            let other = [9]
+            set(other, 0, 8)
+            get(values, index)
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.get
+        import std.list.set
+        fn overlap(values List[Int], first Int, second Int) Int
+        ensures result == 7
+        {
+            set(values, first, 7)
+            set(values, second, 9)
+            get(values, first)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.get
+        import std.list.set
+        fn aliases(left List[Int], right List[Int]) Int
+        ensures result == 7
+        {
+            set(left, 0, 7)
+            set(right, 0, 9)
+            get(left, 0)
+        }
+        """, false)
+}
+
+test fn element_entry_checks_and_contract_helpers_keep_definedness() {
+    list_length_contract("""
+        import std.list.get
+        import std.list.length
+        fn positive(values List[Int], index Int) Int
+        requires get(values, index) > 0
+        ensures result > 0
+        {
+            get(values, index)
+        }
+        fn selected(first Bool) Int {
+            if first { 0 } else { 1 }
+        }
+        fn branch(first Bool) Int
+        ensures result == 7
+        {
+            let values = [7, 7]
+            get(values, selected(first))
+        }
+        fn chosen(values List[Int], first Bool)
+        ensures get(values, selected(first)) == 7
+        {
+            values[0] = 7
+            values[1] = 7
+        }
+        fn guarded(values List[Int]) Int
+        requires length(values) == 0 || get(values, 0) > 0
+        ensures result >= 0
+        {
+            if length(values) == 0 { 0 } else { get(values, 0) }
+        }
+        """, true)
+    // A hypothetical postcondition access cannot assume its bounds check passed.
+    list_length_contract("""
+        import std.list.get
+        fn out_of_bounds(values List[Int], index Int) Int
+        ensures result == get(values, index + 1)
+        {
+            get(values, index)
+        }
+        """, false)
+    // Adding current element reads must not turn old into a post-state read.
+    list_length_contract("""
+        import std.list.get
+        import std.list.set
+        fn old_element(values List[Int]) Int
+        ensures result == old(get(values, 0))
+        {
+            set(values, 0, 9)
+            get(values, 0)
+        }
+        """, false)
+}
+
+test fn calls_and_loops_forget_mutated_contents_even_when_lengths_survive() {
+    list_length_contract("""
+        import std.list.get
+        import std.list.set
+        fn change(values List[Int]) Int
+        ensures result == 0
+        {
+            set(values, 0, 9)
+            0
+        }
+        fn stale(values List[Int]) Int
+        ensures result == 7
+        {
+            set(values, 0, 7)
+            discard change(values)
+            get(values, 0)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.get
+        import std.list.set
+        fn stale_loop(turns Int) Int
+        ensures result == 7
+        {
+            let values = [7]
+            var turn = 0
+            while turn < turns {
+                set(values, 0, 9)
+                turn = turn + 1
+            }
+            get(values, 0)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.get
+        fn unchanged(turns Int) Int
+        ensures result == 7
+        {
+            let values = [7]
+            var turn = 0
+            while turn < turns {
+                assert get(values, 0) == 7
+                turn = turn + 1
+            }
+            get(values, 0)
+        }
+        """, true)
+}

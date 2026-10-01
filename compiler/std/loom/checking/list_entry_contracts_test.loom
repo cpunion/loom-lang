@@ -161,7 +161,7 @@ test fn old_lengths_do_not_invent_alias_or_contents_facts() {
         {
             get(values, 0)
         }
-        """, false)
+        """, true)
 }
 
 test fn old_summary_entry_follows_all_arguments_and_declared_dyn_contracts() {

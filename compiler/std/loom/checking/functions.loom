@@ -439,6 +439,16 @@ fn scalar_contract(context Context, node Node) Result[Bool, Failure] {
             return Result.Ok(true)
         }
     }
+    if node.kind == NodeKind.Index || node.kind == NodeKind.Apply {
+        discard scalar_contract(context, child(node, 0))?
+        let indices = child(node, 1).children
+        var index = 0
+        while index < length(indices) {
+            discard scalar_contract(context, get(indices, index))?
+            index = index + 1
+        }
+        return Result.Ok(true)
+    }
     if node.kind == NodeKind.Call {
         let arguments = child(node, 1).children
         var index = 0
@@ -515,6 +525,20 @@ fn old_entry_expression(context Context, node Node, shared Bool, depth Int) Resu
     if node.kind == NodeKind.Integer || node.kind == NodeKind.Float ||
     node.kind == NodeKind.Bool || node.kind == NodeKind.Text {
         return Result.Ok(true)
+    }
+    if shared && (node.kind == NodeKind.Index || node.kind == NodeKind.Apply) {
+        if !old_entry_expression(context, child(node, 0), true, depth + 1)? {
+            return Result.Ok(false)
+        }
+        let indices = child(node, 1).children
+        var index = 0
+        while index < length(indices) {
+            if !old_entry_expression(context, get(indices, index), true, depth + 1)? {
+                return Result.Ok(false)
+            }
+            index = index + 1
+        }
+        return Result.Ok(inline_constraint_base(context.env, expr(context, node, -1)?.ty, 0))
     }
     let call = node.kind == NodeKind.Call
     if call && lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 {

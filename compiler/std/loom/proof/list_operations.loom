@@ -68,10 +68,12 @@ fn list_operation_outcome(proof Verification, name Text, ty Int, inputs CallArgu
         // the precise update; every possibly overlapping extent is forgotten.
         let modified = new[Int]()
         push(modified, identity)
-        let allocated = list_state(identity, state)?.allocated
+        let previous = list_state(identity, state)?
         let after = forget_modified_extents(proof, state, modified)
+        let grown = with_extent(identity, add(size, constant(integer(1))), previous.allocated, after)
         return Result.Ok(Outcome {
-                state = with_extent(identity, add(size, constant(integer(1))), allocated, after)
+                state = remember_element(identity, size, get(inputs.values, 1),
+                    with_cells(identity, previous.cells, grown))?
                 value = Value.Empty
             })
     }
@@ -83,18 +85,30 @@ fn list_operation_outcome(proof Verification, name Text, ty Int, inputs CallArgu
                 return Result.Err("List indexing proof requires an Int index")
             }
         }
-        // Native bounds checks have succeeded on normal continuation. This
-        // supplies index bounds, never contents, pointer identity or no-fault.
+        // Native bounds checks have succeeded on normal continuation. Reuse
+        // established observations; an unknown read supplies an arbitrary value.
         state = assume(assume(state, Predicate.Compare(">=", index)),
             Predicate.Compare("<", add(index, scale(size, integer(-1)))))
-        let value = if name == "list_get" {
-            record_parameter_value(proof, ty, 0)
-        } else {
-            Value.Empty
+        if name == "list_get" {
+            match known_element(identity, index, state) {
+                Result.Ok(value) => {
+                    return Result.Ok(Outcome {
+                            state = bounded(value, state)
+                            value = value
+                        })
+                }
+                Result.Err(_) => {
+                }
+            }
+            let value = record_parameter_value(proof, ty, 0)
+            return Result.Ok(Outcome {
+                    state = remember_element(identity, index, value, bounded(value, state))?
+                    value = value
+                })
         }
         return Result.Ok(Outcome {
-                state = bounded(value, state)
-                value = value
+                state = written_element(identity, index, get(inputs.values, 2), state)?
+                value = Value.Empty
             })
     }
     Result.Err("unsupported List operation in required proof")

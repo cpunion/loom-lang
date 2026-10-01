@@ -163,6 +163,10 @@ fn pure(expr Expr, state State) Result[Value, Text] {
     if expr.kind == ExprKind.Coerce {
         return pure(get(expr.children, 0), state)
     }
+    if list_read_expression(expr) {
+        let location = element_location(expr, state)?
+        return known_element(location.identity, location.index, state)
+    }
     if expr.kind == ExprKind.Field {
         match pure(get(expr.children, 0), state)? {
             Value.Record(fields) => {
@@ -236,6 +240,9 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
     }
     if holds(Predicate.Constant(false), state.facts) {
         return Result.Ok(true)
+    }
+    if list_read_expression(expr) {
+        return element_defined(expr, state)
     }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || expr.kind == ExprKind.Field || text_length_expression(expr) || list_length_expression(expr) {
         discard defined(get(expr.children, 0), state)?

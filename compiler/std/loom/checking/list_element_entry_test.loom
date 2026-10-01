@@ -1,0 +1,148 @@
+test fn old_elements_are_immutable_snapshots_at_each_invocation() {
+    list_length_contract("""
+        import std.list.length
+        fn replace(values List[Int], index Int, item Int) Int
+        requires index >= 0 && index < length(values)
+        ensures result == old(values[index])
+        ensures values[index] == item
+        {
+            let before = values[index]
+            values[index] = item
+            before
+        }
+        fn observe(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == old(values[0])
+        {
+            values[0]
+        }
+        fn readonly(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == values[0]
+        {
+            observe(values)
+        }
+        fn twice(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == old(values[0])
+        ensures values[0] == 9
+        {
+            let first = replace(values, 0, 7)
+            let second = replace(values, 0, 9)
+            assert second == 7
+            first
+        }
+        fn swap(values List[Int], first Int, second Int)
+        requires first >= 0 && first < length(values)
+        requires second >= 0 && second < length(values)
+        requires first != second
+        ensures values[first] == old(values[second])
+        ensures values[second] == old(values[first])
+        {
+            let left = values[first]
+            let right = values[second]
+            values[first] = right
+            values[second] = left
+        }
+        fn swapped() Int
+        ensures result == 7
+        {
+            let values = [3, 7]
+            swap(values, 0, 1)
+            values[0]
+        }
+        record Pair {
+            first Int
+            second Text
+        }
+        fn aggregate(values List[Pair]) Int
+        requires length(values) > 0
+        ensures result == old(values[0]).first
+        {
+            let before = values[0]
+            values[0] = Pair {
+                first = 9
+                second = "new"
+            }
+            before.first
+        }
+        fn selected(first Bool) Int {
+            if first { 0 } else { 1 }
+        }
+        fn chosen(values List[Int], first Bool) Int
+        requires length(values) > 1
+        ensures result == old(values[selected(first)])
+        {
+            let saved = values[selected(first)]
+            values[0] = 9
+            values[1] = 9
+            saved
+        }
+        fn main() {
+            assert readonly([3]) == 3
+            assert twice([3]) == 3
+            assert swapped() == 7
+            let pair = Pair {
+                first = 3
+                second = "old"
+            }
+            assert aggregate([pair]) == 3
+            assert chosen([3, 7], false) == 7
+        }
+        """, true)
+}
+
+test fn old_elements_require_entry_bounds_and_do_not_repopulate_modified_storage() {
+    list_length_contract("""
+        import std.list.length
+        fn replace(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == old(values[0])
+        {
+            let before = values[0]
+            values[0] = 9
+            before
+        }
+        fn wrong(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == old(values[0])
+        {
+            discard replace(values)
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn appended(values List[Int]) Int
+        ensures result == old(values[length(values)])
+        {
+            let index = length(values)
+            push(values, 7)
+            values[index]
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.get
+        fn first(left Int, ignored Int) Int {
+            left
+        }
+        fn eager(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == old(first(get(values, 0), get(values, length(values))))
+        {
+            values[0]
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn wrong(left List[Int], right List[Int]) Int
+        requires length(left) > 0 && length(right) > 0
+        ensures result == old(left[0])
+        {
+            right[0] = 9
+            left[0]
+        }
+        """, false)
+}

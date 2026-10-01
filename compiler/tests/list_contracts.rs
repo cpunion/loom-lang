@@ -4,7 +4,11 @@ use common::success;
 
 #[test]
 fn list_lengths_track_shared_state_without_runtime_postconditions() {
-    let package = "compiler/examples/list_contracts";
+    list_contract_package("compiler/examples/list_contracts");
+    list_contract_package("compiler/examples/list_elements");
+}
+
+fn list_contract_package(package: &str) {
     for command in ["check", "test", "run"] {
         success(&common::loom(&[command, package]));
     }
@@ -23,7 +27,13 @@ fn list_lengths_track_shared_state_without_runtime_postconditions() {
                 .unwrap(),
         );
         let ir = fs::read_to_string(&ir).unwrap();
-        for proof_only in ["62917384", "contract_old", "entry_list_len"] {
+        for proof_only in [
+            "62917384",
+            "81364279",
+            "contract_old",
+            "entry_list_len",
+            "entry_list_get",
+        ] {
             assert!(!ir.contains(proof_only));
         }
         success(
