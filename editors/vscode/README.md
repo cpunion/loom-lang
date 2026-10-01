@@ -9,7 +9,8 @@ Loom. A resident compiler reuses unchanged checked snapshots for diagnostics,
 hover and navigation, and unchanged ordinary checks and concrete bodies after edits.
 Replacing or rebuilding the compiler restarts its worker on the next request;
 queued requests remain serialized and cancellation still retires only that worker.
-Type/field rename and edits across external module consumers are not implemented.
+Edits across external module consumers are not implemented. Unknown or generated
+references refuse checked rename instead of offering a partial edit.
 CLI disk caching is separate and opt-in.
 
 ## Try it
@@ -170,7 +171,13 @@ refuse the edit. This does not add metadata to executable IR or bypass the final
 virtual-package check. Navigation points to the parameter, not its specialized
 callback target; hover reports concrete checked parameter types across observed
 specializations. Uses erased in unobserved branches still provide no evidence.
-Field and concept rename are not yet available. Type aliases, unobserved type
+Record fields can also be renamed through checked initializers, receivers,
+record updates, explicit destructuring labels, contracts and type constraints.
+Fields of public records use the same module-wide test-inclusive edit check;
+private records stay within their package. Distinct checked locals and other
+records' fields are not edited. Unchecked same-spelled accesses or constructor
+labels refuse edits, even in a module package that has not imported the owner.
+Concept rename is not yet available. Type aliases, unobserved type
 applications and generated or unaligned annotations without complete checked
 binding evidence refuse type edits. The server
 returns a workspace edit for the

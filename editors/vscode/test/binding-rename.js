@@ -236,9 +236,16 @@ fn main() {
     assert.equal(await client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('Option.None') + 7), newName: 'Changed',
     }), null);
-    await assert.rejects(client.rpc.sendRequest('textDocument/rename', {
+    const fieldEdit = await client.rpc.sendRequest('textDocument/rename', {
       textDocument: { uri }, position: document.positionAt(source.indexOf('left = chosen')), newName: 'changed',
-    }), /checked local bindings/);
+    });
+    assert.equal(fieldEdit.changes[uri].length, 5);
+    assert.ok(fieldEdit.changes[uri].every(edit => document.getText(edit.range) === 'left'));
+    const fieldSource = TextDocument.applyEdits(document, fieldEdit.changes[uri]);
+    assert.ok(fieldSource.includes('changed Int') && fieldSource.includes('self.changed + extra'));
+    await client.change(file, fieldSource, ++version);
+    assert.deepEqual((await client.wait(file, version)).diagnostics, []);
+    await client.change(file, source, ++version);
     await assert.rejects(fs.readFile(file), { code: 'ENOENT' });
     console.log('Binding rename smoke passed: runtime/static parameters, specialization coverage, contracts, patterns and method locals.');
   } finally {

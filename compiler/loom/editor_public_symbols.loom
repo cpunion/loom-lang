@@ -125,15 +125,21 @@ fn editor_public_visible(analysis Analysis, file Int, target Location, spelling 
 }
 
 fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
-    spelling Text, name Text, edits List[EditorPublicEdit]) Result[Bool, Text] {
+    spelling Text, name Text, field Bool, edits List[EditorPublicEdit]) Result[Bool, Text] {
     let target = match editor_public_target(analysis, path, span) {
         Option.Some(value) => value
         Option.None => {
+            if field && name != "" && editor_field_unobserved(analysis, spelling) {
+                return Result.Err("Rename cannot account for every occurrence of this public field")
+            }
             return Result.Ok(true)
         }
     }
-    if !editor_top_declaration(analysis, target, spelling, true) {
-        return Result.Err("Public rename requires one ordinary top-level function or nominal type, not overloads or generated declarations")
+    let owner = editor_field_owner(analysis, target, spelling)
+    let public_field = owner >= 0 && get(analysis.bindings.symbols, owner).public &&
+        editor_declaration_authority(analysis, target, true)
+    if !(if field { public_field } else { editor_top_declaration(analysis, target, spelling, true) }) {
+        return Result.Err("Public rename requires one ordinary declaration or record field, not overloads or generated declarations")
     }
     let references = editor_references(analysis, target, spelling)
     var file = 0
@@ -142,7 +148,7 @@ fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
         // Imported packages omit their tests in this analysis. Their own root
         // analysis accounts for those uses; never mistake omission for evidence.
         if source.package == analysis.bindings.root {
-            let visible = editor_public_visible(analysis, file, target, spelling)
+            let visible = field || editor_public_visible(analysis, file, target, spelling)
             if name != "" && (editor_generated(source.tree) || std.loom.checking.has_declaration_stages(analysis.source, true)) {
                 return Result.Err("Public rename cannot account for generated source references")
             }
@@ -181,12 +187,7 @@ fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
                     } else if visible && name != "" {
                         // A distinct checked binding is not a reference. Unknown
                         // occurrences may live in an uninstantiated body.
-                        let known_other = match inspect_at(analysis, file, token.span.start) {
-                            Option.Some(found) => length(found.definitions) == 1 &&
-                            !editor_same_location(get(found.definitions, 0), target)
-                            Option.None => editor_declaration(source.tree, tokens, token.span)
-                        }
-                        if !known_other {
+                        if !editor_other_binding(analysis, file, token, tokens, Option.Some(target)) {
                             return Result.Err("Rename cannot account for every occurrence of this public declaration")
                         }
                     }
@@ -265,6 +266,7 @@ fn editor_module_analysis(options EditorOptions, directory Text, overlays List[S
 fn editor_public_symbols(options EditorOptions, initial Analysis, target Location,
     spelling Text, inputs BuildInputs) EditorOutput {
     let rename = options.new_name != ""
+    let field = editor_field_owner(initial, target, spelling) >= 0
     if rename && !editor_valid_new_name(options.new_name) {
         return editor_error("Rename needs a valid non-reserved Loom identifier")
     }
@@ -309,7 +311,7 @@ fn editor_public_symbols(options EditorOptions, initial Analysis, target Locatio
                 }
             }
         }
-        match editor_public_collect(analysis, module, path, target.span, spelling, options.new_name, edits) {
+        match editor_public_collect(analysis, module, path, target.span, spelling, options.new_name, field, edits) {
             Result.Err(message) => {
                 return editor_error(message)
             }

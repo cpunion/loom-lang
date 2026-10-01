@@ -57,6 +57,7 @@ pub fn check_query(source std.loom.binding.Program, file Int, offset Int, inputs
         index = index + 1
     }
     if selected < 0 {
+        discard layouts(env)?
         return Result.Ok(CheckedQuery { types = env.types interfaces = env.interfaces functions = new[Function]() })
     }
     let current = get(env.signatures, selected)

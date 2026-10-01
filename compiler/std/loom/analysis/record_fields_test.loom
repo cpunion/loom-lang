@@ -1,0 +1,71 @@
+test fn constraint_and_destructure_fields_keep_their_checked_record_owner() {
+    let text = """
+        record Counter {
+            count Int
+            limit Int
+        }
+        record Other {
+            count Int
+        }
+        type Valid = Counter where self.count >= 0 && self.count <= self.limit
+        pub fn read(value Valid) Int {
+            let raw Counter = value
+            let Counter { count = amount, .. } = raw
+            amount
+        }
+        fn copy(value Counter) Counter {
+            Counter { count = value.count, ..value }
+        }
+        fn main() {
+            let value = Counter { count = 3, limit = 8 }
+            discard Other { count = value.count }
+            discard copy(value)
+        }
+        """
+    let analysis = accepted(input(text))
+    let field = query_offset(text, "count Int\n    limit")
+    let references = ["count >=", "count <=", "count = amount", "count = value.count,", "count, ..", "count }\n"]
+    var index = 0
+    while index < length(references) {
+        let found = inspection(analysis, text, get(references, index))
+        only_type(found, "Int")
+        only_definition(found, field, field + 5)
+        index = index + 1
+    }
+    let other = inspection(analysis, text, "count = value.count }")
+    let other_field = query_offset(text, "count Int\n}")
+    only_definition(other, other_field, other_field + 5)
+    let pattern = inspection(analysis, text, "Counter { count = amount")
+    let declared = query_offset(text, "Counter {\n")
+    only_type(pattern, "app.Counter")
+    only_definition(pattern, declared, declared + 7)
+}
+
+test fn implicit_self_does_not_navigate_to_a_same_spelled_record() {
+    let text = """
+        record Self {
+            count Int
+        }
+        concept Keep {
+            fn keep(self Self) Self {
+                self
+            }
+        }
+        impl Keep for app.Self {
+        }
+        fn main() {
+            let value = Self { count = 7 }
+            assert value.keep().count == 7
+        }
+        """
+    let analysis = accepted(input(text))
+    let references = ["Self) Self", "Self {\n        self"]
+    var index = 0
+    while index < length(references) {
+        assert match inspect_at(analysis, 0, query_offset(text, get(references, index))) {
+            Option.None => true
+            Option.Some(found) => length(found.definitions) == 0
+        }
+        index = index + 1
+    }
+}

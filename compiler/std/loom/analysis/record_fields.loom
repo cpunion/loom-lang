@@ -1,0 +1,82 @@
+// Constraint templates have typed receivers but no executable function IDs.
+// Only field projections supply navigation evidence here, never calls or locals.
+fn inspect_constraint_field(analysis SemanticView, report Inspection, target Query, value Expr) {
+    if !inside(value.span, target.token.span.start) {
+        return
+    }
+    if value.kind == ExprKind.Field && same_span(value.span, target.node.span) &&
+    (target.node.kind == NodeKind.Select ||
+        (target.node.kind == NodeKind.Name && path_depth(analysis, value) == target.segment)) {
+        add_type(report, query_type_name(analysis, value.ty))
+        field_location(analysis, report, get(value.children, 0).ty, value.index)
+    }
+    var index = 0
+    while index < length(value.children) {
+        inspect_constraint_field(analysis, report, target, get(value.children, index))
+        index = index + 1
+    }
+}
+
+fn source_pattern_member(node Node, span Span) Bool {
+    if node.kind == NodeKind.RecordPattern {
+        var field = 0
+        while field < length(node.children) {
+            let member = get(node.children, field)
+            if member.kind == NodeKind.Field && same_span(member.span, span) {
+                return true
+            }
+            field = field + 1
+        }
+    }
+    var index = 0
+    while index < length(node.children) {
+        if source_pattern_member(get(node.children, index), span) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Destructuring projections carry the nested binding's span, not its field
+// label. Match that exact source child and the checked receiver/index together.
+fn inspect_pattern_projection(analysis SemanticView, report Inspection, function Function, target Query, value Expr) {
+    if value.kind == ExprKind.Field && length(value.children) == 1 {
+        let receiver = get(value.children, 0).ty
+        let shape = get(analysis.data.types, receiver)
+        if shape.kind == TypeKind.Record {
+            if target.node.kind == NodeKind.Field && length(target.node.children) == 1 &&
+            same_span(value.span, get(target.node.children, 0).span) && get(shape.fields, value.index).name == target.node.value {
+                add_type(report, query_type_name(analysis, value.ty))
+                field_location(analysis, report, receiver, value.index)
+            }
+            if target.node.kind == NodeKind.RecordPattern && target.segment + 1 == target.segments {
+                var index = 0
+                while index < length(target.node.children) {
+                    let member = get(target.node.children, index)
+                    if member.kind == NodeKind.Field && length(member.children) == 1 &&
+                    same_span(value.span, get(member.children, 0).span) && get(shape.fields, value.index).name == member.value {
+                        add_type(report, query_type_name(analysis, receiver))
+                        nominal_body_location(analysis, report, function, target, receiver, target.node.value)
+                    }
+                    index = index + 1
+                }
+            }
+        }
+    }
+    var index = 0
+    while index < length(value.children) {
+        inspect_pattern_projection(analysis, report, function, target, get(value.children, index))
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        var child = 0
+        while child < length(arm.body) {
+            inspect_pattern_projection(analysis, report, function, target, get(arm.body, child))
+            child = child + 1
+        }
+        index = index + 1
+    }
+}

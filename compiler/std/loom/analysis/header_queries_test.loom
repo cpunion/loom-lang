@@ -52,6 +52,37 @@ test fn specialized_header_parameters_do_not_guess_same_spelled_nominal_definiti
     }
 }
 
+test fn recovered_data_headers_validate_layouts_before_publishing_query_facts() {
+    let invalid = """
+        record Loop {
+            next Loop
+        }
+        fn main() {
+            let wrong Int = true
+            discard wrong
+        }
+        """
+    let broken = query_bindings(input(invalid))
+    assert match inspect_independent(broken, 0, query_offset(invalid, "Loop\n}")) {
+        Option.None => true
+        Option.Some(_) => false
+    }
+    let valid = """
+        record Tree {
+            children List[Tree]
+        }
+        fn main() {
+            let wrong Int = true
+            discard wrong
+        }
+        """
+    let bindings = query_bindings(input(valid))
+    let found = independent_found(bindings, valid, "Tree]")
+    let declared = query_offset(valid, "Tree {\n")
+    only_type(found, "app.Tree")
+    only_definition(found, declared, declared + 4)
+}
+
 test fn data_and_local_annotations_use_checked_nominal_identities() {
     let text = """
         record Item {
