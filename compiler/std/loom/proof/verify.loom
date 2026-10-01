@@ -490,7 +490,8 @@ fn verify_body(proof Verification) Result[Bool, Text] {
     index = 0
     while index < length(function.params) {
         let ty = get(function.params, index)
-        state = assigned(state, index, parameter_value(proof, ty, index)?)
+        let value = parameter_value(proof, ty, index)?
+        state = text_bounds(value, assigned(state, index, value))
         index = index + 1
     }
     index = 0

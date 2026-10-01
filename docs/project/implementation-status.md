@@ -177,8 +177,11 @@ Immutable Text values, exact literals and established equality facts participate
 in required proofs, including Text leaves beside shared siblings. Distinct unknown
 values never imply unequal contents. Established equality chains and inequalities
 between equal-value classes compose; disjunctions and unequal chains supply no
-invented equality or inequality. Concatenation/length/substring reasoning is
-not implemented. Bytes and List parameters can be carried opaquely through
+invented equality or inequality. Immutable UTF-8 byte lengths, their nonnegative
+bounds and equality consequences compose with entry values, pure helpers and
+input-type constraints. Proved length-based weakening omits the second check;
+unknown strengthening retains it. Equal lengths do not establish equal contents.
+Concatenation/substring reasoning is not implemented. Bytes and List parameters can be carried opaquely through
 contracted calls, including generic nominal receivers. Unmodeled heap operations still reject.
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry

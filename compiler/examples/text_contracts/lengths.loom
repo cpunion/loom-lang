@@ -1,0 +1,85 @@
+import std.text.length
+import std.text.concat
+import std.time.sleep_ms
+import std.result.Result
+import std.result.ConstraintError
+
+type ShortName = Text where length(self) > 0 && length(self) <= 8
+
+type WideName = Text where length(self) > 0 && length(self) <= 16
+
+fn byte_count(value Text) Int
+ensures result == length(value) && result >= 0
+{
+    length(value)
+}
+
+fn entry_extent(value Text) Int {
+    let length_marker = 71928364
+    discard length_marker
+    length(value)
+}
+
+fn retained_extent(value Text) Int
+ensures result == old(entry_extent(value))
+{
+    var local = value
+    let size = byte_count(local)
+    local = "different"
+    discard local
+    size
+}
+
+fn equal_extent(left Text, right Text) Int
+requires left == right
+ensures result == length(left)
+{
+    byte_count(right)
+}
+
+fn checked_short(value Text) Result[ShortName, ConstraintError] {
+    ShortName(value)
+}
+
+fn wider(value ShortName) WideName
+ensures length(result) == old(length(value))
+{
+    WideName(value)
+}
+
+fn bounded_extent(value WideName) Int
+ensures result > 0 && result <= 16
+{
+    byte_count(value)
+}
+
+async fn exercise_text_lengths() {
+    let value = concat("é", "😀")
+    assert byte_count(value) == 6 && retained_extent(value) == 6
+    assert equal_extent(value, relay(value)) == 6
+    assert byte_count(generic(1, value)) == 6
+    let receiver dyn Keep = 1
+    assert byte_count(dynamic(receiver, value)) == 6
+    let narrow = match checked_short(value) {
+        Result.Ok(name) => name
+        Result.Err(_) => {
+            assert false
+            ShortName("fallback")
+        }
+    }
+    let wide = wider(narrow)
+    assert match checked_short("") {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    assert match checked_short("123456789") {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+    sleep_ms(1).await
+    assert bounded_extent(wide) == 6
+}
+
+test async fn immutable_byte_lengths_and_checked_names() {
+    exercise_text_lengths().await
+}

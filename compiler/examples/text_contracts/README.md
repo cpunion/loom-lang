@@ -17,5 +17,11 @@ two different symbolic inputs alone never establish inequality.
 returns `Result[Tag, ConstraintError]`; both accepted and rejected inputs run.
 The native test checks O0/O2 IR for proof-only helper elimination and runs the
 artifacts under moving-GC stress, retaining dynamically allocated Text and a
-refined Text value across timer suspension. Text operations beyond byte equality are not
-modeled by the required prover.
+refined Text value across timer suspension.
+
+The [byte-length example](lengths.loom) proves UTF-8 byte counts (six for `é😀`,
+not two characters), preserved entry lengths and equal-value lengths. Checked
+1–8-byte names widen to a 1–16-byte type without a second check, while unknown
+construction still returns a checked Result. Length constraints remain valid
+across GC and suspension. Equal lengths do not imply equal contents;
+concatenation and substring properties remain outside this proof fragment.
