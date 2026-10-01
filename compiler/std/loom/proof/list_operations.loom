@@ -6,7 +6,7 @@ fn list_operation(name Text) Bool {
 // Recognize an ordinary forwarding body by checked structure, never its source
 // name. No argument reordering, extra evaluation or entry checks may disappear.
 fn forwarded_list_operation(program Program, function Function, depth Int) Text {
-    if depth >= 16 || length(function.preconditions) != 0 ||
+    if depth >= 16 || function.is_async || length(function.preconditions) != 0 ||
     length(function.postconditions) != 0 {
         return ""
     }
