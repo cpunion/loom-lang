@@ -1433,9 +1433,10 @@ Bool, Text and inline record/tuple value facts. Unspecified leaves remain indepe
 shared siblings supply no content or alias facts. Summaries never guess an
 implementation or enter native code. See the [generic](examples/concept_contracts/generic.loom)
 and [aggregate](examples/concept_contracts/aggregates.loom) contract examples.
-Bytes and List inputs may be carried opaquely in these proofs, including
-generic nominal receivers: a declared scalar guarantee need not inspect them.
-Their contents, mutable aliases and unmodeled operations still provide no evidence.
+Bytes and List inputs can pass through these proofs, including generic nominal
+receivers. List lengths use the stateful contract rules below; an opaque method
+may change reachable lengths unless its postcondition establishes new facts.
+Shared contents and unmodeled operations still provide no evidence.
 Pure static and dynamic calls can also execute inside an isolated `comptime`
 computation.
 
@@ -2065,6 +2066,26 @@ Unequal Texts may have equal lengths, and equal lengths do not identify contents
 Concatenation and substring reasoning remain unsupported. See the
 [native Text example](examples/text_contracts).
 
+List lengths are stateful, unlike immutable Text lengths. `std.list.length`,
+List literals, `std.list.new`, indexing, `std.list.get/set` and `std.list.push`
+participate in required proofs. Exact local aliases share the same extent;
+append updates it and forgets other possibly overlapping extents. Indexed reads
+return fresh unknown elements and preserve length; writes establish no content
+facts. Successful accesses retain ordinary bounds checks and normal-return
+semantics. A scalar length already read is an immutable snapshot.
+
+Calls with a checked extent-preserving body retain lengths. Opaque summaries
+can change all reachable Lists, including through hidden dyn aliases: their
+preconditions describe entry, and only their postconditions supply post-call
+facts. No distinct-parameter or distinct-result non-aliasing promise is inferred.
+Pure helpers and supported List length refinements compose with generic functions
+and inline fields. Extent-changing loops freshen lengths at the inductive head;
+all retained invariants still require entry/backedge proofs. See the
+[List contract example](examples/list_contracts), which proves length preservation
+during an actual sorting loop, **not** sortedness or permutation. General element
+relationships, mutable `old` snapshots and List-local reassignment in proof loops
+remain unsupported. These proof states add no native object metadata.
+
 Aggregate summaries compose through nested calls, field projections and
 whole-value updates. Unconditional proved equalities such as
 `ensures result.count == value.count` preserve that field's exact value;
@@ -2115,8 +2136,8 @@ preserving evaluated return snapshots. Guard calls execute with fresh result
 identities using verified summaries or finite pure expansion; their syntax is
 not reused as a stable invariant term. Optional pure expansion can suggest bounds,
 but contributes no assumed facts and every candidate still needs induction.
-Resource cleanup and heap writes inside a
-required loop proof currently reject. The bounded
+Resource cleanup and unmodeled heap operations inside a
+required loop proof still reject; the List extent operations above are supported. The bounded
 inference neither unrolls a sample of iterations nor adds runtime invariant
 checks. See the [loop contract example](examples/loop_contracts), including
 [nested aggregate state](examples/loop_contracts/aggregates.loom).

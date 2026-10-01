@@ -91,7 +91,8 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
     let scalar = kind == ExprKind.Integer || kind == ExprKind.Bool || kind == ExprKind.Local ||
     kind == ExprKind.Unary || kind == ExprKind.Binary || kind == ExprKind.Coerce ||
     kind == ExprKind.Field || kind == ExprKind.Record
-    if !scalar && kind != ExprKind.Call {
+    if !scalar && kind != ExprKind.Call &&
+        !(kind == ExprKind.Intrinsic && list_operation(expr.text)) {
         if guard || (kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.While &&
             kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
             kind != ExprKind.Assert && kind != ExprKind.Discard &&
@@ -111,8 +112,8 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
         set(writes, expr.index, true)
     }
     // Direct calls reuse body_call's checked scalar/aggregate summaries
-    // or finite pure expansion. Captured cells, indirect calls and heap access
-    // are not admitted here; they cannot mutate one of these scalar locals.
+    // or finite pure expansion. List primitives have explicit extent effects;
+    // opaque summaries freshen heap facts. Captured/indirect calls still reject.
     var index = 0
     while index < length(expr.children) {
         discard loop_writes(proof, get(expr.children, index), writes,
@@ -349,7 +350,12 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     let guard = get(expr.children, 0)
     let body = get(expr.children, 1)
     var candidates = loop_candidates(proof, loop_candidate_guard(proof, guard), writes, entry)?
-    let head = loop_head(proof, writes, entry)
+    let head = loop_head(proof, writes,
+        if length(entry.extents) == 0 || extent_preserving(proof.program, expr) {
+            entry
+        } else {
+            forget_extents(proof, entry)
+        })
     while true {
         discard loop_step(proof)?
         let assumed = loop_assumptions(head, candidates)?

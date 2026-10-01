@@ -1,6 +1,7 @@
 // A proof-only abstraction: each List argument denotes its length. Only the
 // trusted length intrinsic consumes it; element access and mutation stay outside
-// the helper grammar. Ordinary contract proofs do not enable this abstraction.
+// the helper grammar. Ordinary contracts instead use the stateful extent model
+// in list_state.loom; they never equate a mutable List with an immutable number.
 fn proof_list_type(program Program, ty Int) Bool {
     ty >= 0 && ty < length(program.types) && get(program.types, ty).kind == TypeKind.List
 }

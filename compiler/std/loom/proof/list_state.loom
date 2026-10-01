@@ -1,0 +1,139 @@
+// A List value denotes a shared handle. Its current length belongs to the
+// execution state, not to an immutable scalar snapshot or a source variable.
+fn list_length_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "list_len" &&
+    value.ty == 1 && length(value.children) == 1
+}
+
+fn list_extent(identity Int, state State) Result[Linear, Text] {
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        if extent.identity == identity {
+            return Result.Ok(extent.size)
+        }
+        index = index + 1
+    }
+    Result.Err("List length proof has no current state")
+}
+
+fn extent_bounds(size Linear, state State) State {
+    assume(bounded(Value.Number(size), state), Predicate.Compare(">=", size))
+}
+
+fn with_extent(identity Int, size Linear, state State) State {
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        if extent.identity != identity {
+            push(extents, extent)
+        }
+        index = index + 1
+    }
+    push(extents, ListExtent {
+            identity = identity
+            size = size
+        })
+    extent_bounds(size, State {
+            locals = state.locals
+            facts = state.facts
+            extents = extents
+        })
+}
+
+fn list_bounds(value Value, state State) State {
+    match value {
+        Value.List(identity) => match list_extent(identity, state) {
+            Result.Ok(_) => state
+            Result.Err(_) => with_extent(identity, variable(identity), state)
+        }
+        Value.Record(fields) => {
+            var bounded = state
+            var index = 0
+            while index < length(fields) {
+                bounded = list_bounds(get(fields, index), bounded)
+                index = index + 1
+            }
+            bounded
+        }
+        _ => state
+    }
+}
+
+// An opaque call may resize any reachable alias, including a List concealed
+// inside a dyn receiver. Retain facts about past scalar reads, but give every
+// handle a fresh current extent. Different handles are not assumed disjoint.
+fn forget_extents(proof Verification, state State) State {
+    var current = state
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        match fresh_result(proof, 1) {
+            Value.Number(size) => {
+                current = with_extent(extent.identity, size, current)
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    current
+}
+
+// Only checked, finite extent-preserving operations retain caller heap facts.
+// Abstract summaries, recursion and unknown operations supply no frame rule.
+fn preserves_extents(program Program, value Expr, budget List[Int], depth Int) Bool {
+    if depth >= 32 || !conjunction_step(budget) {
+        return false
+    }
+    let kind = value.kind
+    if kind == ExprKind.Call {
+        if value.index < 0 || value.index >= length(program.functions) {
+            return false
+        }
+        let function = get(program.functions, value.index)
+        if function.runtime_name != "" {
+            if function.runtime_name != "list_len" && function.runtime_name != "text_len" &&
+            function.runtime_name != "list_new" && function.runtime_name != "list_get" &&
+            function.runtime_name != "list_set" {
+                return false
+            }
+        } else {
+            if !preserves_extents(program, function.body, budget, depth + 1) {
+                return false
+            }
+        }
+    } else {
+        if kind != ExprKind.Local && kind != ExprKind.Integer && kind != ExprKind.Bool &&
+        kind != ExprKind.Text && kind != ExprKind.Float && kind != ExprKind.Bytes &&
+        kind != ExprKind.Unary && kind != ExprKind.Binary && kind != ExprKind.Field &&
+        kind != ExprKind.Record && kind != ExprKind.List && kind != ExprKind.Coerce &&
+        kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.While &&
+        kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
+        kind != ExprKind.Assert && kind != ExprKind.Discard &&
+        kind != ExprKind.Break && kind != ExprKind.Continue &&
+        !list_length_expression(value) && !text_length_expression(value) &&
+        !(kind == ExprKind.Intrinsic && (value.text == "list_new" ||
+                value.text == "list_get" || value.text == "list_set")) {
+            return false
+        }
+    }
+    if length(value.arms) != 0 {
+        return false
+    }
+    var index = 0
+    while index < length(value.children) {
+        if !preserves_extents(program, get(value.children, index), budget, depth + 1) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn extent_preserving(program Program, value Expr) Bool {
+    let budget = new[Int]()
+    push(budget, 256)
+    preserves_extents(program, value, budget, 0)
+}

@@ -153,6 +153,7 @@ fn call_scope(state State, values List[Value]) State {
     State {
         locals = locals
         facts = state.facts
+        extents = state.extents
     }
 }
 
@@ -166,6 +167,7 @@ fn caller_state(state State, boundary Int) State {
     State {
         locals = locals
         facts = state.facts
+        extents = state.extents
     }
 }
 
@@ -321,9 +323,68 @@ fn summarized_value(context Expansion, function Function, path Expr, snapshot Ex
     Result.Ok(proof_expr(path, ExprKind.Record, path.ty, "", -1, fields))
 }
 
+fn applied_summary(proof Verification, call Expr, function Function, state State,
+    bindings List[ExpansionBinding], boundary Int, depth Int) Result[List[Outcome], Text] {
+    let entry = Expansion {
+        program = proof.program
+        list_lengths = false
+        budget = proof.budget
+        active = new[Int]()
+        checks = new[Evaluation]()
+    }
+    discard summary_conditions(entry, function, function.preconditions, bindings)?
+    let paths = established_checks(proof, entry.checks, state, depth)?
+    let stable = length(state.extents) == 0 || extent_preserving(proof.program, function.body)
+    let output = new[Outcome]()
+    var index = 0
+    while index < length(paths) {
+        let before = get(paths, index).state
+        // Preconditions describe entry. Keep their scalar snapshots, never
+        // re-evaluate them as facts about storage after an opaque call.
+        var after = if stable {
+            before
+        } else {
+            forget_extents(proof, before)
+        }
+        let result_value = record_parameter_value(proof, function.result, 0)
+        let result_values = new[Value]()
+        push(result_values, result_value)
+        after = bounded(result_value, call_scope(after, result_values))
+        let reference = proof_expr(call, ExprKind.Local, function.result, "",
+            boundary + length(function.params), new[Expr]())
+        let current_bindings = new[ExpansionBinding]()
+        var binding = 0
+        while binding < length(bindings) {
+            push(current_bindings, get(bindings, binding))
+            binding = binding + 1
+        }
+        push(current_bindings, ExpansionBinding {
+                local = function.result_local
+                value = reference
+            })
+        let context = Expansion {
+            program = proof.program
+            list_lengths = false
+            budget = proof.budget
+            active = new[Int]()
+            checks = new[Evaluation]()
+        }
+        discard summary_conditions(context, function, function.postconditions, current_bindings)?
+        let path = proof_expr(call, ExprKind.Local, function.result, "",
+            function.result_local, new[Expr]())
+        let value = summarized_value(context, function, path, reference, current_bindings, 0)?
+        if !bounded_contract(value) {
+            return Result.Err("body helper proof expansion budget exhausted")
+        }
+        discard append(output, call_results(proof, value, context, after, boundary, depth)?)?
+        index = index + 1
+    }
+    Result.Ok(output)
+}
+
 fn applied_call(proof Verification, call Expr, function Function, arguments CallArguments, depth Int) Result[List[Outcome], Text] {
     let boundary = length(arguments.state.locals)
-    var state = call_scope(arguments.state, arguments.values)
+    let state = call_scope(arguments.state, arguments.values)
     let expressions = new[Expr]()
     let bindings = new[ExpansionBinding]()
     var index = 0
@@ -344,51 +405,34 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         checks = new[Evaluation]()
     }
     discard expansion_step(context, 0)?
-    let summary = length(function.postconditions) != 0
-    var value = proof_bool(call, false)
-    if summary {
-        // The counter is shared by every path and call in this proof, not keyed
-        // by callee, local-slot position, or source call-site identity.
-        let result_value = record_parameter_value(proof, function.result, 0)
-        push(state.locals, result_value)
-        state = bounded(result_value, state)
-        let reference = proof_expr(call, ExprKind.Local, function.result, "", boundary + length(function.params), new[Expr]())
-        push(bindings, ExpansionBinding {
-                local = function.result_local
+    if length(function.postconditions) != 0 {
+        return applied_summary(proof, call, function, state, bindings, boundary, depth)
+    }
+    // Arguments already ran once. Only snapshot references and a finite pure
+    // helper are expanded; unsupported storage effects cannot disappear.
+    let references = new[ExpansionBinding]()
+    index = 0
+    while index < length(expressions) {
+        let reference = get(expressions, index)
+        push(references, ExpansionBinding {
+                local = reference.index
                 value = reference
             })
-        discard summary_conditions(context, function, function.preconditions, bindings)?
-        discard summary_conditions(context, function, function.postconditions, bindings)?
-        // Verified equalities define individual scalar leaves. Reconstruct only
-        // their logical values; unspecified leaves keep independent identities,
-        // and shared storage stays opaque. The native call remains unchanged.
-        let path = proof_expr(call, ExprKind.Local, function.result, "", function.result_local, new[Expr]())
-        value = summarized_value(context, function, path, reference, bindings, 0)?
-        if !bounded_contract(value) {
-            return Result.Err("body helper proof expansion budget exhausted")
-        }
-    } else {
-        // The call's actual arguments have already executed once. Expand only
-        // their immutable snapshot references and the finite scalar helper.
-        let references = new[ExpansionBinding]()
-        index = 0
-        while index < length(expressions) {
-            let reference = get(expressions, index)
-            push(references, ExpansionBinding {
-                    local = reference.index
-                    value = reference
-                })
-            index = index + 1
-        }
-        let prepared = proof_expr(call, ExprKind.Call, call.ty, call.text, call.index, expressions)
-        value = expanded_call(context, prepared, proof_bool(call, true), references, proof.function.locals, false, 0, 0)?
-        if !bounded_contract(value) {
-            return Result.Err("body helper proof expansion budget exhausted")
-        }
+        index = index + 1
     }
+    let prepared = proof_expr(call, ExprKind.Call, call.ty, call.text, call.index, expressions)
+    let value = expanded_call(context, prepared, proof_bool(call, true), references, proof.function.locals, false, 0, 0)?
+    if !bounded_contract(value) {
+        return Result.Err("body helper proof expansion budget exhausted")
+    }
+    call_results(proof, value, context, state, boundary, depth)
+}
+
+fn call_results(proof Verification, value Expr, context Expansion, state State,
+    boundary Int, depth Int) Result[List[Outcome], Text] {
     let paths = established_checks(proof, context.checks, state, depth)?
     let output = new[Outcome]()
-    index = 0
+    var index = 0
     while index < length(paths) {
         let current = get(paths, index).state
         if !holds(Predicate.Constant(false), current.facts) {
@@ -413,6 +457,10 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
         return Result.Err("body proof call has no checked helper instance")
     }
     let function = get(proof.program.functions, call.index)
+    let primitive = forwarded_list_operation(proof.program, function, 0)
+    if primitive != "" {
+        return execute_list_operation(proof, call, primitive, state, depth)
+    }
     if function.runtime_name != "" || !helper_type(proof.program, function.result, 0) || function.result == 5 || length(function.params) != length(call.children) {
         return Result.Err("body proof needs a checked scalar or inline aggregate source function")
     }

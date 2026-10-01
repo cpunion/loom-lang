@@ -46,8 +46,8 @@ test fn contracted_opaque_inputs_contribute_no_scalar_facts() {
             number
         }
         """)
-    rejects("""
-        fn unmodeled(values List[Int], number Int) Int
+    discard accepted("""
+        fn write_keeps_scalar_result(values List[Int], number Int) Int
         ensures result == number {
             values[0] = number
             number

@@ -42,7 +42,7 @@ fn helper_type(program Program, ty Int, depth Int) Bool {
     }
     // Inline aggregate leaves may be opaque. Projection does not establish
     // facts about their shared storage or permit operations on that storage.
-    shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple
+    shape.kind == TypeKind.Record || shape.kind == TypeKind.Tuple || shape.kind == TypeKind.List
 }
 
 fn expanded_field(context Expansion, field Expr, value Expr, depth Int) Result[Expr, Text] {
@@ -124,6 +124,13 @@ fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[Expans
     let function = get(context.program.functions, value.index)
     if context.list_lengths && function.runtime_name == "list_len" && length(value.children) == 1 {
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
+    }
+    if function.runtime_name == "list_len" && function.result == 1 &&
+        length(function.params) == 1 && proof_list_type(context.program, get(function.params, 0)) &&
+        length(value.children) == 1 {
+        let children = new[Expr]()
+        push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
+        return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, "list_len", -1, children))
     }
     if function.runtime_name == "text_len" && function.result == 1 &&
         length(function.params) == 1 && get(function.params, 0) == 3 && length(value.children) == 1 {
@@ -223,10 +230,10 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     if context.list_lengths && value.kind == ExprKind.Intrinsic && value.text == "list_len" && length(value.children) == 1 {
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
     }
-    if text_length_expression(value) {
+    if text_length_expression(value) || list_length_expression(value) {
         let children = new[Expr]()
         push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
-        return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, "text_len", -1, children))
+        return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, value.text, -1, children))
     }
     if value.kind == ExprKind.Coerce { return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1) }
     if value.kind == ExprKind.Field {
@@ -269,7 +276,8 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
 fn total_scalar(value Expr) Bool {
     if value.kind == ExprKind.Local || value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text { return true }
     if value.kind != ExprKind.Unary && value.kind != ExprKind.Binary && value.kind != ExprKind.If &&
-        value.kind != ExprKind.Field && value.kind != ExprKind.Record && !text_length_expression(value) { return false }
+        value.kind != ExprKind.Field && value.kind != ExprKind.Record && !text_length_expression(value) &&
+        !list_length_expression(value) { return false }
     var index = 0
     while index < length(value.children) {
         if !total_scalar(get(value.children, index)) { return false }

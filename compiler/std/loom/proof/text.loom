@@ -55,7 +55,8 @@ fn implication_initial(premise Expr, conclusion Expr) State {
         })
     bounded(get(locals, 0), State {
             locals = locals
-            facts = new[Predicate]()
+        facts = new[Predicate]()
+        extents = new[ListExtent]()
         })
 }
 

@@ -119,7 +119,11 @@ test fn short_circuit_contracts_skip_only_proved_unreachable_operands() {
 }
 
 test fn proof_outcomes_never_exceed_the_path_budget() {
-    let state = State { locals = new[Value]() facts = new[Predicate]() }
+    let state = State {
+        locals = new[Value]()
+        facts = new[Predicate]()
+        extents = new[ListExtent]()
+    }
     let output = new[Outcome]()
     let value = Outcome { state = state value = Value.Empty }
     var index = 0

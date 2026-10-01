@@ -20,6 +20,7 @@ fn invariant_predicate(predicate Expr, value Value, state State) State {
     match pure(predicate, State {
             locals = locals
             facts = state.facts
+            extents = state.extents
         }) {
         Result.Ok(known) => match known {
             Value.Boolean(fact) => assume(state, fact)
@@ -66,7 +67,7 @@ fn invariant_facts(types List[Type], ty Int, value Value, state State, depth Int
             }
         }
     }
-    // Lists and other shared contents remain opaque. An inline sibling's
-    // invariant says nothing about shared aliases or future heap reads.
+    // Shared contents remain opaque. A length predicate is an entry fact;
+    // mutation or opaque calls must not retain it for a fresh current extent.
     state
 }
