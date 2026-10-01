@@ -376,7 +376,25 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         if !bounded_contract(value) {
             return Result.Err("body helper proof expansion budget exhausted")
         }
-        discard append(output, call_results(proof, value, context, after, boundary, depth)?)?
+        let snapshots = Expansion {
+            program = context.program
+            list_lengths = false
+            budget = context.budget
+            active = context.active
+            checks = new[Evaluation]()
+        }
+        var check_index = 0
+        while check_index < length(context.checks) {
+            let check = get(context.checks, check_index)
+            let guard = capture_entry(check.guard, before, after)?
+            let observed = capture_entry(check.value, before, guard.state)?
+            after = observed.state
+            discard evaluated(snapshots, guard.expression, observed.expression, check.required)?
+            check_index = check_index + 1
+        }
+        let captured = capture_entry(value, before, after)?
+        discard append(output, call_results(proof, captured.expression, snapshots,
+                captured.state, boundary, depth)?)?
         index = index + 1
     }
     Result.Ok(output)

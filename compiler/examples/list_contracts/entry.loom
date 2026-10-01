@@ -1,0 +1,32 @@
+fn append_entry[T](values List[T], value T) Int
+ensures result == old(length(values))
+ensures length(values) == old(length(values)) + 1
+{
+    let before = length(values)
+    push(values, value)
+    before
+}
+
+fn append_twice(values List[Int]) Int
+ensures result == old(length(values))
+ensures length(values) == old(length(values)) + 2
+{
+    let first = append_entry(values, 8)
+    let second = append_entry(values, 9)
+    assert second == first + 1
+    first
+}
+
+async fn exercise_entry_lengths() {
+    let values List[Int] = []
+    let alias = values
+    assert append_twice(values) == 0
+    sleep_ms(1).await
+    assert length(alias) == 2 && alias[0] == 8 && alias[1] == 9
+    assert append_twice(alias) == 2
+    assert length(values) == 4
+}
+
+test async fn entry_lengths_are_per_invocation_and_have_no_runtime_snapshot() {
+    exercise_entry_lengths().await
+}

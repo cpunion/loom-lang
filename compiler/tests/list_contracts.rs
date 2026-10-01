@@ -22,7 +22,10 @@ fn list_lengths_track_shared_state_without_runtime_postconditions() {
                 .output()
                 .unwrap(),
         );
-        assert!(!fs::read_to_string(&ir).unwrap().contains("62917384"));
+        let ir = fs::read_to_string(&ir).unwrap();
+        for proof_only in ["62917384", "contract_old", "entry_list_len"] {
+            assert!(!ir.contains(proof_only));
+        }
         success(
             &Command::new(&executable)
                 .env("LOOM_GC_STRESS", "1")

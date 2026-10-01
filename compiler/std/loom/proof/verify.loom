@@ -526,11 +526,20 @@ fn verify_body(proof Verification) Result[Bool, Text] {
         state = assume(state, boolean(pure(get(function.preconditions, index), state)?)?)
         index = index + 1
     }
-    let exits = execute(proof, function.body, state, 256)?
+    let captured = capture_conditions(function.postconditions, state)?
+    let observed_function = snapshot_function(function, captured.conditions)
+    let prepared = Verification {
+        function = observed_function
+        program = proof.program
+        fresh = proof.fresh
+        budget = proof.budget
+        loop_control = proof.loop_control
+    }
+    let exits = execute(prepared, function.body, captured.state, 256)?
     index = 0
     while index < length(exits) {
         let exit = get(exits, index)
-        discard returned(function, exit.state, exit.value)?
+        discard returned(observed_function, exit.state, exit.value)?
         index = index + 1
     }
     Result.Ok(true)

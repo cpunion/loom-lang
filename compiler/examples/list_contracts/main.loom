@@ -82,6 +82,7 @@ async fn exercise() {
 async fn main() {
     exercise().await
     exercise_copies().await
+    exercise_entry_lengths().await
 }
 
 test async fn shared_lengths_survive_updates_loops_and_suspension() {

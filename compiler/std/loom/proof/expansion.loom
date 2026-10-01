@@ -211,6 +211,9 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     if value.kind == ExprKind.Block { return expanded_block(context, value, guard, bindings, locals, self, calls, depth + 1, false) }
     if value.kind == ExprKind.If { return expanded_branches(context, value, guard, bindings, locals, self, calls, depth + 1, false) }
     if length(value.arms) != 0 { return Result.Err("helper expression has unsupported match paths") }
+    if value.kind == ExprKind.Intrinsic && value.text == "contract_old" && length(value.children) == 1 {
+        return expanded_entry(context, value, guard, bindings, locals, self, calls, depth + 1)
+    }
     if value.kind == ExprKind.Local {
         var index = length(bindings)
         while index > 0 {
@@ -230,7 +233,7 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     if context.list_lengths && value.kind == ExprKind.Intrinsic && value.text == "list_len" && length(value.children) == 1 {
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
     }
-    if text_length_expression(value) || list_length_expression(value) {
+    if text_length_expression(value) || list_length_expression(value) || entry_length_expression(value) {
         let children = new[Expr]()
         push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
         return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, value.text, -1, children))
@@ -277,7 +280,7 @@ fn total_scalar(value Expr) Bool {
     if value.kind == ExprKind.Local || value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text { return true }
     if value.kind != ExprKind.Unary && value.kind != ExprKind.Binary && value.kind != ExprKind.If &&
         value.kind != ExprKind.Field && value.kind != ExprKind.Record && !text_length_expression(value) &&
-        !list_length_expression(value) { return false }
+        !list_length_expression(value) && !entry_length_expression(value) { return false }
     var index = 0
     while index < length(value.children) {
         if !total_scalar(get(value.children, index)) { return false }

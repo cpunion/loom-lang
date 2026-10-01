@@ -30,6 +30,64 @@ fn checked(output: &Output, hit: bool) {
 }
 
 #[test]
+fn entry_length_contracts_survive_edited_body_cache_reuse() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("app");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&package).unwrap();
+    let path = package.join("main.loom");
+    let source = r#"
+import std.list.length
+import std.list.push
+fn append(values List[Int]) Int
+ensures result == old(length(values))
+ensures length(values) == old(length(values)) + 1
+{
+    let before = length(values)
+    push(values, 0)
+    before
+}
+fn twice(values List[Int]) Int
+ensures result == old(length(values))
+ensures length(values) == old(length(values)) + 2
+{
+    let first = append(values)
+    assert append(values) == first + 1
+    first
+}
+fn main() {
+    let values List[Int] = []
+    assert twice(values) == 0
+    assert twice(values) == 2
+}
+"#;
+    fs::write(&path, source).unwrap();
+    checked(&cached("emit-checked", &package, &cache, &[]), false);
+    fs::write(&path, format!("fn unrelated() Int {{ 1 }}\n{source}")).unwrap();
+    let reused = cached("emit-checked", &package, &cache, &[]);
+    checked(&reused, false);
+    let trace = String::from_utf8_lossy(&reused.stderr);
+    let bodies: usize = trace
+        .split(", bodies reused ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(bodies >= 3, "{trace}");
+    checked(&cached("run", &package, &cache, &[]), true);
+    // The helper edit invalidates dependent summaries, not just its body.
+    fs::write(
+        &path,
+        source.replace("    before\n", "    length(values)\n"),
+    )
+    .unwrap();
+    let invalid = cached("check", &package, &cache, &[]);
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("postcondition"));
+}
+
+#[test]
 fn closure_callers_reuse_without_restoring_old_capture_environments() {
     let directory = tempfile::tempdir().unwrap();
     let package = directory.path().join("app");

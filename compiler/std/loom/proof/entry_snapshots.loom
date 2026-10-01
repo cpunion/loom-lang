@@ -1,0 +1,115 @@
+fn entry_length_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "entry_list_len" &&
+    value.ty == 1 && length(value.children) == 1
+}
+
+// Snapshot mutable observations, not their surrounding arithmetic. This keeps
+// short-circuit guards and eager helper-argument definedness in the contract.
+fn entry_reads(value Expr) Expr {
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, entry_reads(get(value.children, index)))
+        index = index + 1
+    }
+    proof_expr(value, value.kind, value.ty,
+        if list_length_expression(value) {
+            "entry_list_len"
+        } else {
+            value.text
+        },
+        value.index, children)
+}
+
+fn expanded_entry(context Expansion, value Expr, guard Expr,
+    bindings List[ExpansionBinding], locals List[Local], self Bool,
+    calls Int, depth Int) Result[Expr, Text] {
+    let entry = Expansion {
+        program = context.program
+        list_lengths = false
+        budget = context.budget
+        active = context.active
+        checks = new[Evaluation]()
+    }
+    let observed = expanded(entry, get(value.children, 0), proof_bool(value, true),
+        bindings, locals, self, calls, depth + 1)?
+    var index = 0
+    while index < length(entry.checks) {
+        let check = get(entry.checks, index)
+        discard evaluated(context, proof_and(guard, entry_reads(check.guard)),
+            entry_reads(check.value), check.required)?
+        index = index + 1
+    }
+    Result.Ok(entry_reads(observed))
+}
+
+record EntrySnapshot {
+    expression Expr
+    state State
+}
+
+// Entry/current may differ for a callee summary. Read from its own invocation
+// state, then place the scalar snapshot in the post-call proof scope. These
+// locals are private to verification and never enter Function.locals or MIR.
+fn capture_entry(value Expr, entry State, current State) Result[EntrySnapshot, Text] {
+    if entry_length_expression(value) {
+        let read = proof_expr(value, ExprKind.Intrinsic, 1, "list_len", -1, value.children)
+        let values = new[Value]()
+        push(values, pure(read, entry)?)
+        return Result.Ok(EntrySnapshot {
+                expression = proof_expr(value, ExprKind.Local, 1, "", length(current.locals), new[Expr]())
+                state = call_scope(current, values)
+            })
+    }
+    let children = new[Expr]()
+    var state = current
+    var index = 0
+    while index < length(value.children) {
+        let captured = capture_entry(get(value.children, index), entry, state)?
+        push(children, captured.expression)
+        state = captured.state
+        index = index + 1
+    }
+    Result.Ok(EntrySnapshot {
+            expression = proof_expr(value, value.kind, value.ty, value.text, value.index, children)
+            state = state
+        })
+}
+
+record EntryConditions {
+    conditions List[Expr]
+    state State
+}
+
+fn capture_conditions(conditions List[Expr], entry State) Result[EntryConditions, Text] {
+    let output = new[Expr]()
+    var state = entry
+    var index = 0
+    while index < length(conditions) {
+        let captured = capture_entry(get(conditions, index), entry, state)?
+        push(output, captured.expression)
+        state = captured.state
+        index = index + 1
+    }
+    Result.Ok(EntryConditions {
+            conditions = output
+            state = state
+        })
+}
+
+fn snapshot_function(function Function, conditions List[Expr]) Function {
+    Function {
+        is_async = function.is_async
+        symbol = function.symbol
+        arguments = function.arguments
+        params = function.params
+        result = function.result
+        locals = function.locals
+        preconditions = function.preconditions
+        postconditions = conditions
+        result_local = function.result_local
+        body = function.body
+        runtime_name = function.runtime_name
+        span = function.span
+    }
+}

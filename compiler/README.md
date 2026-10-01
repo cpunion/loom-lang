@@ -2086,7 +2086,7 @@ and inline fields. Extent-changing loops freshen affected lengths at the inducti
 all retained invariants still require entry/backedge proofs. See the
 [List contract example](examples/list_contracts), which proves length preservation
 during an actual sorting loop, **not** sortedness or permutation. General element
-relationships, mutable `old` snapshots and List-local reassignment in proof loops
+relationships, element-content snapshots and List-local reassignment in proof loops
 remain unsupported. These proof states add no native object metadata.
 
 Aggregate summaries compose through nested calls, field projections and
@@ -2099,12 +2099,16 @@ shared-state invariant or alias-mutation proof. Predicate helpers still evaluate
 every argument and initializer, including an unused field that could overflow.
 `old` denotes immutable entry expressions: parameter paths, immutable aggregates,
 arithmetic and finite pure helpers can compose (`old(value).count`,
-`old(identity(value)).0`). Every operand must be entry-derived and immutable;
+`old(identity(value)).0`). `old(length(values))` also captures a List's entry
+length, including through inline fields and finite pure helpers. These scalar
+observations remain valid after append, alias mutation and nested calls; each
+callee summary uses its own invocation's entry, after argument evaluation.
+Operands must be entry-derived and the observed result must be immutable;
 an immutable field can be selected beside an unobserved shared sibling, but
 `old` of a whole aggregate containing shared mutable storage rejects. Helper
 arguments and predicate arithmetic still require definedness, even when a
 helper ignores an argument. No entry computation or snapshot allocation enters
-native code. Callback parameters, result/body-local references and shared-data
+native code. Callback parameters, result/body-local references and List element
 snapshots remain unsupported; this is not general heap-entry reasoning.
 See the [aggregate contract example](examples/aggregate_contracts/main.loom).
 

@@ -1,0 +1,19 @@
+// Shared inputs are permitted only inside a proved, pure entry observation.
+// The result is an immutable value, never a shallow snapshot of a List handle.
+fn old_observation(context Context, node Node) Result[Expr, Failure] {
+    if lookup(context, "result") < 0 {
+        return Result.Err(error(context, node, "old is only valid in ensures"))
+    }
+    let argument = child(node, 0)
+    if !old_entry_expression(context, argument, true, 0)? {
+        return Result.Err(error(context, node, "old requires an immutable entry value or a supported pure observation"))
+    }
+    let value = expr(context, argument, -1)?
+    if !inline_constraint_base(context.env, value.ty, 0) {
+        return Result.Err(error(context, node, "old requires an immutable entry value or a supported pure observation"))
+    }
+    // Contract-only metadata. Expansion validates the helper closure and
+    // preserves entry reads; this intrinsic never becomes executable IR.
+    Result.Ok(expression(ExprKind.Intrinsic, value.ty, node, "contract_old", -1,
+            expressions(value), true))
+}

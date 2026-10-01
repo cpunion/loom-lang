@@ -122,7 +122,7 @@ test fn list_extents_follow_inline_fields_and_preserved_type_constraints() {
         {
             length(values)
         }
-        """, false)
+        """, true)
     list_length_contract("""
         import std.list.length
         fn contents(values List[Int]) Int
