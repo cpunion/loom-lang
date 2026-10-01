@@ -308,7 +308,8 @@ async function privateRenameSmoke(executable, stdRoot) {
     await client.change(helper, 'pub fn helper() Int { 7 }\n', 4);
     await client.change(file, source, 4);
     assert.deepEqual((await client.wait(file, 4)).diagnostics, []);
-    await assert.rejects(renameAt('utility'), /package-private top-level function/);
+    const publicEdit = await renameAt('utility');
+    assert.deepEqual(Object.keys(publicEdit.changes).sort(), [helperUri, testUri, uri].sort());
     assert.equal(await fs.readFile(file, 'utf8'), savedMain);
     assert.equal(await fs.readFile(helper, 'utf8'), savedHelper);
     assert.equal(await fs.readFile(helperTest, 'utf8'), savedTest);
@@ -613,6 +614,7 @@ fn main() {
     await autoImportSmoke(executable, stdRoot);
     await directDependencyAutoImportSmoke(executable, stdRoot);
     await privateRenameSmoke(executable, stdRoot);
+    await require('./public-rename').publicRenameSmoke(executable, stdRoot);
     await require('./binding-rename').bindingRenameSmoke(executable, stdRoot);
     await buildInputSmoke(executable, stdRoot);
     await buildOptionSmoke(executable, stdRoot);

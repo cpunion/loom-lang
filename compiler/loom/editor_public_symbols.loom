@@ -1,0 +1,362 @@
+import std.loom.binding.candidates
+import std.loom.project.name
+
+// Public function edits cover this module, not external consumers or dependency
+// snapshots. Each directory keeps its own private test scope and checked IDs.
+fn editor_import_selected(analysis Analysis, file Int, token Token, tokens List[Token]) Option[Location] {
+    let declarations = get(analysis.bindings.files, file).tree.children
+    var index = 0
+    while index < length(declarations) {
+        let node = get(declarations, index)
+        if node.kind == NodeKind.Import && token.span.start >= node.span.start && token.span.end <= node.span.end {
+            let member = std.loom.project.name(node.value)
+            var last = token.span
+            var item = 0
+            while item < length(tokens) {
+                let part = get(tokens, item)
+                if part.kind == Kind.Name && part.span.start >= node.span.start && part.span.end <= node.span.end {
+                    last = part.span
+                }
+                item = item + 1
+            }
+            if token.value != member || !editor_same_span(token.span, last) {
+                return Option.None
+            }
+            let candidates = std.loom.binding.candidates(analysis.bindings, file, true, node.value)
+            if length(candidates) != 1 {
+                return Option.None
+            }
+            let symbol = get(analysis.bindings.symbols, get(candidates, 0))
+            let source = get(analysis.bindings.files, symbol.file)
+            let declared = match lex(source.text) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Option.None
+                }
+            }
+            return match editor_name(declared, symbol.node) {
+                Option.Some(span) => Option.Some(Location {
+                        file = symbol.file
+                        span = span
+                    })
+                Option.None => Option.None
+            }
+        }
+        index = index + 1
+    }
+    Option.None
+}
+
+fn editor_generated(node Node) Bool {
+    if node.kind == NodeKind.MacroCall {
+        return true
+    }
+    var index = 0
+    while index < length(node.children) {
+        if editor_generated(get(node.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+record EditorPublicEdit {
+    path Text
+    text Text
+    spans List[Span]
+}
+
+fn editor_public_edit(edits List[EditorPublicEdit], path Text, text Text, span Span) Bool {
+    var index = 0
+    while index < length(edits) {
+        let edit = get(edits, index)
+        if edit.path == path {
+            if edit.text != text {
+                return false
+            }
+            var item = 0
+            while item < length(edit.spans) {
+                if editor_same_span(get(edit.spans, item), span) {
+                    return true
+                }
+                item = item + 1
+            }
+            push(edit.spans, span)
+            return true
+        }
+        index = index + 1
+    }
+    let spans = new[Span]()
+    push(spans, span)
+    push(edits, EditorPublicEdit {
+            path = path
+            text = text
+            spans = spans
+        })
+    true
+}
+
+fn editor_public_target(analysis Analysis, path Text, span Span) Option[Location] {
+    var file = 0
+    while file < length(analysis.bindings.files) {
+        if get(analysis.bindings.files, file).path == path {
+            return Option.Some(Location {
+                    file = file
+                    span = span
+                })
+        }
+        file = file + 1
+    }
+    Option.None
+}
+
+fn editor_public_visible(analysis Analysis, file Int, target Location, spelling Text) Bool {
+    let candidates = std.loom.binding.candidates(analysis.bindings, file, true, spelling)
+    var index = 0
+    while index < length(candidates) {
+        let symbol = get(analysis.bindings.symbols, get(candidates, index))
+        if symbol.file == target.file {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn editor_public_collect(analysis Analysis, module Text, path Text, span Span,
+    spelling Text, name Text, edits List[EditorPublicEdit]) Result[Bool, Text] {
+    let target = match editor_public_target(analysis, path, span) {
+        Option.Some(value) => value
+        Option.None => {
+            return Result.Ok(true)
+        }
+    }
+    if !editor_top_function(analysis, target, spelling, true) {
+        return Result.Err("Public function rename requires one ordinary declaration, not overloads or generated declarations")
+    }
+    let references = editor_references(analysis, target, spelling)
+    var file = 0
+    while file < length(analysis.bindings.files) {
+        let source = get(analysis.bindings.files, file)
+        // Imported packages omit their tests in this analysis. Their own root
+        // analysis accounts for those uses; never mistake omission for evidence.
+        if source.package == analysis.bindings.root {
+            let visible = editor_public_visible(analysis, file, target, spelling)
+            if name != "" && (editor_generated(source.tree) || std.loom.checking.has_declaration_stages(analysis.source, true)) {
+                return Result.Err("Public function rename cannot account for generated source references")
+            }
+            let tokens = match lex(source.text) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Err("Cannot lex a module source file")
+                }
+            }
+            var index = 0
+            while index < length(tokens) {
+                let token = get(tokens, index)
+                let location = Location {
+                    file = file
+                    span = token.span
+                }
+                if visible && name != "" && name != spelling && token.kind == Kind.Name && token.value == name {
+                    return Result.Err("Rename would conflict with a name in an affected package")
+                }
+                if token.kind == Kind.Name && token.value == spelling {
+                    var reference = editor_contains(references, location)
+                    match editor_import_selected(analysis, file, token, tokens) {
+                        Option.Some(imported) => {
+                            if editor_same_location(imported, target) {
+                                reference = true
+                            }
+                        }
+                        Option.None => {
+                        }
+                    }
+                    if reference {
+                        if !std.text.starts_with(source.path, join_path(module, "")) ||
+                        !editor_public_edit(edits, source.path, source.text, token.span) {
+                            return Result.Err("Public function rename cannot edit an external or changing source file")
+                        }
+                    } else if visible && name != "" {
+                        // A distinct checked binding is not a reference. Unknown
+                        // occurrences may live in an uninstantiated body.
+                        let known_other = match inspect_at(analysis, file, token.span.start) {
+                            Option.Some(found) => length(found.definitions) == 1 &&
+                            !editor_same_location(get(found.definitions, 0), target)
+                            Option.None => editor_declaration(source.tree, tokens, token.span)
+                        }
+                        if !known_other {
+                            return Result.Err("Rename cannot account for every occurrence of this public function")
+                        }
+                    }
+                }
+                index = index + 1
+            }
+        }
+        file = file + 1
+    }
+    Result.Ok(true)
+}
+
+fn editor_public_overlays(options EditorOptions, edits List[EditorPublicEdit], name Text) List[SourceOverlay] {
+    let overlays = new[SourceOverlay]()
+    var index = 0
+    while index < length(options.overlays) {
+        let overlay = get(options.overlays, index)
+        var edited = false
+        var item = 0
+        while item < length(edits) {
+            if editor_same_source_path(overlay.path, get(edits, item).path) {
+                edited = true
+            }
+            item = item + 1
+        }
+        if !edited {
+            push(overlays, overlay)
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(edits) {
+        let edit = get(edits, index)
+        let references = new[Location]()
+        var item = 0
+        while item < length(edit.spans) {
+            push(references, Location {
+                    file = 0
+                    span = get(edit.spans, item)
+                })
+            item = item + 1
+        }
+        let revised = match editor_replaced_references(edit.text, 0, references, name) {
+            Option.Some(value) => value
+            Option.None => edit.text
+        }
+        push(overlays, SourceOverlay {
+                path = edit.path
+                text = revised
+            })
+        index = index + 1
+    }
+    overlays
+}
+
+fn editor_module_analysis(options EditorOptions, directory Text, overlays List[SourceOverlay],
+    inputs BuildInputs, cache EditorCache) Result[Analysis, Text] {
+    let project = match load_overlaid(directory, options.std_root, true, overlays) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(failed.diagnostic.message)
+        }
+    }
+    let bindings = match bind_headers(project, true) {
+        Result.Ok(value) => value
+        Result.Err(failed) => {
+            return Result.Err(failed.diagnostic.message)
+        }
+    }
+    match editor_checked(bindings, inputs, cache) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(failed) => Result.Err(failed.diagnostic.message)
+    }
+}
+
+fn editor_public_symbols(options EditorOptions, initial Analysis, target Location,
+    spelling Text, inputs BuildInputs) EditorOutput {
+    let rename = options.new_name != ""
+    if rename && !editor_valid_new_name(options.new_name) {
+        return editor_error("Rename needs a valid non-reserved Loom identifier")
+    }
+    if !options.tests {
+        return editor_error("Public function queries require --tests to account for every package's tests")
+    }
+    let root = get(initial.bindings.packages, initial.bindings.root)
+    let module = get(initial.bindings.modules, root.instance).source
+    let path = get(initial.bindings.files, target.file).path
+    let extra = new[Text]()
+    var index = 0
+    while index < length(options.overlays) {
+        match canonicalize(executable_directory(get(options.overlays, index).path)) {
+            Result.Ok(directory) => {
+                push(extra, directory)
+            }
+            Result.Err(_) => {
+            }
+        }
+        index = index + 1
+    }
+    let packages = new[Text]()
+    match package_directories(module, true, packages, extra) {
+        Result.Err(message) => {
+            return editor_error(message)
+        }
+        Result.Ok(_) => {
+        }
+    }
+    let edits = new[EditorPublicEdit]()
+    let cache = editor_cache()
+    index = 0
+    while index < length(packages) {
+        let directory = get(packages, index)
+        let analysis = if editor_same_source_path(directory, options.path) {
+            initial
+        } else {
+            match editor_module_analysis(options, directory, options.overlays, inputs, cache) {
+                Result.Ok(value) => value
+                Result.Err(message) => {
+                    return editor_error(concat("Cannot check module package: ", message))
+                }
+            }
+        }
+        match editor_public_collect(analysis, module, path, target.span, spelling, options.new_name, edits) {
+            Result.Err(message) => {
+                return editor_error(message)
+            }
+            Result.Ok(_) => {
+            }
+        }
+        index = index + 1
+    }
+    if rename {
+        let overlays = editor_public_overlays(options, edits, options.new_name)
+        index = 0
+        while index < length(packages) {
+            match editor_module_analysis(options, get(packages, index), overlays, inputs, cache) {
+                Result.Err(_) => {
+                    return editor_error("Rename would invalidate a module package")
+                }
+                Result.Ok(_) => {
+                }
+            }
+            index = index + 1
+        }
+    }
+    var locations = "["
+    index = 0
+    var count = 0
+    while index < length(edits) {
+        let edit = get(edits, index)
+        var item = 0
+        while item < length(edit.spans) {
+            let span = get(edit.spans, item)
+            if count > 0 {
+                locations = concat(locations, ",")
+            }
+            locations = concat(locations, concat("{\"path\":", concat(editor_quoted(edit.path),
+                        concat(",\"start\":", concat(to_text(span.start), concat(",\"end\":", concat(to_text(span.end), "}")))))))
+            count = count + 1
+            item = item + 1
+        }
+        index = index + 1
+    }
+    let prefix = if rename {
+        "{\"diagnostics\":[],\"edits\":"
+    } else {
+        concat("{\"diagnostics\":[],\"declaration\":", concat(editor_location_json(initial.bindings, target), ",\"references\":"))
+    }
+    EditorOutput {
+        text = concat(prefix, concat(locations, "]}\n"))
+        failed = false
+    }
+}

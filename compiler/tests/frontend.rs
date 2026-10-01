@@ -90,6 +90,96 @@ pub fn runtime(value Int) Int {
 }
 
 #[test]
+fn public_function_rename_checks_all_module_packages_and_their_tests() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    for name in ["app", "library", "other", "nested"] {
+        fs::create_dir(root.join(name)).unwrap();
+    }
+    let sources = [
+        ("loom.toml", "[module]\nname = 'demo'\n"),
+        (
+            "app/main.loom",
+            "import demo.library.answer\n\nfn main() {\n    assert demo.library.answer(7) == 7\n}\n",
+        ),
+        (
+            "app/main_test.loom",
+            "test fn application() {\n    assert answer(8) == 8\n}\n",
+        ),
+        (
+            "library/main.loom",
+            r#"pub fn answer(value Int) Int
+ensures result == value
+{
+    value
+}
+
+test fn embedded() {
+    assert answer(4) == 4
+}
+"#,
+        ),
+        (
+            "library/main_test.loom",
+            "test fn library() {\n    assert answer(5) == 5\n}\n",
+        ),
+        ("other/main.loom", "pub fn answer() Int {\n    99\n}\n"),
+        ("nested/loom.toml", "[module]\nname = 'nested'\n"),
+        ("nested/main.loom", "not a valid separate module\n"),
+    ];
+    for (name, text) in sources {
+        fs::write(root.join(name), text).unwrap();
+    }
+    let app = root.join("app");
+    let source = app.join("main.loom");
+    let output = source_compiler(
+        &common::compiler(),
+        &[
+            "editor-rename",
+            app.to_str().unwrap(),
+            "--at",
+            source.to_str().unwrap(),
+            &sources[1].1.find("answer").unwrap().to_string(),
+            "--to",
+            "identity",
+            "--tests",
+        ],
+    );
+    success(&output);
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(report.matches("\"start\":").count(), 6, "{report}");
+    assert!(!report.contains("other"), "{report}");
+    for (name, text) in sources {
+        assert_eq!(fs::read_to_string(root.join(name)).unwrap(), text);
+    }
+    // Apply the known edits as a native acceptance trial, not a second rename
+    // implementation. The editor request above must never publish source.
+    for (name, text) in sources
+        .iter()
+        .filter(|(name, _)| name.starts_with("app/") || name.starts_with("library/"))
+    {
+        fs::write(root.join(name), text.replace("answer", "identity")).unwrap();
+    }
+    for command in ["check", "test", "run"] {
+        success(&source_compiler(
+            &common::compiler(),
+            &[command, app.to_str().unwrap()],
+        ));
+    }
+    let executable = common::executable(root, "renamed");
+    success(&source_compiler(
+        &common::compiler(),
+        &[
+            "build",
+            app.to_str().unwrap(),
+            "--output",
+            executable.to_str().unwrap(),
+        ],
+    ));
+    success(&Command::new(executable).output().unwrap());
+}
+
+#[test]
 fn init_creates_a_runnable_project_without_overwriting_one() {
     let temporary = tempfile::tempdir().unwrap();
     let compiler = common::compiler();

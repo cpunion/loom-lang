@@ -16,7 +16,7 @@ syntax, APIs and supported proof fragment.
 | Guarantees | Checked constrained construction, safe weakening, bounded mandatory postconditions and selected invariant-preserving operations. | General loop proofs and mutable-alias preservation remain open. |
 | Metaprogramming | Pure compile-time execution, type/value/function parameters, packs, typed macros, reflection and tracked inputs. | Staging and visibility still apply; no arbitrary compile-time I/O. |
 | Memory/resources/async | Moving GC, lexical cleanup, stackless Tasks, real timers, files, DNS/TCP/TLS and tuple/List joins. | Cooperative scheduling; general worker APIs remain open. |
-| Programming tools | Directory tests, recursive test selection, formatter, LSP/VS Code, public parser/analysis libraries. | Public/API rename and broader erroneous-source queries remain open. |
+| Programming tools | Directory tests, recursive test selection, formatter, LSP/VS Code, public parser/analysis libraries. | Type/field and external-consumer API edits, broader erroneous-source queries remain open. |
 | Evolution tools | Reviewed single-package semantic merge and a real offline SQLite migration trial. | Bounded prototypes, not general semantic VCS or deployment compatibility proof. |
 
 ## Build and programming experience
@@ -52,8 +52,14 @@ explicitly discarded, and Task/MustScope obligations cannot be discarded.
 
 The [VS Code extension](../../editors/vscode/README.md) uses the real compiler
 for unsaved diagnostics, formatting, hover/navigation, name/member/import
-completion, checked import fixes, parameter/local-pattern rename and narrow private-function
-rename. Resident workers reuse valid analyses and definition checks while
+completion, checked import fixes, parameter/local-pattern rename and checked
+function rename. One public top-level function can be renamed throughout its
+local module, including import declarations, qualified calls, callbacks, embedded
+tests and unopened test files. Each directory retains its private test scope;
+the complete virtual edit is checked before offering it. Nested modules and
+directory aliases are excluded, as in recursive tests. Unknown occurrences,
+overloads and generated references refuse edits; dependency snapshots and
+external consumers are not rewritten. Resident workers reuse valid analyses and definition checks while
 revalidating loaded source and observed inputs. Completion recovery is virtual;
 it supplies neither build success nor proof evidence.
 Runtime parameter declarations and match payload/whole bindings retain exact
@@ -65,8 +71,8 @@ optional binding trace before specialization erases uses; values, callbacks and
 covered compile-time blocks/branches work without executable IR metadata. Hover
 retains concrete parameter types and navigation follows the source binding,
 including specialized callbacks.
-Unobserved branches, packs and untracked captures still refuse edits. Public API
-rename and broader recovery/query support remain open.
+Unobserved branches, packs and untracked captures still refuse edits. Type/field
+rename, external-consumer API migration and broader recovery/query support remain open.
 
 Public `std.loom` syntax, fragment parsing, project/binding and typed-analysis
 libraries are the same implementation used by the compiler. In-memory syntax
