@@ -656,7 +656,7 @@ fn inspect_tree(analysis SemanticView, report Inspection, function Function, tar
 
 // Uses actual checked instances, never spelling-only resolution. Results merge
 // every concrete instance; locations and type labels are deduplicated. Whitespace,
-// comments, punctuation and uninstantiated bodies have no result.
+// comments, punctuation and uses without checked binding evidence have no result.
 // Match bindings and lowered checked constructors have types but no location. Dynamic calls
 // navigate to a unique concept signature, never a speculative implementation;
 // overloaded signatures not distinguished by name/arity omit the location.

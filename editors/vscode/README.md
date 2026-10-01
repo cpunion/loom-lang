@@ -136,7 +136,7 @@ This is checked navigation, not a complete symbol index. References use
 exact definition spans from checked uses and can include the declaration. One
 public top-level function, nominal type or concept in the current module also includes import declarations
 and uses in other directory packages and their private tests. They omit
-uninstantiated bodies, unchecked syntax and ambiguous targets. A package error suppresses references and rename until the
+uses without checked binding evidence and ambiguous targets. A package error suppresses references and rename until the
 whole package checks; hover and definition retain their independent-function
 fallback.
 
