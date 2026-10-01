@@ -414,7 +414,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
             return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))
         }
     }
-    if (base == 1 || base == 5) && source.kind == TypeKind.Refined && base_type(context.env, input.ty) == base &&
+    if (base == 1 || base == 3 || base == 5) && source.kind == TypeKind.Refined && base_type(context.env, input.ty) == base &&
     length(source.constraint) == 1 && length(destination.constraint) == 1 &&
     implies(get(source.constraint, 0), get(destination.constraint, 0)) {
         return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))
@@ -444,7 +444,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
             return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))
         }
     }
-    if (base == 1 || base == 5) && source.kind == TypeKind.Refined && length(source.constraint) == 1 && length(destination.constraint) == 1 &&
+    if (base == 1 || base == 3 || base == 5) && source.kind == TypeKind.Refined && length(source.constraint) == 1 && length(destination.constraint) == 1 &&
     (predicate_calls(get(source.constraint, 0), 0) || predicate_calls(get(destination.constraint, 0), 0)) &&
     helpers_imply(context, node, source.symbol, declaration, base) {
         return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))

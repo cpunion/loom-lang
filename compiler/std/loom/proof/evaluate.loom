@@ -148,6 +148,12 @@ fn pure(expr Expr, state State) Result[Value, Text] {
     if expr.kind == ExprKind.Local {
         return Result.Ok(get(state.locals, expr.index))
     }
+    if text_length_expression(expr) {
+        return match pure(get(expr.children, 0), state)? {
+            Value.Text(value) => Result.Ok(Value.Number(text_length(value)))
+            _ => Result.Err("Text length proof requires immutable Text")
+        }
+    }
     if expr.kind == ExprKind.Coerce {
         return pure(get(expr.children, 0), state)
     }
@@ -210,7 +216,7 @@ fn bounded(value Value, state State) State {
             let high = Predicate.Compare("<=", add(term, constant(integer(-9223372036854775807))))
             assume(assume(state, low), high)
         }
-        _ => state
+        _ => text_bounds(value, state)
     }
 }
 
@@ -225,7 +231,7 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
     if holds(Predicate.Constant(false), state.facts) {
         return Result.Ok(true)
     }
-    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || expr.kind == ExprKind.Field {
+    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || expr.kind == ExprKind.Field || text_length_expression(expr) {
         discard defined(get(expr.children, 0), state)?
     }
     if expr.kind == ExprKind.Record {

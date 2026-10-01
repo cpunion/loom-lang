@@ -1,5 +1,64 @@
 // Immutable content equalities form finite classes of logical values. Follow
 // only established equality facts, never disjunctions or native pointer identity.
+fn text_length(value TextValue) Linear {
+    match value {
+        TextValue.Literal(text) => constant(integer(std.text.length(text)))
+        // This fresh identity denotes immutable bytes in the Text domain and
+        // their byte length in the numeric domain, never another Int local.
+        TextValue.Variable(id) => variable(id)
+    }
+}
+
+fn text_length_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "text_len" &&
+        value.ty == 1 && length(value.children) == 1
+}
+
+fn text_bounds(value Value, state State) State {
+    match value {
+        Value.Text(text) => assume(state, Predicate.Compare(">=", text_length(text)))
+        Value.Record(fields) => {
+            var bounded = state
+            var index = 0
+            while index < length(fields) {
+                bounded = text_bounds(get(fields, index), bounded)
+                index = index + 1
+            }
+            bounded
+        }
+        _ => state
+    }
+}
+
+// Optional refinement queries have one canonical self. Their checked, bounded
+// syntax determines its domain; never treat immutable Text as an Int value.
+fn text_self(value Expr) Bool {
+    if value.kind == ExprKind.Local && value.ty == 3 {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if text_self(get(value.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn implication_initial(premise Expr, conclusion Expr) State {
+    let locals = new[Value]()
+    push(locals, if text_self(premise) || text_self(conclusion) {
+            Value.Text(TextValue.Variable(0))
+        } else {
+            Value.Number(variable(0))
+        })
+    bounded(get(locals, 0), State {
+            locals = locals
+            facts = new[Predicate]()
+        })
+}
+
 fn distinct_text_literals(left TextValue, right TextValue) Bool {
     match left {
         TextValue.Literal(text) => match right {

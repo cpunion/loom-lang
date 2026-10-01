@@ -8,11 +8,11 @@ import std.list.length
 import std.result.Result
 
 fn implication_form(expr Expr, budget List[Int], depth Int) Bool {
-    if depth >= 64 || get(budget, 0) == 0 || (expr.ty != 1 && expr.ty != 2) { return false }
+    if depth >= 64 || get(budget, 0) == 0 || (expr.ty != 1 && expr.ty != 2 && expr.ty != 3) { return false }
     set(budget, 0, get(budget, 0) - 1)
-    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Bool { return true }
+    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text { return true }
     if expr.kind == ExprKind.Local { return expr.index == 0 }
-    let unary = expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce
+    let unary = expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || text_length_expression(expr)
     if !unary && expr.kind != ExprKind.Binary { return false }
     if length(expr.children) != (if unary { 1 } else { 2 }) { return false }
     var index = 0
@@ -24,9 +24,7 @@ fn implication_form(expr Expr, budget List[Int], depth Int) Bool {
 }
 
 fn implication(premise Expr, conclusion Expr) Result[Bool, Text] {
-    let locals = new[Value]()
-    push(locals, Value.Number(variable(0)))
-    let initial = bounded(get(locals, 0), State { locals = locals facts = new[Predicate]() })
+    let initial = implication_initial(premise, conclusion)
     let state = assume(initial, boolean(pure(premise, initial)?)?)
     // The goal has not executed: never assume its overflow guards passed.
     discard defined(conclusion, state)?

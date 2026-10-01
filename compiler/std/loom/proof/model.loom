@@ -145,6 +145,11 @@ fn append_facts(output List[Predicate], fact Predicate) {
             append_facts(output, get(values, 0))
             append_facts(output, get(values, 1))
         }
+        Predicate.TextEqual(left, right) => {
+            push(output, fact)
+            push(output, Predicate.Compare("==", add(text_length(left),
+                        scale(text_length(right), integer(-1)))))
+        }
         _ => {
             push(output, fact)
         }

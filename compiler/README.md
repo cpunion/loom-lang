@@ -2056,8 +2056,14 @@ participate in these proofs, including `old`, finite helpers, Text refinements
 and declared generic/dyn concept summaries. Established equalities compose
 transitively; known inequality propagates across equal values. Different unknown
 Text values do not imply unequal contents, and inequality is not transitive.
-Disjunctive facts do not establish either alternative. Text concatenation, length
-and substring reasoning remain unsupported. See the [native Text example](examples/text_contracts).
+Disjunctive facts do not establish either alternative. `std.text.length` supplies
+the immutable UTF-8 byte length: literals have exact sizes, all lengths are
+nonnegative, and equal Texts have equal lengths. These facts compose through
+entry values, helpers and input-type constraints. Length-based refinement
+weakening can remove a second boundary check; unknown strengthening still checks.
+Unequal Texts may have equal lengths, and equal lengths do not identify contents.
+Concatenation and substring reasoning remain unsupported. See the
+[native Text example](examples/text_contracts).
 
 Aggregate summaries compose through nested calls, field projections and
 whole-value updates. Unconditional proved equalities such as
