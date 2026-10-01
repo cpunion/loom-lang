@@ -154,6 +154,12 @@ fn pure(expr Expr, state State) Result[Value, Text] {
             _ => Result.Err("Text length proof requires immutable Text")
         }
     }
+    if list_length_expression(expr) {
+        return match pure(get(expr.children, 0), state)? {
+            Value.List(identity) => Result.Ok(Value.Number(list_extent(identity, state)?))
+            _ => Result.Err("List length proof requires a tracked handle")
+        }
+    }
     if expr.kind == ExprKind.Coerce {
         return pure(get(expr.children, 0), state)
     }
@@ -216,7 +222,7 @@ fn bounded(value Value, state State) State {
             let high = Predicate.Compare("<=", add(term, constant(integer(-9223372036854775807))))
             assume(assume(state, low), high)
         }
-        _ => text_bounds(value, state)
+        _ => list_bounds(value, text_bounds(value, state))
     }
 }
 
@@ -231,7 +237,7 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
     if holds(Predicate.Constant(false), state.facts) {
         return Result.Ok(true)
     }
-    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || expr.kind == ExprKind.Field || text_length_expression(expr) {
+    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || expr.kind == ExprKind.Field || text_length_expression(expr) || list_length_expression(expr) {
         discard defined(get(expr.children, 0), state)?
     }
     if expr.kind == ExprKind.Record {

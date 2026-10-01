@@ -1,0 +1,109 @@
+fn list_operation(name Text) Bool {
+    name == "list_new" || name == "list_len" || name == "list_get" ||
+    name == "list_set" || name == "list_push"
+}
+
+// Recognize an ordinary forwarding body by checked structure, never its source
+// name. No argument reordering, extra evaluation or entry checks may disappear.
+fn forwarded_list_operation(program Program, function Function, depth Int) Text {
+    if depth >= 16 || length(function.preconditions) != 0 ||
+    length(function.postconditions) != 0 {
+        return ""
+    }
+    if list_operation(function.runtime_name) {
+        return function.runtime_name
+    }
+    var body = function.body
+    if body.kind == ExprKind.Block && length(body.children) == 1 {
+        body = get(body.children, 0)
+    }
+    if body.kind == ExprKind.Return && length(body.children) == 1 {
+        body = get(body.children, 0)
+    }
+    if body.kind != ExprKind.Call || body.index < 0 ||
+    body.index >= length(program.functions) || length(body.children) != length(function.params) {
+        return ""
+    }
+    var index = 0
+    while index < length(body.children) {
+        let argument = get(body.children, index)
+        if argument.kind != ExprKind.Local || argument.index != index {
+            return ""
+        }
+        index = index + 1
+    }
+    forwarded_list_operation(program, get(program.functions, body.index), depth + 1)
+}
+
+fn list_operation_outcome(proof Verification, name Text, ty Int, inputs CallArguments) Result[Outcome, Text] {
+    var state = inputs.state
+    if name == "list_new" && length(inputs.values) == 0 {
+        let value = record_parameter_value(proof, ty, 0)
+        return match value {
+            Value.List(identity) => Result.Ok(Outcome {
+                    state = with_extent(identity, constant(integer(0)), state)
+                    value = value
+                })
+            _ => Result.Err("List allocation proof requires a List result")
+        }
+    }
+    if length(inputs.values) == 0 {
+        return Result.Err("List operation proof requires a receiver")
+    }
+    let identity = match get(inputs.values, 0) {
+        Value.List(identity) => identity
+        _ => {
+            return Result.Err("List operation proof requires a tracked handle")
+        }
+    }
+    let size = list_extent(identity, state)?
+    if name == "list_len" && length(inputs.values) == 1 {
+        return Result.Ok(Outcome {
+                state = state
+                value = Value.Number(size)
+            })
+    }
+    if name == "list_push" && length(inputs.values) == 2 {
+        // Other handles may alias this receiver. Only exact handle copies keep
+        // the precise update; every possibly overlapping extent is forgotten.
+        let after = forget_extents(proof, state)
+        return Result.Ok(Outcome {
+                state = with_extent(identity, add(size, constant(integer(1))), after)
+                value = Value.Empty
+            })
+    }
+    if (name == "list_get" && length(inputs.values) == 2) ||
+    (name == "list_set" && length(inputs.values) == 3) {
+        let index = match get(inputs.values, 1) {
+            Value.Number(value) => value
+            _ => {
+                return Result.Err("List indexing proof requires an Int index")
+            }
+        }
+        // Native bounds checks have succeeded on normal continuation. This
+        // supplies index bounds, never contents, pointer identity or no-fault.
+        state = assume(assume(state, Predicate.Compare(">=", index)),
+            Predicate.Compare("<", add(index, scale(size, integer(-1)))))
+        let value = if name == "list_get" {
+            record_parameter_value(proof, ty, 0)
+        } else {
+            Value.Empty
+        }
+        return Result.Ok(Outcome {
+                state = bounded(value, state)
+                value = value
+            })
+    }
+    Result.Err("unsupported List operation in required proof")
+}
+
+fn execute_list_operation(proof Verification, expr Expr, name Text, state State, depth Int) Result[List[Outcome], Text] {
+    let inputs = call_arguments(proof, expr, state, depth)?
+    let output = new[Outcome]()
+    var index = 0
+    while index < length(inputs) {
+        discard add_outcome(output, list_operation_outcome(proof, name, expr.ty, get(inputs, index))?)?
+        index = index + 1
+    }
+    Result.Ok(output)
+}

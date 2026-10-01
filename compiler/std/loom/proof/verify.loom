@@ -99,6 +99,11 @@ fn record_parameter_value(proof Verification, ty Int, depth Int) Value {
         return Value.Empty
     }
     let shape = get(proof.program.types, ty)
+    if shape.kind == TypeKind.List {
+        let identity = get(proof.fresh, 0)
+        std.list.set(proof.fresh, 0, identity + 1)
+        return Value.List(identity)
+    }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 && get(shape.fields, 0).ty == 1 {
         // Keep one identity for the nominal scalar and its representation.
         // Entry invariants are added separately after all parameters exist.
@@ -142,6 +147,10 @@ fn parameter_value(proof Verification, ty Int, id Int) Result[Value, Text] {
         return Result.Err("required proof currently needs scalar parameters")
     }
     let shape = get(proof.program.types, ty)
+    if shape.kind == TypeKind.List || (shape.kind == TypeKind.Refined &&
+        length(shape.fields) == 1 && proof_list_type(proof.program, get(shape.fields, 0).ty)) {
+        return Result.Ok(record_parameter_value(proof, ty, 0))
+    }
     if shape.kind == TypeKind.Refined && length(shape.fields) == 1 &&
     get(proof.program.types, get(shape.fields, 0).ty).kind == TypeKind.Text {
         return Result.Ok(Value.Text(TextValue.Variable(id)))
@@ -384,15 +393,21 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
         return record_outcomes(proof, expr, state, depth - 1)
     }
     if expr.kind == ExprKind.List {
-        // Allocation supplies no heap facts, but every initializer still runs
-        // once, in order. Its scalar updates, guards and exits cannot vanish.
+        // Every initializer runs once, in order, before the fresh handle and
+        // exact extent exist. Element contents are deliberately not modeled.
         let inputs = block(proof, expr, state, depth)?
         let output = new[Outcome]()
         var index = 0
         while index < length(inputs) {
+            let value = record_parameter_value(proof, expr.ty, 0)
+            let state = match value {
+                Value.List(identity) => with_extent(identity,
+                    constant(integer(length(expr.children))), get(inputs, index).state)
+                _ => get(inputs, index).state
+            }
             discard add_outcome(output, Outcome {
-                    state = get(inputs, index).state
-                    value = Value.Empty
+                    state = state
+                    value = value
                 })?
             index = index + 1
         }
@@ -437,6 +452,9 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     }
     if expr.kind == ExprKind.Call {
         return body_call(proof, expr, state, depth - 1)
+    }
+    if expr.kind == ExprKind.Intrinsic && list_operation(expr.text) {
+        return execute_list_operation(proof, expr, expr.text, state, depth - 1)
     }
     if expr.kind == ExprKind.Return && length(expr.children) == 0 {
         discard returned(proof.function, state, Value.Empty)?
@@ -486,12 +504,13 @@ fn verify_body(proof Verification) Result[Bool, Text] {
     var state = State {
         locals = locals
         facts = new[Predicate]()
+        extents = new[ListExtent]()
     }
     index = 0
     while index < length(function.params) {
         let ty = get(function.params, index)
         let value = parameter_value(proof, ty, index)?
-        state = text_bounds(value, assigned(state, index, value))
+        state = list_bounds(value, text_bounds(value, assigned(state, index, value)))
         index = index + 1
     }
     index = 0

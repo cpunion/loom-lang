@@ -190,8 +190,15 @@ invented equality or inequality. Immutable UTF-8 byte lengths, their nonnegative
 bounds and equality consequences compose with entry values, pure helpers and
 input-type constraints. Proved length-based weakening omits the second check;
 unknown strengthening retains it. Equal lengths do not establish equal contents.
-Concatenation/substring reasoning is not implemented. Bytes and List parameters can be carried opaquely through
-contracted calls, including generic nominal receivers. Unmodeled heap operations still reject.
+Concatenation/substring reasoning is not implemented. Bytes remain opaque.
+List lengths belong to the current proof state: exact aliases share extent
+updates, while unknown overlap and opaque calls forget current-length facts.
+Scalar reads remain snapshots. Length helpers, literals/allocation, indexed
+reads/writes and append compose with generic/inline values and bounded loops.
+Input length refinements supply entry facts; callee preconditions are not reused
+as post-call heap facts. Element reads supply fresh unknowns, not content or
+non-aliasing evidence. Unmodeled heap operations still reject. See the
+[List contract example](../../compiler/examples/list_contracts).
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining
@@ -210,9 +217,10 @@ Scalar and scalar-only inline aggregate loops infer entry/guard bounds and check
 zero-iteration paths and early returns retain separate obligations. This supports
 whole-value record/tuple reassignment with independently fresh scalar leaves,
 branches, nested loops, break/continue paths and existing
-direct-call proof rules. Scalar lexical cleanup retains its checked order and
+direct-call proof rules. List extent-changing loops freshen shared lengths before
+checking inductiveness. Scalar lexical cleanup retains its checked order and
 return snapshots. Guard calls use fresh checked results, not stable syntactic
-invariant terms. Resource cleanup and heap mutation remain unsupported. See the
+invariant terms. Resource cleanup and general heap-content proofs remain unsupported. See the
 [native loop example](../../compiler/examples/loop_contracts).
 
 General content-preserving mutation, strengthening existing mutable alias graphs,

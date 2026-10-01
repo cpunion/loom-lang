@@ -1,0 +1,308 @@
+fn list_length_contract(text Text, valid Bool) {
+    let files = source_files(text)
+    push(files, source_file("std.list", """
+        intrinsic fn list_len[T](values List[T]) Int
+        intrinsic fn list_new[T]() List[T]
+        intrinsic fn list_push[T](values List[T], value T)
+        intrinsic fn list_get[T](values List[T], index Int) T
+        intrinsic fn list_set[T](values List[T], index Int, value T)
+        pub fn length[T](values List[T]) Int {
+            list_len(values)
+        }
+        pub fn new[T]() List[T] {
+            list_new[T]()
+        }
+        pub fn push[T](values List[T], value T) {
+            list_push(values, value)
+        }
+        pub fn get[T](values List[T], index Int) T {
+            list_get(values, index)
+        }
+        pub fn set[T](values List[T], index Int, value T) {
+            list_set(values, index, value)
+        }
+        """, true))
+    match checked(files) {
+        Result.Ok(_) => {
+            assert valid
+        }
+        Result.Err(failed) => {
+            if valid {
+                show_failure(fixture_project(files), failed)
+            }
+            assert !valid
+        }
+    }
+}
+
+test fn list_lengths_compose_through_helpers_aliases_and_scalar_loops() {
+    list_length_contract("""
+        import std.list.length
+        fn count[T](values List[T]) Int
+        ensures result == length(values) && result >= 0
+        {
+            length(values)
+        }
+        fn shared(values List[Int]) Int
+        ensures result == length(values)
+        {
+            let alias = values
+            let before = length(alias)
+            assert count(values) == before
+            count(alias)
+        }
+        fn literal() Int
+        ensures result == 3
+        {
+            let values = [4, 5, 6]
+            count(values)
+        }
+        fn walk(values List[Int]) Int
+        ensures result == length(values)
+        {
+            var index = 0
+            while index < length(values) {
+                index = index + 1
+            }
+            index
+        }
+        fn main() {
+            assert literal() == 3
+            assert walk([1, 2]) == shared([7, 8])
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        fn independent(left List[Int], right List[Int]) Int
+        ensures result == length(left)
+        {
+            length(right)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn replaced(values List[Int]) Int
+        ensures result == length(values)
+        {
+            var alias = values
+            alias = [1]
+            length(alias)
+        }
+        """, false)
+}
+
+test fn list_extents_follow_inline_fields_and_preserved_type_constraints() {
+    list_length_contract("""
+        import std.list.length
+        type Pair = List[Int] where length(self) == 2
+        record Envelope {
+            values Pair
+            other List[Int]
+        }
+        fn extent(value Envelope) Int
+        ensures result == 2
+        {
+            length(value.values)
+        }
+        fn passthrough(values List[Int]) List[Int]
+        ensures length(result) == length(values)
+        {
+            values
+        }
+        fn forwarded(values List[Int]) Int
+        ensures result == length(values)
+        {
+            length(passthrough(values))
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        fn snapshot(values List[Int]) Int
+        ensures result == old(length(values))
+        {
+            length(values)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn contents(values List[Int]) Int
+        requires length(values) > 0
+        ensures result == values[0]
+        {
+            0
+        }
+        """, false)
+}
+
+fn list_changer() Text {
+    """
+    import std.list.length
+    concept Changer {
+        fn touch(self Self, values List[Int]) Int
+        requires length(values) == 1
+        ensures result == 0
+    }
+    """
+}
+
+test fn list_updates_keep_exact_aliases_and_forget_possible_overlap() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.new
+        import std.list.push
+        import std.list.get
+        import std.list.set
+        fn appended(values List[Int], before Int) Int
+        requires length(values) == before
+        ensures result == before + 1 && result == length(values)
+        {
+            let alias = values
+            push(alias, 42)
+            length(values)
+        }
+        fn empty() Int
+        ensures result == 0
+        {
+            length(new[Int]())
+        }
+        fn grow(values List[Int], limit Int) Int
+        ensures result >= limit && result == length(values)
+        {
+            while length(values) < limit {
+                push(values, 0)
+            }
+            length(values)
+        }
+        fn fill(values List[Int], before Int) Int
+        requires length(values) == before
+        ensures result == before && length(values) == before
+        {
+            var index = 0
+            while index < length(values) {
+                let value = get(values, index)
+                set(values, index, value + 1)
+                index = index + 1
+            }
+            length(values)
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn possible_alias(left List[Int], right List[Int]) Int
+        requires length(left) == 1
+        ensures result == 1
+        {
+            push(right, 7)
+            length(left)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn not_stale(values List[Int]) Int
+        requires length(values) == 1
+        ensures result == 1
+        {
+            let alias = values
+            push(alias, 7)
+            length(values)
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn snapshots(values List[Int]) Int
+        requires length(values) == 1
+        ensures result == 1
+        {
+            let before = length(values)
+            push(values, 7)
+            before
+        }
+        """, true)
+}
+
+test fn list_proofs_preserve_argument_order_and_evaluated_handle_identity() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.get
+        import std.list.push
+        fn checked_index(values List[Int]) Int
+        ensures result == 1
+        {
+            let list = [1]
+            discard get(list, {
+                push(list, 2)
+                1
+            })
+            length(list) - 1
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        import std.list.get
+        import std.list.push
+        fn stale_argument() Int
+        ensures result == 0
+        {
+            let list = [1]
+            discard get(list, {
+                push(list, 2)
+                1
+            })
+            1
+        }
+        """, false)
+}
+
+test fn opaque_calls_cannot_reuse_entry_lengths_even_through_hidden_aliases() {
+    list_length_contract(concat(list_changer(), """
+        fn fresh(receiver dyn Changer, values List[Int]) Int
+        ensures result >= 0
+        {
+            discard receiver.touch(values)
+            length(values)
+        }
+        """), true)
+    list_length_contract(concat(list_changer(), """
+        fn stale(receiver dyn Changer, values List[Int]) Int
+        ensures result == 1
+        {
+            discard receiver.touch(values)
+            length(values)
+        }
+        """), false)
+    list_length_contract(concat(list_changer(), """
+        fn hidden[T Changer](receiver T, left List[Int], right List[Int]) Int
+        requires length(left) == 1
+        ensures result == 1
+        {
+            discard receiver.touch(right)
+            length(left)
+        }
+        """), false)
+    list_length_contract(concat(list_changer(), """
+        fn snapshots(receiver dyn Changer, values List[Int]) Int
+        requires length(values) == 1
+        ensures result == 1
+        {
+            let size = length(values)
+            discard receiver.touch(values)
+            size
+        }
+        """), true)
+    list_length_contract(concat(list_changer(), """
+        fn loop_stale(receiver dyn Changer, values List[Int], limit Int) Int
+        requires length(values) == 1
+        ensures result == 1
+        {
+            var index = 0
+            while index < limit {
+                discard receiver.touch(values)
+                index = index + 1
+            }
+            length(values)
+        }
+        """), false)
+}

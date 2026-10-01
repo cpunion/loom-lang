@@ -1,0 +1,88 @@
+import std.list.length
+import std.list.push
+import std.time.sleep_ms
+
+fn extent(values List[Int]) Int {
+    let proof_only_marker = 62917384
+    discard proof_only_marker
+    length(values)
+}
+
+fn count[T](values List[T]) Int
+ensures result == length(values) && result >= 0
+{
+    length(values)
+}
+
+fn append_one(values List[Int], before Int) Int
+requires length(values) == before
+ensures result == before + 1 && result == extent(values)
+{
+    let alias = values
+    push(alias, 7)
+    length(values)
+}
+
+fn grow(values List[Int], limit Int) Int
+ensures result >= limit && result == extent(values)
+{
+    while length(values) < limit {
+        push(values, 0)
+    }
+    length(values)
+}
+
+fn append_forward(values List[Int], before Int) Int
+requires length(values) == before
+ensures result == before + 1 && extent(values) == result
+{
+    append_one(values, before)
+}
+
+// Only the shape contract is proved here. Ordering and permutation are tested
+// below, not advertised as proofs by the current bounded verifier.
+fn sort_in_place(values List[Int], size Int) Int
+requires length(values) == size
+ensures result == size && extent(values) == size
+{
+    var end = size
+    while end > 1 {
+        var index = 1
+        while index < end {
+            let left = values[index - 1]
+            let right = values[index]
+            if left > right {
+                values[index - 1] = right
+                values[index] = left
+            }
+            index = index + 1
+        }
+        end = end - 1
+    }
+    length(values)
+}
+
+async fn exercise() {
+    let values = [3, 1, 2, 1]
+    let alias = values
+    assert count(values) == 4
+    assert sort_in_place(values, 4) == 4
+    assert alias[0] == 1 && alias[1] == 1 && alias[2] == 2 && alias[3] == 3
+    assert append_forward(alias, 4) == 5
+    assert count(values) == 5 && values[4] == 7
+    sleep_ms(1).await
+    assert grow(values, 12) == 12
+    assert count(alias) == 12 && alias[11] == 0
+    assert grow(values, 2) == 12
+    let empty List[Int] = []
+    assert sort_in_place(empty, 0) == 0
+    assert grow(empty, 1) == 1
+}
+
+async fn main() {
+    exercise().await
+}
+
+test async fn shared_lengths_survive_updates_loops_and_suspension() {
+    exercise().await
+}

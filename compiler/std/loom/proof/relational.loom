@@ -373,6 +373,7 @@ fn scalar_facts_imply(premises List[Expr], conclusion Expr) Result[Bool, Text] {
     var state = State {
         locals = values
         facts = new[Predicate]()
+        extents = new[ListExtent]()
     }
     index = 0
     while index < length(known) {
