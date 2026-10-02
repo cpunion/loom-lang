@@ -239,6 +239,12 @@ this meaning does not require a runtime graph. Lazy, unordered, or parallel
 transformations require validated equivalence evidence, including error
 behavior, termination behavior, early exits, and cleanup.
 
+Explicitly requested workers may interleave shared accesses. Each access remains
+memory-safe, but a multi-access update is not implicitly atomic; synchronization
+is explicit. This does not relax persistent constraints or authorize automatic
+parallelization of conflicting sequential operations. See the
+[shared-worker decision](tasks.md#shared-workers).
+
 ## Memory, resources, and async
 
 Automatic GC may move objects; source cannot observe addresses or movement.

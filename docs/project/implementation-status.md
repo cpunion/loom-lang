@@ -383,6 +383,10 @@ O0/O2 tests include simultaneous 8 MiB transfers, moving-GC traffic, rejected pe
 and independent Rustls interoperability with both-direction cancellation under
 backpressure. Revocation policy, general workers, broader socket options,
 and parallel Loom execution remain open.
+The [accepted shared-worker semantics](../rfcs/tasks.md#shared-workers) allow
+memory-safe logical races with explicit synchronization for compound updates.
+The current heap/root chains and mutable-container lowering remain single-owner;
+this decision does not make managed pointers safe to pass to native threads.
 See [Tasks and I/O](../../compiler/README.md#source-tasks).
 
 ## Modules, caching and performance
