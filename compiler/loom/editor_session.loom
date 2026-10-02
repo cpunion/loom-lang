@@ -92,6 +92,7 @@ fn editor_checked(bindings std.loom.binding.Program, inputs BuildInputs, cache E
         inputs = inputs.files
         options = inputs.options
         targets = inputs.targets
+        proof_backend = inputs.proof_backend
         concepts = new[List[std.loom.checking.ConceptReference]]()
     }
     if length(cache.analysis) == 0 {

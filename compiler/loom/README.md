@@ -289,7 +289,7 @@ without the CLI, LLVM backend, or filesystem loading:
 | Function | Result |
 | --- | --- |
 | `analyze(project, tests)` | `Result[Analysis, Failure]`, with bindings and a checked program |
-| `analyze_with_inputs(project, tests, inputs)` | Analysis with explicit `checking.BuildInputs`; owns detached dependency snapshots |
+| `analyze_with_inputs(project, tests, inputs)` | Analysis with explicit `checking.BuildInputs`; owns detached dependency snapshots and retains the host's proof backend for lazy queries |
 | `type_name(analysis, ty)` | Display name for a type in that analysis |
 | `expressions_at(analysis, file, offset)` | Smallest covering expression per concrete function instance |
 | `inspect_at(analysis, file, offset)` | `Option[Inspection]`: token span, checked type/signature labels and definition locations |
