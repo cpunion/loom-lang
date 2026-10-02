@@ -59,7 +59,10 @@ ensures value + 1 > value
         let output = common::loom(&["check", temporary.path().to_str().unwrap()]);
         assert!(!output.status.success(), "unsound proof: {program}");
         let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains("postcondition"), "unexpected failure: {error}");
+        assert!(
+            error.contains("postcondition"),
+            "unexpected failure: {error}"
+        );
     }
     fs::write(
         &source,
