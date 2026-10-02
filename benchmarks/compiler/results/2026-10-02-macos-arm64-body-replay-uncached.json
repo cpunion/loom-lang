@@ -1,0 +1,506 @@
+{
+  "schema": 1,
+  "revision": "5af7a6369eb3d4fbfc9180c42fc3c7929980d077",
+  "dirty": true,
+  "compiler": "/Users/lijie/source/cpunion/loom-lang/target/loom",
+  "compilerVersion": "loom source compiler (development)",
+  "compilerSha256": "66fb022bb9c114143a732334158b50d046ca50971e62a37c9a1a7c05459c7aca",
+  "baselineCompiler": "/Users/lijie/source/cpunion/loom-lang/target/loom-before-cache-restore",
+  "baselineVersion": "loom source compiler (development)",
+  "baselineSha256": "b59935c48f859ca9579e90d182032ac77d465f7992f43af7608163a4d26cdde2",
+  "harnessSha256": "0069a0a2c8d6b03cff60ec19626eabc0412426d19d56f5850a4ffafb3e4b1e6c",
+  "sourceSha256": "76f0d7d985e1074673457ee4a7faac1857f131e6ca9f7364cb8163105fbc290d",
+  "sourceFiles": 708,
+  "extended": false,
+  "compareCache": false,
+  "compareFrontend": false,
+  "compareEdits": false,
+  "checkOnly": true,
+  "generatedSizes": [],
+  "host": {
+    "os": "darwin",
+    "release": "25.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "method": "fresh processes; same source inputs; one warmup per compiler per case; paired samples alternate baseline/candidate order; sample indexes identify pairs; no incremental compiler cache",
+  "wall": "elapsed around /usr/bin/time launch, including process launch and output; startup runs --version without loading a package",
+  "rss": "maximum RSS reported by macOS time, not a sum of simultaneous process memory",
+  "cpu": "user and system CPU time reported by macOS time, converted from seconds to milliseconds; short runs are limited by time's reporting precision",
+  "cases": [
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 9.633416,
+        "peakRssBytes": 8372224,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 10.173416,
+          "peakRssBytes": 9519104,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.633416,
+          "peakRssBytes": 8372224,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.52125,
+          "peakRssBytes": 8355840,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.728416,
+          "peakRssBytes": 8355840,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.993208,
+          "peakRssBytes": 10141696,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.292833,
+          "peakRssBytes": 8355840,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.558375,
+          "peakRssBytes": 9879552,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.319458,
+          "peakRssBytes": 10436608,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.521584,
+          "peakRssBytes": 8355840,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 9.670125,
+        "peakRssBytes": 8404992,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 9.71475,
+          "peakRssBytes": 8814592,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.865208,
+          "peakRssBytes": 8404992,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.759708,
+          "peakRssBytes": 8568832,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 10.388625,
+          "peakRssBytes": 9781248,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.486209,
+          "peakRssBytes": 8404992,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.661791,
+          "peakRssBytes": 9306112,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.670125,
+          "peakRssBytes": 8388608,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.449709,
+          "peakRssBytes": 8388608,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 9.623917,
+          "peakRssBytes": 8388608,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 5.410292,
+        "peakRssBytes": 5292032,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 5.382042,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.379958,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.568792,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.438542,
+          "peakRssBytes": 5308416,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.119041,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.406459,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.410292,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.709291,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.803,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 5.28425,
+        "peakRssBytes": 5292032,
+        "userCpuMs": 0,
+        "systemCpuMs": 0
+      },
+      "samples": [
+        {
+          "wallMs": 5.28425,
+          "peakRssBytes": 5275648,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 6.710834,
+          "peakRssBytes": 5718016,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.085083,
+          "peakRssBytes": 5275648,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.420917,
+          "peakRssBytes": 5275648,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.193958,
+          "peakRssBytes": 5275648,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.012792,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.599709,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.056292,
+          "peakRssBytes": 5292032,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        },
+        {
+          "wallMs": 5.572958,
+          "peakRssBytes": 5799936,
+          "userCpuMs": 0,
+          "systemCpuMs": 0
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "variant": "baseline",
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "median": {
+        "wallMs": 1251.293958,
+        "peakRssBytes": 514899968,
+        "userCpuMs": 1170,
+        "systemCpuMs": 70
+      },
+      "samples": [
+        {
+          "wallMs": 1239.332333,
+          "peakRssBytes": 518635520,
+          "userCpuMs": 1160,
+          "systemCpuMs": 60
+        },
+        {
+          "wallMs": 1273.147417,
+          "peakRssBytes": 510230528,
+          "userCpuMs": 1180,
+          "systemCpuMs": 70
+        },
+        {
+          "wallMs": 1251.293958,
+          "peakRssBytes": 497532928,
+          "userCpuMs": 1170,
+          "systemCpuMs": 70
+        },
+        {
+          "wallMs": 1276.359625,
+          "peakRssBytes": 523747328,
+          "userCpuMs": 1180,
+          "systemCpuMs": 80
+        },
+        {
+          "wallMs": 1237.910625,
+          "peakRssBytes": 503463936,
+          "userCpuMs": 1150,
+          "systemCpuMs": 70
+        },
+        {
+          "wallMs": 1200.602625,
+          "peakRssBytes": 489209856,
+          "userCpuMs": 1130,
+          "systemCpuMs": 60
+        },
+        {
+          "wallMs": 1462.370792,
+          "peakRssBytes": 514899968,
+          "userCpuMs": 1200,
+          "systemCpuMs": 100
+        },
+        {
+          "wallMs": 1216.110042,
+          "peakRssBytes": 531300352,
+          "userCpuMs": 1140,
+          "systemCpuMs": 60
+        },
+        {
+          "wallMs": 1289.862625,
+          "peakRssBytes": 557383680,
+          "userCpuMs": 1170,
+          "systemCpuMs": 60
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "variant": "candidate",
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "median": {
+        "wallMs": 1247.474542,
+        "peakRssBytes": 489160704,
+        "userCpuMs": 1150,
+        "systemCpuMs": 60
+      },
+      "samples": [
+        {
+          "wallMs": 1272.296125,
+          "peakRssBytes": 535461888,
+          "userCpuMs": 1180,
+          "systemCpuMs": 70
+        },
+        {
+          "wallMs": 1287.321375,
+          "peakRssBytes": 485195776,
+          "userCpuMs": 1200,
+          "systemCpuMs": 80
+        },
+        {
+          "wallMs": 1222.636333,
+          "peakRssBytes": 506019840,
+          "userCpuMs": 1140,
+          "systemCpuMs": 60
+        },
+        {
+          "wallMs": 1278.174666,
+          "peakRssBytes": 489160704,
+          "userCpuMs": 1190,
+          "systemCpuMs": 70
+        },
+        {
+          "wallMs": 1247.474542,
+          "peakRssBytes": 484884480,
+          "userCpuMs": 1170,
+          "systemCpuMs": 60
+        },
+        {
+          "wallMs": 1211.419417,
+          "peakRssBytes": 489242624,
+          "userCpuMs": 1140,
+          "systemCpuMs": 50
+        },
+        {
+          "wallMs": 1252.382791,
+          "peakRssBytes": 484950016,
+          "userCpuMs": 1150,
+          "systemCpuMs": 70
+        },
+        {
+          "wallMs": 1207.435917,
+          "peakRssBytes": 489160704,
+          "userCpuMs": 1130,
+          "systemCpuMs": 60
+        },
+        {
+          "wallMs": 1206.038709,
+          "peakRssBytes": 484933632,
+          "userCpuMs": 1140,
+          "systemCpuMs": 50
+        }
+      ]
+    }
+  ]
+}

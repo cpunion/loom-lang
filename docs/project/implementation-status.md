@@ -361,11 +361,13 @@ still whole-closure, and trusted-local snapshots are not portable proof artifact
 The [edited-source benchmark](../../compiler/README.md#frontend-cache) uses
 fresh processes and requires a whole-closure miss. One-shot CLI checks serialize
 and retire temporary source/body aliases before returning mutable results;
-resident editor caches still keep isolated copies. Five alternating pairs of
-O2 compilers on identical edited macOS inputs measured 1825/1569 ms and
-1362/1150 MiB before/after. Disk restoration and writeback remain expensive,
-especially for small packages; caching stays opt-in. This is not a universal
-speedup or completion of the compiler-latency goal.
+resident editor caches still keep isolated copies. Body eligibility and concrete
+callee reconstruction are memoized only within the current check, never across
+edits. Nine alternating pairs of O2 compilers on identical edited macOS inputs
+measured 1750/1614 ms and 1463/1187 MiB before/after this replay change, with the
+same reuse counts. A separate uncached pair measured 1251/1247 ms. Restoration,
+replay and writeback remain expensive; caching stays opt-in. This is not a
+universal speedup or completion of the compiler-latency goal.
 Separately, five alternating fresh-process checks of the same compiler sources
 measured 2749 ms / 779 MiB before and 1188 ms / 486 MiB after removing repeated
 trusted `Result` discovery and package-label allocations. No incremental cache

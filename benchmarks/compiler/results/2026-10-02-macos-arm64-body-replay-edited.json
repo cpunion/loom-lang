@@ -1,0 +1,698 @@
+{
+  "schema": 1,
+  "revision": "5af7a6369eb3d4fbfc9180c42fc3c7929980d077",
+  "dirty": true,
+  "compiler": "/Users/lijie/source/cpunion/loom-lang/target/loom",
+  "compilerVersion": "loom source compiler (development)",
+  "compilerSha256": "66fb022bb9c114143a732334158b50d046ca50971e62a37c9a1a7c05459c7aca",
+  "baselineCompiler": "/Users/lijie/source/cpunion/loom-lang/target/loom-before-cache-restore",
+  "baselineVersion": "loom source compiler (development)",
+  "baselineSha256": "b59935c48f859ca9579e90d182032ac77d465f7992f43af7608163a4d26cdde2",
+  "harnessSha256": "0069a0a2c8d6b03cff60ec19626eabc0412426d19d56f5850a4ffafb3e4b1e6c",
+  "sourceSha256": "76f0d7d985e1074673457ee4a7faac1857f131e6ca9f7364cb8163105fbc290d",
+  "sourceFiles": 708,
+  "extended": false,
+  "compareCache": false,
+  "compareFrontend": false,
+  "compareEdits": true,
+  "checkOnly": true,
+  "generatedSizes": [],
+  "host": {
+    "os": "darwin",
+    "release": "25.2.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Max"
+  },
+  "method": "fresh processes; copied packages; one private helper changes each pair; identical source per baseline/candidate pair; independent frontend caches; alternating order; initial misses separate; whole-closure hits forbidden; definition/body reuse required",
+  "wall": "elapsed around /usr/bin/time launch, including process launch and output; startup runs --version without loading a package",
+  "rss": "maximum RSS reported by macOS time, not a sum of simultaneous process memory",
+  "cpu": "user and system CPU time reported by macOS time, converted from seconds to milliseconds; short runs are limited by time's reporting precision",
+  "cases": [
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "variant": "baseline-incremental-edit",
+      "flags": [
+        "--frontend-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-CmHAoY/baseline-cache-0"
+      ],
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "firstMiss": {
+        "wallMs": 38.221916,
+        "peakRssBytes": 16941056,
+        "userCpuMs": 30,
+        "systemCpuMs": 0,
+        "definitionsReused": 0,
+        "bodiesReused": 0
+      },
+      "median": {
+        "wallMs": 35.959291,
+        "peakRssBytes": 15417344,
+        "userCpuMs": 20,
+        "systemCpuMs": 0,
+        "definitionsReused": 80,
+        "bodiesReused": 5
+      },
+      "samples": [
+        {
+          "wallMs": 35.959291,
+          "peakRssBytes": 15433728,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 36.805333,
+          "peakRssBytes": 21266432,
+          "userCpuMs": 30,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 36.743375,
+          "peakRssBytes": 15417344,
+          "userCpuMs": 30,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 35.644958,
+          "peakRssBytes": 15433728,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 35.661667,
+          "peakRssBytes": 15417344,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 35.8945,
+          "peakRssBytes": 15433728,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 36.076542,
+          "peakRssBytes": 15417344,
+          "userCpuMs": 30,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 36.431291,
+          "peakRssBytes": 15417344,
+          "userCpuMs": 30,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 35.792208,
+          "peakRssBytes": 15417344,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        }
+      ]
+    },
+    {
+      "name": "scalar",
+      "command": "check",
+      "package": "compiler/examples/scalar",
+      "variant": "candidate-incremental-edit",
+      "flags": [
+        "--frontend-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-CmHAoY/cache-0"
+      ],
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "firstMiss": {
+        "wallMs": 38.414375,
+        "peakRssBytes": 16990208,
+        "userCpuMs": 30,
+        "systemCpuMs": 0,
+        "definitionsReused": 0,
+        "bodiesReused": 0
+      },
+      "median": {
+        "wallMs": 36.024709,
+        "peakRssBytes": 15450112,
+        "userCpuMs": 20,
+        "systemCpuMs": 0,
+        "definitionsReused": 80,
+        "bodiesReused": 5
+      },
+      "samples": [
+        {
+          "wallMs": 36.468958,
+          "peakRssBytes": 15433728,
+          "userCpuMs": 30,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 37.016125,
+          "peakRssBytes": 15450112,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 35.971209,
+          "peakRssBytes": 21446656,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 35.657083,
+          "peakRssBytes": 15433728,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 36.024709,
+          "peakRssBytes": 15433728,
+          "userCpuMs": 30,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 35.89375,
+          "peakRssBytes": 15450112,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 35.937125,
+          "peakRssBytes": 15433728,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 36.387416,
+          "peakRssBytes": 15450112,
+          "userCpuMs": 30,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        },
+        {
+          "wallMs": 36.526333,
+          "peakRssBytes": 15450112,
+          "userCpuMs": 30,
+          "systemCpuMs": 0,
+          "definitionsReused": 80,
+          "bodiesReused": 5
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "variant": "baseline-incremental-edit",
+      "flags": [
+        "--frontend-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-CmHAoY/baseline-cache-2"
+      ],
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "firstMiss": {
+        "wallMs": 30.804125,
+        "peakRssBytes": 12828672,
+        "userCpuMs": 20,
+        "systemCpuMs": 0,
+        "definitionsReused": 0,
+        "bodiesReused": 0
+      },
+      "median": {
+        "wallMs": 29.957125,
+        "peakRssBytes": 12697600,
+        "userCpuMs": 20,
+        "systemCpuMs": 0,
+        "definitionsReused": 12,
+        "bodiesReused": 3
+      },
+      "samples": [
+        {
+          "wallMs": 29.679125,
+          "peakRssBytes": 12697600,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 30.093,
+          "peakRssBytes": 12697600,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.957125,
+          "peakRssBytes": 12697600,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.8355,
+          "peakRssBytes": 12697600,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 30.24325,
+          "peakRssBytes": 12697600,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.851375,
+          "peakRssBytes": 12697600,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.744625,
+          "peakRssBytes": 12697600,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.999417,
+          "peakRssBytes": 12697600,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.962583,
+          "peakRssBytes": 12697600,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "command": "check",
+      "package": "compiler/examples/data",
+      "variant": "candidate-incremental-edit",
+      "flags": [
+        "--frontend-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-CmHAoY/cache-2"
+      ],
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "firstMiss": {
+        "wallMs": 30.36525,
+        "peakRssBytes": 14368768,
+        "userCpuMs": 20,
+        "systemCpuMs": 0,
+        "definitionsReused": 0,
+        "bodiesReused": 0
+      },
+      "median": {
+        "wallMs": 29.940166,
+        "peakRssBytes": 12779520,
+        "userCpuMs": 20,
+        "systemCpuMs": 0,
+        "definitionsReused": 12,
+        "bodiesReused": 3
+      },
+      "samples": [
+        {
+          "wallMs": 29.8145,
+          "peakRssBytes": 12779520,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.940166,
+          "peakRssBytes": 12779520,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 30.009292,
+          "peakRssBytes": 12779520,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 30.207416,
+          "peakRssBytes": 12779520,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.565375,
+          "peakRssBytes": 12779520,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.823708,
+          "peakRssBytes": 12779520,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.972791,
+          "peakRssBytes": 12779520,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 30.273667,
+          "peakRssBytes": 12779520,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        },
+        {
+          "wallMs": 29.720417,
+          "peakRssBytes": 12779520,
+          "userCpuMs": 20,
+          "systemCpuMs": 0,
+          "definitionsReused": 12,
+          "bodiesReused": 3
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "variant": "baseline-incremental-edit",
+      "flags": [
+        "--frontend-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-CmHAoY/baseline-cache-4"
+      ],
+      "samplePositions": [
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0
+      ],
+      "firstMiss": {
+        "wallMs": 1682.90675,
+        "peakRssBytes": 961249280,
+        "userCpuMs": 1590,
+        "systemCpuMs": 80,
+        "definitionsReused": 0,
+        "bodiesReused": 0
+      },
+      "median": {
+        "wallMs": 1749.695666,
+        "peakRssBytes": 1533706240,
+        "userCpuMs": 1560,
+        "systemCpuMs": 170,
+        "definitionsReused": 1841,
+        "bodiesReused": 2982
+      },
+      "samples": [
+        {
+          "wallMs": 1699.902417,
+          "peakRssBytes": 1705377792,
+          "userCpuMs": 1540,
+          "systemCpuMs": 140,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1685.721208,
+          "peakRssBytes": 1537114112,
+          "userCpuMs": 1530,
+          "systemCpuMs": 130,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1706.818917,
+          "peakRssBytes": 1533247488,
+          "userCpuMs": 1520,
+          "systemCpuMs": 160,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1749.695666,
+          "peakRssBytes": 1533706240,
+          "userCpuMs": 1560,
+          "systemCpuMs": 170,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1743.140334,
+          "peakRssBytes": 1710358528,
+          "userCpuMs": 1540,
+          "systemCpuMs": 190,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1916.26975,
+          "peakRssBytes": 1532968960,
+          "userCpuMs": 1650,
+          "systemCpuMs": 200,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 2264.184,
+          "peakRssBytes": 1531936768,
+          "userCpuMs": 1630,
+          "systemCpuMs": 210,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1884.598333,
+          "peakRssBytes": 1533755392,
+          "userCpuMs": 1680,
+          "systemCpuMs": 180,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1866.367792,
+          "peakRssBytes": 1533083648,
+          "userCpuMs": 1680,
+          "systemCpuMs": 170,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        }
+      ]
+    },
+    {
+      "name": "compiler",
+      "command": "check",
+      "package": "compiler/loom",
+      "variant": "candidate-incremental-edit",
+      "flags": [
+        "--frontend-cache",
+        "/Users/lijie/source/cpunion/loom-lang/target/performance/run-CmHAoY/cache-4"
+      ],
+      "samplePositions": [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "firstMiss": {
+        "wallMs": 1697.825958,
+        "peakRssBytes": 968343552,
+        "userCpuMs": 1600,
+        "systemCpuMs": 80,
+        "definitionsReused": 0,
+        "bodiesReused": 0
+      },
+      "median": {
+        "wallMs": 1614.223459,
+        "peakRssBytes": 1244839936,
+        "userCpuMs": 1450,
+        "systemCpuMs": 140,
+        "definitionsReused": 1841,
+        "bodiesReused": 2982
+      },
+      "samples": [
+        {
+          "wallMs": 1521.814458,
+          "peakRssBytes": 1244839936,
+          "userCpuMs": 1400,
+          "systemCpuMs": 100,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1523.44175,
+          "peakRssBytes": 1243054080,
+          "userCpuMs": 1390,
+          "systemCpuMs": 110,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1614.223459,
+          "peakRssBytes": 1387479040,
+          "userCpuMs": 1430,
+          "systemCpuMs": 160,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1597.419541,
+          "peakRssBytes": 1265647616,
+          "userCpuMs": 1430,
+          "systemCpuMs": 150,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1603.199125,
+          "peakRssBytes": 1315520512,
+          "userCpuMs": 1450,
+          "systemCpuMs": 140,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1659.282291,
+          "peakRssBytes": 1239236608,
+          "userCpuMs": 1470,
+          "systemCpuMs": 160,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 2132.1865,
+          "peakRssBytes": 1247576064,
+          "userCpuMs": 1600,
+          "systemCpuMs": 180,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1672.60875,
+          "peakRssBytes": 1240858624,
+          "userCpuMs": 1510,
+          "systemCpuMs": 140,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        },
+        {
+          "wallMs": 1680.518,
+          "peakRssBytes": 1241350144,
+          "userCpuMs": 1520,
+          "systemCpuMs": 130,
+          "definitionsReused": 1841,
+          "bodiesReused": 2982
+        }
+      ]
+    }
+  ]
+}

@@ -386,6 +386,10 @@ Fresh bindings rekey types, static
 arguments, calls and source locations;
 changed definitions and overloads invalidate transitive consumers. Nominal/import
 changes and syntax-producing macro or unsupported bodies recheck conservatively.
+Within one check, each saved body's eligibility is computed once, and each
+replayed concrete callee is validated and scheduled once in the current
+environment. These lookup tables are rebuilt after every edit, never persisted
+as evidence or reused across checking environments.
 Declaration generation reruns before matching, using current build inputs.
 Snapshots retain raw source and private expanded trees separately; unchanged
 generated bodies use the current generating block's location and extent.
@@ -462,21 +466,23 @@ are recorded separately. This isolates a local edit; it does not represent a
 public API change. Snapshot I/O and copying can outweigh saved checking, especially
 for small programs; a positive reuse count alone is not evidence of a speedup.
 
-The [2026-10-01 paired comparison](../benchmarks/compiler/results/2026-10-01-macos-arm64-one-shot-snapshot.json)
+The [2026-10-02 paired comparison](../benchmarks/compiler/results/2026-10-02-macos-arm64-body-replay-edited.json)
 measured the same edited inputs with two O2 compilers and independent caches:
 
-| Edited package | Before | One-shot snapshots |
+| Edited package | Before | Per-check replay lookups |
 | --- | ---: | ---: |
-| Data example | 28.79 ms | 28.98 ms |
-| Compiler | 1,824.85 ms | 1,569.39 ms |
-| 200 generated helpers | 74.21 ms | 66.50 ms |
+| Scalar example | 35.96 ms | 36.02 ms |
+| Data example | 29.96 ms | 29.94 ms |
+| Compiler | 1,749.70 ms | 1,614.22 ms |
 
-The compiler case reused the same 1,739 definition checks and 2,833 bodies.
-Removing copies needed only by resident hosts reduced latency about 14% and
-peak RSS from 1,362 to 1,150 MiB (about 16%). These are five alternating
+The compiler case reused the same 1,841 definition checks and 2,982 bodies.
+Avoiding repeated eligibility scans and callee reconstruction reduced latency
+about 7.7% and peak RSS from 1,463 to 1,187 MiB (about 18.8%). These are nine alternating
 fresh-process macOS arm64 medians, not arbitrary dependency changes or native
-build speedups. Disk restoration and writeback still cost memory and time;
-positive reuse counts alone do not justify enabling caching by default.
+build speedups. A separate [uncached comparison](../benchmarks/compiler/results/2026-10-02-macos-arm64-body-replay-uncached.json)
+measured 1,251/1,247 ms for the compiler, with no meaningful latency change.
+The edited cache path still has substantial restoration, replay and writeback
+costs; these measurements do not justify enabling caching by default.
 Tracked files, explicit options and observed target properties bind both levels
 of reuse. Backend objects are still whole-closure, not per-definition. Ordinary
 compile-time execution cannot read arbitrary I/O.
