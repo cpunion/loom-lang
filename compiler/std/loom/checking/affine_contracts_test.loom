@@ -1,0 +1,99 @@
+test fn contract_equalities_compose_fields_summaries_and_definedness() {
+    discard accepted("""
+        record Parts {
+            a Int
+            b Int
+            c Int
+        }
+        fn identity(value Int) Int
+        ensures result == value
+        {
+            value
+        }
+        fn balanced(value Parts, total Int) Int
+        requires value.a + value.b == total && value.b + value.c == total
+        ensures result == value.c
+        ensures result + value.b == total
+        {
+            identity(value.a)
+        }
+        fn positive(a Int, b Int) Int
+        requires -2 * a == -3 * b && b > 0
+        ensures result > 0
+        {
+            a
+        }
+        """)
+    rejects("""
+        fn wrong(a Int, b Int, c Int, total Int) Int
+        requires a + b == total && b + c == total
+        ensures result == b
+        {
+            a
+        }
+        """)
+    rejects("""
+        fn undefined(a Int, b Int, c Int, total Int) Int
+        requires a + b == total && b + c == total
+        ensures result + 1 == c + 1
+        {
+            a
+        }
+        """)
+    rejects("""
+        fn branches(a Int, b Int, c Int, total Int) Int
+        requires a + b == total || b + c == total
+        ensures result == c
+        {
+            a
+        }
+        """)
+}
+
+test fn affine_rules_apply_to_text_lengths_without_content_evidence() {
+    text_length_contract("""
+        import std.text.length
+        fn count(a Text, b Text, c Text, total Int) Int
+        requires length(a) + length(b) == total && length(b) + length(c) == total
+        ensures result == length(c)
+        {
+            length(a)
+        }
+        """, true)
+    text_length_contract("""
+        import std.text.length
+        fn bytes(a Text, b Text, c Text, total Int) Text
+        requires length(a) + length(b) == total && length(b) + length(c) == total
+        ensures result == c
+        {
+            a
+        }
+        """, false)
+}
+
+test fn affine_list_extents_keep_entry_snapshots_not_stale_heap_facts() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn count(a List[Int], b List[Int], c List[Int], total Int) Int
+        requires length(a) + length(b) == total && length(b) + length(c) == total
+        ensures result == old(length(c))
+        {
+            let before = length(a)
+            push(c, 0)
+            before
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn stale(a List[Int], b List[Int], c List[Int], total Int) Int
+        requires length(a) + length(b) == total && length(b) + length(c) == total
+        ensures result == length(c)
+        {
+            let before = length(a)
+            push(c, 0)
+            before
+        }
+        """, false)
+}

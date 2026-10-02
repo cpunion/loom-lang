@@ -1,0 +1,162 @@
+// A bounded equality basis over mathematical integers. Every row means zero;
+// eliminating a pivot multiplies the queried expression by a positive number
+// and adds an established zero. Relations therefore keep their direction,
+// without division, rounding, machine overflow or assumptions about divisibility.
+fn affine_size(value Linear) Bool {
+    if length(value.terms) > 32 || length(value.constant.digits) > 16 {
+        return false
+    }
+    var index = 0
+    while index < length(value.terms) {
+        if length(get(value.terms, index).factor.digits) > 16 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn affine_coefficient(value Linear, id Int) Number {
+    var index = 0
+    while index < length(value.terms) {
+        let term = get(value.terms, index)
+        if term.id == id {
+            return term.factor
+        }
+        if term.id > id {
+            return integer(0)
+        }
+        index = index + 1
+    }
+    integer(0)
+}
+
+fn affine_reduce(value Linear, basis List[Linear], budget List[Int]) Result[Linear, Text] {
+    if !affine_size(value) {
+        return Result.Err("affine proof size budget exhausted")
+    }
+    var reduced = value
+    var index = 0
+    while index < length(basis) {
+        if !conjunction_step(budget) {
+            return Result.Err("affine proof work budget exhausted")
+        }
+        let row = get(basis, index)
+        let pivot = get(row.terms, 0)
+        let factor = affine_coefficient(reduced, pivot.id)
+        if length(factor.digits) != 0 {
+            reduced = add(scale(reduced, pivot.factor), scale(row, negate(factor)))
+            if !affine_size(reduced) {
+                return Result.Err("affine proof size budget exhausted")
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(reduced)
+}
+
+fn affine_consequence(relation Text, value Linear, operator Text, premise Linear) Bool {
+    if length(value.terms) == 0 || length(premise.terms) == 0 ||
+    get(value.terms, 0).id != get(premise.terms, 0).id {
+        return false
+    }
+    let first = get(value.terms, 0).factor
+    let second = get(premise.terms, 0).factor
+    let goal = scale(value, if second.negative {
+            negate(second)
+        } else {
+            second
+        })
+    let fact = scale(premise, if first.negative {
+            negate(first)
+        } else {
+            first
+        })
+    if !affine_size(goal) || !affine_size(fact) {
+        return false
+    }
+    let known = Predicate.Compare(operator, fact)
+    // In particular, a nonzero comparison is evidence even when its interval
+    // crosses zero. Positive cross multiplication never reverses its sign.
+    if same(Predicate.Compare(relation, goal), known) ||
+    same(Predicate.Compare(flip(relation), scale(goal, integer(-1))), known) {
+        return true
+    }
+    interval(relation, range(goal, predicates(known)))
+}
+
+fn affine_query(relation Text, value Linear, facts List[Predicate]) Result[Bool, Text] {
+    let basis = new[Linear]()
+    let budget = new[Int]()
+    push(budget, 4096)
+    var index = 0
+    while index < length(facts) && index < 256 {
+        match get(facts, index) {
+            Predicate.Compare(operator, term) => {
+                if operator == "==" {
+                    var row = affine_reduce(term, basis, budget)?
+                    if length(row.terms) == 0 {
+                        if length(row.constant.digits) != 0 {
+                            // An actual combination of established equalities
+                            // is inconsistent; there is no reachable input.
+                            return Result.Ok(true)
+                        }
+                    } else {
+                        if length(basis) >= 32 {
+                            return Result.Err("affine proof rank budget exhausted")
+                        }
+                        if get(row.terms, 0).factor.negative {
+                            row = scale(row, integer(-1))
+                        }
+                        // Keep pivots sorted. Later rows cannot reintroduce a
+                        // smaller pivot eliminated earlier in a reduction.
+                        var position = length(basis)
+                        push(basis, row)
+                        while position > 0 && get(get(basis, position - 1).terms, 0).id > get(row.terms, 0).id {
+                            set(basis, position, get(basis, position - 1))
+                            position = position - 1
+                        }
+                        set(basis, position, row)
+                    }
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    if length(basis) == 0 {
+        return Result.Ok(false)
+    }
+    let reduced = affine_reduce(value, basis, budget)?
+    if interval(relation, range(reduced, facts)) {
+        return Result.Ok(true)
+    }
+    // Normalize established inequalities with the same basis. They remain
+    // consequences, including strict comparisons and disequalities; an OR
+    // clause is not an independently established comparison.
+    let normalized = new[Predicate]()
+    index = 0
+    while index < length(facts) && index < 256 {
+        match get(facts, index) {
+            Predicate.Compare(operator, term) => {
+                let fact = affine_reduce(term, basis, budget)?
+                if affine_consequence(relation, reduced, operator, fact) {
+                    return Result.Ok(true)
+                }
+                push(normalized, Predicate.Compare(operator, fact))
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(interval(relation, range(reduced, normalized)))
+}
+
+fn affine_holds(relation Text, value Linear, facts List[Predicate]) Bool {
+    match affine_query(relation, value, facts) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+}

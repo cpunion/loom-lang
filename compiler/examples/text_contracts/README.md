@@ -38,3 +38,8 @@ operands, Text lengths, integer arithmetic and pure helpers. It also selects an
 entry List element by a conditional index and preserves that observation across
 writes. The same composition rules handle each operation; proof-only helpers
 stay absent from native code at both O0 and O2.
+
+The [affine example](affine.loom) combines multiple equations over record fields,
+Text lengths and entry List lengths through one bounded elimination rule. It
+preserves the saved scalar length after growing a shared List, without claiming
+that its current extent or contents stayed unchanged.

@@ -1,0 +1,60 @@
+test fn affine_equalities_eliminate_multiple_weighted_rows() {
+    let a = variable(0)
+    let b = variable(1)
+    let c = variable(2)
+    let total = variable(3)
+    let first = add(add(a, b), scale(total, integer(-1)))
+    let second = add(add(b, c), scale(total, integer(-1)))
+    let facts = predicates(Predicate.Compare("==", first), Predicate.Compare("==", second))
+    let goal = add(a, scale(c, integer(-1)))
+    assert affine_holds("==", goal, facts)
+    assert !affine_holds("!=", goal, facts)
+    assert !affine_holds("==", add(a, scale(b, integer(-1))), facts)
+    let weighted = predicates(Predicate.Compare("==", scale(second, integer(-3))),
+        Predicate.Compare("==", scale(first, integer(2))))
+    assert affine_holds("==", goal, weighted)
+    assert affine_holds("==", scale(goal, integer(-7)), weighted)
+    // These intermediate coefficients exceed Int, without wrapping or floats.
+    let large = decimal("9223372036854775808")
+    let wide = predicates(Predicate.Compare("==", scale(first, large)),
+        Predicate.Compare("==", scale(second, large)))
+    assert affine_holds("==", goal, wide)
+}
+
+test fn affine_relations_keep_signs_and_established_premises() {
+    let a = variable(0)
+    let b = variable(1)
+    let equality = add(scale(a, integer(-2)), scale(b, integer(3)))
+    let facts = predicates(Predicate.Compare("==", equality), Predicate.Compare(">", b))
+    assert affine_holds(">", a, facts)
+    assert !affine_holds("<", a, facts)
+    assert !affine_holds("==", a, facts)
+    // Algebra normalizes an inequality on the other side of the equation too.
+    let reversed = predicates(Predicate.Compare("==", equality), Predicate.Compare("!=", a))
+    assert affine_holds("!=", b, reversed)
+    let either = predicates(Predicate.Or(predicates(Predicate.Compare("==", equality),
+                Predicate.Compare("==", b))))
+    assert !affine_holds("==", equality, either)
+    let inconsistent = predicates(Predicate.Compare("==", equality),
+        Predicate.Compare("==", add(equality, constant(integer(1)))))
+    assert affine_holds("<", constant(integer(0)), inconsistent)
+}
+
+test fn affine_limits_do_not_turn_unknowns_into_proofs() {
+    var huge = integer(1)
+    var index = 0
+    while index < 17 {
+        huge = product(huge, integer(1000000000))
+        index = index + 1
+    }
+    let facts = predicates(Predicate.Compare("==", scale(variable(0), huge)))
+    assert !affine_holds("==", variable(0), facts)
+    let basis = new[Linear]()
+    push(basis, variable(0))
+    let budget = new[Int]()
+    push(budget, 0)
+    assert match affine_reduce(variable(0), basis, budget) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

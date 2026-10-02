@@ -2045,6 +2045,16 @@ budgets; independent guards stay independent. Algebraic equality never permits
 reordering effects or erasing eager faults. This is compositional but bounded,
 not a complete solver for arbitrary contracts or a user-axiom mechanism.
 
+Established affine equalities share a bounded, fraction-free elimination basis.
+For example, `a + b == total` and `b + c == total` prove `a == c`, including
+when those quantities come from fields, verified call summaries, Text lengths
+or captured List lengths. Positive cross multiplication preserves comparison
+direction without rounding or machine overflow. This algebra does not prove
+equal contents from equal lengths or preserve stale heap observations. Each
+source arithmetic operation must still be proved defined; cancellation cannot
+hide an overflowing intermediate. Rank, coefficient-size or work exhaustion
+leaves the goal unproved. Nonlinear and quantified reasoning remain unsupported.
+
 Function contracts can reuse direct, acyclic helpers over scalars and inline
 records/tuples, with local bindings/reassignment and conditional bodies. The [contract example](examples/contracts/README.md)
 shows a predicate with its own `requires`: proving its returned Boolean alone is

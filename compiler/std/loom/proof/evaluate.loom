@@ -262,7 +262,11 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
                 let bounds = range(term, state.facts)
                 if compare(bounds.low, bounds.high) <= 0 &&
                 (compare(bounds.low, integer(-9223372036854775808)) < 0 || compare(bounds.high, integer(9223372036854775807)) > 0) {
-                    return Result.Err("postcondition arithmetic is not proved defined")
+                    let low = Predicate.Compare(">=", add(term, constant(negate(integer(-9223372036854775808)))))
+                    let high = Predicate.Compare("<=", add(term, constant(integer(-9223372036854775807))))
+                    if !holds(low, state.facts) || !holds(high, state.facts) {
+                        return Result.Err("postcondition arithmetic is not proved defined")
+                    }
                 }
             }
             _ => {

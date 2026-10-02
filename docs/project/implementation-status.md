@@ -192,6 +192,12 @@ does not require enumerating its conditional operand combinations. Correlated
 guards normalize without a larger budget, while unrelated guards, eager faults
 and entry-state bounds remain independent obligations. This is not unrestricted
 theory combination or a complete proof procedure.
+Bounded affine equality elimination now composes multiple established equations
+and inequalities over the same mathematical scalar symbols, regardless of
+whether they originated as parameters, fields, callee results or length
+observations. Fraction-free positive scaling keeps relation signs and definedness
+obligations; overflow, disjunctions, Text contents and invalidated List state
+gain no invented evidence. Nonlinear and quantified proofs remain open.
 Synchronous scalar
 and inline aggregate concept calls use declared contracts through generic/associated or dyn receivers,
 not a guessed implementation or hidden receiver knowledge. Private abstract
