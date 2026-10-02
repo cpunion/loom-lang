@@ -306,11 +306,55 @@ test fn snapshots_preserve_the_loader_test_selection() {
         Result.Err(_) => false
     }
     let restored = restored_definition_cache(initial)
+    assert get(get(definition_state(restored).basis, 0).source_selection, 0) == 0
     assert match check_project_cached(project, false, build_inputs(no_input_reader), restored) {
         Result.Ok(_) => true
         Result.Err(_) => false
     }
     assert definitions_reused(restored) == 1 && bodies_reused(restored) == 1
+    assert get(get(definition_state(restored).basis, 0).source_selection, 0) == 0
+}
+
+test fn cached_source_validation_requires_matching_text_and_complete_syntax() {
+    let text = "fn value() Int { 1 }"
+    let initial = definition_cache()
+    discard match cached_source(initial, text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert get(get(definition_state(initial).basis, 0).source_selection, 0) == -1
+    let restored = restored_definition_cache(initial)
+    discard match cached_source(restored, text) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            assert false
+            return
+        }
+    }
+    assert get(get(definition_state(restored).basis, 0).source_selection, 0) == 1
+
+    let source = fixture_project(source_files("fn value() Int { 2 }"))
+    let file = get(source.files, 0)
+    set(source.files, 0, SourceFile {
+            package = file.package
+            path = file.path
+            text = text
+            tree = file.tree
+            test_only = file.test_only
+            trusted_std = file.trusted_std
+        })
+    assert match check_project_cached(source, false, build_inputs(no_input_reader), restored) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+    assert get(get(definition_state(restored).basis, 0).source_selection, 0) == -1
+    assert match export_definition_cache(restored) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
 }
 
 test fn generated_snapshots_own_raw_and_expanded_source_separately() {

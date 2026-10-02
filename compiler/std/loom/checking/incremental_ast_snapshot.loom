@@ -137,12 +137,12 @@ fn cache_definition_source(output Bytes, basis DefinitionBasis) Result[Bool, Tex
     let generated = length(basis.original) != 0
     cache_bool(output, generated)
     if !generated {
-        return cache_project(output, basis.source)
+        return cache_project(output, basis.source, basis.source_selection)
     }
     let original = get(basis.original, 0)
     // Validate the pre-expansion source, not a rendered replacement. Only the
     // compiler's detached expanded trees can accompany this checked source.
-    discard cache_project(output, original)?
+    discard cache_project(output, original, basis.source_selection)?
     let kinds = cache_node_kinds()
     var index = 0
     while index < length(original.files) {

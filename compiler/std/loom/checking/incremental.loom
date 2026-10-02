@@ -30,6 +30,8 @@ record DefinitionBasis {
     tests Bool
     entries List[DefinitionEntry]
     reusable List[Bool]
+    // Per raw file: -1 unchecked, 0 parsed without tests, 1 complete parse.
+    source_selection List[Int]
 }
 
 record DefinitionEntry {
@@ -125,8 +127,10 @@ fn definition_basis(source std.loom.binding.Program) Result[DefinitionBasis, Fai
 // reader already owns fresh parsed trees, so restoring must not copy them again.
 fn definition_basis_from(source std.loom.binding.Program, original Project) DefinitionBasis {
     let files = new[SourceFile]()
+    let selection = new[Int]()
     var index = 0
     while index < length(original.files) {
+        push(selection, -1)
         let file = get(original.files, index)
         let nodes = new[Node]()
         var declaration = 0
@@ -196,6 +200,7 @@ fn definition_basis_from(source std.loom.binding.Program, original Project) Defi
         tests = source.tests
         entries = entries
         reusable = reusable
+        source_selection = selection
     }
 }
 
@@ -473,6 +478,7 @@ fn check_project_reusing(project Project, tests Bool, inputs BuildInputs, cache 
         // and retire the basis before returning it to their caller.
         push(basis.original, if detach { snapshot(original) } else { original })
     }
+    reuse_source_selection(basis, cache)
     // Expansion always reruns with current tracked inputs before matching. The
     // resulting declarations, not a prior generator result, define reuse.
     let reuse = definition_reuse(source, basis, cache)
