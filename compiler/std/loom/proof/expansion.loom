@@ -406,7 +406,7 @@ fn known_evaluation(premise Expr, goal Evaluation, source List[Evaluation]) Bool
     false
 }
 
-fn evaluation_proved(premise Expr, guard Expr, value Expr, required Bool) Result[Bool, Text] {
+fn evaluation_proved(query ProofQuery, premise Expr, guard Expr, value Expr, required Bool) Result[Bool, Text] {
     let predicate = if required {
         value
     } else {
@@ -415,11 +415,10 @@ fn evaluation_proved(premise Expr, guard Expr, value Expr, required Bool) Result
     let condition = normalized_predicate(guarded_value(guard, predicate))?
     let initial = implication_initial(premise, condition)
     let state = assume(initial, boolean(pure(premise, initial)?)?)
-    discard defined(condition, state)?
-    postcondition_holds(condition, state, 256)
+    condition_or_queue(query, condition, state)
 }
 
-fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengths Bool) Result[Bool, Text] {
+fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengths Bool, backend ProofBackend) Result[Bool, Text] {
     let budget = new[Int]()
     push(budget, 1024)
     let source = Expansion {
@@ -455,18 +454,19 @@ fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengt
     if !bounded_expression(facts) {
         return Result.Ok(false)
     }
+    let query = proof_query(backend)
     index = 0
     while index < length(target.checks) {
         let check = get(target.checks, index)
         if !is_bool(check.guard, false) && !known_evaluation(facts, check, source.checks) {
             if check.required {
                 if !implies(facts, normalized_predicate(guarded_value(check.guard, check.value))?) &&
-                !evaluation_proved(facts, check.guard, check.value, true)? {
+                !evaluation_proved(query, facts, check.guard, check.value, true)? {
                     return Result.Ok(false)
                 }
             } else {
                 if !total_scalar(check.value) {
-                    if !evaluation_proved(facts, check.guard, check.value, false)? {
+                    if !evaluation_proved(query, facts, check.guard, check.value, false)? {
                         return Result.Ok(false)
                     }
                 }
@@ -474,13 +474,20 @@ fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengt
         }
         index = index + 1
     }
-    Result.Ok(implies(facts, right))
+    if !implication(query, facts, right)? {
+        return Result.Ok(false)
+    }
+    discharge(query)
 }
 
 // Inputs belong to this prepared Program and use canonical self local 0. This
 // optional query never turns unsupported forms or failed preparation into facts.
 pub fn implies_with_helpers(program Program, premise Expr, conclusion Expr) Bool {
-    match helper_implication(program, premise, conclusion, false) {
+    implies_with_helpers(program, premise, conclusion, no_proof_backend())
+}
+
+pub fn implies_with_helpers(program Program, premise Expr, conclusion Expr, backend ProofBackend) Bool {
+    match helper_implication(program, premise, conclusion, false, backend) {
         Result.Ok(proved) => proved,
         Result.Err(_) => false
     }

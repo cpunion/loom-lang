@@ -1,0 +1,57 @@
+import std.result.Result
+import std.result.ConstraintError
+import std.text.length
+
+type EmptyByLength = Text where length(self) == 0
+
+type EmptyContent = Text where self == ""
+
+type UnitSquare = Int where self * self == 1
+
+type SignedOne = Int where self == -1 || self == 1
+
+type Small = Int where self >= -10 && self <= 10
+
+fn square_nonnegative(value Int) Bool {
+    value * value >= 0
+}
+
+type SafeSquare = Int where square_nonnegative(self)
+
+type Nonzero = Int where self != 0
+
+fn empty_weakening(value EmptyByLength) EmptyContent {
+    EmptyContent(value)
+}
+
+fn integer_roots(value UnitSquare) SignedOne {
+    SignedOne(value)
+}
+
+fn safe_helper(value Small) SafeSquare {
+    SafeSquare(value)
+}
+
+fn established_square(value Int) Nonzero {
+    assert value * value == 1
+    Nonzero(value)
+}
+
+fn unknown_root(value Int) Result[SignedOne, ConstraintError] {
+    SignedOne(value)
+}
+
+fn refinement_cases() {
+    assert empty_weakening(EmptyByLength("")) == ""
+    assert integer_roots(UnitSquare(-1)) == -1
+    assert integer_roots(UnitSquare(1)) == 1
+    assert safe_helper(Small(-10)) == -10
+    assert established_square(-1) == -1
+    match unknown_root(0) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+}

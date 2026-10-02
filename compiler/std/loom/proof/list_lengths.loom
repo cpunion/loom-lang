@@ -26,6 +26,10 @@ fn appended_self(value Expr, next Expr, depth Int) Result[Expr, Text] {
 // writable aliases from escaping. Successful append changes n to n+1; capacity
 // and Int-length overflow fault before mutation. Failure to prove is not permission.
 pub fn preserves_list_append(program Program, predicate Expr) Bool {
+    preserves_list_append(program, predicate, no_proof_backend())
+}
+
+pub fn preserves_list_append(program Program, predicate Expr, backend ProofBackend) Bool {
     let current = proof_expr(predicate, ExprKind.Local, 1, "self", 0, new[Expr]())
     let zero = proof_expr(predicate, ExprKind.Integer, 1, "0", -1, new[Expr]())
     let one = proof_expr(predicate, ExprKind.Integer, 1, "1", -1, new[Expr]())
@@ -39,7 +43,7 @@ pub fn preserves_list_append(program Program, predicate Expr) Bool {
             return false
         }
     }
-    match helper_implication(program, proof_and(proof_and(nonnegative, capacity), predicate), conclusion, true) {
+    match helper_implication(program, proof_and(proof_and(nonnegative, capacity), predicate), conclusion, true, backend) {
         Result.Ok(proved) => proved
         Result.Err(_) => false
     }

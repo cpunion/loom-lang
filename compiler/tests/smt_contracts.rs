@@ -108,3 +108,86 @@ ensures result == value * value + 1
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("required proof needs Z3"));
 }
+
+#[test]
+fn solver_refinement_proofs_erase_checks_but_not_eager_faults() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("main.loom");
+    fs::write(
+        &source,
+        r#"import std.list.get
+import std.list.set
+
+type Small = Int where self >= -10 && self <= 10
+
+fn square_nonnegative(value Int) Bool {
+    value * value >= 0
+}
+
+type SafeSquare = Int where square_nonnegative(self)
+
+fn observed(counter List[Int]) Small {
+    set(counter, 0, get(counter, 0) + 1)
+    Small(3)
+}
+
+fn weaken(value Small) SafeSquare {
+    SafeSquare(value)
+}
+
+fn main() {
+    let counter = [0]
+    assert weaken(observed(counter)) == 3
+    assert get(counter, 0) == 1
+}
+"#,
+    )
+    .unwrap();
+    let executable = common::executable(temporary.path(), "refinements");
+    let ir = temporary.path().join("refinements.ll");
+    success(
+        &common::command(&["build", temporary.path().to_str().unwrap()])
+            .arg("--output")
+            .arg(&executable)
+            .arg("--emit-ir")
+            .arg(&ir)
+            .env("LOOM_OPT_LEVEL", "0")
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        !fs::read_to_string(&ir).unwrap().contains("llvm.smul"),
+        "proved predicate must disappear before LLVM optimization"
+    );
+    success(&Command::new(&executable).output().unwrap());
+    for program in [
+        r#"type UnitSquare = Int where self * self == 1
+type Positive = Int where self > 0
+fn wrong(value UnitSquare) Positive {
+    Positive(value)
+}
+"#,
+        r#"fn square_nonnegative(value Int) Bool {
+    value * value >= 0
+}
+type SafeSquare = Int where square_nonnegative(self)
+fn wrong(value Int) SafeSquare {
+    SafeSquare(value)
+}
+"#,
+        r#"fn either(first Bool, second Bool) Bool {
+    first || second
+}
+type SafeNext = Int where either(true, self + 1 > self)
+fn wrong(value Int) SafeNext {
+    SafeNext(value)
+}
+"#,
+    ] {
+        fs::write(&source, program).unwrap();
+        let output = common::loom(&["check", temporary.path().to_str().unwrap()]);
+        assert!(!output.status.success(), "unsound refinement: {program}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("Result["), "unexpected failure: {error}");
+    }
+}

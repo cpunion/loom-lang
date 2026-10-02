@@ -1,6 +1,6 @@
 // Reuse the ordinary operand/guard algebra. The solver does not decide which
 // operands execute: it must discharge every safety obligation on its path.
-fn solver_defined(proof Verification, expr Expr, state State, depth Int) Result[Bool, Text] {
+fn solver_defined(proof ProofQuery, expr Expr, state State, depth Int) Result[Bool, Text] {
     if depth <= 0 {
         return Result.Err("SMT safety obligation depth exhausted")
     }

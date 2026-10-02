@@ -302,7 +302,7 @@ fn difference_facts(state State) State {
     output
 }
 
-fn scalar_facts_imply(premises List[Expr], conclusion Expr) Result[Bool, Text] {
+fn scalar_facts_imply(premises List[Expr], conclusion Expr, backend ProofBackend) Result[Bool, Text] {
     if conclusion.ty != 2 {
         return Result.Ok(false)
     }
@@ -311,7 +311,7 @@ fn scalar_facts_imply(premises List[Expr], conclusion Expr) Result[Bool, Text] {
     push(budget, 4096)
     let goal = fact_expression(conclusion, locals, budget, 0)?
     if length(locals) == 0 {
-        return Result.Ok(implies(proof_bool(goal, true), goal))
+        return Result.Ok(implies(proof_bool(goal, true), goal, backend))
     }
     let known = new[Expr]()
     let selected = new[Bool]()
@@ -392,15 +392,19 @@ fn scalar_facts_imply(premises List[Expr], conclusion Expr) Result[Bool, Text] {
         index = index + 1
     }
     state = difference_facts(state)
-    discard defined(goal, state)?
-    let predicate = boolean(pure(goal, state)?)?
-    Result.Ok(holds(predicate, state.facts) || difference_holds(predicate, state.facts))
+    let query = proof_query(backend)
+    discard condition_or_queue(query, goal, state)?
+    discharge(query)
 }
 
 // The caller supplies checked, already-established facts over stable scalars.
 // IDs identify values, not spelling. Unknowns and budget exhaustion retain checks.
 pub fn implies_facts(premises List[Expr], conclusion Expr) Bool {
-    match scalar_facts_imply(premises, conclusion) {
+    implies_facts(premises, conclusion, no_proof_backend())
+}
+
+pub fn implies_facts(premises List[Expr], conclusion Expr, backend ProofBackend) Bool {
+    match scalar_facts_imply(premises, conclusion, backend) {
         Result.Ok(proved) => proved
         Result.Err(_) => false
     }

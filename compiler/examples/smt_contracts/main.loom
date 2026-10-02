@@ -52,6 +52,7 @@ fn main() {
     assert square_expansion(-7, 12)
     assert difference_of_squares(9, 5) == 56
     assert squared_length("雪") == 9
+    refinement_cases()
 }
 
 test fn combined_contracts() {

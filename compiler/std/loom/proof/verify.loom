@@ -17,8 +17,7 @@ record Verification {
     fresh List[Int]
     budget List[Int]
     loop_control Option[LoopControl]
-    backend ProofBackend
-    obligations List[Obligation]
+    query ProofQuery
 }
 
 record RecordPath {
@@ -240,15 +239,7 @@ fn returned(proof Verification, state State, value Value) Result[Bool, Text] {
                     returned = difference_facts(returned)
                     propagated = true
                 }
-                match required_condition(condition, returned) {
-                    Result.Ok(_) => {}
-                    Result.Err(message) => {
-                        if !proof.backend.enabled {
-                            return Result.Err(message)
-                        }
-                        discard solver_condition(proof, condition, returned)?
-                    }
-                }
+                discard condition_or_queue(proof.query, condition, returned)?
             }
         }
         index = index + 1
@@ -553,7 +544,7 @@ fn verify_body(proof Verification) Result[Bool, Text] {
         discard verify_entered(proof, get(entries, index).state)?
         index = index + 1
     }
-    discharge(proof)
+    discharge(proof.query)
 }
 
 fn verify_entered(proof Verification, state State) Result[Bool, Text] {
@@ -566,8 +557,7 @@ fn verify_entered(proof Verification, state State) Result[Bool, Text] {
         fresh = proof.fresh
         budget = proof.budget
         loop_control = proof.loop_control
-        backend = proof.backend
-        obligations = proof.obligations
+        query = proof.query
     }
     let exits = execute(prepared, function.body, captured.state, 256)?
     var index = 0
