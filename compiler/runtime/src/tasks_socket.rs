@@ -5,7 +5,7 @@
 use super::*;
 use crate::wait::{ERROR, KIND_READINESS, READABLE, WRITABLE};
 use crate::{buffer_bytes, reserve};
-use socket2::{Domain, Protocol, SockAddr, Socket as NativeSocket, Type};
+use socket2::{Domain, Protocol, SockAddr, SockRef, Socket as NativeSocket, TcpKeepalive, Type};
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 
@@ -275,6 +275,38 @@ impl Sockets {
         // particular a write shutdown must preserve an outstanding read lease.
         apply(stream).map_or(-1, |()| 0)
     }
+
+    fn keepalive(&self, token: i64, enabled: i64, idle: i64, interval: i64, retries: i64) -> i64 {
+        if enabled == 0 {
+            return self
+                .configure_stream(token, |stream| SockRef::from(stream).set_keepalive(false));
+        }
+        // socket2 narrows or clamps these OS values. Reject unrepresentable
+        // requests before changing any option instead of silently shortening it.
+        let (Ok(idle), Ok(interval), Ok(retries)) = (
+            i32::try_from(idle),
+            i32::try_from(interval),
+            i32::try_from(retries),
+        ) else {
+            return -1;
+        };
+        if enabled != 1 || idle <= 0 || interval <= 0 || retries <= 0 {
+            return -1;
+        }
+        #[cfg(windows)]
+        if idle as u64 * 1000 >= u64::from(u32::MAX)
+            || interval as u64 * 1000 >= u64::from(u32::MAX)
+        {
+            return -1;
+        }
+        let options = TcpKeepalive::new()
+            .with_time(Duration::from_secs(idle as u64))
+            .with_interval(Duration::from_secs(interval as u64))
+            .with_retries(retries as u32);
+        self.configure_stream(token, |stream| {
+            SockRef::from(stream).set_tcp_keepalive(&options)
+        })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -352,6 +384,21 @@ pub(super) extern "C-unwind" fn loom_rt_socket_set_nodelay(token: i64, enabled: 
         Ok(owner
             .sockets()
             .configure_stream(token, |stream| stream.set_nodelay(enabled == 1)))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub(super) extern "C-unwind" fn loom_rt_socket_set_keepalive(
+    token: i64,
+    enabled: i64,
+    idle: i64,
+    interval: i64,
+    retries: i64,
+) -> i64 {
+    edit(|owner, _| {
+        Ok(owner
+            .sockets()
+            .keepalive(token, enabled, idle, interval, retries))
     })
 }
 
@@ -538,6 +585,39 @@ mod tests {
                 );
                 assert_eq!(stream.nodelay().unwrap(), enabled);
             }
+            assert_eq!(sockets.keepalive(listener, 1, 60, 5, 3), -1);
+            assert_eq!(sockets.keepalive(accepted, 1, 60, 5, 3), 0);
+            let options = SockRef::from(stream);
+            assert!(options.keepalive().unwrap());
+            assert_eq!(options.tcp_keepalive_retries().unwrap(), 3);
+            #[cfg(unix)]
+            {
+                assert_eq!(
+                    options.tcp_keepalive_time().unwrap(),
+                    Duration::from_secs(60)
+                );
+                assert_eq!(
+                    options.tcp_keepalive_interval().unwrap(),
+                    Duration::from_secs(5)
+                );
+            }
+            for (enabled, idle, interval, retries) in [
+                (2, 60, 5, 3),
+                (1, 0, 5, 3),
+                (1, 60, -1, 3),
+                (1, 60, 5, 0),
+                (1, i64::MAX, 5, 3),
+                (1, 60, 5, i64::MAX),
+            ] {
+                assert_eq!(
+                    sockets.keepalive(accepted, enabled, idle, interval, retries),
+                    -1
+                );
+                assert!(options.keepalive().unwrap());
+                assert_eq!(options.tcp_keepalive_retries().unwrap(), 3);
+            }
+            assert_eq!(sockets.keepalive(accepted, 0, 0, 0, 0), 0);
+            assert!(!options.keepalive().unwrap());
             assert!(!sockets.close(accepted));
             assert_eq!(
                 sockets.configure_stream(accepted, |stream| stream.shutdown(Shutdown::Write)),
@@ -549,6 +629,7 @@ mod tests {
             assert!(sockets.close(accepted));
             assert!(sockets.address(accepted, false).is_none());
             assert_eq!(sockets.configure_stream(accepted, |_| Ok(())), -1);
+            assert_eq!(sockets.keepalive(accepted, 1, 60, 5, 3), -1);
             assert!(sockets.close(listener));
         }
     }

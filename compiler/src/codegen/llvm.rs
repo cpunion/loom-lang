@@ -901,6 +901,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::SocketLocalPort => ("socket_local_port", Some(i64_type.into())),
             Primitive::SocketAddress => ("socket_address", Some(pointer.into())),
             Primitive::SocketSetNodelay => ("socket_set_nodelay", Some(i64_type.into())),
+            Primitive::SocketSetKeepalive => ("socket_set_keepalive", Some(i64_type.into())),
             Primitive::SocketShutdownWrite => ("socket_shutdown_write", Some(i64_type.into())),
             Primitive::SocketAbort => ("socket_abort", Some(i64_type.into())),
             Primitive::TlsClient => ("tls_client", Some(i64_type.into())),

@@ -109,6 +109,7 @@ pub enum Primitive {
     SocketLocalPort,
     SocketAddress,
     SocketSetNodelay,
+    SocketSetKeepalive,
     SocketShutdownWrite,
     SocketAbort,
     TlsClient,

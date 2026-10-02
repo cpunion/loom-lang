@@ -171,6 +171,7 @@ fn half_close_preserves_pending_reads_and_address_queries_under_moving_gc() {
         for operation in [
             "socket_address",
             "socket_set_nodelay",
+            "socket_set_keepalive",
             "socket_shutdown_write",
         ] {
             assert!(llvm.contains(&format!("loom_rt_{operation}")));
