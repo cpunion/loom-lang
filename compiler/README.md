@@ -2034,6 +2034,17 @@ immutable input invariants and flow facts are described below.
 proved; unknown or unsupported proofs reject the build, including for functions
 outside the emitted entry closure. There is no runtime postcondition fallback.
 
+Proof composition uses the checked expression model, not a second executable IR.
+A closed [operation description](std/loom/proof/operations.loom) supplies operand
+shape, eager/conditional evaluation, heap observations and totality. Shared
+traversals handle expansion, choices, entry guards and operand-definedness;
+[primitive theories](std/loom/proof/primitive_theories.loom) interpret values and
+check operation-specific obligations. Unknown operations are not implicitly pure
+or total. Correlated choices reuse their exact guard without increasing proof
+budgets; independent guards stay independent. Algebraic equality never permits
+reordering effects or erasing eager faults. This is compositional but bounded,
+not a complete solver for arbitrary contracts or a user-axiom mechanism.
+
 Function contracts can reuse direct, acyclic helpers over scalars and inline
 records/tuples, with local bindings/reassignment and conditional bodies. The [contract example](examples/contracts/README.md)
 shows a predicate with its own `requires`: proving its returned Boolean alone is

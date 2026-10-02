@@ -15,6 +15,11 @@ checked programs, and native lowering as distinct boundaries; add another
 representation only for a demonstrated consumer. LLVM 22 through the Rust
 Inkwell binding is the current backend, not a source-language dependency.
 
+Proofs compose through shared expression, control-flow and contract rules, with
+separate arithmetic, sequence and storage theories. Extend those theories and
+reuse verified contracts instead of enumerating application types or expression
+combinations. Unsupported or exhausted reasoning remains unproved, never an axiom.
+
 Compile ordinary calls and scalar operations directly. Carry GC, fault, and
 scheduler context only where required. Dependency semantics do not require an
 executor or execution graph around every function. Library policy belongs in

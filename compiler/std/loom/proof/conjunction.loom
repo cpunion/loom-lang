@@ -17,9 +17,8 @@ fn scalar_structure(expr Expr, budget List[Int], depth Int) Bool {
         return length(expr.children) == 0
     }
     if expr.kind == ExprKind.Local { return expr.index == 0 && length(expr.children) == 0 }
-    let unary = expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || text_length_expression(expr)
-    if !unary && expr.kind != ExprKind.Binary && !text_concat_expression(expr) { return false }
-    if length(expr.children) != (if unary { 1 } else { 2 }) { return false }
+    let shape = proof_operation(expr)
+    if shape.arity < 0 || shape.heap || shape.flow == OperandFlow.Choice { return false }
     var index = 0
     while index < length(expr.children) {
         if !scalar_structure(get(expr.children, index), budget, depth + 1) { return false }

@@ -1,0 +1,78 @@
+// Interpret already evaluated operands. Structural traversal, branch guards and
+// eager evaluation belong to the composition layer, not to individual theories.
+fn intrinsic_value(name Text, inputs List[Value], state State) Result[Value, Text] {
+    if name == "text_len" {
+        return match get(inputs, 0) {
+            Value.Text(text) => Result.Ok(Value.Number(text_length(text)))
+            _ => Result.Err("Text length proof requires immutable Text")
+        }
+    }
+    if name == "text_concat" {
+        return joined_text(get(inputs, 0), get(inputs, 1))
+    }
+    if name == "list_len" {
+        return match get(inputs, 0) {
+            Value.List(identity) => Result.Ok(Value.Number(list_extent(identity, state)?))
+            _ => Result.Err("List length proof requires a tracked handle")
+        }
+    }
+    if name == "list_get" {
+        let location = element_inputs(get(inputs, 0), get(inputs, 1))?
+        return known_element(location.identity, location.index, state)
+    }
+    Result.Err("unsupported or uncaptured intrinsic in required proof")
+}
+
+// Check this operation only; composition has checked each operand under the
+// right guard. A hypothetical expression never establishes its own safety fact.
+fn intrinsic_defined(expr Expr, state State) Result[Bool, Text] {
+    if expr.text == "list_get" {
+        return element_bounds(expr, state)
+    }
+    if expr.text == "text_concat" {
+        let size = match pure(expr, state)? {
+            Value.Text(text) => text_length(text)
+            _ => {
+                return Result.Err("Text concatenation proof requires immutable Text")
+            }
+        }
+        if !text_size_defined(size, state) {
+            return Result.Err("postcondition Text concatenation size is not proved defined")
+        }
+        return Result.Ok(true)
+    }
+    if expr.text == "text_len" || expr.text == "list_len" {
+        return Result.Ok(true)
+    }
+    Result.Err("unsupported or uncaptured intrinsic definedness")
+}
+
+fn operation_obligation(context Expansion, value Expr, guard Expr, shape ProofOperation) Result[Bool, Text] {
+    if list_read_expression(value) {
+        return read_obligation(context, value, guard)
+    }
+    // Entry reads have their own guarded capture/bounds check. Other partial
+    // primitives retain an obligation even when their value is later discarded.
+    if value.kind != ExprKind.Intrinsic || (!shape.total && !entry_element_expression(value)) {
+        return evaluated(context, guard, value, false)
+    }
+    Result.Ok(true)
+}
+
+fn execute_immutable_operation(proof Verification, expr Expr, name Text, state State, depth Int) Result[List[Outcome], Text] {
+    let inputs = call_arguments(proof, expr, state, depth)?
+    let output = new[Outcome]()
+    var index = 0
+    while index < length(inputs) {
+        let arguments = get(inputs, index)
+        let value = intrinsic_value(name, arguments.values, arguments.state)?
+        // Successful execution, unlike a hypothetical contract expression, may
+        // establish result bounds. No equation permits reordering arguments.
+        discard add_outcome(output, Outcome {
+                state = bounded(value, arguments.state)
+                value = value
+            })?
+        index = index + 1
+    }
+    Result.Ok(output)
+}

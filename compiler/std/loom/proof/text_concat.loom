@@ -220,32 +220,3 @@ fn text_equal(left TextValue, right TextValue, facts List[Predicate]) Bool {
     }
     false
 }
-
-fn execute_text_operation(proof Verification, expr Expr, name Text, state State, depth Int) Result[List[Outcome], Text] {
-    let inputs = call_arguments(proof, expr, state, depth)?
-    let output = new[Outcome]()
-    var index = 0
-    while index < length(inputs) {
-        let arguments = get(inputs, index)
-        let value = if name == "text_concat" && length(arguments.values) == 2 {
-            joined_text(get(arguments.values, 0), get(arguments.values, 1))?
-        } else if name == "text_len" && length(arguments.values) == 1 {
-            match get(arguments.values, 0) {
-                Value.Text(text) => Value.Number(text_length(text))
-                _ => {
-                    return Result.Err("Text length proof requires immutable Text")
-                }
-            }
-        } else {
-            return Result.Err("unsupported Text operation in required proof")
-        }
-        // Only an executed concatenation establishes that its size fits. A
-        // hypothetical contract expression must prove this independently.
-        discard add_outcome(output, Outcome {
-                state = bounded(value, arguments.state)
-                value = value
-            })?
-        index = index + 1
-    }
-    Result.Ok(output)
-}

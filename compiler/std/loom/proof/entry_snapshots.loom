@@ -90,22 +90,9 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
     var state = current
     var before = entry
     var index = 0
+    let flow = proof_operation(value).flow
     while index < length(value.children) {
-        var next = guard
-        if (value.kind == ExprKind.Binary && index == 1 &&
-            (value.text == "&&" || value.text == "||")) ||
-        (value.kind == ExprKind.If && index > 0) {
-            let positive = if value.kind == ExprKind.If {
-                index == 1
-            } else {
-                value.text == "&&"
-            }
-            next = proof_and(guard, if positive {
-                    get(children, 0)
-                } else {
-                    proof_not(get(children, 0))
-                })
-        }
+        let next = operand_guard(flow, index, children, guard)
         let captured = capture_guarded_entry(proof, get(value.children, index), next, before, state)?
         push(children, captured.expression)
         state = captured.state
