@@ -138,9 +138,14 @@ fn difference_shape(value Linear) Bool {
     var index = 0
     while index < length(value.terms) {
         let factor = get(value.terms, index).factor
-        if compare(factor, integer(1)) == 0 && !positive {
+        // Canonical magnitudes identify +/-1 without allocating two temporary
+        // Numbers for every coefficient on this common rejected-query path.
+        if length(factor.digits) != 1 || get(factor.digits, 0) != 1 {
+            return false
+        }
+        if !factor.negative && !positive {
             positive = true
-        } else if compare(factor, integer(-1)) == 0 && !negative {
+        } else if factor.negative && !negative {
             negative = true
         } else {
             return false

@@ -47,6 +47,10 @@ test fn inequalities_keep_integer_gaps_exact_without_division() {
 }
 
 test fn inequality_exhaustion_never_accepts_the_goal() {
+    assert difference_shape(variable(0))
+    assert difference_shape(add(variable(0), scale(variable(1), integer(-1))))
+    assert !difference_shape(add(variable(0), variable(1)))
+    assert !difference_shape(scale(variable(0), integer(2)))
     let rows = new[Linear]()
     assert match inequality_rows(rows, "<=", variable(0)) {
         Result.Ok(contradiction) => !contradiction
