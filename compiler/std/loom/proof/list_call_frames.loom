@@ -136,13 +136,17 @@ fn framed_elements(entry State, writes List[ElementWrite]) State {
                 var cell = 0
                 while cell < length(extent.cells) {
                     let observed = get(extent.cells, cell)
-                    let separate = match write.index {
-                        Value.Number(written) => extent.identity == target.identity &&
-                        index_relation("!=", observed.index, written, entry)
-                        _ => false
-                    }
-                    if separate {
-                        push(cells, observed)
+                    if extent.identity == target.identity {
+                        match write.index {
+                            Value.Number(written) => {
+                                let retained = frame_observation(observed, written, entry)
+                                if !same(retained.valid, Predicate.Constant(false)) {
+                                    push(cells, retained)
+                                }
+                            }
+                            _ => {
+                            }
+                        }
                     }
                     cell = cell + 1
                 }

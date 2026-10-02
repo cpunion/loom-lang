@@ -1,0 +1,95 @@
+test fn storage_frames_can_use_separation_established_after_the_write() {
+    list_length_contract("""
+        import std.list.length
+        fn direct(values List[Int], observed Int, written Int) Int
+        requires observed >= 0 && observed < length(values)
+        requires written >= 0 && written < length(values)
+        ensures result == old(values[observed])
+        {
+            let before = values[observed]
+            values[written] = 9
+            if observed != written { values[observed] } else { before }
+        }
+        fn paint(values List[Int], written Int) {
+            values[written] = 9
+        }
+        fn extracted(values List[Int], observed Int, written Int) Int
+        requires observed >= 0 && observed < length(values)
+        requires written >= 0 && written < length(values)
+        ensures result == old(values[observed])
+        {
+            let before = values[observed]
+            paint(values, written)
+            if observed != written { values[observed] } else { before }
+        }
+        fn text(values List[Text], observed Int, written Int) Text
+        requires observed >= 0 && observed < length(values)
+        requires written >= 0 && written < length(values)
+        ensures result == old(values[observed])
+        {
+            let before = values[observed]
+            values[written] = "changed"
+            if observed != written { values[observed] } else { before }
+        }
+        """, true)
+}
+
+test fn conditional_frames_conjoin_every_write_including_cleanup() {
+    list_length_contract("""
+        import std.list.length
+        fn paint(values List[Int], first Int, second Int) {
+            defer { values[second] = 8 }
+            values[first] = 9
+        }
+        fn retained(values List[Int], observed Int, first Int, second Int) Int
+        requires observed >= 0 && observed < length(values)
+        ensures result == old(values[observed])
+        {
+            let before = values[observed]
+            paint(values, first, second)
+            if observed != first && observed != second { values[observed] } else { before }
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        fn paint(values List[Int], first Int, second Int) {
+            defer { values[second] = 8 }
+            values[first] = 9
+        }
+        fn incomplete(values List[Int], observed Int, first Int, second Int) Int
+        requires observed >= 0 && observed < length(values)
+        ensures result == old(values[observed])
+        {
+            let before = values[observed]
+            paint(values, first, second)
+            if observed != first { values[observed] } else { before }
+        }
+        """, false)
+}
+
+test fn conditional_frames_do_not_confuse_rebound_indices_or_handle_aliases() {
+    list_length_contract("""
+        import std.list.length
+        fn rebound(values List[Int], observed Int, written Int) Int
+        requires observed >= 0 && observed < length(values)
+        ensures result == old(values[observed])
+        {
+            let before = values[observed]
+            var index = written
+            values[index] = 9
+            index = observed + 1
+            if observed != index { values[observed] } else { before }
+        }
+        """, false)
+    list_length_contract("""
+        import std.list.length
+        fn overlap(values List[Int], other List[Int], observed Int, written Int) Int
+        requires observed >= 0 && observed < length(values)
+        ensures result == old(values[observed])
+        {
+            let before = values[observed]
+            other[written] = 9
+            if observed != written { values[observed] } else { before }
+        }
+        """, false)
+}

@@ -2168,8 +2168,10 @@ Required List contracts also admit `get(values, index)` and `values[index]`.
 Entry predicates retain facts from their actual reads and bounds checks;
 postcondition indexing must prove bounds without assuming a new check succeeds.
 Literal elements, appended values, indexed writes and repeated reads establish
-bounded observations (at most 64 per handle). Writes retain other indices only
-with proved inequality; distinct unknown handles can still alias. Contracted
+bounded observations (at most 64 per handle). Writes retain other indices under
+inequality guards; a later branch may establish the guard. Multiple writes
+conjoin their guards, using index-value snapshots, not mutable variable names.
+Distinct unknown handles can still alias. Contracted
 length-preserving calls can retain untouched observations using a bounded union
 of their checked bodies' possible writes. Immutable parameter/inline aliases and
 nested helpers compose; every branch and ordinary cleanup body contributes.

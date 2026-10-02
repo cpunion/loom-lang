@@ -233,7 +233,9 @@ check them inductively, preserving input extents only with that separation.
 Input length refinements supply entry facts; callee preconditions are not reused
 as post-call heap facts. Element observations now track literals, appends, writes
 and repeated reads at proved-equal indices, bounded to 64 per handle. Other
-indices survive writes only with proved inequality; unknown handle overlap,
+indices survive writes under inequality guards that may be proved by a later
+branch. Multiple writes, including cleanup, conjoin their separation conditions;
+rebound indices do not change these snapshots. Unknown handle overlap and
 opaque calls discard content facts. Contracted length-preserving calls retain
 untouched observations using bounded may-write analysis of their checked bodies,
 including immutable parameter/inline aliases, nested calls and ordinary cleanup.
