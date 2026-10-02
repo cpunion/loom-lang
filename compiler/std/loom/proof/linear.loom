@@ -352,7 +352,7 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
     }
     match predicate {
         Predicate.Constant(value) => value
-        Predicate.Compare(relation, value) => affine_holds(relation, value, facts)
+        Predicate.Compare(relation, value) => affine_holds(relation, value, facts) || inequality_holds(relation, value, facts)
         Predicate.TextEqual(left, right) => text_equal(left, right, facts)
         Predicate.Not(values) => match get(values, 0) {
             Predicate.TextEqual(left, right) => text_distinct(left, right, facts)

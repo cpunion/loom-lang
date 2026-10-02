@@ -1,0 +1,69 @@
+fn inequalities_prove(relation Text, value Linear, facts List[Predicate]) Bool {
+    match inequality_query(relation, value, facts) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+}
+
+test fn inequalities_compose_positive_weighted_consequences() {
+    let a = variable(0)
+    let b = variable(1)
+    let c = variable(2)
+    let first = add(a, scale(c, integer(-1)))
+    let second = add(b, scale(c, integer(-1)))
+    let facts = predicates(Predicate.Compare("<=", first), Predicate.Compare("<=", second))
+    let sum = add(first, second)
+    assert inequalities_prove("<=", sum, facts)
+    assert !inequalities_prove("<", sum, facts)
+    assert !inequalities_prove("==", sum, facts)
+    assert !inequalities_prove("<=", add(first, scale(second, integer(-1))), facts)
+    let weighted = add(scale(first, integer(2)), scale(second, integer(3)))
+    assert inequalities_prove("<=", weighted, facts)
+    assert inequalities_prove(">=", scale(weighted, integer(-1)), facts)
+    let mixed = predicates(Predicate.Compare("<=", second), Predicate.Compare("==", first))
+    assert inequalities_prove("<=", weighted, mixed)
+    let strict = predicates(Predicate.Compare("<", first), Predicate.Compare("<=", second))
+    assert inequalities_prove("<", sum, strict)
+    assert inequalities_prove("!=", sum, strict)
+}
+
+test fn inequalities_keep_integer_gaps_exact_without_division() {
+    let value = variable(0)
+    let odd = add(scale(value, integer(2)), constant(integer(-5)))
+    assert inequalities_prove("<", add(value, constant(integer(-3))), predicates(Predicate.Compare("<=", odd)))
+    assert !inequalities_prove("<", add(value, constant(integer(-2))), predicates(Predicate.Compare("<=", odd)))
+    let facts = predicates(Predicate.Compare("<=", odd), Predicate.Compare(">=", add(value, constant(integer(-2)))))
+    assert inequalities_prove("==", add(value, constant(integer(-2))), facts)
+    let wide = scale(odd, decimal("9223372036854775808"))
+    assert inequalities_prove("<=", add(value, constant(integer(-3))), predicates(Predicate.Compare("<", wide)))
+    // A disequality and a disjunction are not independent upper/lower bounds.
+    assert !inequalities_prove(">", value, predicates(Predicate.Compare("!=", value)))
+    let either = Predicate.Or(predicates(Predicate.Compare("<", value), Predicate.Compare(">", value)))
+    assert !inequalities_prove("<", value, predicates(either))
+    let redundant = predicates(Predicate.Compare("<=", add(value, constant(integer(-5)))),
+        Predicate.Compare("<=", add(value, constant(integer(-3)))))
+    assert inequalities_prove("<=", add(value, constant(integer(-3))), redundant)
+    assert !inequalities_prove("<=", add(value, constant(integer(-2))), redundant)
+}
+
+test fn inequality_exhaustion_never_accepts_the_goal() {
+    assert difference_shape(variable(0))
+    assert difference_shape(add(variable(0), scale(variable(1), integer(-1))))
+    assert !difference_shape(add(variable(0), variable(1)))
+    assert !difference_shape(scale(variable(0), integer(2)))
+    let rows = new[Linear]()
+    assert match inequality_rows(rows, "<=", variable(0)) {
+        Result.Ok(contradiction) => !contradiction
+        Result.Err(_) => false
+    }
+    assert match inequality_rows(rows, ">", variable(0)) {
+        Result.Ok(contradiction) => !contradiction
+        Result.Err(_) => false
+    }
+    let budget = new[Int]()
+    push(budget, 0)
+    assert match inequality_eliminate(rows, budget) {
+        Result.Err(_) => true
+        Result.Ok(_) => false
+    }
+}

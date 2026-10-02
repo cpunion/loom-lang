@@ -1,0 +1,180 @@
+// Rows mean value <= 0 over mathematical integers. Only nonnegative linear
+// combinations are consequences: unlike equality elimination, subtracting an
+// inequality would reverse its evidence. This is bounded Fourier elimination,
+// not integer feasibility, nonlinear arithmetic or proof by sampling.
+fn inequality_row(rows List[Linear], value Linear) Result[Bool, Text] {
+    if !affine_size(value) {
+        return Result.Err("inequality proof size budget exhausted")
+    }
+    if length(value.terms) == 0 {
+        return Result.Ok(compare(value.constant, integer(0)) > 0)
+    }
+    var index = 0
+    while index < length(rows) {
+        let previous = get(rows, index)
+        if same_terms(previous.terms, value.terms) {
+            if compare(value.constant, previous.constant) > 0 {
+                set(rows, index, value)
+            }
+            return Result.Ok(false)
+        }
+        index = index + 1
+    }
+    if length(rows) >= 128 {
+        return Result.Err("inequality proof row budget exhausted")
+    }
+    push(rows, value)
+    Result.Ok(false)
+}
+
+fn inequality_rows(rows List[Linear], relation Text, value Linear) Result[Bool, Text] {
+    if relation == "!=" {
+        // A disjunction cannot become a single conjunctive row.
+        return Result.Ok(false)
+    }
+    if relation == "==" {
+        return Result.Ok(inequality_row(rows, value)? || inequality_row(rows, scale(value, integer(-1)))?)
+    }
+    if relation != "<" && relation != "<=" && relation != ">" && relation != ">=" {
+        return Result.Err("unsupported inequality relation")
+    }
+    var row = if relation == ">" || relation == ">=" {
+        scale(value, integer(-1))
+    } else {
+        value
+    }
+    if relation == "<" || relation == ">" {
+        // Strict comparisons of integer expressions have an exact unit gap.
+        row = add(row, constant(integer(1)))
+    }
+    inequality_row(rows, row)
+}
+
+fn inequality_eliminate(input List[Linear], budget List[Int]) Result[Bool, Text] {
+    var rows = input
+    var round = 0
+    while length(rows) > 0 && round < 32 {
+        let pivot = get(get(rows, 0).terms, 0).id
+        let positive = new[Linear]()
+        let negative = new[Linear]()
+        let remaining = new[Linear]()
+        var index = 0
+        while index < length(rows) {
+            let row = get(rows, index)
+            let factor = affine_coefficient(row, pivot)
+            if length(factor.digits) == 0 {
+                push(remaining, row)
+            } else if factor.negative {
+                push(negative, row)
+            } else {
+                push(positive, row)
+            }
+            index = index + 1
+        }
+        index = 0
+        while index < length(positive) {
+            let upper = get(positive, index)
+            let a = affine_coefficient(upper, pivot)
+            var other = 0
+            while other < length(negative) {
+                if !conjunction_step(budget) {
+                    return Result.Err("inequality proof work budget exhausted")
+                }
+                let lower = get(negative, other)
+                let b = negate(affine_coefficient(lower, pivot))
+                // b > 0 and a > 0, so this row is a consequence and its
+                // pivot cancels exactly. An impossible constant is a proof.
+                if inequality_row(remaining, add(scale(upper, b), scale(lower, a)))? {
+                    return Result.Ok(true)
+                }
+                other = other + 1
+            }
+            index = index + 1
+        }
+        rows = remaining
+        round = round + 1
+    }
+    // Empty or exhausted elimination is not evidence of inconsistency.
+    Result.Ok(false)
+}
+
+fn inequality_query(relation Text, value Linear, facts List[Predicate]) Result[Bool, Text] {
+    if relation == "==" {
+        return Result.Ok(inequality_query("<=", value, facts)? && inequality_query(">=", value, facts)?)
+    }
+    if relation == "!=" {
+        return Result.Ok(inequality_query("<", value, facts)? || inequality_query(">", value, facts)?)
+    }
+    let rows = new[Linear]()
+    // Refute the negated goal, never assume the goal or that its evaluation
+    // succeeded. Source definedness remains a separate caller obligation.
+    if inequality_rows(rows, inverse(relation), value)? {
+        return Result.Ok(true)
+    }
+    var index = 0
+    while index < length(facts) && index < 256 {
+        match get(facts, index) {
+            Predicate.Compare(operator, term) => {
+                if inequality_rows(rows, operator, term)? {
+                    return Result.Ok(true)
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    let budget = new[Int]()
+    push(budget, 4096)
+    inequality_eliminate(rows, budget)
+}
+
+fn difference_shape(value Linear) Bool {
+    if length(value.terms) > 2 {
+        return false
+    }
+    var positive = false
+    var negative = false
+    var index = 0
+    while index < length(value.terms) {
+        let factor = get(value.terms, index).factor
+        // Canonical magnitudes identify +/-1 without allocating two temporary
+        // Numbers for every coefficient on this common rejected-query path.
+        if length(factor.digits) != 1 || get(factor.digits, 0) != 1 {
+            return false
+        }
+        if !factor.negative && !positive {
+            positive = true
+        } else if factor.negative && !negative {
+            negative = true
+        } else {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn inequality_holds(relation Text, value Linear, facts List[Predicate]) Bool {
+    // Difference-only systems already have a cheaper graph query. Ordinary
+    // failed interval checks must not start general elimination needlessly.
+    var needed = !difference_shape(value)
+    var index = 0
+    while !needed && index < length(facts) && index < 256 {
+        match get(facts, index) {
+            Predicate.Compare(operator, term) => {
+                needed = operator != "!=" && !difference_shape(term)
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    if !needed {
+        return false
+    }
+    match inequality_query(relation, value, facts) {
+        Result.Ok(proved) => proved
+        Result.Err(_) => false
+    }
+}

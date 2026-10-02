@@ -1,0 +1,102 @@
+test fn inequalities_compose_fields_summaries_and_safe_weakening() {
+    discard accepted("""
+        record Budget {
+            limit Int
+            reserve Int
+        }
+        fn at_most(value Int) Int
+        ensures result <= value
+        {
+            value
+        }
+        fn available(a Int, b Int, budget Budget) Int
+        requires a >= 0 && budget.reserve >= 0
+        requires a + b <= budget.limit && b >= budget.reserve
+        ensures result <= budget.limit - budget.reserve
+        {
+            at_most(a)
+        }
+        fn combined(a Int, b Int, c Int) Int
+        requires a >= 0 && b >= 0 && a <= c && b <= c && c <= 100
+        ensures result <= 2 * c
+        {
+            a + b
+        }
+        type Twice = Int where self >= 0 && self <= 100 && 2 * self <= 100
+        type Half = Int where self <= 50
+        fn widen(value Twice) Half {
+            Half(value)
+        }
+        """)
+}
+
+test fn inequality_combinations_do_not_reverse_evidence_or_hide_overflow() {
+    rejects("""
+        fn difference(a Int, b Int, c Int) Int
+        requires a <= c && b <= c
+        ensures result <= 0
+        {
+            a - b
+        }
+        """)
+    rejects("""
+        fn strict(a Int, b Int, c Int) Int
+        requires a >= 0 && b >= 0 && a <= c && b <= c && c <= 100
+        ensures result < 2 * c
+        {
+            a + b
+        }
+        """)
+    rejects("""
+        fn overflow(a Int, b Int, c Int) Int
+        requires a <= c && b <= c
+        ensures result <= 2 * c
+        {
+            a + b
+        }
+        """)
+    rejects("""
+        fn alternative(a Int, b Int, c Int) Int
+        requires a <= c || b <= c
+        ensures result <= c
+        {
+            a
+        }
+        """)
+}
+
+test fn inequality_rules_compose_text_and_entry_storage_observations() {
+    text_length_contract("""
+        import std.text.length
+        fn size(a Text, b Text, limit Int, reserve Int) Int
+        requires reserve >= 0 && length(a) + length(b) <= limit && length(b) >= reserve
+        ensures result <= limit - reserve
+        {
+            length(a)
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn entry_size(a List[Int], b List[Int], limit Int, reserve Int) Int
+        requires reserve >= 0 && length(a) + length(b) <= limit && length(b) >= reserve
+        ensures result <= limit - reserve
+        ensures result == old(length(a))
+        {
+            let saved = length(a)
+            push(a, 1)
+            saved
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+        fn stale(a List[Int], b List[Int], limit Int, reserve Int) Int
+        requires reserve >= 0 && length(a) + length(b) <= limit && length(b) >= reserve
+        ensures result <= limit - reserve
+        {
+            push(a, 1)
+            length(a)
+        }
+        """, false)
+}

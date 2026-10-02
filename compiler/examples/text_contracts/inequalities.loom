@@ -1,0 +1,66 @@
+record Budget {
+    limit Int
+    reserve Int
+}
+
+fn within_budget(value Int, upper Int) Bool {
+    let proof_marker = 74958362
+    discard proof_marker
+    value <= upper
+}
+
+fn at_most(value Int) Int
+ensures result <= value
+{
+    value
+}
+
+fn budgeted(first Int, second Int, budget Budget) Int
+requires first >= 0 && budget.reserve >= 0
+requires first + second <= budget.limit && second >= budget.reserve
+ensures within_budget(result, budget.limit - budget.reserve)
+{
+    at_most(first)
+}
+
+fn budgeted_text(first Text, second Text, budget Budget) Int
+requires budget.reserve >= 0 && length(first) + length(second) <= budget.limit
+requires length(second) >= budget.reserve
+ensures result <= budget.limit - budget.reserve
+{
+    length(first)
+}
+
+fn budgeted_entry(values List[Int], text Text, budget Budget) Int
+requires budget.reserve >= 0 && std.list.length(values) + length(text) <= budget.limit
+requires length(text) >= budget.reserve
+ensures result <= budget.limit - budget.reserve
+ensures result == old(std.list.length(values))
+{
+    let saved = std.list.length(values)
+    std.list.push(values, 9)
+    saved
+}
+
+type TwiceLimited = Int where self >= 0 && self <= 100 && 2 * self <= 100
+
+type HalfLimited = Int where self <= 50
+
+fn widen_limit(value TwiceLimited) HalfLimited {
+    HalfLimited(value)
+}
+
+fn exercise_inequalities() {
+    let budget = Budget {
+        limit = 10
+        reserve = 4
+    }
+    assert budgeted(3, 6, budget) == 3
+    assert budgeted_text("é", "😀", budget) == 2
+    assert budgeted_entry([1, 2], "😀", budget) == 2
+    assert widen_limit(TwiceLimited(50)) == 50
+}
+
+test fn inequalities_share_the_scalar_algebra() {
+    exercise_inequalities()
+}
