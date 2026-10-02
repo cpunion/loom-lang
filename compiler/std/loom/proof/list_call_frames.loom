@@ -52,7 +52,7 @@ fn frame_function(program Program, function Function, inputs List[Value], entry 
             return frame_write(inputs, writes)
         }
         return function.runtime_name == "list_get" || function.runtime_name == "list_len" ||
-        function.runtime_name == "list_new" || function.runtime_name == "text_len"
+        function.runtime_name == "list_new" || function.runtime_name == "text_len" || function.runtime_name == "text_concat"
     }
     let locals = new[Value]()
     var index = 0

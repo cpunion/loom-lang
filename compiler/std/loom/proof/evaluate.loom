@@ -154,6 +154,9 @@ fn pure(expr Expr, state State) Result[Value, Text] {
             _ => Result.Err("Text length proof requires immutable Text")
         }
     }
+    if text_concat_expression(expr) {
+        return joined_text(pure(get(expr.children, 0), state)?, pure(get(expr.children, 1), state)?)
+    }
     if list_length_expression(expr) {
         return match pure(get(expr.children, 0), state)? {
             Value.List(identity) => Result.Ok(Value.Number(list_extent(identity, state)?))
@@ -243,6 +246,17 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
     }
     if list_read_expression(expr) {
         return element_defined(expr, state)
+    }
+    if text_concat_expression(expr) {
+        discard defined(get(expr.children, 0), state)?
+        discard defined(get(expr.children, 1), state)?
+        let size = match pure(expr, state)? {
+            Value.Text(text) => text_length(text)
+            _ => { return Result.Err("Text concatenation proof requires immutable Text") }
+        }
+        if !text_size_defined(size, state) {
+            return Result.Err("postcondition Text concatenation size is not proved defined")
+        }
     }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || expr.kind == ExprKind.Field || text_length_expression(expr) || list_length_expression(expr) {
         discard defined(get(expr.children, 0), state)?

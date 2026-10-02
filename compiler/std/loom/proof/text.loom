@@ -6,6 +6,15 @@ fn text_length(value TextValue) Linear {
         // This fresh identity denotes immutable bytes in the Text domain and
         // their byte length in the numeric domain, never another Int local.
         TextValue.Variable(id) => variable(id)
+        TextValue.Joined(parts) => {
+            var size = constant(integer(0))
+            var index = 0
+            while index < length(parts) {
+                size = add(size, text_length(get(parts, index)))
+                index = index + 1
+            }
+            size
+        }
     }
 }
 
@@ -14,9 +23,15 @@ fn text_length_expression(value Expr) Bool {
     value.ty == 1 && length(value.children) == 1
 }
 
+fn text_concat_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "text_concat" &&
+    value.ty == 3 && length(value.children) == 2
+}
+
 fn text_bounds(value Value, state State) State {
     match value {
-        Value.Text(text) => assume(state, Predicate.Compare(">=", text_length(text)))
+        Value.Text(text) => assume(assume(state, Predicate.Compare(">=", text_length(text))),
+            Predicate.Compare("<=", add(text_length(text), constant(integer(-9223372036854775807)))))
         Value.Record(fields) => {
             var bounded = state
             var index = 0
@@ -61,13 +76,7 @@ fn implication_initial(premise Expr, conclusion Expr) State {
 }
 
 fn distinct_text_literals(left TextValue, right TextValue) Bool {
-    match left {
-        TextValue.Literal(text) => match right {
-            TextValue.Literal(other) => text != other
-            _ => false
-        }
-        _ => false
-    }
+    text_literal(left) && text_literal(right) && !same_text(left, right)
 }
 
 fn text_member(values List[TextValue], value TextValue) Bool {

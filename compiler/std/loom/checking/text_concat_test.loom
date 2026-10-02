@@ -1,0 +1,186 @@
+test fn text_concatenation_proves_lengths_identity_and_ordered_association() {
+    text_length_contract("""
+        import std.text.length
+        import std.text.concat
+        fn joined(left Text, right Text) Text
+        ensures length(result) == length(left) + length(right)
+        {
+            concat(left, right)
+        }
+        fn associated(a Text, b Text, c Text) Text
+        ensures result == concat(a, concat(b, c))
+        {
+            concat(concat(a, b), c)
+        }
+        fn identity(value Text) Text
+        ensures result == value
+        {
+            concat("", concat(value, ""))
+        }
+        fn literal() Text
+        ensures result == "é😀" && result != "é🙂" && length(result) == 6
+        {
+            concat("é", "😀")
+        }
+        fn chunks(value Text) Text
+        ensures result == concat("abc", value)
+        {
+            concat("a", concat("bc", value))
+        }
+        fn selected(flag Bool) Text {
+            concat("a", if flag { "1" } else { "2" })
+        }
+        fn chosen(flag Bool) Text
+        ensures result == selected(flag)
+        {
+            if flag { "a1" } else { "a2" }
+        }
+        """, true)
+    text_length_contract("""
+        import std.text.concat
+        fn swapped(a Text, b Text) Text
+        ensures result == concat(b, a)
+        {
+            concat(a, b)
+        }
+        """, false)
+    text_length_contract("""
+        import std.text.concat
+        fn selected(flag Bool) Text {
+            concat("a", if flag { "1" } else { "2" })
+        }
+        fn wrong_branch(flag Bool) Text
+        ensures result == selected(flag)
+        {
+            "a1"
+        }
+        """, false)
+    text_length_contract("""
+        import std.text.concat
+        fn unequal(a Text, b Text) Text
+        ensures result != concat(b, a)
+        {
+            concat(a, b)
+        }
+        """, false)
+}
+
+test fn text_concatenation_preserves_entry_values_and_established_equalities() {
+    text_length_contract("""
+        import std.text.length
+        import std.text.concat
+        fn same_suffix(a Text, b Text, suffix Text) Text
+        requires a == b
+        ensures result == concat(b, suffix)
+        {
+            concat(a, suffix)
+        }
+        fn empty_part(value Text, empty Text) Text
+        requires empty == ""
+        ensures result == value
+        {
+            concat(value, empty)
+        }
+        fn entry(value Text) Text {
+            concat("é", value)
+        }
+        fn retained(value Text) Text
+        ensures result == old(entry(value))
+        {
+            var local = value
+            let saved = entry(local)
+            local = "changed"
+            discard local
+            saved
+        }
+        fn eager(value Text) Text
+        ensures result == concat(value, "b")
+        {
+            var local = value
+            let saved = concat(local, {
+                local = "b"
+                local
+            })
+            saved
+        }
+        """, true)
+    text_length_contract("""
+        import std.text.length
+        import std.text.concat
+        fn not_congruent(a Text, b Text, suffix Text) Text
+        requires length(a) <= 8 && length(b) <= 8 && length(suffix) <= 8
+        requires a == "" || b == ""
+        ensures result == concat(b, suffix)
+        {
+            concat(a, suffix)
+        }
+        """, false)
+}
+
+test fn hypothetical_text_concatenation_must_prove_size_and_helper_obligations() {
+    text_length_contract("""
+        import std.text.concat
+        fn ignored(value Text) Bool {
+            true
+        }
+        fn unknown_size(value Text) Bool
+        ensures ignored(concat(value, "x"))
+        {
+            true
+        }
+        """, false)
+    text_length_contract("""
+        import std.text.length
+        import std.text.concat
+        fn ignored(value Text) Bool {
+            true
+        }
+        fn bounded_size(value Text) Bool
+        requires length(value) <= 100
+        ensures ignored(concat(value, "x"))
+        {
+            true
+        }
+        fn completed(value Text) Bool
+        ensures ignored(concat(value, "x"))
+        {
+            discard concat(value, "x")
+            true
+        }
+        """, true)
+    text_length_contract("""
+        import std.text.length
+        import std.text.concat
+        fn checked(value Text) Text
+        requires length(value) > 0
+        {
+            value
+        }
+        fn invalid() Text
+        ensures result == concat("", checked(""))
+        {
+            ""
+        }
+        """, false)
+}
+
+test fn concatenated_length_constraints_weaken_without_guessing_contents() {
+    text_length_contract("""
+        import std.text.length
+        import std.text.concat
+        type Short = Text where length(self) <= 8
+        type Decorated = Text where length(concat("é", self)) <= 10
+        fn widened(value Short) Decorated {
+            Decorated(value)
+        }
+        """, true)
+    text_length_contract("""
+        import std.text.length
+        import std.text.concat
+        type Any = Text where length(self) <= 8
+        type Ready = Text where concat(self, "!") == "ready!"
+        fn invalid(value Any) Ready {
+            Ready(value)
+        }
+        """, false)
+}

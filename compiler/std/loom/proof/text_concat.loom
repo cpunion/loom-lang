@@ -1,0 +1,251 @@
+// A bounded, flat word of immutable atoms. Preserve order and literal chunks;
+// do not allocate the concatenated bytes or solve arbitrary word equations.
+fn text_parts(value TextValue) List[TextValue] {
+    match value {
+        TextValue.Joined(parts) => parts
+        _ => {
+            let parts = new[TextValue]()
+            if !same_text(value, TextValue.Literal("")) {
+                push(parts, value)
+            }
+            parts
+        }
+    }
+}
+
+fn text_sequence(parts List[TextValue]) TextValue {
+    if length(parts) == 0 {
+        return TextValue.Literal("")
+    }
+    if length(parts) == 1 {
+        return get(parts, 0)
+    }
+    TextValue.Joined(parts)
+}
+
+fn joined_text(left Value, right Value) Result[Value, Text] {
+    let parts = new[TextValue]()
+    let inputs = snapshot_values(new[Value](), left)
+    push(inputs, right)
+    var input = 0
+    while input < 2 {
+        let value = match get(inputs, input) {
+            Value.Text(text) => text
+            _ => {
+                return Result.Err("Text concatenation proof requires immutable Text")
+            }
+        }
+        let atoms = text_parts(value)
+        if length(atoms) > 256 - length(parts) {
+            return Result.Err("Text concatenation proof budget exhausted")
+        }
+        var index = 0
+        while index < length(atoms) {
+            push(parts, get(atoms, index))
+            index = index + 1
+        }
+        input = input + 1
+    }
+    Result.Ok(Value.Text(text_sequence(parts)))
+}
+
+fn text_literal(value TextValue) Bool {
+    match value {
+        TextValue.Literal(_) => true
+        TextValue.Variable(_) => false
+        TextValue.Joined(parts) => {
+            var index = 0
+            while index < length(parts) {
+                if !text_literal(get(parts, index)) {
+                    return false
+                }
+                index = index + 1
+            }
+            true
+        }
+    }
+}
+
+fn text_size_defined(size Linear, state State) Bool {
+    let goal = add(size, constant(integer(-9223372036854775807)))
+    if holds(Predicate.Compare("<=", goal), state.facts) {
+        return true
+    }
+    // Reassociation may evaluate a different partial sum. Its nonnegative
+    // lengths fit whenever an established larger sum fits. Use only an actual
+    // inequality and a proved nonpositive difference, never a guessed bound.
+    var index = 0
+    while index < length(state.facts) {
+        match get(state.facts, index) {
+            Predicate.Compare(relation, term) => {
+                if (relation == "<=" || relation == "<" || relation == "==") &&
+                compare(range(add(goal, scale(term, integer(-1))), state.facts).high, integer(0)) <= 0 {
+                    return true
+                }
+                if (relation == ">=" || relation == ">" || relation == "==") &&
+                compare(range(add(goal, term), state.facts).high, integer(0)) <= 0 {
+                    return true
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Literal chunk boundaries are not observable. Unknown atoms, however, must
+// match exactly: different variables are neither unequal nor interchangeable.
+fn same_text_sequence(left TextValue, right TextValue) Bool {
+    let first = text_parts(left)
+    let second = text_parts(right)
+    var a = 0
+    var b = 0
+    var x = 0
+    var y = 0
+    while a < length(first) && b < length(second) {
+        let l = get(first, a)
+        let r = get(second, b)
+        match l {
+            TextValue.Literal(text) => match r {
+                TextValue.Literal(other) => {
+                    while x < std.text.length(text) && y < std.text.length(other) {
+                        if std.text.byte(text, x) != std.text.byte(other, y) {
+                            return false
+                        }
+                        x = x + 1
+                        y = y + 1
+                    }
+                    if x == std.text.length(text) {
+                        a = a + 1
+                        x = 0
+                    }
+                    if y == std.text.length(other) {
+                        b = b + 1
+                        y = 0
+                    }
+                }
+                _ => {
+                    return false
+                }
+            }
+            TextValue.Variable(id) => match r {
+                TextValue.Variable(other) => {
+                    if id != other {
+                        return false
+                    }
+                    a = a + 1
+                    b = b + 1
+                }
+                _ => {
+                    return false
+                }
+            }
+            _ => {
+                return false
+            }
+        }
+    }
+    a == length(first) && b == length(second)
+}
+
+fn text_atom_representative(value TextValue, facts List[Predicate]) TextValue {
+    let equivalents = text_class(value, facts)
+    var selected = value
+    var index = 0
+    while index < length(equivalents) {
+        let next = get(equivalents, index)
+        match next {
+            TextValue.Literal(_) => {
+                return next
+            }
+            TextValue.Variable(id) => match selected {
+                TextValue.Variable(other) => {
+                    if id < other {
+                        selected = next
+                    }
+                }
+                _ => {
+                }
+            }
+            _ => {
+            }
+        }
+        index = index + 1
+    }
+    selected
+}
+
+fn normalized_text(value TextValue, facts List[Predicate]) TextValue {
+    let parts = text_parts(value)
+    let output = new[TextValue]()
+    var index = 0
+    while index < length(parts) {
+        let atom = text_atom_representative(get(parts, index), facts)
+        if !same_text(atom, TextValue.Literal("")) {
+            push(output, atom)
+        }
+        index = index + 1
+    }
+    text_sequence(output)
+}
+
+fn text_equal(left TextValue, right TextValue, facts List[Predicate]) Bool {
+    let first = text_class(left, facts)
+    if text_member(first, right) {
+        return true
+    }
+    let second = text_class(right, facts)
+    var a = 0
+    while a < length(first) {
+        var b = 0
+        while b < length(second) {
+            let l = get(first, a)
+            let r = get(second, b)
+            let joined = match l {
+                TextValue.Joined(_) => true,
+                _ => false
+            } ||
+            match r {
+                TextValue.Joined(_) => true,
+                _ => false
+            }
+            if joined && same_text(normalized_text(l, facts), normalized_text(r, facts)) {
+                return true
+            }
+            b = b + 1
+        }
+        a = a + 1
+    }
+    false
+}
+
+fn execute_text_operation(proof Verification, expr Expr, name Text, state State, depth Int) Result[List[Outcome], Text] {
+    let inputs = call_arguments(proof, expr, state, depth)?
+    let output = new[Outcome]()
+    var index = 0
+    while index < length(inputs) {
+        let arguments = get(inputs, index)
+        let value = if name == "text_concat" && length(arguments.values) == 2 {
+            joined_text(get(arguments.values, 0), get(arguments.values, 1))?
+        } else if name == "text_len" && length(arguments.values) == 1 {
+            match get(arguments.values, 0) {
+                Value.Text(text) => Value.Number(text_length(text))
+                _ => {
+                    return Result.Err("Text length proof requires immutable Text")
+                }
+            }
+        } else {
+            return Result.Err("unsupported Text operation in required proof")
+        }
+        // Only an executed concatenation establishes that its size fits. A
+        // hypothetical contract expression must prove this independently.
+        discard add_outcome(output, Outcome {
+                state = bounded(value, arguments.state)
+                value = value
+            })?
+        index = index + 1
+    }
+    Result.Ok(output)
+}

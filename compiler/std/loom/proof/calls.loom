@@ -491,6 +491,9 @@ fn body_call(proof Verification, call Expr, state State, depth Int) Result[List[
         return Result.Err("body proof call has no checked helper instance")
     }
     let function = get(proof.program.functions, call.index)
+    if function.runtime_name == "text_len" || function.runtime_name == "text_concat" {
+        return execute_text_operation(proof, call, function.runtime_name, state, depth)
+    }
     let primitive = forwarded_list_operation(proof.program, function, 0)
     if primitive != "" {
         return execute_list_operation(proof, call, primitive, state, depth)

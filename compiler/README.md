@@ -2073,8 +2073,18 @@ nonnegative, and equal Texts have equal lengths. These facts compose through
 entry values, helpers and input-type constraints. Length-based refinement
 weakening can remove a second boundary check; unknown strengthening still checks.
 Unequal Texts may have equal lengths, and equal lengths do not identify contents.
-Concatenation and substring reasoning remain unsupported. See the
-[native Text example](examples/text_contracts).
+`std.text.concat` also preserves ordered symbolic contents and adds byte lengths.
+Bounded proofs support empty-string identity, reassociation, literal chunks and
+substitution of established equal atoms, including pure helpers, `old` and
+refinement weakening. They neither commute unknown strings nor solve arbitrary
+word equations. Hypothetical concatenations must prove their size fits; eager
+arguments and helper preconditions remain obligations even if the result is
+unused. Only an executed concatenation supplies a successful-allocation size
+bound on normal continuation. Symbolic words are limited to 256 atoms; exhausting
+the limit rejects a required proof or retains a checked conversion. No runtime
+proof strings or entry snapshots are allocated. Substring reasoning remains
+unsupported. See the [native Text example](examples/text_contracts) and its
+[concatenation contracts](examples/text_contracts/concatenation.loom).
 
 List lengths are stateful, unlike immutable Text lengths. `std.list.length`,
 List literals, `std.list.new`, indexing, `std.list.get/set` and `std.list.push`
