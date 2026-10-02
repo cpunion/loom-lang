@@ -1,0 +1,77 @@
+import std.iter.Iterator
+import std.iter.from_list
+import std.iter.range
+import std.iter.map
+import std.iter.filter
+import std.iter.take
+import std.iter.collect
+import std.iter.fold
+import std.option.Option
+import std.task.Outcome
+import std.task.outcome
+import std.list.push
+import std.list.length
+import std.text.concat
+import std.int.to_text
+
+fn pipeline() {
+    let values = [["first"], ["second"], ["third"]]
+    let source = from_list(values)
+    let names = map(source, fn(value List[Text]) Text {
+            concat(value[0], "!")
+        })
+    values[1][0] = "updated"
+    let selected = collect(take(names, 2))
+    assert selected[0] == "first!" && selected[1] == "updated!"
+    assert match source.next() {
+        Option.Some(value) => value[0] == "third"
+        Option.None => false
+    }
+    let dynamic dyn Iterator[Item = Int] = filter(range(0, 6), fn(value Int) Bool {
+            value % 2 == 0
+        })
+    assert fold(dynamic, "", fn(text Text, value Int) Text {
+            concat(text, to_text(value))
+        }) == "024"
+}
+
+async fn failing_scan(source std.iter.Range, trace List[Int]) Int {
+    defer {
+        push(trace, 99)
+    }
+    let mapped = map(source, fn(value Int) Int {
+            defer {
+                push(trace, value + 10)
+            }
+            push(trace, value)
+            assert value != 2
+            value
+        })
+    fold(mapped, 0, fn(total Int, value Int) Int {
+            total + value
+        })
+}
+
+async fn main() {
+    pipeline()
+    let source = range(1, 4)
+    let trace = std.list.new[Int]()
+    assert match outcome(failing_scan(source, trace)).await {
+        Outcome.Faulted(_) => true
+        _ => false
+    }
+    assert length(trace) == 5
+    assert trace[0] == 1 && trace[1] == 11
+    assert trace[2] == 2 && trace[3] == 12 && trace[4] == 99
+    assert match source.next() {
+        Option.Some(value) => value == 3
+        Option.None => false
+    }
+}
+
+test async fn lazy_iteration_preserves_sharing_callback_faults_and_cleanup() {
+    main().await
+}
+
+import std.iter.Range
+import std.list.new
