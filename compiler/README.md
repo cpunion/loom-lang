@@ -2062,11 +2062,24 @@ overflow obligations, immutable Text lengths and verified call summaries.
 This adds no quantified loop inference, nonconstant division or universal pack
 proof. Nonlinear solving is incomplete: unknown or timeout still blocks a proof.
 
+Constrained construction, scalar flow facts, pure-helper implication and supported
+List-append preservation use this same backend after their fast rules fail.
+Helper evaluation safety and predicate truth are discharged together, before
+removing a boundary check. For example, `self * self == 1` implies
+`self == -1 || self == 1`, and a zero byte length implies empty Text content;
+see [refinement examples](examples/smt_contracts/refinements.loom). Unknown or
+failed optional proofs retain checked `Result` construction or reject an
+unproved mutation; they do not turn into mandatory postconditions. A helper
+whose final Boolean is true still needs its eager arithmetic to be safe.
+
 `std.loom.proof.ProofBackend` is an explicit trusted host callback, supplied to
 `std.loom.checking.with_proof_backend(inputs, backend)`. The default public checker
 does no process I/O and retains the in-process proof fragment. A backend and
 imported trusted caches belong to the same host trust boundary; they are not
 source-program axioms. The compiler's Z3 process is absent from emitted programs.
+The public `implies`, `implies_facts`, `implies_with_helpers` and
+`preserves_list_append` queries also accept an explicit backend; their default
+overloads remain I/O-free.
 
 Proof composition uses the checked expression model, not a second executable IR.
 A closed [operation description](std/loom/proof/operations.loom) supplies operand

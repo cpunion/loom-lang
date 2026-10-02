@@ -24,10 +24,22 @@ record Obligation {
     conclusion Predicate
 }
 
+record ProofQuery {
+    backend ProofBackend
+    obligations List[Obligation]
+}
+
+fn proof_query(backend ProofBackend) ProofQuery {
+    ProofQuery {
+        backend = backend
+        obligations = new[Obligation]()
+    }
+}
+
 // All return paths of one body are submitted together. Cheap proofs retain
 // their existing fast path and never call the host. Logical declarations are
 // local to this query; no previous function's assumptions can leak into it.
-fn discharge(proof Verification) Result[Bool, Text] {
+fn discharge(proof ProofQuery) Result[Bool, Text] {
     if length(proof.obligations) == 0 {
         return Result.Ok(true)
     }
@@ -38,7 +50,7 @@ fn discharge(proof Verification) Result[Bool, Text] {
     Result.Ok(true)
 }
 
-fn solver_condition(proof Verification, condition Expr, state State) Result[Bool, Text] {
+fn solver_condition(proof ProofQuery, condition Expr, state State) Result[Bool, Text] {
     // Safety and truth are separate obligations over the same entry facts.
     // Never assume a hypothetical operation's overflow or access check passed.
     discard solver_defined(proof, condition, state, 256)?
@@ -47,9 +59,23 @@ fn solver_condition(proof Verification, condition Expr, state State) Result[Bool
     Result.Ok(true)
 }
 
-fn solver_fact(proof Verification, fact Predicate, state State) {
+fn solver_fact(proof ProofQuery, fact Predicate, state State) {
     push(proof.obligations, Obligation {
             facts = state.facts
             conclusion = fact
         })
+}
+
+// Optional implication and mandatory contracts use the same truth and safety
+// obligations. Queuing is not proof: every caller must discharge the query.
+fn condition_or_queue(proof ProofQuery, condition Expr, state State) Result[Bool, Text] {
+    match required_condition(condition, state) {
+        Result.Ok(_) => Result.Ok(true)
+        Result.Err(message) => {
+            if !proof.backend.enabled {
+                return Result.Err(message)
+            }
+            solver_condition(proof, condition, state)
+        }
+    }
 }

@@ -30,7 +30,7 @@ fn prepared_implication(context Context, node Node, source Int, target Int, base
     let left_scope = predicate_context(env, source, stage.locals, 0, true)
     let left = expr(left_scope, predicate_node(env, source), 2)?
     let right = expr(predicate_context(env, target, stage.locals, 0, true), predicate_node(env, target), 2)?
-    Result.Ok(implies_with_helpers(prepared(left_scope)?, left, right))
+    Result.Ok(implies_with_helpers(prepared(left_scope)?, left, right, get(env.inputs, 0).build.proof_backend))
 }
 fn helpers_imply(context Context, node Node, source Int, target Int, base Int) Bool {
     if context.env.expanding_helpers { return false }

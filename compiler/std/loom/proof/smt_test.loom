@@ -54,3 +54,18 @@ test fn backend_failures_propagate_and_easy_or_unsupported_proofs_do_not_call_it
         _ => false
     }
 }
+
+test fn optional_implication_retains_checks_when_the_backend_fails() {
+    let backend = ProofBackend {
+        enabled = true
+        context = ""
+        solve = failed_solver
+    }
+    let x = local(0)
+    let positive = operation(">", x, literal("0"))
+    assert implies(positive, operation(">=", x, literal("0")), backend)
+    let unit_square = operation("==", operation("*", x, x), literal("1"))
+    assert !implies(unit_square, positive, backend)
+    assert !implies_facts([unit_square], operation("!=", x, literal("0")), backend)
+    assert implies_facts([positive], operation(">=", x, literal("0")), backend)
+}

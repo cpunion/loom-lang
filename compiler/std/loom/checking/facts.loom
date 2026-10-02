@@ -287,5 +287,5 @@ fn facts_imply(context Context, value Expr, goal Expr) Bool {
         push(premises, fact.predicate)
         head = fact.previous
     }
-    implies_facts(premises, rebound_fact(goal, 0, local))
+    implies_facts(premises, rebound_fact(goal, 0, local), get(context.env.inputs, 0).build.proof_backend)
 }

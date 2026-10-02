@@ -196,6 +196,12 @@ bounds and verified call summaries compose with Text lengths; see the
 [polynomial example](../../compiler/examples/smt_contracts/polynomials.loom).
 Nonconstant division, quantified collection induction and universal variadic
 proofs remain unsupported; nonlinear solver queries may still be unknown or time out.
+Constrained construction, stable scalar facts, pure-helper implication and
+supported List-append preservation now share the same optional backend and
+batched safety/truth obligations. Unknown or failed implication retains the
+boundary check; eliminating it preserves input evaluation and faults. The
+[refinement example](../../compiler/examples/smt_contracts/refinements.loom)
+exercises sequence-length weakening, integer roots and nonlinear local facts.
 
 Current reasoning includes
 scalar/inline-aggregate identities, guarded preconditions/assertions, bounded

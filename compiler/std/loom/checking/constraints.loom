@@ -144,7 +144,7 @@ fn validate_refinement(env Environment, owner Int, base Int) Result[Int, Failure
             return Result.Err(failure(env, owner, predicate, "type constraints may observe immutable fields, not shared mutable contents"))
         }
         if list && !get(reads.element_reads, 0) {
-            writes = if std.loom.proof.preserves_list_append(program, value) {
+            writes = if std.loom.proof.preserves_list_append(program, value, get(env.inputs, 0).build.proof_backend) {
                 2
             } else {
                 1
@@ -416,7 +416,7 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     }
     if (base == 1 || base == 3 || base == 5) && source.kind == TypeKind.Refined && base_type(context.env, input.ty) == base &&
     length(source.constraint) == 1 && length(destination.constraint) == 1 &&
-    implies(get(source.constraint, 0), get(destination.constraint, 0)) {
+    implies(get(source.constraint, 0), get(destination.constraint, 0), get(context.env.inputs, 0).build.proof_backend) {
         return Result.Ok(expression(ExprKind.Coerce, target, node, boundary, -1, expressions(value), value.falls))
     }
     if length(destination.constraint) == 1 && facts_imply(context, value, get(destination.constraint, 0)) {

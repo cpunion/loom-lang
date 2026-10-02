@@ -61,8 +61,7 @@ fn verification(function Function, program Program, backend ProofBackend) Verifi
         fresh = fresh
         budget = budget
         loop_control = Option.None
-        backend = backend
-        obligations = new[Obligation]()
+        query = proof_query(backend)
     }
 }
 
