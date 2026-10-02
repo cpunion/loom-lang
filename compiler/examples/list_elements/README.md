@@ -9,7 +9,7 @@ target/loom run compiler/examples/list_elements
 The program proves indexed writes, swaps with and without returned values,
 literal/append reads and contract composition across calls. Int, Bool, Text and supported inline
 element values retain established observations. Exact handle aliases share
-them; another index survives a write only with proved inequality, and another
+them; another index survives a write under a proved inequality, and another
 handle only with proved allocation separation.
 
 Entry checks execute normally. Postcondition indexing must separately prove
@@ -33,6 +33,9 @@ recursive effects never acquire a guessed write footprint. Written values still
 need declared postconditions; the frame analysis does not execute helper bodies.
 No-result helpers with finite checked effects need no additional contract just
 to preserve untouched storage.
+Separation may be proved after a write: `keep_conditionally` guards its later
+read against both the ordinary and deferred write. Each observation retains the
+conjunction of its write-separation conditions, not an unconditional old value.
 
 `old(values[index])` and pure helper reads snapshot immutable element values
 before the body. Bounds must be proved at entry, even under a conditional

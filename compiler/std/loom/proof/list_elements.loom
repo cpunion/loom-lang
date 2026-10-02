@@ -117,9 +117,35 @@ fn remember_observation(identity Int, index Linear, value Value, valid Predicate
     Result.Ok(with_cells(identity, cells, state))
 }
 
-// A write keeps other indices only with proved inequality. Another handle may
-// be an alias, so its observations must be forgotten unless allocation proves
-// separation. Previously read scalar values remain immutable snapshots.
+// The frame condition is a formula, not a decision that must be settled at the
+// write. A later branch may establish index separation. Capture scalar indices
+// now; subsequent local reassignments cannot change this condition.
+fn frame_observation(cell ListCell, written Linear, state State) ListCell {
+    if index_relation("!=", cell.index, written, state) {
+        return cell
+    }
+    let valid = if index_relation("==", cell.index, written, state) {
+        Predicate.Constant(false)
+    } else {
+        let separate = Predicate.Compare("!=", add(cell.index, scale(written, integer(-1))))
+        if same(cell.valid, separate) {
+            cell.valid
+        } else if same(cell.valid, Predicate.Constant(true)) {
+            separate
+        } else {
+            Predicate.And(predicates(cell.valid, separate))
+        }
+    }
+    ListCell {
+        index = cell.index
+        value = cell.value
+        valid = valid
+    }
+}
+
+// A write retains same-handle observations under index separation. Different
+// handles may alias at different offsets, so only established allocation
+// separation preserves their cells. Read scalars remain immutable snapshots.
 fn written_element(identity Int, index Linear, value Value, state State) Result[State, Text] {
     let target = list_state(identity, state)?
     let extents = new[ListExtent]()
@@ -130,9 +156,9 @@ fn written_element(identity Int, index Linear, value Value, state State) Result[
         if extent.identity == identity {
             var cell = 0
             while cell < length(extent.cells) {
-                let previous = get(extent.cells, cell)
-                if index_relation("!=", previous.index, index, state) {
-                    push(cells, previous)
+                let retained = frame_observation(get(extent.cells, cell), index, state)
+                if !same(retained.valid, Predicate.Constant(false)) {
+                    push(cells, retained)
                 }
                 cell = cell + 1
             }

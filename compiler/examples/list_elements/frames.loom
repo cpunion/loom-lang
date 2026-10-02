@@ -60,6 +60,26 @@ ensures result == old(values[0])
     values[0]
 }
 
+fn paint_pair(values List[Int], first Int, second Int) {
+    defer {
+        values[second] = 8
+    }
+    values[first] = 9
+}
+
+fn keep_conditionally(values List[Int], observed Int, first Int, second Int) Int
+requires observed >= 0 && observed < length(values)
+ensures result == old(values[observed])
+{
+    let before = values[observed]
+    paint_pair(values, first, second)
+    if observed != first && observed != second {
+        values[observed]
+    } else {
+        before
+    }
+}
+
 fn frame_contracts() {
     let values = [3, 5, 7]
     assert keep_without_contract(values) == 3
@@ -71,6 +91,10 @@ fn frame_contracts() {
     assert values[1] == 7 && values[2] == 9
     assert keep_other(values, 2, 0) == 9
     assert values[0] == 9
+    assert keep_conditionally(values, 0, 1, 2) == 9
+    assert values[1] == 9 && values[2] == 8
+    assert keep_conditionally(values, 0, 0, 0) == 9
+    assert values[0] == 8
 }
 
 test fn call_frames_preserve_actual_untouched_elements() {
