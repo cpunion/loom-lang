@@ -1,0 +1,89 @@
+import std.text.length
+import std.text.concat
+
+fn joined(left Text, right Text) Text
+ensures length(result) == length(left) + length(right)
+{
+    concat(left, right)
+}
+
+fn associated(a Text, b Text, c Text) Text
+ensures result == concat(a, concat(b, c))
+{
+    concat(concat(a, b), c)
+}
+
+fn same_suffix(left Text, right Text, suffix Text) Text
+requires left == right
+ensures result == concat(right, suffix)
+{
+    concat(left, suffix)
+}
+
+fn empty_identity(value Text) Text
+ensures result == value
+{
+    concat("", concat(value, ""))
+}
+
+fn sequenced_join(value Text) Text
+ensures result == concat(value, "!")
+{
+    var local = value
+    concat(local, {
+            local = "!"
+            local
+        })
+}
+
+fn selected_suffix(flag Bool) Text {
+    concat("a", if flag {
+            "1"
+        } else {
+            "2"
+        })
+}
+
+fn conditional_join(flag Bool) Text
+ensures result == selected_suffix(flag)
+{
+    if flag {
+        "a1"
+    } else {
+        "a2"
+    }
+}
+
+fn joined_entry(value Text) Text {
+    let concat_marker = 61728394
+    discard concat_marker
+    concat("é", value)
+}
+
+fn entry_join(value Text) Text
+ensures result == old(joined_entry(value))
+{
+    concat("é", value)
+}
+
+type DecoratedName = Text where length(concat("é", self)) <= 10
+
+fn decorated_name(value ShortName) DecoratedName {
+    DecoratedName(value)
+}
+
+fn exercise_concatenation() {
+    let value = joined("é", "😀")
+    assert length(value) == 6
+    assert associated("a", value, "b") == concat("a", concat(value, "b"))
+    assert empty_identity(value) == value
+    assert sequenced_join(value) == "é😀!"
+    assert conditional_join(true) == "a1" && conditional_join(false) == "a2"
+    assert same_suffix(value, relay(value), "!") == "é😀!"
+    assert entry_join(value) == "éé😀"
+    assert decorated_name(ShortName("ok")) == "ok"
+}
+
+test fn concatenated_text_properties() {
+    exercise_concatenation()
+}

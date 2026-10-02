@@ -19,7 +19,7 @@ fn entry_guard_expression(value Expr) Bool {
     value.kind != ExprKind.Bool && value.kind != ExprKind.Text &&
     value.kind != ExprKind.Unary && value.kind != ExprKind.Binary &&
     value.kind != ExprKind.Coerce && value.kind != ExprKind.Field &&
-    !text_length_expression(value) {
+    !text_length_expression(value) && !text_concat_expression(value) {
         return false
     }
     var index = 0

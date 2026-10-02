@@ -145,7 +145,7 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], contents 
         }
         let function = get(program.functions, value.index)
         if function.runtime_name != "" {
-            if function.runtime_name != "list_len" && function.runtime_name != "text_len" &&
+            if function.runtime_name != "list_len" && function.runtime_name != "text_len" && function.runtime_name != "text_concat" &&
             function.runtime_name != "list_new" && function.runtime_name != "list_get" &&
             (contents || function.runtime_name != "list_set") {
                 return false
@@ -165,7 +165,7 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], contents 
         kind != ExprKind.Assert && kind != ExprKind.Discard &&
         kind != ExprKind.Defer && kind != ExprKind.Cleanup &&
         kind != ExprKind.Break && kind != ExprKind.Continue &&
-        !list_length_expression(value) && !text_length_expression(value) &&
+        !list_length_expression(value) && !text_length_expression(value) && !text_concat_expression(value) &&
         !(kind == ExprKind.Intrinsic && (value.text == "list_new" ||
                 value.text == "list_get" || (!contents && value.text == "list_set"))) {
             return false

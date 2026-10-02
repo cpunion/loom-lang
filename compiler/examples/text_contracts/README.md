@@ -23,5 +23,12 @@ The [byte-length example](lengths.loom) proves UTF-8 byte counts (six for `é�
 not two characters), preserved entry lengths and equal-value lengths. Checked
 1–8-byte names widen to a 1–16-byte type without a second check, while unknown
 construction still returns a checked Result. Length constraints remain valid
-across GC and suspension. Equal lengths do not imply equal contents;
-concatenation and substring properties remain outside this proof fragment.
+across GC and suspension. Equal lengths do not imply equal contents.
+
+The [concatenation example](concatenation.loom) proves additive byte lengths,
+empty identity, reassociation, substitution of equal inputs and entry contents.
+A length constraint involving a prefix also accepts a proved weakening directly.
+The native exercise checks eager left-to-right argument snapshots. These are
+bounded symbolic proofs, not sampled strings or runtime postcondition checks;
+unknown sizes in hypothetical concatenations must still be proved safe.
+Substring properties and arbitrary word equations remain outside this fragment.

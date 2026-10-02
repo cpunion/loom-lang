@@ -17,6 +17,7 @@ record Linear {
 enum TextValue {
     Literal(Text)
     Variable(Int)
+    Joined(List[TextValue])
 }
 
 enum Predicate {

@@ -201,6 +201,19 @@ fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[Expans
         push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
         return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, "text_len", -1, children))
     }
+    if function.runtime_name == "text_concat" && function.result == 3 &&
+    length(function.params) == 2 && get(function.params, 0) == 3 &&
+    get(function.params, 1) == 3 && length(value.children) == 2 {
+        let children = new[Expr]()
+        var index = 0
+        while index < 2 {
+            push(children, expanded(context, get(value.children, index), guard, bindings, locals, self, calls, depth + 1)?)
+            index = index + 1
+        }
+        let output = proof_expr(value, ExprKind.Intrinsic, 3, "text_concat", -1, children)
+        discard evaluated(context, guard, output, false)?
+        return Result.Ok(output)
+    }
     if function.runtime_name != "" || !helper_type(context.program, function.result, 0) || length(function.params) != length(value.children) {
         return Result.Err("helper proof needs a source scalar or inline aggregate function")
     }
@@ -344,6 +357,17 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
         let children = new[Expr]()
         push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
         return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, value.text, -1, children))
+    }
+    if text_concat_expression(value) {
+        let children = new[Expr]()
+        var index = 0
+        while index < 2 {
+            push(children, expanded(context, get(value.children, index), guard, bindings, locals, self, calls, depth + 1)?)
+            index = index + 1
+        }
+        let output = proof_expr(value, ExprKind.Intrinsic, 3, "text_concat", -1, children)
+        discard evaluated(context, guard, output, false)?
+        return Result.Ok(output)
     }
     if value.kind == ExprKind.Coerce {
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)

@@ -5,6 +5,10 @@ fn text_length_contract(text Text, valid Bool) {
         pub fn length(value Text) Int {
             text_len(value)
         }
+        intrinsic fn text_concat(left Text, right Text) Text
+        pub fn concat(left Text, right Text) Text {
+            text_concat(left, right)
+        }
         """, true))
     push(files, source_file("std.result", """
         pub enum Result[T, E] {

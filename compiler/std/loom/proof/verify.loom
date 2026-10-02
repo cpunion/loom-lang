@@ -465,6 +465,9 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
     if expr.kind == ExprKind.Call {
         return body_call(proof, expr, state, depth - 1)
     }
+    if text_concat_expression(expr) || text_length_expression(expr) {
+        return execute_text_operation(proof, expr, expr.text, state, depth - 1)
+    }
     if expr.kind == ExprKind.Intrinsic && list_operation(expr.text) {
         return execute_list_operation(proof, expr, expr.text, state, depth - 1)
     }

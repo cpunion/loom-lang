@@ -151,6 +151,10 @@ fn same(a Predicate, b Predicate) Bool {
 }
 
 fn same_text(left TextValue, right TextValue) Bool {
+    if match left { TextValue.Joined(_) => true, _ => false } ||
+    match right { TextValue.Joined(_) => true, _ => false } {
+        return same_text_sequence(left, right)
+    }
     match left {
         TextValue.Literal(text) => match right {
             TextValue.Literal(other) => text == other
@@ -160,6 +164,7 @@ fn same_text(left TextValue, right TextValue) Bool {
             TextValue.Variable(other) => id == other
             _ => false
         }
+        TextValue.Joined(_) => false
     }
 }
 
@@ -348,7 +353,7 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
     match predicate {
         Predicate.Constant(value) => value
         Predicate.Compare(_, _) => false
-        Predicate.TextEqual(left, right) => text_member(text_class(left, facts), right)
+        Predicate.TextEqual(left, right) => text_equal(left, right, facts)
         Predicate.Not(values) => match get(values, 0) {
             Predicate.TextEqual(left, right) => text_distinct(left, right, facts)
             _ => false
