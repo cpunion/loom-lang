@@ -30,7 +30,39 @@ pub fn check_project_snapshot(project Project, tests Bool, inputs BuildInputs, c
         })
 }
 
-fn cache_project(output Bytes, project Project) Result[Bool, Text] {
+fn raw_definition_source(basis DefinitionBasis) Project {
+    if length(basis.original) != 0 {
+        get(basis.original, 0)
+    } else {
+        basis.source
+    }
+}
+
+// Syntax provenance, not semantic reuse. Both trees are private snapshots;
+// equal text alone is insufficient because public callers can edit the AST.
+fn reuse_source_selection(basis DefinitionBasis, cache DefinitionCache) {
+    let previous = definition_state(cache).basis
+    if length(previous) == 0 {
+        return
+    }
+    let prior = get(previous, 0)
+    let before = raw_definition_source(prior)
+    let after = raw_definition_source(basis)
+    var index = 0
+    while index < length(after.files) && index < length(before.files) {
+        let selection = get(prior.source_selection, index)
+        if selection >= 0 {
+            let old_file = get(before.files, index)
+            let file = get(after.files, index)
+            if old_file.text == file.text && std.loom.ast.same(old_file.tree, file.tree) {
+                set(basis.source_selection, index, selection)
+            }
+        }
+        index = index + 1
+    }
+}
+
+fn cache_project(output Bytes, project Project, selection List[Int]) Result[Bool, Text] {
     cache_int(output, project.root)
     cache_int(output, length(project.modules))
     var index = 0
@@ -62,20 +94,25 @@ fn cache_project(output Bytes, project Project) Result[Bool, Text] {
         let file = get(project.files, index)
         // Public callers can supply ASTs unlike their source text. Such checks
         // still work in memory, but cannot mint a text-backed disk snapshot.
-        let parsed = match std.loom.parser.parse(file.text) {
-            Result.Ok(value) => value
-            Result.Err(_) => {
+        var mode = get(selection, index)
+        if mode < 0 {
+            let parsed = match std.loom.parser.parse(file.text) {
+                Result.Ok(value) => value
+                Result.Err(_) => {
+                    return Result.Err("cache requires source-backed syntax")
+                }
+            }
+            let complete = std.loom.ast.same(parsed, file.tree)
+            if !complete && !std.loom.ast.same(std.loom.project.select_source(parsed, false), file.tree) {
                 return Result.Err("cache requires source-backed syntax")
             }
-        }
-        let complete = std.loom.ast.same(parsed, file.tree)
-        if !complete && !std.loom.ast.same(std.loom.project.select_source(parsed, false), file.tree) {
-            return Result.Err("cache requires source-backed syntax")
+            mode = if complete { 1 } else { 0 }
+            set(selection, index, mode)
         }
         cache_int(output, file.package)
         cache_text(output, file.path)
         cache_text(output, file.text)
-        cache_bool(output, complete)
+        cache_bool(output, mode == 1)
         cache_bool(output, file.test_only)
         cache_bool(output, file.trusted_std)
         index = index + 1
@@ -83,7 +120,7 @@ fn cache_project(output Bytes, project Project) Result[Bool, Text] {
     Result.Ok(true)
 }
 
-fn cache_read_project(reader CacheReader) Result[Project, Text] {
+fn cache_read_project(reader CacheReader, selection List[Int]) Result[Project, Text] {
     let root = cache_read_int(reader)?
     let module_count = cache_read_count(reader)?
     let modules = new[ModuleInstance]()
@@ -145,7 +182,9 @@ fn cache_read_project(reader CacheReader) Result[Project, Text] {
                 return Result.Err("invalid cached source")
             }
         }
-        let selected = std.loom.project.select_source(tree, cache_read_bool(reader)?)
+        let complete = cache_read_bool(reader)?
+        let selected = std.loom.project.select_source(tree, complete)
+        push(selection, if complete { 1 } else { 0 })
         push(files, SourceFile {
                 package = package
                 path = path
@@ -218,7 +257,8 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
     }
     let tests = cache_read_bool(reader)?
     let generated = cache_read_bool(reader)?
-    let original = cache_read_project(reader)?
+    let selection = new[Int]()
+    let original = cache_read_project(reader, selection)?
     let project = if generated {
         cache_read_expanded(reader, original)?
     } else {
@@ -239,6 +279,11 @@ pub fn import_trusted_definition_cache(text Text) Result[DefinitionCache, Text] 
         return Result.Err("invalid cached definition count")
     }
     var index = 0
+    while index < length(selection) {
+        set(basis.source_selection, index, get(selection, index))
+        index = index + 1
+    }
+    index = 0
     while index < count {
         set(basis.reusable, index, cache_read_bool(reader)?)
         index = index + 1
