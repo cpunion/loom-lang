@@ -125,7 +125,14 @@ ensures result == value * value + 1
     }
     fs::write(
         &source,
-        "fn identity(value Int) Int ensures result == value { value }",
+        r#"fn identity(value Int) Int ensures result == value { value }
+fn bounded(value Int) Int
+requires value >= -3 && value <= 4
+ensures result <= 16
+{
+    value * value
+}
+"#,
     )
     .unwrap();
     success(

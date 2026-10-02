@@ -11,6 +11,9 @@ fn solve_obligation(tool Text, query Text) Result[Bool, Text] {
     push(arguments, "-in")
     push(arguments, "-smt2")
     push(arguments, "-T:2")
+    // Normalize polynomial identities before search. Z3 bounds monomial
+    // expansion; the same timeout and exact-unsat acceptance rule still apply.
+    push(arguments, "rewriter.som=true")
     let input = std.bytes.new()
     var index = 0
     while index < std.text.length(query) {

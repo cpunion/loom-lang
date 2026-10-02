@@ -1,0 +1,85 @@
+// Interval transfer over the integer expression algebra. Bounds use mathematical
+// Numbers, never wrapping machine arithmetic or a guessed sign for a product.
+fn integer_bounds(value IntegerTerm, facts List[Predicate], budget List[Int]) Result[Bounds, Text] {
+    if get(budget, 0) <= 0 {
+        return Result.Err("integer interval budget exhausted")
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    match value {
+        IntegerTerm.Linear(term) => Result.Ok(range(term, facts))
+        IntegerTerm.Apply(operator, inputs) => {
+            if length(inputs) != 2 {
+                return Result.Err("invalid integer interval operands")
+            }
+            let left = integer_bounds(get(inputs, 0), facts, budget)?
+            let right = integer_bounds(get(inputs, 1), facts, budget)?
+            if compare(left.low, left.high) > 0 {
+                return Result.Ok(left)
+            }
+            if compare(right.low, right.high) > 0 {
+                return Result.Ok(right)
+            }
+            if operator == "+" {
+                return Result.Ok(Bounds {
+                        low = sum(left.low, right.low)
+                        high = sum(left.high, right.high)
+                    })
+            }
+            if operator == "-" {
+                return Result.Ok(Bounds {
+                        low = subtract(left.low, right.high)
+                        high = subtract(left.high, right.low)
+                    })
+            }
+            if operator != "*" {
+                return Result.Err("unsupported integer interval operation")
+            }
+            let products = new[Number]()
+            push(products, product(left.low, right.low))
+            push(products, product(left.low, right.high))
+            push(products, product(left.high, right.low))
+            push(products, product(left.high, right.high))
+            var low = get(products, 0)
+            var high = low
+            var index = 1
+            while index < length(products) {
+                let current = get(products, index)
+                if compare(current, low) < 0 {
+                    low = current
+                }
+                if compare(current, high) > 0 {
+                    high = current
+                }
+                index = index + 1
+            }
+            Result.Ok(Bounds {
+                    low = low
+                    high = high
+                })
+        }
+    }
+}
+
+fn integer_interval(relation Text, left IntegerTerm, right IntegerTerm, facts List[Predicate]) Bool {
+    let budget = new[Int]()
+    push(budget, 256)
+    let first = match integer_bounds(left, facts, budget) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    let second = match integer_bounds(right, facts, budget) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return false
+        }
+    }
+    if compare(first.low, first.high) > 0 || compare(second.low, second.high) > 0 {
+        return true
+    }
+    interval(relation, Bounds {
+            low = subtract(first.low, second.high)
+            high = subtract(first.high, second.low)
+        })
+}

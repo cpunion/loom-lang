@@ -1,0 +1,39 @@
+test fn integer_intervals_compose_signed_products_sums_and_differences() {
+    let x = IntegerTerm.Linear(variable(0))
+    let y = IntegerTerm.Linear(variable(1))
+    let facts = [Predicate.Compare(">=", add(variable(0), constant(integer(-2)))),
+        Predicate.Compare("<=", add(variable(0), constant(integer(-4)))),
+        Predicate.Compare(">=", add(variable(1), constant(integer(5)))),
+        Predicate.Compare("<=", add(variable(1), constant(integer(3))))]
+    let multiplied = IntegerTerm.Apply("*", [x, y])
+    let added = IntegerTerm.Apply("+", [multiplied, x])
+    let subtracted = IntegerTerm.Apply("-", [added, y])
+    assert holds(integer_limit(">=", multiplied, -20), facts)
+    assert holds(integer_limit("<=", multiplied, -6), facts)
+    assert !holds(integer_limit(">", multiplied, -20), facts)
+    assert !holds(integer_limit("<", multiplied, -6), facts)
+    assert holds(integer_limit(">=", subtracted, -15), facts)
+    assert holds(integer_limit("<=", subtracted, 3), facts)
+    assert !holds(integer_limit(">", subtracted, -15), facts)
+    assert !holds(integer_limit("<", subtracted, 3), facts)
+    // Mathematical endpoints cannot wrap into a machine-sized safety proof.
+    assert !holds(integer_limit("<=", IntegerTerm.Apply("*", [x, x]), 9223372036854775807), [])
+    assert match integer_bounds(multiplied, facts, [0]) {
+        Result.Err(_) => true
+        _ => false
+    }
+}
+
+test fn bounded_polynomial_safety_keeps_hypothetical_overflow_and_eager_faults() {
+    let x = local(0)
+    let square = operation("*", x, x)
+    let bounds = [operation(">=", x, literal("-3")), operation("<=", x, literal("4"))]
+    let goal = operation("<=", square, literal("16"))
+    assert verified(fixture(literal("0"), bounds, goal))
+    assert !verified(fixture(literal("0"), bounds, operation("<", square, literal("16"))))
+    assert !verified(fixture(literal("0"), [], goal))
+    assert !verified(fixture(literal("0"), [], operation("==", square, square)))
+    // Even multiplication by zero does not erase an overflowing operand.
+    let eager = operation("*", operation("+", x, literal("1")), literal("0"))
+    assert !verified(fixture(literal("0"), [], operation("==", eager, literal("0"))))
+}
