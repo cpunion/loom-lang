@@ -113,6 +113,15 @@ fn same_predicates(a List[Predicate], b List[Predicate]) Bool {
 
 fn same(a Predicate, b Predicate) Bool {
     match a {
+        Predicate.IntegerCompare(relation, left, right) => match b {
+            Predicate.IntegerCompare(other, first, second) => {
+                let budget = new[Int]()
+                push(budget, 1024)
+                relation == other && same_integer_term(left, first, budget) &&
+                    same_integer_term(right, second, budget)
+            }
+            _ => false
+        }
         Predicate.Constant(value) => match b {
             Predicate.Constant(other) => value == other,
             _ => false

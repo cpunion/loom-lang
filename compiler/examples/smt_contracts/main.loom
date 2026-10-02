@@ -32,12 +32,26 @@ ensures result != 1
     value * 2
 }
 
+// The addition is safe because it does not execute, even for Int.max.
+// Sequence/length reasoning must also justify that short-circuit path.
+fn guarded_successor(value Text, number Int) Bool
+requires length(value) == 0
+ensures value == "" || number + 1 > number
+{
+    true
+}
+
 fn main() {
     assert suffixes_equal("前缀", "后缀", "后缀")
     assert empty_content("")
     assert multibyte_choice("雪")
     assert multibyte_choice("é")
     assert even(10) == 20
+    assert guarded_successor("", 9223372036854775807)
+    assert square(-9) == 81
+    assert square_expansion(-7, 12)
+    assert difference_of_squares(9, 5) == 56
+    assert squared_length("雪") == 9
 }
 
 test fn combined_contracts() {

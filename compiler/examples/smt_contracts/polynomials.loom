@@ -1,0 +1,35 @@
+// These are normal-return properties. Native checked multiplication may still
+// fault for an overflowing input; the contract is not a termination promise.
+fn square(value Int) Int
+ensures result >= 0
+ensures result == value * value
+{
+    value * value
+}
+
+fn square_expansion(left Int, right Int) Bool
+requires left >= -100 && left <= 100 && right >= -100 && right <= 100
+ensures (left + right) * (left + right) == left * left + 2 * left * right + right * right
+{
+    true
+}
+
+fn difference_of_squares(left Int, right Int) Int
+requires left >= -100 && left <= 100 && right >= -100 && right <= 100
+ensures result == left * left - right * right
+{
+    (left - right) * (left + right)
+}
+
+fn squared_length(value Text) Int
+ensures result >= 0 && result == length(value) * length(value)
+{
+    square(length(value))
+}
+
+test fn polynomial_contracts() {
+    assert square(-9) == 81
+    assert square_expansion(-7, 12)
+    assert difference_of_squares(9, 5) == 56
+    assert squared_length("雪") == 9
+}

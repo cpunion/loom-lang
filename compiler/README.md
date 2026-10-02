@@ -2046,12 +2046,21 @@ When fast rules leave a supported postcondition unresolved, the CLI submits its
 path assumptions and conclusion to Z3. One counterexample query combines the
 function's unresolved exits. Only `unsat` establishes a proof; `sat`, unknown,
 the two-second solver timeout, encoding limits, launch failure or malformed
-output cannot pass. Z3 composes Boolean conditions, affine integer feasibility
+output cannot pass. Z3 composes Boolean conditions, integer feasibility
 and byte-sequence equations, including Text cancellation and length/content
 relations; see [SMT contracts](examples/smt_contracts/main.loom). Sequence lengths
-count UTF-8 bytes, not Unicode code points. Source overflow, access safety and
-eager evaluation are checked before submission. This adds no quantified loop
-inference, nonlinear terms or universal pack proof.
+count UTF-8 bytes, not Unicode code points. Source overflow, concatenation size
+and modeled access safety remain separate obligations: the solver must establish
+them under the actual evaluation guards as well as the final truth. For example,
+`length(value) == 0` makes `value == "" || number + 1 > number` safe even for
+`Int`'s maximum, but cannot make an eagerly evaluated helper argument safe.
+Hypothetical operations never supply their own successful-check assumptions.
+Non-affine integer `+`, `-` and `*` remain symbolic terms over the same logical
+values. The [polynomial example](examples/smt_contracts/polynomials.loom) proves
+square nonnegativity, square expansion and difference-of-squares identities, with
+overflow obligations, immutable Text lengths and verified call summaries.
+This adds no quantified loop inference, nonconstant division or universal pack
+proof. Nonlinear solving is incomplete: unknown or timeout still blocks a proof.
 
 `std.loom.proof.ProofBackend` is an explicit trusted host callback, supplied to
 `std.loom.checking.with_proof_backend(inputs, backend)`. The default public checker
@@ -2078,7 +2087,8 @@ direction without rounding or machine overflow. This algebra does not prove
 equal contents from equal lengths or preserve stale heap observations. Each
 source arithmetic operation must still be proved defined; cancellation cannot
 hide an overflowing intermediate. Rank, coefficient-size or work exhaustion
-leaves the goal unproved. Nonlinear and quantified reasoning remain unsupported.
+leaves this fast path unresolved. Nonlinear terms use SMT; quantified reasoning
+remains unsupported.
 
 Linear inequalities also compose by bounded variable elimination: for example,
 `a + b <= limit` and `b >= reserve` establish `a <= limit - reserve` when
@@ -2327,7 +2337,7 @@ must itself be defined within `Int` bounds.
 Pure-helper expansion still excludes loops, shared-storage mutation, cleanup and
 returns inside operands; verified callee summaries use the separate rules above.
 Recursive proof dependencies, dynamic calls without a usable declared contract,
-indirect calls, nonlinear arithmetic and nonconstant division remain outside
+indirect calls and nonconstant division remain outside
 this proof fragment. Required Float proofs remain unsupported, while pure Float entry
 predicates can run normally. Solver work is bounded; exhaustion is a diagnostic,
 not permission to trust an obligation. These are normal-return guarantees, not

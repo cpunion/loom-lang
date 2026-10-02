@@ -20,6 +20,11 @@ enum TextValue {
     Joined(List[TextValue])
 }
 
+enum IntegerTerm {
+    Linear(Linear)
+    Apply(Text, List[IntegerTerm])
+}
+
 enum Predicate {
     Constant(Bool)
     Variable(Int)
@@ -29,10 +34,12 @@ enum Predicate {
     And(List[Predicate])
     Or(List[Predicate])
     TextEqual(TextValue, TextValue)
+    IntegerCompare(Text, IntegerTerm, IntegerTerm)
 }
 
 enum Value {
     Number(Linear)
+    Nonlinear(IntegerTerm)
     Boolean(Predicate)
     Record(List[Value])
     Empty
@@ -148,6 +155,7 @@ fn not(value Predicate) Predicate {
     match value {
         Predicate.Constant(value) => Predicate.Constant(!value)
         Predicate.Compare(relation, value) => Predicate.Compare(inverse(relation), value)
+        Predicate.IntegerCompare(relation, left, right) => Predicate.IntegerCompare(inverse(relation), left, right)
         Predicate.Not(values) => get(values, 0)
         Predicate.And(values) => Predicate.Or(predicates(not(get(values, 0)), not(get(values, 1))))
         Predicate.Or(values) => Predicate.And(predicates(not(get(values, 0)), not(get(values, 1))))

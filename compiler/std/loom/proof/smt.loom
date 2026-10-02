@@ -125,6 +125,34 @@ fn smt_pair(writer SmtWriter, operator Text, values List[Predicate], depth Int) 
     Result.Ok(concat("(", concat(operator, concat(" ", concat(first, concat(" ", concat(second, ")")))))))
 }
 
+fn smt_relation(relation Text) Result[Text, Text] {
+    if relation == "==" {
+        return Result.Ok("=")
+    }
+    if relation == "!=" {
+        return Result.Ok("distinct")
+    }
+    if relation == "<" || relation == "<=" || relation == ">" || relation == ">=" {
+        return Result.Ok(relation)
+    }
+    Result.Err("invalid proof comparison")
+}
+
+fn smt_integer(writer SmtWriter, value IntegerTerm, depth Int) Result[Text, Text] {
+    discard smt_step(writer, depth)?
+    match value {
+        IntegerTerm.Linear(term) => smt_linear(writer, term)
+        IntegerTerm.Apply(operator, inputs) => {
+            if (operator != "+" && operator != "-" && operator != "*") || length(inputs) != 2 {
+                return Result.Err("unsupported SMT integer operation")
+            }
+            let first = smt_integer(writer, get(inputs, 0), depth + 1)?
+            let second = smt_integer(writer, get(inputs, 1), depth + 1)?
+            Result.Ok(concat("(", concat(operator, concat(" ", concat(first, concat(" ", concat(second, ")")))))))
+        }
+    }
+}
+
 fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text] {
     discard smt_step(writer, depth)?
     match value {
@@ -134,17 +162,14 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
                 "false"
             })
         Predicate.Variable(id) => Result.Ok(smt_name(writer, "b", id, "Bool"))
+        Predicate.IntegerCompare(relation, left, right) => {
+            let operator = smt_relation(relation)?
+            let first = smt_integer(writer, left, depth + 1)?
+            let second = smt_integer(writer, right, depth + 1)?
+            Result.Ok(concat("(", concat(operator, concat(" ", concat(first, concat(" ", concat(second, ")")))))))
+        }
         Predicate.Compare(relation, value) => {
-            let operator = if relation == "==" {
-                "="
-            } else if relation == "!=" {
-                "distinct"
-            } else {
-                relation
-            }
-            if operator != "=" && operator != "distinct" && operator != "<" && operator != "<=" && operator != ">" && operator != ">=" {
-                return Result.Err("invalid proof comparison")
-            }
+            let operator = smt_relation(relation)?
             Result.Ok(concat("(", concat(operator, concat(" ", concat(smt_linear(writer, value)?, " 0)")))))
         }
         Predicate.Not(values) => {

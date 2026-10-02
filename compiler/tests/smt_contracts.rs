@@ -54,6 +54,32 @@ ensures result != 2
 ensures value + 1 > value
 { 0 }
 "#,
+        r#"import std.text.length
+fn wrong(value Text, number Int) Bool
+requires length(value) == 0
+ensures value != "" || number + 1 > number
+{ true }
+"#,
+        r#"import std.text.length
+fn either(first Bool, second Bool) Bool { first || second }
+fn wrong(value Text, number Int) Bool
+requires length(value) == 0
+ensures either(value == "", number + 1 > number)
+{ true }
+"#,
+        r#"fn wrong(value Int) Int
+ensures result > 0
+{ value * value }
+"#,
+        r#"fn wrong(value Int) Bool
+ensures value * value >= 0
+{ true }
+"#,
+        r#"fn wrong(value Int) Int
+requires value >= -100 && value <= 100
+ensures result == value * value + 1
+{ value * value }
+"#,
     ] {
         fs::write(&source, program).unwrap();
         let output = common::loom(&["check", temporary.path().to_str().unwrap()]);

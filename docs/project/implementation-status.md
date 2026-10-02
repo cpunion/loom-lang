@@ -180,15 +180,22 @@ Predicates may call pure functions, but cannot rely on external mutable state.
 Every declared `ensures` requires a static proof. The CLI submits remaining
 supported obligations to a compile-time Z3 process after the fast rules fail.
 One query combines a function's unresolved return paths. Bool, mathematical
-affine integers and UTF-8 byte sequences share logical symbols; Text byte lengths
+integers and UTF-8 byte sequences share logical symbols; Text byte lengths
 are tied to sequence lengths. Unknown, timeout, malformed output and solver
 failure never establish a proof. The public checker remains I/O-free unless its
 host supplies `ProofBackend` through `BuildInputs`; this is a trusted capability,
 like importing trusted cache evidence, not a source axiom. Native programs do not
 link the solver. The [example](../../compiler/examples/smt_contracts/main.loom)
 exercises sequence cancellation, empty content, Unicode byte lengths and integer
-feasibility. Definedness still precedes SMT; this does not yet add nonlinear
-terms, quantified collection induction or universal variadic proofs.
+feasibility. Unresolved arithmetic, concatenation-size and modeled access safety
+become separate path-guarded obligations in the same query as truth. Short-circuit
+guards do not guard eager call arguments, and hypothetical operations supply no
+successful-check assumptions. Symbolic integer `+`, `-` and `*` preserve general
+expression terms alongside the affine fast path. Polynomial identities, safety
+bounds and verified call summaries compose with Text lengths; see the
+[polynomial example](../../compiler/examples/smt_contracts/polynomials.loom).
+Nonconstant division, quantified collection induction and universal variadic
+proofs remain unsupported; nonlinear solver queries may still be unknown or time out.
 
 Current reasoning includes
 scalar/inline-aggregate identities, guarded preconditions/assertions, bounded
@@ -210,7 +217,7 @@ and inequalities over the same mathematical scalar symbols, regardless of
 whether they originated as parameters, fields, callee results or length
 observations. Fraction-free positive scaling keeps relation signs and definedness
 obligations; overflow, disjunctions, Text contents and invalidated List state
-gain no invented evidence. Nonlinear and quantified proofs remain open.
+gain no invented evidence. Nonlinear terms use the SMT path; quantified proofs remain open.
 Bounded inequality elimination additionally combines multiple upper/lower bounds
 using positive scaling and addition, including weighted terms and strict integer
 gaps. It refutes the negated goal without assuming hypothetical arithmetic is

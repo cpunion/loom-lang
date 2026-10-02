@@ -1,0 +1,66 @@
+// Reuse the ordinary operand/guard algebra. The solver does not decide which
+// operands execute: it must discharge every safety obligation on its path.
+fn solver_defined(proof Verification, expr Expr, state State, depth Int) Result[Bool, Text] {
+    if depth <= 0 {
+        return Result.Err("SMT safety obligation depth exhausted")
+    }
+    let failure = match defined(expr, state) {
+        Result.Ok(_) => {
+            return Result.Ok(true)
+        }
+        Result.Err(message) => message
+    }
+    let shape = proof_operation(expr)
+    if shape.arity < 0 {
+        return Result.Err(failure)
+    }
+    var index = 0
+    while index < shape.arity {
+        var branch = state
+        if index > 0 && shape.flow != OperandFlow.Eager {
+            let guard = operand_guard(shape.flow, index, expr.children, proof_bool(expr, true))
+            branch = assume(state, boolean(pure(guard, state)?)?)
+        }
+        discard solver_defined(proof, get(expr.children, index), branch, depth - 1)?
+        index = index + 1
+    }
+    if shape.total {
+        return Result.Ok(true)
+    }
+    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary {
+        return match pure(expr, state)? {
+            Value.Nonlinear(term) => {
+                solver_fact(proof, integer_limit(">=", term, -9223372036854775808), state)
+                solver_fact(proof, integer_limit("<=", term, 9223372036854775807), state)
+                Result.Ok(true)
+            }
+            Value.Number(term) => {
+                solver_fact(proof, Predicate.Compare(">=",
+                        add(term, constant(negate(integer(-9223372036854775808))))), state)
+                solver_fact(proof, Predicate.Compare("<=",
+                        add(term, constant(integer(-9223372036854775807)))), state)
+                Result.Ok(true)
+            }
+            _ => Result.Err(failure)
+        }
+    }
+    if expr.kind == ExprKind.Intrinsic && expr.text == "text_concat" {
+        return match pure(expr, state)? {
+            Value.Text(value) => {
+                solver_fact(proof, Predicate.Compare("<=",
+                        add(text_length(value), constant(integer(-9223372036854775807)))), state)
+                Result.Ok(true)
+            }
+            _ => Result.Err(failure)
+        }
+    }
+    if expr.kind == ExprKind.Intrinsic && expr.text == "list_get" {
+        let location = element_inputs(pure(get(expr.children, 0), state)?,
+            pure(get(expr.children, 1), state)?)?
+        solver_fact(proof, Predicate.Compare(">=", location.index), state)
+        solver_fact(proof, Predicate.Compare("<", add(location.index,
+                    scale(list_extent(location.identity, state)?, integer(-1)))), state)
+        return Result.Ok(true)
+    }
+    Result.Err(failure)
+}

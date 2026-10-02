@@ -16,6 +16,12 @@ fn boolean(value Value) Result[Predicate, Text] {
 
 fn unary(operator Text, value Value) Result[Value, Text] {
     match value {
+        Value.Nonlinear(term) => {
+            if operator == "-" {
+                return integer_operation("-", IntegerTerm.Linear(constant(integer(0))), term)
+            }
+            Result.Err("unsupported proof unary operation")
+        }
         Value.Number(term) => {
             if operator == "-" {
                 return Result.Ok(Value.Number(scale(term, integer(-1))))
@@ -46,6 +52,7 @@ fn numeric(operator Text, a Linear, b Linear) Result[Value, Text] {
         if length(b.terms) == 0 {
             return Result.Ok(Value.Number(scale(a, b.constant)))
         }
+        return integer_operation(operator, IntegerTerm.Linear(a), IntegerTerm.Linear(b))
     }
     if operator == "/" || operator == "%" {
         if length(a.terms) != 0 || length(b.terms) != 0 {
@@ -96,6 +103,9 @@ fn logical(operator Text, a Predicate, b Predicate) Result[Value, Text] {
 }
 
 fn binary(operator Text, a Value, b Value) Result[Value, Text] {
+    if nonlinear_value(a) || nonlinear_value(b) {
+        return integer_operation(operator, integer_term(a)?, integer_term(b)?)
+    }
     match a {
         Value.Number(left) => match b {
             Value.Number(right) => numeric(operator, left, right)
@@ -217,6 +227,9 @@ fn pure(expr Expr, state State) Result[Value, Text] {
 
 fn bounded(value Value, state State) State {
     match value {
+        Value.Nonlinear(term) => assume(assume(state,
+            integer_limit(">=", term, -9223372036854775808)),
+            integer_limit("<=", term, 9223372036854775807))
         Value.Number(term) => {
             let low = Predicate.Compare(">=", add(term, constant(negate(integer(-9223372036854775808)))))
             let high = Predicate.Compare("<=", add(term, constant(integer(-9223372036854775807))))
