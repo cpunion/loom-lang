@@ -1,0 +1,31 @@
+import std.option.Option
+
+// Whole seconds avoid silently rounding sub-second requests on Unix hosts.
+pub record KeepAlive {
+    idle_seconds Int
+    interval_seconds Int
+    retries Int
+}
+
+intrinsic fn socket_set_keepalive(token Int, enabled Int, idle Int, interval Int, retries Int) Int
+
+// None disables probing. These options affect every alias of the stream but
+// neither close it nor retire pending I/O. OS failure may apply only part of a
+// configuration; close the stream if the exact policy is required.
+pub fn set_keepalive(stream Stream, options Option[KeepAlive]) Result[Int, TcpError] {
+    let status = match options {
+        Option.None => socket_set_keepalive(stream.state.token, 0, 0, 0, 0)
+        Option.Some(value) => {
+            if value.idle_seconds <= 0 || value.interval_seconds <= 0 || value.retries <= 0 {
+                return Result.Err(TcpError.Option)
+            }
+            socket_set_keepalive(stream.state.token, 1,
+                value.idle_seconds, value.interval_seconds, value.retries)
+        }
+    }
+    if status < 0 {
+        Result.Err(TcpError.Option)
+    } else {
+        Result.Ok(0)
+    }
+}

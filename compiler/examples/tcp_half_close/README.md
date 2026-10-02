@@ -16,5 +16,10 @@ wrappers. `set_nodelay(stream, enabled)` controls TCP_NODELAY; it does not disab
 Loom or application buffering. `shutdown_write` preserves the token and pending
 read registrations, so `close_stream` is still required after tasks drain.
 
+Both peers explicitly enable TCP keepalive with positive idle/interval seconds
+and a retry count. The client disables it while its response may be pending;
+this does not cancel the reader. Invalid configuration and stale aliases return
+`TcpError.Option`. Keepalive does not replace an application deadline.
+
 The test also checks exact local/peer endpoint correspondence and stale wrapper
 errors after close. Native integration runs the example at O0/O2 with moving GC.

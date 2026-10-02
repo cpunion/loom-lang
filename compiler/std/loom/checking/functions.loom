@@ -168,6 +168,12 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
     if name == "socket_set_nodelay" {
         return runtime(0, two_types(1, 1), 1)
     }
+    if name == "socket_set_keepalive" {
+        let arguments = three_types(1, 1, 1)
+        push(arguments, 1)
+        push(arguments, 1)
+        return runtime(0, arguments, 1)
+    }
     if name == "tls_client" {
         let arguments = three_types(3, 4, 1)
         push(arguments, 4)

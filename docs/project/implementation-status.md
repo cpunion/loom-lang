@@ -360,7 +360,8 @@ capture are implemented; blocking I/O uses bounded native workers with copied na
 not managed pointers. Cancellation of a running OS call waits for completion.
 Process capture adds native pipe-drain threads and unbounded output buffering;
 cancellation reaps the direct child without terminating process trees.
-TCP exposes numeric local/peer endpoints, TCP_NODELAY and write half-close,
+TCP exposes numeric local/peer endpoints, TCP_NODELAY, explicit keepalive
+idle/interval/retry configuration and write half-close,
 preserving pending receive registrations for EOF-delimited exchanges. Text-to-Bytes
 encoding is source-library policy and returns an independent buffer.
 Hostname connections interleave address families with configurable bounded

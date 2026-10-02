@@ -3118,6 +3118,17 @@ promised across operating systems. These operations report `Address`, `Option`
 or `Shutdown` errors, including stale tokens. See the
 [EOF-delimited request/response example](examples/tcp_half_close/README.md).
 
+`set_keepalive(stream, Option[KeepAlive])` configures idle connection probes.
+`Some(KeepAlive { idle_seconds = 60; interval_seconds = 5; retries = 3 })`
+enables them; `None` disables them. All fields must be positive, with whole-second
+durations. Unrepresentable values reject instead of silently narrowing; host
+limits may reject otherwise valid configurations with `TcpError.Option`.
+Options apply to all aliases and preserve the socket and pending I/O. An OS
+failure may leave a partially applied configuration; close the stream when an
+exact policy is required. Keepalive is neither an application heartbeat nor an
+I/O deadline; use Task cancellation/deadlines for the latter. Connections keep
+their OS defaults until explicitly configured.
+
 `abort(stream)` revokes all aliases and retires active socket waits. Pending I/O
 wakes to fail, including a wait Task that has not started yet. Already-sent bytes
 are not rolled back; callers must still consume or cancel their child Tasks.

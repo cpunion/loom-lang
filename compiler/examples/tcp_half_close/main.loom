@@ -7,6 +7,9 @@ import std.net.tcp.local_address
 import std.net.tcp.peer_address
 import std.net.tcp.local_port
 import std.net.tcp.set_nodelay
+import std.net.tcp.KeepAlive
+import std.net.tcp.set_keepalive
+import std.option.Option
 import std.net.tcp.shutdown_write
 import std.net.tcp.close_listener
 import std.net.tcp.close_stream
@@ -54,6 +57,21 @@ async fn exchange() Result[Int, TcpError] {
     discard set_nodelay(client, true)?
     discard set_nodelay(client, false)?
     discard set_nodelay(server, true)?
+    let keepalive = KeepAlive {
+        idle_seconds = 60
+        interval_seconds = 5
+        retries = 3
+    }
+    discard set_keepalive(client, Option.Some(keepalive))?
+    discard set_keepalive(server, Option.Some(keepalive))?
+    assert match set_keepalive(client, Option.Some(KeepAlive {
+                idle_seconds = 0
+                interval_seconds = 5
+                retries = 3
+            })) {
+        Result.Err(error) => error == TcpError.Option
+        Result.Ok(_) => false
+    }
 
     let serving = respond(server)
     let response = read_to_end(client)
@@ -63,6 +81,10 @@ async fn exchange() Result[Int, TcpError] {
     }
     // The response reader may already be waiting. Signal request EOF without
     // revoking the socket or any read lease.
+    assert match set_keepalive(client, Option.None) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
     assert match shutdown_write(client) {
         Result.Ok(_) => true
         Result.Err(_) => false
@@ -84,6 +106,10 @@ async fn exchange() Result[Int, TcpError] {
         Result.Ok(_) => false
     }
     assert match set_nodelay(alias, true) {
+        Result.Err(error) => error == TcpError.Option
+        Result.Ok(_) => false
+    }
+    assert match set_keepalive(alias, Option.Some(keepalive)) {
         Result.Err(error) => error == TcpError.Option
         Result.Ok(_) => false
     }

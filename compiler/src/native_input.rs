@@ -1106,6 +1106,10 @@ impl Converter<'_> {
                     }
                     Primitive::SocketAddress => Some((&[Type::Int, Type::Int], Type::Text)),
                     Primitive::SocketSetNodelay => Some((&[Type::Int, Type::Int], Type::Int)),
+                    Primitive::SocketSetKeepalive => Some((
+                        &[Type::Int, Type::Int, Type::Int, Type::Int, Type::Int],
+                        Type::Int,
+                    )),
                     Primitive::SocketRead | Primitive::TlsRead | Primitive::TlsReceive => {
                         Some((&[Type::Int, Type::Bytes, Type::Int], Type::Int))
                     }
@@ -1464,6 +1468,7 @@ fn primitive(value: &str) -> Result<Primitive> {
         "socket_local_port" => P::SocketLocalPort,
         "socket_address" => P::SocketAddress,
         "socket_set_nodelay" => P::SocketSetNodelay,
+        "socket_set_keepalive" => P::SocketSetKeepalive,
         "socket_shutdown_write" => P::SocketShutdownWrite,
         "socket_abort" => P::SocketAbort,
         "tls_client" => P::TlsClient,
@@ -1634,6 +1639,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         P::TaskWaitProcessCapture => 5,
         P::ProcessCaptureConfigured => 6,
         P::ProcessCaptureInputConfigured => 7,
+        P::SocketSetKeepalive => 5,
     }
 }
 
@@ -1928,6 +1934,7 @@ mod tests {
             ("tls_generation", &[1][..]),
             ("tls_notify", &[1][..]),
             ("socket_abort", &[1][..]),
+            ("socket_set_keepalive", &[1, 1, 1, 1, 1][..]),
         ] {
             let operation = primitive(name).unwrap();
             let program = decode(&stream(name, params, 1)).unwrap();
