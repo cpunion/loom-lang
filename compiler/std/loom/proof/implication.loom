@@ -57,9 +57,14 @@ pub fn implies(premise Expr, conclusion Expr) Bool {
 pub fn implies(premise Expr, conclusion Expr, backend ProofBackend) Bool {
     let query = proof_query(backend)
     match implication(query, premise, conclusion) {
-        Result.Ok(true) => match discharge(query) {
-            Result.Ok(proved) => proved
-            Result.Err(_) => false
+        Result.Ok(accepted) => {
+            if !accepted {
+                return false
+            }
+            match discharge(query) {
+                Result.Ok(proved) => proved
+                Result.Err(_) => false
+            }
         }
         _ => false
     }
