@@ -1,0 +1,42 @@
+import std.loom.proof.ProofBackend
+import std.loom.checking.with_proof_backend
+import std.bytes.length
+import std.text.trim
+
+// Z3 is a compiler tool, never a linked dependency of a Loom application.
+// Literal arguments and stdin carry the query without shell interpretation.
+fn solve_obligation(tool Text, query Text) Result[Bool, Text] {
+    let arguments = new[Text]()
+    push(arguments, tool)
+    push(arguments, "-in")
+    push(arguments, "-smt2")
+    push(arguments, "-T:2")
+    let input = std.bytes.new()
+    var index = 0
+    while index < std.text.length(query) {
+        std.bytes.push(input, byte(query, index))
+        index = index + 1
+    }
+    let output = match capture_input(arguments, input) {
+        Result.Ok(value) => value
+        Result.Err(_) => {
+            return Result.Err("required proof needs Z3; install z3 and make it available on PATH")
+        }
+    }
+    if !cache_success(output) || std.bytes.length(output.stderr) != 0 {
+        return Result.Err("SMT solver failed; required proof was not established")
+    }
+    let answer = match decode_utf8(output.stdout) {
+        Result.Ok(value) => trim(value)
+        Result.Err(_) => {
+            return Result.Err("invalid SMT response; required proof was not established")
+        }
+    }
+    if answer == "unsat" {
+        return Result.Ok(true)
+    }
+    if answer == "sat" {
+        return Result.Ok(false)
+    }
+    Result.Err("SMT solver returned unknown or timed out; required proof was not established")
+}

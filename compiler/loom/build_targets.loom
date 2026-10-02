@@ -48,5 +48,10 @@ fn native_target_inputs(tool Text) Result[List[BuildOption], Text] {
 }
 
 fn driver_build_inputs(options List[BuildOption], tool Text) BuildInputs {
-    build_inputs(read_input, options, native_target_inputs, tool)
+    std.loom.checking.with_proof_backend(build_inputs(read_input, options, native_target_inputs, tool),
+        ProofBackend {
+            enabled = true
+            context = "z3"
+            solve = solve_obligation
+        })
 }

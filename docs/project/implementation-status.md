@@ -177,7 +177,20 @@ refinements with byte equality. Safe weakening and supported
 implications avoid redundant checks while retaining input evaluation and faults.
 Predicates may call pure functions, but cannot rely on external mutable state.
 
-Every declared `ensures` requires a static proof. Current reasoning includes
+Every declared `ensures` requires a static proof. The CLI submits remaining
+supported obligations to a compile-time Z3 process after the fast rules fail.
+One query combines a function's unresolved return paths. Bool, mathematical
+affine integers and UTF-8 byte sequences share logical symbols; Text byte lengths
+are tied to sequence lengths. Unknown, timeout, malformed output and solver
+failure never establish a proof. The public checker remains I/O-free unless its
+host supplies `ProofBackend` through `BuildInputs`; this is a trusted capability,
+like importing trusted cache evidence, not a source axiom. Native programs do not
+link the solver. The [example](../../compiler/examples/smt_contracts/main.loom)
+exercises sequence cancellation, empty content, Unicode byte lengths and integer
+feasibility. Definedness still precedes SMT; this does not yet add nonlinear
+terms, quantified collection induction or universal variadic proofs.
+
+Current reasoning includes
 scalar/inline-aggregate identities, guarded preconditions/assertions, bounded
 integer difference relations, input-type invariants, inferred scalar/inline-aggregate loop
 invariants, finite pure helpers and verified callee summaries. Finite helpers

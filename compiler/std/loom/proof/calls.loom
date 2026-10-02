@@ -47,6 +47,10 @@ fn proof_program_with_types(types List[Type]) Program {
 }
 
 fn verification(function Function, program Program) Verification {
+    verification(function, program, no_proof_backend())
+}
+
+fn verification(function Function, program Program, backend ProofBackend) Verification {
     let fresh = new[Int]()
     push(fresh, length(function.locals))
     let budget = new[Int]()
@@ -57,6 +61,8 @@ fn verification(function Function, program Program) Verification {
         fresh = fresh
         budget = budget
         loop_control = Option.None
+        backend = backend
+        obligations = new[Obligation]()
     }
 }
 

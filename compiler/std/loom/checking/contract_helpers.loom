@@ -110,6 +110,7 @@ fn with_body(function Function, body Expr) Function {
 }
 
 fn checked_contracts(context Context, id Int, function Function) Result[Function, Failure] {
+    let backend = get(context.env.inputs, 0).build.proof_backend
     let node = symbol(context.env, context.signature.symbol).node
     let has_ensures = has(node, NodeKind.Ensures) || inherited_method_contract(context.env, context.signature.symbol, NodeKind.Ensures)
     let body_calls = has_ensures && proof_body_calls(function.body)
@@ -117,11 +118,11 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
         if !has_ensures { return Result.Ok(function) }
         let conditions = add_contracts(contracts(context, node, NodeKind.Ensures)?, inherited_contracts(context, NodeKind.Ensures)?)
         let checked = with_contracts(function, function.preconditions, conditions)
-        match verify_with_types(context.env.types, checked) {
+        match verify_with_types(context.env.types, checked, backend) {
             Result.Ok(_) => Result.Ok(checked)
             Result.Err(message) => {
                 match expanded_input_types(context, checked) {
-                    Result.Ok(types) => match verify_with_types(types, checked) {
+                    Result.Ok(types) => match verify_with_types(types, checked, backend) {
                         Result.Ok(_) => {
                             return Result.Ok(checked)
                         }
@@ -162,7 +163,7 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
             push(position, 0)
             proof = with_body(proof, proof_dynamic_calls(proof.body, first, position))
         }
-        match verify_with_helpers(program, proof) {
+        match verify_with_helpers(program, proof, backend) {
             Result.Ok(conditions) => {
                 // Ensures are already proved; retain call-free checked clauses
                 // for reflection/CTFE, not private helper indices or runtime roots.
@@ -170,7 +171,7 @@ fn checked_contracts(context Context, id Int, function Function) Result[Function
             }
             Result.Err(message) => {
                 match expanded_input_types(context, proof) {
-                    Result.Ok(types) => match verify_with_helpers(proof_types(program, types), proof) {
+                    Result.Ok(types) => match verify_with_helpers(proof_types(program, types), proof, backend) {
                         Result.Ok(conditions) => {
                             return Result.Ok(with_contracts(function, function.preconditions, conditions))
                         }

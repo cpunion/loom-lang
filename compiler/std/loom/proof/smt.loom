@@ -1,0 +1,194 @@
+import std.bytes.new
+import std.bytes.push
+import std.bytes.to_text
+import std.int.to_text
+import std.text.concat
+
+record SmtWriter {
+    declarations Bytes
+    names List[Text]
+    budget List[Int]
+}
+
+fn smt_append(output Bytes, value Text) {
+    var index = 0
+    while index < std.text.length(value) {
+        std.bytes.push(output, byte(value, index))
+        index = index + 1
+    }
+}
+
+fn smt_step(writer SmtWriter, depth Int) Result[Bool, Text] {
+    if depth >= 256 || get(writer.budget, 0) <= 0 {
+        return Result.Err("SMT obligation encoding budget exhausted")
+    }
+    set(writer.budget, 0, get(writer.budget, 0) - 1)
+    Result.Ok(true)
+}
+
+fn smt_name(writer SmtWriter, prefix Text, id Int, sort Text) Text {
+    let name = concat(prefix, std.int.to_text(id))
+    var index = 0
+    while index < length(writer.names) {
+        if get(writer.names, index) == name {
+            return name
+        }
+        index = index + 1
+    }
+    push(writer.names, name)
+    smt_append(writer.declarations, concat("(declare-const ", concat(name, concat(" ", concat(sort, ")\n")))))
+    name
+}
+
+fn smt_number(value Number) Text {
+    if length(value.digits) == 0 {
+        return "0"
+    }
+    var index = length(value.digits) - 1
+    var text = std.int.to_text(get(value.digits, index))
+    while index > 0 {
+        index = index - 1
+        let part = std.int.to_text(get(value.digits, index))
+        var padding = 9 - std.text.length(part)
+        while padding > 0 {
+            text = concat(text, "0")
+            padding = padding - 1
+        }
+        text = concat(text, part)
+    }
+    if value.negative {
+        concat("(- ", concat(text, ")"))
+    } else {
+        text
+    }
+}
+
+fn smt_linear(writer SmtWriter, value Linear) Result[Text, Text] {
+    let output = std.bytes.new()
+    smt_append(output, concat("(+ ", smt_number(value.constant)))
+    var index = 0
+    while index < length(value.terms) {
+        discard smt_step(writer, 0)?
+        let term = get(value.terms, index)
+        let name = smt_name(writer, "n", term.id, "Int")
+        smt_append(output, concat(" (* ", concat(smt_number(term.factor), concat(" ", concat(name, ")")))))
+        index = index + 1
+    }
+    smt_append(output, ")")
+    Result.Ok(std.bytes.to_text(output))
+}
+
+// Text is a sequence of UTF-8 bytes, not SMT String's Unicode code points.
+// The larger byte-sequence domain is a sound overapproximation of valid Text.
+fn smt_text(writer SmtWriter, value TextValue, depth Int) Result[Text, Text] {
+    discard smt_step(writer, depth)?
+    match value {
+        TextValue.Variable(id) => {
+            let name = smt_name(writer, "t", id, "(Seq (_ BitVec 8))")
+            let size = smt_name(writer, "n", id, "Int")
+            smt_append(writer.declarations, concat("(assert (= ", concat(size, concat(" (seq.len ", concat(name, ")))\n")))))
+            Result.Ok(name)
+        }
+        TextValue.Literal(text) => {
+            let output = std.bytes.new()
+            smt_append(output, "(seq.++ (as seq.empty (Seq (_ BitVec 8)))")
+            var index = 0
+            while index < std.text.length(text) {
+                discard smt_step(writer, depth)?
+                smt_append(output, concat(" (seq.unit (_ bv", concat(std.int.to_text(byte(text, index)), " 8))")))
+                index = index + 1
+            }
+            smt_append(output, ")")
+            Result.Ok(std.bytes.to_text(output))
+        }
+        TextValue.Joined(parts) => {
+            let output = std.bytes.new()
+            smt_append(output, "(seq.++ (as seq.empty (Seq (_ BitVec 8)))")
+            var index = 0
+            while index < length(parts) {
+                smt_append(output, " ")
+                smt_append(output, smt_text(writer, get(parts, index), depth + 1)?)
+                index = index + 1
+            }
+            smt_append(output, ")")
+            Result.Ok(std.bytes.to_text(output))
+        }
+    }
+}
+
+fn smt_pair(writer SmtWriter, operator Text, values List[Predicate], depth Int) Result[Text, Text] {
+    if length(values) != 2 {
+        return Result.Err("invalid binary proof predicate")
+    }
+    let first = smt_predicate(writer, get(values, 0), depth + 1)?
+    let second = smt_predicate(writer, get(values, 1), depth + 1)?
+    Result.Ok(concat("(", concat(operator, concat(" ", concat(first, concat(" ", concat(second, ")")))))))
+}
+
+fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text] {
+    discard smt_step(writer, depth)?
+    match value {
+        Predicate.Constant(value) => Result.Ok(if value {
+                "true"
+            } else {
+                "false"
+            })
+        Predicate.Variable(id) => Result.Ok(smt_name(writer, "b", id, "Bool"))
+        Predicate.Compare(relation, value) => {
+            let operator = if relation == "==" {
+                "="
+            } else if relation == "!=" {
+                "distinct"
+            } else {
+                relation
+            }
+            if operator != "=" && operator != "distinct" && operator != "<" && operator != "<=" && operator != ">" && operator != ">=" {
+                return Result.Err("invalid proof comparison")
+            }
+            Result.Ok(concat("(", concat(operator, concat(" ", concat(smt_linear(writer, value)?, " 0)")))))
+        }
+        Predicate.Not(values) => {
+            if length(values) != 1 {
+                return Result.Err("invalid proof negation")
+            }
+            Result.Ok(concat("(not ", concat(smt_predicate(writer, get(values, 0), depth + 1)?, ")")))
+        }
+        Predicate.And(values) => smt_pair(writer, "and", values, depth)
+        Predicate.Or(values) => smt_pair(writer, "or", values, depth)
+        Predicate.Equal(values) => smt_pair(writer, "=", values, depth)
+        Predicate.TextEqual(left, right) => {
+            let first = smt_text(writer, left, depth + 1)?
+            let second = smt_text(writer, right, depth + 1)?
+            Result.Ok(concat("(= ", concat(first, concat(" ", concat(second, ")")))))
+        }
+    }
+}
+
+fn smt_query(obligations List[Obligation]) Result[Text, Text] {
+    let budget = new[Int]()
+    push(budget, 65536)
+    let writer = SmtWriter {
+        declarations = std.bytes.new()
+        names = new[Text]()
+        budget = budget
+    }
+    let body = std.bytes.new()
+    smt_append(body, "(assert (not (and true")
+    var index = 0
+    while index < length(obligations) {
+        let obligation = get(obligations, index)
+        smt_append(body, " (=> (and true")
+        var fact = 0
+        while fact < length(obligation.facts) {
+            smt_append(body, " ")
+            smt_append(body, smt_predicate(writer, get(obligation.facts, fact), 0)?)
+            fact = fact + 1
+        }
+        smt_append(body, ") ")
+        smt_append(body, smt_predicate(writer, obligation.conclusion, 0)?)
+        smt_append(body, ")")
+        index = index + 1
+    }
+    smt_append(body, ")))\n(check-sat)\n")
+    Result.Ok(concat(std.bytes.to_text(writer.declarations), std.bytes.to_text(body)))
+}

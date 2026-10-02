@@ -1,0 +1,56 @@
+import std.text.contains
+
+fn encoding(obligations List[Obligation]) Text {
+    match smt_query(obligations) {
+        Result.Ok(query) => query
+        Result.Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+test fn smt_encoding_keeps_exact_numbers_domains_and_one_counterexample() {
+    assert smt_number(integer(-9223372036854775808)) == "(- 9223372036854775808)"
+    assert smt_number(decimal("1000000000000000000000000007")) == "1000000000000000000000000007"
+    assert smt_number(integer(0)) == "0"
+    let query = encoding([Obligation {
+                facts = [Predicate.Variable(7)]
+                conclusion = Predicate.TextEqual(TextValue.Variable(7), TextValue.Literal("雪"))
+            }])
+    assert contains(query, "(declare-const b7 Bool)")
+    assert contains(query, "(declare-const t7 (Seq (_ BitVec 8)))")
+    assert contains(query, "(assert (= n7 (seq.len t7)))")
+    assert contains(query, "(_ bv233 8)") && contains(query, "(_ bv155 8)") && contains(query, "(_ bv170 8)")
+    assert encoding([Obligation {
+                facts = []
+                conclusion = Predicate.Constant(false)
+            }]) == "(assert (not (and true (=> (and true) false))))\n(check-sat)\n"
+}
+
+fn failed_solver(context Text, query Text) Result[Bool, Text] {
+    Result.Err("test backend failure")
+}
+
+test fn backend_failures_propagate_and_easy_or_undefined_proofs_do_not_call_it() {
+    let backend = ProofBackend {
+        enabled = true
+        context = ""
+        solve = failed_solver
+    }
+    let x = local(0)
+    let returned = local(1)
+    assert match verify_with_types([], fixture(x, [], operation("==", returned, x)), backend) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert match verify_with_types([], fixture(x, [], operation(">", returned, x)), backend) {
+        Result.Err(message) => message == "test backend failure"
+        _ => false
+    }
+    assert match verify_with_types([], fixture(literal("0"), [],
+            operation(">", operation("+", x, literal("1")), x)), backend) {
+        Result.Err(message) => message != "test backend failure"
+        _ => false
+    }
+}

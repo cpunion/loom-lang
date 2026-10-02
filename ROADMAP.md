@@ -19,6 +19,8 @@ Proofs compose through shared expression, control-flow and contract rules, with
 separate arithmetic, sequence and storage theories. Extend those theories and
 reuse verified contracts instead of enumerating application types or expression
 combinations. Unsupported or exhausted reasoning remains unproved, never an axiom.
+Compile-time SMT discharges unresolved supported obligations; keep cheap local
+proofs in process and keep solver dependencies out of emitted applications.
 
 Compile ordinary calls and scalar operations directly. Carry GC, fault, and
 scheduler context only where required. Dependency semantics do not require an

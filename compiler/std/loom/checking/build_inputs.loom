@@ -10,10 +10,13 @@ import std.loom.project.valid_build_option
 import std.loom.project.valid_target_property
 import std.loom.source.Span
 import std.bytes.decode_utf8
+import std.loom.proof.ProofBackend
+import std.loom.proof.no_proof_backend
 
 // One context per check. The caller can supply snapshots and/or an explicit
 // reader; discovered dependencies append to files. Treat them as read-only.
 pub record BuildInputs {
+    proof_backend ProofBackend
     options List[BuildOption]
     targets List[BuildOption]
     target_context Text
@@ -34,6 +37,7 @@ pub fn build_inputs(reader fn(InputRequest) Result[InputFile, Text], options Lis
 
 pub fn build_inputs(reader fn(InputRequest) Result[InputFile, Text], options List[BuildOption], target_reader fn(Text) Result[List[BuildOption], Text], target_context Text) BuildInputs {
     BuildInputs {
+        proof_backend = no_proof_backend()
         options = options
         targets = new[BuildOption]()
         target_context = target_context
@@ -41,6 +45,21 @@ pub fn build_inputs(reader fn(InputRequest) Result[InputFile, Text], options Lis
         files = new[BuildInput]()
         requests = new[InputRequest]()
         read = reader
+    }
+}
+
+// The host is responsible for the backend's correctness, just as for imported
+// trusted definition-cache evidence. Source code cannot install a solver.
+pub fn with_proof_backend(inputs BuildInputs, backend ProofBackend) BuildInputs {
+    BuildInputs {
+        proof_backend = backend
+        options = inputs.options
+        targets = inputs.targets
+        target_context = inputs.target_context
+        read_target = inputs.read_target
+        files = inputs.files
+        requests = inputs.requests
+        read = inputs.read
     }
 }
 

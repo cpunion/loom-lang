@@ -1,0 +1,52 @@
+// A trusted compiler-host capability, not a source-program callback or axiom.
+// The query is SMT-LIB: declarations followed by one asserted counterexample.
+// Only an exact unsatisfiable result establishes the obligation.
+pub record ProofBackend {
+    enabled Bool
+    context Text
+    solve fn(Text, Text) Result[Bool, Text]
+}
+
+fn unavailable_solver(context Text, query Text) Result[Bool, Text] {
+    Result.Ok(false)
+}
+
+pub fn no_proof_backend() ProofBackend {
+    ProofBackend {
+        enabled = false
+        context = ""
+        solve = unavailable_solver
+    }
+}
+
+record Obligation {
+    facts List[Predicate]
+    conclusion Predicate
+}
+
+// All return paths of one body are submitted together. Cheap proofs retain
+// their existing fast path and never call the host. Logical declarations are
+// local to this query; no previous function's assumptions can leak into it.
+fn discharge(proof Verification) Result[Bool, Text] {
+    if length(proof.obligations) == 0 {
+        return Result.Ok(true)
+    }
+    let query = smt_query(proof.obligations)?
+    if !proof.backend.solve(proof.backend.context, query)? {
+        return Result.Err("required postcondition is not proved")
+    }
+    Result.Ok(true)
+}
+
+fn solver_condition(proof Verification, condition Expr, state State) Result[Bool, Text] {
+    // Definedness must already hold in Loom's evaluation semantics. A solver
+    // must not turn unchecked overflow, an invalid read or eager evaluation
+    // into mathematical assumptions that omit a source fault.
+    discard defined(condition, state)?
+    let fact = boolean(pure(condition, state)?)?
+    push(proof.obligations, Obligation {
+            facts = state.facts
+            conclusion = fact
+        })
+    Result.Ok(true)
+}

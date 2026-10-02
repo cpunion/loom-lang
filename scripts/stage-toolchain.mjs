@@ -107,6 +107,9 @@ try {
   const backend = join(prefix, `lib/loom/loom-native${suffix}`);
   await move(backend, `${backend}.disabled`);
   run(loom, ["check"], app, environment);
+  const proofs = join(temporary, "proofs");
+  copyTree(join(root, "compiler/examples/smt_contracts"), proofs);
+  run(loom, ["check", proofs], app, environment);
   const diagnostics = JSON.parse(run(loom, ["editor-check", app, "--tests"], app, environment));
   if (diagnostics.error || diagnostics.diagnostics.length !== 0) throw new Error("relocated editor diagnostics could not load std");
   const source = join(app, "main.loom");
