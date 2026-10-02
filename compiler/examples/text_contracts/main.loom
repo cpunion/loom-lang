@@ -138,6 +138,7 @@ async fn exercise() {
 async fn main() {
     exercise_composition()
     exercise_affine()
+    exercise_inequalities()
     exercise_concatenation()
     exercise().await
     exercise_text_lengths().await

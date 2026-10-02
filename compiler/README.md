@@ -2055,6 +2055,16 @@ source arithmetic operation must still be proved defined; cancellation cannot
 hide an overflowing intermediate. Rank, coefficient-size or work exhaustion
 leaves the goal unproved. Nonlinear and quantified reasoning remain unsupported.
 
+Linear inequalities also compose by bounded variable elimination: for example,
+`a + b <= limit` and `b >= reserve` establish `a <= limit - reserve` when
+the subtraction is defined. The same rules apply to immutable scalar observations
+of Text and Lists. Only positive scaling and addition combine inequality rows;
+strict integer comparisons retain their unit gap. A contradiction between the
+established premises and the negated goal supplies the proof. Disjunctions and
+disequalities are not silently split into independent bounds. This is not a
+complete integer-feasibility solver; size, work or elimination limits leave a
+goal unproved, and storage invalidation and source overflow checks still apply.
+
 Function contracts can reuse direct, acyclic helpers over scalars and inline
 records/tuples, with local bindings/reassignment and conditional bodies. The [contract example](examples/contracts/README.md)
 shows a predicate with its own `requires`: proving its returned Boolean alone is

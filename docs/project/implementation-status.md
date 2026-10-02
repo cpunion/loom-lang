@@ -198,6 +198,12 @@ whether they originated as parameters, fields, callee results or length
 observations. Fraction-free positive scaling keeps relation signs and definedness
 obligations; overflow, disjunctions, Text contents and invalidated List state
 gain no invented evidence. Nonlinear and quantified proofs remain open.
+Bounded inequality elimination additionally combines multiple upper/lower bounds
+using positive scaling and addition, including weighted terms and strict integer
+gaps. It refutes the negated goal without assuming hypothetical arithmetic is
+defined, treating alternatives as conjunctions or carrying stale heap facts across
+mutation. Ordinary interval and equality queries remain the first paths; this is
+not complete integer feasibility or unrestricted theory combination.
 Synchronous scalar
 and inline aggregate concept calls use declared contracts through generic/associated or dyn receivers,
 not a guessed implementation or hidden receiver knowledge. Private abstract

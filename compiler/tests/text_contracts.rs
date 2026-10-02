@@ -24,7 +24,7 @@ fn text_contracts_prove_without_runtime_postcondition_helpers() {
         );
         let emitted = fs::read_to_string(&ir).unwrap();
         for marker in [
-            "91827365", "81726354", "71928364", "61728394", "52849163", "63849271",
+            "91827365", "81726354", "71928364", "61728394", "52849163", "63849271", "74958362",
         ] {
             assert!(
                 !emitted.contains(marker),

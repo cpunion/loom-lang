@@ -43,3 +43,9 @@ The [affine example](affine.loom) combines multiple equations over record fields
 Text lengths and entry List lengths through one bounded elimination rule. It
 preserves the saved scalar length after growing a shared List, without claiming
 that its current extent or contents stayed unchanged.
+
+The [inequality example](inequalities.loom) derives a remaining budget from
+multiple upper/lower bounds. One algebra handles record fields, callee summaries,
+UTF-8 byte lengths and entry List lengths; a weighted numeric refinement also
+weakens without a second construction check. Overflow and changed storage remain
+separate obligations, and the proof-only budget predicate is absent from native IR.
