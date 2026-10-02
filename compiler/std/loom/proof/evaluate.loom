@@ -271,6 +271,12 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
     (expr.kind == ExprKind.Binary && (expr.text == "+" || expr.text == "-" || expr.text == "*" || expr.text == "/" || expr.text == "%")) {
         let value = pure(expr, state)?
         match value {
+            Value.Nonlinear(term) => {
+                if !holds(integer_limit(">=", term, -9223372036854775808), state.facts) ||
+                !holds(integer_limit("<=", term, 9223372036854775807), state.facts) {
+                    return Result.Err("postcondition arithmetic is not proved defined")
+                }
+            }
             Value.Number(term) => {
                 let bounds = range(term, state.facts)
                 if compare(bounds.low, bounds.high) <= 0 &&

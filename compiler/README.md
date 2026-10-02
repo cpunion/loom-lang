@@ -2059,7 +2059,12 @@ Non-affine integer `+`, `-` and `*` remain symbolic terms over the same logical
 values. The [polynomial example](examples/smt_contracts/polynomials.loom) proves
 square nonnegativity, square expansion and difference-of-squares identities, with
 overflow obligations, immutable Text lengths and verified call summaries.
-This adds no quantified loop inference, nonconstant division or universal pack
+Signed interval transfer composes integer `+`, `-` and `*` before SMT, using
+mathematical endpoints and a bounded traversal. It discharges known scalar ranges
+and overflow safety without discarding eager operand checks; loose ranges remain
+unproved. The CLI also enables Z3's bounded polynomial normalization before search,
+without extending the solver timeout. This adds no quantified loop inference,
+nonconstant division or universal pack
 proof. Nonlinear solving is incomplete: unknown or timeout still blocks a proof.
 
 Constrained construction, scalar flow facts, pure-helper implication and supported

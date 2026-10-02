@@ -191,7 +191,9 @@ feasibility. Unresolved arithmetic, concatenation-size and modeled access safety
 become separate path-guarded obligations in the same query as truth. Short-circuit
 guards do not guard eager call arguments, and hypothetical operations supply no
 successful-check assumptions. Symbolic integer `+`, `-` and `*` preserve general
-expression terms alongside the affine fast path. Polynomial identities, safety
+expression terms alongside the affine fast path. Signed interval transfer over
+these terms handles bounded safety/range obligations before SMT, with mathematical
+endpoints and unchanged eager operand checks. Polynomial identities, safety
 bounds and verified call summaries compose with Text lengths; see the
 [polynomial example](../../compiler/examples/smt_contracts/polynomials.loom).
 Nonconstant division, quantified collection induction and universal variadic

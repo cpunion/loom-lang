@@ -326,6 +326,11 @@ fn holds(predicate Predicate, facts List[Predicate]) Bool {
                 return true
             }
         }
+        Predicate.IntegerCompare(relation, left, right) => {
+            if integer_interval(relation, left, right, facts) {
+                return true
+            }
+        }
         _ => {
         }
     }
