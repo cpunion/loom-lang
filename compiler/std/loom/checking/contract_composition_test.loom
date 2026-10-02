@@ -1,0 +1,99 @@
+test fn contracts_compose_correlated_operands_across_theories() {
+    text_length_contract("""
+        import std.text.concat
+        import std.text.length
+        fn selected(flag Bool) Text {
+            concat(if flag { "é" } else { "x" }, if flag { "😀" } else { "!" })
+        }
+        fn text_pair(flag Bool) Text
+        ensures result == selected(flag)
+        {
+            if flag { "é😀" } else { "x!" }
+        }
+        fn size(flag Bool) Int {
+            length(selected(flag)) + (if !flag { 3 } else { 1 })
+        }
+        fn mixed(flag Bool) Int
+        ensures result == size(flag)
+        {
+            if flag { 7 } else { 5 }
+        }
+        """, true)
+    text_length_contract("""
+        import std.text.concat
+        fn selected(a Bool, b Bool) Text {
+            concat(if a { "a" } else { "b" }, if b { "1" } else { "2" })
+        }
+        fn wrong(a Bool, b Bool) Text
+        ensures result == selected(a, b)
+        {
+            if a { "a1" } else { "b2" }
+        }
+        """, false)
+}
+
+test fn composed_choices_preserve_eager_fault_and_helper_requirements() {
+    text_length_contract("""
+        import std.text.concat
+        fn ignored(value Text) Bool { true }
+        fn checked(value Text) Text
+        requires value != ""
+        { value }
+        fn invalid(flag Bool) Bool
+        ensures ignored(concat(if flag { "x" } else { "y" }, checked("")))
+        { true }
+        """, false)
+    text_length_contract("""
+        import std.text.concat
+        fn ignored(value Text) Bool { true }
+        fn invalid(flag Bool, value Text) Bool
+        ensures ignored(concat(if flag { "x" } else { "y" }, value))
+        { true }
+        """, false)
+    text_length_contract("""
+        import std.text.concat
+        fn ignored(value Text) Bool { true }
+        fn checked(value Text) Text
+        requires value != ""
+        { value }
+        fn guarded(flag Bool) Bool
+        requires flag
+        ensures result && (flag || ignored(concat("x", checked(""))))
+        { true }
+        """, true)
+}
+
+test fn composed_storage_observations_keep_entry_bounds_and_state() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.get
+        import std.list.set
+        fn selected(values List[Int], flag Bool) Int {
+            get(values, if flag { 0 } else { 1 })
+        }
+        fn retained(values List[Int], flag Bool) Int
+        requires length(values) >= 2
+        ensures result == old(selected(values, flag))
+        {
+            let before = selected(values, flag)
+            set(values, 0, 7)
+            set(values, 1, 9)
+            before
+        }
+        """, true)
+    list_length_contract("""
+        import std.list.length
+        import std.list.get
+        import std.list.push
+        fn selected(values List[Int], flag Bool) Int {
+            get(values, if flag { 0 } else { 1 })
+        }
+        fn invalid(values List[Int], flag Bool) Int
+        requires length(values) == 1
+        ensures result == old(selected(values, flag))
+        {
+            push(values, 7)
+            selected(values, flag)
+        }
+        """, false)
+}

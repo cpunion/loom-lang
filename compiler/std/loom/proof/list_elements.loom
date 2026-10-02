@@ -160,13 +160,17 @@ record ElementLocation {
 }
 
 fn element_location(value Expr, state State) Result[ElementLocation, Text] {
-    let identity = match pure(get(value.children, 0), state)? {
+    element_inputs(pure(get(value.children, 0), state)?, pure(get(value.children, 1), state)?)
+}
+
+fn element_inputs(receiver Value, position Value) Result[ElementLocation, Text] {
+    let identity = match receiver {
         Value.List(identity) => identity
         _ => {
             return Result.Err("List element proof needs a tracked handle")
         }
     }
-    let index = match pure(get(value.children, 1), state)? {
+    let index = match position {
         Value.Number(index) => index
         _ => {
             return Result.Err("List element proof needs an Int index")
@@ -181,6 +185,10 @@ fn element_location(value Expr, state State) Result[ElementLocation, Text] {
 fn element_defined(value Expr, state State) Result[Bool, Text] {
     discard defined(get(value.children, 0), state)?
     discard defined(get(value.children, 1), state)?
+    element_bounds(value, state)
+}
+
+fn element_bounds(value Expr, state State) Result[Bool, Text] {
     let location = element_location(value, state)?
     if !index_relation(">=", location.index, constant(integer(0)), state) ||
     !index_relation("<", location.index, list_extent(location.identity, state)?, state) {
@@ -189,29 +197,18 @@ fn element_defined(value Expr, state State) Result[Bool, Text] {
     Result.Ok(true)
 }
 
-fn expanded_read(context Expansion, value Expr, guard Expr,
-    bindings List[ExpansionBinding], locals List[Local], self Bool,
-    calls Int, depth Int) Result[Expr, Text] {
-    let children = new[Expr]()
-    var index = 0
-    while index < length(value.children) {
-        push(children, expanded(context, get(value.children, index), guard,
-                bindings, locals, self, calls, depth + 1)?)
-        index = index + 1
-    }
-    let read = proof_expr(value, ExprKind.Intrinsic, value.ty, "list_get", -1, children)
+fn read_obligation(context Expansion, value Expr, guard Expr) Result[Bool, Text] {
     // A read's obligation is bounds, not reflexive element equality: inline
     // records and opaque leaves need not support an equality proof. Keep this
     // obligation even when a helper ignores the read's resulting value.
     let zero = proof_expr(value, ExprKind.Integer, 1, "0", -1, new[Expr]())
     let receiver = new[Expr]()
-    push(receiver, get(children, 0))
+    push(receiver, get(value.children, 0))
     let size = proof_expr(value, ExprKind.Intrinsic, 1, "list_len", -1, receiver)
-    let position = get(children, 1)
+    let position = get(value.children, 1)
     let lower = proof_expr(value, ExprKind.Binary, 2, ">=", -1, proof_children(position, zero))
     let upper = proof_expr(value, ExprKind.Binary, 2, "<", -1, proof_children(position, size))
-    discard evaluated(context, guard, proof_and(lower, upper), true)?
-    Result.Ok(read)
+    evaluated(context, guard, proof_and(lower, upper), true)
 }
 
 // Entry predicates have actually executed, including their bounds checks and

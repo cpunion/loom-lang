@@ -148,27 +148,8 @@ fn pure(expr Expr, state State) Result[Value, Text] {
     if expr.kind == ExprKind.Local {
         return Result.Ok(get(state.locals, expr.index))
     }
-    if text_length_expression(expr) {
-        return match pure(get(expr.children, 0), state)? {
-            Value.Text(value) => Result.Ok(Value.Number(text_length(value)))
-            _ => Result.Err("Text length proof requires immutable Text")
-        }
-    }
-    if text_concat_expression(expr) {
-        return joined_text(pure(get(expr.children, 0), state)?, pure(get(expr.children, 1), state)?)
-    }
-    if list_length_expression(expr) {
-        return match pure(get(expr.children, 0), state)? {
-            Value.List(identity) => Result.Ok(Value.Number(list_extent(identity, state)?))
-            _ => Result.Err("List length proof requires a tracked handle")
-        }
-    }
     if expr.kind == ExprKind.Coerce {
         return pure(get(expr.children, 0), state)
-    }
-    if list_read_expression(expr) {
-        let location = element_location(expr, state)?
-        return known_element(location.identity, location.index, state)
     }
     if expr.kind == ExprKind.Field {
         match pure(get(expr.children, 0), state)? {
@@ -201,14 +182,16 @@ fn pure(expr Expr, state State) Result[Value, Text] {
         }
         return Result.Ok(Value.Record(fields))
     }
-    if expr.kind == ExprKind.Unary {
-        return unary(expr.text, pure(get(expr.children, 0), state)?)
+    let shape = proof_operation(expr)
+    if shape.arity < 0 || shape.flow == OperandFlow.Choice {
+        return Result.Err("unsupported expression in required proof")
     }
-    if expr.kind == ExprKind.Binary {
-        let left = pure(get(expr.children, 0), state)?
-        if expr.text == "&&" || expr.text == "||" {
-            let fact = boolean(left)?
-            let and = expr.text == "&&"
+    let inputs = new[Value]()
+    var index = 0
+    while index < shape.arity {
+        if index == 1 && (shape.flow == OperandFlow.And || shape.flow == OperandFlow.Or) {
+            let fact = boolean(get(inputs, 0))?
+            let and = shape.flow == OperandFlow.And
             if holds(if and {
                     not(fact)
                 } else {
@@ -217,7 +200,17 @@ fn pure(expr Expr, state State) Result[Value, Text] {
                 return Result.Ok(Value.Boolean(Predicate.Constant(!and)))
             }
         }
-        return binary(expr.text, left, pure(get(expr.children, 1), state)?)
+        push(inputs, pure(get(expr.children, index), state)?)
+        index = index + 1
+    }
+    if expr.kind == ExprKind.Unary {
+        return unary(expr.text, get(inputs, 0))
+    }
+    if expr.kind == ExprKind.Binary {
+        return binary(expr.text, get(inputs, 0), get(inputs, 1))
+    }
+    if expr.kind == ExprKind.Intrinsic {
+        return intrinsic_value(expr.text, inputs, state)
     }
     Result.Err("unsupported expression in required proof")
 }
@@ -244,43 +237,22 @@ fn defined(expr Expr, state State) Result[Bool, Text] {
     if holds(Predicate.Constant(false), state.facts) {
         return Result.Ok(true)
     }
-    if list_read_expression(expr) {
-        return element_defined(expr, state)
+    let shape = proof_operation(expr)
+    if shape.arity < 0 {
+        return Result.Err("unsupported operation in proof definedness")
     }
-    if text_concat_expression(expr) {
-        discard defined(get(expr.children, 0), state)?
-        discard defined(get(expr.children, 1), state)?
-        let size = match pure(expr, state)? {
-            Value.Text(text) => text_length(text)
-            _ => { return Result.Err("Text concatenation proof requires immutable Text") }
-        }
-        if !text_size_defined(size, state) {
-            return Result.Err("postcondition Text concatenation size is not proved defined")
-        }
-    }
-    if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce || expr.kind == ExprKind.Field || text_length_expression(expr) || list_length_expression(expr) {
-        discard defined(get(expr.children, 0), state)?
-    }
-    if expr.kind == ExprKind.Record {
-        var index = 0
-        while index < length(expr.children) {
-            discard defined(get(expr.children, index), state)?
-            index = index + 1
-        }
-    }
-    if expr.kind == ExprKind.Binary {
-        let left = get(expr.children, 0)
-        discard defined(left, state)?
+    var index = 0
+    while index < shape.arity {
         var branch = state
-        if expr.text == "&&" || expr.text == "||" {
-            let fact = boolean(pure(left, state)?)?
-            branch = difference_facts(assume(state, if expr.text == "&&" {
-                        fact
-                    } else {
-                        not(fact)
-                    }))
+        if index > 0 && shape.flow != OperandFlow.Eager {
+            let guard = operand_guard(shape.flow, index, expr.children, proof_bool(expr, true))
+            branch = difference_facts(assume(state, boolean(pure(guard, state)?)?))
         }
-        discard defined(get(expr.children, 1), branch)?
+        discard defined(get(expr.children, index), branch)?
+        index = index + 1
+    }
+    if expr.kind == ExprKind.Intrinsic {
+        return intrinsic_defined(expr, state)
     }
     if (expr.kind == ExprKind.Unary && expr.text == "-") ||
     (expr.kind == ExprKind.Binary && (expr.text == "+" || expr.text == "-" || expr.text == "*" || expr.text == "/" || expr.text == "%")) {

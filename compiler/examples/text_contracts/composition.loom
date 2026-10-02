@@ -1,0 +1,78 @@
+import std.list.get
+import std.list.set
+import std.list.length
+
+// Correlated choices compose through Text, arithmetic and helper contracts.
+// This function is referenced only by a postcondition and must not be emitted.
+fn composed_description(flag Bool) Text {
+    let proof_marker = 52849163
+    discard proof_marker
+    concat(if flag {
+            "é"
+        } else {
+            "x"
+        }, if flag {
+            "😀"
+        } else {
+            "!"
+        })
+}
+
+fn composed_result(flag Bool) Text
+ensures result == composed_description(flag)
+{
+    if flag {
+        "é😀"
+    } else {
+        "x!"
+    }
+}
+
+fn composed_size(flag Bool) Int {
+    length(composed_result(flag)) + (if !flag {
+            3
+        } else {
+            1
+        })
+}
+
+fn composed_number(flag Bool) Int
+ensures result == composed_size(flag)
+{
+    if flag {
+        7
+    } else {
+        5
+    }
+}
+
+fn selected_element(values List[Int], flag Bool) Int {
+    std.list.get(values, if flag {
+            0
+        } else {
+            1
+        })
+}
+
+fn composed_entry(values List[Int], flag Bool) Int
+requires std.list.length(values) >= 2
+ensures result == old(selected_element(values, flag))
+{
+    let before = selected_element(values, flag)
+    std.list.set(values, 0, 7)
+    std.list.set(values, 1, 9)
+    before
+}
+
+fn exercise_composition() {
+    assert composed_result(true) == "é😀"
+    assert composed_result(false) == "x!"
+    assert composed_number(true) == 7
+    assert composed_number(false) == 5
+    assert composed_entry([3, 5], true) == 3
+    assert composed_entry([3, 5], false) == 5
+}
+
+test fn contract_theories_compose() {
+    exercise_composition()
+}

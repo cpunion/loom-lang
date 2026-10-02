@@ -15,11 +15,8 @@ fn entry_scope(entry State, current State) State {
 // An unmarked heap read is a post-state expression, even when its spelling
 // matches an entry read. Only immutable terms may guard an entry observation.
 fn entry_guard_expression(value Expr) Bool {
-    if value.kind != ExprKind.Local && value.kind != ExprKind.Integer &&
-    value.kind != ExprKind.Bool && value.kind != ExprKind.Text &&
-    value.kind != ExprKind.Unary && value.kind != ExprKind.Binary &&
-    value.kind != ExprKind.Coerce && value.kind != ExprKind.Field &&
-    !text_length_expression(value) && !text_concat_expression(value) {
+    let shape = proof_operation(value)
+    if shape.arity < 0 || shape.heap || shape.flow == OperandFlow.Choice || value.ty == 5 {
         return false
     }
     var index = 0

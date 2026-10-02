@@ -1,0 +1,142 @@
+// Structural composition is independent of the algebra used to interpret an
+// operation. These descriptors grant no facts: theory evaluation and fault
+// obligations still have to succeed. Unknown operations fail closed.
+enum OperandFlow {
+    Eager
+    And
+    Or
+    Choice
+}
+
+record ProofOperation {
+    arity Int
+    flow OperandFlow
+    heap Bool
+    total Bool
+}
+
+fn operation_shape(arity Int, flow OperandFlow, heap Bool, total Bool) ProofOperation {
+    ProofOperation {
+        arity = arity
+        flow = flow
+        heap = heap
+        total = total
+    }
+}
+
+fn unsupported_operation() ProofOperation {
+    operation_shape(-1, OperandFlow.Eager, true, false)
+}
+
+fn intrinsic_operation(name Text, ty Int, arity Int) ProofOperation {
+    if arity == 1 && ty == 1 {
+        if name == "text_len" {
+            return operation_shape(1, OperandFlow.Eager, false, true)
+        }
+        if name == "list_len" || name == "entry_list_len" {
+            return operation_shape(1, OperandFlow.Eager, true, true)
+        }
+    }
+    if arity == 2 {
+        if name == "text_concat" && ty == 3 {
+            return operation_shape(2, OperandFlow.Eager, false, false)
+        }
+        if name == "list_get" || name == "entry_list_get" {
+            return operation_shape(2, OperandFlow.Eager, true, false)
+        }
+    }
+    unsupported_operation()
+}
+
+fn scalar_operator(value Expr) Bool {
+    if value.kind == ExprKind.Unary {
+        return value.text == "-" || value.text == "!" || value.text == "~"
+    }
+    value.text == "+" || value.text == "-" || value.text == "*" || value.text == "/" || value.text == "%" ||
+    value.text == "==" || value.text == "!=" || value.text == "<" || value.text == "<=" || value.text == ">" || value.text == ">=" ||
+    value.text == "&&" || value.text == "||" || value.text == "&" || value.text == "|" || value.text == "^"
+}
+
+fn proof_operation(value Expr) ProofOperation {
+    if length(value.arms) != 0 {
+        return unsupported_operation()
+    }
+    let arity = length(value.children)
+    if value.kind == ExprKind.Intrinsic {
+        return intrinsic_operation(value.text, value.ty, arity)
+    }
+    if arity == 0 && (value.kind == ExprKind.Local || value.kind == ExprKind.Integer ||
+        value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text) {
+        return operation_shape(0, OperandFlow.Eager, false, true)
+    }
+    if arity == 3 && value.kind == ExprKind.If {
+        return operation_shape(3, OperandFlow.Choice, false, true)
+    }
+    if value.kind == ExprKind.Record ||
+    (arity == 1 && (value.kind == ExprKind.Field || value.kind == ExprKind.Coerce)) {
+        return operation_shape(arity, OperandFlow.Eager, false, true)
+    }
+    if ((arity == 1 && value.kind == ExprKind.Unary) ||
+        (arity == 2 && value.kind == ExprKind.Binary)) && scalar_operator(value) {
+        let flow = if value.kind == ExprKind.Binary && value.text == "&&" {
+            OperandFlow.And
+        } else if value.kind == ExprKind.Binary && value.text == "||" {
+            OperandFlow.Or
+        } else {
+            OperandFlow.Eager
+        }
+        let partial = value.ty == 1 && (value.text == "+" || value.text == "-" ||
+            value.text == "*" || value.text == "/" || value.text == "%")
+        return operation_shape(arity, flow, false, !partial)
+    }
+    unsupported_operation()
+}
+
+// A prefix contains already evaluated/snapshotted operands. Never move an
+// eager argument into a callee's short circuit or borrow a later operand's state.
+fn operand_guard(flow OperandFlow, index Int, prefix List[Expr], guard Expr) Expr {
+    if (index == 1 && (flow == OperandFlow.And || flow == OperandFlow.Or)) ||
+    (index > 0 && flow == OperandFlow.Choice) {
+        let positive = if flow == OperandFlow.Choice {
+            index == 1
+        } else {
+            flow == OperandFlow.And
+        }
+        return proof_and(guard, if positive {
+                get(prefix, 0)
+            } else {
+                proof_not(get(prefix, 0))
+            })
+    }
+    guard
+}
+
+// Only checked runtime primitives enter the expression algebra. Source helpers
+// keep their ordinary bodies and verified contracts; names confer no evidence.
+fn runtime_proof_operation(program Program, function Function, value Expr) Bool {
+    if length(function.params) != length(value.children) {
+        return false
+    }
+    let name = function.runtime_name
+    if name == "text_len" {
+        return function.result == 1 && length(function.params) == 1 && get(function.params, 0) == 3
+    }
+    if name == "text_concat" {
+        return function.result == 3 && length(function.params) == 2 &&
+        get(function.params, 0) == 3 && get(function.params, 1) == 3
+    }
+    if name == "list_len" || name == "list_get" {
+        let count = if name == "list_len" {
+            1
+        } else {
+            2
+        }
+        return length(function.params) == count && proof_list_type(program, get(function.params, 0)) &&
+        (if count == 1 {
+                function.result == 1
+            } else {
+                get(function.params, 1) == 1
+            })
+    }
+    false
+}

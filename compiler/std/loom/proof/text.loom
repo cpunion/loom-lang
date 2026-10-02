@@ -18,16 +18,6 @@ fn text_length(value TextValue) Linear {
     }
 }
 
-fn text_length_expression(value Expr) Bool {
-    value.kind == ExprKind.Intrinsic && value.text == "text_len" &&
-    value.ty == 1 && length(value.children) == 1
-}
-
-fn text_concat_expression(value Expr) Bool {
-    value.kind == ExprKind.Intrinsic && value.text == "text_concat" &&
-    value.ty == 3 && length(value.children) == 2
-}
-
 fn text_bounds(value Value, state State) State {
     match value {
         Value.Text(text) => assume(assume(state, Predicate.Compare(">=", text_length(text))),

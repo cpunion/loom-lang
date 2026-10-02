@@ -11,10 +11,8 @@ fn frame_value_expression(value Expr, budget List[Int], depth Int) Bool {
     if depth >= 32 || !conjunction_step(budget) {
         return false
     }
-    let kind = value.kind
-    if kind != ExprKind.Local && kind != ExprKind.Integer && kind != ExprKind.Bool &&
-    kind != ExprKind.Text && kind != ExprKind.Field && kind != ExprKind.Record &&
-    kind != ExprKind.Coerce && kind != ExprKind.Unary && kind != ExprKind.Binary {
+    let shape = proof_operation(value)
+    if shape.arity < 0 || shape.heap || value.ty == 5 {
         return false
     }
     var index = 0
@@ -51,8 +49,8 @@ fn frame_function(program Program, function Function, inputs List[Value], entry 
         if function.runtime_name == "list_set" && length(inputs) == 3 {
             return frame_write(inputs, writes)
         }
-        return function.runtime_name == "list_get" || function.runtime_name == "list_len" ||
-        function.runtime_name == "list_new" || function.runtime_name == "text_len" || function.runtime_name == "text_concat"
+        return function.runtime_name == "list_new" ||
+        intrinsic_operation(function.runtime_name, function.result, length(function.params)).arity >= 0
     }
     let locals = new[Value]()
     var index = 0

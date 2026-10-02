@@ -185,6 +185,13 @@ support local reassignment, conditional expression operands and
 short-circuit writes while retaining prior value snapshots and evaluation
 obligations, including overwritten calculations. This adds no runtime proof
 state and does not treat shared-storage mutation as pure.
+Expression composition now shares operation descriptions for operand shape,
+conditional evaluation, heap observations and totality. Theory-specific value
+and safety rules remain separate from expansion and traversal; adding a primitive
+does not require enumerating its conditional operand combinations. Correlated
+guards normalize without a larger budget, while unrelated guards, eager faults
+and entry-state bounds remain independent obligations. This is not unrestricted
+theory combination or a complete proof procedure.
 Synchronous scalar
 and inline aggregate concept calls use declared contracts through generic/associated or dyn receivers,
 not a guessed implementation or hidden receiver knowledge. Private abstract

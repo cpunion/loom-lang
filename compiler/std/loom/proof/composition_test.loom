@@ -1,0 +1,85 @@
+test fn composition_preserves_every_operand_without_type_specific_lifting() {
+    let flag = expression(ExprKind.Local, 2, "", 0, [])
+    let choice = proof_choice(flag, literal("1"), literal("2"))
+    let fields = [expression(ExprKind.Field, 1, "", 0, [choice]),
+        expression(ExprKind.Field, 1, "", 1, [literal("7")]),
+        expression(ExprKind.Field, 1, "", 2, [choice])]
+    let value = expression(ExprKind.Record, 9, "", -1, fields)
+    let lifted = match lifted_choices(value, [2048], 0) {
+        Result.Ok(output) => output
+        Result.Err(_) => {
+            assert false
+            value
+        }
+    }
+    assert lifted.kind == ExprKind.If
+    var branch = 1
+    while branch <= 2 {
+        let selected = get(lifted.children, branch)
+        assert selected.kind == ExprKind.Record && length(selected.children) == 3
+        assert exact_expression(get(get(selected.children, 0).children, 0), literal(if branch == 1 {
+                    "1"
+                } else {
+                    "2"
+                }))
+        assert exact_expression(get(get(selected.children, 1).children, 0), literal("7"))
+        assert exact_expression(get(get(selected.children, 2).children, 0), literal(if branch == 1 {
+                    "1"
+                } else {
+                    "2"
+                }))
+        branch = branch + 1
+    }
+    let other = expression(ExprKind.Local, 2, "", 1, [])
+    let independent = operation("+", choice, proof_choice(other, literal("10"), literal("20")))
+    let split = match lifted_choices(independent, [2048], 0) {
+        Result.Ok(output) => output
+        Result.Err(_) => {
+            assert false
+            independent
+        }
+    }
+    assert exact_expression(get(split.children, 0), flag)
+    branch = 1
+    while branch <= 2 {
+        let selected = get(split.children, branch)
+        assert selected.kind == ExprKind.If
+        assert exact_expression(get(selected.children, 0), other)
+        var alternative = 1
+        while alternative <= 2 {
+            assert exact_expression(get(selected.children, alternative), operation("+",
+                    literal(if branch == 1 {
+                            "1"
+                        } else {
+                            "2"
+                        }),
+                    literal(if alternative == 1 {
+                            "10"
+                        } else {
+                            "20"
+                        })))
+            alternative = alternative + 1
+        }
+        branch = branch + 1
+    }
+}
+
+test fn unknown_or_malformed_operations_never_gain_composition_evidence() {
+    let flag = expression(ExprKind.Local, 2, "", 0, [])
+    let choice = proof_choice(flag, literal("1"), literal("2"))
+    let values = [expression(ExprKind.Intrinsic, 1, "unregistered_operation", -1, [choice]),
+        expression(ExprKind.Intrinsic, 3, "text_concat", -1, [choice]),
+        expression(ExprKind.Binary, 1, "+", -1, [choice])]
+    var index = 0
+    while index < length(values) {
+        let value = get(values, index)
+        assert proof_operation(value).arity < 0
+        assert !total_scalar(value)
+        assert !entry_guard_expression(value)
+        assert match lifted_choices(value, [2048], 0) {
+            Result.Err(_) => true
+            _ => false
+        }
+        index = index + 1
+    }
+}

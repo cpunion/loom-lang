@@ -32,3 +32,9 @@ The native exercise checks eager left-to-right argument snapshots. These are
 bounded symbolic proofs, not sampled strings or runtime postcondition checks;
 unknown sizes in hypothetical concatenations must still be proved safe.
 Substring properties and arbitrary word equations remain outside this fragment.
+
+The [composition example](composition.loom) combines correlated conditional
+operands, Text lengths, integer arithmetic and pure helpers. It also selects an
+entry List element by a conditional index and preserves that observation across
+writes. The same composition rules handle each operation; proof-only helpers
+stay absent from native code at both O0 and O2.

@@ -167,52 +167,14 @@ fn evaluated(context Expansion, guard Expr, value Expr, required Bool) Result[Bo
     Result.Ok(true)
 }
 
-fn scalar_operator(value Expr) Bool {
-    if value.kind == ExprKind.Unary {
-        return value.text == "-" || value.text == "!" || value.text == "~"
-    }
-    value.text == "+" || value.text == "-" || value.text == "*" || value.text == "/" || value.text == "%" ||
-    value.text == "==" || value.text == "!=" || value.text == "<" || value.text == "<=" || value.text == ">" || value.text == ">=" ||
-    value.text == "&&" || value.text == "||" || value.text == "&" || value.text == "|" || value.text == "^"
-}
-
 fn expanded_call(context Expansion, value Expr, guard Expr, bindings List[ExpansionBinding], locals List[Local], self Bool, calls Int, depth Int) Result[Expr, Text] {
     if value.index < 0 || value.index >= length(context.program.functions) || calls >= 32 {
         return Result.Err("helper has no bounded checked instance")
     }
     let function = get(context.program.functions, value.index)
-    if function.runtime_name == "list_get" && length(function.params) == 2 &&
-    proof_list_type(context.program, get(function.params, 0)) && length(value.children) == 2 {
-        return expanded_read(context, value, guard, bindings, locals, self, calls, depth + 1)
-    }
-    if context.list_lengths && function.runtime_name == "list_len" && length(value.children) == 1 {
-        return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
-    }
-    if function.runtime_name == "list_len" && function.result == 1 &&
-    length(function.params) == 1 && proof_list_type(context.program, get(function.params, 0)) &&
-    length(value.children) == 1 {
-        let children = new[Expr]()
-        push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
-        return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, "list_len", -1, children))
-    }
-    if function.runtime_name == "text_len" && function.result == 1 &&
-    length(function.params) == 1 && get(function.params, 0) == 3 && length(value.children) == 1 {
-        let children = new[Expr]()
-        push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
-        return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, "text_len", -1, children))
-    }
-    if function.runtime_name == "text_concat" && function.result == 3 &&
-    length(function.params) == 2 && get(function.params, 0) == 3 &&
-    get(function.params, 1) == 3 && length(value.children) == 2 {
-        let children = new[Expr]()
-        var index = 0
-        while index < 2 {
-            push(children, expanded(context, get(value.children, index), guard, bindings, locals, self, calls, depth + 1)?)
-            index = index + 1
-        }
-        let output = proof_expr(value, ExprKind.Intrinsic, 3, "text_concat", -1, children)
-        discard evaluated(context, guard, output, false)?
-        return Result.Ok(output)
+    if runtime_proof_operation(context.program, function, value) {
+        return expanded(context, proof_expr(value, ExprKind.Intrinsic, function.result,
+                function.runtime_name, -1, value.children), guard, bindings, locals, self, calls, depth + 1)
     }
     if function.runtime_name != "" || !helper_type(context.program, function.result, 0) || length(function.params) != length(value.children) {
         return Result.Err("helper proof needs a source scalar or inline aggregate function")
@@ -338,36 +300,8 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     if value.kind == ExprKind.Call {
         return expanded_call(context, value, guard, bindings, locals, self, calls, depth + 1)
     }
-    if list_read_expression(value) {
-        return expanded_read(context, value, guard, bindings, locals, self, calls, depth + 1)
-    }
-    if entry_element_expression(value) {
-        let children = new[Expr]()
-        var index = 0
-        while index < length(value.children) {
-            push(children, expanded(context, get(value.children, index), guard, bindings, locals, self, calls, depth + 1)?)
-            index = index + 1
-        }
-        return Result.Ok(proof_expr(value, ExprKind.Intrinsic, value.ty, value.text, -1, children))
-    }
     if context.list_lengths && value.kind == ExprKind.Intrinsic && value.text == "list_len" && length(value.children) == 1 {
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
-    }
-    if text_length_expression(value) || list_length_expression(value) || entry_length_expression(value) {
-        let children = new[Expr]()
-        push(children, expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?)
-        return Result.Ok(proof_expr(value, ExprKind.Intrinsic, 1, value.text, -1, children))
-    }
-    if text_concat_expression(value) {
-        let children = new[Expr]()
-        var index = 0
-        while index < 2 {
-            push(children, expanded(context, get(value.children, index), guard, bindings, locals, self, calls, depth + 1)?)
-            index = index + 1
-        }
-        let output = proof_expr(value, ExprKind.Intrinsic, 3, "text_concat", -1, children)
-        discard evaluated(context, guard, output, false)?
-        return Result.Ok(output)
     }
     if value.kind == ExprKind.Coerce {
         return expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)
@@ -389,53 +323,40 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
         }
         return Result.Ok(proof_expr(value, ExprKind.Record, value.ty, "", -1, fields))
     }
-    if !scalar_type(value.ty) {
-        return Result.Err("helper expression is not a primitive scalar or inline aggregate")
-    }
-    if (value.kind != ExprKind.Unary && value.kind != ExprKind.Binary) || !scalar_operator(value) {
+    let shape = proof_operation(value)
+    if shape.arity < 0 || (value.kind != ExprKind.Intrinsic && !scalar_type(value.ty)) {
         return Result.Err("unsupported helper proof expression")
     }
     let children = new[Expr]()
-    let left = expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?
-    push(children, left)
-    if value.kind == ExprKind.Binary {
-        let next = if value.text == "&&" {
-            proof_and(guard, left)
-        } else {
-            if value.text == "||" {
-                proof_and(guard, proof_not(left))
-            } else {
-                guard
-            }
-        }
-        if (value.text == "&&" || value.text == "||") && helper_writes(get(value.children, 1)) {
+    var operand = 0
+    while operand < shape.arity {
+        let child = get(value.children, operand)
+        let next = operand_guard(shape.flow, operand, children, guard)
+        if operand == 1 && (shape.flow == OperandFlow.And || shape.flow == OperandFlow.Or) && helper_writes(child) {
             // The right operand may rebind helper locals, but only on the
             // evaluated path. Earlier operands already hold immutable values.
             let right = clone(bindings)
-            push(children, expanded(context, get(value.children, 1), next, right, locals, self, calls, depth + 1)?)
-            join_bindings(bindings, right, if value.text == "&&" {
-                    left
+            push(children, expanded(context, child, next, right, locals, self, calls, depth + 1)?)
+            join_bindings(bindings, right, if shape.flow == OperandFlow.And {
+                    get(children, 0)
                 } else {
-                    proof_not(left)
+                    proof_not(get(children, 0))
                 })
         } else {
-            push(children, expanded(context, get(value.children, 1), next, bindings, locals, self, calls, depth + 1)?)
+            push(children, expanded(context, child, next, bindings, locals, self, calls, depth + 1)?)
         }
+        operand = operand + 1
     }
     let output = proof_expr(value, value.kind, value.ty, value.text, -1, children)
-    discard evaluated(context, guard, output, false)?
+    discard operation_obligation(context, output, guard, shape)?
     Result.Ok(output)
 }
 
 // Primitive Float arithmetic is total IEEE arithmetic. Keep evaluation metadata
 // separate from equality: a successfully evaluated NaN is not equal to itself.
 fn total_scalar(value Expr) Bool {
-    if value.kind == ExprKind.Local || value.kind == ExprKind.Integer || value.kind == ExprKind.Float || value.kind == ExprKind.Bool || value.kind == ExprKind.Text {
-        return true
-    }
-    if value.kind != ExprKind.Unary && value.kind != ExprKind.Binary && value.kind != ExprKind.If &&
-    value.kind != ExprKind.Field && value.kind != ExprKind.Record && !text_length_expression(value) &&
-    !list_length_expression(value) && !entry_length_expression(value) {
+    let shape = proof_operation(value)
+    if shape.arity < 0 || !shape.total {
         return false
     }
     var index = 0
@@ -444,9 +365,6 @@ fn total_scalar(value Expr) Bool {
             return false
         }
         index = index + 1
-    }
-    if value.ty == 1 && (value.text == "+" || value.text == "-" || value.text == "*" || value.text == "/" || value.text == "%") {
-        return false
     }
     true
 }

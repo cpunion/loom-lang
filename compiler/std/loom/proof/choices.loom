@@ -2,18 +2,26 @@
 // Evaluation obligations stay in Expansion.checks; this is logical substitution,
 // not permission to omit eager arguments or calculations in an executed branch.
 fn choice_step(budget List[Int], depth Int) Result[Bool, Text] {
-    if depth >= 64 || !conjunction_step(budget) { return Result.Err("helper choice expansion budget exhausted") }
+    if depth >= 64 || !conjunction_step(budget) {
+        return Result.Err("helper choice expansion budget exhausted")
+    }
     Result.Ok(true)
 }
+
 fn has_choice(value Expr) Bool {
-    if value.kind == ExprKind.If { return true }
+    if value.kind == ExprKind.If {
+        return true
+    }
     var index = 0
     while index < length(value.children) {
-        if has_choice(get(value.children, index)) { return true }
+        if has_choice(get(value.children, index)) {
+            return true
+        }
         index = index + 1
     }
     false
 }
+
 fn lifted_choice(condition Expr, yes Expr, no Expr, budget List[Int], depth Int) Result[Expr, Text] {
     discard choice_step(budget, depth)?
     if condition.kind == ExprKind.If {
@@ -23,57 +31,122 @@ fn lifted_choice(condition Expr, yes Expr, no Expr, budget List[Int], depth Int)
     }
     Result.Ok(proof_choice(condition, yes, no))
 }
-fn lifted_operation(value Expr, left Expr, right Expr, budget List[Int], depth Int) Result[Expr, Text] {
+
+fn selected_choice(value Expr, condition Expr, positive Bool, budget List[Int], depth Int) Result[Expr, Text] {
+    if value.kind != ExprKind.If {
+        return Result.Ok(value)
+    }
     discard choice_step(budget, depth)?
-    if left.kind == ExprKind.If {
-        let yes = lifted_operation(value, get(left.children, 1), right, budget, depth + 1)?
-        let no = lifted_operation(value, get(left.children, 2), right, budget, depth + 1)?
-        return Result.Ok(proof_choice(get(left.children, 0), yes, no))
+    let guard = get(value.children, 0)
+    if exact_expression(guard, condition) {
+        return selected_choice(get(value.children, if positive {
+                    1
+                } else {
+                    2
+                }), condition, positive, budget, depth + 1)
     }
-    if value.kind == ExprKind.Binary && right.kind == ExprKind.If && (value.text == "&&" || value.text == "||") {
-        // Do not hoist a right-hand condition out of its short-circuit guard.
-        let and = value.text == "&&"
-        return Result.Ok(proof_choice(left, if and { right } else { proof_bool(value, true) },
-            if and { proof_bool(value, false) } else { right }))
+    if exact_expression(proof_not(guard), condition) {
+        return selected_choice(get(value.children, if positive {
+                    2
+                } else {
+                    1
+                }), condition, positive, budget, depth + 1)
     }
-    if (value.kind == ExprKind.Binary || text_concat_expression(value) || list_read_expression(value) || entry_element_expression(value)) && right.kind == ExprKind.If {
-        let yes = lifted_operation(value, left, get(right.children, 1), budget, depth + 1)?
-        let no = lifted_operation(value, left, get(right.children, 2), budget, depth + 1)?
-        return Result.Ok(proof_choice(get(right.children, 0), yes, no))
+    Result.Ok(value)
+}
+
+fn lifted_operation(value Expr, children List[Expr], budget List[Int], depth Int) Result[Expr, Text] {
+    discard choice_step(budget, depth)?
+    let shape = proof_operation(value)
+    var index = 0
+    while index < length(children) {
+        let child = get(children, index)
+        if index == 1 && child.kind == ExprKind.If &&
+        (shape.flow == OperandFlow.And || shape.flow == OperandFlow.Or) {
+            // The right operand stays under its short-circuit guard.
+            let and = shape.flow == OperandFlow.And
+            return Result.Ok(proof_choice(get(children, 0), if and {
+                        child
+                    } else {
+                        proof_bool(value, true)
+                    },
+                    if and {
+                        proof_bool(value, false)
+                    } else {
+                        child
+                    }))
+        }
+        if child.kind == ExprKind.If {
+            let guard = get(child.children, 0)
+            let yes = new[Expr]()
+            let no = new[Expr]()
+            var item = 0
+            while item < length(children) {
+                let operand = get(children, item)
+                push(yes, selected_choice(operand, guard, true, budget, depth + 1)?)
+                push(no, selected_choice(operand, guard, false, budget, depth + 1)?)
+                item = item + 1
+            }
+            return Result.Ok(proof_choice(guard, lifted_operation(value, yes, budget, depth + 1)?,
+                    lifted_operation(value, no, budget, depth + 1)?))
+        }
+        index = index + 1
     }
-    let children = new[Expr]()
-    push(children, left)
-    if value.kind == ExprKind.Binary || text_concat_expression(value) || list_read_expression(value) || entry_element_expression(value) { push(children, right) }
     Result.Ok(proof_expr(value, value.kind, value.ty, value.text, value.index, children))
 }
+
 fn lifted_choices(value Expr, budget List[Int], depth Int) Result[Expr, Text] {
     discard choice_step(budget, depth)?
-    if length(value.children) == 0 { return Result.Ok(value) }
-    let left = lifted_choices(get(value.children, 0), budget, depth + 1)?
-    if value.kind == ExprKind.If {
-        let yes = lifted_choices(get(value.children, 1), budget, depth + 1)?
-        let no = lifted_choices(get(value.children, 2), budget, depth + 1)?
-        return lifted_choice(left, yes, no, budget, depth + 1)
+    let shape = proof_operation(value)
+    if shape.arity < 0 {
+        return Result.Err("unsupported operation in proof composition")
     }
-    let right = if value.kind == ExprKind.Binary || text_concat_expression(value) || list_read_expression(value) || entry_element_expression(value) { lifted_choices(get(value.children, 1), budget, depth + 1)? } else { left }
-    lifted_operation(value, left, right, budget, depth + 1)
+    if shape.arity == 0 {
+        return Result.Ok(value)
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < shape.arity {
+        push(children, lifted_choices(get(value.children, index), budget, depth + 1)?)
+        index = index + 1
+    }
+    if shape.flow == OperandFlow.Choice {
+        let guard = get(children, 0)
+        return lifted_choice(guard, selected_choice(get(children, 1), guard, true, budget, depth + 1)?,
+            selected_choice(get(children, 2), guard, false, budget, depth + 1)?, budget, depth + 1)
+    }
+    lifted_operation(value, children, budget, depth + 1)
 }
+
 fn choice_predicate(value Expr, budget List[Int], depth Int) Result[Expr, Text] {
     discard choice_step(budget, depth)?
-    if value.kind != ExprKind.If { return Result.Ok(value) }
+    if value.kind != ExprKind.If {
+        return Result.Ok(value)
+    }
     let condition = get(value.children, 0)
     let yes = choice_predicate(get(value.children, 1), budget, depth + 1)?
     let no = choice_predicate(get(value.children, 2), budget, depth + 1)?
-    if is_bool(yes, true) && is_bool(no, false) { return Result.Ok(condition) }
-    if is_bool(yes, false) && is_bool(no, true) { return Result.Ok(proof_not(condition)) }
+    if is_bool(yes, true) && is_bool(no, false) {
+        return Result.Ok(condition)
+    }
+    if is_bool(yes, false) && is_bool(no, true) {
+        return Result.Ok(proof_not(condition))
+    }
     Result.Ok(proof_and(guarded_value(condition, yes), guarded_value(proof_not(condition), no)))
 }
+
 fn normalized_predicate(value Expr) Result[Expr, Text] {
-    if value.ty != 2 || !bounded_contract(value) { return Result.Err("helper predicate expansion budget exhausted") }
-    if !has_choice(value) { return Result.Ok(value) }
+    if value.ty != 2 || !bounded_contract(value) {
+        return Result.Err("helper predicate expansion budget exhausted")
+    }
+    if !has_choice(value) {
+        return Result.Ok(value)
+    }
     let budget = new[Int]()
     push(budget, 2048)
     let output = choice_predicate(lifted_choices(value, budget, 0)?, budget, 0)?
-    if !bounded_contract(output) { return Result.Err("helper predicate expansion budget exhausted") }
+    if !bounded_contract(output) {
+        return Result.Err("helper predicate expansion budget exhausted")
+    }
     Result.Ok(output)
 }
