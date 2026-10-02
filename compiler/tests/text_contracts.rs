@@ -23,7 +23,9 @@ fn text_contracts_prove_without_runtime_postcondition_helpers() {
                 .unwrap(),
         );
         let emitted = fs::read_to_string(&ir).unwrap();
-        for marker in ["91827365", "81726354", "71928364", "61728394", "52849163"] {
+        for marker in [
+            "91827365", "81726354", "71928364", "61728394", "52849163", "63849271",
+        ] {
             assert!(
                 !emitted.contains(marker),
                 "proof-only Text helper became a runtime root"

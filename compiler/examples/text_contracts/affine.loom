@@ -1,0 +1,54 @@
+import std.list.push
+
+record Allocation {
+    first Int
+    shared Int
+    last Int
+}
+
+fn affine_same(left Int, right Int) Bool {
+    let proof_marker = 63849271
+    discard proof_marker
+    left == right
+}
+
+fn allocation_first(value Allocation, total Int) Int
+requires value.first + value.shared == total && value.shared + value.last == total
+ensures affine_same(result, value.last)
+ensures result + value.shared == total
+{
+    value.first
+}
+
+fn equal_size(first Text, shared Text, last Text, total Int) Int
+requires length(first) + length(shared) == total && length(shared) + length(last) == total
+ensures result == length(last)
+{
+    length(first)
+}
+
+// Scalar, immutable Text lengths and entry List lengths use the same algebra.
+// Growing a shared handle cannot change the saved entry observation.
+fn saved_size(values List[Int], text Text, common Int, total Int) Int
+requires std.list.length(values) + common == total && length(text) + common == total
+ensures result == length(text)
+ensures result == old(std.list.length(values))
+{
+    let saved = std.list.length(values)
+    std.list.push(values, 7)
+    saved
+}
+
+fn exercise_affine() {
+    assert allocation_first(Allocation {
+            first = 4
+            shared = 6
+            last = 4
+        }, 10) == 4
+    assert equal_size("é", "!", "ab", 3) == 2
+    assert saved_size([1, 2], "é", 3, 5) == 2
+}
+
+test fn affine_contracts_share_one_algebra() {
+    exercise_affine()
+}
