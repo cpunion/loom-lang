@@ -86,6 +86,50 @@ test fn concrete_bodies_rekey_nominals_calls_and_generic_instances() {
     assert cached_answer(third) == 7 && bodies_reused(cache) == 6
 }
 
+test fn repeated_generic_and_static_calls_rekey_once_per_current_check() {
+    let source = """
+        fn identity[T](value T) T {
+            value
+        }
+        fn add(comptime amount Int, value Int) Int {
+            value + amount
+        }
+        pub fn answer() Int {
+            assert identity(true)
+            assert identity("same") == "same"
+            add(1, identity(2)) + add(1, identity(3)) + add(2, identity(4))
+        }
+        """
+    var cache = definition_cache()
+    assert match cached_source(cache, source) {
+        Result.Ok(value) => cached_answer(value) == 13
+        Result.Err(_) => false
+    }
+    // Shift both definition and function IDs, then restore them. Per-check
+    // eligibility and target IDs must never survive into another environment.
+    let prefix = "pub fn before() Bool { true }\n"
+    var index = 0
+    while index < 2 {
+        cache = restored_definition_cache(cache)
+        assert match cached_source(cache, if index == 0 {
+                concat(prefix, source)
+            } else {
+                source
+            }) {
+            Result.Ok(value) => cached_answer(value) == 13
+            Result.Err(_) => false
+        }
+        assert bodies_reused(cache) >= 6
+        index = index + 1
+    }
+    // A changed helper must revoke both the reused caller and static instances.
+    cache = restored_definition_cache(cache)
+    assert match cached_source(cache, join(split(source, "value + amount"), "value + amount + 1")) {
+        Result.Ok(value) => cached_answer(value) == 16
+        Result.Err(_) => false
+    }
+}
+
 test fn reused_assertions_follow_moved_source_and_failed_checks_do_not_publish() {
     let cache = definition_cache()
     let source = """

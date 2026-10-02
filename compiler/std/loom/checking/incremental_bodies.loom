@@ -28,6 +28,8 @@ record BodyReuse {
     allowed List[Bool]
     symbols List[Int]
     types List[Int]
+    eligibility List[Int]
+    targets List[Int]
     functions Map[Int, List[Int]]
     changed Map[Text, Bool]
     hits List[Int]
@@ -40,6 +42,8 @@ fn no_body_reuse() BodyReuse {
         allowed = new[Bool]()
         symbols = new[Int]()
         types = new[Int]()
+        eligibility = new[Int]()
+        targets = new[Int]()
         functions = std.map.new[Int, List[Int]]()
         changed = std.map.new[Text, Bool]()
         hits = ints(0)
@@ -108,8 +112,12 @@ fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) 
         index = index + 1
     }
     let functions = std.map.new[Int, List[Int]]()
+    let eligibility = new[Int]()
+    let targets = new[Int]()
     index = 0
     while index < length(prior.functions) {
+        push(eligibility, 0)
+        push(targets, -1)
         let owner = get(prior.targets, index).symbol
         if owner >= 0 && owner < length(symbols) && get(symbols, owner) >= 0 {
             let mapped = get(symbols, owner)
@@ -130,6 +138,8 @@ fn body_reuse(cache DefinitionCache, basis DefinitionBasis, allowed List[Bool]) 
         allowed = allowed
         symbols = symbols
         types = types
+        eligibility = eligibility
+        targets = targets
         functions = functions
         changed = changed
         hits = definition_state(cache).body_hits
@@ -316,6 +326,25 @@ fn body_supported(reuse BodyReuse, target BodyTarget, value Function) Bool {
     body_expression_supported(reuse, value.body, value.span, seen)
 }
 
+// Eligibility depends only on this check's fixed source correspondence, not on
+// which specialization is looking for a match. Inspect each saved body once.
+fn body_eligible(reuse BodyReuse, candidate Int) Bool {
+    let known = get(reuse.eligibility, candidate)
+    if known != 0 {
+        return known > 0
+    }
+    let prior = get(reuse.prior, 0)
+    let target = get(prior.targets, candidate)
+    let supported = body_supported(reuse, target, get(prior.functions, candidate)) &&
+    body_constants_supported(reuse, target.constants, new[Int]())
+    set(reuse.eligibility, candidate, if supported {
+            1
+        } else {
+            -1
+        })
+    supported
+}
+
 fn body_type(env Environment, reuse BodyReuse, ty Int) Result[Int, Failure] {
     if get(reuse.types, ty) >= 0 {
         return Result.Ok(get(reuse.types, ty))
@@ -352,6 +381,18 @@ fn body_types(env Environment, reuse BodyReuse, types List[Int]) Result[List[Int
 }
 
 fn body_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure] {
+    let mapped = get(reuse.targets, target)
+    if mapped >= 0 {
+        return Result.Ok(mapped)
+    }
+    let current = body_schedule_target(env, reuse, target)?
+    set(reuse.targets, target, current)
+    Result.Ok(current)
+}
+
+// A saved concrete callee is scheduled/validated once in the current environment;
+// all replayed call sites then use that environment's stable function ID.
+fn body_schedule_target(env Environment, reuse BodyReuse, target Int) Result[Int, Failure] {
     let prior = get(get(reuse.prior, 0).targets, target)
     let owner = impl_member_instance(env, body_symbol(reuse, prior.symbol), prior.implementation_arity)?
     if prior.arity >= 0 {
@@ -406,7 +447,11 @@ fn body_expression(env Environment, reuse BodyReuse, value Expr, owner Int, offs
                 value.kind == ExprKind.IndirectCall) && value.text != "" {
                 render(file.path, file.text, Diagnostic {
                         span = span
-                        message = if value.kind == ExprKind.Assert { "assertion failed" } else { "task created here" }
+                        message = if value.kind == ExprKind.Assert {
+                            "assertion failed"
+                        } else {
+                            "task created here"
+                        }
                     })
             } else {
                 value.text
@@ -438,9 +483,17 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
     }
     let concrete_owner = get(env.signatures, instance.signature).symbol
     let pack = pack_instance(env, instance.signature)
-    let source = if pack >= 0 { get(env.packs, pack).source } else { concrete_owner }
+    let source = if pack >= 0 {
+        get(env.packs, pack).source
+    } else {
+        concrete_owner
+    }
     let owner = impl_member_source(env, source)
-    let arity = if pack >= 0 { get(env.packs, pack).arity } else { -1 }
+    let arity = if pack >= 0 {
+        get(env.packs, pack).arity
+    } else {
+        -1
+    }
     let implementation_arity = impl_member_arity(env, source)
     if owner >= length(reuse.allowed) || !get(reuse.allowed, owner) {
         return Result.Ok(Option.None)
@@ -460,9 +513,8 @@ fn reuse_body(env Environment, reuse BodyReuse, instance Instance) Result[Option
         let target = get(prior.targets, candidate)
         if target.arity == arity && target.implementation_arity == implementation_arity && body_symbol(reuse, target.symbol) == owner &&
         (std.loom.ast.has(current.node, NodeKind.ExpansionId) ||
-            (current.text != "" && current.text == get(prior.definitions.entries, target.symbol).text)) && body_supported(reuse, target, value) &&
+            (current.text != "" && current.text == get(prior.definitions.entries, target.symbol).text)) && body_eligible(reuse, candidate) &&
         same(body_types(env, reuse, value.arguments)?, instance.arguments) &&
-        body_constants_supported(reuse, target.constants, new[Int]()) &&
         same_constants(body_constants(env, reuse, target.constants, owner)?, instance.constants) {
             if arity >= 0 {
                 discard check_pack_arity(env, instance.signature)?
