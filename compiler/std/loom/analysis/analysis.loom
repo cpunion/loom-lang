@@ -16,6 +16,8 @@ import std.loom.checking.check_with_inputs
 import std.loom.checking.expand_project
 import std.loom.checking.BuildInputs
 import std.loom.checking.build_inputs
+import std.loom.checking.with_proof_backend
+import std.loom.proof.ProofBackend
 import std.loom.checking.no_input_reader
 import std.loom.project.BuildInput
 import std.loom.project.BuildOption
@@ -45,6 +47,8 @@ pub record Analysis {
     inputs List[BuildInput]
     options List[BuildOption]
     targets List[BuildOption]
+    // Keep the explicit host capability for lazy semantic queries.
+    proof_backend ProofBackend
     // Lazy query evidence; never attached to executable IR or definition caches.
     concepts List[List[std.loom.checking.ConceptReference]]
 }
@@ -59,7 +63,9 @@ pub fn analyze(project Project, tests Bool) Result[Analysis, Failure] {
 }
 pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Result[Analysis, Failure] {
     let source = snapshot(project)
-    let detached = build_inputs(inputs.read, new[BuildOption](), inputs.read_target, inputs.target_context)
+    let detached = with_proof_backend(
+        build_inputs(inputs.read, new[BuildOption](), inputs.read_target, inputs.target_context),
+        inputs.proof_backend)
     var option = 0
     while option < length(inputs.options) {
         push(detached.options, get(inputs.options, option))
@@ -89,6 +95,7 @@ pub fn analyze_with_inputs(project Project, tests Bool, inputs BuildInputs) Resu
             inputs = files
             options = detached.options
             targets = detached.targets
+            proof_backend = detached.proof_backend
             concepts = new[List[std.loom.checking.ConceptReference]]()
         })
 }

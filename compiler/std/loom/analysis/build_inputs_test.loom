@@ -4,6 +4,39 @@ import std.encoding.hex.decode
 import std.bytes.to_text
 import std.bytes.set
 import std.bytes.new
+import std.loom.proof.ProofBackend
+import std.loom.checking.with_proof_backend
+import std.text.contains
+
+fn analysis_test_backend(context Text, query Text) Result[Bool, Text] {
+    assert std.text.contains(query, "(check-sat)")
+    Result.Err(context)
+}
+
+test fn analysis_preserves_the_hosts_explicit_proof_backend() {
+    let project = input("""
+        fn square(value Int) Int
+        ensures result >= 0
+        {
+            value * value
+        }
+        """)
+    assert match analyze(project, false) {
+        Result.Err(_) => true
+        _ => false
+    }
+    let inputs = std.loom.checking.with_proof_backend(build_inputs(no_input_reader),
+        ProofBackend {
+            enabled = true
+            context = "analysis backend sentinel"
+            solve = analysis_test_backend
+        })
+    // Test capability forwarding, not a mocked successful mathematical proof.
+    assert match analyze_with_inputs(project, false, inputs) {
+        Result.Err(failed) => std.text.contains(failed.diagnostic.message, "analysis backend sentinel")
+        _ => false
+    }
+}
 
 fn input_bytes_fixture(text Text) Bytes {
     match std.encoding.hex.decode(text) {

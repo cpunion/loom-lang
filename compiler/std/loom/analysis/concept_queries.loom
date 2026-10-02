@@ -51,7 +51,7 @@ fn inspect_concept_at(analysis Analysis, view SemanticView, file Int, offset Int
     if !possible {
         return Option.None
     }
-    let inputs = build_inputs(no_input_reader, analysis.options)
+    let inputs = with_proof_backend(build_inputs(no_input_reader, analysis.options), analysis.proof_backend)
     index = 0
     while index < length(analysis.inputs) {
         push(inputs.files, get(analysis.inputs, index))

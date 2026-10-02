@@ -3,6 +3,39 @@ mod common;
 use common::success;
 
 #[test]
+fn solver_contracts_keep_editor_concept_navigation() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("main.loom");
+    let text = r#"concept Read {
+    fn read(self Self) Int
+}
+
+fn read[T Read](value T) Int {
+    value.read()
+}
+
+fn square(value Int) Int
+ensures result >= 0
+{
+    value * value
+}
+"#;
+    fs::write(&source, text).unwrap();
+    let output = common::loom(&[
+        "editor-query",
+        temporary.path().to_str().unwrap(),
+        "--at",
+        source.to_str().unwrap(),
+        &text.find("Read]").unwrap().to_string(),
+    ]);
+    success(&output);
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(report.contains("\"diagnostics\":[]"), "{report}");
+    assert!(report.contains("\"start\":8,\"end\":12"), "{report}");
+    assert!(!report.contains("\"definitions\":[]"), "{report}");
+}
+
+#[test]
 fn solver_contracts_check_and_compile_without_a_runtime_solver() {
     let package = "compiler/examples/smt_contracts";
     for command in ["check", "test", "run"] {
