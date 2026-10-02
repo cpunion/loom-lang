@@ -32,7 +32,7 @@ fn failed_solver(context Text, query Text) Result[Bool, Text] {
     Result.Err("test backend failure")
 }
 
-test fn backend_failures_propagate_and_easy_or_undefined_proofs_do_not_call_it() {
+test fn backend_failures_propagate_and_easy_or_unsupported_proofs_do_not_call_it() {
     let backend = ProofBackend {
         enabled = true
         context = ""
@@ -49,7 +49,7 @@ test fn backend_failures_propagate_and_easy_or_undefined_proofs_do_not_call_it()
         _ => false
     }
     assert match verify_with_types([], fixture(literal("0"), [],
-            operation(">", operation("+", x, literal("1")), x)), backend) {
+            operation(">", operation("/", x, literal("0")), x)), backend) {
         Result.Err(message) => message != "test backend failure"
         _ => false
     }

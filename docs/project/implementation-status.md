@@ -187,8 +187,11 @@ host supplies `ProofBackend` through `BuildInputs`; this is a trusted capability
 like importing trusted cache evidence, not a source axiom. Native programs do not
 link the solver. The [example](../../compiler/examples/smt_contracts/main.loom)
 exercises sequence cancellation, empty content, Unicode byte lengths and integer
-feasibility. Definedness still precedes SMT; this does not yet add nonlinear
-terms, quantified collection induction or universal variadic proofs.
+feasibility. Unresolved arithmetic, concatenation-size and modeled access safety
+become separate path-guarded obligations in the same query as truth. Short-circuit
+guards do not guard eager call arguments, and hypothetical operations supply no
+successful-check assumptions. This does not yet add nonlinear terms, quantified
+collection induction or universal variadic proofs.
 
 Current reasoning includes
 scalar/inline-aggregate identities, guarded preconditions/assertions, bounded

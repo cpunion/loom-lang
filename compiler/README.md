@@ -2049,9 +2049,13 @@ the two-second solver timeout, encoding limits, launch failure or malformed
 output cannot pass. Z3 composes Boolean conditions, affine integer feasibility
 and byte-sequence equations, including Text cancellation and length/content
 relations; see [SMT contracts](examples/smt_contracts/main.loom). Sequence lengths
-count UTF-8 bytes, not Unicode code points. Source overflow, access safety and
-eager evaluation are checked before submission. This adds no quantified loop
-inference, nonlinear terms or universal pack proof.
+count UTF-8 bytes, not Unicode code points. Source overflow, concatenation size
+and modeled access safety remain separate obligations: the solver must establish
+them under the actual evaluation guards as well as the final truth. For example,
+`length(value) == 0` makes `value == "" || number + 1 > number` safe even for
+`Int`'s maximum, but cannot make an eagerly evaluated helper argument safe.
+Hypothetical operations never supply their own successful-check assumptions.
+This adds no quantified loop inference, nonlinear terms or universal pack proof.
 
 `std.loom.proof.ProofBackend` is an explicit trusted host callback, supplied to
 `std.loom.checking.with_proof_backend(inputs, backend)`. The default public checker
