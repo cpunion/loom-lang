@@ -1,0 +1,45 @@
+import std.text.concat
+import std.text.length
+
+// Cancellation follows from the sequence algebra, not a rule for this helper.
+fn suffixes_equal(prefix Text, left Text, right Text) Bool
+requires length(prefix) <= 1000 && length(left) <= 1000 && length(right) <= 1000
+requires concat(prefix, left) == concat(prefix, right)
+ensures result
+{
+    left == right
+}
+
+fn empty_content(value Text) Bool
+requires length(value) == 0
+ensures result
+{
+    value == ""
+}
+
+// Loom lengths count UTF-8 bytes: these literals have 3 and 2 bytes.
+fn multibyte_choice(value Text) Bool
+requires value == "雪" || value == "é"
+ensures result
+{
+    length(value) > 1
+}
+
+fn even(value Int) Int
+requires value >= -100 && value <= 100
+ensures result != 1
+{
+    value * 2
+}
+
+fn main() {
+    assert suffixes_equal("前缀", "后缀", "后缀")
+    assert empty_content("")
+    assert multibyte_choice("雪")
+    assert multibyte_choice("é")
+    assert even(10) == 20
+}
+
+test fn combined_contracts() {
+    main()
+}

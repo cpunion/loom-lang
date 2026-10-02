@@ -1,0 +1,18 @@
+test fn smt_process_accepts_only_an_exact_unsatisfiable_result() {
+    assert match solve_obligation("z3", "(assert false)\n(check-sat)\n") {
+        Result.Ok(value) => value
+        _ => false
+    }
+    assert match solve_obligation("z3", "(assert true)\n(check-sat)\n") {
+        Result.Ok(value) => !value
+        _ => false
+    }
+    assert match solve_obligation("z3", "(bad-command)\n(assert false)\n(check-sat)\n") {
+        Result.Err(_) => true
+        _ => false
+    }
+    assert match solve_obligation("z3", "(assert false)\n(check-sat)\n(check-sat)\n") {
+        Result.Err(_) => true
+        _ => false
+    }
+}

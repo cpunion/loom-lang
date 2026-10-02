@@ -17,6 +17,8 @@ record Verification {
     fresh List[Int]
     budget List[Int]
     loop_control Option[LoopControl]
+    backend ProofBackend
+    obligations List[Obligation]
 }
 
 record RecordPath {
@@ -221,7 +223,8 @@ fn required_condition(condition Expr, state State) Result[Bool, Text] {
     Result.Ok(true)
 }
 
-fn returned(function Function, state State, value Value) Result[Bool, Text] {
+fn returned(proof Verification, state State, value Value) Result[Bool, Text] {
+    let function = proof.function
     var returned = assigned(state, function.result_local, value)
     var propagated = false
     var index = 0
@@ -231,14 +234,21 @@ fn returned(function Function, state State, value Value) Result[Bool, Text] {
             Result.Ok(_) => {
             }
             Result.Err(message) => {
-                if propagated {
-                    return Result.Err(message)
-                }
                 // Most contracts need only direct facts or scalar intervals.
                 // Derive cross-symbol bounds once, only if that proof failed.
-                returned = difference_facts(returned)
-                propagated = true
-                discard required_condition(condition, returned)?
+                if !propagated {
+                    returned = difference_facts(returned)
+                    propagated = true
+                }
+                match required_condition(condition, returned) {
+                    Result.Ok(_) => {}
+                    Result.Err(message) => {
+                        if !proof.backend.enabled {
+                            return Result.Err(message)
+                        }
+                        discard solver_condition(proof, condition, returned)?
+                    }
+                }
             }
         }
         index = index + 1
@@ -473,7 +483,7 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
         return execute_list_operation(proof, expr, expr.text, state, depth - 1)
     }
     if expr.kind == ExprKind.Return && length(expr.children) == 0 {
-        discard returned(proof.function, state, Value.Empty)?
+        discard returned(proof, state, Value.Empty)?
         return Result.Ok(new[Outcome]())
     }
     if expr.kind == ExprKind.Let || expr.kind == ExprKind.Assign || expr.kind == ExprKind.Return || expr.kind == ExprKind.Assert || expr.kind == ExprKind.Discard {
@@ -483,7 +493,7 @@ fn execute(proof Verification, expr Expr, state State, depth Int) Result[List[Ou
         while index < length(values) {
             let value = get(values, index)
             if expr.kind == ExprKind.Return {
-                discard returned(proof.function, value.state, value.value)?
+                discard returned(proof, value.state, value.value)?
             } else {
                 let state = if expr.kind == ExprKind.Assert {
                     assume(value.state, boolean(value.value)?)
@@ -543,7 +553,7 @@ fn verify_body(proof Verification) Result[Bool, Text] {
         discard verify_entered(proof, get(entries, index).state)?
         index = index + 1
     }
-    Result.Ok(true)
+    discharge(proof)
 }
 
 fn verify_entered(proof Verification, state State) Result[Bool, Text] {
@@ -556,12 +566,14 @@ fn verify_entered(proof Verification, state State) Result[Bool, Text] {
         fresh = proof.fresh
         budget = proof.budget
         loop_control = proof.loop_control
+        backend = proof.backend
+        obligations = proof.obligations
     }
     let exits = execute(prepared, function.body, captured.state, 256)?
     var index = 0
     while index < length(exits) {
         let exit = get(exits, index)
-        discard returned(observed_function, exit.state, exit.value)?
+        discard returned(prepared, exit.state, exit.value)?
         index = index + 1
     }
     Result.Ok(true)
@@ -575,6 +587,10 @@ pub fn verify_with_types(types List[Type], function Function) Result[Bool, Text]
     verify_body(verification(function, proof_program_with_types(types)))
 }
 
+pub fn verify_with_types(types List[Type], function Function, backend ProofBackend) Result[Bool, Text] {
+    verify_body(verification(function, proof_program_with_types(types), backend))
+}
+
 // Contract calls belong to this checked helper closure. Expansion is symbolic,
 // not evaluation of samples. Body calls use the same closure without changing
 // the caller's emitted body or exposing temporary proof-local bindings.
@@ -584,9 +600,13 @@ pub fn verify_with_types(types List[Type], function Function) Result[Bool, Text]
 // With no postconditions, entry predicates still validate their helper closure
 // but do not invoke the narrower required-proof arithmetic fragment.
 pub fn verify_with_helpers(program Program, function Function) Result[List[Expr], Text] {
+    verify_with_helpers(program, function, no_proof_backend())
+}
+
+pub fn verify_with_helpers(program Program, function Function, backend ProofBackend) Result[List[Expr], Text] {
     let expanded = expanded_contracts(program, function)?
     if length(function.postconditions) != 0 {
-        discard verify_body(verification(expanded, program))?
+        discard verify_body(verification(expanded, program, backend))?
     }
     Result.Ok(expanded.postconditions)
 }

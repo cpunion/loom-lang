@@ -39,6 +39,9 @@ jobs:
           echo "LOOM_CC=$llvm_prefix/bin/clang" >> "$GITHUB_ENV"
           echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
 
+      - name: Install the compile-time proof solver
+        run: node .github/scripts/setup-z3.mjs
+
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.88.0
@@ -121,6 +124,9 @@ jobs:
           sudo apt-get install -y llvm-22-dev clang-22 libpolly-22-dev
           llvm-config-22 --version --system-libs
 
+      - name: Install the compile-time proof solver
+        run: node .github/scripts/setup-z3.mjs
+
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.88.0
@@ -168,6 +174,9 @@ jobs:
           persist-credentials: false
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+
+      - name: Install the compile-time proof solver
+        run: node .github/scripts/setup-z3.mjs
 
       - name: Select the MSVC linker for Rust
         shell: pwsh

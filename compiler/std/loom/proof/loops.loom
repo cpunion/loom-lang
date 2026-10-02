@@ -28,6 +28,8 @@ fn with_loop_control(proof Verification, control Option[LoopControl]) Verificati
         fresh = proof.fresh
         budget = proof.budget
         loop_control = control
+        backend = proof.backend
+        obligations = proof.obligations
     }
 }
 

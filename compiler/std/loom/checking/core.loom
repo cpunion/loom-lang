@@ -430,6 +430,7 @@ fn prepare_with_inputs(source std.loom.binding.Program, inputs BuildInputs, conc
     }
     push(input_state, CheckInputs {
             build = BuildInputs {
+                proof_backend = inputs.proof_backend
                 options = options
                 targets = inputs.targets
                 target_context = inputs.target_context

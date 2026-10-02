@@ -376,7 +376,7 @@ fn proven_record(context Context, node Node, base Int, value Expr, predicate Exp
         runtime_name = ""
         span = node.span
     }
-    match verify_with_types(context.env.types, proof) {
+    match verify_with_types(context.env.types, proof, get(context.env.inputs, 0).build.proof_backend) {
         Result.Ok(_) => true
         Result.Err(_) => false
     }

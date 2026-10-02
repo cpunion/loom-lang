@@ -24,7 +24,10 @@ without an alternate language implementation or a dispatch/plugin framework.
 ## Build and try it
 
 Use Rust 1.88 (pinned by `rust-toolchain.toml`), LLVM 22 development libraries,
-and Clang. macOS, Linux, and Windows
+Clang, and Z3 on `PATH` for extended contract proofs. CI uses
+[Z3 5.1.0](https://github.com/Z3Prover/z3/releases/tag/z3-5.1.0).
+The solver runs only at compile time when the fast prover cannot finish;
+ordinary checking and emitted applications do not require it. macOS, Linux, and Windows
 pass the LLVM 22 bootstrap and native gate. On Ubuntu 24.04 use the signed
 [LLVM apt repository](https://apt.llvm.org/) and install `llvm-22-dev`, `clang-22`,
 and `libpolly-22-dev`; set `LLVM_SYS_221_PREFIX=/usr/lib/llvm-22` and
@@ -33,7 +36,7 @@ repository setup and runs the same full native/bootstrap gate.
 From the repository root on macOS:
 
 ```sh
-brew install llvm@22
+brew install llvm@22 z3
 export LLVM_SYS_221_PREFIX="$(brew --prefix llvm@22)"
 export LOOM_CC="$LLVM_SYS_221_PREFIX/bin/clang"
 bash scripts/bootstrap.sh
@@ -2039,6 +2042,23 @@ immutable input invariants and flow facts are described below.
 proved; unknown or unsupported proofs reject the build, including for functions
 outside the emitted entry closure. There is no runtime postcondition fallback.
 
+When fast rules leave a supported postcondition unresolved, the CLI submits its
+path assumptions and conclusion to Z3. One counterexample query combines the
+function's unresolved exits. Only `unsat` establishes a proof; `sat`, unknown,
+the two-second solver timeout, encoding limits, launch failure or malformed
+output cannot pass. Z3 composes Boolean conditions, affine integer feasibility
+and byte-sequence equations, including Text cancellation and length/content
+relations; see [SMT contracts](examples/smt_contracts/main.loom). Sequence lengths
+count UTF-8 bytes, not Unicode code points. Source overflow, access safety and
+eager evaluation are checked before submission. This adds no quantified loop
+inference, nonlinear terms or universal pack proof.
+
+`std.loom.proof.ProofBackend` is an explicit trusted host callback, supplied to
+`std.loom.checking.with_proof_backend(inputs, backend)`. The default public checker
+does no process I/O and retains the in-process proof fragment. A backend and
+imported trusted caches belong to the same host trust boundary; they are not
+source-program axioms. The compiler's Z3 process is absent from emitted programs.
+
 Proof composition uses the checked expression model, not a second executable IR.
 A closed [operation description](std/loom/proof/operations.loom) supplies operand
 shape, eager/conditional evaluation, heap observations and totality. Shared
@@ -2067,8 +2087,8 @@ of Text and Lists. Only positive scaling and addition combine inequality rows;
 strict integer comparisons retain their unit gap. A contradiction between the
 established premises and the negated goal supplies the proof. Disjunctions and
 disequalities are not silently split into independent bounds. This is not a
-complete integer-feasibility solver; size, work or elimination limits leave a
-goal unproved, and storage invalidation and source overflow checks still apply.
+complete integer-feasibility solver; unresolved representable postconditions
+can use the SMT backend. Storage invalidation and source overflow checks still apply.
 
 Function contracts can reuse direct, acyclic helpers over scalars and inline
 records/tuples, with local bindings/reassignment and conditional bodies. The [contract example](examples/contracts/README.md)
