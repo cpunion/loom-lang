@@ -411,7 +411,7 @@ skip reparsing only when both text and the complete AST, including spans, match.
 Public AST-only edits cannot inherit this evidence. Two five-pair alternating
 macOS runs measured edited-source checks at 1460/1310 ms and 1550/1453 ms before/after
 this syntax-validation reuse, with identical definition/body reuse counts. Peak
-memory remained about 1.07–1.12 GiB. An uncached pair measured 1221/1200 ms and
+memory remained about 1067–1124 MiB. An uncached pair measured 1221/1200 ms and
 472/482 MiB. Restoration, replay and writeback remain expensive; caching stays
 opt-in. This is not a universal speedup or completion of the compiler-latency goal.
 Separately, five alternating fresh-process checks of the same compiler sources
