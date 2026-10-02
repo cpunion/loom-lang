@@ -603,6 +603,11 @@ timings; local variables remain conservatively rooted for the function.
   Growth and clear preserve aliases; enumeration returns fresh outer Lists with
   shared elements and unspecified order. There are no map/set runtime intrinsics.
   See [hash collections](#hash-collections) for key laws and the minimal API.
+- [`std.iter`](std/iter/README.md) defines `Iterator` with associated `Item` and
+  `next()`. List/range sources and map/filter/take adapters are lazy; generic and
+  dynamic consumers collect, fold or short-circuit with any/all. List iterators
+  share fixed-view element identities and cursor state, not a copied snapshot.
+  [The native example](examples/iterators) covers callback faults and cleanup.
 - Source `std.option` and `std.result` provide `map`, `and_then`, and
   `unwrap_or_else`; Result also provides `map_err`. The selected branch invokes
   its callback once, while the other branch preserves its payload without

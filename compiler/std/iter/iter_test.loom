@@ -1,0 +1,113 @@
+import std.list.transfer.take_last
+
+fn integer_item(value Option[Int]) Int {
+    match value {
+        Option.Some(item) => item
+        Option.None => {
+            assert false
+            0
+        }
+    }
+}
+
+fn absent[T](value Option[T]) Bool {
+    match value {
+        Option.Some(_) => false
+        Option.None => true
+    }
+}
+
+test fn list_iteration_shares_cursor_and_captured_element_identities() {
+    let values = [1, 2, 3]
+    let iterator = from_list(values)
+    let alias = iterator
+    assert integer_item(iterator.next()) == 1
+    values[1] = 7
+    discard take_last(values)
+    push(values, 99)
+    assert integer_item(alias.next()) == 7
+    assert integer_item(iterator.next()) == 3
+    assert absent(alias.next()) && absent(iterator.next())
+    assert values[2] == 99
+}
+
+test fn pipelines_are_lazy_ordered_and_preserve_the_unconsumed_suffix() {
+    let visits = new[Int]()
+    let source = range(0, 10)
+    let selected = filter(source, fn(value Int) Bool {
+            push(visits, value)
+            value % 2 == 0
+        })
+    let mapped = map(selected, fn(value Int) Text {
+            std.int.to_text(value)
+        })
+    let limited = take(mapped, 2)
+    assert std.list.length(visits) == 0
+    let values = collect(limited)
+    assert std.list.length(values) == 2 && values[0] == "0" && values[1] == "2"
+    assert std.list.length(visits) == 3 && visits[0] == 0 && visits[1] == 1 && visits[2] == 2
+    assert absent(limited.next())
+    assert std.list.length(visits) == 3
+    assert integer_item(source.next()) == 3
+    assert std.list.length(collect(take(source, 0))) == 0
+    assert integer_item(source.next()) == 4
+}
+
+test fn consumers_short_circuit_and_ranges_handle_integer_boundaries() {
+    let source = range(1, 6)
+    assert any(source, fn(value Int) Bool {
+            value == 2
+        })
+    assert integer_item(source.next()) == 3
+    assert !all(source, fn(value Int) Bool {
+            value < 4
+        })
+    assert integer_item(source.next()) == 5
+    assert !any(source, fn(value Int) Bool {
+            true
+        })
+    assert all(source, fn(value Int) Bool {
+            false
+        })
+    assert fold(range(1, 5), 0, fn(total Int, value Int) Int {
+            total + value
+        }) == 10
+    assert absent(range(2, 1).next())
+    assert integer_item(range(-9223372036854775808, -9223372036854775807).next()) == -9223372036854775808
+    let last = range(9223372036854775806, 9223372036854775807)
+    assert integer_item(last.next()) == 9223372036854775806 && absent(last.next())
+}
+
+record Intermittent {
+    position List[Int]
+}
+
+impl Iterator for Intermittent {
+    type Item = Int
+
+    fn next(self Intermittent) Option[Int] {
+        let position = self.position[0]
+        self.position[0] = position + 1
+        if position == 0 {
+            Option.None
+        } else {
+            Option.Some(position)
+        }
+    }
+}
+
+test fn user_implementations_and_dynamic_iterators_use_the_same_consumers() {
+    let source = Intermittent {
+        position = [0]
+    }
+    let limited = take(source, 3)
+    assert absent(limited.next()) && absent(limited.next())
+    assert integer_item(source.next()) == 1
+    let dynamic dyn Iterator[Item = Int] = range(1, 4)
+    assert fold(dynamic, 0, fn(total Int, value Int) Int {
+            total + value
+        }) == 6
+}
+
+import std.list.length
+import std.int.to_text

@@ -298,8 +298,12 @@ story. Exact supported rules and examples are in the
 Source `std` includes text/numeric/byte operations, List algorithms, Map/Set,
 Option/Result, typed JSON, storage descriptors/codecs, reflection, environment,
 filesystem, process and I/O APIs. JSON has no special runtime implementation.
-Collection hash/order laws remain caller obligations; streaming JSON, broad
-iterator APIs and application-grade networking are not complete.
+Source [`std.iter`](../../compiler/std/iter/README.md) provides an associated-type
+pull protocol, shared-view List/range sources, lazy map/filter/take and
+collect/fold/any/all consumers, including dynamic iterators. Callbacks retain
+pull order, faults and lexical cleanup. Collection hash/order laws remain caller
+obligations; streaming JSON, resource/async iterators and application-grade
+networking are not complete.
 
 Stop-the-world copying GC preserves precise typed roots, sharing and cycles;
 large-object storage is separate and stress tests relocate all sizes. Ordinary

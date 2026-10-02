@@ -1,0 +1,237 @@
+import std.option.Option
+import std.list.new
+import std.list.push
+import std.list.view.View
+import std.list.view.capture
+import std.list.view.get
+import std.list.view.length
+
+// Pull one value at a time. Consumers stop at None; they never speculate,
+// reorder callbacks, or assume an implementation is pure or terminating.
+pub concept Iterator {
+    type Item
+    fn next(self Self) Option[Self.Item]
+}
+
+pub record ListIterator[T] {
+    state ListState[T]
+}
+
+record ListState[T] {
+    values View[T]
+    position List[Int]
+}
+
+// Capture identities, not element copies. Growth is not visited; removal keeps
+// captured elements alive. Copies of this iterator share their cursor.
+pub fn from_list[T](values List[T]) ListIterator[T] {
+    ListIterator {
+        state = ListState {
+            values = capture(values)
+            position = [0]
+        }
+    }
+}
+
+impl[T] Iterator for ListIterator[T] {
+    type Item = T
+
+    fn next(self ListIterator[T]) Option[T] {
+        let position = self.state.position[0]
+        if position == length(self.state.values) {
+            return Option.None
+        }
+        let item = get(self.state.values, position)
+        self.state.position[0] = position + 1
+        Option.Some(item)
+    }
+}
+
+pub record Range {
+    state RangeState
+}
+
+record RangeState {
+    position List[Int]
+    end Int
+}
+
+// Half-open increasing range. Reversed bounds produce an empty iterator.
+pub fn range(start Int, end Int) Range {
+    Range {
+        state = RangeState {
+            position = [start]
+            end = end
+        }
+    }
+}
+
+impl Iterator for Range {
+    type Item = Int
+
+    fn next(self Range) Option[Int] {
+        let position = self.state.position[0]
+        if position >= self.state.end {
+            return Option.None
+        }
+        self.state.position[0] = position + 1
+        Option.Some(position)
+    }
+}
+
+pub record Mapped[I Iterator, T] {
+    source I
+    transform fn(I.Item) T
+}
+
+pub fn map[I Iterator, T](source I, transform fn(I.Item) T) Mapped[I, T] {
+    Mapped {
+        source = source
+        transform = transform
+    }
+}
+
+impl[I Iterator, T] Iterator for Mapped[I, T] {
+    type Item = T
+
+    fn next(self Mapped[I, T]) Option[T] {
+        match self.source.next() {
+            Option.Some(value) => Option.Some((self.transform)(value))
+            Option.None => Option.None
+        }
+    }
+}
+
+pub record Filtered[I Iterator] {
+    source I
+    predicate fn(I.Item) Bool
+}
+
+pub fn filter[I Iterator](source I, predicate fn(I.Item) Bool) Filtered[I] {
+    Filtered {
+        source = source
+        predicate = predicate
+    }
+}
+
+impl[I Iterator] Iterator for Filtered[I] {
+    type Item = I.Item
+
+    fn next(self Filtered[I]) Option[I.Item] {
+        while true {
+            match self.source.next() {
+                Option.Some(value) => {
+                    if (self.predicate)(value) {
+                        return Option.Some(value)
+                    }
+                }
+                Option.None => {
+                    return Option.None
+                }
+            }
+        }
+        Option.None
+    }
+}
+
+pub record Limited[I Iterator] {
+    state LimitState[I]
+}
+
+record LimitState[I Iterator] {
+    source I
+    remaining List[Int]
+}
+
+pub fn take[I Iterator](source I, count Int) Limited[I]
+requires count >= 0
+{
+    Limited {
+        state = LimitState {
+            source = source
+            remaining = [count]
+        }
+    }
+}
+
+impl[I Iterator] Iterator for Limited[I] {
+    type Item = I.Item
+
+    fn next(self Limited[I]) Option[I.Item] {
+        let remaining = self.state.remaining[0]
+        if remaining == 0 {
+            return Option.None
+        }
+        // Retire the allowance before calling user code, including reentry.
+        self.state.remaining[0] = remaining - 1
+        match self.state.source.next() {
+            Option.Some(value) => Option.Some(value)
+            Option.None => {
+                self.state.remaining[0] = 0
+                Option.None
+            }
+        }
+    }
+}
+
+pub fn collect[I Iterator](source I) List[I.Item] {
+    let values = std.list.new[I.Item]()
+    while true {
+        match source.next() {
+            Option.Some(value) => {
+                std.list.push(values, value)
+            }
+            Option.None => {
+                return values
+            }
+        }
+    }
+    values
+}
+
+pub fn fold[I Iterator, A](source I, initial A, combine fn(A, I.Item) A) A {
+    var accumulator = initial
+    while true {
+        match source.next() {
+            Option.Some(value) => {
+                accumulator = combine(accumulator, value)
+            }
+            Option.None => {
+                return accumulator
+            }
+        }
+    }
+    accumulator
+}
+
+pub fn any[I Iterator](source I, predicate fn(I.Item) Bool) Bool {
+    while true {
+        match source.next() {
+            Option.Some(value) => {
+                if predicate(value) {
+                    return true
+                }
+            }
+            Option.None => {
+                return false
+            }
+        }
+    }
+    false
+}
+
+pub fn all[I Iterator](source I, predicate fn(I.Item) Bool) Bool {
+    while true {
+        match source.next() {
+            Option.Some(value) => {
+                if !predicate(value) {
+                    return false
+                }
+            }
+            Option.None => {
+                return true
+            }
+        }
+    }
+    true
+}
