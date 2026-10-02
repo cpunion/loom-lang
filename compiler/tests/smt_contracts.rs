@@ -56,8 +56,10 @@ ensures value + 1 > value
 "#,
     ] {
         fs::write(&source, program).unwrap();
-        let output = common::loom(&["check", source.to_str().unwrap()]);
+        let output = common::loom(&["check", temporary.path().to_str().unwrap()]);
         assert!(!output.status.success(), "unsound proof: {program}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("postcondition"), "unexpected failure: {error}");
     }
     fs::write(
         &source,
@@ -65,7 +67,7 @@ ensures value + 1 > value
     )
     .unwrap();
     success(
-        &common::command(&["check", source.to_str().unwrap()])
+        &common::command(&["check", temporary.path().to_str().unwrap()])
             .env("PATH", "")
             .output()
             .unwrap(),
