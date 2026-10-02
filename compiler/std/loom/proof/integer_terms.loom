@@ -1,0 +1,64 @@
+// Preserve compact affine values on the fast path. Non-affine arithmetic uses
+// an expression algebra over the same symbols, never an application-specific
+// predicate or an unconstrained fresh name for a product.
+fn integer_term(value Value) Result[IntegerTerm, Text] {
+    match value {
+        Value.Number(term) => Result.Ok(IntegerTerm.Linear(term))
+        Value.Nonlinear(term) => Result.Ok(term)
+        _ => Result.Err("expected integer proof operands")
+    }
+}
+
+fn nonlinear_value(value Value) Bool {
+    match value {
+        Value.Nonlinear(_) => true
+        _ => false
+    }
+}
+
+fn integer_operation(operator Text, left IntegerTerm, right IntegerTerm) Result[Value, Text] {
+    if operator == "==" || operator == "!=" || operator == "<" || operator == "<=" || operator == ">" || operator == ">=" {
+        return Result.Ok(Value.Boolean(Predicate.IntegerCompare(operator, left, right)))
+    }
+    if operator != "+" && operator != "-" && operator != "*" {
+        return Result.Err("unsupported symbolic integer operation")
+    }
+    let inputs = new[IntegerTerm]()
+    push(inputs, left)
+    push(inputs, right)
+    Result.Ok(Value.Nonlinear(IntegerTerm.Apply(operator, inputs)))
+}
+
+fn same_integer_term(left IntegerTerm, right IntegerTerm, budget List[Int]) Bool {
+    if get(budget, 0) <= 0 {
+        return false
+    }
+    set(budget, 0, get(budget, 0) - 1)
+    match left {
+        IntegerTerm.Linear(first) => match right {
+            IntegerTerm.Linear(second) => compare(first.constant, second.constant) == 0 &&
+            same_terms(first.terms, second.terms)
+            _ => false
+        }
+        IntegerTerm.Apply(operator, inputs) => match right {
+            IntegerTerm.Apply(other, values) => {
+                if operator != other || length(inputs) != length(values) {
+                    return false
+                }
+                var index = 0
+                while index < length(inputs) {
+                    if !same_integer_term(get(inputs, index), get(values, index), budget) {
+                        return false
+                    }
+                    index = index + 1
+                }
+                true
+            }
+            _ => false
+        }
+    }
+}
+
+fn integer_limit(relation Text, value IntegerTerm, limit Int) Predicate {
+    Predicate.IntegerCompare(relation, value, IntegerTerm.Linear(constant(integer(limit))))
+}

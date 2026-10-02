@@ -29,6 +29,11 @@ fn solver_defined(proof Verification, expr Expr, state State, depth Int) Result[
     }
     if expr.kind == ExprKind.Unary || expr.kind == ExprKind.Binary {
         return match pure(expr, state)? {
+            Value.Nonlinear(term) => {
+                solver_fact(proof, integer_limit(">=", term, -9223372036854775808), state)
+                solver_fact(proof, integer_limit("<=", term, 9223372036854775807), state)
+                Result.Ok(true)
+            }
             Value.Number(term) => {
                 solver_fact(proof, Predicate.Compare(">=",
                         add(term, constant(negate(integer(-9223372036854775808))))), state)

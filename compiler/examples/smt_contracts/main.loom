@@ -48,6 +48,10 @@ fn main() {
     assert multibyte_choice("é")
     assert even(10) == 20
     assert guarded_successor("", 9223372036854775807)
+    assert square(-9) == 81
+    assert square_expansion(-7, 12)
+    assert difference_of_squares(9, 5) == 56
+    assert squared_length("雪") == 9
 }
 
 test fn combined_contracts() {
