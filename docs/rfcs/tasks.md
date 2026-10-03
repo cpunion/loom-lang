@@ -374,8 +374,11 @@ the scope. This is not a general root handle valid after its owner returns.
 The private [shared-heap ABI](../../compiler/runtime/src/shared_heap.rs) can trace
 registered native mutators' roots after a cooperative rendezvous. Native waits
 park without retaining heap borrows; joining the shared scope restores its heap
-to the initiating thread. This does not yet enable generated Loom workers or
-make existing container operations safe for concurrent mutation.
+to the initiating thread. Private per-object access guards preserve lock identity
+through movement and park contended waiters; faults release internal guards
+before user cleanup. Idle owner reactors and native-I/O drain waits also park.
+These boundaries do not yet enable generated Loom workers or protect existing
+container operations automatically.
 
 Frame payloads reuse the existing zeroed typed GC allocation and tracer, without
 changing ordinary record semantics. Allocation-crossing code reloads the frame

@@ -27,6 +27,7 @@ mod frame_roots_tests;
 mod fs_ops;
 pub mod native;
 mod process_io;
+mod shared_access;
 mod shared_heap;
 mod tasks;
 #[cfg(test)]
@@ -167,6 +168,7 @@ struct Heap {
     threshold: usize,
     stress: bool,
     list_views: Vec<ListView>,
+    access: shared_access::Locks,
 }
 
 const MIN_THRESHOLD: usize = 64 * 1024;
@@ -187,6 +189,7 @@ impl Default for Heap {
             stress: std::env::var_os("LOOM_GC_STRESS").as_deref()
                 == Some(std::ffi::OsStr::new("1")),
             list_views: Vec::new(),
+            access: shared_access::Locks::default(),
         }
     }
 }
@@ -208,7 +211,6 @@ impl Drop for Heap {
 }
 
 thread_local! {
-    static LOCAL_HEAP: RefCell<Heap> = RefCell::new(Heap::default());
     // Native stacks belong to their mutator, not to the shared object arena.
     static ROOTS: Cell<*mut RootFrame> = const { Cell::new(ptr::null_mut()) };
     #[cfg(not(windows))]
@@ -430,8 +432,10 @@ fn collect_roots(roots: &[*mut RootFrame]) {
         let Heap {
             previous,
             list_views,
+            access,
             ..
         } = &mut *heap;
+        shared_access::relocate(access, previous);
         for view in list_views.iter() {
             if let Some(object) = previous.get(&(view.source as usize)) {
                 if !object.forwarded.is_null() {
