@@ -1,0 +1,49 @@
+test fn observations_keep_evaluation_identity_and_guard_boundaries() {
+    let source = local(0)
+    let children = new[Expr]()
+    push(children, source)
+    let read = proof_expr(source, ExprKind.Intrinsic, 1, "list_len", 7, children)
+    let other = proof_expr(source, ExprKind.Intrinsic, 1, "list_len", 8, children)
+    let state = State {
+        locals = new[Value]()
+        facts = new[Predicate]()
+        extents = new[ListExtent]()
+        observations = new[Observation]()
+    }
+    let no = proof_bool(source, false)
+    let yes = proof_bool(source, true)
+    let guarded = with_observation(read, no, Value.Number(constant(integer(3))), state)
+    assert match observation_value(read, yes, guarded) {
+        Option.None => true
+        _ => false
+    }
+    let executed = with_observation(read, yes, Value.Number(constant(integer(4))), state)
+    assert match observation_value(read, no, executed) {
+        Option.Some(_) => true
+        _ => false
+    }
+    assert match observation_value(other, yes, executed) {
+        Option.None => true
+        _ => false
+    }
+    assert match observation_value(read, yes, state) {
+        Option.None => true
+        _ => false
+    }
+    let condition = operation(">", local(0), literal("0"))
+    let branch = State {
+        locals = [Value.Number(variable(0))]
+        facts = new[Predicate]()
+        extents = new[ListExtent]()
+        observations = new[Observation]()
+    }
+    let conditional = with_observation(read, condition, Value.Number(constant(integer(5))), branch)
+    assert match observation_value(read, proof_and(condition, operation("<", local(0), literal("10"))), conditional) {
+        Option.Some(_) => true
+        _ => false
+    }
+    assert match observation_value(read, yes, conditional) {
+        Option.None => true
+        _ => false
+    }
+}

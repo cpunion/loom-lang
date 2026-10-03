@@ -20,3 +20,9 @@ for the memory, proof and cancellation boundaries.
 the length and indexed contents of a fresh result. Private accesses omit
 shared-storage locks; GC roots and cancellation checkpoints remain. This needs
 no ownership annotations and does not change the shared-counter example.
+
+`observed_snapshot` passes a shared length to a pure helper. Arguments and local
+bindings are evaluated once, so the helper can reuse that scalar snapshot.
+Writing `length(values) == length(values)` instead makes two independent reads
+and cannot prove equality under interference. The same distinction applies to
+`old` observations; a snapshot does not freeze the underlying List.

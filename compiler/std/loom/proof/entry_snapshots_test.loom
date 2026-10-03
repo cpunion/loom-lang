@@ -3,11 +3,13 @@ test fn entry_scopes_keep_results_unavailable_across_snapshots() {
         locals = [Value.Number(constant(integer(3)))]
         facts = new[Predicate]()
         extents = new[ListExtent]()
+        observations = new[Observation]()
     }
     let current = State {
         locals = [Value.Number(constant(integer(99))), Value.Number(constant(integer(7)))]
         facts = new[Predicate]()
         extents = new[ListExtent]()
+        observations = new[Observation]()
     }
     let snapshot = [Value.Number(constant(integer(9)))]
     let before = call_scope(entry_scope(entry, current), snapshot)

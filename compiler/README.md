@@ -2985,7 +2985,11 @@ Shared builds revalidate mandatory contracts. Each shared entry, `old` and
 current List observation is independent; scalar snapshots and observations of
 fresh, unpublished Lists remain stable. Length nonnegativity is provable, but
 two reads are not assumed equal and an earlier length check cannot justify a
-later shared indexed access. Short circuits and hypothetical arithmetic still
+later shared indexed access. Pure helper arguments and local bindings preserve
+their once-only evaluation, including inline fields and guarded branches.
+Checked clauses retain these identities across cache reuse; each invocation
+imports a fresh scope. Reusing a scalar snapshot does not freeze its source.
+Short circuits and hypothetical arithmetic still
 need safety proofs. Private factory contracts compose through finite source
 helpers. Publication through mutable graphs or opaque calls conservatively loses
 privacy, including across loop iterations. A lock alone does not prove that all

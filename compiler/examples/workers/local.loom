@@ -47,3 +47,15 @@ ensures result >= 0 && std.list.length(values) >= 0 && old(std.list.length(value
 {
     std.list.length(values)
 }
+
+fn same_count(value Int) Bool {
+    value == value
+}
+
+// This argument is read once; repeated use by a pure helper is stable. Writing
+// length(values) == length(values) instead would make two independent reads.
+fn observed_snapshot(values List[Int]) Int
+ensures same_count(std.list.length(values)) && same_count(old(std.list.length(values)))
+{
+    std.list.length(values)
+}

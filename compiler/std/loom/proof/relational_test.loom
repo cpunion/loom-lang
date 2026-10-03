@@ -11,6 +11,7 @@ test fn symbolic_difference_bounds_do_not_use_local_slots_as_identities() {
             locals = locals
             facts = facts
             extents = new[ListExtent]()
+            observations = new[Observation]()
         })
     assert holds(Predicate.Compare(">", x), state.facts)
     assert !holds(Predicate.Compare(">", y), state.facts)
@@ -27,6 +28,7 @@ test fn symbolic_difference_bounds_do_not_use_local_slots_as_identities() {
             locals = locals
             facts = facts
             extents = new[ListExtent]()
+            observations = new[Observation]()
         })
     assert length(exhausted.facts) == length(facts)
     assert !holds(Predicate.Compare(">", x), exhausted.facts)

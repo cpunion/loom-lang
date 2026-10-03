@@ -143,6 +143,15 @@ fn binary(operator Text, a Value, b Value) Result[Value, Text] {
 }
 
 fn pure(expr Expr, state State) Result[Value, Text] {
+    if observation_expression(expr) {
+        match observation_value(expr, proof_bool(expr, true), state) {
+            Option.Some(value) => {
+                return Result.Ok(value)
+            }
+            Option.None => {
+            }
+        }
+    }
     if expr.ty == 5 {
         return Result.Err("Float expressions are not supported in required proofs")
     }
@@ -228,7 +237,7 @@ fn pure(expr Expr, state State) Result[Value, Text] {
 fn bounded(value Value, state State) State {
     match value {
         Value.Nonlinear(term) => assume(assume(state,
-            integer_limit(">=", term, -9223372036854775808)),
+                integer_limit(">=", term, -9223372036854775808)),
             integer_limit("<=", term, 9223372036854775807))
         Value.Number(term) => {
             let low = Predicate.Compare(">=", add(term, constant(negate(integer(-9223372036854775808)))))
@@ -242,6 +251,15 @@ fn bounded(value Value, state State) State {
 // Postcondition arithmetic has not executed. Establish definedness from facts;
 // unlike body arithmetic, never assume a hypothetical overflow check passed.
 fn defined(expr Expr, state State) Result[Bool, Text] {
+    if observation_expression(expr) {
+        match observation_value(expr, proof_bool(expr, true), state) {
+            Option.Some(_) => {
+                return Result.Ok(true)
+            }
+            Option.None => {
+            }
+        }
+    }
     // Checked literals and stable scalar reads cannot fault. Do not rescan
     // the entire fact set for contradictions at every leaf of a predicate.
     if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Float || expr.kind == ExprKind.Bool || expr.kind == ExprKind.Text || expr.kind == ExprKind.Local {

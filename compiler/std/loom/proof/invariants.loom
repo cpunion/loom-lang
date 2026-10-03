@@ -21,6 +21,7 @@ fn invariant_predicate(predicate Expr, value Value, state State) State {
             locals = locals
             facts = state.facts
             extents = state.extents
+            observations = state.observations
         }) {
         Result.Ok(known) => match known {
             Value.Boolean(fact) => assume(state, fact)

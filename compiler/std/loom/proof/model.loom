@@ -65,6 +65,7 @@ record State {
     locals List[Value]
     facts List[Predicate]
     extents List[ListExtent]
+    observations List[Observation]
 }
 
 record Outcome {
@@ -193,6 +194,7 @@ fn assume(state State, fact Predicate) State {
         locals = state.locals
         facts = facts
         extents = state.extents
+        observations = state.observations
     }
 }
 
@@ -211,5 +213,6 @@ fn assigned(state State, id Int, value Value) State {
         locals = locals
         facts = state.facts
         extents = state.extents
+        observations = state.observations
     }
 }

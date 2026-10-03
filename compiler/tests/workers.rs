@@ -4,14 +4,20 @@ use common::success;
 #[test]
 fn source_workers_share_typed_data_and_drain_under_moving_gc() {
     let temporary = tempfile::tempdir().unwrap();
+    let cache = temporary.path().join("frontend-cache");
     let example = common::executable(temporary.path(), "workers");
     let ir = temporary.path().join("workers.ll");
     for level in ["0", "2"] {
         success(
-            &common::command(&["test", "compiler/std/task/worker"])
-                .env("LOOM_OPT_LEVEL", level)
-                .output()
-                .unwrap(),
+            &common::command(&[
+                "test",
+                "compiler/std/task/worker",
+                "--frontend-cache",
+                cache.to_str().unwrap(),
+            ])
+            .env("LOOM_OPT_LEVEL", level)
+            .output()
+            .unwrap(),
         );
         success(&common::run_tasks(&common::executable(
             &common::root().join("compiler/std/task/worker/target"),
@@ -57,6 +63,10 @@ fn workers_reject_resource_transfer_and_stale_shared_proofs() {
         "fn unchanged(values List[Int]) Int ensures result == std.list.length(values) { std.list.length(values) }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
         "fn unchanged(values List[Int]) List[Int] requires length(values) == 1 ensures length(result) == 1 { values }\nasync fn main() { discard run(fn() List[Int] { unchanged([1]) }).await }",
         "fn unchanged(values List[Int]) Int ensures length(values) == length(values) { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
+        "fn equal(a Int, b Int) Bool { a == b }\nfn unchanged(values List[Int]) Int ensures equal(length(values), length(values)) { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
+        "fn count(values List[Int]) Int { length(values) }\nfn unchanged(values List[Int]) Int ensures count(values) == count(values) { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
+        "fn ignore(value Int) Bool { true }\nfn unchanged(values List[Int]) Int ensures ignore(get(values, 0)) { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
+        "fn same(value Int) Bool { value == value }\nfn unchanged(values List[Int]) Int requires length(values) < 9223372036854775807 ensures same(length(values) + 1) { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
         "fn unchanged(values List[Int]) Int ensures result == old(length(values)) { length(values) }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
         "fn unchanged(values List[Int]) Int requires length(values) >= 1 ensures length(values) == 0 || get(values, 0) == result { get(values, 0) }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
         "fn unchanged(values List[Int]) Int requires length(values) < 9223372036854775807 ensures length(values) + 1 >= 1 { 0 }\nasync fn main() { discard run(fn() Int { unchanged([1]) }).await }",
@@ -76,6 +86,67 @@ fn workers_reject_resource_transfer_and_stale_shared_proofs() {
                 || message.contains("interference-safe"),
             "{message}"
         );
+    }
+}
+
+#[test]
+fn edited_worker_builds_revalidate_cached_observation_identities() {
+    for (predicate, accepted) in [
+        ("same(length(values)) && same(old(length(values)))", true),
+        ("length(values) == length(values)", false),
+    ] {
+        let package = tempfile::tempdir().unwrap();
+        let cache = package.path().join("cache");
+        std::fs::write(
+            package.path().join("observations.loom"),
+            format!(
+                r#"
+import std.list.length
+
+fn same(value Int) Bool {{
+    value == value
+}}
+
+fn observed(values List[Int]) Int
+ensures {predicate}
+{{
+    length(values)
+}}
+"#
+            ),
+        )
+        .unwrap();
+        let main = package.path().join("main.loom");
+        std::fs::write(&main, "fn main() { discard observed([1]) }\n").unwrap();
+        let check = || {
+            common::command(&[
+                "check",
+                package.path().to_str().unwrap(),
+                "--frontend-cache",
+                cache.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+        };
+        success(&check());
+        std::fs::write(
+            main,
+            r#"
+import std.task.worker.run
+
+async fn main() {
+    discard run(fn() Int {
+            observed([1])
+        }).await
+}
+"#,
+        )
+        .unwrap();
+        let output = check();
+        assert_eq!(output.status.success(), accepted, "{output:?}");
+        if !accepted {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("interference-safe"));
+        }
     }
 }
 

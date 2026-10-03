@@ -374,6 +374,7 @@ fn scalar_facts_imply(premises List[Expr], conclusion Expr, backend ProofBackend
         locals = values
         facts = new[Predicate]()
         extents = new[ListExtent]()
+        observations = new[Observation]()
     }
     index = 0
     while index < length(known) {

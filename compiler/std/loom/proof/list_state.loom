@@ -49,6 +49,7 @@ fn with_extent(identity Int, size Linear, allocated Bool, state State) State {
             locals = state.locals
             facts = state.facts
             extents = extents
+            observations = state.observations
         })
 }
 
@@ -105,6 +106,7 @@ fn published_storage(state State) State {
         locals = state.locals
         facts = state.facts
         extents = extents
+        observations = state.observations
     }
 }
 
