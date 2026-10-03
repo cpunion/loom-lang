@@ -371,6 +371,12 @@ not the historical slot capacity. No vector element address is registered as a
 root. The root set itself remains native, owner-thread state and does not escape
 the scope. This is not a general root handle valid after its owner returns.
 
+The private [shared-heap ABI](../../compiler/runtime/src/shared_heap.rs) can trace
+registered native mutators' roots after a cooperative rendezvous. Native waits
+park without retaining heap borrows; joining the shared scope restores its heap
+to the initiating thread. This does not yet enable generated Loom workers or
+make existing container operations safe for concurrent mutation.
+
 Frame payloads reuse the existing zeroed typed GC allocation and tracer, without
 changing ordinary record semantics. Allocation-crossing code reloads the frame
 base before deriving field addresses. A completed result stays rooted until its

@@ -1,4 +1,4 @@
-//! Loom's single-threaded, moving managed-memory and platform boundary.
+//! Loom's moving managed-memory and platform boundary.
 //! Generated code roots every live managed slot before an allocating call.
 //! Entries that can raise a language fault use C-unwind so an explicit resume
 //! boundary can catch it. GC tracers and invariant failures never unwind.
@@ -7,7 +7,6 @@
 compile_error!("Loom runtime requires panic=unwind for native fault boundaries");
 
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc, realloc};
-#[cfg(not(windows))]
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,6 +27,7 @@ mod frame_roots_tests;
 mod fs_ops;
 pub mod native;
 mod process_io;
+mod shared_heap;
 mod tasks;
 #[cfg(test)]
 mod tasks_tests;
@@ -162,7 +162,6 @@ struct Heap {
     space: Arena,
     previous_space: Arena,
     collecting: bool,
-    roots: *mut RootFrame,
     work: Vec<(*mut u8, Trace)>,
     bytes: usize, // Occupied slots, including abandoned growth slices until GC.
     threshold: usize,
@@ -182,7 +181,6 @@ impl Default for Heap {
             space: Arena::default(),
             previous_space: Arena::default(),
             collecting: false,
-            roots: ptr::null_mut(),
             work: Vec::new(),
             bytes: 0,
             threshold: MIN_THRESHOLD,
@@ -210,11 +208,23 @@ impl Drop for Heap {
 }
 
 thread_local! {
-    static HEAP: RefCell<Heap> = RefCell::new(Heap::default());
+    static LOCAL_HEAP: RefCell<Heap> = RefCell::new(Heap::default());
+    // Native stacks belong to their mutator, not to the shared object arena.
+    static ROOTS: Cell<*mut RootFrame> = const { Cell::new(ptr::null_mut()) };
     #[cfg(not(windows))]
     static PROCESS_ARGS: Cell<(i32, *const *const c_char)> = const { Cell::new((0, ptr::null())) };
     #[cfg(windows)]
     static PROCESS_ARGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+struct HeapAccess;
+
+static HEAP: HeapAccess = HeapAccess;
+
+impl HeapAccess {
+    fn with<R>(&self, run: impl FnOnce(&RefCell<Heap>) -> R) -> R {
+        shared_heap::with_heap(run)
+    }
 }
 
 fn fault(message: &str) -> ! {
@@ -294,35 +304,26 @@ extern "C-unwind" fn loom_rt_box_new(size: usize, trace: Option<Trace>) -> *mut 
 // valid while their frame is detached and the caller receives the value.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_roots_enter(frame: *mut RootFrame, roots: *const Root, count: usize) {
-    HEAP.with(|heap| {
-        let mut heap = heap.borrow_mut();
-        // SAFETY: The caller provides writable frame storage and count live
-        // root entries. Their addresses stay fixed until the matching leave;
-        // initialize every field before publishing this single-threaded head.
-        unsafe {
-            ptr::write(
-                frame,
-                RootFrame {
-                    previous: heap.roots,
-                    roots,
-                    count,
-                },
-            );
-        }
-        heap.roots = frame;
-    });
+    // SAFETY: The caller provides writable frame storage and count live roots.
+    // Only this active mutator changes its head. A shared collector sees the
+    // complete chain only after the mutator publishes it at a safe point.
+    unsafe {
+        frame.write(RootFrame {
+            previous: ROOTS.get(),
+            roots,
+            count,
+        });
+    }
+    ROOTS.set(frame);
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_roots_leave(frame: *mut RootFrame) {
-    HEAP.with(|heap| {
-        let mut heap = heap.borrow_mut();
-        if heap.roots != frame {
-            fatal("invalid GC root frame order");
-        }
-        // SAFETY: A matching enter initialized this still-live frame.
-        heap.roots = unsafe { (*frame).previous };
-    });
+    if ROOTS.get() != frame {
+        fatal("invalid GC root frame order");
+    }
+    // SAFETY: A matching enter initialized this still-live frame.
+    ROOTS.set(unsafe { (*frame).previous });
 }
 
 #[unsafe(no_mangle)]
@@ -377,7 +378,11 @@ extern "C" fn loom_rt_visit(pointer: *mut u8) -> *mut u8 {
 
 #[unsafe(no_mangle)]
 extern "C" fn loom_rt_collect() {
-    let mut frame = HEAP.with(|heap| {
+    shared_heap::collect(collect_roots);
+}
+
+fn collect_roots(roots: &[*mut RootFrame]) {
+    HEAP.with(|heap| {
         let mut heap = heap.borrow_mut();
         if heap.collecting {
             fatal("recursive GC collection");
@@ -395,19 +400,20 @@ extern "C" fn loom_rt_collect() {
         std::mem::swap(objects, previous);
         std::mem::swap(space, previous_space);
         heap.bytes = 0;
-        heap.roots
     });
-    while !frame.is_null() {
-        // SAFETY: Active stack frames and slots stay fixed. Tracers rewrite
-        // managed pointers; they cannot allocate,
-        // collect or modify the root chain. No Heap borrow spans a callback.
-        unsafe {
-            let active = &*frame;
-            for index in 0..active.count {
-                let root = *active.roots.add(index);
-                (root.trace)(root.address);
+    for mut frame in roots.iter().copied() {
+        while !frame.is_null() {
+            // SAFETY: Active stack frames and slots stay fixed. Tracers rewrite
+            // managed pointers; they cannot allocate,
+            // collect or modify the root chain. No Heap borrow spans a callback.
+            unsafe {
+                let active = &*frame;
+                for index in 0..active.count {
+                    let root = *active.roots.add(index);
+                    (root.trace)(root.address);
+                }
+                frame = active.previous;
             }
-            frame = active.previous;
         }
     }
     loop {
