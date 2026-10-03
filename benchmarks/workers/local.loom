@@ -1,0 +1,14 @@
+import std.list.get
+import std.list.set
+
+fn local_compute(seed Int) Int {
+    let values = [seed, seed + 1, seed + 2, seed + 3]
+    let alias = values
+    var index = 0
+    while index < 1000000 {
+        let slot = index % 4
+        set(alias, slot, (get(values, slot) * 17 + 23) % 1000003)
+        index = index + 1
+    }
+    get(values, 0) + get(values, 1) + get(values, 2) + get(values, 3)
+}

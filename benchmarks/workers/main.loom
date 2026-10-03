@@ -16,7 +16,21 @@ fn compute(seed Int) Int {
 
 async fn main() {
     let mode = arguments()[1]
-    let total = if mode == "parallel" {
+    let total = if mode == "local-parallel" {
+        let a, b, c, d = (run(fn() Int {
+                    local_compute(1)
+                }), run(fn() Int {
+                    local_compute(2)
+                }),
+            run(fn() Int {
+                    local_compute(3)
+                }), run(fn() Int {
+                    local_compute(4)
+                })).await
+        a + b + c + d
+    } else if mode == "local-serial" {
+        local_compute(1) + local_compute(2) + local_compute(3) + local_compute(4)
+    } else if mode == "parallel" {
         let a, b, c, d = (run(fn() Int {
                     compute(1)
                 }), run(fn() Int {

@@ -5,11 +5,16 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Remove shared-access guards for proven invocation-local storage, retaining
+  moving-GC roots and cancellation checkpoints. Preserve private List facts and
+  prove fresh-result contracts in worker builds; publication and loop backedges
+  conservatively invalidate privacy. No new source ownership syntax or seed.
+
 - Add source `std.task.worker.run` with typed callback frames, shared moving GC,
   memory-safe mutable accesses, completion notifications and structured
   cancellation/fault cleanup. Keep no-worker lowering direct and revalidate
-  required proofs for interference. Broader shared-state proofs and removal of
-  unnecessary instrumentation inside worker-enabled builds remain open.
+  required proofs for interference. Broader shared-state proofs and
+  interprocedural escape summaries remain open.
 
 - Add source `std.sync.mutex` with lexical `MustScope`/`NoSuspend` guards,
   normal/fault release and rejected same-thread reentrance. Guards cannot be

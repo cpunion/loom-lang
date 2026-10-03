@@ -412,10 +412,15 @@ The [accepted shared-worker semantics](../rfcs/tasks.md#shared-workers) allow
 memory-safe logical races with explicit synchronization for compound updates.
 Only explicit workers request parallel execution. No-worker executables retain
 their direct lowering; worker-enabled builds conservatively instrument accesses
-and roots. Required proofs are revalidated for interference: scalar snapshots
-remain stable, mutable observations cannot reuse sequential facts, and required
-mutable-storage predicates currently reject. Broader interference proofs and
-escape-sensitive removal of local instrumentation remain open. Source library
+and roots. Checked escape analysis now removes guards for invocation-local
+List/Bytes/frame accesses, including aliases and fresh return buffers. Container
+and capture edges, all assignments and cleanup participate; unknown calls stay
+conservative. GC roots and cancellation checkpoints remain.
+Required proofs are revalidated for interference: scalar snapshots and private
+List observations remain stable; factories may prove private result length and
+indexed contents. Stored mutable graphs and opaque calls lose privacy, and loop
+backedges cannot restore it. Shared input/entry predicates and broader
+interprocedural escape summaries remain open. Source library
 compound operations still require caller synchronization when racing mutations
 would violate the desired application semantics.
 See [Tasks and I/O](../../compiler/README.md#source-tasks).

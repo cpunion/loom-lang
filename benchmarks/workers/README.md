@@ -15,3 +15,9 @@ on an otherwise idle machine. Pool size is bounded by available CPUs and four.
 Use `scripts/benchmark-basic.mjs` separately for no-worker scalar, record and
 List comparisons against C/Go/Rust/Zig. GC stress is a correctness gate, not a
 performance setting.
+
+The `local-serial` and `local-parallel` modes instead update invocation-local
+Lists through aliases, four million checked read/write pairs in total. They
+exercise escape-sensitive guard removal, not shared atomic updates. Both modes
+must print the same checksum; compare identical optimization levels and report
+fresh-process medians separately from compiler time.

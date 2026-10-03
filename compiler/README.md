@@ -2981,14 +2981,21 @@ synchronous I/O parks the mutator but can delay cancellation until the OS call
 returns. Scoped resources and owner-local Tasks/native tokens cannot cross the
 worker boundary; acquire and close resources within the callback.
 
-Shared builds revalidate mandatory contracts with mutable observations forgotten
-between accesses; scalar snapshots remain facts. Required contracts that inspect
-mutable storage are currently rejected unless expressed through independent
-scalar snapshots. A lock alone does not prove that all aliases obey it. This is
-a conservative proof boundary, not permission to weaken constraints. Builds with
-no reachable workers retain direct nonshared lowering. Within worker-enabled
-builds, access/root instrumentation is conservative; escape-sensitive removal
-of unnecessary local guards remains an optimization opportunity.
+Shared builds revalidate mandatory contracts. Scalar snapshots and observations
+of fresh, unpublished Lists remain facts; independently shared observations do
+not. A factory can prove the length and indexed contents of its private result.
+Publication through stored mutable graphs or opaque calls conservatively loses
+privacy, including across loop iterations. Shared input/entry predicates remain
+unsupported; a lock alone does not prove that all aliases obey it.
+
+Within worker-enabled builds, checked storage escape analysis removes access
+guards for invocation-local List/Bytes/captured storage, including aliases and
+fresh returned buffers. Containers, captures, branches, loops and cleanup all
+contribute escape edges; unknown calls retain guards. Identity-only primitive
+forwarders use the same direct operations at private call sites. This does not
+remove moving-GC roots or cancellation checkpoints, infer ownership, or make
+compound operations atomic. Broader interprocedural escape summaries and shared
+heap proofs remain open. Builds with no workers retain their existing lowering.
 
 ## Source Tasks
 

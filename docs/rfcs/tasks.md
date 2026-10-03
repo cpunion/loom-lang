@@ -145,10 +145,12 @@ or per-access locks without need.
 
 The [worker guide](../../compiler/README.md#shared-workers) records runnable
 examples and current conservative boundaries. In particular, worker-enabled
-builds do not reuse sequential heap-observation certificates: scalar snapshots
-are supported, but required mutable-storage predicates still need broader
-interference reasoning. Private access guards do not make source library calls
-atomic. Escape-sensitive optimization inside shared builds remains open.
+builds do not reuse sequential heap-observation certificates. Scalar snapshots
+and private List construction/results have proof support; shared input/entry
+predicates still need broader interference reasoning. Escape analysis removes
+guards from proven invocation-local storage while retaining GC roots and
+cancellation checkpoints. Unknown calls remain conservative. Private access
+guards do not make source library calls atomic.
 
 ## Implementation boundary
 
