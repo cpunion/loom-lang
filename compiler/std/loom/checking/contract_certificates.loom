@@ -3,7 +3,6 @@
 // Shared-state verification remains independent. Visiting/cyclic promises,
 // captured callbacks and stored compile-time values supply no cached evidence.
 record ContractCertificate {
-    signature Int
     arguments List[Int]
     constants List[StaticValue]
     params List[Int]
@@ -38,12 +37,13 @@ fn contract_local_types(function Function) List[Int] {
 }
 
 fn completed_contract(context Context, id Int, function Function) List[Expr] {
-    let certificates = get(context.env.inputs, 0).contracts
-    if length(certificates) != 0 && contract_cacheable(context) {
+    let cache = get(context.env.inputs, 0).contracts
+    if id < length(cache) && contract_cacheable(context) {
+        let certificates = get(cache, id)
         var index = 0
         while index < length(certificates) {
             let saved = get(certificates, index)
-            if saved.signature == id && saved.result == function.result && saved.result_local == function.result_local &&
+            if saved.result == function.result && saved.result_local == function.result_local &&
             same(saved.arguments, context.arguments) && same_constants(saved.constants, context.constants) &&
             same(saved.params, function.params) && same(saved.locals, contract_local_types(function)) {
                 return saved.postconditions
@@ -58,8 +58,11 @@ fn retain_contract(context Context, id Int, function Function) {
     if !contract_cacheable(context) || length(function.postconditions) == 0 {
         return
     }
-    push(get(context.env.inputs, 0).contracts, ContractCertificate {
-            signature = id
+    let cache = get(context.env.inputs, 0).contracts
+    while length(cache) <= id {
+        push(cache, new[ContractCertificate]())
+    }
+    push(get(cache, id), ContractCertificate {
             arguments = context.arguments
             constants = context.constants
             params = function.params
