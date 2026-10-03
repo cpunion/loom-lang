@@ -97,3 +97,47 @@ test fn bounded_quantifiers_keep_their_binder_inside_the_range_and_body() {
     assert contains(query, "(forall ((n-7 Int)) (=> (and (<= (+ 0) n-7) (< n-7 (+ 2))) ")
     assert contains(query, "(select a10 (+ 0 (* 1 n-7)))")
 }
+
+test fn pointwise_prefix_equality_supplies_only_the_matching_histogram_law() {
+    let bound = variable(-7)
+    let size = variable(4)
+    let equal = Predicate.IntegerCompare("==", IntegerTerm.Select(10, bound), IntegerTerm.Select(11, bound))
+    let prefix = Predicate.Forall(-7, constant(integer(0)), size, [equal])
+    let bag = Predicate.BagEqual(10, size, 11, size)
+    assert match pointwise_bag(prefix) {
+        Option.Some(value) => same(value, bag)
+        Option.None => false
+    }
+    assert match pointwise_bag(Predicate.Forall(-7, constant(integer(1)), size, [equal])) {
+        Option.None => true
+        _ => false
+    }
+    let shifted = Predicate.IntegerCompare("==", IntegerTerm.Select(10, bound),
+        IntegerTerm.Select(11, add(bound, constant(integer(1)))))
+    assert match pointwise_bag(Predicate.Forall(-7, constant(integer(0)), size, [shifted])) {
+        Option.None => true
+        _ => false
+    }
+    let query = encoding([Obligation {
+                facts = [prefix]
+                conclusion = bag
+            }])
+    assert contains(query, "(assert (=> (forall ((n-7 Int))")
+    assert contains(query, "(= (loom_bag a10 (+ 0 (* 1 n4))) (loom_bag a11 (+ 0 (* 1 n4))))")
+    assert !contains(encoding([Obligation {
+                    facts = [prefix]
+                    conclusion = prefix
+                }]), "loom_bag")
+}
+
+test fn repeated_assumptions_keep_one_fact_and_all_derived_text_bounds() {
+    let facts = new[Predicate]()
+    let equal = Predicate.TextEqual(TextValue.Variable(1), TextValue.Variable(2))
+    append_facts(facts, Predicate.And([equal, equal]))
+    append_facts(facts, Predicate.Constant(true))
+    assert length(facts) == 2
+    assert same(get(facts, 0), equal)
+    assert same(get(facts, 1), Predicate.Compare("==", add(variable(1), scale(variable(2), integer(-1)))))
+    append_facts(facts, Predicate.Constant(false))
+    assert length(facts) == 3 && holds(Predicate.Constant(false), facts)
+}

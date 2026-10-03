@@ -184,3 +184,42 @@ fn bag_fact(value Predicate, facts List[Predicate]) Predicate {
     }
     value
 }
+
+// Equality at every valid prefix index implies histogram equality for that
+// prefix. It does not equate storage handles or unobserved array positions.
+fn pointwise_bag(value Predicate) Option[Predicate] {
+    match value {
+        Predicate.Forall(identity, start, end, conditions) => {
+            if length(start.terms) != 0 || compare(start.constant, integer(0)) != 0 || length(conditions) != 1 {
+                return Option.None
+            }
+            match get(conditions, 0) {
+                Predicate.IntegerCompare(relation, first, second) => {
+                    if relation != "==" {
+                        return Option.None
+                    }
+                    match first {
+                        IntegerTerm.Select(before, left) => match second {
+                            IntegerTerm.Select(after, right) => {
+                                let bound = variable(identity)
+                                if same_terms(left.terms, bound.terms) && same_terms(right.terms, bound.terms) &&
+                                compare(left.constant, integer(0)) == 0 && compare(right.constant, integer(0)) == 0 {
+                                    return Option.Some(Predicate.BagEqual(before, end, after, end))
+                                }
+                            }
+                            _ => {
+                            }
+                        }
+                        _ => {
+                        }
+                    }
+                }
+                _ => {
+                }
+            }
+        }
+        _ => {
+        }
+    }
+    Option.None
+}

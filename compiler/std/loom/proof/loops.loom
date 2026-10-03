@@ -11,7 +11,7 @@ import std.option.Option
 enum LoopCandidate {
     Entry(Int, List[Int], Text, Value)
     Guard(Expr)
-    ExtentLocal(Int, Int)
+    ExtentLocal(Int, Int, Linear)
     EntryExtent(Int, List[Int], Text, Linear)
     Element(Int, Linear, Text, Value)
 }
@@ -150,8 +150,9 @@ fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] 
             boolean(binary(relation, value, initial)?)
         }
         LoopCandidate.Guard(expr) => Result.Ok(bag_fact(boolean(pure(expr, state)?)?, state.facts))
-        LoopCandidate.ExtentLocal(identity, local) => boolean(binary("==",
-                Value.Number(list_extent(identity, state)?), get(state.locals, local))?)
+        LoopCandidate.ExtentLocal(identity, local, offset) => boolean(binary("==",
+                Value.Number(list_extent(identity, state)?),
+                Value.Number(add(list_value_index(get(state.locals, local))?, offset)))?)
         LoopCandidate.EntryExtent(index, path, relation, initial) => {
             var value = get(state.locals, index)
             var field = 0
@@ -325,7 +326,7 @@ fn loop_entry_candidates(proof Verification, candidates List[LoopCandidate], ind
     Result.Ok(true)
 }
 
-fn loop_candidates(proof Verification, guard Expr, writes List[Bool], entry State) Result[List[LoopCandidate], Text] {
+fn loop_candidates(proof Verification, guard Expr, writes List[Bool], resized List[Int], entry State) Result[List[LoopCandidate], Text] {
     let candidates = new[LoopCandidate]()
     var index = 0
     while index < length(writes) {
@@ -335,7 +336,7 @@ fn loop_candidates(proof Verification, guard Expr, writes List[Bool], entry Stat
         index = index + 1
     }
     discard loop_guard_candidates(guard, candidates, entry)?
-    discard loop_extent_candidates(proof, candidates, writes, entry)?
+    discard loop_extent_candidates(proof, candidates, writes, resized, entry)?
     Result.Ok(candidates)
 }
 
@@ -393,17 +394,19 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
     let body = get(expr.children, 1)
     let clauses = loop_postconditions(proof.function)
     let observed = loop_query_views(proof, clauses, entry)
-    var candidates = loop_candidates(proof, loop_candidate_guard(proof, guard), writes, observed)?
+    let resized = loop_storage_targets(proof, expr, observed, writes, false)?
+    var candidates = loop_candidates(proof, loop_candidate_guard(proof, guard), writes, resized, observed)?
     loop_quantified_candidates(proof, clauses, candidates, writes, guard, observed)
-    var storage = loop_extents(proof, expr, observed, writes)?
+    var storage = forget_modified_extents(proof, observed, resized)
     if length(storage.extents) != 0 && !elements_preserving(proof.program, expr) {
+        let modified = loop_storage_targets(proof, expr, observed, writes, true)?
         if extent_preserving(proof.program, expr) {
-            storage = loop_element_head(proof, storage)?
+            storage = loop_element_head(proof, storage, modified)?
             discard loop_element_candidates(proof, clauses, candidates, entry)?
         } else {
             // Changing extents can invalidate entry indices. Do not create
             // hypothetical in-bounds cells or infer an opaque call's effects.
-            storage = forget_elements(storage)
+            storage = forget_modified_elements(storage, modified)
         }
     }
     var head = loop_head(proof, writes, storage)

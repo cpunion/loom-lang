@@ -180,7 +180,19 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
             smt_append(output, concat(first, concat(" ", concat(bound, ") (< "))))
             smt_append(output, concat(bound, concat(" ", concat(last, ")) "))))
             smt_append(output, concat(condition, "))"))
-            Result.Ok(std.bytes.to_text(output))
+            let quantified = std.bytes.to_text(output)
+            if length(writer.counts) != 0 {
+                match pointwise_bag(value) {
+                    Option.Some(bag) => {
+                        let law = concat("(=> ", concat(quantified,
+                                concat(" ", concat(smt_predicate(writer, bag, depth + 1)?, ")"))))
+                        smt_append(writer.declarations, concat("(assert ", concat(bag_bound_scope(law, end), ")\n")))
+                    }
+                    Option.None => {
+                    }
+                }
+            }
+            Result.Ok(quantified)
         }
         Predicate.Variable(id) => Result.Ok(smt_name(writer, "b", id, "Bool"))
         Predicate.BagEqual(before, size, after, count) => {
@@ -229,7 +241,7 @@ fn smt_predicate(writer SmtWriter, value Predicate, depth Int) Result[Text, Text
             let position = smt_linear(writer, index)?
             let term = smt_integer(writer, value, depth + 1)?
             let stored = concat("(store ", concat(previous, concat(" ", concat(position,
-                        concat(" ", concat(term, ")"))))))
+                            concat(" ", concat(term, ")"))))))
             let equation = concat("(= ", concat(current, concat(" ", concat(stored, ")"))))
             if length(writer.counts) == 0 {
                 return Result.Ok(equation)

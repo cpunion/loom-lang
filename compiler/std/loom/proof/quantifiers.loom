@@ -41,7 +41,19 @@ fn solver_quantified_defined(query ProofQuery, expr Expr, state State, depth Int
         var premise = Predicate.Constant(true)
         var fact = 0
         while fact < length(obligation.facts) {
-            premise = Predicate.And(predicates(premise, get(obligation.facts, fact)))
+            let condition = get(obligation.facts, fact)
+            // The outer obligation already carries this context. Repeating it
+            // inside every quantified safety implication expands composed
+            // helpers quadratically; only binder/path-specific facts belong here.
+            var inherited = false
+            var prior = 0
+            while prior < length(state.facts) && !inherited {
+                inherited = same(condition, get(state.facts, prior))
+                prior = prior + 1
+            }
+            if !inherited {
+                premise = Predicate.And(predicates(premise, condition))
+            }
             fact = fact + 1
         }
         let condition = Predicate.Or(predicates(not(premise), obligation.conclusion))

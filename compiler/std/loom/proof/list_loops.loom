@@ -1,4 +1,4 @@
-fn loop_extent_writes(proof Verification, value Expr, entry State, modified List[Int], depth Int) Result[Bool, Text] {
+fn loop_storage_writes(proof Verification, value Expr, entry State, modified List[Int], contents Bool, depth Int) Result[Bool, Text] {
     discard loop_step(proof)?
     if depth <= 0 {
         return Result.Err("loop extent analysis budget exhausted")
@@ -14,12 +14,16 @@ fn loop_extent_writes(proof Verification, value Expr, entry State, modified List
         } else {
             primitive = forwarded_list_operation(proof.program,
                 get(proof.program.functions, value.index), 0)
-            if primitive == "" && !extent_preserving(proof.program, value) {
+            if primitive == "" && !(if contents {
+                    elements_preserving(proof.program, value)
+                } else {
+                    extent_preserving(proof.program, value)
+                }) {
                 push(modified, -1)
             }
         }
     }
-    if primitive == "list_push" && length(value.children) > 0 {
+    if (primitive == "list_push" || (contents && primitive == "list_set")) && length(value.children) > 0 {
         let identity = match pure(get(value.children, 0), entry) {
             Result.Ok(receiver) => match receiver {
                 Value.List(identity) => identity
@@ -31,10 +35,36 @@ fn loop_extent_writes(proof Verification, value Expr, entry State, modified List
     }
     var index = 0
     while index < length(value.children) {
-        discard loop_extent_writes(proof, get(value.children, index), entry, modified, depth - 1)?
+        discard loop_storage_writes(proof, get(value.children, index), entry, modified, contents, depth - 1)?
         index = index + 1
     }
     Result.Ok(true)
+}
+
+fn loop_storage_targets(proof Verification, value Expr, entry State, writes List[Bool], contents Bool) Result[List[Int], Text] {
+    let modified = new[Int]()
+    if length(entry.extents) == 0 {
+        return Result.Ok(modified)
+    }
+    let preserved = if contents {
+        elements_preserving(proof.program, value)
+    } else {
+        extent_preserving(proof.program, value)
+    }
+    if preserved {
+        return Result.Ok(modified)
+    }
+    var index = 0
+    while index < length(proof.function.locals) {
+        if get(writes, index) && loop_list_type(proof, get(proof.function.locals, index).ty, 0) {
+            // A rebound receiver can target a different alias on later iterations.
+            push(modified, -1)
+            return Result.Ok(modified)
+        }
+        index = index + 1
+    }
+    discard loop_storage_writes(proof, value, entry, modified, contents, 64)?
+    Result.Ok(modified)
 }
 
 fn loop_list_type(proof Verification, ty Int, depth Int) Bool {
@@ -55,28 +85,11 @@ fn loop_list_type(proof Verification, ty Int, depth Int) Bool {
     false
 }
 
-fn loop_extents(proof Verification, value Expr, entry State, writes List[Bool]) Result[State, Text] {
-    if length(entry.extents) == 0 || extent_preserving(proof.program, value) {
-        return Result.Ok(entry)
-    }
-    // Rebinding can change which handle a resize targets on any iteration.
-    // Without a points-to invariant, freshen all possibly reachable extents;
-    // never resolve that target using only the pre-loop local value.
-    var index = 0
-    while index < length(proof.function.locals) {
-        if get(writes, index) && loop_list_type(proof, get(proof.function.locals, index).ty, 0) {
-            return Result.Ok(forget_extents(proof, entry))
-        }
-        index = index + 1
-    }
-    let modified = new[Int]()
-    discard loop_extent_writes(proof, value, entry, modified, 64)?
-    Result.Ok(forget_modified_extents(proof, entry, modified))
-}
-
 // Copy/build loops commonly advance an index with an output length. Propose
 // only equalities true at entry; ordinary backedge induction must preserve them.
-fn loop_extent_candidates(proof Verification, candidates List[LoopCandidate], writes List[Bool], entry State) Result[Bool, Text] {
+// Nonzero offsets matter only for possibly resized storage, avoiding speculative
+// relationships between unrelated read-only lengths and mutable scalar locals.
+fn loop_extent_candidates(proof Verification, candidates List[LoopCandidate], writes List[Bool], resized List[Int], entry State) Result[Bool, Text] {
     var extent = 0
     while extent < length(entry.extents) {
         let identity = get(entry.extents, extent).identity
@@ -86,8 +99,13 @@ fn loop_extent_candidates(proof Verification, candidates List[LoopCandidate], wr
                 discard loop_step(proof)?
                 match get(entry.locals, local) {
                     Value.Number(_) => {
-                        discard add_loop_candidate(candidates,
-                            LoopCandidate.ExtentLocal(identity, local), entry)?
+                        let initial = list_value_index(get(entry.locals, local))?
+                        let offset = add(list_extent(identity, entry)?, scale(initial, integer(-1)))
+                        if extent_modified(get(entry.extents, extent), entry, resized) ||
+                        (length(offset.terms) == 0 && compare(offset.constant, integer(0)) == 0) {
+                            discard add_loop_candidate(candidates,
+                                LoopCandidate.ExtentLocal(identity, local, offset), entry)?
+                        }
                     }
                     _ => {
                     }

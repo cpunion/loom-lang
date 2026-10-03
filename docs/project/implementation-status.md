@@ -310,6 +310,13 @@ ordering, lost duplicates, stale entry reads and unproved
 full-range safety reject. No helper names, runtime copies or sampled tests supply
 proof evidence. General scan shapes, mutable element graphs and unprotected
 shared observations remain outside this fragment.
+The [copy example](../../compiler/examples/smt_contracts/copies.loom) proves
+fresh-output element equality and permutation, then composes the returned value
+with the sort's guarantees. Loop havoc uses checked may-write targets and
+allocation-time disjointness; unknown aliases still invalidate observations.
+Affine output-length candidates also cover appending to a nonempty target,
+including a captured-length self-append. Repeated facts and inherited quantified
+contexts are shared logically rather than weakening safety obligations.
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining

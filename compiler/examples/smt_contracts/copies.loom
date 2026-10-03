@@ -1,0 +1,71 @@
+import std.list.new
+import std.list.push
+
+fn matching(first List[Int], second List[Int]) Bool {
+    var index = 0
+    while index < length(first) {
+        if get(first, index) != get(second, index) {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn identical(first List[Int], second List[Int]) Bool {
+    length(first) == length(second) && matching(first, second)
+}
+
+fn copied(values List[Int]) List[Int]
+ensures identical(result, old(values))
+ensures permutation(result, old(values))
+{
+    let output = new[Int]()
+    var index = 0
+    while index < length(values) {
+        push(output, get(values, index))
+        index = index + 1
+    }
+    output
+}
+
+fn sorted_copy(values List[Int]) List[Int]
+ensures ordered(result)
+ensures permutation(result, old(values))
+{
+    let output = copied(values)
+    sort(output)
+}
+
+fn append_prefix(target List[Int], source List[Int])
+ensures length(target) - old(length(target)) == old(length(source))
+{
+    let count = length(source)
+    var index = 0
+    while index < count {
+        push(target, get(source, index))
+        index = index + 1
+    }
+}
+
+fn copy_cases() {
+    let values = [3, -1, 2, -1]
+    let copy = copied(values)
+    assert identical(copy, values)
+    set(copy, 0, 99)
+    assert values[0] == 3
+    let sorted = sorted_copy(values)
+    assert identical(values, [3, -1, 2, -1])
+    assert identical(sorted, [-1, -1, 2, 3])
+    assert identical(copied([]), [])
+    assert identical(sorted_copy([7]), [7])
+    let prefix = [8, 9]
+    append_prefix(prefix, values)
+    assert identical(prefix, [8, 9, 3, -1, 2, -1])
+    append_prefix(values, values)
+    assert identical(values, [3, -1, 2, -1, 3, -1, 2, -1])
+}
+
+test fn fresh_copy_and_sort_compose_proved_content_contracts() {
+    copy_cases()
+}

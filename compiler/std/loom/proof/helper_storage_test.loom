@@ -16,3 +16,29 @@ test fn private_summary_fields_do_not_imply_distinct_allocations() {
     let c = get(single.extents, 2)
     assert c.private_storage && c.allocated && !extent_overlap(a, c)
 }
+
+test fn selective_content_havoc_uses_allocation_time_not_different_ids() {
+    let entry = State {
+        locals = []
+        facts = []
+        extents = []
+        observations = []
+    }
+    var state = list_bounds(Value.Record([Value.List(10), Value.List(11)]), entry)
+    state = fresh_storage(Value.List(12), state)
+    state = with_contents(10, 20, with_contents(11, 21, with_contents(12, 22, state)))
+    let output_write = forget_modified_elements(state, [12])
+    assert get(output_write.extents, 0).contents == 20
+    assert get(output_write.extents, 1).contents == 21
+    assert get(output_write.extents, 2).contents == -1
+    let input_write = forget_modified_elements(state, [10])
+    assert get(input_write.extents, 0).contents == -1
+    assert get(input_write.extents, 1).contents == -1
+    assert get(input_write.extents, 2).contents == 22
+    let unknown = forget_modified_elements(state, [-1])
+    assert get(unknown.extents, 0).contents == -1
+    assert get(unknown.extents, 1).contents == -1
+    assert get(unknown.extents, 2).contents == -1
+    let later_alias = forget_modified_elements(list_bounds(Value.List(13), state), [13])
+    assert get(later_alias.extents, 2).contents == -1
+}

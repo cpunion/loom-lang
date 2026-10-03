@@ -57,10 +57,21 @@ fn with_cells(identity Int, cells List[ListCell], state State) State {
 }
 
 fn forget_elements(state State) State {
+    let modified = new[Int]()
+    push(modified, -1)
+    forget_modified_elements(state, modified)
+}
+
+fn forget_modified_elements(state State, modified List[Int]) State {
     let extents = new[ListExtent]()
     var index = 0
     while index < length(state.extents) {
-        push(extents, element_contents(get(state.extents, index), -1, new[ListCell]()))
+        let extent = get(state.extents, index)
+        push(extents, if extent_modified(extent, state, modified) {
+                element_contents(extent, -1, new[ListCell]())
+            } else {
+                extent
+            })
         index = index + 1
     }
     State {
