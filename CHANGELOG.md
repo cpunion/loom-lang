@@ -5,6 +5,11 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add source `std.sync.mutex` with lexical `MustScope`/`NoSuspend` guards,
+  normal/fault release and rejected same-thread reentrance. Guards cannot be
+  copied, reconstructed from fields or held across await. This does not yet
+  expose general parallel workers.
+
 - Add compile-time `std.build.target` queries from the actual backend. Bind
   observed properties to checked artifacts, cache reuse and analysis; reject
   mismatched emission targets without adding runtime platform queries.

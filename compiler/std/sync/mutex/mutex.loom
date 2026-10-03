@@ -1,0 +1,65 @@
+import std.list.new
+import std.resource.Dispose
+import std.resource.MustScope
+import std.resource.NoSuspend
+
+pub record Mutex {
+    state State
+}
+
+record State {
+    key List[Int]
+}
+
+pub record Guard {
+    held Held
+}
+
+// The private payload is also a resource: projecting it cannot manufacture a
+// second fresh Guard for the same native acquisition.
+record Held {
+    token Int
+}
+
+intrinsic fn mutex_lock(key List[Int]) Int
+
+intrinsic fn mutex_unlock(token Int) Bool
+
+pub fn new() Mutex {
+    Mutex {
+        state = State {
+            key = std.list.new[Int]()
+        }
+    }
+}
+
+pub fn lock(mutex Mutex) Guard {
+    Guard {
+        held = Held {
+            token = mutex_lock(mutex.state.key)
+        }
+    }
+}
+
+impl MustScope for Guard {
+}
+
+impl NoSuspend for Guard {
+}
+
+impl Dispose for Guard {
+    fn dispose(self Guard) {
+    }
+}
+
+impl MustScope for Held {
+}
+
+impl NoSuspend for Held {
+}
+
+impl Dispose for Held {
+    fn dispose(self Held) {
+        discard mutex_unlock(self.token)
+    }
+}

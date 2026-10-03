@@ -168,6 +168,8 @@ pub enum Primitive {
     TaskFileOpenResult,
     FileAbort,
     MonotonicNs,
+    MutexLock,
+    MutexUnlock,
 }
 
 pub mod checked {

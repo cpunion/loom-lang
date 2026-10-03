@@ -32,7 +32,7 @@ impl Access {
         }
     }
 
-    fn acquire(&self) {
+    pub(super) fn acquire(&self) {
         if self.try_acquire() {
             return;
         }
@@ -54,7 +54,7 @@ impl Access {
         });
     }
 
-    fn release(&self) {
+    pub(super) fn release(&self) {
         *self
             .held
             .lock()

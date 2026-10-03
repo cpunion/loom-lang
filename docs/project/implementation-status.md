@@ -356,6 +356,14 @@ Cleanup drains after secondary faults while retaining the first diagnostic;
 OOM/external termination offer no guarantee. Scoped resources cannot transfer
 into Tasks. See [cleanup](../../compiler/README.md#lexical-cleanup).
 
+Source `std.sync.mutex` provides shared mutex identities and lexical
+`MustScope`/`NoSuspend` guards. Normal exit, returns and faults release the lock;
+same-thread reentrance faults. Private resource payloads prevent reconstructing
+duplicate guards through field projection. Native tests exercise cross-thread
+updates and moving GC; source tests cover O0/O2 cleanup and rejected guard use.
+This does not yet supply a general worker executor or cancellation of a blocked
+worker acquisition. See [scoped mutexes](../../compiler/README.md#scoped-mutexes).
+
 Stackless Tasks lower into typed state machines and GC-traced frames, using one
 owner-thread ready queue. Only needed suspension state spills. One-shot handles
 transfer through functions, callbacks, dyn methods and aggregates. Outcomes,

@@ -25,6 +25,7 @@ mod frame_roots_abi;
 #[cfg(test)]
 mod frame_roots_tests;
 mod fs_ops;
+mod mutex;
 pub mod native;
 mod process_io;
 mod shared_access;
@@ -169,6 +170,7 @@ struct Heap {
     stress: bool,
     list_views: Vec<ListView>,
     access: shared_access::Locks,
+    mutexes: shared_access::Locks,
 }
 
 const MIN_THRESHOLD: usize = 64 * 1024;
@@ -190,6 +192,7 @@ impl Default for Heap {
                 == Some(std::ffi::OsStr::new("1")),
             list_views: Vec::new(),
             access: shared_access::Locks::default(),
+            mutexes: shared_access::Locks::default(),
         }
     }
 }
@@ -433,9 +436,11 @@ fn collect_roots(roots: &[*mut RootFrame]) {
             previous,
             list_views,
             access,
+            mutexes,
             ..
         } = &mut *heap;
         shared_access::relocate(access, previous);
+        shared_access::relocate(mutexes, previous);
         for view in list_views.iter() {
             if let Some(object) = previous.get(&(view.source as usize)) {
                 if !object.forwarded.is_null() {

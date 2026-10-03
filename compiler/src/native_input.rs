@@ -1025,6 +1025,14 @@ impl Converter<'_> {
                 {
                     return Err("list capacity allocation requires Int and returns List".into());
                 }
+                if operation == Primitive::MutexLock
+                    && (ty != Type::Int
+                        || !matches!(arguments[0].ty, Type::List(id) if self.program.lists[id] == Type::Int))
+                {
+                    return Err(
+                        "mutex acquisition requires List[Int] identity and Int token".into(),
+                    );
+                }
                 if operation == Primitive::ListPop {
                     match arguments[0].ty {
                         Type::List(id) if self.program.lists[id] == ty => {}
@@ -1122,6 +1130,7 @@ impl Converter<'_> {
                     | Primitive::PathEntryKind => Some((&[Type::Text], Type::Int)),
                     Primitive::PathRename => Some((&[Type::Text, Type::Text], Type::Int)),
                     Primitive::EnvGet => Some((&[Type::Text, Type::Bytes], Type::Int)),
+                    Primitive::MutexUnlock => Some((&[Type::Int], Type::Bool)),
                     _ => None,
                 };
                 if let Some((params, result)) = signature {
@@ -1527,6 +1536,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_file_open_result" => P::TaskFileOpenResult,
         "file_abort" => P::FileAbort,
         "clock_monotonic_ns" => P::MonotonicNs,
+        "mutex_lock" => P::MutexLock,
+        "mutex_unlock" => P::MutexUnlock,
         "cleanup_each" => P::CleanupEach,
         _ => return Err("unknown private checked runtime operation".into()),
     })
@@ -1593,7 +1604,9 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskFailure
         | P::TaskCancelBegin
         | P::FaultText
-        | P::TaskRun => 1,
+        | P::TaskRun
+        | P::MutexLock
+        | P::MutexUnlock => 1,
         P::TaskWaitTimer | P::TaskBytesResult | P::TaskWaitFileClose | P::FileAbort => 1,
         P::TextByte
         | P::TextConcat

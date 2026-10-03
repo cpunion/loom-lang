@@ -173,7 +173,8 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::TlsProtocol
         | Primitive::TlsPeerCertificate
         | Primitive::DirectoryRead
-        | Primitive::PathCanonical => true,
+        | Primitive::PathCanonical
+        | Primitive::MutexLock => true,
         Primitive::TaskFailure
         | Primitive::TaskNextTerminalFailure
         | Primitive::TaskCancelBegin
@@ -257,7 +258,8 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::PathRename
         | Primitive::FileRemove
         | Primitive::DirectoryRemove
-        | Primitive::PathEntryKind => false,
+        | Primitive::PathEntryKind
+        | Primitive::MutexUnlock => false,
     }
 }
 

@@ -1,0 +1,20 @@
+import std.sync.mutex.Mutex
+import std.sync.mutex.new
+import std.sync.mutex.lock
+import std.list.get
+import std.list.set
+import std.io.write_text
+
+fn increment(mutex Mutex, values List[Int]) {
+    scoped guard = lock(mutex)
+    set(values, 0, get(values, 0) + 1)
+}
+
+fn main() {
+    let mutex = new()
+    let values = [0]
+    increment(mutex, values)
+    increment(mutex, values)
+    assert get(values, 0) == 2
+    discard write_text("scoped mutex released\n")
+}
