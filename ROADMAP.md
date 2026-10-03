@@ -98,12 +98,13 @@ through loops, with per-invocation `old(length(values))` observations. This is
 groundwork for the sorting story below. Bounded indexed observations now cover
 read/write relations, immutable entry-element snapshots and conservative alias
 invalidation. Length-preserving loops can retain proved element bounds and
-storage conservation relations through induction; this is not quantified
-ordering, permutation or general heap reasoning. Bounded call-write analysis
+storage conservation relations through induction. Bounded call-write analysis
 preserves untouched observations across extracted helpers without assuming
 unknown indices or handles are disjoint.
 Whole `List[Int]` logical entry values can now be queried at post-state indices
-without runtime copying; quantified ordering/permutation induction remains open.
+without runtime copying. Bounded pure scans, array/histogram laws and checked
+loop candidates now prove ordering and permutation for an ordinary in-place sort.
+General content induction and constrained shared-alias preservation remain open.
 
 Use these complete acceptance stories, rather than a count of syntax features:
 

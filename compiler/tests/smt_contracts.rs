@@ -22,6 +22,17 @@ fn quantified_contracts_reject_wrong_algorithms_and_unexecuted_safety_facts() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");
     let example = include_str!("../examples/smt_contracts/quantified.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, example).unwrap();
+    success(&check());
     for program in [
         example.replace("if left > right", "if left < right"),
         example.replace("set(values, index, left)", "set(values, index, right)"),
@@ -59,7 +70,7 @@ ensures result
         .to_owned(),
     ] {
         fs::write(&source, &program).unwrap();
-        let output = common::loom(&["check", package.path().to_str().unwrap()]);
+        let output = check();
         assert!(
             !output.status.success(),
             "unsound quantified proof: {program}"
@@ -273,6 +284,7 @@ fn solver_contracts_check_and_compile_without_a_runtime_solver() {
         );
         let emitted = fs::read_to_string(&ir).unwrap();
         assert!(!emitted.contains("process_capture"));
+        assert!(!emitted.contains("loom_bag") && !emitted.contains("proof_all"));
         success(
             &Command::new(&executable)
                 .env("PATH", "")
