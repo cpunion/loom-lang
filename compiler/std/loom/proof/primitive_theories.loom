@@ -45,6 +45,9 @@ fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Va
 // Check this operation only; composition has checked each operand under the
 // right guard. A hypothetical expression never establishes its own safety fact.
 fn intrinsic_defined(expr Expr, state State) Result[Bool, Text] {
+    if count_expression(expr) {
+        return Result.Ok(true)
+    }
     if expr.text == "list_get" {
         return element_bounds(expr, state)
     }

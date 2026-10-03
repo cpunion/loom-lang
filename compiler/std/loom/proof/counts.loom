@@ -1,0 +1,186 @@
+fn count_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "proof_count" && length(value.children) == 2
+}
+
+fn scan_tail(value Expr) Expr {
+    if value.kind == ExprKind.Return && length(value.children) == 1 {
+        return get(value.children, 0)
+    }
+    value
+}
+
+fn has_bound(value Expr, identity Int) Bool {
+    if bound_expression(value) && value.index == identity {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if has_bound(get(value.children, index), identity) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn counted_scan(context Expansion, source Expr, condition Expr, end Expr, identity Int) Result[Expr, Text] {
+    if condition.kind != ExprKind.Binary || condition.text != "==" || !list_length_expression(end) {
+        return Result.Err("count proof needs an equality scan over the complete List")
+    }
+    var read = get(condition.children, 0)
+    var needle = get(condition.children, 1)
+    if !list_read_expression(read) {
+        read = get(condition.children, 1)
+        needle = get(condition.children, 0)
+    }
+    if !list_read_expression(read) || read.ty != 1 || has_bound(needle, identity) ||
+    !entry_list_type(context.program, get(read.children, 0).ty, 0) ||
+    !bound_expression(get(read.children, 1)) || get(read.children, 1).index != identity ||
+    !exact_expression(get(read.children, 0), get(end.children, 0)) {
+        return Result.Err("count proof needs one Int element and a stable needle")
+    }
+    Result.Ok(proof_expr(source, ExprKind.Intrinsic, 1, "proof_count", -1,
+            proof_children(get(read.children, 0), needle)))
+}
+
+fn counted_value(expr Expr, state State) Result[Value, Text] {
+    let receiver = pure(get(expr.children, 0), state)?
+    let size = list_value_extent(receiver, state)?
+    let contents = match receiver {
+        Value.List(identity) => list_state(identity, state)?.contents
+        Value.EntryList(_, contents) => contents
+        _ => -1
+    }
+    if contents < 0 {
+        return Result.Err("List count proof needs an enabled array backend")
+    }
+    let inputs = new[IntegerTerm]()
+    push(inputs, IntegerTerm.Linear(size))
+    push(inputs, integer_term(pure(get(expr.children, 1), state)?)?)
+    Result.Ok(Value.Nonlinear(IntegerTerm.Count(contents, inputs)))
+}
+
+// Equal lengths and equal occurrence counts for every element of either input
+// are equivalent to equality of their finite histograms. Preserve the length
+// relation explicitly; no element or algorithm names confer proof evidence.
+fn bag_from_counts(value Predicate) Option[Predicate] {
+    match value {
+        Predicate.Forall(identity, start, end, conditions) => {
+            if length(start.terms) != 0 || compare(start.constant, integer(0)) != 0 || length(conditions) != 1 {
+                return Option.None
+            }
+            match get(conditions, 0) {
+                Predicate.IntegerCompare(relation, left, right) => {
+                    if relation != "==" {
+                        return Option.None
+                    }
+                    match left {
+                        IntegerTerm.Count(before, first) => match right {
+                            IntegerTerm.Count(after, second) => {
+                                if length(first) != 2 || length(second) != 2 {
+                                    return Option.None
+                                }
+                                let budget = new[Int]()
+                                push(budget, 512)
+                                if !same_integer_term(get(first, 1), get(second, 1), budget) {
+                                    return Option.None
+                                }
+                                match get(first, 0) {
+                                    IntegerTerm.Linear(size) => match get(second, 0) {
+                                        IntegerTerm.Linear(count) => match get(first, 1) {
+                                            IntegerTerm.Select(array, index) => {
+                                                if !same_terms(index.terms, variable(identity).terms) ||
+                                                compare(index.constant, integer(0)) != 0 {
+                                                    return Option.None
+                                                }
+                                                let extent = if array == before {
+                                                    size
+                                                } else {
+                                                    count
+                                                }
+                                                if (array != before && array != after) ||
+                                                !same_terms(end.terms, extent.terms) || compare(end.constant, extent.constant) != 0 {
+                                                    return Option.None
+                                                }
+                                                return Option.Some(Predicate.BagEqual(before, size, after, count))
+                                            }
+                                            _ => {
+                                            }
+                                        }
+                                        _ => {
+                                        }
+                                    }
+                                    _ => {
+                                    }
+                                }
+                            }
+                            _ => {
+                            }
+                        }
+                        _ => {
+                        }
+                    }
+                }
+                _ => {
+                }
+            }
+        }
+        _ => {
+        }
+    }
+    Option.None
+}
+
+fn bag_length(value Predicate, bag Predicate) Bool {
+    match value {
+        Predicate.Compare(relation, term) => match bag {
+            Predicate.BagEqual(_, size, _, count) => {
+                let delta = add(size, scale(count, integer(-1)))
+                relation == "==" && ((same_terms(term.terms, delta.terms) && compare(term.constant, delta.constant) == 0) ||
+                    (opposite_terms(term.terms, delta.terms) && compare(term.constant, negate(delta.constant)) == 0))
+            }
+            _ => false
+        }
+        _ => false
+    }
+}
+
+fn bag_conjunction(first Predicate, second Predicate) Predicate {
+    match bag_from_counts(second) {
+        Option.Some(bag) => {
+            if bag_length(first, bag) {
+                return Predicate.And(predicates(first, bag))
+            }
+        }
+        Option.None => {
+        }
+    }
+    match bag_from_counts(first) {
+        Option.Some(bag) => {
+            if bag_length(second, bag) {
+                return Predicate.And(predicates(bag, second))
+            }
+        }
+        Option.None => {
+        }
+    }
+    Predicate.And(predicates(first, second))
+}
+
+fn bag_fact(value Predicate, facts List[Predicate]) Predicate {
+    match bag_from_counts(value) {
+        Option.Some(bag) => match bag {
+            Predicate.BagEqual(_, first, _, second) => {
+                let equal = Predicate.Compare("==", add(first, scale(second, integer(-1))))
+                if holds(equal, facts) {
+                    return bag
+                }
+            }
+            _ => {
+            }
+        }
+        Option.None => {
+        }
+    }
+    value
+}

@@ -40,6 +40,7 @@ test fn entry_lists_do_not_reuse_a_locals_index_as_an_observation_identity() {
         active = []
         checks = []
         observations = [42]
+        binders = [0]
         origins = [ObservationOrigin {
                 source = 0
                 identity = 7

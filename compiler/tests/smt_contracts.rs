@@ -18,6 +18,61 @@ ensures get(values, observed) == old(get(values, observed))
 "#;
 
 #[test]
+fn quantified_contracts_reject_wrong_algorithms_and_unexecuted_safety_facts() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("main.loom");
+    let example = include_str!("../examples/smt_contracts/quantified.loom");
+    for program in [
+        example.replace("if left > right", "if left < right"),
+        example.replace("set(values, index, left)", "set(values, index, right)"),
+        example.replace("set(values, second, before)", "set(values, second, after)"),
+        example.replace(
+            "get(values, index - 1) > get(values, index)",
+            "get(values, index - 1) > get(values, index + 1)",
+        ),
+        example.replace("count = count + 1", "count = count + 2"),
+        example.replace(
+            "    values\n}",
+            "    if length(values) > 1 {\n        set(values, 0, 99)\n    }\n    values\n}",
+        ),
+        r#"import std.list.length
+import std.list.get
+
+fn early_false(values List[Int]) Bool {
+    var index = 0
+    while index < length(values) {
+        if get(values, index + 1) == 0 {
+            return false
+        }
+        index = index + 1
+    }
+    true
+}
+
+fn impossible(values List[Int]) Bool
+requires !early_false(values)
+ensures result
+{
+    false
+}
+"#
+        .to_owned(),
+    ] {
+        fs::write(&source, &program).unwrap();
+        let output = common::loom(&["check", package.path().to_str().unwrap()]);
+        assert!(
+            !output.status.success(),
+            "unsound quantified proof: {program}"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved") || error.contains("scan"),
+            "unexpected failure: {error}"
+        );
+    }
+}
+
+#[test]
 fn heap_versions_reject_wrong_writes_alias_interference_and_undefined_reads() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");

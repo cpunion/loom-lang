@@ -1,0 +1,210 @@
+// Derive bounded quantification from checked source control flow, never from a
+// helper's name or declared result. Runtime helpers keep their ordinary loops.
+fn scan_block(value Expr) Bool {
+    var index = 0
+    while index < length(value.children) {
+        if get(value.children, index).kind == ExprKind.While {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn scan_mentions(value Expr, local Int) Bool {
+    if value.kind == ExprKind.Local && value.index == local {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if scan_mentions(get(value.children, index), local) {
+            return true
+        }
+        index = index + 1
+    }
+    false
+}
+
+fn scan_unit_step(value Expr, local Int) Bool {
+    if value.kind != ExprKind.Assign || value.index != local || length(value.children) != 1 {
+        return false
+    }
+    let step = get(value.children, 0)
+    if step.kind != ExprKind.Binary || step.text != "+" || length(step.children) != 2 {
+        return false
+    }
+    let first = get(step.children, 0)
+    let second = get(step.children, 1)
+    first.kind == ExprKind.Local && first.index == local && second.kind == ExprKind.Integer && second.text == "1"
+}
+
+fn scan_return(value Expr, truth Bool) Bool {
+    if value.kind == ExprKind.Block && length(value.children) == 1 {
+        return scan_return(get(value.children, 0), truth)
+    }
+    if value.kind == ExprKind.Return && length(value.children) == 1 {
+        return scan_return(get(value.children, 0), truth)
+    }
+    is_bool(value, truth)
+}
+
+fn scan_binder(context Expansion) Int {
+    let identity = get(context.binders, 0)
+    set(context.binders, 0, identity + 1)
+    -1 - identity
+}
+
+fn quantified_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && (value.text == "proof_all" || value.text == "proof_scan_checks") && length(value.children) == 3
+}
+
+fn bound_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "proof_bound" && length(value.children) == 0
+}
+
+fn quantified_value(source Expr, identity Int, start Expr, end Expr, condition Expr) Expr {
+    let children = proof_children(start, end)
+    push(children, condition)
+    proof_expr(source, ExprKind.Intrinsic, 2,
+        if source.text == "proof_scan_checks" {
+            "proof_scan_checks"
+        } else {
+            "proof_all"
+        }, identity, children)
+}
+
+fn rename_bound(value Expr, before Int, after Int) Expr {
+    if bound_expression(value) && value.index == before {
+        return proof_expr(value, value.kind, value.ty, value.text, after, value.children)
+    }
+    if quantified_expression(value) && value.index == before {
+        return value
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, rename_bound(get(value.children, index), before, after))
+        index = index + 1
+    }
+    proof_expr(value, value.kind, value.ty, value.text, value.index, children)
+}
+
+fn scan_checks(context Expansion, inner Expansion, source Expr, guard Expr,
+    identity Int, start Expr, end Expr) Result[Bool, Text] {
+    var index = 0
+    while index < length(inner.checks) {
+        let check = get(inner.checks, index)
+        let condition = if check.required {
+            check.value
+        } else {
+            proof_expr(check.value, ExprKind.Binary, 2, "==", -1, proof_children(check.value, check.value))
+        }
+        if length(context.checks) >= 256 {
+            return Result.Err("helper evaluation budget exhausted")
+        }
+        let checks = quantified_value(source, identity, start, end, guarded_value(check.guard, condition))
+        push(context.checks, Evaluation {
+                guard = guard
+                value = proof_expr(checks, checks.kind, checks.ty, "proof_scan_checks", checks.index, checks.children)
+                required = true
+                universal = true
+            })
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+fn scan_context(context Expansion) Expansion {
+    Expansion {
+        program = context.program
+        list_lengths = context.list_lengths
+        budget = context.budget
+        active = context.active
+        checks = new[Evaluation]()
+        observations = context.observations
+        origins = context.origins
+        binders = context.binders
+    }
+}
+
+fn expanded_quantifier(context Expansion, value Expr, guard Expr,
+    bindings List[ExpansionBinding], locals List[Local], self Bool,
+    calls Int, depth Int) Result[Expr, Text] {
+    let identity = scan_binder(context)
+    let start = expanded(context, get(value.children, 0), guard, bindings, locals, self, calls, depth + 1)?
+    let end = expanded(context, get(value.children, 1), guard, bindings, locals, self, calls, depth + 1)?
+    let inner = scan_context(context)
+    let condition = expanded(inner, rename_bound(get(value.children, 2), value.index, identity),
+        proof_bool(value, true), bindings, locals, self, calls, depth + 1)?
+    discard scan_checks(context, inner, value, guard, identity, start, end)?
+    Result.Ok(quantified_value(value, identity, start, end, condition))
+}
+
+fn expanded_scan(context Expansion, value Expr, guard Expr,
+    bindings List[ExpansionBinding], locals List[Local], self Bool,
+    calls Int, depth Int) Result[Expr, Text] {
+    var position = 0
+    while position < length(value.children) && get(value.children, position).kind == ExprKind.Let {
+        discard expanded_binding(context, get(value.children, position), guard,
+            bindings, locals, self, calls, depth + 1)?
+        position = position + 1
+    }
+    if position + 2 != length(value.children) {
+        return Result.Err("pure loop proof needs a bounded unit-step Boolean scan")
+    }
+    let tail = scan_tail(get(value.children, position + 1))
+    let counting = tail.kind == ExprKind.Local && tail.ty == 1
+    if !counting && !scan_return(tail, true) {
+        return Result.Err("pure scan must return its Boolean result or zero-based count")
+    }
+    let iteration = get(value.children, position)
+    if iteration.kind != ExprKind.While || length(iteration.children) != 2 {
+        return Result.Err("pure loop proof needs one bounded scan")
+    }
+    let limit_test = get(iteration.children, 0)
+    let body = get(iteration.children, 1)
+    if limit_test.kind != ExprKind.Binary || limit_test.text != "<" || length(limit_test.children) != 2 ||
+    body.kind != ExprKind.Block || length(body.children) != 2 {
+        return Result.Err("pure loop proof needs an exclusive upper bound")
+    }
+    let cursor = get(limit_test.children, 0)
+    if cursor.kind != ExprKind.Local || cursor.ty != 1 ||
+    scan_mentions(get(limit_test.children, 1), cursor.index) ||
+    !scan_unit_step(get(body.children, 1), cursor.index) {
+        return Result.Err("pure loop proof needs a stable bound and unit-step cursor")
+    }
+    let branch = get(body.children, 0)
+    if branch.kind != ExprKind.If || length(branch.children) != 2 {
+        return Result.Err("pure Boolean scan must return false on a failed element")
+    }
+    if counting {
+        let arm = get(branch.children, 1)
+        let initial = expanded(context, tail, guard, bindings, locals, self, calls, depth + 1)?
+        if tail.index == cursor.index || arm.kind != ExprKind.Block || length(arm.children) != 1 ||
+        !scan_unit_step(get(arm.children, 0), tail.index) || initial.kind != ExprKind.Integer || initial.text != "0" ||
+        scan_mentions(get(branch.children, 0), tail.index) || scan_mentions(get(limit_test.children, 1), tail.index) {
+            return Result.Err("count scan needs a zero-based independent accumulator")
+        }
+    } else if !scan_return(get(branch.children, 1), false) {
+        return Result.Err("pure Boolean scan must return false on a failed element")
+    }
+    let start = expanded(context, cursor, guard, bindings, locals, self, calls, depth + 1)?
+    let end = expanded(context, get(limit_test.children, 1), guard, bindings, locals, self, calls, depth + 1)?
+    let identity = scan_binder(context)
+    let items = clone(bindings)
+    push(items, ExpansionBinding {
+            local = cursor.index
+            value = proof_expr(cursor, ExprKind.Intrinsic, 1, "proof_bound", identity, new[Expr]())
+        })
+    let inner = scan_context(context)
+    let condition = expanded(inner, get(branch.children, 0), proof_bool(value, true),
+        items, locals, self, calls, depth + 1)?
+    discard scan_checks(context, inner, value, guard, identity, start, end)?
+    if counting {
+        if start.kind != ExprKind.Integer || start.text != "0" {
+            return Result.Err("count scan must start at the beginning of the List")
+        }
+        return counted_scan(context, value, condition, end, identity)
+    }
+    Result.Ok(quantified_value(value, identity, start, end, proof_not(condition)))
+}

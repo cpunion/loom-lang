@@ -78,7 +78,7 @@ fn numeric(operator Text, a Linear, b Linear) Result[Value, Text] {
 
 fn logical(operator Text, a Predicate, b Predicate) Result[Value, Text] {
     if operator == "&&" {
-        return Result.Ok(Value.Boolean(Predicate.And(predicates(a, b))))
+        return Result.Ok(Value.Boolean(bag_conjunction(a, b)))
     }
     if operator == "||" {
         return Result.Ok(Value.Boolean(Predicate.Or(predicates(a, b))))
@@ -143,6 +143,15 @@ fn binary(operator Text, a Value, b Value) Result[Value, Text] {
 }
 
 fn pure(expr Expr, state State) Result[Value, Text] {
+    if bound_expression(expr) {
+        return Result.Ok(Value.Number(variable(expr.index)))
+    }
+    if quantified_expression(expr) {
+        return Result.Ok(Value.Boolean(quantified_predicate(expr, state)?))
+    }
+    if count_expression(expr) {
+        return counted_value(expr, state)
+    }
     if observation_expression(expr) {
         match observation_value(expr, proof_bool(expr, true), state) {
             Option.Some(value) => {
@@ -251,6 +260,12 @@ fn bounded(value Value, state State) State {
 // Postcondition arithmetic has not executed. Establish definedness from facts;
 // unlike body arithmetic, never assume a hypothetical overflow check passed.
 fn defined(expr Expr, state State) Result[Bool, Text] {
+    if bound_expression(expr) {
+        return Result.Ok(true)
+    }
+    if quantified_expression(expr) {
+        return quantified_defined(expr, state)
+    }
     if observation_expression(expr) {
         match observation_value(expr, proof_bool(expr, true), state) {
             Option.Some(_) => {

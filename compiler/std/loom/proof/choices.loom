@@ -107,7 +107,12 @@ fn lifted_choices(value Expr, budget List[Int], depth Int) Result[Expr, Text] {
     let children = new[Expr]()
     var index = 0
     while index < shape.arity {
-        push(children, lifted_choices(get(value.children, index), budget, depth + 1)?)
+        let child = lifted_choices(get(value.children, index), budget, depth + 1)?
+        push(children, if quantified_expression(value) && index == 2 {
+                choice_predicate(child, budget, depth + 1)?
+            } else {
+                child
+            })
         index = index + 1
     }
     if shape.flow == OperandFlow.Choice {

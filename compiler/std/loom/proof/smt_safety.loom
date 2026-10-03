@@ -4,6 +4,9 @@ fn solver_defined(proof ProofQuery, expr Expr, state State, depth Int) Result[Bo
     if depth <= 0 {
         return Result.Err("SMT safety obligation depth exhausted")
     }
+    if quantified_expression(expr) {
+        return solver_quantified_defined(proof, expr, state, depth)
+    }
     let failure = match defined(expr, state) {
         Result.Ok(_) => {
             return Result.Ok(true)

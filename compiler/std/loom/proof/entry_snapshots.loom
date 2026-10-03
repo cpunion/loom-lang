@@ -49,6 +49,17 @@ fn entry_list_value(context Expansion, value Expr) Expr {
 // Snapshot mutable observations, not their surrounding arithmetic. This keeps
 // short-circuit guards and eager helper-argument definedness in the contract.
 fn entry_reads(value Expr) Expr {
+    if count_expression(value) {
+        let receiver = get(value.children, 0)
+        let snapshot = proof_expr(receiver, ExprKind.Intrinsic, receiver.ty, "entry_list", -1,
+            snapshot_child(entry_reads(receiver)))
+        return proof_expr(value, value.kind, value.ty, value.text, value.index,
+            proof_children(snapshot, entry_reads(get(value.children, 1))))
+    }
+    if quantified_expression(value) {
+        return quantified_value(value, value.index, entry_reads(get(value.children, 0)),
+            entry_reads(get(value.children, 1)), entry_quantified_reads(get(value.children, 2)))
+    }
     let children = new[Expr]()
     var index = 0
     while index < length(value.children) {
@@ -68,6 +79,32 @@ fn entry_reads(value Expr) Expr {
         value.index, children)
 }
 
+fn snapshot_child(value Expr) List[Expr] {
+    let values = new[Expr]()
+    push(values, value)
+    values
+}
+
+fn entry_quantified_reads(value Expr) Expr {
+    if list_read_expression(value) {
+        let receiver = get(value.children, 0)
+        let snapshot = proof_expr(receiver, ExprKind.Intrinsic, receiver.ty, "entry_list", -1,
+            snapshot_child(entry_reads(receiver)))
+        return proof_expr(value, value.kind, value.ty, value.text, value.index,
+            proof_children(snapshot, entry_quantified_reads(get(value.children, 1))))
+    }
+    if count_expression(value) || quantified_expression(value) {
+        return entry_reads(value)
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, entry_quantified_reads(get(value.children, index)))
+        index = index + 1
+    }
+    proof_expr(value, value.kind, value.ty, value.text, value.index, children)
+}
+
 fn expanded_entry(context Expansion, value Expr, guard Expr,
     bindings List[ExpansionBinding], locals List[Local], self Bool,
     calls Int, depth Int) Result[Expr, Text] {
@@ -79,6 +116,7 @@ fn expanded_entry(context Expansion, value Expr, guard Expr,
         checks = new[Evaluation]()
         observations = context.observations
         origins = context.origins
+        binders = context.binders
     }
     let observed = expanded(entry, get(value.children, 0), proof_bool(value, true),
         bindings, locals, self, calls, depth + 1)?
@@ -86,7 +124,7 @@ fn expanded_entry(context Expansion, value Expr, guard Expr,
     while index < length(entry.checks) {
         let check = get(entry.checks, index)
         discard evaluated(context, proof_and(guard, entry_reads(check.guard)),
-            entry_reads(check.value), check.required)?
+            entry_reads(check.value), check.required, check.universal)?
         index = index + 1
     }
     Result.Ok(if entry_list_type(context.program, value.ty, 0) {
