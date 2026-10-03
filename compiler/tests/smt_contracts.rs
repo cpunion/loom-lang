@@ -31,8 +31,25 @@ fn quantified_contracts_reject_wrong_algorithms_and_unexecuted_safety_facts() {
             cache.to_str().unwrap(),
         ])
     };
-    fs::write(&source, example).unwrap();
-    success(&check());
+    for program in [
+        example.to_owned(),
+        example
+            .replace(
+                "fn sort(values",
+                "record Batch {\n    values List[Int]\n}\n\nfn sort(values",
+            )
+            .replace(
+                "    var end = length(values)",
+                "    let batch = Batch { values = values }\n    var end = length(values)",
+            )
+            .replace(
+                "    values\n}\n\nfn unchanged_order",
+                "    return batch.values\n}\n\nfn unchanged_order",
+            ),
+    ] {
+        fs::write(&source, program).unwrap();
+        success(&check());
+    }
     for program in [
         example.replace("if left > right", "if left < right"),
         example.replace("set(values, index, left)", "set(values, index, right)"),
@@ -42,6 +59,17 @@ fn quantified_contracts_reject_wrong_algorithms_and_unexecuted_safety_facts() {
             "get(values, index - 1) > get(values, index + 1)",
         ),
         example.replace("count = count + 1", "count = count + 2"),
+        example.replace(
+            "    var end = length(values)",
+            "    if length(values) > 1 {\n        return values\n    }\n    var end = length(values)",
+        ),
+        example
+            .replace("    var end = length(values)", "    var selected = values\n    var end = length(values)")
+            .replace("    values\n}\n\nfn unchanged_order", "    selected = [9]\n    selected\n}\n\nfn unchanged_order"),
+        example.replace(
+            "    var end = length(values)",
+            "    defer {\n        if length(values) > 1 {\n            set(values, 0, 99)\n        }\n    }\n    var end = length(values)",
+        ),
         example.replace(
             "    values\n}",
             "    if length(values) > 1 {\n        set(values, 0, 99)\n    }\n    values\n}",

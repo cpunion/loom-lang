@@ -63,9 +63,9 @@ ensures permutation(values, old(values))
     }
 }
 
-fn sort(values List[Int])
-ensures ordered(values)
-ensures permutation(values, old(values))
+fn sort(values List[Int]) List[Int]
+ensures ordered(result)
+ensures permutation(result, old(values))
 {
     var end = length(values)
     while end > 1 {
@@ -81,6 +81,7 @@ ensures permutation(values, old(values))
         }
         end = end - 1
     }
+    values
 }
 
 fn unchanged_order(values List[Int]) List[Int]
@@ -94,16 +95,17 @@ fn quantified_cases() {
     let alias = values
     reverse(values)
     assert permutation(alias, [3, -1, 2, -1])
-    sort(values)
+    let sorted = sort(values)
+    assert ordered(sorted) && permutation(sorted, [3, -1, 2, -1])
     assert alias[0] == -1 && alias[1] == -1 && alias[2] == 2 && alias[3] == 3
     assert occurrences(alias, -1) == 2
     assert ordered(unchanged_order(alias))
     swap(values, 0, 0)
     let empty List[Int] = []
-    sort(empty)
+    discard sort(empty)
     reverse(empty)
     assert ordered(empty) && permutation(empty, [])
-    sort([7])
+    assert ordered(sort([7]))
 }
 
 test fn sorting_and_permutation_are_proved_and_run_as_ordinary_code() {

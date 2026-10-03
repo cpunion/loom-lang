@@ -391,14 +391,15 @@ fn loop_assumptions(head State, candidates List[LoopCandidate]) Result[State, Te
 fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], depth Int) Result[List[Outcome], Text] {
     let guard = get(expr.children, 0)
     let body = get(expr.children, 1)
-    let observed = loop_query_views(proof, proof.function.postconditions, entry)
+    let clauses = loop_postconditions(proof.function)
+    let observed = loop_query_views(proof, clauses, entry)
     var candidates = loop_candidates(proof, loop_candidate_guard(proof, guard), writes, observed)?
-    loop_quantified_candidates(proof, candidates, writes, guard, observed)
+    loop_quantified_candidates(proof, clauses, candidates, writes, guard, observed)
     var storage = loop_extents(proof, expr, observed, writes)?
     if length(storage.extents) != 0 && !elements_preserving(proof.program, expr) {
         if extent_preserving(proof.program, expr) {
             storage = loop_element_head(proof, storage)?
-            discard loop_element_candidates(proof, candidates, entry)?
+            discard loop_element_candidates(proof, clauses, candidates, entry)?
         } else {
             // Changing extents can invalidate entry indices. Do not create
             // hypothetical in-bounds cells or infer an opaque call's effects.
@@ -406,7 +407,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
         }
     }
     var head = loop_head(proof, writes, storage)
-    head = loop_query_views(proof, proof.function.postconditions, head)
+    head = loop_query_views(proof, clauses, head)
     candidates = available_loop_candidates(candidates, head)
     while true {
         discard loop_step(proof)?

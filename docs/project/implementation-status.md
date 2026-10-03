@@ -303,8 +303,10 @@ and occurrence counts. Finite histogram laws compose with array stores and
 verified call summaries; loop candidates derived from quantified postconditions
 must pass entry/backedge proofs and rechecking after removal. The
 [quantified example](../../compiler/examples/smt_contracts/quantified.loom)
-proves ordering and permutation for an in-place sort, plus swap and reverse
-permutation. Wrong ordering, lost duplicates, stale entry reads and unproved
+proves ordering and permutation for a returned in-place sort, plus swap and
+reverse permutation. Terminal local/field return paths propose loop hints, not
+assumed result identities; each actual return retains its own proof. Wrong
+ordering, lost duplicates, stale entry reads and unproved
 full-range safety reject. No helper names, runtime copies or sampled tests supply
 proof evidence. General scan shapes, mutable element graphs and unprotected
 shared observations remain outside this fragment.

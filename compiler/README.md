@@ -2316,6 +2316,14 @@ private storage. Unsupported scan shapes, other mutable element domains and
 exhausted inference reject required proofs; this is not general heap induction
 or a termination proof. Proof operations do not enter native IR or the runtime.
 
+A terminal local or inline field access (implicit tail or explicit `return`)
+can substitute for `result` when proposing loop invariants. The sorting example
+therefore returns its List with `ensures ordered(result)` and
+`ensures permutation(result, old(values))`. These are hints, not an early result
+binding: entry/backedge proofs and every actual return still check the original
+clauses. Rebinding, early returns and cleanup cannot reuse a guessed result.
+Computed/conditional tails and unavailable body-local paths supply no such hint.
+
 Length-preserving loops can infer bounds/equalities for observed Int, Bool and
 Text elements, and scalar field relations in immutable inline elements. Source
 pre/postconditions may propose storage conservation laws; they are not assumed
