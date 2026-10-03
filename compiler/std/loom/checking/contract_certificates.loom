@@ -72,3 +72,8 @@ fn retain_contract(context Context, id Int, function Function) {
             postconditions = function.postconditions
         })
 }
+
+fn certified_contract(context Context, id Int, function Function) Result[Function, Failure] {
+    retain_contract(context, id, function)
+    Result.Ok(function)
+}
