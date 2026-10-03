@@ -1,0 +1,233 @@
+fn nominal_revision(producer Text, caller Text, move Int) Revision {
+    let data = """
+record First {
+    amount Int
+}
+
+record Second {
+    amount Int
+}
+
+record Envelope {
+    current First
+    history List[Second]
+}
+
+record OtherEnvelope {
+    current First
+    history List[Second]
+}
+
+"""
+    let record_path = if move == 1 {
+        "destination.loom"
+    } else {
+        "types.loom"
+    }
+    let caller_path = if move == 2 {
+        "destination.loom"
+    } else {
+        "entry.loom"
+    }
+    let files = [File {
+            path = "types.loom"
+            text = if move == 1 {
+                ""
+            } else {
+                data
+            }
+        }, File {
+            path = "input.loom"
+            text = producer
+        }, File {
+            path = "entry.loom"
+            text = if move == 2 {
+                ""
+            } else {
+                caller
+            }
+        }, File {
+            path = "destination.loom"
+            text = if move == 1 {
+                data
+            } else {
+                if move == 2 {
+                    caller
+                } else {
+                    ""
+                }
+            }
+        }]
+    let ids = new[Identity]()
+    let names = ["First", "Second", "Envelope", "OtherEnvelope"]
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        push(ids, Identity {
+                id = concat("record-", name)
+                path = record_path
+                kind = NodeKind.Record
+                name = name
+                key = "-"
+            })
+        index = index + 1
+    }
+    push(ids, Identity {
+            id = "input-id"
+            path = "input.loom"
+            kind = NodeKind.Function
+            name = "input"
+            key = key_in(producer, "input")
+        })
+    push(ids, Identity {
+            id = "entry-id"
+            path = caller_path
+            kind = NodeKind.Function
+            name = "entry"
+            key = key_in(caller, "entry")
+        })
+    Revision {
+        package_name = "sample"
+        files = files
+        identities = ids
+    }
+}
+
+test fn record_move_preserves_annotations_nested_fields_and_initializers() {
+    let before = """
+fn input() First {
+    First {
+        amount = 1
+    }
+}
+
+"""
+    let after = """
+fn input() First {
+    First {
+        amount = 3
+    }
+}
+
+"""
+    let caller = """
+fn entry() Int {
+    let saved Envelope = Envelope {
+        current = input()
+        history = [Second { amount = 2 }]
+    }
+    let item First = saved.current
+    item.amount
+}
+
+"""
+    let base = nominal_revision(before, caller, 0)
+    let moved = nominal_revision(before, caller, 1)
+    let edited = nominal_revision(after, caller, 0)
+    var order = 0
+    while order < 2 {
+        let outcome = if order == 0 {
+            merge(base, moved, edited)
+        } else {
+            merge(base, edited, moved)
+        }
+        match outcome {
+            Result.Ok(merged) => {
+                assert get(merged.files, 0).text == ""
+                assert get(merged.files, 1).text == after
+                assert get(merged.files, 2).text == caller
+                assert get(merged.files, 3).text == get(moved.files, 3).text
+                assert get(merged.identities, 0).path == "destination.loom"
+            }
+            Result.Err(message) => {
+                discard write_error(message)
+                assert false
+            }
+        }
+        order = order + 1
+    }
+}
+
+test fn a_moved_field_read_cannot_silently_change_record_owner() {
+    let caller = """
+fn entry() Int {
+    input().amount
+}
+
+"""
+    let before = """
+fn input() First {
+    First {
+        amount = 1
+    }
+}
+
+"""
+    let after = """
+fn input() Second {
+    Second {
+        amount = 2
+    }
+}
+
+"""
+    let base = nominal_revision(before, caller, 0)
+    let moved = nominal_revision(before, caller, 2)
+    let edited = nominal_revision(after, caller, 0)
+    var order = 0
+    while order < 2 {
+        let outcome = if order == 0 {
+            merge(base, moved, edited)
+        } else {
+            merge(base, edited, moved)
+        }
+        match outcome {
+            Result.Ok(_) => {
+                assert false
+            }
+            Result.Err(message) => {
+                assert contains(message, "changed its checked definition binding")
+            }
+        }
+        order = order + 1
+    }
+}
+
+test fn an_unchanged_leaf_does_not_hide_a_changed_intermediate_field() {
+    let caller = """
+fn entry() Int {
+    let saved = input()
+    saved.current.amount
+}
+
+"""
+    let before = """
+fn input() Envelope {
+    Envelope {
+        current = First { amount = 1 }
+        history = []
+    }
+}
+
+"""
+    let after = """
+fn input() OtherEnvelope {
+    OtherEnvelope {
+        current = First { amount = 2 }
+        history = []
+    }
+}
+
+"""
+    let base = nominal_revision(before, caller, 0)
+    let moved = nominal_revision(before, caller, 2)
+    let edited = nominal_revision(after, caller, 0)
+    match merge(base, moved, edited) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(message) => {
+            assert contains(message, "changed its checked definition binding")
+        }
+    }
+}

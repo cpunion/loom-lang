@@ -248,17 +248,12 @@ fn local_type_parameter(parameters List[Text], value Text) Bool {
     false
 }
 
-// The public query API supplies binding locations for checked expressions,
-// but not signature-only type references or every source construct. Restrict
-// this gate to forms whose reference tokens it can enumerate; any other form
-// needs explicit review instead of a spelling-based guess.
-fn source_sites(node Node, tokens List[Token], parameters List[Text], sites List[Int]) Result[Bool, Text] {
+// Enumerate source references, then ask the compiler for their actual bindings.
+// Declaration labels are not uses; record initializer labels are field uses.
+// Forms without complete query evidence still need explicit review.
+fn source_sites(node Node, parent NodeKind, tokens List[Token], parameters List[Text], sites List[Int]) Result[Bool, Text] {
     let kind = node.kind
-    if kind == NodeKind.Type {
-        if !builtin_type(node.value) && !local_type_parameter(parameters, node.value) {
-            return Result.Err("reference binding evidence unavailable for a source type")
-        }
-    } else if kind == NodeKind.TypeParameters {
+    if kind == NodeKind.TypeParameters {
         var index = 0
         while index < length(node.children) {
             let parameter = get(node.children, index)
@@ -269,15 +264,18 @@ fn source_sites(node Node, tokens List[Token], parameters List[Text], sites List
         }
         return Result.Ok(true)
     } else {
-        if kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.Construct || kind == NodeKind.Assign ||
-        kind == NodeKind.Select || kind == NodeKind.MethodCall {
+        let named_type = kind == NodeKind.Type && !builtin_type(node.value) &&
+        !local_type_parameter(parameters, node.value)
+        let field_use = kind == NodeKind.Field && parent == NodeKind.Construct
+        if named_type || field_use || kind == NodeKind.Name || kind == NodeKind.Call ||
+        kind == NodeKind.Construct || kind == NodeKind.Assign || kind == NodeKind.Select || kind == NodeKind.MethodCall {
             let from = if (kind == NodeKind.Select || kind == NodeKind.MethodCall) && length(node.children) > 0 {
                 get(node.children, 0).span.end
             } else {
                 node.span.start
             }
-            let until = if (kind == NodeKind.Name || kind == NodeKind.Call || kind == NodeKind.Construct ||
-                kind == NodeKind.Assign) &&
+            let until = if (named_type || field_use || kind == NodeKind.Name || kind == NodeKind.Call ||
+                kind == NodeKind.Construct || kind == NodeKind.Assign) &&
             length(node.children) > 0 {
                 get(node.children, 0).span.start
             } else {
@@ -289,6 +287,10 @@ fn source_sites(node Node, tokens List[Token], parameters List[Text], sites List
                 let token = get(tokens, token_index)
                 if token.span.start >= from && token.span.end <= until && token.kind == Kind.Name &&
                 ((kind != NodeKind.Select && kind != NodeKind.MethodCall) || token.value == node.value) {
+                    if kind == NodeKind.Name {
+                        // Every member of a value path binds independently.
+                        push(sites, token.span.start)
+                    }
                     site = token.span.start
                 }
                 token_index = token_index + 1
@@ -296,9 +298,13 @@ fn source_sites(node Node, tokens List[Token], parameters List[Text], sites List
             if site < 0 {
                 return Result.Err("reference token has no stable source position")
             }
-            push(sites, site)
+            if kind != NodeKind.Name {
+                push(sites, site)
+            }
         } else {
-            if kind != NodeKind.Function && kind != NodeKind.Public && kind != NodeKind.Test &&
+            if kind != NodeKind.Type && kind != NodeKind.Record &&
+            !(kind == NodeKind.Field && parent == NodeKind.Record) &&
+            kind != NodeKind.Function && kind != NodeKind.Public && kind != NodeKind.Test &&
             kind != NodeKind.Intrinsic && kind != NodeKind.TypeParameters && kind != NodeKind.Parameters &&
             kind != NodeKind.Parameter && kind != NodeKind.TypeArguments && kind != NodeKind.Arguments &&
             kind != NodeKind.ReturnType && kind != NodeKind.Block && kind != NodeKind.Return &&
@@ -316,7 +322,7 @@ fn source_sites(node Node, tokens List[Token], parameters List[Text], sites List
     }
     var child = 0
     while child < length(node.children) {
-        discard source_sites(get(node.children, child), tokens, parameters, sites)?
+        discard source_sites(get(node.children, child), kind, tokens, parameters, sites)?
         child = child + 1
     }
     Result.Ok(true)
@@ -354,7 +360,7 @@ fn reference_sites(entry Entry) Result[List[Int], Text] {
         }
         child = child + 1
     }
-    discard source_sites(declaration, tokens, parameters, sites)?
+    discard source_sites(declaration, NodeKind.File, tokens, parameters, sites)?
     if length(parameters) > 0 && length(sites) > 0 {
         return Result.Err("uninstantiated generic references need explicit binding review")
     }
