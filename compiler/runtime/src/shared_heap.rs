@@ -2,7 +2,7 @@
 //! not access to mutable object contents and not a source worker executor.
 //! Native callbacks must obey the root/safe-point contract before sharing data.
 
-use super::{Heap, LOCAL_HEAP, ROOTS, RefCell, RootFrame, fatal};
+use super::{Heap, ROOTS, RefCell, RootFrame, fatal};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ptr;
@@ -46,9 +46,19 @@ struct Participant<'a> {
     entry_roots: *mut RootFrame,
 }
 
-thread_local! {
+struct Memory {
+    heap: RefCell<Heap>,
     // Points into the active attach invocation, never another native thread.
-    static CURRENT: Cell<*const Participant<'static>> = const { Cell::new(ptr::null()) };
+    participant: Cell<*const Participant<'static>>,
+}
+
+thread_local! {
+    // One TLS lookup selects the local heap or shared participant. Ordinary
+    // allocations must not pay a second TLS lookup just to reject shared mode.
+    static MEMORY: Memory = Memory {
+        heap: RefCell::new(Heap::default()),
+        participant: Cell::new(ptr::null()),
+    };
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -58,22 +68,27 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn current<R>(run: impl FnOnce(Option<&Participant<'_>>) -> R) -> R {
-    let pointer = CURRENT.get();
-    // SAFETY: attach owns this stack record for the whole native activation.
-    // The reference never escapes this call; CURRENT is private to this thread.
-    run(unsafe { pointer.as_ref() })
+    MEMORY.with(|memory| {
+        // SAFETY: attach owns this stack record for the whole native activation.
+        // The reference never escapes this call; the slot is thread-local.
+        run(unsafe { memory.participant.get().as_ref() })
+    })
 }
 
 pub(super) fn with_heap<R>(run: impl FnOnce(&RefCell<Heap>) -> R) -> R {
-    current(|participant| match participant {
-        None => LOCAL_HEAP.with(run),
-        Some(participant) => {
-            if participant.state.get() == State::Parked {
-                fatal("managed heap access while mutator is parked");
+    // SAFETY: As in current(), attach retains the participant for this complete
+    // activation. No heap borrow or reference survives this callback.
+    MEMORY.with(
+        |memory| match unsafe { memory.participant.get().as_ref() } {
+            None => run(&memory.heap),
+            Some(participant) => {
+                if participant.state.get() == State::Parked {
+                    fatal("managed heap access while mutator is parked");
+                }
+                run(&lock(&participant.heap.storage).0)
             }
-            run(&lock(&participant.heap.storage).0)
-        }
-    })
+        },
+    )
 }
 
 impl SharedHeap {
@@ -84,7 +99,7 @@ impl SharedHeap {
     }
 
     fn attach<R>(&self, run: impl FnOnce() -> R) -> R {
-        if !CURRENT.get().is_null() {
+        if active() {
             fatal("nested shared heap attachment");
         }
         let mut control = lock(&self.control);
@@ -104,8 +119,8 @@ impl SharedHeap {
             entry_roots: ROOTS.get(),
         };
         // Erase only the stored raw pointer's lifetime. Its stack owner cannot
-        // return before the guard removes CURRENT; nothing can send it away.
-        CURRENT.set(ptr::from_ref(&participant).cast());
+        // return before the guard removes it; nothing can send it away.
+        MEMORY.with(|memory| memory.participant.set(ptr::from_ref(&participant).cast()));
         let result = run();
         drop(participant);
         result
@@ -114,14 +129,17 @@ impl SharedHeap {
 
 impl Drop for Participant<'_> {
     fn drop(&mut self) {
-        if self.state.get() != State::Running || ROOTS.get() != self.entry_roots {
+        if self.state.get() != State::Running
+            || ROOTS.get() != self.entry_roots
+            || !super::shared_access::idle()
+        {
             fatal("unbalanced mutator exit");
         }
         // A collector may be waiting for this thread. Removing a root-free
         // registration is also a rendezvous; no managed access follows it.
         let mut control = lock(&self.heap.control);
         control.participants.remove(&self.id);
-        CURRENT.set(ptr::null());
+        MEMORY.with(|memory| memory.participant.set(ptr::null()));
         self.heap.changed.notify_all();
     }
 }
@@ -205,6 +223,25 @@ extern "C" fn loom_rt_shared_checkpoint() {
 type Run = unsafe extern "C" fn(*mut u8);
 type SharedRun = unsafe extern "C" fn(*mut u8, *const SharedHeap);
 
+pub(super) fn active() -> bool {
+    MEMORY.with(|memory| !memory.participant.get().is_null())
+}
+
+pub(super) fn park_native<R>(run: impl FnOnce() -> R) -> R {
+    current(|participant| {
+        let Some(participant) = participant else {
+            return run();
+        };
+        let heap = participant.heap;
+        let mut control = participant.control();
+        park(participant, &mut control);
+        drop(control);
+        let result = run();
+        resume(participant, lock(&heap.control));
+        result
+    })
+}
+
 /// Establish one shared heap scope, adopting this thread's existing objects.
 /// The callback must join all participating native threads before returning.
 /// It catches language faults internally and balances its native roots.
@@ -219,7 +256,7 @@ unsafe extern "C" fn loom_rt_shared_run(context: *mut u8, run: SharedRun) {
         }
         let heap = SharedHeap {
             storage: Mutex::new(Storage(RefCell::new(
-                LOCAL_HEAP.with(|heap| std::mem::take(&mut *heap.borrow_mut())),
+                MEMORY.with(|memory| std::mem::take(&mut *memory.heap.borrow_mut())),
             ))),
             control: Mutex::new(Control::default()),
             changed: Condvar::new(),
@@ -233,7 +270,7 @@ unsafe extern "C" fn loom_rt_shared_run(context: *mut u8, run: SharedRun) {
             .storage
             .into_inner()
             .unwrap_or_else(|_| fatal("poisoned shared heap"));
-        LOCAL_HEAP.with(|heap| *heap.borrow_mut() = storage.0.into_inner());
+        MEMORY.with(|memory| *memory.heap.borrow_mut() = storage.0.into_inner());
     });
 }
 
@@ -242,7 +279,7 @@ unsafe extern "C" fn loom_rt_shared_run(context: *mut u8, run: SharedRun) {
 /// acquire values from rooted shared handoff storage inside the callback.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_shared_enter(heap: *const SharedHeap, context: *mut u8, run: Run) {
-    if !ROOTS.get().is_null() || LOCAL_HEAP.with(|heap| !heap.borrow().objects.is_empty()) {
+    if !ROOTS.get().is_null() || MEMORY.with(|memory| !memory.heap.borrow().objects.is_empty()) {
         fatal("worker entered with a different live heap");
     }
     // SAFETY: The shared scope outlives this native thread's joined activation.
@@ -254,17 +291,7 @@ unsafe extern "C" fn loom_rt_shared_enter(heap: *const SharedHeap, context: *mut
 /// return normally. Rooted managed snapshots must be reloaded after this call.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_shared_park(context: *mut u8, run: Run) {
-    current(|participant| {
-        let Some(participant) = participant else {
-            return unsafe { run(context) };
-        };
-        let heap = participant.heap;
-        let mut control = participant.control();
-        park(participant, &mut control);
-        drop(control);
-        unsafe { run(context) };
-        resume(participant, lock(&heap.control));
-    });
+    park_native(|| unsafe { run(context) });
 }
 
 #[cfg(test)]

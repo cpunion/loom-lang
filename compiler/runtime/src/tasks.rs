@@ -157,7 +157,7 @@ impl Owner {
             .operation
             .take();
         if let Some(operation) = operation {
-            operation.cancel_and_drain();
+            super::shared_heap::park_native(|| operation.cancel_and_drain());
         }
     }
 
@@ -187,7 +187,11 @@ impl Owner {
         let reactor = self.reactor.get().expect("registered task wait");
         // No task/root/heap borrow crosses this OS wait. Workers can only
         // publish identities; the owner alone queues and resumes task frames.
-        reactor.wait(if blocking { None } else { Some(Duration::ZERO) })?;
+        if blocking {
+            super::shared_heap::park_native(|| reactor.wait(None))?;
+        } else {
+            reactor.wait(Some(Duration::ZERO))?;
+        }
         while let Some(notification) = reactor.pop_ready() {
             let mut core = self.core.borrow_mut();
             let Some(task) = core.tasks.get_mut(&notification.owner) else {

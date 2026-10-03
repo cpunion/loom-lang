@@ -253,6 +253,9 @@ fn drain_to(boundary: *mut Cleanup) {
 }
 
 pub(super) fn fault(message: &[u8]) -> ! {
+    // Internal storage accesses never enclose user code. A failed primitive
+    // releases its access guards before cleanup can wait for another mutator.
+    super::shared_access::release_all();
     let boundary = BOUNDARY.get();
     if !boundary.is_null() {
         // SAFETY: catch_fault's shared stack boundary stays live until its own

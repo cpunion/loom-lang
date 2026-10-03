@@ -342,8 +342,12 @@ addresses, finalizers, weak references or ownership/borrow syntax.
 The private [shared-heap boundary](../../compiler/runtime/src/shared_heap.rs)
 separates mutator root chains from object storage. Native tests cover concurrent
 collectors, parked waits, checkpoint reloads and thread-local fault rollback on
-one moving heap. This is runtime groundwork, not source-level parallel execution;
-generated shared-access protection and worker scheduling are still absent.
+one moving heap. Private per-object access guards keep their identity through
+relocation, park contended waiters and release before fault cleanup. Idle Task
+reactors and native-I/O drain waits also park, allowing another mutator to collect
+before publishing completion. This is runtime groundwork, not source-level
+parallel execution; generated shared-access protection and worker scheduling
+are still absent.
 
 Lexical `defer` and `scoped` handle normal exits, propagation, loop exits,
 language faults, suspension and cancellation. MustScope freshness/escape checks
