@@ -28,6 +28,10 @@ pub(super) fn forwarders(program: &checked::Program, reachable: &BTreeSet<usize>
                 },
                 _ => continue,
             };
+            if value.ty != source.result {
+                // Discarding a primitive result is not identity forwarding.
+                continue;
+            }
             let (operation, args) = match &value.kind {
                 checked::ExprKind::Primitive(operation, args) if local_operation(*operation) => {
                     (*operation, args)
@@ -392,5 +396,26 @@ mod tests {
                 !published
             );
         }
+        let discarded = checked::Function {
+            name: "discarded".into(),
+            params: vec![Type::List(0)],
+            result: Type::Unit,
+            locals: vec![Type::List(0)],
+            requires: vec![],
+            body: checked::Block {
+                statements: vec![statement(S::Discard(expr(
+                    E::Primitive(Primitive::ListLen, vec![local(0)]),
+                    Type::Int,
+                )))],
+                tail: None,
+                falls_through: true,
+            },
+            span: Default::default(),
+        };
+        let program = checked::Program {
+            functions: vec![discarded],
+            ..program
+        };
+        assert!(forwarders(&program, &BTreeSet::from([0])).is_empty());
     }
 }
