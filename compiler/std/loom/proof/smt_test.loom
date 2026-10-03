@@ -84,4 +84,5 @@ test fn array_encoding_preserves_versions_indices_and_observation_guards() {
     assert contains(query, "(= a11 (store a10 (+ 0 (* 1 n1)) (+ 0 (* 1 n2))))")
     assert contains(query, "(= (select a11")
     assert !integer_interval("==", IntegerTerm.Select(11, index), value, [])
+    assert immutable_snapshot(Value.Nonlinear(IntegerTerm.Select(11, index)))
 }

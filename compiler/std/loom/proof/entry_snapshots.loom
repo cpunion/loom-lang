@@ -63,6 +63,7 @@ record EntrySnapshot {
 fn immutable_snapshot(value Value) Bool {
     match value {
         Value.Number(_) => true
+        Value.Nonlinear(_) => true
         Value.Boolean(_) => true
         Value.Text(_) => true
         Value.Record(fields) => {

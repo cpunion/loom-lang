@@ -30,7 +30,18 @@ get(values, observed) == old(get(values, observed))
     set(values, second, left)
 }
 
+fn composed_heap(value Int) Int
+requires value >= -10 && value <= 10
+ensures result == value * value
+{
+    let values = [value * value, 2]
+    restored(values, 0, 1)
+    get(values, 0)
+}
+
 fn heap_cases() {
+    assert composed_heap(3) == 9
+    assert composed_heap(-10) == 100
     let values = [1, 2, 3]
     restored(values, 0, 2)
     restored(values, 1, 1)
