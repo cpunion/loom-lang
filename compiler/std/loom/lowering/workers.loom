@@ -1,0 +1,66 @@
+// A worker has one typed frame, retained through queued/running/completed states.
+// The CPU thunk is ordinary checked code; LLVM owns no second closure lowering.
+fn worker_parking(graph Graph, source Expr, start Int, loop Loop) Value {
+    let work = snapshot(graph, evaluate(graph, get(source.children, 0), start, loop))
+    if work.state < 0 {
+        return work
+    }
+    let frame = length(graph.types)
+    let fields = new[Field]()
+    push(fields, Field {
+            name = "result"
+            ty = source.ty
+        })
+    push(fields, Field {
+            name = "work"
+            ty = work.expression.ty
+        })
+    push(graph.types, Type {
+            kind = TypeKind.Frame
+            symbol = -1
+            arguments = new[Int]()
+            fields = fields
+            variants = new[Variant]()
+            constraint = new[Expr]()
+        })
+    let param = node(ExprKind.Local, frame, source.span, 0, new[Expr]())
+    let callee = node(ExprKind.Field, work.expression.ty, source.span, 1, one(param))
+    let invoke = node(ExprKind.IndirectCall, source.ty, source.span, -1, one(callee))
+    let body = node(ExprKind.FrameStore, 0, source.span, 0, pair(param, invoke))
+    let locals = new[Local]()
+    push(locals, Local {
+            name = ""
+            ty = frame
+            mutable = false
+            is_scoped = false
+        })
+    let callback = length(graph.functions)
+    push(graph.functions, Function {
+            is_async = false
+            symbol = -1
+            arguments = new[Int]()
+            params = ints(frame)
+            result = 0
+            locals = locals
+            preconditions = new[Expr]()
+            postconditions = new[Expr]()
+            result_local = -1
+            body = block(one(body), 0, source.span, true)
+            runtime_name = ""
+            span = source.span
+        })
+    let stored = temporary(graph, frame)
+    let initial = one(node(ExprKind.Field, work.expression.ty, source.span, 1, one(work.expression)))
+    save(graph, work.state, stored, node(ExprKind.FrameNew, frame, source.span, -1, initial))
+    let park = state(graph)
+    let after = state(graph)
+    jump(graph, work.state, park)
+    let reference = node(ExprKind.FunctionRef, function_type(graph.types, ints(frame), 0), source.span, callback, new[Expr]())
+    finish(graph, park, Exit.Park,
+        operation("task_wait_worker", 2, source.span, pair(local(graph, stored), reference)),
+        edges(after), new[Arm]())
+    Value {
+        state = after
+        expression = operation("task_worker_result", source.ty, source.span, one(local(graph, stored)))
+    }
+}

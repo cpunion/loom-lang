@@ -129,6 +129,7 @@ fn async_function(program Program, callbacks List[Int], visits TaskVisits, id In
     }
     let graph = Graph {
         types = program.types
+        functions = program.functions
         states = new[State]()
         locals = locals
         result = source.result

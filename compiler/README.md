@@ -2942,8 +2942,53 @@ its owning thread faults instead of deadlocking. Fault cleanup releases the
 guard without poisoning the mutex. There is no fairness promise. Every relevant
 access must follow the same locking policy; holding a guard alone does not prove
 that other aliases preserve an invariant. See the [example](examples/mutex)
-and `loom test compiler/std/sync/mutex`. General parallel Loom workers remain
-unimplemented; this API does not change ordinary Task scheduling.
+and `loom test compiler/std/sync/mutex`. This API does not change ordinary Task
+scheduling; explicit [workers](#shared-workers) can use it for compound updates.
+
+## Shared workers
+
+`std.task.worker.run(work)` creates a hot `Task[T]` for a synchronous `fn() T`
+callback. Captures retain ordinary sharing, including mutable captured bindings;
+there is no implicit copy or ownership syntax. Ordinary async functions still
+run cooperatively. Workers run on a separate bounded CPU pool (up to four native
+threads), using the same moving heap and existing Task completion notifications.
+
+```loom
+import std.task.worker.run
+
+fn compute(value Int) Int {
+    value * value
+}
+
+async fn main() {
+    let left, right = (run(fn() Int { compute(6) }), run(fn() Text { "ready" })).await
+    assert left == 36 && right == "ready"
+}
+```
+
+See the [worker example](examples/workers) and run
+`loom test compiler/std/task/worker`. List/Bytes operations and captured-cell
+accesses protect complete typed values, bounds and backing storage. A sequence
+of operations is **not atomic**: use the same `scoped` mutex around a compound
+update in every participating caller. This also applies to multi-step source
+library operations such as view indexing during source resize.
+
+Existing Task joins, outcomes, deadlines and cancellation accept worker Tasks.
+Cancellation is cooperative at generated checkpoints and mutex acquisition;
+cleanup runs on the worker and drains before the parent continues. A completed
+result wins late cancellation, and cleanup faults remain faults. Blocking
+synchronous I/O parks the mutator but can delay cancellation until the OS call
+returns. Scoped resources and owner-local Tasks/native tokens cannot cross the
+worker boundary; acquire and close resources within the callback.
+
+Shared builds revalidate mandatory contracts with mutable observations forgotten
+between accesses; scalar snapshots remain facts. Required contracts that inspect
+mutable storage are currently rejected unless expressed through independent
+scalar snapshots. A lock alone does not prove that all aliases obey it. This is
+a conservative proof boundary, not permission to weaken constraints. Builds with
+no reachable workers retain direct nonshared lowering. Within worker-enabled
+builds, access/root instrumentation is conservative; escape-sensitive removal
+of unnecessary local guards remains an optimization opportunity.
 
 ## Source Tasks
 

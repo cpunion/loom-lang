@@ -15,7 +15,7 @@ syntax, APIs and supported proof fragment.
 | Language | Generics, concepts/dyn, associated types, closures, tuples, recursive List-backed data and pattern matching. | Not every accepted generic/pack combination is implemented. |
 | Guarantees | Checked constrained construction, safe weakening, bounded mandatory postconditions and selected invariant-preserving operations. | General loop proofs and mutable-alias preservation remain open. |
 | Metaprogramming | Pure compile-time execution, type/value/function parameters, packs, typed macros, reflection and tracked inputs. | Staging and visibility still apply; no arbitrary compile-time I/O. |
-| Memory/resources/async | Moving GC, lexical cleanup, stackless Tasks, real timers, files, DNS/TCP/TLS and tuple/List joins. | Cooperative scheduling; general worker APIs remain open. |
+| Memory/resources/async | Moving GC, lexical cleanup, stackless Tasks, real timers, files, DNS/TCP/TLS, tuple/List joins and explicit shared CPU workers. | Conservative shared-build instrumentation and interference proofs; no concurrent/generational GC. |
 | Programming tools | Directory tests, formatter, LSP/VS Code, public parser/analysis libraries, checked function/type/concept/record-field edits. | Unaccounted/generated uses, external-consumer API edits and broader erroneous-source queries remain open. |
 | Evolution tools | Reviewed single-package semantic merge and a real offline SQLite migration trial. | Bounded prototypes, not general semantic VCS or deployment compatibility proof. |
 
@@ -345,9 +345,11 @@ collectors, parked waits, checkpoint reloads and thread-local fault rollback on
 one moving heap. Private per-object access guards keep their identity through
 relocation, park contended waiters and release before fault cleanup. Idle Task
 reactors and native-I/O drain waits also park, allowing another mutator to collect
-before publishing completion. This is runtime groundwork, not source-level
-parallel execution; generated shared-access protection and worker scheduling
-are still absent.
+before publishing completion. Source `std.task.worker.run` now lowers callbacks
+to typed worker frames. A separate bounded CPU pool attaches mutators; stable
+traced slots retain queued and completed frames across collection. Generated
+List/Bytes/captured-cell access guards protect typed publication and bounds.
+Native blocking I/O snapshots managed inputs and parks before OS waits.
 
 Lexical `defer` and `scoped` handle normal exits, propagation, loop exits,
 language faults, suspension and cancellation. MustScope freshness/escape checks
@@ -365,8 +367,10 @@ The native worker activation boundary now interrupts blocked mutex acquisition,
 resumes the mutator before lexical drain and keeps cancellation distinct from a
 fault. Cleanup remains non-cancellable; a cleanup fault is retained. A focused
 test drains a cancelled child while its parent still holds the requested lock,
-including moving collection and cleanup allocation. This is not yet a source
-worker executor. See [scoped mutexes](../../compiler/README.md#scoped-mutexes).
+including moving collection and cleanup allocation. Source worker tests cover
+the same cancellation/fault drain, forced lost updates, synchronized captured
+updates and aggregate publication at O0/O2 under moving-GC stress. See
+[workers](../../compiler/README.md#shared-workers).
 
 Stackless Tasks lower into typed state machines and GC-traced frames, using one
 owner-thread ready queue. Only needed suspension state spills. One-shot handles
@@ -403,13 +407,17 @@ ordered encrypted writes and generation-checked completion wakes. Cancellation
 retires the connection and its socket waits, waking the other direction to fail.
 O0/O2 tests include simultaneous 8 MiB transfers, moving-GC traffic, rejected peers,
 and independent Rustls interoperability with both-direction cancellation under
-backpressure. Revocation policy, general workers, broader socket options,
-and parallel Loom execution remain open.
+backpressure. Revocation policy and broader socket options remain open.
 The [accepted shared-worker semantics](../rfcs/tasks.md#shared-workers) allow
 memory-safe logical races with explicit synchronization for compound updates.
-Emitted programs and mutable-container lowering remain single-owner; the private
-shared-heap protocol does not make arbitrary pointer transfer or concurrent
-container mutation safe.
+Only explicit workers request parallel execution. No-worker executables retain
+their direct lowering; worker-enabled builds conservatively instrument accesses
+and roots. Required proofs are revalidated for interference: scalar snapshots
+remain stable, mutable observations cannot reuse sequential facts, and required
+mutable-storage predicates currently reject. Broader interference proofs and
+escape-sensitive removal of local instrumentation remain open. Source library
+compound operations still require caller synchronization when racing mutations
+would violate the desired application semantics.
 See [Tasks and I/O](../../compiler/README.md#source-tasks).
 
 ## Modules, caching and performance

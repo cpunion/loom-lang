@@ -1,0 +1,35 @@
+import std.task.worker.run
+import std.list.get
+import std.list.set
+import std.sync.mutex.new
+import std.sync.mutex.lock
+
+fn fib(n Int) Int {
+    if n < 2 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+async fn main() {
+    let values = [0]
+    let mutex = new()
+    let first = run(fn() Int {
+            {
+                scoped guard = lock(mutex)
+                set(values, 0, get(values, 0) + 1)
+            }
+            fib(12)
+        })
+    let second = run(fn() Int {
+            {
+                scoped guard = lock(mutex)
+                set(values, 0, get(values, 0) + 1)
+            }
+            fib(13)
+        })
+    let a, b = (first, second).await
+    assert a == 144 && b == 233
+    assert get(values, 0) == 2
+}

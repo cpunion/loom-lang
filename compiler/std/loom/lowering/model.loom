@@ -42,6 +42,7 @@ record State {
 
 record Graph {
     types List[Type]
+    functions List[Function]
     states List[State]
     locals List[Local]
     result Int

@@ -175,6 +175,7 @@ pub(super) fn allocates(operation: Primitive) -> bool {
         | Primitive::DirectoryRead
         | Primitive::PathCanonical
         | Primitive::MutexLock => true,
+        Primitive::TaskWorkerResult | Primitive::TaskWaitWorker => true,
         Primitive::TaskFailure
         | Primitive::TaskNextTerminalFailure
         | Primitive::TaskCancelBegin
@@ -326,6 +327,7 @@ pub(super) fn runtime_function<'ctx>(
 
 #[derive(Default)]
 struct TemporarySlots {
+    shared: bool,
     // Physical slots follow first source use, never HashMap iteration order.
     types: Vec<Type>,
     pools: HashMap<Type, Vec<usize>>,
@@ -336,6 +338,9 @@ struct TemporarySlots {
 
 impl TemporarySlots {
     fn may_allocate(&mut self, allocating: &BTreeSet<usize>, value: &checked::Expr) -> bool {
+        if self.shared {
+            return true;
+        }
         if let Some(result) = self.allocation.get(&(value as *const checked::Expr)) {
             return *result;
         }
@@ -469,7 +474,7 @@ impl TemporarySlots {
                 environment: value, ..
             }
             | checked::ExprKind::Coerce(value) => {
-                self.expression(program, allocating, value, false)
+                self.expression(program, allocating, value, self.shared)
             }
             checked::ExprKind::DynBox { value, .. } => {
                 self.expression(program, allocating, value, true)
@@ -497,7 +502,12 @@ impl TemporarySlots {
                 self.siblings(program, allocating, args, allocating.contains(target));
             }
             checked::ExprKind::Primitive(operation, args) => {
-                self.siblings(program, allocating, args, allocates(*operation));
+                self.siblings(
+                    program,
+                    allocating,
+                    args,
+                    self.shared || allocates(*operation),
+                );
             }
             checked::ExprKind::Variant { fields, .. } => {
                 self.siblings(program, allocating, fields, false);
@@ -522,7 +532,12 @@ impl TemporarySlots {
                 );
             }
             checked::ExprKind::FrameStore { frame, value, .. } => {
-                self.siblings(program, allocating, [frame.as_ref(), value.as_ref()], false);
+                self.siblings(
+                    program,
+                    allocating,
+                    [frame.as_ref(), value.as_ref()],
+                    self.shared,
+                );
             }
             checked::ExprKind::Block(body) => self.block(program, allocating, body),
             checked::ExprKind::Match { value, arms } => {
@@ -612,6 +627,7 @@ pub(super) fn root_function<'ctx>(
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     program: &checked::Program,
+    shared: bool,
     allocating: &BTreeSet<usize>,
     source: &checked::Function,
     callback_body: Option<&checked::Block>,
@@ -621,7 +637,11 @@ pub(super) fn root_function<'ctx>(
 ) -> NativeResult<RootFrame<'ctx>> {
     let mut slots = Vec::new();
     let mut rooted_locals = borrowed.clone();
-    let handoffs = immediate_match_handoffs(program, source);
+    let handoffs = if shared {
+        BTreeSet::new()
+    } else {
+        immediate_match_handoffs(program, source)
+    };
     for (index, ty) in source.locals.iter().enumerate() {
         if managed(program, *ty)
             && locals[index].is_some()
@@ -647,7 +667,10 @@ pub(super) fn root_function<'ctx>(
             slots.push((slot, *ty));
         }
     }
-    let mut temporary = TemporarySlots::default();
+    let mut temporary = TemporarySlots {
+        shared,
+        ..TemporarySlots::default()
+    };
     if callback_body.is_none() {
         for value in &source.requires {
             temporary.expression(program, allocating, value, false);

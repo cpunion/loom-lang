@@ -147,6 +147,36 @@ pub(super) unsafe extern "C" fn loom_rt_shared_access_begin(target: *mut u8) {
     });
 }
 
+/// All targets are rooted by the caller. Capture native identities before any
+/// park, then acquire in stable native order (managed addresses can relocate).
+#[unsafe(no_mangle)]
+pub(super) unsafe extern "C" fn loom_rt_shared_access_many(targets: *const *mut u8, count: usize) {
+    if !shared_heap::active() {
+        return;
+    }
+    let mut accesses = HEAP.with(|heap| {
+        let mut heap = heap.borrow_mut();
+        unsafe { std::slice::from_raw_parts(targets, count) }
+            .iter()
+            .map(|target| {
+                if !heap.objects.contains_key(&(*target as usize)) {
+                    fatal("storage access requires a managed allocation base");
+                }
+                Arc::clone(heap.access.entry(*target as usize).or_default())
+            })
+            .collect::<Vec<_>>()
+    });
+    accesses.sort_by_key(Arc::as_ptr);
+    for access in accesses {
+        let reentrant =
+            HELD.with(|held| held.borrow().iter().any(|item| Arc::ptr_eq(item, &access)));
+        if !reentrant {
+            access.acquire();
+        }
+        HELD.with(|held| held.borrow_mut().push(access));
+    }
+}
+
 /// Release the innermost internal guard. Does not collect or run user code.
 #[unsafe(no_mangle)]
 pub(super) extern "C" fn loom_rt_shared_access_end() {

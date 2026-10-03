@@ -335,6 +335,9 @@ fn runtime_signature(env Environment, name Text) RuntimeSignature {
         return runtime(0, two_types(3, 3), 1)
     }
     let parameter = get(abstract_arguments(env, 1), 0)
+    if name == "async_worker" {
+        return runtime(1, ints(intern(env, TypeKind.Function, -1, ints(parameter))), parameter)
+    }
     if name == "resource_generate" {
         let callback = intern(env, TypeKind.Function, -1, two_types(1, parameter))
         return runtime(1, two_types(1, callback), intern(env, TypeKind.List, -1, ints(parameter)))
@@ -432,7 +435,7 @@ fn validate_intrinsic(env Environment, id Int) Result[Text, Failure] {
         }
     }
     if expected.parameters < 0 { return Result.Err(failure(env, current.symbol, item.node, "unknown private runtime intrinsic")) }
-    if has(item.node, NodeKind.Async) != (item.name == "timer_until_ns" || item.name == "socket_wait" || item.name == "tls_wait" || item.name == "task_next" || item.name == "task_next_terminal" || item.name == "task_outcome" || item.name == "async_read" || item.name == "async_write" || item.name == "async_write_bytes" || item.name == "async_open" || item.name == "async_close" || item.name == "async_resolve" || item.name == "async_process_capture") {
+    if has(item.node, NodeKind.Async) != (item.name == "async_worker" || item.name == "timer_until_ns" || item.name == "socket_wait" || item.name == "tls_wait" || item.name == "task_next" || item.name == "task_next_terminal" || item.name == "task_outcome" || item.name == "async_read" || item.name == "async_write" || item.name == "async_write_bytes" || item.name == "async_open" || item.name == "async_close" || item.name == "async_resolve" || item.name == "async_process_capture") {
         return Result.Err(failure(env, current.symbol, item.node, "intrinsic declaration has an incorrect async modifier"))
     }
     if current.parameters != expected.parameters || !same(current.params, expected.params) || current.result != expected.result {

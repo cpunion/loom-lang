@@ -62,6 +62,7 @@ fn verification(function Function, program Program, backend ProofBackend) Verifi
         budget = budget
         loop_control = Option.None
         query = proof_query(backend)
+        shared = false
     }
 }
 
@@ -339,7 +340,7 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
     }
     discard summary_conditions(entry, function, function.preconditions, bindings)?
     let paths = established_checks(proof, entry.checks, state, depth)?
-    let stable = length(state.extents) == 0 || extent_preserving(proof.program, function.body)
+    let stable = !proof.shared && (length(state.extents) == 0 || extent_preserving(proof.program, function.body))
     let output = new[Outcome]()
     var index = 0
     while index < length(paths) {

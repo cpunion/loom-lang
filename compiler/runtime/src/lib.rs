@@ -27,6 +27,7 @@ mod frame_roots_tests;
 mod fs_ops;
 mod mutex;
 pub mod native;
+mod parallel;
 mod process_io;
 mod shared_access;
 mod shared_heap;
@@ -745,7 +746,7 @@ fn process_status(status: std::io::Result<std::process::ExitStatus>) -> i64 {
 unsafe extern "C" fn loom_rt_process_run(arguments: *const u8) -> i64 {
     // SAFETY: The private ABI passes List[Text]; no managed allocation occurs.
     match unsafe { process_command(arguments) } {
-        Ok(mut command) => process_status(command.status()),
+        Ok(mut command) => process_status(shared_heap::park_native(|| command.status())),
         Err(status) => status,
     }
 }
@@ -760,7 +761,9 @@ unsafe extern "C" fn loom_rt_process_run_input(arguments: *const u8, input: *con
     // SAFETY: The dedicated signal-protected writer owns a Rust copy, never a
     // managed pointer. No Loom GC runs while reading the immutable input Text.
     let input = unsafe { text_bytes(input) }.to_vec();
-    process_status(process_io::run_input(command, input))
+    process_status(shared_heap::park_native(|| {
+        process_io::run_input(command, input)
+    }))
 }
 
 #[unsafe(no_mangle)]
@@ -814,10 +817,13 @@ unsafe fn process_capture_configured(
     stdout: *mut u8,
     stderr: *mut u8,
 ) -> i64 {
-    let output = unsafe { configured_process(arguments, directory, clear, changes) }
-        .and_then(|command| capture_process(command, input));
-    // SAFETY: Both output buffers retain their exact private ABI type.
-    unsafe { process_output(output, stdout, stderr) }
+    let command = unsafe { configured_process(arguments, directory, clear, changes) };
+    rooted([stdout, stderr], |slots| {
+        let output = command
+            .and_then(|command| shared_heap::park_native(|| capture_process(command, input)));
+        // Native process work owns its input. Reload outputs after the park.
+        unsafe { process_output(output, *slots, *slots.add(1)) }
+    })
 }
 
 unsafe fn configured_process(
@@ -1020,7 +1026,11 @@ unsafe extern "C-unwind" fn loom_rt_list_detach(source: *mut u8) -> *mut u8 {
         (*cell).buffer.len = 1;
         for index in 2..values.len() {
             // The item is a rooted slot, not a stale pointer snapshot across reserve.
+            // View storage is private: the only multi-object mutation follows
+            // source -> removed cells, never the reverse. Readers hold only one.
+            shared_access::loom_rt_shared_access_begin(*slots.add(index));
             list_push(*slots.add(index), slots.add(1).cast());
+            shared_access::loom_rt_shared_access_end();
         }
         loom_rt_roots_leave(frame.as_mut_ptr());
         *slots
@@ -1260,19 +1270,34 @@ unsafe extern "C-unwind" fn loom_rt_list_reserve_one(list: *mut u8) {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_file_open(path: *const u8) -> i64 {
     // SAFETY: Text is valid UTF-8; the platform operation does not retain it.
-    file_io::open(
-        unsafe { std::str::from_utf8_unchecked(text_bytes(path)) },
-        false,
-    )
+    unsafe { with_path(path, |path| file_io::open(path, false)) }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_file_create(path: *const u8) -> i64 {
     // SAFETY: Text is valid UTF-8; the platform operation does not retain it.
-    file_io::open(
-        unsafe { std::str::from_utf8_unchecked(text_bytes(path)) },
-        true,
-    )
+    unsafe { with_path(path, |path| file_io::open(path, true)) }
+}
+
+// Park only after copying borrowed managed data. The sequential path keeps
+// its direct borrowed boundary and never installs a shared-heap owner.
+unsafe fn with_path<R>(path: *const u8, run: impl FnOnce(&str) -> R) -> R {
+    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
+    if shared_heap::active() {
+        let path = path.to_owned();
+        shared_heap::park_native(|| run(&path))
+    } else {
+        run(path)
+    }
+}
+
+fn write_native(fd: i64, bytes: &[u8]) -> i64 {
+    if shared_heap::active() {
+        let bytes = bytes.to_vec();
+        shared_heap::park_native(|| file_io::write(fd, &bytes))
+    } else {
+        file_io::write(fd, bytes)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1285,7 +1310,7 @@ unsafe extern "C" fn loom_rt_file_write(fd: i64, text: *const u8, offset: i64) -
     let Some(bytes) = bytes.get(offset..) else {
         return -1;
     };
-    file_io::write(fd, bytes)
+    write_native(fd, bytes)
 }
 
 #[unsafe(no_mangle)]
@@ -1299,7 +1324,7 @@ unsafe extern "C" fn loom_rt_file_write_bytes(fd: i64, bytes: *const u8, offset:
     let Some(bytes) = bytes.get(offset..) else {
         return -1;
     };
-    file_io::write(fd, bytes)
+    write_native(fd, bytes)
 }
 
 #[unsafe(no_mangle)]
@@ -1309,6 +1334,24 @@ unsafe extern "C-unwind" fn loom_rt_file_read(fd: i64, bytes: *mut u8, limit: i6
     };
     if limit == 0 {
         return 0;
+    }
+    if shared_heap::active() {
+        return rooted([bytes], |slots| {
+            let mut input = vec![0; limit];
+            let count = shared_heap::park_native(|| file_io::read(fd, &mut input));
+            if count > 0 {
+                unsafe {
+                    let buffer = reserve(*slots, count as usize, 1);
+                    ptr::copy_nonoverlapping(
+                        input.as_ptr(),
+                        (*buffer).data.add((*buffer).len),
+                        count as usize,
+                    );
+                    (*buffer).len += count as usize;
+                }
+            }
+            count
+        });
     }
     // SAFETY: Caller roots bytes. reserve provides limit writable bytes beyond
     // len, and read initializes exactly its nonnegative result count.
@@ -1328,11 +1371,31 @@ unsafe extern "C-unwind" fn loom_rt_file_read(fd: i64, bytes: *mut u8, limit: i6
 
 #[unsafe(no_mangle)]
 extern "C" fn loom_rt_file_close(fd: i64) -> i64 {
-    file_io::close(fd)
+    shared_heap::park_native(|| file_io::close(fd))
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn loom_rt_directory_read(path: *const u8, names: *mut u8) -> i64 {
+    if shared_heap::active() {
+        return rooted([names, ptr::null_mut()], |slots| unsafe {
+            let entries = with_path(path, |path| {
+                std::fs::read_dir(path).and_then(|entries| {
+                    entries
+                        .map(|entry| entry.map(|entry| entry.file_name()))
+                        .collect::<std::io::Result<Vec<_>>>()
+                })
+            });
+            let Ok(entries) = entries else { return -1 };
+            for entry in entries {
+                let Some(spelling) = entry.to_str() else {
+                    return -2;
+                };
+                *slots.add(1) = loom_rt_text_new(spelling.as_ptr(), spelling.len());
+                list_push(*slots, slots.add(1).cast());
+            }
+            0
+        });
+    }
     // SAFETY: The caller supplies rooted Text and List[Text] values. Text is
     // valid UTF-8; read_dir consumes the path without retaining its bytes.
     let entries = {
@@ -1364,8 +1427,7 @@ unsafe extern "C-unwind" fn loom_rt_directory_read(path: *const u8, names: *mut 
 unsafe extern "C" fn loom_rt_path_kind(path: *const u8) -> i64 {
     // SAFETY: The non-retaining call receives valid UTF-8 Text. Metadata follows
     // symlinks; a missing target is reported as an error, not as a file kind.
-    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
-    let Ok(metadata) = std::fs::metadata(path) else {
+    let Ok(metadata) = (unsafe { with_path(path, |path| std::fs::metadata(path)) }) else {
         return -1;
     };
     if metadata.is_file() {
@@ -1380,8 +1442,7 @@ unsafe extern "C" fn loom_rt_path_kind(path: *const u8) -> i64 {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_directory_create(path: *const u8) -> i64 {
     // SAFETY: Text is valid UTF-8 and stays live throughout this nonallocating call.
-    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
-    fs_ops::create_dir(std::path::Path::new(path))
+    unsafe { with_path(path, |path| fs_ops::create_dir(std::path::Path::new(path))) }
 }
 
 #[unsafe(no_mangle)]
@@ -1390,37 +1451,46 @@ unsafe extern "C" fn loom_rt_path_rename(from: *const u8, to: *const u8) -> i64 
     // managed pointers nor allocate through the Loom heap.
     let from = unsafe { std::str::from_utf8_unchecked(text_bytes(from)) };
     let to = unsafe { std::str::from_utf8_unchecked(text_bytes(to)) };
+    if shared_heap::active() {
+        let from = from.to_owned();
+        let to = to.to_owned();
+        return shared_heap::park_native(|| {
+            fs_ops::rename(std::path::Path::new(&from), std::path::Path::new(&to))
+        });
+    }
     fs_ops::rename(std::path::Path::new(from), std::path::Path::new(to))
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_file_remove(path: *const u8) -> i64 {
     // SAFETY: Text is valid UTF-8 and stays live throughout this nonallocating call.
-    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
-    fs_ops::remove_file(std::path::Path::new(path))
+    unsafe { with_path(path, |path| fs_ops::remove_file(std::path::Path::new(path))) }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_directory_remove(path: *const u8) -> i64 {
     // SAFETY: Text is valid UTF-8 and stays live throughout this nonallocating call.
-    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
-    fs_ops::remove_empty_dir(std::path::Path::new(path))
+    unsafe {
+        with_path(path, |path| {
+            fs_ops::remove_empty_dir(std::path::Path::new(path))
+        })
+    }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_path_entry_kind(path: *const u8) -> i64 {
     // SAFETY: Text is valid UTF-8 and stays live throughout this nonallocating call.
-    let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
-    fs_ops::entry_kind(std::path::Path::new(path))
+    unsafe { with_path(path, |path| fs_ops::entry_kind(std::path::Path::new(path))) }
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn loom_rt_path_canonical(path: *const u8, bytes: *mut u8) -> i64 {
+    rooted([bytes], |slots| unsafe { path_canonical(path, slots) })
+}
+
+unsafe fn path_canonical(path: *const u8, slots: *mut *mut u8) -> i64 {
     // SAFETY: The caller roots the Text and mutable Bytes arguments.
-    let canonical = {
-        let path = unsafe { std::str::from_utf8_unchecked(text_bytes(path)) };
-        std::fs::canonicalize(path)
-    };
+    let canonical = unsafe { with_path(path, |path| std::fs::canonicalize(path)) };
     let Ok(canonical) = canonical else {
         return -1;
     };
@@ -1430,7 +1500,7 @@ unsafe extern "C-unwind" fn loom_rt_path_canonical(path: *const u8, bytes: *mut 
     // SAFETY: reserve may collect but the caller roots bytes and the canonical
     // path owns its spelling separately. The reserved tail holds every byte.
     unsafe {
-        let buffer = reserve(bytes, spelling.len(), 1);
+        let buffer = reserve(*slots, spelling.len(), 1);
         ptr::copy_nonoverlapping(
             spelling.as_ptr(),
             (*buffer).data.add((*buffer).len),
