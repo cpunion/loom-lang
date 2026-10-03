@@ -21,11 +21,18 @@ pub(super) struct OwnedFault {
     pub test_name: Option<Vec<u8>>,
 }
 
+#[derive(Debug)]
+pub(super) enum Failure {
+    Fault(OwnedFault),
+    Cancelled,
+}
+
 struct Boundary {
     previous: *const Boundary,
     cleanup: *mut Cleanup,
     roots: *mut super::RootFrame,
     first: RefCell<Option<OwnedFault>>,
+    cancelled: Cell<bool>,
     before_drain: Cell<Option<BeforeDrain>>,
 }
 
@@ -59,7 +66,23 @@ thread_local! {
 /// code after the root chain has been restored.
 pub(super) unsafe fn catch_fault<R>(run: impl FnOnce() -> R) -> Result<R, OwnedFault> {
     // SAFETY: The caller supplies the native stack/unwind contract above.
+    propagate_cancel(unsafe { catch_fault_inner(run, None) })
+}
+
+/// The worker owner distinguishes cancellation from a user/runtime fault.
+/// The same live-stack safety requirements as catch_fault apply.
+pub(super) unsafe fn catch_worker<R>(run: impl FnOnce() -> R) -> Result<R, Failure> {
     unsafe { catch_fault_inner(run, None) }
+}
+
+fn propagate_cancel<R>(result: Result<R, Failure>) -> Result<R, OwnedFault> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(Failure::Fault(fault)) => Err(fault),
+        // A nested diagnostic catcher cannot consume worker cancellation. Its
+        // registrations have drained; continue at the next live boundary.
+        Err(Failure::Cancelled) => cancel(),
+    }
 }
 
 /// A task resume first retires descendants and its borrowed wait before native
@@ -75,13 +98,13 @@ pub(super) unsafe fn catch_fault_before_drain<R>(
     data: *mut u8,
 ) -> Result<R, OwnedFault> {
     // SAFETY: The caller retains data and supplies the hook contract above.
-    unsafe { catch_fault_inner(run, Some((before_drain, data))) }
+    propagate_cancel(unsafe { catch_fault_inner(run, Some((before_drain, data))) })
 }
 
 unsafe fn catch_fault_inner<R>(
     run: impl FnOnce() -> R,
     before_drain: Option<BeforeDrain>,
-) -> Result<R, OwnedFault> {
+) -> Result<R, Failure> {
     let roots = super::HEAP.with(|heap| {
         let heap = heap.borrow();
         if heap.collecting {
@@ -94,6 +117,7 @@ unsafe fn catch_fault_inner<R>(
         cleanup: HEAD.get(),
         roots,
         first: RefCell::new(None),
+        cancelled: Cell::new(false),
         before_drain: Cell::new(before_drain),
     };
     let test_name = TEST_NAME.get();
@@ -106,7 +130,9 @@ unsafe fn catch_fault_inner<R>(
     TEST_NAME.set(test_name);
     FIRST_FAULT.set(first_fault);
     if let Err(payload) = &result {
-        if !payload.is::<FaultUnwind>() || boundary.first.borrow().is_none() {
+        if !payload.is::<FaultUnwind>()
+            || (boundary.first.borrow().is_none() && !boundary.cancelled.get())
+        {
             // Arbitrary Rust panics may have bypassed the live-stack drain.
             // Never inspect stale records or treat runtime bugs as TaskFault.
             super::fatal("unexpected Rust panic at fault boundary");
@@ -119,12 +145,15 @@ unsafe fn catch_fault_inner<R>(
     }
     match result {
         Ok(value) => {
-            if boundary.first.borrow().is_some() {
+            if boundary.first.borrow().is_some() || boundary.cancelled.get() {
                 super::fatal("fault escaped its resume boundary");
             }
             Ok(value)
         }
-        Err(_) => Err(boundary.first.into_inner().expect("recorded runtime fault")),
+        Err(_) => Err(match boundary.first.into_inner() {
+            Some(fault) => Failure::Fault(fault),
+            None => Failure::Cancelled,
+        }),
     }
 }
 
@@ -252,7 +281,38 @@ fn drain_to(boundary: *mut Cleanup) {
     }
 }
 
+fn unwind_boundary(boundary: &Boundary) -> ! {
+    if let Some((before_drain, data)) = boundary.before_drain.take() {
+        // SAFETY: The resume owner remains live and the hook catches its own
+        // cleanup faults. Take first so recursive faults cannot repeat it.
+        unsafe { before_drain(data) };
+    }
+    drain_to(boundary.cleanup);
+    // All cleanup ran with live roots. No Loom code executes after cutting the
+    // abandoned chain, including from native unwinding destructors.
+    super::HEAP.with(|heap| {
+        if heap.borrow().collecting {
+            super::fatal("runtime fault during GC tracing");
+        }
+        super::ROOTS.set(boundary.roots);
+    });
+    resume_unwind(Box::new(FaultUnwind));
+}
+
+pub(super) fn cancel() -> ! {
+    let _mask = super::worker_control::mask();
+    super::shared_access::release_all();
+    // SAFETY: Only an active worker observes cancellation; its catcher and any
+    // intervening diagnostic catchers retain live stack boundary records.
+    let boundary = unsafe { BOUNDARY.get().as_ref() }
+        .unwrap_or_else(|| super::fatal("worker cancellation without a boundary"));
+    boundary.cancelled.set(true);
+    unwind_boundary(boundary)
+}
+
 pub(super) fn fault(message: &[u8]) -> ! {
+    // Cancellation cannot interrupt mandatory cleanup, nor replace its fault.
+    let _mask = super::worker_control::mask();
     // Internal storage accesses never enclose user code. A failed primitive
     // releases its access guards before cleanup can wait for another mutator.
     super::shared_access::release_all();
@@ -273,24 +333,7 @@ pub(super) fn fault(message: &[u8]) -> ! {
                 });
             }
         }
-        if let Some((before_drain, data)) = boundary.before_drain.take() {
-            // SAFETY: The resume owner remains live and the hook catches its
-            // own cleanup faults. Take first so recursive faults cannot repeat it.
-            unsafe { before_drain(data) };
-        }
-        drain_to(boundary.cleanup);
-        // Every user cleanup has finished while its root slots were valid.
-        // Cut the abandoned chain before unwinding makes those stack addresses
-        // stale; no generated callback or Loom allocation runs after this point.
-        super::HEAP.with(|heap| {
-            let heap = heap.borrow();
-            if heap.collecting {
-                super::fatal("runtime fault during GC tracing");
-            }
-            super::ROOTS.set(boundary.roots);
-        });
-        // resume_unwind deliberately bypasses the process-wide Rust panic hook.
-        resume_unwind(Box::new(FaultUnwind));
+        unwind_boundary(boundary);
     }
     let first = FIRST_FAULT.get().unwrap_or_else(|| {
         let first = Fault {

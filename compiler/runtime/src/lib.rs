@@ -37,6 +37,7 @@ mod wait;
 mod wait_abi;
 #[cfg(test)]
 mod wait_tests;
+mod worker_control;
 
 type Trace = unsafe extern "C" fn(*mut u8);
 

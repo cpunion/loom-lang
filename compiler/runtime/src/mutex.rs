@@ -26,6 +26,7 @@ pub(super) fn acquired_since(mark: i64) -> bool {
 /// in a lexical guard; no native lock finalizer substitutes for source cleanup.
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C-unwind" fn loom_rt_mutex_lock(key: *mut u8) -> i64 {
+    super::worker_control::checkpoint();
     rooted([key], |_| {
         let access = HEAP.with(|heap| {
             let mut heap = heap.borrow_mut();
@@ -47,7 +48,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_mutex_lock(key: *mut u8) -> i64 {
                 next.checked_add(1)
             })
             .unwrap_or_else(|_| fatal("mutex guard identities exhausted"));
-        access.acquire();
+        super::worker_control::acquire(&access);
         GUARDS.with(|guards| guards.borrow_mut().push((token, access)));
         token
     })
