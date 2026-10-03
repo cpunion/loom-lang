@@ -10,6 +10,11 @@ implementation, not a compatibility ledger for previous prototypes.
   copied, reconstructed from fields or held across await. This does not yet
   expose general parallel workers.
 
+- Add a native worker cancellation boundary with wakeable mutex acquisition,
+  live-root lexical drain and distinct cancellation/fault outcomes. Nested
+  diagnostic catchers cannot swallow cancellation; mandatory cleanup completes
+  before drain returns. Source worker lowering and scheduling remain open.
+
 - Add compile-time `std.build.target` queries from the actual backend. Bind
   observed properties to checked artifacts, cache reuse and analysis; reject
   mismatched emission targets without adding runtime platform queries.

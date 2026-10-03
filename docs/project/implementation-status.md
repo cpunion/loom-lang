@@ -361,8 +361,12 @@ Source `std.sync.mutex` provides shared mutex identities and lexical
 same-thread reentrance faults. Private resource payloads prevent reconstructing
 duplicate guards through field projection. Native tests exercise cross-thread
 updates and moving GC; source tests cover O0/O2 cleanup and rejected guard use.
-This does not yet supply a general worker executor or cancellation of a blocked
-worker acquisition. See [scoped mutexes](../../compiler/README.md#scoped-mutexes).
+The native worker activation boundary now interrupts blocked mutex acquisition,
+resumes the mutator before lexical drain and keeps cancellation distinct from a
+fault. Cleanup remains non-cancellable; a cleanup fault is retained. A focused
+test drains a cancelled child while its parent still holds the requested lock,
+including moving collection and cleanup allocation. This is not yet a source
+worker executor. See [scoped mutexes](../../compiler/README.md#scoped-mutexes).
 
 Stackless Tasks lower into typed state machines and GC-traced frames, using one
 owner-thread ready queue. Only needed suspension state spills. One-shot handles

@@ -3,6 +3,10 @@
 
 use crate::{List, reserve};
 
+// Private worker activation protocol, not a source spawn API. The caller must
+// separately attach a mutator and keep its managed handoff rooted until drain.
+pub use crate::worker_control::{Control as WorkerControl, Exit as WorkerExit};
+
 // One-shot owner notification for a native provider. No managed references,
 // callbacks, or OS handles cross this boundary. Cancelled registrations are
 // harmless when a provider later notifies them.

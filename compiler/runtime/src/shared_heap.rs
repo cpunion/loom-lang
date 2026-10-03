@@ -209,7 +209,7 @@ pub(super) fn collect(run: impl FnOnce(&[*mut RootFrame])) {
 /// Compiler safe point: all live managed snapshots are in updateable roots;
 /// reload them after returning, even if no allocation occurred on this thread.
 #[unsafe(no_mangle)]
-extern "C" fn loom_rt_shared_checkpoint() {
+pub(super) extern "C" fn loom_rt_shared_checkpoint() {
     current(|participant| {
         let Some(participant) = participant else {
             return;

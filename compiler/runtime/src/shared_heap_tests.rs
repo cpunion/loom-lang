@@ -130,30 +130,37 @@ fn parallel_collectors_rewrite_shared_aliases_and_return_worker_allocations() {
 
 #[test]
 fn nonallocating_mutator_checkpoints_allow_collection_and_reload_roots() {
+    use crate::native::{WorkerControl, WorkerExit};
+    unsafe extern "C-unwind" {
+        fn loom_rt_worker_checkpoint();
+    }
     let input = unsafe { loom_rt_text_new(b"checkpoint".as_ptr(), 10) };
     with_handoff(input, |handoff| {
         scope(|heap| {
             let heap = heap as usize;
             let handoff = Arc::clone(&handoff);
             let ready = Arc::new(AtomicBool::new(false));
-            let done = Arc::new(AtomicBool::new(false));
+            let control = Arc::new(WorkerControl::default());
             let polls = Arc::new(AtomicUsize::new(0));
             let worker = {
                 let ready = Arc::clone(&ready);
-                let done = Arc::clone(&done);
+                let control = Arc::clone(&control);
                 let polls = Arc::clone(&polls);
                 thread::spawn(move || unsafe {
                     attach(heap, || {
-                        rooted([handoff.input.load(Ordering::Acquire)], |slots| {
-                            ready.store(true, Ordering::Release);
-                            while !done.load(Ordering::Acquire) {
-                                loom_rt_shared_checkpoint();
-                                assert_eq!(*slots, handoff.input.load(Ordering::Acquire));
-                                assert_eq!(text_bytes(*slots), b"checkpoint");
-                                polls.fetch_add(1, Ordering::Relaxed);
-                                thread::yield_now();
-                            }
+                        let result: Result<(), _> = control.run(|| {
+                            rooted([handoff.input.load(Ordering::Acquire)], |slots| {
+                                ready.store(true, Ordering::Release);
+                                loop {
+                                    loom_rt_worker_checkpoint();
+                                    assert_eq!(*slots, handoff.input.load(Ordering::Acquire));
+                                    assert_eq!(text_bytes(*slots), b"checkpoint");
+                                    polls.fetch_add(1, Ordering::Relaxed);
+                                    thread::yield_now();
+                                }
+                            });
                         });
+                        assert!(matches!(result, Err(WorkerExit::Cancelled)));
                     });
                 })
             };
@@ -163,7 +170,7 @@ fn nonallocating_mutator_checkpoints_allow_collection_and_reload_roots() {
             for _ in 0..16 {
                 loom_rt_collect();
             }
-            done.store(true, Ordering::Release);
+            control.cancel();
             parked(|| worker.join().unwrap());
             assert!(polls.load(Ordering::Relaxed) > 0);
         });
@@ -481,4 +488,103 @@ fn scoped_mutex_primitives_serialize_updates_while_waiters_participate_in_gc() {
     });
     loom_rt_collect();
     assert!(HEAP.with(|heap| heap.borrow().mutexes.is_empty()));
+}
+
+#[test]
+fn cancelled_mutex_waiter_drains_with_live_roots_before_owner_releases_lock() {
+    use crate::mutex::{loom_rt_mutex_lock, loom_rt_mutex_unlock};
+    use crate::native::{WorkerControl, WorkerExit};
+
+    unsafe extern "C" {
+        fn loom_rt_cleanup_push(
+            record: *mut crate::cleanup::Cleanup,
+            callback: unsafe extern "C-unwind" fn(*mut u8),
+            captures: *mut u8,
+        );
+    }
+    unsafe extern "C-unwind" {
+        fn loom_rt_worker_checkpoint();
+    }
+
+    struct Captures<'a> {
+        slots: *mut *mut u8,
+        cleaned: &'a mut bool,
+    }
+
+    unsafe extern "C-unwind" fn clean(data: *mut u8) {
+        let captures = unsafe { &mut *data.cast::<Captures<'_>>() };
+        loom_rt_collect();
+        unsafe {
+            assert_eq!(text_bytes(*captures.slots), b"still rooted");
+            // Mandatory cleanup ignores the request and may use a different
+            // mutex. GC above also proves cancellation resumed the mutator.
+            loom_rt_worker_checkpoint();
+            let key = crate::loom_rt_box_new(8, None);
+            let guard = loom_rt_mutex_lock(key);
+            assert_eq!(loom_rt_mutex_unlock(guard), 1);
+        }
+        *captures.cleaned = true;
+    }
+
+    with_handoff(crate::loom_rt_box_new(8, None), |handoff| {
+        scope(|heap| {
+            let guard = unsafe { loom_rt_mutex_lock(handoff.input.load(Ordering::Acquire)) };
+            let control = Arc::new(WorkerControl::default());
+            let child_control = Arc::clone(&control);
+            let child_handoff = Arc::clone(&handoff);
+            let heap = heap as usize;
+            let (send, receive) = std::sync::mpsc::channel();
+            let worker = thread::spawn(move || unsafe {
+                attach(heap, || {
+                    let mut cleaned = false;
+                    let result = child_control.run(|| {
+                        let text = loom_rt_text_new(b"still rooted".as_ptr(), 12);
+                        rooted([text], |slots| {
+                            let mut captures = Captures {
+                                slots,
+                                cleaned: &mut cleaned,
+                            };
+                            let mut record = MaybeUninit::uninit();
+                            loom_rt_cleanup_push(
+                                record.as_mut_ptr(),
+                                clean,
+                                ptr::from_mut(&mut captures).cast(),
+                            );
+                            let acquired =
+                                loom_rt_mutex_lock(child_handoff.input.load(Ordering::Acquire));
+                            // Only reached by the timeout recovery of a broken
+                            // cancellation implementation; balance before exit.
+                            loom_rt_mutex_unlock(acquired);
+                            crate::cleanup::fault(b"cancelled acquisition returned");
+                        });
+                    });
+                    send.send((result, cleaned)).unwrap();
+                });
+            });
+            // Registration publishes no borrowed managed address. Collection
+            // waits for the child to park, and relocates the shared lock key.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !control.waiting() && std::time::Instant::now() < deadline {
+                loom_rt_shared_checkpoint();
+                thread::yield_now();
+            }
+            let waiting = control.waiting();
+            if waiting {
+                loom_rt_collect();
+            }
+            control.cancel();
+            let result = park_native(|| receive.recv_timeout(std::time::Duration::from_secs(10)));
+            // The successful path has already drained the child without this
+            // release. On regression, release before joining to report failure.
+            assert_eq!(loom_rt_mutex_unlock(guard), 1);
+            parked(|| worker.join().unwrap());
+            assert!(waiting, "worker never registered its blocked acquisition");
+            let (result, cleaned) = result.expect("cancelled child did not drain while lock held");
+            assert!(matches!(result, Err(WorkerExit::Cancelled)), "{result:?}");
+            assert!(cleaned);
+            let next = unsafe { loom_rt_mutex_lock(handoff.input.load(Ordering::Acquire)) };
+            assert_eq!(loom_rt_mutex_unlock(next), 1);
+        });
+    });
+    loom_rt_collect();
 }

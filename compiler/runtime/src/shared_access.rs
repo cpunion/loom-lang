@@ -21,6 +21,39 @@ thread_local! {
 }
 
 impl Access {
+    pub(super) fn wake(&self) {
+        // Pair notification with the waiter's predicate mutex. An atomic flag
+        // and notify alone would lose cancellation between testing and waiting.
+        let _held = self.held.lock().unwrap();
+        self.changed.notify_all();
+    }
+
+    pub(super) fn acquire_cancellable(
+        self: &Arc<Self>,
+        control: &super::worker_control::Control,
+    ) -> bool {
+        if control.requested() {
+            return false;
+        }
+        if self.try_acquire() {
+            return true;
+        }
+        control.wait_on(Some(Arc::clone(self)));
+        let acquired = shared_heap::park_native(|| {
+            let mut held = self.held.lock().unwrap();
+            while *held && !control.requested() {
+                held = self.changed.wait(held).unwrap();
+            }
+            if control.requested() {
+                return false;
+            }
+            *held = true;
+            true
+        });
+        control.wait_on(None);
+        acquired
+    }
+
     fn try_acquire(&self) -> bool {
         match self.held.try_lock() {
             Ok(mut held) if !*held => {
