@@ -173,6 +173,26 @@ fn not(value Predicate) Predicate {
     }
 }
 
+fn distinct_fact(output List[Predicate], fact Predicate) {
+    match fact {
+        Predicate.Constant(value) => {
+            if value {
+                return
+            }
+        }
+        _ => {
+        }
+    }
+    var index = 0
+    while index < length(output) {
+        if same(get(output, index), fact) {
+            return
+        }
+        index = index + 1
+    }
+    push(output, fact)
+}
+
 fn append_facts(output List[Predicate], fact Predicate) {
     match fact {
         Predicate.And(values) => {
@@ -180,12 +200,12 @@ fn append_facts(output List[Predicate], fact Predicate) {
             append_facts(output, get(values, 1))
         }
         Predicate.TextEqual(left, right) => {
-            push(output, fact)
-            push(output, Predicate.Compare("==", add(text_length(left),
+            distinct_fact(output, fact)
+            distinct_fact(output, Predicate.Compare("==", add(text_length(left),
                         scale(text_length(right), integer(-1)))))
         }
         _ => {
-            push(output, bag_fact(fact, output))
+            distinct_fact(output, bag_fact(fact, output))
         }
     }
 }

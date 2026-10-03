@@ -20,13 +20,13 @@ fn fresh_loop_element(proof Verification, value Value) Value {
     }
 }
 
-fn loop_element_head(proof Verification, entry State) Result[State, Text] {
-    var state = forget_elements(entry)
+fn loop_element_head(proof Verification, entry State, modified List[Int]) Result[State, Text] {
+    var state = forget_modified_elements(entry, modified)
     var index = 0
     while index < length(entry.extents) {
         let extent = get(entry.extents, index)
         var position = 0
-        while position < length(extent.cells) {
+        while extent_modified(extent, entry, modified) && position < length(extent.cells) {
             discard loop_step(proof)?
             let cell = get(extent.cells, position)
             if immutable_snapshot(cell.value) {

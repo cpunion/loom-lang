@@ -2324,6 +2324,15 @@ binding: entry/backedge proofs and every actual return still check the original
 clauses. Rebinding, early returns and cleanup cannot reuse a guessed result.
 Computed/conditional tails and unavailable body-local paths supply no such hint.
 
+The [copy and composition example](examples/smt_contracts/copies.loom) proves
+element equality and permutation for a fresh output, then returns a sorted copy
+using verified call summaries. Equality at every zero-based prefix index implies
+histogram equality for that prefix, not handle identity or equality outside it.
+Loops preserve observations of storage proved disjoint from their may-write
+targets; unknown effects or rebound List receivers still havoc conservatively.
+Output length may track an advancing cursor with an entry offset, checked on
+every backedge, including nonempty targets and captured-length self-appends.
+
 Length-preserving loops can infer bounds/equalities for observed Int, Bool and
 Text elements, and scalar field relations in immutable inline elements. Source
 pre/postconditions may propose storage conservation laws; they are not assumed
@@ -2334,7 +2343,8 @@ bounded amount between two elements while conserving their sum. Ordinary block
 cleanup runs before `continue`/`break` checks and preserves return snapshots.
 
 These observations refer to fixed entry indices, not an entire array. Extent-
-changing loops and opaque effects still forget contents. Mutable element handles
+changing loops forget affected contents; opaque effects forget all possibly
+reachable contents. Mutable element handles
 are not snapshotted; a possibly overlapping write removes evidence. The existing
 64-candidate budget bounds inference, and no loop termination claim is inferred.
 See [loop examples](examples/list_elements/loops.loom).

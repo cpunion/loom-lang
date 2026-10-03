@@ -18,6 +18,52 @@ ensures get(values, observed) == old(get(values, observed))
 "#;
 
 #[test]
+fn copy_contracts_compose_and_cached_edits_cannot_retain_stale_heap_facts() {
+    let package = tempfile::tempdir().unwrap();
+    fs::write(
+        package.path().join("quantified.loom"),
+        include_str!("../examples/smt_contracts/quantified.loom"),
+    )
+    .unwrap();
+    let source = package.path().join("copies.loom");
+    let program = include_str!("../examples/smt_contracts/copies.loom");
+    let cache = package.path().join("cache");
+    let check = || {
+        common::loom(&[
+            "check",
+            package.path().to_str().unwrap(),
+            "--frontend-cache",
+            cache.to_str().unwrap(),
+        ])
+    };
+    fs::write(&source, program).unwrap();
+    success(&check());
+    success(&check());
+    for changed in [
+        program.replace("push(output, get(values, index))", "push(output, 0)"),
+        program.replace(
+            "push(output, get(values, index))",
+            "let alias = values\n        set(alias, index, 0)\n        push(output, get(values, index))",
+        ),
+        program
+            .replace("let output = new[Int]()", "let output = values\n    let count = length(values)")
+            .replace("index < length(values)", "index < count"),
+        program.replace("    sort(output)\n", "    discard sort(output)\n    [0]\n"),
+    ] {
+        fs::write(&source, &changed).unwrap();
+        let output = check();
+        assert!(!output.status.success(), "unsound copy contract: {changed}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("proof") || error.contains("proved"),
+            "unexpected failure: {error}"
+        );
+    }
+    fs::write(&source, program).unwrap();
+    success(&check());
+}
+
+#[test]
 fn quantified_contracts_reject_wrong_algorithms_and_unexecuted_safety_facts() {
     let package = tempfile::tempdir().unwrap();
     let source = package.path().join("main.loom");
