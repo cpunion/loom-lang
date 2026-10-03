@@ -178,6 +178,43 @@ fn nonallocating_mutator_checkpoints_allow_collection_and_reload_roots() {
     loom_rt_collect();
 }
 
+#[cfg(unix)]
+#[test]
+fn blocking_file_read_parks_without_retaining_a_managed_interior() {
+    let mut pipe = [0; 2];
+    assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+    scope(|heap| {
+        let heap = heap as usize;
+        let worker = thread::spawn(move || unsafe {
+            attach(heap, || {
+                rooted([crate::loom_rt_bytes_new()], |slots| {
+                    assert_eq!(crate::loom_rt_file_read(i64::from(pipe[0]), *slots, 4), 4);
+                    assert_eq!(crate::buffer_bytes(*slots), b"read");
+                    assert_eq!(crate::loom_rt_file_close(i64::from(pipe[0])), 0);
+                });
+            });
+        });
+        // Wait for the file boundary itself to publish the worker's roots.
+        loop {
+            let parked = lock(&unsafe { &*(heap as *const SharedHeap) }.control)
+                .participants
+                .values()
+                .any(Option::is_some);
+            if parked {
+                break;
+            }
+            thread::yield_now();
+        }
+        loom_rt_collect();
+        assert_eq!(
+            unsafe { libc::write(pipe[1], b"read".as_ptr().cast(), 4) },
+            4
+        );
+        assert_eq!(unsafe { libc::close(pipe[1]) }, 0);
+        parked(|| worker.join().unwrap());
+    });
+}
+
 #[test]
 fn worker_fault_restores_only_its_own_root_chain() {
     let input = unsafe { loom_rt_text_new(b"parent".as_ptr(), 6) };

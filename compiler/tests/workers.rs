@@ -54,3 +54,23 @@ fn workers_reject_resource_transfer_and_stale_shared_proofs() {
         );
     }
 }
+
+#[test]
+fn ordinary_list_programs_keep_direct_lowering_without_worker_runtime() {
+    let temporary = tempfile::tempdir().unwrap();
+    let binary = common::executable(temporary.path(), "local");
+    let ir = temporary.path().join("local.ll");
+    success(&common::loom(&[
+        "build",
+        "compiler/examples/list_contracts",
+        "--output",
+        binary.to_str().unwrap(),
+        "--emit-ir",
+        ir.to_str().unwrap(),
+    ]));
+    let ir = std::fs::read_to_string(ir).unwrap();
+    assert!(!ir.contains("loom_rt_worker_checkpoint"));
+    assert!(!ir.contains("loom_rt_shared_access"));
+    assert!(!ir.contains("loom_rt_task_run_shared"));
+    success(&common::run_tasks(&binary));
+}
