@@ -4,8 +4,9 @@
 // ordinary checked Result boundary, including the separate List isolation check.
 fn construction_proof(context Context, node Node, source Node, declaration Int, base Int) Result[Bool, Failure] {
     let stage = staging(context, node)?
-    let input = expr(stage, source, base)?
-    if input.kind != ExprKind.Call {
+    // Match the original call's inference, without a new result-type hint.
+    let input = expr(stage, source, -1)?
+    if input.kind != ExprKind.Call || input.ty != base {
         return Result.Ok(false)
     }
     // Argument effects have already happened when the callee is entered.
@@ -62,12 +63,11 @@ fn construction_proof(context Context, node Node, source Node, declaration Int, 
         })
 }
 
-fn proved_construction(context Context, node Node, source Node, value Expr, declaration Int, base Int) Bool {
-    if context.env.expanding_helpers || value.kind != ExprKind.Call {
-        return false
+fn proved_construction(context Context, node Node, source Node, value Expr, declaration Int, base Int) Result[Bool, Failure] {
+    if context.env.expanding_helpers || context.env.stage_depth >= 32 || value.kind != ExprKind.Call {
+        return Result.Ok(false)
     }
-    match construction_proof(context, node, source, declaration, base) {
-        Result.Ok(proved) => proved
-        Result.Err(_) => false
-    }
+    // Unknown predicate proofs keep the Result boundary, but a source callee's
+    // mandatory checking failure must not be hidden as a constructor mismatch.
+    construction_proof(context, node, source, declaration, base)
 }
