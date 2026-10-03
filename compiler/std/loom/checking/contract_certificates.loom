@@ -1,7 +1,7 @@
 // Only completed sequential proofs in this binding/type/input snapshot. The
 // shared CheckInputs cell survives private queues, not a later check or edit.
 // Shared-state verification remains independent. Visiting/cyclic promises,
-// captured callbacks and stored compile-time values supply no cached evidence.
+// closures, captured callbacks and stored compile-time values supply no cached evidence.
 record ContractCertificate {
     arguments List[Int]
     constants List[StaticValue]
@@ -12,8 +12,8 @@ record ContractCertificate {
     postconditions List[Expr]
 }
 
-fn contract_cacheable(context Context) Bool {
-    if !context.emit {
+fn contract_cacheable(context Context, id Int) Bool {
+    if id < 0 || !context.emit {
         return false
     }
     var index = 0
@@ -38,7 +38,7 @@ fn contract_local_types(function Function) List[Int] {
 
 fn completed_contract(context Context, id Int, function Function) List[Expr] {
     let cache = get(context.env.inputs, 0).contracts
-    if id < length(cache) && contract_cacheable(context) {
+    if id < length(cache) && contract_cacheable(context, id) {
         let certificates = get(cache, id)
         var index = 0
         while index < length(certificates) {
@@ -55,7 +55,7 @@ fn completed_contract(context Context, id Int, function Function) List[Expr] {
 }
 
 fn retain_contract(context Context, id Int, function Function) {
-    if !contract_cacheable(context) || length(function.postconditions) == 0 {
+    if !contract_cacheable(context, id) || length(function.postconditions) == 0 {
         return
     }
     let cache = get(context.env.inputs, 0).contracts
