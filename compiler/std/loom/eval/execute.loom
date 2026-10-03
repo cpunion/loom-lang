@@ -103,15 +103,8 @@ fn call(state State, expr Expr, target Int, values List[Value], start Int, paren
         index = index + 1
     }
     let computed = finished(function.body, execute(state, function.body, frame, depth + 1)?)?
-    if function.result_local >= 0 { discard stored(frame, expr, function.result_local, computed)? }
-    index = 0
-    while index < length(function.postconditions) {
-        let condition = get(function.postconditions, index)
-        if !boolean(condition, finished(condition, execute(state, condition, frame, depth + 1)?)?)? {
-            return Result.Err(failure(condition, "compile-time postcondition failed"))
-        }
-        index = index + 1
-    }
+    // Ensures are checked proof metadata, not executable return checks. Keep
+    // CTFE aligned with native calls, including logical old/quantifier clauses.
     Result.Ok(step(computed))
 }
 fn function_value(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {

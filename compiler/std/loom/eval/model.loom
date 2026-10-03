@@ -165,6 +165,7 @@ fn boolean(expr Expr, value Value) Result[Bool, Failure] {
 // Check the supported operation/call closure without executing it. The caller
 // supplies checked IR and establishes input isolation; this is not a general
 // effect proof for functions that receive externally shared mutable objects.
+// Statically proved postconditions are metadata, outside this execution closure.
 pub fn validate(program Program, expression Expr) Result[Bool, Failure] {
     purity(state(program, false), expression)
 }

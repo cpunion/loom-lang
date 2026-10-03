@@ -57,6 +57,7 @@ fn main() {
     snapshot_cases()
     quantified_cases()
     copy_cases()
+    construction_cases()
 }
 
 test fn combined_contracts() {

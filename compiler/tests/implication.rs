@@ -37,6 +37,61 @@ fn stronger_int_refinements_need_no_second_check_before_llvm_optimization() {
 }
 
 #[test]
+fn proved_call_construction_keeps_once_only_argument_effects_and_eager_faults() {
+    let (_directory, executable, ir) = build(
+        r#"
+import std.list.get
+import std.list.set
+import std.list.length
+import std.process.arguments
+
+type Positive = Int where self > 0
+
+fn boundary(value Int) Int
+requires value > 0
+ensures result > 0
+{
+    value
+}
+
+fn observed(count List[Int], value Int) Int {
+    set(count, 0, get(count, 0) + 1)
+    value
+}
+
+fn converted(count List[Int], value Int) Positive {
+    Positive(boundary(observed(count, value)))
+}
+
+fn main() {
+    let count = [0]
+    if length(arguments()) > 1 {
+        set(count, 0, 9223372036854775807)
+    }
+    assert converted(count, 7) == 7
+    assert get(count, 0) == 1
+}
+"#,
+    );
+    success(
+        &Command::new(&executable)
+            .env("LOOM_GC_STRESS", "1")
+            .output()
+            .unwrap(),
+    );
+    // Only the source callee's precondition remains, not a second constructor check.
+    assert_eq!(
+        ir.lines()
+            .filter(|line| line.contains("icmp sgt i64") && line.trim_end().ends_with(", 0"))
+            .count(),
+        1
+    );
+    let overflow = Command::new(executable).arg("overflow").output().unwrap();
+    assert_eq!(overflow.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&overflow.stderr).contains("overflow"));
+}
+
+#[test]
 fn float_conjunction_weakening_reuses_checks_without_ieee_algebra() {
     let (_directory, executable, ir) = build(
         r#"

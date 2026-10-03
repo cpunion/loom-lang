@@ -39,8 +39,8 @@ ensures result == before + 1 && extent(values) == result
     append_one(values, before)
 }
 
-// Only the shape contract is proved here. Ordering and permutation are tested
-// below, not advertised as proofs by the current bounded verifier.
+// This example declares only a shape contract. Ordering and permutation are
+// tested below; the smt_contracts example declares and proves those properties.
 fn sort_in_place(values List[Int], size Int) Int
 requires length(values) == size
 ensures result == size && extent(values) == size

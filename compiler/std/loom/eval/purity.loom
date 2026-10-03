@@ -136,11 +136,6 @@ fn scan_function(effects Effects, expr Expr, target Int, seen List[Int], depth I
         discard scan(effects, get(function.preconditions, index), seen, depth + 1, 0)?
         index = index + 1
     }
-    index = 0
-    while index < length(function.postconditions) {
-        discard scan(effects, get(function.postconditions, index), seen, depth + 1, 0)?
-        index = index + 1
-    }
     Result.Ok(true)
 }
 

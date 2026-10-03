@@ -64,11 +64,12 @@ test fn dynamic_values_capture_once_and_calls_snapshot_arguments() {
     push(statements, dynamic_called(local(1, 6), argument))
     assert accepted(program, node(ExprKind.Block, 1, "", -1, statements), 2).number == 11
     assert rejected(program, dynamic_called(dynamic_boxed(literal(7)), literal(-1)), 0).message == "compile-time precondition failed"
-    set(program.functions, 0, dynamic_method(1, literal(1), new[Expr](), one(truth(false))))
-    assert rejected(program, dynamic_called(dynamic_boxed(literal(7)), literal(0)), 0).message == "compile-time postcondition failed"
+    let metadata = node(ExprKind.Intrinsic, 2, "proof_all", -1, new[Expr]())
+    set(program.functions, 0, dynamic_method(1, literal(1), new[Expr](), one(metadata)))
+    assert accepted(program, dynamic_called(dynamic_boxed(literal(7)), literal(0)), 0).number == 1
 }
 
-test fn dynamic_purity_checks_every_target_and_its_contracts() {
+test fn dynamic_purity_checks_executable_targets_and_preconditions_not_proof_metadata() {
     let program = dynamic_program()
     let targets = new[Int]()
     push(targets, 1)
@@ -82,7 +83,9 @@ test fn dynamic_purity_checks_every_target_and_its_contracts() {
     set(program.functions, 1, dynamic_method(2, literal(0), one(impure), new[Expr]()))
     assert rejected(program, expression, 0).message == "compile-time evaluation forbids intrinsic write"
     set(program.functions, 1, dynamic_method(2, literal(0), new[Expr](), one(impure)))
-    assert rejected(program, expression, 0).message == "compile-time evaluation forbids intrinsic write"
+    // The caller supplies checked IR. Ghost metadata cannot add execution
+    // effects or roots, just as it cannot establish a source-level proof here.
+    assert accepted(program, expression, 0).number == 70
     // Merely holding a capability does not execute any of its methods.
     assert accepted(program, dynamic_boxed(literal(7)), 0).number == 1
     set(program.functions, 1, dynamic_method(2, literal(0), new[Expr](), new[Expr]()))

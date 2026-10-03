@@ -1,0 +1,46 @@
+import std.result.Result
+import std.result.ConstraintError
+
+type SortedValues = List[Int] where ordered(self)
+
+// The checked guarantee supplies the predicate; the factory analysis still
+// establishes isolated storage before introducing this read-only constrained type.
+fn constrained_sorted_copy(values List[Int]) SortedValues {
+    SortedValues(sorted_copy(values))
+}
+
+fn checked_copy(values List[Int]) Result[SortedValues, ConstraintError] {
+    SortedValues(copied(values))
+}
+
+fn construction_cases() {
+    let source = [3, 1, 2]
+    let valid = constrained_sorted_copy(source)
+    let alias = valid
+    set(source, 0, 99)
+    assert valid[0] == 1 && alias[2] == 3
+    assert length(valid) == 3
+    let computed = comptime {
+        sorted_copy([2, 1, 2])
+    }
+    assert identical(computed, [1, 2, 2])
+    match checked_copy([2, 1]) {
+        Result.Ok(_) => {
+            assert false
+        }
+        Result.Err(_) => {
+        }
+    }
+    match checked_copy([1, 2]) {
+        Result.Ok(value) => {
+            assert value[0] == 1 && value[1] == 2
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}
+
+test fn proved_construction_reuses_contracts_but_unknown_content_keeps_a_check() {
+    construction_cases()
+}

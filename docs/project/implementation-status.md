@@ -317,6 +317,12 @@ allocation-time disjointness; unknown aliases still invalidate observations.
 Affine output-length candidates also cover appending to a nonempty target,
 including a captured-length self-append. Repeated facts and inherited quantified
 contexts are shared logically rather than weakening safety obligations.
+Direct source calls can now reuse checked guarantees at constrained construction,
+without replaying argument effects or bypassing fresh-storage validation. The
+[construction example](../../compiler/examples/smt_contracts/constructions.loom)
+returns a read-only constrained sorted copy directly; unknown ordering keeps
+the checked `Result` boundary. CTFE ignores statically proved `ensures` metadata
+while retaining executable preconditions, bodies and faults.
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining

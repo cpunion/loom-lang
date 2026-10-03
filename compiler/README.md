@@ -2333,6 +2333,17 @@ targets; unknown effects or rebound List receivers still havoc conservatively.
 Output length may track an advancing cursor with an entry offset, checked on
 every backedge, including nonempty targets and captured-length self-appends.
 
+Direct source-call results can reuse their checked normal-return guarantees at a
+constrained constructor. A private proof queue uses typed invocation snapshots
+and closed immutable literals; argument effects still execute once in the
+original call. Unsupported or unknown proofs retain checked `Result` construction.
+List isolation is a separate requirement, not inferred from ordering alone.
+The [construction example](examples/smt_contracts/constructions.loom) converts a
+proved sorted copy directly, retains checks for unknown input ordering, and runs
+the contracted copying/sorting functions at compile time. CTFE executes source
+preconditions and bodies, not statically proved `ensures` metadata, matching native
+execution without an extra return check or a runtime implementation of proof operators.
+
 Length-preserving loops can infer bounds/equalities for observed Int, Bool and
 Text elements, and scalar field relations in immutable inline elements. Source
 pre/postconditions may propose storage conservation laws; they are not assumed

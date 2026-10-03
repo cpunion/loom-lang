@@ -49,6 +49,10 @@ fn copy_contracts_compose_and_cached_edits_cannot_retain_stale_heap_facts() {
             .replace("let output = new[Int]()", "let output = values\n    let count = length(values)")
             .replace("index < length(values)", "index < count"),
         program.replace("    sort(output)\n", "    discard sort(output)\n    [0]\n"),
+        program.replace(
+            "    output\n}",
+            "    if length(values) > 0 {\n        set(values, 0, 99)\n    }\n    output\n}",
+        ),
     ] {
         fs::write(&source, &changed).unwrap();
         let output = check();
@@ -60,6 +64,25 @@ fn copy_contracts_compose_and_cached_edits_cannot_retain_stale_heap_facts() {
         );
     }
     fs::write(&source, program).unwrap();
+    success(&check());
+    let construction = package.path().join("construction.loom");
+    let wrapper = r#"type Sorted = List[Int] where ordered(self)
+
+fn constrained(values List[Int]) Sorted {
+    Sorted(sorted_copy(values))
+}
+"#;
+    fs::write(&construction, wrapper).unwrap();
+    success(&check());
+    fs::write(
+        &construction,
+        wrapper.replace("sorted_copy(values)", "sort(values)"),
+    )
+    .unwrap();
+    let aliased = check();
+    assert!(!aliased.status.success());
+    assert!(String::from_utf8_lossy(&aliased.stderr).contains("non-publishing factory"));
+    fs::write(&construction, wrapper).unwrap();
     success(&check());
 }
 
