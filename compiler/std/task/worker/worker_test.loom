@@ -3,6 +3,7 @@ import std.list.set
 import std.list.push
 import std.list.length
 import std.list.new
+import std.list.clone
 import std.bytes.new
 import std.bytes.length
 import std.bytes.push
@@ -309,6 +310,25 @@ test async fn private_storage_retains_required_proofs_inside_workers() {
     assert run(fn() Int {
             local_loop(12)
         }).await == 12
+    assert run(rebound_count).await == 3
+}
+
+fn rebound_values(choice Bool) List[Int]
+ensures length(result) >= 0
+{
+    var values = [1]
+    if choice {
+        values = [2, 3]
+    }
+    values
+}
+
+fn rebound_count() Int
+ensures result >= 1
+{
+    let values = rebound_values(true)
+    push(values, 4)
+    length(values)
 }
 
 fn local_loop(limit Int) Int
@@ -322,4 +342,51 @@ ensures result == limit
         index = index + 1
     }
     length(values)
+}
+
+record CopiedValues {
+    values List[Int]
+}
+
+fn copied_values(values List[Int]) CopiedValues {
+    CopiedValues {
+        values = clone(values)
+    }
+}
+
+fn extended_copy(values List[Int]) Int
+ensures result >= 1
+{
+    let copied = copied_values(values).values
+    push(copied, 7)
+    length(copied)
+}
+
+fn independent_copy(values List[Int]) Int
+ensures result == 0
+{
+    let copied = clone(values)
+    let before = length(copied)
+    push(values, 9)
+    length(copied) - before
+}
+
+test async fn explicit_scalar_copies_keep_private_proofs_without_copying_nested_data() {
+    let values = [1, 2]
+    assert run(fn() Int {
+            extended_copy(values)
+        }).await == 3
+    assert length(values) == 2
+    assert run(fn() Int {
+            independent_copy(values)
+        }).await == 0
+    assert length(values) == 3
+    let nested = [values]
+    let copied = run(fn() List[List[Int]] {
+            clone(nested)
+        }).await
+    push(get(copied, 0), 11)
+    assert length(values) == 4 && length(nested) == 1
+    push(copied, [12])
+    assert length(nested) == 1 && length(copied) == 2
 }

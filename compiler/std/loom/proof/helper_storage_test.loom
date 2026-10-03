@@ -1,0 +1,18 @@
+test fn private_summary_fields_do_not_imply_distinct_allocations() {
+    let entry = State {
+        locals = new[Value]()
+        facts = new[Predicate]()
+        extents = new[ListExtent]()
+        observations = new[Observation]()
+    }
+    let fields = new[Value]()
+    push(fields, Value.List(10))
+    push(fields, Value.List(11))
+    let state = fresh_storage(Value.Record(fields), entry)
+    let a = get(state.extents, 0)
+    let b = get(state.extents, 1)
+    assert a.private_storage && b.private_storage && extent_overlap(a, b)
+    let single = fresh_storage(Value.List(12), state)
+    let c = get(single.extents, 2)
+    assert c.private_storage && c.allocated && !extent_overlap(a, c)
+}

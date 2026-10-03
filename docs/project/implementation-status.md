@@ -421,6 +421,9 @@ Mixed, callback, dynamic and external-entry contexts stay conservative, without
 cloning helper bodies. GC roots and cancellation checkpoints remain.
 Required proofs are revalidated for interference: scalar snapshots and private
 List observations remain stable; finite private factory summaries compose.
+Checked source allocation/return origins recognize explicit scalar-element copies
+from shared inputs, including `std.list.clone` through inline wrappers. No value
+contract or deep copy is inferred; multiple returned mutable leaves may alias.
 Shared entry, old and current observations are independent: nonnegative lengths
 are provable, but repeated reads, stale index guards and hypothetical overflow
 gain no evidence. Once-only helper arguments and local bindings retain scalar

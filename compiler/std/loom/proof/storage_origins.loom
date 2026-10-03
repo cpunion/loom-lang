@@ -1,0 +1,89 @@
+// A bounded checked-body origin analysis. True means every reachable mutable
+// leaf came from this invocation or a fresh argument, not that leaves are
+// distinct. The caller separately excludes publication and opaque effects.
+fn factory_storage(program Program, function Function, inputs List[Bool], budget List[Int], depth Int) Bool {
+    if depth >= 32 || !conjunction_step(budget) || function.is_async ||
+    length(function.params) != length(inputs) || length(function.locals) > 256 {
+        return false
+    }
+    if function.runtime_name != "" {
+        return function.runtime_name == "list_new" || function.runtime_name == "list_new_capacity" ||
+        (function.runtime_name == "list_get" && length(inputs) == 2 && get(inputs, 0))
+    }
+    let locals = new[Bool]()
+    var index = 0
+    while index < length(function.locals) {
+        push(locals, index < length(inputs) && get(inputs, index) && !get(function.locals, index).mutable)
+        index = index + 1
+    }
+    let returns = new[Bool]()
+    push(returns, true)
+    let returned = storage_origin(program, function, function.body, locals, returns, budget, depth + 1)
+    get(returns, 0) && (!function.body.falls || returned)
+}
+
+fn storage_origin(program Program, function Function, value Expr, locals List[Bool],
+    returns List[Bool], budget List[Int], depth Int) Bool {
+    if depth >= 32 || !conjunction_step(budget) || length(value.arms) != 0 {
+        // Exhaustion is failure for the whole scan, even in a discarded child.
+        set(returns, 0, false)
+        return false
+    }
+    let inputs = new[Bool]()
+    var index = 0
+    while index < length(value.children) {
+        push(inputs, storage_origin(program, function, get(value.children, index),
+                locals, returns, budget, depth + 1))
+        index = index + 1
+    }
+    if value.kind == ExprKind.Return {
+        if length(inputs) != 0 && !get(inputs, 0) {
+            set(returns, 0, false)
+        }
+        return true
+    }
+    if value.kind == ExprKind.Let {
+        if value.index < 0 || value.index >= length(locals) || length(inputs) != 1 {
+            set(returns, 0, false)
+        } else {
+            set(locals, value.index, get(inputs, 0) && !get(function.locals, value.index).mutable)
+        }
+    }
+    if immutable_storage_type(program, value.ty, 0) {
+        return true
+    }
+    if value.kind == ExprKind.Local {
+        return value.index >= 0 && value.index < length(locals) && get(locals, value.index)
+    }
+    if value.kind == ExprKind.Block {
+        return length(inputs) != 0 && get(inputs, length(inputs) - 1)
+    }
+    if value.kind == ExprKind.If && length(inputs) == 3 {
+        return (!get(value.children, 1).falls || get(inputs, 1)) &&
+        (!get(value.children, 2).falls || get(inputs, 2))
+    }
+    if value.kind == ExprKind.Field || value.kind == ExprKind.Coerce {
+        return length(inputs) == 1 && get(inputs, 0)
+    }
+    if value.kind == ExprKind.Bytes {
+        return true
+    }
+    if value.kind == ExprKind.List || value.kind == ExprKind.Record {
+        index = 0
+        while index < length(inputs) {
+            if !get(inputs, index) {
+                return false
+            }
+            index = index + 1
+        }
+        return true
+    }
+    if value.kind == ExprKind.Call && value.index >= 0 && value.index < length(program.functions) {
+        return factory_storage(program, get(program.functions, value.index), inputs, budget, depth + 1)
+    }
+    if value.kind == ExprKind.Intrinsic {
+        return value.text == "list_new" || value.text == "list_new_capacity" ||
+        (value.text == "list_get" && length(inputs) == 2 && get(inputs, 0))
+    }
+    false
+}
