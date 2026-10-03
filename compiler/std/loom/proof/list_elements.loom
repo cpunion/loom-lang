@@ -78,8 +78,21 @@ fn preserved_elements(entry State, current State, shared Bool) State {
     var index = 0
     while index < length(entry.extents) {
         let extent = get(entry.extents, index)
-        if length(extent.cells) != 0 && (!shared || extent.private_storage) {
-            state = with_cells(extent.identity, extent.cells, state)
+        if !shared || extent.private_storage {
+            match list_state(extent.identity, state) {
+                Result.Ok(current) => {
+                    if !shared || current.private_storage {
+                        if length(extent.cells) != 0 {
+                            state = with_cells(extent.identity, extent.cells, state)
+                        }
+                        if current.contents < 0 && extent.contents >= 0 {
+                            state = with_contents(extent.identity, extent.contents, state)
+                        }
+                    }
+                }
+                Result.Err(_) => {
+                }
+            }
         }
         index = index + 1
     }
@@ -206,16 +219,26 @@ fn element_inputs(receiver Value, position Value) Result[ElementLocation, Text] 
             return Result.Err("List element proof needs a tracked handle")
         }
     }
-    let index = match position {
-        Value.Number(index) => index
-        _ => {
-            return Result.Err("List element proof needs an Int index")
-        }
-    }
+    let index = list_value_index(position)?
     Result.Ok(ElementLocation {
             identity = identity
             index = index
         })
+}
+
+fn list_value_index(value Value) Result[Linear, Text] {
+    match value {
+        Value.Number(index) => Result.Ok(index)
+        _ => Result.Err("List element proof needs an Int index")
+    }
+}
+
+fn list_value_extent(value Value, state State) Result[Linear, Text] {
+    match value {
+        Value.List(identity) => list_extent(identity, state)
+        Value.EntryList(size, _) => Result.Ok(size)
+        _ => Result.Err("List length proof requires a tracked handle or entry value")
+    }
 }
 
 fn element_defined(value Expr, state State) Result[Bool, Text] {
@@ -225,9 +248,10 @@ fn element_defined(value Expr, state State) Result[Bool, Text] {
 }
 
 fn element_bounds(value Expr, state State) Result[Bool, Text] {
-    let location = element_location(value, state)?
-    if !index_relation(">=", location.index, constant(integer(0)), state) ||
-    !index_relation("<", location.index, list_extent(location.identity, state)?, state) {
+    let size = list_value_extent(pure(get(value.children, 0), state)?, state)?
+    let index = list_value_index(pure(get(value.children, 1), state)?)?
+    if !index_relation(">=", index, constant(integer(0)), state) ||
+    !index_relation("<", index, size, state) {
         return Result.Err("postcondition List index is not proved in bounds")
     }
     Result.Ok(true)

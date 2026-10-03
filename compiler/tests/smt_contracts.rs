@@ -55,35 +55,39 @@ fn heap_versions_reject_wrong_writes_alias_interference_and_undefined_reads() {
 
 #[test]
 fn cached_heap_proofs_revalidate_edits_and_worker_interference() {
-    let package = tempfile::tempdir().unwrap();
-    let cache = package.path().join("cache");
-    let source = package.path().join("restore.loom");
-    let main = package.path().join("main.loom");
-    fs::write(&source, RESTORE).unwrap();
-    fs::write(&main, "fn main() {\n    restored([1], 0, 0)\n}\n").unwrap();
-    let check = || {
-        common::loom(&[
-            "check",
-            package.path().to_str().unwrap(),
-            "--frontend-cache",
-            cache.to_str().unwrap(),
-        ])
-    };
-    success(&check());
-    success(&check());
-    fs::write(
-        &source,
-        RESTORE.replace("set(values, changed, saved)", "set(values, changed, 7)"),
-    )
-    .unwrap();
-    let wrong = check();
-    assert!(!wrong.status.success());
-    assert!(String::from_utf8_lossy(&wrong.stderr).contains("postcondition"));
-    fs::write(&source, RESTORE).unwrap();
-    success(&check());
-    fs::write(
-        &main,
-        r#"import std.task.worker.run
+    for program in [
+        RESTORE.to_owned(),
+        RESTORE.replace("old(get(values, observed))", "get(old(values), observed)"),
+    ] {
+        let package = tempfile::tempdir().unwrap();
+        let cache = package.path().join("cache");
+        let source = package.path().join("restore.loom");
+        let main = package.path().join("main.loom");
+        fs::write(&source, &program).unwrap();
+        fs::write(&main, "fn main() {\n    restored([1], 0, 0)\n}\n").unwrap();
+        let check = || {
+            common::loom(&[
+                "check",
+                package.path().to_str().unwrap(),
+                "--frontend-cache",
+                cache.to_str().unwrap(),
+            ])
+        };
+        success(&check());
+        success(&check());
+        fs::write(
+            &source,
+            program.replace("set(values, changed, saved)", "set(values, changed, 7)"),
+        )
+        .unwrap();
+        let wrong = check();
+        assert!(!wrong.status.success());
+        assert!(String::from_utf8_lossy(&wrong.stderr).contains("postcondition"));
+        fs::write(&source, &program).unwrap();
+        success(&check());
+        fs::write(
+            &main,
+            r#"import std.task.worker.run
 
 async fn main() {
     discard run(fn() Int {
@@ -92,12 +96,71 @@ async fn main() {
         }).await
 }
 "#,
-    )
-    .unwrap();
-    let shared = check();
-    assert!(!shared.status.success());
-    let error = String::from_utf8_lossy(&shared.stderr);
-    assert!(error.contains("interference-safe"), "{error}");
+        )
+        .unwrap();
+        let shared = check();
+        assert!(!shared.status.success());
+        let error = String::from_utf8_lossy(&shared.stderr);
+        assert!(error.contains("interference-safe"), "{error}");
+    }
+}
+
+#[test]
+fn entry_lists_do_not_restore_current_headers_or_hide_undefined_accesses() {
+    let package = tempfile::tempdir().unwrap();
+    let source = package.path().join("main.loom");
+    let snapshot = RESTORE.replace("old(get(values, observed))", "get(old(values), observed)");
+    for program in [
+        snapshot.replace("set(values, changed, saved)", "set(values, changed, 7)"),
+        snapshot.replace(
+            "get(old(values), observed)",
+            "get(old(values), length(values))",
+        ),
+        r#"import std.list.get
+import std.list.set
+import std.list.length
+
+fn changed(values List[Int], index Int) Int
+requires index >= 0 && index < length(values)
+ensures result == get(old(values), index)
+{
+    let saved = get(values, index)
+    set(values, index, 7)
+    saved
+}
+
+fn wrong(values List[Int], index Int) Int
+requires index >= 0 && index < length(values)
+ensures result == get(values, index)
+{
+    changed(values, index)
+}
+"#
+        .to_owned(),
+        r#"import std.list.get
+import std.list.length
+
+fn wrong(values List[Int], index Int) Bool
+requires index >= 0 && index < length(values)
+ensures get(old(values), index) + 1 > get(old(values), index)
+{
+    true
+}
+"#
+        .to_owned(),
+    ] {
+        fs::write(&source, &program).unwrap();
+        let output = common::loom(&["check", package.path().to_str().unwrap()]);
+        assert!(
+            !output.status.success(),
+            "unsound entry snapshot: {program}"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("postcondition") || error.contains("List element proof"),
+            "unexpected failure: {error}\n{program}"
+        );
+    }
 }
 
 #[test]

@@ -356,7 +356,7 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
     }
     var observation = -1
     if length(context.observations) != 0 && (list_length_expression(value) || list_read_expression(value) ||
-        entry_length_expression(value) || entry_element_expression(value)) {
+        entry_observation_expression(value)) {
         observation = expanded_observation(context, value)
     }
     let output = proof_expr(value, value.kind, value.ty, value.text, observation, children)

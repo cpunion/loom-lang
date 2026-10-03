@@ -48,6 +48,7 @@ enum Value {
     Empty
     Text(TextValue)
     List(Int)
+    EntryList(Linear, Int)
 }
 
 record ListCell {

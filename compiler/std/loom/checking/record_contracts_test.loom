@@ -41,9 +41,9 @@ test fn old_reads_only_immutable_entry_scalars() {
     rejects(concat(nested, "fn wrong(value Outer) Int ensures result == old(value.inner.count) { 0 }"))
 }
 
-test fn old_rejects_aliases_and_non_entry_places() {
+test fn old_rejects_unsupported_graphs_and_non_entry_places() {
     let shared = "record Holder { count Int; values List[Int] }\n"
-    let alias = concat(shared, "fn unsafe(value Holder) Int ensures result == old(value.values) { 1 }")
+    let alias = "record Nested { values List[List[Int]] }\nfn unsafe(value Nested) Int ensures result == old(value.values) { 1 }"
     match checked(source_files(alias)) {
         Result.Err(failed) => {
             assert failed.diagnostic.message == "old requires an immutable entry value or a supported pure observation"

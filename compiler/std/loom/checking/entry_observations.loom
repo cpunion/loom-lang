@@ -1,5 +1,11 @@
 // Shared inputs are permitted only inside a proved, pure entry observation.
-// The result is an immutable value, never a shallow snapshot of a List handle.
+// The result is an immutable logical value, never another mutable List alias.
+fn old_list_type(env Environment, ty Int) Bool {
+    let shape = get(env.types, base_type(env, ty))
+    shape.kind == TypeKind.List && length(shape.arguments) == 1 &&
+    get(shape.arguments, 0) == 1
+}
+
 fn old_observation(context Context, node Node) Result[Expr, Failure] {
     if lookup(context, "result") < 0 {
         return Result.Err(error(context, node, "old is only valid in ensures"))
@@ -9,7 +15,7 @@ fn old_observation(context Context, node Node) Result[Expr, Failure] {
         return Result.Err(error(context, node, "old requires an immutable entry value or a supported pure observation"))
     }
     let value = expr(context, argument, -1)?
-    if !inline_constraint_base(context.env, value.ty, 0) {
+    if !inline_constraint_base(context.env, value.ty, 0) && !old_list_type(context.env, value.ty) {
         return Result.Err(error(context, node, "old requires an immutable entry value or a supported pure observation"))
     }
     // Contract-only metadata. Expansion validates the helper closure and

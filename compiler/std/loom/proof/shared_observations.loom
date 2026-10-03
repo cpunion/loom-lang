@@ -24,6 +24,14 @@ fn shared_observations(proof Verification, value Expr, guard Expr, state State) 
     if list_length_expression(expression) || list_read_expression(expression) {
         let identity = match pure(get(children, 0), current)? {
             Value.List(identity) => identity
+            Value.EntryList(_, _) => {
+                // A logical entry value observes no current shared storage.
+                return Result.Ok(EntrySnapshot {
+                        expression = expression
+                        state = current
+                        entry = current
+                    })
+            }
             _ => {
                 return Result.Err("shared contract observation requires a tracked List")
             }
