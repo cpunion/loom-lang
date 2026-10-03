@@ -33,14 +33,14 @@ pub fn aggregate(value Int) Ordered {
     Ordered(interval(value))
 }
 
-fn fixed(comptime value Int) Int
+fn fixed(value Int, comptime selected Bool) Int
 ensures result == value
 {
     value
 }
 
 pub fn selected() Positive {
-    Positive(fixed(1))
+    Positive(fixed(1, true))
 }
 """)
     rejects_result("""
@@ -57,18 +57,18 @@ pub fn unproved(value Int) Positive {
     rejects_result("""
 type Positive = Int where self > 0
 
-fn fixed(comptime value Int) Int
+fn fixed(value Int, comptime selected Bool) Int
 ensures result == value
 {
     value
 }
 
 pub fn first() Positive {
-    Positive(fixed(1))
+    Positive(fixed(1, true))
 }
 
 pub fn different_instance() Positive {
-    Positive(fixed(-1))
+    Positive(fixed(-1, false))
 }
 """)
 }
