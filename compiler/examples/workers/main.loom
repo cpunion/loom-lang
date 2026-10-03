@@ -37,4 +37,7 @@ async fn main() {
     assert run(fn() Int {
             observed_count(values)
         }).await == 1
+    assert run(fn() Int {
+            observed_snapshot(values)
+        }).await == 1
 }

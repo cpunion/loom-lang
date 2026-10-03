@@ -423,7 +423,10 @@ Required proofs are revalidated for interference: scalar snapshots and private
 List observations remain stable; finite private factory summaries compose.
 Shared entry, old and current observations are independent: nonnegative lengths
 are provable, but repeated reads, stale index guards and hypothetical overflow
-gain no evidence. Stored mutable graphs and opaque calls lose privacy, and loop
+gain no evidence. Once-only helper arguments and local bindings retain scalar
+snapshots through substitution, inline fields, guarded branches and cache reuse;
+independent invocations receive separate observation identities.
+Stored mutable graphs and opaque calls lose privacy, and loop
 backedges cannot restore it. General synchronized heap reasoning remains open. Source library
 compound operations still require caller synchronization when racing mutations
 would violate the desired application semantics.

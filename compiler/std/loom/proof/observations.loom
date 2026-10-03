@@ -1,0 +1,117 @@
+// Expansion duplicates expression trees, not evaluations. A read gets a fresh
+// identity before parameter/local substitution; separate calls never share it.
+// These path-local values are verification data, not source or runtime storage.
+record Observation {
+    identity Int
+    entry Bool
+    guard Expr
+    valid Option[Predicate]
+    value Value
+}
+
+// Checked clauses may already contain duplicated reads. Import their identities
+// once per invocation, retaining sharing without confusing two callee scopes.
+fn expanded_observation(context Expansion, value Expr) Int {
+    var index = 0
+    while value.index >= 0 && index < length(context.origins) {
+        let origin = get(context.origins, index)
+        if origin.source == value.index {
+            return origin.identity
+        }
+        index = index + 1
+    }
+    let identity = get(context.observations, 0)
+    set(context.observations, 0, identity + 1)
+    if value.index >= 0 {
+        push(context.origins, ObservationOrigin {
+                source = value.index
+                identity = identity
+            })
+    }
+    identity
+}
+
+fn observation_expression(value Expr) Bool {
+    value.index >= 0 && (list_length_expression(value) || list_read_expression(value) ||
+        entry_length_expression(value) || entry_element_expression(value))
+}
+
+fn observation_guard(guard Expr, state State) Option[Predicate] {
+    if entry_guard_expression(guard) {
+        match pure(guard, state) {
+            Result.Ok(value) => match value {
+                Value.Boolean(fact) => {
+                    return Option.Some(fact)
+                }
+                _ => {
+                }
+            }
+            Result.Err(_) => {
+            }
+        }
+    }
+    Option.None
+}
+
+fn observation_available(observed Observation, guard Expr, state State) Bool {
+    if is_bool(observed.guard, true) || exact_expression(observed.guard, guard) {
+        return true
+    }
+    match observed.valid {
+        Option.Some(valid) => match observation_guard(guard, state) {
+            Option.Some(current) => holds(valid, assume(state, current).facts)
+            Option.None => false
+        }
+        Option.None => false
+    }
+}
+
+fn observation_value(value Expr, guard Expr, state State) Option[Value] {
+    if !observation_expression(value) {
+        return Option.None
+    }
+    let entry = entry_length_expression(value) || entry_element_expression(value)
+    var index = length(state.observations)
+    while index > 0 {
+        index = index - 1
+        let observed = get(state.observations, index)
+        // Reuse only on a path that implies the original guard. Raw heap guards
+        // cannot supply that implication; actual executed reads are unconditional.
+        if observed.identity == value.index && observed.entry == entry &&
+        observation_available(observed, guard, state) {
+            return Option.Some(observed.value)
+        }
+    }
+    Option.None
+}
+
+fn with_observation(source Expr, guard Expr, value Value, state State) State {
+    if !observation_expression(source) {
+        return state
+    }
+    let observations = clone(state.observations)
+    push(observations, Observation {
+            identity = source.index
+            entry = entry_length_expression(source) || entry_element_expression(source)
+            guard = guard
+            valid = observation_guard(guard, state)
+            value = value
+        })
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = state.extents
+        observations = observations
+    }
+}
+
+fn observation_reference(source Expr, value Value, state State) EntrySnapshot {
+    let values = new[Value]()
+    push(values, value)
+    let scope = bounded(value, call_scope(state, values))
+    EntrySnapshot {
+        expression = proof_expr(source, ExprKind.Local, source.ty, "", length(state.locals), new[Expr]())
+        state = scope
+        entry = scope
+    }
+}

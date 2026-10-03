@@ -123,6 +123,7 @@ test fn proof_outcomes_never_exceed_the_path_budget() {
         locals = new[Value]()
         facts = new[Predicate]()
         extents = new[ListExtent]()
+        observations = new[Observation]()
     }
     let output = new[Outcome]()
     let value = Outcome { state = state value = Value.Empty }

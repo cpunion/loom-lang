@@ -33,6 +33,7 @@ fn frame_value(value Expr, locals List[Value], entry State, budget List[Int]) Va
             locals = locals
             facts = entry.facts
             extents = entry.extents
+            observations = entry.observations
         }) {
         Result.Ok(value) => value
         Result.Err(_) => Value.Empty

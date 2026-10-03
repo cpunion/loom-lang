@@ -47,6 +47,7 @@ fn with_cells(identity Int, cells List[ListCell], state State) State {
         locals = state.locals
         facts = state.facts
         extents = extents
+        observations = state.observations
     }
 }
 
@@ -61,6 +62,7 @@ fn forget_elements(state State) State {
         locals = state.locals
         facts = state.facts
         extents = extents
+        observations = state.observations
     }
 }
 
@@ -178,6 +180,7 @@ fn written_element(identity Int, index Linear, value Value, state State) Result[
             locals = state.locals
             facts = state.facts
             extents = extents
+            observations = state.observations
         })
 }
 

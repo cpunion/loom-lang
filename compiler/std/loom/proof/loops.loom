@@ -226,6 +226,8 @@ fn loop_candidate_guard(proof Verification, guard Expr) Expr {
         budget = budget
         active = new[Int]()
         checks = new[Evaluation]()
+        observations = new[Int]()
+        origins = new[ObservationOrigin]()
     }
     match expanded(context, guard, proof_bool(guard, true), bindings,
         proof.function.locals, false, 0, 0) {

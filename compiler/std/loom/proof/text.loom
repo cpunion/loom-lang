@@ -62,6 +62,7 @@ fn implication_initial(premise Expr, conclusion Expr) State {
             locals = locals
             facts = new[Predicate]()
             extents = new[ListExtent]()
+            observations = new[Observation]()
         })
 }
 

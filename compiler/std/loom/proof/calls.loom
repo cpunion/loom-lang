@@ -160,6 +160,7 @@ fn call_scope(state State, values List[Value]) State {
         locals = locals
         facts = state.facts
         extents = state.extents
+        observations = state.observations
     }
 }
 
@@ -174,6 +175,7 @@ fn caller_state(state State, boundary Int) State {
         locals = locals
         facts = state.facts
         extents = state.extents
+        observations = state.observations
     }
 }
 
@@ -337,6 +339,12 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
         budget = proof.budget
         active = new[Int]()
         checks = new[Evaluation]()
+        observations = if proof.shared {
+            proof.fresh
+        } else {
+            new[Int]()
+        }
+        origins = new[ObservationOrigin]()
     }
     discard summary_conditions(entry, function, function.preconditions, bindings)?
     let paths = established_checks(proof, entry.checks, state, depth)?
@@ -388,6 +396,12 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
             budget = proof.budget
             active = new[Int]()
             checks = new[Evaluation]()
+            observations = if proof.shared {
+                proof.fresh
+            } else {
+                new[Int]()
+            }
+            origins = new[ObservationOrigin]()
         }
         discard summary_conditions(context, function, function.postconditions, current_bindings)?
         let path = proof_expr(call, ExprKind.Local, function.result, "",
@@ -402,6 +416,8 @@ fn applied_summary(proof Verification, call Expr, function Function, state State
             budget = context.budget
             active = context.active
             checks = new[Evaluation]()
+            observations = context.observations
+            origins = context.origins
         }
         var check_index = 0
         while check_index < length(context.checks) {
@@ -453,6 +469,12 @@ fn applied_call(proof Verification, call Expr, function Function, arguments Call
         budget = proof.budget
         active = new[Int]()
         checks = new[Evaluation]()
+        observations = if proof.shared {
+            proof.fresh
+        } else {
+            new[Int]()
+        }
+        origins = new[ObservationOrigin]()
     }
     discard expansion_step(context, 0)?
     if length(function.postconditions) != 0 || function.result == 0 {

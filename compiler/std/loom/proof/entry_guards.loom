@@ -9,6 +9,7 @@ fn entry_scope(entry State, current State) State {
         locals = locals
         facts = entry.facts
         extents = entry.extents
+        observations = entry.observations
     }
 }
 

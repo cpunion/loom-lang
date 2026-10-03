@@ -2,6 +2,13 @@
 // The ordinary expression algebra then proves truth *and* definedness. Never
 // execute the predicate as a body assertion: that would assume its own success.
 fn shared_observations(proof Verification, value Expr, guard Expr, state State) Result[EntrySnapshot, Text] {
+    match observation_value(value, guard, state) {
+        Option.Some(observed) => {
+            return Result.Ok(observation_reference(value, observed, state))
+        }
+        Option.None => {
+        }
+    }
     let children = new[Expr]()
     var current = state
     var index = 0
@@ -36,15 +43,8 @@ fn shared_observations(proof Verification, value Expr, guard Expr, state State) 
             } else {
                 pure(expression, current)?
             }
-            let local = length(current.locals)
-            let values = new[Value]()
-            push(values, observed)
-            current = bounded(observed, call_scope(current, values))
-            return Result.Ok(EntrySnapshot {
-                    expression = proof_expr(value, ExprKind.Local, value.ty, "", local, new[Expr]())
-                    state = current
-                    entry = current
-                })
+            return Result.Ok(observation_reference(value, observed,
+                    with_observation(value, guard, observed, current)))
         }
     }
     Result.Ok(EntrySnapshot {

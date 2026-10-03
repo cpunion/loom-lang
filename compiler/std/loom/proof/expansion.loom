@@ -22,12 +22,19 @@ record Evaluation {
     required Bool
 }
 
+record ObservationOrigin {
+    source Int
+    identity Int
+}
+
 record Expansion {
     program Program
     list_lengths Bool
     budget List[Int]
     active List[Int]
     checks List[Evaluation]
+    observations List[Int]
+    origins List[ObservationOrigin]
 }
 
 fn scalar_type(ty Int) Bool {
@@ -347,7 +354,12 @@ fn expanded(context Expansion, value Expr, guard Expr, bindings List[ExpansionBi
         }
         operand = operand + 1
     }
-    let output = proof_expr(value, value.kind, value.ty, value.text, -1, children)
+    var observation = -1
+    if length(context.observations) != 0 && (list_length_expression(value) || list_read_expression(value) ||
+        entry_length_expression(value) || entry_element_expression(value)) {
+        observation = expanded_observation(context, value)
+    }
+    let output = proof_expr(value, value.kind, value.ty, value.text, observation, children)
     discard operation_obligation(context, output, guard, shape)?
     Result.Ok(output)
 }
@@ -427,6 +439,8 @@ fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengt
         budget = budget
         active = new[Int]()
         checks = new[Evaluation]()
+        observations = new[Int]()
+        origins = new[ObservationOrigin]()
     }
     let left = normalized_predicate(expanded(source, premise, proof_bool(premise, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
     let target = Expansion {
@@ -435,6 +449,8 @@ fn helper_implication(program Program, premise Expr, conclusion Expr, list_lengt
         budget = budget
         active = new[Int]()
         checks = new[Evaluation]()
+        observations = new[Int]()
+        origins = new[ObservationOrigin]()
     }
     let right = normalized_predicate(expanded(target, conclusion, proof_bool(conclusion, true), new[ExpansionBinding](), new[Local](), true, 0, 0)?)?
     // Parameter substitution can share a small DAG whose unfolded tree is huge.
@@ -541,7 +557,7 @@ fn evaluated_bounds(value Expr) Expr {
         proof_expr(value, ExprKind.Binary, 2, "<=", -1, proof_children(value, high)))
 }
 
-fn contract_predicates(program Program, locals List[Local], inputs List[Expr], entry Bool, budget List[Int]) Result[List[Expr], Text] {
+fn contract_predicates(program Program, locals List[Local], inputs List[Expr], entry Bool, budget List[Int], observations List[Int], origins List[ObservationOrigin]) Result[List[Expr], Text] {
     let output = new[Expr]()
     let bindings = new[ExpansionBinding]()
     var index = 0
@@ -562,6 +578,8 @@ fn contract_predicates(program Program, locals List[Local], inputs List[Expr], e
             budget = budget
             active = new[Int]()
             checks = new[Evaluation]()
+            observations = observations
+            origins = origins
         }
         let predicate = expanded(context, input, proof_bool(input, true), bindings, locals, false, 0, 0)?
         var check_index = 0
@@ -597,11 +615,12 @@ fn contract_predicates(program Program, locals List[Local], inputs List[Expr], e
     Result.Ok(output)
 }
 
-fn expanded_contracts(program Program, function Function) Result[Function, Text] {
+fn expanded_contracts(program Program, function Function, observations List[Int]) Result[Function, Text] {
     let budget = new[Int]()
     push(budget, 4096)
-    let preconditions = contract_predicates(program, function.locals, function.preconditions, true, budget)?
-    let postconditions = contract_predicates(program, function.locals, function.postconditions, false, budget)?
+    let origins = new[ObservationOrigin]()
+    let preconditions = contract_predicates(program, function.locals, function.preconditions, true, budget, observations, origins)?
+    let postconditions = contract_predicates(program, function.locals, function.postconditions, false, budget, observations, origins)?
     Result.Ok(Function {
             is_async = function.is_async
             symbol = function.symbol
@@ -633,5 +652,5 @@ pub fn invariant_predicates(program Program, base Int, predicate Expr) Result[Li
     push(inputs, predicate)
     let budget = new[Int]()
     push(budget, 4096)
-    contract_predicates(program, locals, inputs, true, budget)
+    contract_predicates(program, locals, inputs, true, budget, new[Int](), new[ObservationOrigin]())
 }

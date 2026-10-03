@@ -248,6 +248,40 @@ ensures result >= 0 && length(values) >= 0 && old(length(values)) >= 0
     length(values)
 }
 
+record CountSnapshot {
+    value Int
+}
+
+fn same_count(value Int) Bool {
+    let first = value
+    var second = first
+    second = value
+    first == second
+}
+
+fn same_record(value CountSnapshot) Bool {
+    same_count(value.value)
+}
+
+fn count_snapshot(values List[Int]) Bool {
+    let count = length(values)
+    if count == 0 {
+        count == 0
+    } else {
+        count > 0
+    }
+}
+
+fn shared_snapshots(values List[Int]) Int
+requires same_count(length(values))
+ensures same_count(length(values)) && same_count(old(length(values))) &&
+same_record(CountSnapshot {
+        value = length(values)
+    }) && count_snapshot(values)
+{
+    length(values)
+}
+
 fn shared_handle(values List[Int]) List[Int]
 ensures length(result) >= 0
 {
@@ -264,6 +298,9 @@ test async fn shared_contracts_use_independent_current_and_entry_observations() 
     assert count == 2 && length(alias) == 2
     push(alias, 3)
     assert length(values) == 3
+    assert run(fn() Int {
+            shared_snapshots(values)
+        }).await == 3
 }
 
 test async fn private_storage_retains_required_proofs_inside_workers() {

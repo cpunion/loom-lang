@@ -39,6 +39,8 @@ fn expanded_entry(context Expansion, value Expr, guard Expr,
         budget = context.budget
         active = context.active
         checks = new[Evaluation]()
+        observations = context.observations
+        origins = context.origins
     }
     let observed = expanded(entry, get(value.children, 0), proof_bool(value, true),
         bindings, locals, self, calls, depth + 1)?
@@ -86,6 +88,22 @@ fn capture_entry(proof Verification, value Expr, entry State, current State) Res
 
 fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
     entry State, current State) Result[EntrySnapshot, Text] {
+    if entry_length_expression(value) || entry_element_expression(value) {
+        match observation_value(value, guard, current) {
+            Option.Some(observed) => {
+                let captured = observation_reference(value, observed, current)
+                let values = new[Value]()
+                push(values, observed)
+                return Result.Ok(EntrySnapshot {
+                        expression = captured.expression
+                        state = captured.state
+                        entry = bounded(observed, call_scope(entry_scope(entry, current), values))
+                    })
+            }
+            Option.None => {
+            }
+        }
+    }
     let children = new[Expr]()
     var state = current
     var before = entry
@@ -139,11 +157,11 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
         let before_scope = call_scope(before, values)
         return Result.Ok(EntrySnapshot {
                 expression = proof_expr(value, ExprKind.Local, value.ty, "", length(state.locals), new[Expr]())
-                state = if proof.shared || entry_element_expression(value) {
-                    bounded(observed, after_scope)
-                } else {
-                    after_scope
-                }
+                state = with_observation(value, guard, observed, if proof.shared || entry_element_expression(value) {
+                        bounded(observed, after_scope)
+                    } else {
+                        after_scope
+                    })
                 entry = if entry_element_expression(value) {
                     bounded(observed, before_scope)
                 } else {
@@ -184,6 +202,7 @@ fn capture_conditions(proof Verification, conditions List[Expr], entry State) Re
                 locals = state.locals
                 facts = state.facts
                 extents = before.extents
+                observations = state.observations
             }
         })
 }
