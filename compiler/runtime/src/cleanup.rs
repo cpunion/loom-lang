@@ -87,7 +87,7 @@ unsafe fn catch_fault_inner<R>(
         if heap.collecting {
             super::fatal("fault boundary during GC tracing");
         }
-        heap.roots
+        super::ROOTS.get()
     });
     let boundary = Boundary {
         previous: BOUNDARY.get(),
@@ -112,9 +112,7 @@ unsafe fn catch_fault_inner<R>(
             super::fatal("unexpected Rust panic at fault boundary");
         }
     }
-    if HEAD.get() != boundary.cleanup
-        || super::HEAP.with(|heap| heap.borrow().roots) != boundary.roots
-    {
+    if HEAD.get() != boundary.cleanup || super::ROOTS.get() != boundary.roots {
         // Normal return must balance registrations itself. The creator's stack
         // is already gone here, so attempting a late drain would be invalid.
         super::fatal("unbalanced fault boundary registrations");
@@ -282,11 +280,11 @@ pub(super) fn fault(message: &[u8]) -> ! {
         // Cut the abandoned chain before unwinding makes those stack addresses
         // stale; no generated callback or Loom allocation runs after this point.
         super::HEAP.with(|heap| {
-            let mut heap = heap.borrow_mut();
+            let heap = heap.borrow();
             if heap.collecting {
                 super::fatal("runtime fault during GC tracing");
             }
-            heap.roots = boundary.roots;
+            super::ROOTS.set(boundary.roots);
         });
         // resume_unwind deliberately bypasses the process-wide Rust panic hook.
         resume_unwind(Box::new(FaultUnwind));
@@ -528,7 +526,7 @@ mod tests {
         }
 
         loom_rt_collect();
-        let baseline_roots = HEAP.with(|heap| heap.borrow().roots);
+        let baseline_roots = crate::ROOTS.get();
         let baseline_objects = HEAP.with(|heap| heap.borrow().objects.len());
         let mut events = Vec::new();
         // SAFETY: rooted() only pops on normal return, so this boundary owns
@@ -559,7 +557,7 @@ mod tests {
             Some(b"primary.test".as_slice())
         );
         assert_eq!(events, [1, 2]);
-        assert_eq!(HEAP.with(|heap| heap.borrow().roots), baseline_roots);
+        assert_eq!(crate::ROOTS.get(), baseline_roots);
         assert!(HEAD.get().is_null());
         assert!(FIRST_FAULT.get().is_none());
         assert!(TEST_NAME.get().is_none());

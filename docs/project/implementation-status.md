@@ -339,6 +339,12 @@ nonallocating functions stay root-free. General local root liveness and
 generational/concurrent collection are not implemented. Source exposes no
 addresses, finalizers, weak references or ownership/borrow syntax.
 
+The private [shared-heap boundary](../../compiler/runtime/src/shared_heap.rs)
+separates mutator root chains from object storage. Native tests cover concurrent
+collectors, parked waits, checkpoint reloads and thread-local fault rollback on
+one moving heap. This is runtime groundwork, not source-level parallel execution;
+generated shared-access protection and worker scheduling are still absent.
+
 Lexical `defer` and `scoped` handle normal exits, propagation, loop exits,
 language faults, suspension and cancellation. MustScope freshness/escape checks
 and typed cleanup cover nested records/enums/Lists and recursive resource trees.
@@ -385,8 +391,9 @@ backpressure. Revocation policy, general workers, broader socket options,
 and parallel Loom execution remain open.
 The [accepted shared-worker semantics](../rfcs/tasks.md#shared-workers) allow
 memory-safe logical races with explicit synchronization for compound updates.
-The current heap/root chains and mutable-container lowering remain single-owner;
-this decision does not make managed pointers safe to pass to native threads.
+Emitted programs and mutable-container lowering remain single-owner; the private
+shared-heap protocol does not make arbitrary pointer transfer or concurrent
+container mutation safe.
 See [Tasks and I/O](../../compiler/README.md#source-tasks).
 
 ## Modules, caching and performance
