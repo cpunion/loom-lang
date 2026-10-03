@@ -51,11 +51,13 @@ closure. The Git-object mode still rejects imports rather than borrowing a live
 checkout. The context and output paths must be trusted local paths. This does
 not make review and publication race-free against hostile concurrent filesystem
 writers. For move-plus-edit proposals, retained references in supported function
-declarations are checked against the branch that supplied each unchanged body
+and record declarations are checked against the branch that supplied each unchanged body
 and the proposed merge. Definition locations must normalize to the same stable
 sidecar declaration ID and relative span, or to the same location in the pinned
-dependency closure. Missing or ambiguous checked evidence, unsupported source
-forms, non-builtin source type names, and reference-bearing generic
+dependency closure. Concrete type annotations, record initializer labels and
+each member of a value path use compiler binding evidence; equal field names
+do not unify distinct record owners. Missing or ambiguous checked evidence,
+unsupported source forms and reference-bearing generic
 declarations require explicit resolution. This preserves checked reference
 bindings only in that subset; it does not prove behavior equivalence or
 arbitrary semantic merges. A dependency closure that invalidates the exact
