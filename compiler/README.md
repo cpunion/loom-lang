@@ -2105,8 +2105,8 @@ direction without rounding or machine overflow. This algebra does not prove
 equal contents from equal lengths or preserve stale heap observations. Each
 source arithmetic operation must still be proved defined; cancellation cannot
 hide an overflowing intermediate. Rank, coefficient-size or work exhaustion
-leaves this fast path unresolved. Nonlinear terms use SMT; quantified reasoning
-remains unsupported.
+leaves this fast path unresolved. Nonlinear terms and the bounded quantified
+fragment below use SMT, not the affine fast path.
 
 Linear inequalities also compose by bounded variable elimination: for example,
 `a + b <= limit` and `b >= reserve` establish `a <= limit - reserve` when
