@@ -44,4 +44,12 @@ async fn main() {
             extended_copy(values)
         }).await == 2
     assert std.list.length(values) == 1
+    let rows = [values]
+    assert run(fn() Int {
+            extended_rows(rows)
+        }).await == 2
+    assert std.list.length(rows) == 1
+    let copied = std.list.clone(rows)
+    std.list.push(get(copied, 0), 3)
+    assert std.list.length(values) == 2
 }

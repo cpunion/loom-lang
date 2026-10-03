@@ -421,16 +421,20 @@ Mixed, callback, dynamic and external-entry contexts stay conservative, without
 cloning helper bodies. GC roots and cancellation checkpoints remain.
 Required proofs are revalidated for interference: scalar snapshots and private
 List observations remain stable; finite private factory summaries compose.
-Checked source allocation/return origins recognize explicit scalar-element copies
+Checked source allocation/return origins recognize explicit shallow copies
 from shared inputs, including `std.list.clone` through inline wrappers. No value
 contract or deep copy is inferred; multiple returned mutable leaves may alias.
+Fresh outer headers remain private when initialized with shared elements;
+mutable elements read from a copy do not inherit that privacy. Source helper
+calls are checked for publication even when their result is scalar or Unit.
 Shared entry, old and current observations are independent: nonnegative lengths
 are provable, but repeated reads, stale index guards and hypothetical overflow
 gain no evidence. Once-only helper arguments and local bindings retain scalar
 snapshots through substitution, inline fields, guarded branches and cache reuse;
 independent invocations receive separate observation identities.
-Stored mutable graphs and opaque calls lose privacy, and loop
-backedges cannot restore it. General synchronized heap reasoning remains open. Source library
+Storing mutable graphs into shared storage and opaque calls conservatively lose
+privacy, and loop backedges cannot restore it. General synchronized heap
+reasoning remains open. Source library
 compound operations still require caller synchronization when racing mutations
 would violate the desired application semantics.
 See [Tasks and I/O](../../compiler/README.md#source-tasks).

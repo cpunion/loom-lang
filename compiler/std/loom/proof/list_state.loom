@@ -90,7 +90,7 @@ fn forget_extents(proof Verification, state State) State {
 }
 
 // Fresh handles are private until publication. Opaque calls or storing a
-// mutable graph discard this evidence conservatively, including nested aliases.
+// mutable graph into shared storage discard this evidence conservatively.
 // This is proof state, not a source ownership qualifier or a runtime monitor.
 fn published_storage(state State) State {
     let extents = new[ListExtent]()
@@ -243,6 +243,20 @@ fn storage_operation(program Program, name Text, ty Int, arguments List[Expr], r
     modeled || name == "list_new" || (requirement == StorageRequirement.Extent && name == "list_set")
 }
 
+fn storage_expression(value Expr) Bool {
+    let kind = value.kind
+    if length(value.arms) != 0 ||
+    ((kind == ExprKind.Defer || kind == ExprKind.Cleanup) && value.text != "") {
+        return false
+    }
+    proof_operation(value).arity >= 0 || kind == ExprKind.Bytes || kind == ExprKind.List ||
+    kind == ExprKind.Block || kind == ExprKind.If || kind == ExprKind.While ||
+    kind == ExprKind.Let || kind == ExprKind.Assign || kind == ExprKind.Return ||
+    kind == ExprKind.Assert || kind == ExprKind.Discard ||
+    kind == ExprKind.Defer || kind == ExprKind.Cleanup ||
+    kind == ExprKind.Break || kind == ExprKind.Continue
+}
+
 fn preserves_list_state(program Program, value Expr, budget List[Int], requirement StorageRequirement, depth Int) Bool {
     if depth >= 32 || !conjunction_step(budget) {
         return false
@@ -269,12 +283,7 @@ fn preserves_list_state(program Program, value Expr, budget List[Int], requireme
             }
         }
     } else {
-        if proof_operation(value).arity < 0 && kind != ExprKind.Bytes && kind != ExprKind.List &&
-        kind != ExprKind.Block && kind != ExprKind.If && kind != ExprKind.While &&
-        kind != ExprKind.Let && kind != ExprKind.Assign && kind != ExprKind.Return &&
-        kind != ExprKind.Assert && kind != ExprKind.Discard &&
-        kind != ExprKind.Defer && kind != ExprKind.Cleanup &&
-        kind != ExprKind.Break && kind != ExprKind.Continue &&
+        if !storage_expression(value) &&
         !(kind == ExprKind.Intrinsic && storage_operation(program, value.text, value.ty, value.children, requirement)) {
             return false
         }

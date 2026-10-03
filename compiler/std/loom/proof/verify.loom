@@ -446,15 +446,8 @@ fn execute_expression(proof Verification, expr Expr, state State, depth Int) Res
                     constant(integer(length(expr.children))), true, get(inputs, index).state)
                 _ => get(inputs, index).state
             }
-            if proof.shared {
-                var item = 0
-                while item < length(get(inputs, index).values) {
-                    if mutable_value(get(get(inputs, index).values, item)) {
-                        state = published_storage(state)
-                    }
-                    item = item + 1
-                }
-            }
+            // Initializing an unpublished outer header is not publication.
+            // Its elements retain their own identities and privacy evidence.
             match value {
                 Value.List(identity) => {
                     let values = get(inputs, index).values

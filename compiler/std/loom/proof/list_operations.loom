@@ -47,7 +47,16 @@ fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArg
         }
     }
     if proof.shared && stored >= 0 && stored < length(inputs.values) && mutable_value(get(inputs.values, stored)) {
-        state = published_storage(state)
+        let private_target = match get(inputs.values, 0) {
+            Value.List(identity) => match list_state(identity, state) {
+                Result.Ok(extent) => extent.private_storage
+                Result.Err(_) => false
+            }
+            _ => false
+        }
+        if !private_target {
+            state = published_storage(state)
+        }
     }
     state = interference(proof, state)
     if name == "list_new" && length(inputs.values) == 0 {

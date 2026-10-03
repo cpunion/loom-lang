@@ -70,3 +70,11 @@ ensures result >= 1
     std.list.push(copied, 7)
     std.list.length(copied)
 }
+
+fn extended_rows(values List[List[Int]]) Int
+ensures result >= 1
+{
+    let copied = clone(values)
+    std.list.push(copied, [7])
+    std.list.length(copied)
+}

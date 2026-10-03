@@ -371,7 +371,7 @@ ensures result == 0
     length(copied) - before
 }
 
-test async fn explicit_scalar_copies_keep_private_proofs_without_copying_nested_data() {
+test async fn explicit_scalar_copies_keep_private_proofs() {
     let values = [1, 2]
     assert run(fn() Int {
             extended_copy(values)
@@ -381,7 +381,75 @@ test async fn explicit_scalar_copies_keep_private_proofs_without_copying_nested_
             independent_copy(values)
         }).await == 0
     assert length(values) == 3
+}
+
+record CopiedRows {
+    values List[List[Int]]
+}
+
+fn copied_rows(values List[List[Int]]) CopiedRows {
+    CopiedRows {
+        values = clone(values)
+    }
+}
+
+fn extended_rows(values List[List[Int]]) Int
+ensures result >= 1
+{
+    let copied = copied_rows(values).values
+    push(copied, [7])
+    length(copied)
+}
+
+fn retained_outer(values List[Int]) Int
+ensures result == 1
+{
     let nested = [values]
+    push(values, 9)
+    length(nested)
+}
+
+fn retained_inner() Int
+ensures result == 2
+{
+    let values = [1]
+    let nested = std.list.new[List[Int]]()
+    push(nested, values)
+    set(nested, 0, values)
+    push(get(nested, 0), 2)
+    length(values)
+}
+
+fn rebound_rows(choice Bool) List[List[Int]]
+ensures length(result) >= 0
+{
+    var values = [[1]]
+    if choice {
+        values = [[2, 3]]
+    }
+    values
+}
+
+fn extended_rebound_rows() Int
+ensures result >= 1
+{
+    let values = rebound_rows(true)
+    push(values, [4])
+    length(values)
+}
+
+test async fn private_outer_storage_does_not_isolate_shared_elements() {
+    let values = [1, 2]
+    let nested = [values]
+    assert run(fn() Int {
+            extended_rows(nested)
+        }).await == 2
+    assert length(nested) == 1
+    assert run(fn() Int {
+            retained_outer(values)
+        }).await == 1
+    assert run(retained_inner).await == 2
+    assert run(extended_rebound_rows).await == 2
     let copied = run(fn() List[List[Int]] {
             clone(nested)
         }).await
