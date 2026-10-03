@@ -285,7 +285,10 @@ fn read_obligation(context Expansion, value Expr, guard Expr) Result[Bool, Text]
 // Entry predicates have actually executed, including their bounds checks and
 // short circuits. Materialize reads only along their normal-return paths.
 fn established_entry(proof Verification, state State) Result[List[Outcome], Text] {
-    let conditions = proof.function.preconditions
+    established_conditions(proof, proof.function.preconditions, state)
+}
+
+fn established_conditions(proof Verification, conditions List[Expr], state State) Result[List[Outcome], Text] {
     var reads = false
     var index = 0
     while index < length(conditions) {

@@ -114,6 +114,7 @@ fn exercise() {
 
 fn main() {
     exercise()
+    list_invariants()
 }
 
 test fn construction_establishes_facts_for_later_contracts() {

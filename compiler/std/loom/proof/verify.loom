@@ -594,10 +594,15 @@ fn verify_body(proof Verification) Result[Bool, Text] {
         }
         index = index + 1
     }
-    let entries = established_entry(proof, state)?
+    let invariants = established_invariants(proof, state)
     index = 0
-    while index < length(entries) {
-        discard verify_entered(proof, get(entries, index).state)?
+    while index < length(invariants) {
+        let entries = established_entry(proof, get(invariants, index).state)?
+        var entry = 0
+        while entry < length(entries) {
+            discard verify_entered(proof, get(entries, entry).state)?
+            entry = entry + 1
+        }
         index = index + 1
     }
     discharge(proof.query)

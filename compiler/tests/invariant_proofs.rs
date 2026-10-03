@@ -67,10 +67,14 @@ fn typed_inputs_prove_contracts_without_rechecking_construction() {
             let ir = fs::read_to_string(&ir_path).unwrap();
             assert_eq!(
                 ir.matches("icmp sgt i64").count(),
-                2,
-                "only the two dynamic construction predicates remain"
+                4,
+                "only the three source construction predicates remain"
             );
-            assert_eq!(ir.matches("icmp sge i64").count(), 1);
+            assert_eq!(
+                ir.matches("icmp sge i64").count(),
+                2,
+                "the source ordered predicate and ordinary List bounds check remain"
+            );
             assert!(
                 !ir.contains("icmp slt i64"),
                 "the compile-time-only invariant helper must not become a native root"

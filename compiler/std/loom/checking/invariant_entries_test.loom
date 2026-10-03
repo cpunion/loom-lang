@@ -1,0 +1,82 @@
+fn positive_head_constraint() Text {
+    """
+import std.list.length
+
+fn positive_head(values List[Int]) Bool {
+    length(values) > 0 && values[0] > 0
+}
+
+type PositiveHead = List[Int] where positive_head(self)
+
+"""
+}
+
+test fn content_invariants_bind_to_the_actual_parameter_and_nested_record() {
+    list_length_contract(concat(positive_head_constraint(), """
+record Envelope {
+    values PositiveHead
+}
+
+fn first(ignored Int, values PositiveHead) Int
+ensures result > 0
+{
+    values[0]
+}
+
+fn nested(value Envelope) Int
+ensures result > 0
+{
+    first(-1, value.values)
+}
+
+fn unchanged(values PositiveHead) Int
+ensures result == old(values[0])
+{
+    values[0]
+}
+
+fn main() {
+    let values = PositiveHead([1])
+    assert first(-1, values) == 1
+    assert nested(Envelope { values = values }) == 1
+    assert unchanged(values) == 1
+}
+"""), true)
+}
+
+test fn length_only_constraints_and_possible_alias_writes_supply_no_content_fact() {
+    list_length_contract("""
+import std.list.length
+type Nonempty = List[Int] where length(self) > 0
+
+fn unproved(values Nonempty) Int
+ensures result > 0
+{
+    values[0]
+}
+""", false)
+    list_length_contract(concat(positive_head_constraint(), """
+fn unproved(values PositiveHead, other List[Int]) Int
+ensures result > 0
+{
+    other[0] = -1
+    values[0]
+}
+"""), false)
+    list_length_contract("""
+import std.list.length
+
+fn selected(values List[Int]) Bool {
+    (length(values) > 0 && values[0] > 0) ||
+    (length(values) > 1 && values[1] > 0)
+}
+
+type Selected = List[Int] where selected(self)
+
+fn unproved(values Selected) Int
+ensures result > 0
+{
+    values[0]
+}
+""", false)
+}

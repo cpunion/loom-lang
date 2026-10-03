@@ -2419,7 +2419,11 @@ ensures result > 0
 The same applies to inline
 record invariants and refined leaves inside records/tuples. Facts belong to the
 actual symbolic value, not the spelling or slot of `self` in the template.
-Element-content type invariants are not imported as indexed observations.
+Bounded List predicates also establish sequential entry observations, including
+nested fields and `old(values[0])`. They use the same guarded-read machinery as
+preconditions, not duplicate runtime checks. Unknown alias writes invalidate
+these observations; length-only facts imply no element contents. Shared workers
+still need separate interference-safe evidence.
 Int/Bool predicates use the existing bounded
 fragment. If direct facts are insufficient, acyclic pure predicate helpers expand
 in a private checked closure, retaining their guarded preconditions and successful

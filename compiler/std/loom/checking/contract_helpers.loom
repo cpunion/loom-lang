@@ -14,10 +14,15 @@ import std.list.length
 import std.result.Result
 
 fn contract_call(node Node) Bool {
-    if node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall { return true }
+    // old(indexed_value) needs entry-observation expansion even with no calls.
+    if node.kind == NodeKind.Call || node.kind == NodeKind.MacroCall || node.kind == NodeKind.Old {
+        return true
+    }
     var index = 0
     while index < length(node.children) {
-        if contract_call(child(node, index)) { return true }
+        if contract_call(child(node, index)) {
+            return true
+        }
         index = index + 1
     }
     false

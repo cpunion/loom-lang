@@ -1,0 +1,57 @@
+import std.list.length
+import std.list.get
+
+fn positive_head(values List[Int]) Bool {
+    length(values) > 0 && get(values, 0) > 0
+}
+
+type PositiveHead = List[Int] where positive_head(self)
+
+record Published {
+    values PositiveHead
+}
+
+fn first(ignored Int, values PositiveHead) Int
+ensures result > 0
+{
+    values[0]
+}
+
+fn published_first(value Published) Int
+ensures result > 0
+{
+    first(-1, value.values)
+}
+
+fn entry_head(values PositiveHead) Int
+ensures result == old(values[0])
+{
+    values[0]
+}
+
+fn checked_head(value Int) Result[PositiveHead, ConstraintError] {
+    PositiveHead([value])
+}
+
+fn list_invariants() {
+    let values = PositiveHead([3, 4])
+    let alias = values
+    let published = Published {
+        values = alias
+    }
+    assert first(-1, values) == 3
+    assert published_first(published) == 3
+    assert entry_head(values) == 3
+    assert match checked_head(0) {
+        Result.Ok(_) => false
+        Result.Err(_) => true
+    }
+    assert match checked_head(7) {
+        Result.Ok(value) => first(-1, value) == 7
+        Result.Err(_) => false
+    }
+}
+
+test fn list_type_facts_are_entry_evidence_without_duplicate_checks() {
+    list_invariants()
+}
