@@ -156,6 +156,8 @@ pub enum Primitive {
     TaskWaitSocket,
     TaskWaitTls,
     TaskWaitFileRead,
+    TaskWaitWorker,
+    TaskWorkerResult,
     TaskWaitFileWrite,
     TaskWaitFileWriteBytes,
     TaskFileResult,

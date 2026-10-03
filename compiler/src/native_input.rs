@@ -652,6 +652,36 @@ impl Converter<'_> {
                     return Err("checked file open result requires Int".into());
                 }
             }
+            Primitive::TaskWaitWorker => {
+                let frame = arguments[0].ty;
+                let Type::Data(id) = frame else {
+                    return Err("worker needs a frame".into());
+                };
+                if !matches!(self.program.types[id].kind, c::DataKind::Frame(_)) {
+                    return Err("worker needs a frame".into());
+                }
+                let Type::Function(callback) = arguments[1].ty else {
+                    return Err("worker requires a callback".into());
+                };
+                let signature = &self.program.function_types[callback];
+                if result != Type::Bool
+                    || signature.params != [frame]
+                    || signature.result != Type::Unit
+                {
+                    return Err("checked worker callback signature mismatch".into());
+                }
+            }
+            Primitive::TaskWorkerResult => {
+                let Type::Data(id) = arguments[0].ty else {
+                    return Err("worker needs a frame".into());
+                };
+                let c::DataKind::Frame(fields) = &self.program.types[id].kind else {
+                    return Err("worker needs a frame".into());
+                };
+                if fields.first().map(|field| field.1) != Some(result) {
+                    return Err("checked worker result mismatch".into());
+                }
+            }
             Primitive::TaskWaitFileRead => {
                 if arguments.iter().any(|argument| argument.ty != Type::Int) || result != Type::Bool
                 {
@@ -1524,6 +1554,8 @@ fn primitive(value: &str) -> Result<Primitive> {
         "task_wait_socket" => P::TaskWaitSocket,
         "task_wait_tls" => P::TaskWaitTls,
         "task_wait_file_read" => P::TaskWaitFileRead,
+        "task_wait_worker" => P::TaskWaitWorker,
+        "task_worker_result" => P::TaskWorkerResult,
         "task_wait_file_write" => P::TaskWaitFileWrite,
         "task_wait_file_write_bytes" => P::TaskWaitFileWriteBytes,
         "task_file_result" => P::TaskFileResult,
@@ -1599,6 +1631,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskReturn
         | P::TaskCleanupPop
         | P::TaskResult
+        | P::TaskWorkerResult
         | P::TaskRelease
         | P::TaskStatus
         | P::TaskFailure
@@ -1624,6 +1657,7 @@ fn primitive_arity(operation: Primitive) -> usize {
         | P::TaskDrain
         | P::TaskCleanupPush
         | P::TaskWaitFileRead
+        | P::TaskWaitWorker
         | P::TaskWaitResolve
         | P::TaskProcessCaptureResult
         | P::TaskWaitFileOpen

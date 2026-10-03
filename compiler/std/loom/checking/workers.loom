@@ -1,0 +1,59 @@
+fn worker_expression(value Expr) Bool {
+    if value.kind == ExprKind.Suspend && value.text == "async_worker" {
+        return true
+    }
+    var index = 0
+    while index < length(value.children) {
+        if worker_expression(get(value.children, index)) {
+            return true
+        }
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            if worker_expression(get(body, item)) {
+                return true
+            }
+            item = item + 1
+        }
+        index = index + 1
+    }
+    false
+}
+
+// Cached sequential certificates never authorize a shared build. Reuse the
+// same algebra, forgetting mutable observations between independently guarded
+// accesses. Unsupported interference obligations remain build errors.
+fn worker_contracts(env Environment, program std.loom.typed.Program) Result[Bool, Failure] {
+    var shared = false
+    var index = 0
+    while index < length(program.functions) {
+        if worker_expression(get(program.functions, index).body) {
+            shared = true
+        }
+        index = index + 1
+    }
+    if !shared {
+        return Result.Ok(true)
+    }
+    index = 0
+    while index < length(program.functions) {
+        let function = get(program.functions, index)
+        if length(function.postconditions) != 0 {
+            match verify_shared(program, function, get(env.inputs, 0).build.proof_backend) {
+                Result.Ok(_) => {
+                }
+                Result.Err(message) => {
+                    return Result.Err(failure(env, function.symbol, symbol(env, function.symbol).node, message))
+                }
+            }
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
+}
+
+import std.loom.proof.verify_shared

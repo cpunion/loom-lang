@@ -98,10 +98,16 @@ pub(super) extern "C-unwind" fn loom_rt_task_cancel_begin(child: u64) {
     }
     // SAFETY: The enclosing owner activation outlives this synchronous drain.
     let owner = unsafe { &*owner };
+    if parallel::complete_before_cancel(owner, child) {
+        return;
+    }
     let mut first = None;
     owner.cancel_descendants(child, &mut first);
     owner.cancel_wait(&mut owner.core.borrow_mut(), child);
-    owner.cancel_operation(child);
+    let failure = owner.cancel_operation(child);
+    if first.is_none() {
+        first = failure;
+    }
     owner.drain_cleanups(child, &mut first);
     let mut core = owner.core.borrow_mut();
     let order = next_stamp(&mut core);

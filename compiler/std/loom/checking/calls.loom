@@ -804,9 +804,17 @@ fn invoke_selected(context Context, node Node, instance Instance, inputs CallInp
         return dynamic_call(context, node, instance.signature, instance.arguments, constants, output, runtime_values)
     }
     if asynchronous && has(symbol(context.env, signature.symbol).node, NodeKind.Intrinsic) {
+        let primitive = validate_intrinsic(context.env, instance.signature)?
+        if primitive == "async_worker" && concrete(context.env, logical_output) {
+            let marker = resource_concept(context.env, "NoSuspend")
+            if task_value(context.env, logical_output) || must_scope(context, logical_output)? ||
+                (marker >= 0 && no_suspend(context, logical_output, marker)?) {
+                return Result.Err(error(context, node, "a worker cannot return a scoped resource, NoSuspend value or one-shot Task"))
+            }
+        }
         // A private suspension primitive is not a separately scheduled Task.
         // Await unwraps this temporary Task type; task flow rejects any escape.
-        return Result.Ok(expression(ExprKind.Suspend, output, node, validate_intrinsic(context.env, instance.signature)?, -1,
+        return Result.Ok(expression(ExprKind.Suspend, output, node, primitive, -1,
                 runtime_values, all_fall(runtime_values)))
     }
     let target = if context.emit {

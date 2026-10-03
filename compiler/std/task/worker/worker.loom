@@ -1,0 +1,6 @@
+async intrinsic fn async_worker[T](work fn() T) T
+
+// An explicit parallel task. Captures keep ordinary sharing semantics.
+pub async fn run[T](work fn() T) T {
+    async_worker(work).await
+}

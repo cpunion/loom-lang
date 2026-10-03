@@ -36,7 +36,7 @@ fn forwarded_list_operation(program Program, function Function, depth Int) Text 
 }
 
 fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArguments) Result[List[Outcome], Text] {
-    var state = inputs.state
+    var state = if proof.shared { forget_extents(proof, inputs.state) } else { inputs.state }
     if name == "list_new" && length(inputs.values) == 0 {
         let value = record_parameter_value(proof, ty, 0)
         return match value {

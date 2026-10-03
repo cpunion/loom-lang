@@ -601,7 +601,7 @@ fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool
     discard runtime_meta(env, functions)?
     discard check_unreached(env, deferred_roots)?
     discard layouts(env)?
-    Result.Ok(std.loom.typed.Program {
+    let program = std.loom.typed.Program {
             types = env.types
             functions = functions
             entry = entry
@@ -610,5 +610,7 @@ fn checked_program_reusing(env Environment, reuse List[Bool], reusable List[Bool
             exports = exports
             interfaces = env.interfaces
             witnesses = env.witnesses
-        })
+        }
+    discard worker_contracts(env, program)?
+    Result.Ok(program)
 }

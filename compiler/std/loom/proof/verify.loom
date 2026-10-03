@@ -18,6 +18,7 @@ record Verification {
     budget List[Int]
     loop_control Option[LoopControl]
     query ProofQuery
+    shared Bool
 }
 
 record RecordPath {
@@ -558,6 +559,7 @@ fn verify_entered(proof Verification, state State) Result[Bool, Text] {
         budget = proof.budget
         loop_control = proof.loop_control
         query = proof.query
+        shared = proof.shared
     }
     let exits = execute(prepared, function.body, captured.state, 256)?
     var index = 0
@@ -599,4 +601,44 @@ pub fn verify_with_helpers(program Program, function Function, backend ProofBack
         discard verify_body(verification(expanded, program, backend))?
     }
     Result.Ok(expanded.postconditions)
+}
+
+// Independent shared observations cannot reuse a previously read extent/cell.
+// Scalar snapshots remain ordinary values; pure scalar contracts are unchanged.
+pub fn verify_shared(program Program, function Function, backend ProofBackend) Result[Bool, Text] {
+    let expanded = expanded_contracts(program, function)?
+    let conditions = std.list.clone(expanded.preconditions)
+    var item = 0
+    while item < length(expanded.postconditions) {
+        push(conditions, get(expanded.postconditions, item))
+        item = item + 1
+    }
+    var index = 0
+    while index < length(conditions) {
+        if mutable_observation(get(conditions, index)) {
+            return Result.Err("required shared-state proof needs independent scalar snapshots; mutable contract observations are not proved interference-safe")
+        }
+        index = index + 1
+    }
+    let ordinary = verification(expanded, program, backend)
+    let proof = Verification {
+        function = ordinary.function
+        program = ordinary.program
+        fresh = ordinary.fresh
+        budget = ordinary.budget
+        loop_control = ordinary.loop_control
+        query = ordinary.query
+        shared = true
+    }
+    verify_body(proof)
+}
+
+fn mutable_observation(value Expr) Bool {
+    if value.kind == ExprKind.Intrinsic && proof_operation(value).heap { return true }
+    var index = 0
+    while index < length(value.children) {
+        if mutable_observation(get(value.children, index)) { return true }
+        index = index + 1
+    }
+    false
 }

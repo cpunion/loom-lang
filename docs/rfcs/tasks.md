@@ -73,7 +73,7 @@ resource finalizers; resource-producing races must retain explicit cleanup.
 
 ## Shared workers
 
-**Accepted semantics; general Loom workers are not implemented.** Ordinary
+**Accepted semantics; the source API is `std.task.worker.run(fn() T) Task[T]`.** Ordinary
 data remains shared by default across explicitly requested workers. There is
 no implicit graph copy, ownership/borrow syntax, or blanket rejection of
 unsynchronized mutable aliases. Async alone does not request parallel execution.
@@ -101,8 +101,7 @@ fn increment(values List[Int]) {
 After both workers complete, the element may be `1` or `2`: both reads may
 observe `0`. To guarantee `2`, both callers must use the same explicit lock
 around the complete read/modify/write, or an explicit atomic update operation.
-Locking only the `set` calls is insufficient. Worker API spelling is not
-specified by this example. The source [mutex API](../../compiler/README.md#scoped-mutexes)
+Locking only the `set` calls is insufficient. The source [mutex API](../../compiler/README.md#scoped-mutexes)
 uses an ordinary `scoped` guard, without an ownership or borrow annotation.
 
 Publication to a worker, successful completion/join, and synchronization
@@ -125,7 +124,7 @@ Cancellation is cooperative; join/drain cannot finish while a worker still
 accesses shared values or runs cleanup. Scoped resources and owner-local native
 tokens do not become transferable merely because ordinary data is shared.
 
-Implementation must close these boundaries together before exposing workers:
+The implementation closes these boundaries together:
 
 1. Register participating mutators and roots; collection relocates a shared graph
    only while all participants are at safe points. Blocking native waits must
@@ -143,6 +142,13 @@ cleanup. The lost-update outcome should be forced with synchronization in a
 focused test, not required to appear by chance. Measure local scalar/List code
 as well as parallel work; ordinary functions must not acquire scheduler context
 or per-access locks without need.
+
+The [worker guide](../../compiler/README.md#shared-workers) records runnable
+examples and current conservative boundaries. In particular, worker-enabled
+builds do not reuse sequential heap-observation certificates: scalar snapshots
+are supported, but required mutable-storage predicates still need broader
+interference reasoning. Private access guards do not make source library calls
+atomic. Escape-sensitive optimization inside shared builds remains open.
 
 ## Implementation boundary
 
@@ -436,6 +442,6 @@ restore that borrowed-handle boundary is an unrecoverable runtime fault.
 
 The reactor uses [polling](https://docs.rs/polling/3.11.0/polling/struct.Poller.html)
 for OS readiness rather than separate handwritten platform reactors. Source
-timers and file-worker completions now use this wait path; readiness tests do not
-imply source socket APIs or general worker execution. Public raw-fd wait
+timers, sockets, file-worker completions and CPU-worker notifications use this
+wait path. Public raw-fd wait
 constructors and a runtime registry of join names are not required.

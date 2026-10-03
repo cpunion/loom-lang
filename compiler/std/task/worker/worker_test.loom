@@ -1,0 +1,212 @@
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+import std.list.new
+import std.bytes.new
+import std.bytes.length
+import std.bytes.push
+import std.time.sleep_ns
+import std.sync.mutex.new
+import std.sync.mutex.lock
+import std.task.Outcome
+import std.task.cancel
+import std.task.outcome
+import std.text.concat
+import std.text.contains
+import std.process.arguments
+
+async fn started(flags List[Int]) {
+    while get(flags, 0) == 0 {
+        sleep_ns(0).await
+    }
+}
+
+test async fn shared_accesses_do_not_make_compound_updates_atomic() {
+    let value = [0]
+    let flags = [0, 0]
+    let worker = run(fn() {
+            let before = get(value, 0)
+            set(flags, 0, 1)
+            while get(flags, 1) == 0 {
+            }
+            set(value, 0, before + 1)
+        })
+    started(flags).await
+    let before = get(value, 0)
+    set(flags, 1, 1)
+    set(value, 0, before + 1)
+    worker.await
+    assert get(value, 0) == 1
+}
+
+enum Payload {
+    Number(Int)
+    Label(Text, List[Int])
+}
+
+record Item {
+    value Payload
+    name Text
+}
+
+test async fn moving_shared_graphs_keep_aggregate_publication_and_captures_typed() {
+    let values = std.list.new[Item]()
+    let bytes = std.bytes.new()
+    let mutex = std.sync.mutex.new()
+    var count = 0
+    var latest = Item {
+        value = Payload.Number(0)
+        name = "shared payload"
+    }
+    let append = fn() Text {
+        var index = 0
+        while index < 24 {
+            let text = concat("shared ", "payload")
+            let value = if index % 2 == 0 {
+                Payload.Number(index)
+            } else {
+                Payload.Label(text, [index])
+            }
+            push(values, Item {
+                    value = value
+                    name = text
+                })
+            latest = Item {
+                value = value
+                name = text
+            }
+            std.bytes.push(bytes, 65)
+            {
+                scoped guard = lock(mutex)
+                count = count + 1
+            }
+            index = index + 1
+        }
+        concat("worker ", "done")
+    }
+    let first = run(append)
+    let second = run(append)
+    while count < 48 {
+        let snapshot = latest
+        assert snapshot.name == "shared payload"
+        match snapshot.value {
+            Payload.Number(value) => {
+                assert value % 2 == 0
+            }
+            Payload.Label(text, numbers) => {
+                assert text == snapshot.name && get(numbers, 0) % 2 == 1
+            }
+        }
+        sleep_ns(0).await
+    }
+    let a, b = (first, second).await
+    assert a == "worker done" && b == a
+    assert length(values) == 48 && std.bytes.length(bytes) == 48 && count == 48
+    var index = 0
+    while index < length(values) {
+        let item = get(values, index)
+        assert item.name == "shared payload"
+        match item.value {
+            Payload.Number(value) => {
+                assert value % 2 == 0
+            }
+            Payload.Label(text, numbers) => {
+                assert text == item.name && get(numbers, 0) % 2 == 1
+            }
+        }
+        index = index + 1
+    }
+}
+
+test async fn worker_cancellation_and_faults_drain_before_releasing_shared_state() {
+    let flags = [0, 0]
+    let mutex = std.sync.mutex.new()
+    let worker = run(fn() Int {
+            scoped guard = lock(mutex)
+            defer {
+                set(flags, 1, 1)
+            }
+            set(flags, 0, 1)
+            while true {
+            }
+            0
+        })
+    started(flags).await
+    match cancel(worker) {
+        Outcome.Cancelled => {
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert get(flags, 1) == 1
+    {
+        scoped guard = lock(mutex)
+    }
+    let failure = outcome(run(fn() Int {
+                scoped guard = lock(mutex)
+                defer {
+                    set(flags, 1, 2)
+                }
+                assert false
+                0
+            })).await
+    match failure {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+    assert get(flags, 1) == 2
+    scoped guard = lock(mutex)
+}
+
+test async fn worker_results_keep_their_types_and_scalar_contracts() {
+    let text, values = (run(fn() Text {
+                concat("typed ", "result")
+            }), run(fn() List[Int] {
+                [1, 2, 3]
+            })).await
+    assert text == "typed result" && values[2] == 3
+    assert run(fn() Int {
+            identity(7)
+        }).await == 7
+    assert run(fn() Int {
+            length(arguments())
+        }).await > 0
+}
+
+test async fn cancellation_retains_cleanup_faults_and_cannot_wait_on_parent_mutex() {
+    let flags = [0, 0]
+    let mutex = std.sync.mutex.new()
+    let worker = run(fn() {
+            defer {
+                assert false
+            }
+            set(flags, 0, 1)
+            while get(flags, 1) == 0 {
+            }
+            scoped guard = lock(mutex)
+            assert false
+        })
+    started(flags).await
+    scoped guard = lock(mutex)
+    set(flags, 1, 1)
+    match cancel(worker) {
+        Outcome.Faulted(error) => {
+            assert contains(error.message, "assertion failed")
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+fn identity(value Int) Int
+ensures result == value
+{
+    value
+}

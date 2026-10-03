@@ -1,0 +1,42 @@
+import std.task.worker.run
+import std.process.arguments
+import std.int.to_text
+import std.io.write_text
+import std.result.Result
+
+fn compute(seed Int) Int {
+    var value = seed
+    var index = 0
+    while index < 4000000 {
+        value = (value * 17 + 23) % 1000003
+        index = index + 1
+    }
+    value
+}
+
+async fn main() {
+    let mode = arguments()[1]
+    let total = if mode == "parallel" {
+        let a, b, c, d = (run(fn() Int {
+                    compute(1)
+                }), run(fn() Int {
+                    compute(2)
+                }),
+            run(fn() Int {
+                    compute(3)
+                }), run(fn() Int {
+                    compute(4)
+                })).await
+        a + b + c + d
+    } else {
+        assert mode == "serial"
+        compute(1) + compute(2) + compute(3) + compute(4)
+    }
+    match write_text(to_text(total)) {
+        Result.Ok(_) => {
+        }
+        Result.Err(_) => {
+            assert false
+        }
+    }
+}

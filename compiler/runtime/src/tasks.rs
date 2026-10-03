@@ -27,6 +27,9 @@ type CleanupCallback = unsafe extern "C-unwind" fn(*mut u8);
 #[path = "tasks_workers.rs"]
 mod workers;
 
+#[path = "tasks_parallel.rs"]
+mod parallel;
+
 #[path = "tasks_socket.rs"]
 mod socket;
 
@@ -89,6 +92,7 @@ struct Task {
     state: State,
     external: Option<ExternalWait>,
     operation: Option<Arc<Job>>,
+    computation: Option<Arc<super::parallel::Job>>,
     creation: (*const u8, usize),
 }
 
@@ -112,6 +116,7 @@ struct Owner {
     // Concrete native providers are linked only when referenced by the program.
     extensions: RefCell<HashMap<TypeId, Box<dyn Any>>>,
     workers: OnceCell<workers::Workers>,
+    parallel: OnceCell<super::parallel::Pool>,
 }
 
 thread_local! {
@@ -147,7 +152,7 @@ impl Owner {
         self.sockets.get_or_init(socket::Sockets::default)
     }
 
-    fn cancel_operation(&self, id: u64) {
+    fn cancel_operation(&self, id: u64) -> Option<OwnedFault> {
         let operation = self
             .core
             .borrow_mut()
@@ -159,6 +164,15 @@ impl Owner {
         if let Some(operation) = operation {
             super::shared_heap::park_native(|| operation.cancel_and_drain());
         }
+        let computation = self
+            .core
+            .borrow_mut()
+            .tasks
+            .get_mut(&id)
+            .unwrap()
+            .computation
+            .take();
+        computation.and_then(|job| job.cancel_and_drain())
     }
 
     fn cancel_wait(&self, core: &mut Core, id: u64) {
@@ -258,7 +272,10 @@ impl Owner {
                 pending.extend(task.children.iter().map(|child| (*child, false)));
             } else {
                 self.cancel_wait(&mut self.core.borrow_mut(), id);
-                self.cancel_operation(id);
+                let failure = self.cancel_operation(id);
+                if first.is_none() {
+                    *first = failure;
+                }
                 self.drain_cleanups(id, first);
                 let mut core = self.core.borrow_mut();
                 observation::remove(&mut core, id);
@@ -419,26 +436,32 @@ impl Owner {
                 }
                 continue;
             };
-            // Reload after every previous callback/collection. Neither Core nor
-            // the root store remains borrowed while generated code executes.
-            let frame = self.roots().get(frame).expect("rooted task frame");
-            // SAFETY: Generated resumes keep their own cleanup captures in the
-            // rooted frame. Native helper cleanup balances before Pending; on a
-            // fault, the hook drains children before live helper stacks unwind.
-            let outcome = unsafe {
-                catch_fault_before_drain(
-                    || {
-                        let status = resume(frame);
-                        self.validate_return(id, status)
-                            .unwrap_or_else(|message| fault(message));
-                        status
-                    },
-                    before_resume_fault,
-                    ptr::from_ref(self).cast_mut().cast(),
-                )
-            };
-            self.finish_resume(id, outcome);
+            unsafe {
+                self.resume_task(id, frame, resume);
+            }
         }
+    }
+
+    unsafe fn resume_task(&self, id: u64, frame: FrameRootId, resume: Resume) {
+        // Reload after every previous callback/collection. Neither Core nor
+        // the root store remains borrowed while generated code executes.
+        let frame = self.roots().get(frame).expect("rooted task frame");
+        // SAFETY: Generated resumes keep their own cleanup captures in the
+        // rooted frame. Native helper cleanup balances before Pending; on a
+        // fault, the hook drains children before live helper stacks unwind.
+        let outcome = unsafe {
+            catch_fault_before_drain(
+                || {
+                    let status = resume(frame);
+                    self.validate_return(id, status)
+                        .unwrap_or_else(|message| fault(message));
+                    status
+                },
+                before_resume_fault,
+                ptr::from_ref(self).cast_mut().cast(),
+            )
+        };
+        self.finish_resume(id, outcome);
     }
 
     fn wait_failure(&self, root: u64, error: io::Error) -> OwnedFault {
@@ -468,7 +491,7 @@ unsafe fn before_resume_fault(data: *mut u8) {
     let mut secondary = None;
     owner.cancel_descendants(id, &mut secondary);
     owner.cancel_wait(&mut owner.core.borrow_mut(), id);
-    owner.cancel_operation(id);
+    let _ = owner.cancel_operation(id);
 }
 
 fn append_creation(failure: &mut OwnedFault, creation: (*const u8, usize)) {
@@ -803,6 +826,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_create(
                 state: State::Queued,
                 external: None,
                 operation: None,
+                computation: None,
                 creation: (creation, creation_len),
             },
         );
@@ -909,10 +933,24 @@ pub(super) extern "C-unwind" fn loom_rt_task_release(child: u64) {
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor) {
+    if let Err(failure) = unsafe { task_run(constructor) } {
+        raise_owned(failure);
+    }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C-unwind" fn loom_rt_task_run_shared(constructor: Constructor) {
+    let result = super::shared_heap::with_shared(|_| unsafe { task_run(constructor) });
+    if let Err(failure) = result {
+        raise_owned(failure);
+    }
+}
+
+unsafe fn task_run(constructor: Constructor) -> Result<(), OwnedFault> {
     if !OWNER.get().is_null() {
         fault("nested task executors are not supported");
     }
-    let outcome = with_frame_roots(|roots| {
+    with_frame_roots(|roots| {
         let owner = Owner {
             roots: ptr::from_ref(roots),
             core: RefCell::new(Core::default()),
@@ -920,6 +958,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor
             sockets: OnceCell::new(),
             extensions: RefCell::new(HashMap::new()),
             workers: OnceCell::new(),
+            parallel: OnceCell::new(),
         };
         OWNER.set(ptr::from_ref(&owner));
         // SAFETY: The owner remains rooted outside all fault boundaries. The
@@ -950,12 +989,7 @@ pub(super) unsafe extern "C-unwind" fn loom_rt_task_run(constructor: Constructor
         };
         OWNER.set(ptr::null());
         outcome
-    });
-    // Reporting/propagation happens only after descendant drain, root-scope
-    // exit and TLS restoration. Synchronous process-fault behavior is unchanged.
-    if let Err(failure) = outcome {
-        raise_owned(failure);
-    }
+    })
 }
 
 #[cfg(test)]

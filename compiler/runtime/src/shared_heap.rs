@@ -6,8 +6,8 @@ use super::{Heap, ROOTS, RefCell, RootFrame, fatal};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 struct Storage(RefCell<Heap>);
 
@@ -23,6 +23,70 @@ struct Control {
     // Addresses are never dereferenced without the complete stop-the-world
     // rendezvous. Only the owning thread can resume or remove its registration.
     participants: HashMap<u64, Option<usize>>,
+    // Slot destruction removes its address under this mutex before freeing it.
+    slots: HashMap<u64, usize>,
+}
+
+/// A queued/running/completed job retains one traced frame without borrowing
+/// the owner's thread-local root store. The heap scope must drain these slots.
+pub(super) struct SharedSlot {
+    heap: *const SharedHeap,
+    id: u64,
+    value: AtomicPtr<u8>,
+}
+
+// SAFETY: The native slot outlives queued work. Its managed value may be read
+// only by an attached mutator, and is rewritten only at the GC rendezvous.
+unsafe impl Send for SharedSlot {}
+unsafe impl Sync for SharedSlot {}
+
+impl SharedSlot {
+    pub(super) unsafe fn enter<R>(&self, run: impl FnOnce(*mut u8) -> R) -> R {
+        if !ROOTS.get().is_null() || MEMORY.with(|memory| !memory.heap.borrow().objects.is_empty())
+        {
+            fatal("worker entered with a different live heap");
+        }
+        unsafe { &*self.heap }.attach(|| run(self.value.load(Ordering::Acquire)))
+    }
+}
+
+impl Drop for SharedSlot {
+    fn drop(&mut self) {
+        // The scope checks for outstanding slots before dropping its heap.
+        lock(&unsafe { &*self.heap }.control).slots.remove(&self.id);
+    }
+}
+
+pub(super) unsafe fn publish(value: *mut u8) -> Arc<SharedSlot> {
+    current(|participant| {
+        let participant = participant.unwrap_or_else(|| fatal("worker requires a shared heap"));
+        let mut control = participant.control();
+        let id = control.next;
+        control.next = id
+            .checked_add(1)
+            .unwrap_or_else(|| fatal("worker identities exhausted"));
+        let slot = Arc::new(SharedSlot {
+            heap: ptr::from_ref(participant.heap),
+            id,
+            value: AtomicPtr::new(value),
+        });
+        control.slots.insert(id, Arc::as_ptr(&slot) as usize);
+        slot
+    })
+}
+
+unsafe extern "C" fn trace_slots(address: *mut u8) {
+    let slots = unsafe { &*address.cast::<HashMap<u64, usize>>() };
+    for address in slots.values() {
+        // The control mutex excludes removal/free, even if the last native job
+        // starts dropping a slot concurrently. Never promote a weak Arc here:
+        // dropping that temporary last owner would reenter the same mutex.
+        let slot = unsafe { &*(*address as *const SharedSlot) };
+        slot.value.store(
+            super::loom_rt_visit(slot.value.load(Ordering::Relaxed)),
+            Ordering::Relaxed,
+        );
+    }
 }
 
 pub(super) struct SharedHeap {
@@ -191,11 +255,21 @@ pub(super) fn collect(run: impl FnOnce(&[*mut RootFrame])) {
         while control.participants.values().any(Option::is_none) {
             control = heap.wait(control);
         }
-        let roots: Vec<_> = control
+        let mut roots: Vec<_> = control
             .participants
             .values()
             .map(|head| head.unwrap() as *mut RootFrame)
             .collect();
+        let entry = super::Root {
+            address: ptr::from_ref(&control.slots).cast_mut().cast(),
+            trace: trace_slots,
+        };
+        let mut frame = RootFrame {
+            previous: ptr::null_mut(),
+            roots: &entry,
+            count: 1,
+        };
+        roots.push(ptr::from_mut(&mut frame));
         // No participant can resume or attach while this lock is held. Heap
         // borrows remain short; a generated tracer may reenter loom_rt_visit.
         run(&roots);
@@ -251,11 +325,14 @@ pub(super) fn park_native<R>(run: impl FnOnce() -> R) -> R {
 /// Context is native storage; managed fields need registered updateable roots.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_shared_run(context: *mut u8, run: SharedRun) {
+    with_shared(|heap| unsafe { run(context, heap) });
+}
+
+pub(super) fn with_shared<R>(run: impl FnOnce(*const SharedHeap) -> R) -> R {
     current(|participant| {
         if let Some(participant) = participant {
             // A nested structured scope reuses its current heap, not a copy.
-            unsafe { run(context, ptr::from_ref(participant.heap)) };
-            return;
+            return run(ptr::from_ref(participant.heap));
         }
         let heap = SharedHeap {
             storage: Mutex::new(Storage(RefCell::new(
@@ -265,16 +342,19 @@ unsafe extern "C" fn loom_rt_shared_run(context: *mut u8, run: SharedRun) {
             changed: Condvar::new(),
             requested: AtomicBool::new(false),
         };
-        heap.attach(|| unsafe { run(context, ptr::from_ref(&heap)) });
-        if !lock(&heap.control).participants.is_empty() {
+        let result = heap.attach(|| run(ptr::from_ref(&heap)));
+        let control = lock(&heap.control);
+        if !control.participants.is_empty() || !control.slots.is_empty() {
             fatal("shared heap scope returned before its workers");
         }
+        drop(control);
         let storage = heap
             .storage
             .into_inner()
             .unwrap_or_else(|_| fatal("poisoned shared heap"));
         MEMORY.with(|memory| *memory.heap.borrow_mut() = storage.0.into_inner());
-    });
+        result
+    })
 }
 
 /// Attach a native worker to a still-live shared scope. The worker's local heap

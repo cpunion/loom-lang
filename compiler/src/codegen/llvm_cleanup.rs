@@ -317,6 +317,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.module,
                 self.builder,
                 self.program,
+                self.shared,
                 self.allocating,
                 source,
                 Some(plan.body),
@@ -341,6 +342,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 loop_targets: Vec::new(),
                 cleanups: HashMap::new(),
                 runtime_fault: true,
+                shared: self.shared,
             };
             callback.block(plan.body)?;
             if callback.live() {

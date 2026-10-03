@@ -82,9 +82,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         value: &checked::Expr,
     ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         // The frame base, never an interior address, survives value evaluation.
-        let Some(values) = self.operands([frame, value])? else {
+        let Some(mut values) = self.operands([frame, value])? else {
             return Ok(None);
         };
+        if self.shared {
+            self.access_begin(&[values[0]])?;
+            self.restore_locals()?;
+            values[0] = self.reload(frame, values[0])?;
+            values[1] = self.reload(value, values[1])?;
+        }
         let address = self.builder.build_struct_gep(
             frame_layout(self.context, self.program, frame.ty)?,
             values[0].into_pointer_value(),
@@ -92,6 +98,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "frame.store.field",
         )?;
         self.builder.build_store(address, values[1])?;
+        if self.shared {
+            self.runtime_call("shared_access_end", None, &[])?;
+        }
         Ok(None)
     }
 
@@ -103,6 +112,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         let pointer = self.context.ptr_type(AddressSpace::default());
         match operation {
+            Primitive::TaskWaitWorker => self.task_ready(operation, values),
+            Primitive::TaskWorkerResult => {
+                self.runtime_call("task_worker_result", None, &[])?;
+                if result == Type::Unit {
+                    return Ok(Some(
+                        self.context.struct_type(&[], false).const_zero().into(),
+                    ));
+                }
+                Ok(Some(self.builder.build_load(
+                    native_type(self.context, self.program, result)?,
+                    values[0].into_pointer_value(),
+                    "worker.result",
+                )?))
+            }
             Primitive::TaskDrain => {
                 let suppress = self.builder.build_int_z_extend(
                     values[1].into_int_value(),
@@ -251,7 +274,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.runtime_call("task_return", Some(self.context.i64_type().into()), values)
             }
             Primitive::TaskRun => {
-                let output = self.runtime_call("task_run", None, values)?;
+                let output = self.runtime_call(
+                    if self.shared {
+                        "task_run_shared"
+                    } else {
+                        "task_run"
+                    },
+                    None,
+                    values,
+                )?;
                 self.restore_locals()?;
                 Ok(output)
             }
@@ -265,6 +296,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         values: &[BasicValueEnum<'ctx>],
     ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         let name = match operation {
+            Primitive::TaskWaitWorker => "task_wait_worker",
             Primitive::TaskAwait => "task_await",
             Primitive::TaskWaitNext => "task_wait_next",
             Primitive::TaskWaitSocket => "task_wait_socket",

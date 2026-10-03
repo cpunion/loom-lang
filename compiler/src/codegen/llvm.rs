@@ -162,7 +162,21 @@ fn emit_checked(
         witnesses: live_witnesses,
         slots: live_slots,
     } = reachable_functions(program, &roots, library)?;
-    let allocating = gc::allocating_functions(program, &reachable, library);
+    let shared = reachable.iter().any(|id| {
+        let mut values = Vec::new();
+        gc::block_expressions(&program.functions[*id].body, &mut values);
+        values.iter().any(|value| {
+            matches!(
+                value.kind,
+                checked::ExprKind::Primitive(Primitive::TaskWaitWorker, _)
+            )
+        })
+    });
+    let allocating = if shared {
+        reachable.clone()
+    } else {
+        gc::allocating_functions(program, &reachable, library)
+    };
     let cleanup_plans = reachable
         .iter()
         .map(|id| cleanup::plans(&program.functions[*id]).map(|plans| (*id, plans)))
@@ -258,6 +272,7 @@ fn emit_checked(
                 &module,
                 &builder,
                 program,
+                shared,
                 &allocating,
                 source,
                 None,
@@ -285,8 +300,10 @@ fn emit_checked(
             loop_targets: Vec::new(),
             cleanups: HashMap::new(),
             runtime_fault,
+            shared,
         };
         emitter.prepare_cleanups(id, plans)?;
+        emitter.worker_checkpoint()?;
         for requirement in &source.requires {
             let condition = emitter
                 .expr(requirement)?
@@ -566,9 +583,17 @@ struct FunctionEmitter<'a, 'ctx> {
     loop_targets: Vec<(BasicBlock<'ctx>, BasicBlock<'ctx>)>,
     cleanups: HashMap<usize, cleanup::Site<'ctx>>,
     runtime_fault: bool,
+    shared: bool,
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    fn worker_checkpoint(&self) -> NativeResult<()> {
+        if self.shared {
+            self.runtime_call("worker_checkpoint", None, &[])?;
+            self.restore_locals()?;
+        }
+        Ok(())
+    }
     fn runtime_call(
         &self,
         name: &str,
@@ -674,10 +699,101 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let Some(mut values) = self.operands(args)? else {
             return Ok(None);
         };
+        let locked = if self.shared
+            && !matches!(
+                operation,
+                Primitive::CleanupEach | Primitive::MutexLock | Primitive::MutexUnlock
+            ) {
+            let targets = args
+                .iter()
+                .enumerate()
+                .filter_map(|(index, arg)| {
+                    // Values stored in a List are handles, not additional accesses.
+                    // View bookkeeping acquires its private removed-cell list under
+                    // the source guard, in the runtime's source -> storage order.
+                    if index > 0
+                        && matches!(
+                            operation,
+                            Primitive::ListPush | Primitive::ListSet | Primitive::ListRetainRange
+                        )
+                    {
+                        return None;
+                    }
+                    matches!(arg.ty, Type::List(_) | Type::Bytes).then_some(values[index])
+                })
+                .collect::<Vec<_>>();
+            if !targets.is_empty() {
+                self.access_begin(&targets)?;
+                self.restore_locals()?;
+                for (index, argument) in args.iter().enumerate() {
+                    values[index] = self.reload(argument, values[index])?;
+                }
+            }
+            targets.len()
+        } else {
+            0
+        };
+        let output = self.primitive_values(result, operation, args, values)?;
+        if self.live() {
+            for _ in 0..locked {
+                self.runtime_call("shared_access_end", None, &[])?;
+            }
+        }
+        Ok(output)
+    }
+
+    fn access_begin(&self, targets: &[BasicValueEnum<'ctx>]) -> NativeResult<()> {
+        if targets.len() == 1 {
+            self.runtime_call("shared_access_begin", None, targets)?;
+        } else {
+            let pointer = self.context.ptr_type(AddressSpace::default());
+            let layout = self
+                .context
+                .struct_type(&vec![pointer.into(); targets.len()], false);
+            // Fixed entry storage, not an alloca growing inside a source loop.
+            let entry = self.context.create_builder();
+            let block = self
+                .function
+                .get_first_basic_block()
+                .ok_or("missing function entry")?;
+            if let Some(first) = block.get_first_instruction() {
+                entry.position_before(&first);
+            } else {
+                entry.position_at_end(block);
+            }
+            let slots = entry.build_alloca(layout, "access.targets")?;
+            for (index, target) in targets.iter().enumerate() {
+                let slot =
+                    self.builder
+                        .build_struct_gep(layout, slots, index as u32, "access.target")?;
+                self.builder.build_store(slot, *target)?;
+            }
+            self.runtime_call(
+                "shared_access_many",
+                None,
+                &[
+                    slots.into(),
+                    self.size_type.const_int(targets.len() as u64, false).into(),
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn primitive_values(
+        &mut self,
+        result: Type,
+        operation: Primitive,
+        args: &[checked::Expr],
+        mut values: Vec<BasicValueEnum<'ctx>>,
+    ) -> NativeResult<Option<BasicValueEnum<'ctx>>> {
         // Runtime coroutine callbacks are compiler-generated direct targets,
         // not source function values with a separately captured environment.
         let callback = match operation {
-            Primitive::TaskCreate | Primitive::TaskCleanupPush | Primitive::CleanupEach => Some(1),
+            Primitive::TaskCreate
+            | Primitive::TaskCleanupPush
+            | Primitive::CleanupEach
+            | Primitive::TaskWaitWorker => Some(1),
             Primitive::TaskRun => Some(0),
             _ => None,
         };
@@ -710,6 +826,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 return Ok(None);
             }
             Primitive::TaskCreate
+            | Primitive::TaskWaitWorker
+            | Primitive::TaskWorkerResult
             | Primitive::TaskAdopt
             | Primitive::TaskReturn
             | Primitive::TaskCleanupPush
@@ -929,7 +1047,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             Primitive::PathEntryKind => ("path_entry_kind", Some(i64_type.into())),
         };
         let value = self.runtime_call(name, result_type, &values)?;
-        if gc::allocates(operation) {
+        if self.shared || gc::allocates(operation) {
             self.restore_locals()?;
         }
         if result == Type::Bool {
@@ -1030,6 +1148,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     let done = self.context.append_basic_block(self.function, "while.done");
                     self.builder.build_unconditional_branch(test)?;
                     self.builder.position_at_end(test);
+                    self.worker_checkpoint()?;
                     if let Some(condition) = self.expr(condition)? {
                         self.builder.build_conditional_branch(
                             condition.into_int_value(),
@@ -1328,21 +1447,31 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     }
                     _ => None,
                 };
-                let Some(value) = self.expr(value)? else {
+                let source = value;
+                let Some(mut value) = self.expr(source)? else {
                     return Ok(None);
                 };
                 if let Some(ty) = frame_type {
+                    if self.shared {
+                        self.access_begin(&[value])?;
+                        self.restore_locals()?;
+                        value = self.reload(source, value)?;
+                    }
                     let address = self.builder.build_struct_gep(
                         tasks::frame_layout(self.context, self.program, ty)?,
                         value.into_pointer_value(),
                         *index as u32,
                         "frame.field",
                     )?;
-                    self.builder.build_load(
+                    let loaded = self.builder.build_load(
                         native_type(self.context, self.program, expr.ty)?,
                         address,
                         "frame.load",
-                    )?
+                    )?;
+                    if self.shared {
+                        self.runtime_call("shared_access_end", None, &[])?;
+                    }
+                    loaded
                 } else {
                     self.builder.build_extract_value(
                         value.into_struct_value(),

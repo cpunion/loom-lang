@@ -29,6 +29,7 @@ fn with_loop_control(proof Verification, control Option[LoopControl]) Verificati
         budget = proof.budget
         loop_control = control
         query = proof.query
+        shared = proof.shared
     }
 }
 

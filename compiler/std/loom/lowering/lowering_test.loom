@@ -250,6 +250,7 @@ test fn edge_bindings_and_argument_snapshots_are_live_at_the_correct_point() {
     push(locals, test_local(6))
     let graph = Graph {
         types = new[Type]()
+        functions = new[Function]()
         states = new[State]()
         locals = locals
         result = 1
@@ -271,6 +272,7 @@ test fn edge_bindings_and_argument_snapshots_are_live_at_the_correct_point() {
 
     let ordered = Graph {
         types = new[Type]()
+        functions = new[Function]()
         states = new[State]()
         locals = new[Local]()
         result = 1
@@ -296,6 +298,7 @@ test fn edge_bindings_and_argument_snapshots_are_live_at_the_correct_point() {
 
     let timer = Graph {
         types = new[Type]()
+        functions = new[Function]()
         states = new[State]()
         locals = new[Local]()
         result = 0

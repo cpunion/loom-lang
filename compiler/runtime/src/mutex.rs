@@ -26,8 +26,10 @@ pub(super) fn acquired_since(mark: i64) -> bool {
 /// in a lexical guard; no native lock finalizer substitutes for source cleanup.
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C-unwind" fn loom_rt_mutex_lock(key: *mut u8) -> i64 {
-    super::worker_control::checkpoint();
-    rooted([key], |_| {
+    rooted([key], |slots| {
+        super::worker_control::checkpoint();
+        // The checkpoint may relocate the caller's key.
+        let key = unsafe { *slots };
         let access = HEAP.with(|heap| {
             let mut heap = heap.borrow_mut();
             if !heap.objects.contains_key(&(key as usize)) {
