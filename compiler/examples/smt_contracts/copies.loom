@@ -19,6 +19,7 @@ fn identical(first List[Int], second List[Int]) Bool {
 fn copied(values List[Int]) List[Int]
 ensures identical(result, old(values))
 ensures permutation(result, old(values))
+ensures identical(values, old(values))
 {
     let output = new[Int]()
     var index = 0
@@ -32,6 +33,7 @@ ensures permutation(result, old(values))
 fn sorted_copy(values List[Int]) List[Int]
 ensures ordered(result)
 ensures permutation(result, old(values))
+ensures identical(values, old(values))
 {
     let output = copied(values)
     sort(output)

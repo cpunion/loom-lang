@@ -1,0 +1,74 @@
+test fn call_guarantees_prove_scalar_and_inline_construction_without_caller_assumptions() {
+    discard accepted_result("""
+type Positive = Int where self > 0
+
+record Pair {
+    lower Int
+    upper Int
+}
+
+type Ordered = Pair where self.upper > self.lower
+
+fn chosen(value Int, minimum Int) Int
+requires minimum > 0
+ensures result > 0
+{
+    if value > 0 { value } else { minimum }
+}
+
+fn interval(value Int) Pair
+ensures result.upper > result.lower
+{
+    Pair {
+        lower = 0
+        upper = if value > 0 { value } else { 1 }
+    }
+}
+
+pub fn scalar(value Int) Positive {
+    Positive(chosen(value, 1))
+}
+
+pub fn aggregate(value Int) Ordered {
+    Ordered(interval(value))
+}
+
+fn fixed(value Int, comptime selected Bool) Int
+ensures result == value
+{
+    value
+}
+
+pub fn selected() Positive {
+    Positive(fixed(1, true))
+}
+""")
+    rejects_result("""
+type Positive = Int where self > 0
+
+fn unchanged(value Int) Int {
+    value
+}
+
+pub fn unproved(value Int) Positive {
+    Positive(unchanged(value))
+}
+""")
+    rejects_result("""
+type Positive = Int where self > 0
+
+fn fixed(value Int, comptime selected Bool) Int
+ensures result == value
+{
+    value
+}
+
+pub fn first() Positive {
+    Positive(fixed(1, true))
+}
+
+pub fn different_instance() Positive {
+    Positive(fixed(-1, false))
+}
+""")
+}

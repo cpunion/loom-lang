@@ -1,0 +1,73 @@
+// A constructor may reuse a checked call's normal-return guarantees. Re-type
+// only its input and predicate in a private helper queue; neither proof helpers
+// nor a second evaluation enter executable code. Unsupported proofs retain the
+// ordinary checked Result boundary, including the separate List isolation check.
+fn construction_proof(context Context, node Node, source Node, declaration Int, base Int) Result[Bool, Failure] {
+    let stage = staging(context, node)?
+    // Match the original call's inference, without a new result-type hint.
+    let input = expr(stage, source, -1)?
+    if input.kind != ExprKind.Call || input.ty != base {
+        return Result.Ok(false)
+    }
+    // Argument effects have already happened when the callee is entered.
+    // Prove over arbitrary typed invocation snapshots, not by replaying those
+    // effects or assuming repeated heap observations are equal.
+    let params = new[Int]()
+    let locals = new[Local]()
+    let arguments = new[Expr]()
+    var index = 0
+    while index < length(input.children) {
+        let argument = get(input.children, index)
+        if closed_inline_value(argument, 0) {
+            push(arguments, argument)
+        } else {
+            let snapshot = length(params)
+            push(params, argument.ty)
+            push(locals, Local {
+                    name = "input"
+                    ty = argument.ty
+                    mutable = false
+                    is_scoped = false
+                })
+            push(arguments, expression(ExprKind.Local, argument.ty, source, "", snapshot, new[Expr](), true))
+        }
+        index = index + 1
+    }
+    let result_local = length(locals)
+    push(locals, Local {
+            name = "self"
+            ty = base
+            mutable = false
+            is_scoped = false
+        })
+    let predicate = expr(predicate_context(stage.env, declaration, locals, result_local, true),
+        predicate_node(stage.env, declaration), 2)?
+    let program = prepared_in(stage, true)?
+    let proof = Function {
+        is_async = false
+        symbol = -1
+        arguments = new[Int]()
+        params = params
+        result = base
+        locals = locals
+        preconditions = new[Expr]()
+        postconditions = expressions(predicate)
+        result_local = result_local
+        body = expression(input.kind, input.ty, source, input.text, input.index, arguments, input.falls)
+        runtime_name = ""
+        span = node.span
+    }
+    Result.Ok(match verify_with_helpers(program, proof, get(context.env.inputs, 0).build.proof_backend) {
+            Result.Ok(_) => true
+            Result.Err(_) => false
+        })
+}
+
+fn proved_construction(context Context, node Node, source Node, value Expr, declaration Int, base Int) Result[Bool, Failure] {
+    if context.env.expanding_helpers || context.env.stage_depth >= 32 || value.kind != ExprKind.Call {
+        return Result.Ok(false)
+    }
+    // Unknown predicate proofs keep the Result boundary, but a source callee's
+    // mandatory checking failure must not be hidden as a constructor mismatch.
+    construction_proof(context, node, source, declaration, base)
+}

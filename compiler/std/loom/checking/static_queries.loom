@@ -8,6 +8,7 @@ record CheckInputs {
     // Trusted source shapes are fixed within this binding/type snapshot.
     result_shapes List[ResultShape]
     constraint_errors List[Int]
+    contracts List[List[ContractCertificate]]
 }
 
 record StaticReferenceQuery {
