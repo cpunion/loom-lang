@@ -698,13 +698,18 @@ fn private_observations(value Expr, state State) Bool {
             return false
         }
         match pure(get(value.children, 0), state) {
-            Result.Ok(Value.List(identity)) => match list_state(identity, state) {
-                Result.Ok(extent) => {
-                    if !extent.private_storage {
+            Result.Ok(receiver) => match receiver {
+                Value.List(identity) => match list_state(identity, state) {
+                    Result.Ok(extent) => {
+                        if !extent.private_storage {
+                            return false
+                        }
+                    }
+                    Result.Err(_) => {
                         return false
                     }
                 }
-                Result.Err(_) => {
+                _ => {
                     return false
                 }
             }
