@@ -103,7 +103,8 @@ preserves untouched observations across extracted helpers without assuming
 unknown indices or handles are disjoint.
 Whole `List[Int]` logical entry values can now be queried at post-state indices
 without runtime copying. Bounded pure scans, array/histogram laws and checked
-loop candidates now prove ordering and permutation for an ordinary in-place sort.
+loop candidates now prove ordering and permutation for an ordinary in-place sort,
+including contracts over its returned List rather than only its input handle.
 General content induction and constrained shared-alias preservation remain open.
 
 Use these complete acceptance stories, rather than a count of syntax features:

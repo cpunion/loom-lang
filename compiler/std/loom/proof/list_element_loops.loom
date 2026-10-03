@@ -69,10 +69,9 @@ fn loop_element_clauses(clauses List[Expr], candidates List[LoopCandidate], entr
     }
 }
 
-fn loop_element_candidates(proof Verification, candidates List[LoopCandidate], entry State) Result[Bool, Text] {
-    // Source contracts often express a useful conservation law. A result local
-    // or a fact established only later is unavailable here and is not assumed.
-    loop_element_clauses(proof.function.postconditions, candidates, entry)
+fn loop_element_candidates(proof Verification, clauses List[Expr], candidates List[LoopCandidate], entry State) Result[Bool, Text] {
+    // Unavailable paths and facts established only later are not assumed.
+    loop_element_clauses(clauses, candidates, entry)
     loop_element_clauses(proof.function.preconditions, candidates, entry)
     var index = 0
     while index < length(entry.extents) && length(candidates) < 64 {

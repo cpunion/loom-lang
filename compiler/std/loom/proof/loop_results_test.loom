@@ -1,0 +1,16 @@
+test fn return_paths_only_propose_clauses_and_preserve_real_result_bindings() {
+    let goal = operation("==", local(1), local(0))
+    let tail = expression(ExprKind.Return, 0, "", -1, nodes(local(0)))
+    let function = fixture(tail, new[Expr](), goal)
+    let clauses = loop_postconditions(function)
+    assert exact_expression(get(clauses, 0), operation("==", local(0), local(0)))
+    assert exact_expression(get(function.postconditions, 0), goal)
+    let field = expression(ExprKind.Field, 1, "", 2, nodes(local(0)))
+    let aggregate = fixture(field, new[Expr](), goal)
+    assert exact_expression(get(loop_postconditions(aggregate), 0), operation("==", field, local(0)))
+    let computed = fixture(operation("+", local(0), literal("1")), new[Expr](), goal)
+    assert exact_expression(get(loop_postconditions(computed), 0), goal)
+    let choice = expression(ExprKind.If, 1, "", -1,
+        [expression(ExprKind.Bool, 2, "true", -1, []), local(0), literal("1")])
+    assert exact_expression(get(loop_postconditions(fixture(choice, [], goal)), 0), goal)
+}

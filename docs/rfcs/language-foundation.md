@@ -201,8 +201,8 @@ turn an invalid-then-valid sequence into success by merging checks.
 Postconditions concern normal returns only. They do not implicitly prove
 termination, absence of faults, or successful external operations. The example
 does not promise an unchanged input, a fresh result, or non-aliasing. In-place
-sorting instead states its result properties over the updated argument and
-compares its elements with the argument's entry-state value.
+sorting may state its properties over the updated argument or the returned
+shared List, comparing its elements with the argument's entry-state value.
 
 ## Compile-time programming and effects
 

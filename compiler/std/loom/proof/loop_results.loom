@@ -1,0 +1,65 @@
+// A terminal access path proposes postcondition-shaped loop invariants. It does
+// not identify the function result before it is evaluated: the ordinary entry,
+// backedge and return checks remain authoritative, including after rebinding,
+// early returns and cleanup. Calls and computed/conditional tails are not paths.
+fn loop_result_path(value Expr, result_local Int, depth Int) Option[Expr] {
+    if depth <= 0 {
+        return Option.None
+    }
+    if value.kind == ExprKind.Local && value.index != result_local {
+        return Option.Some(value)
+    }
+    if value.kind == ExprKind.Block && length(value.children) != 0 {
+        return loop_result_path(get(value.children, length(value.children) - 1), result_local, depth - 1)
+    }
+    if value.kind == ExprKind.Return && length(value.children) == 1 {
+        return loop_result_path(get(value.children, 0), result_local, depth - 1)
+    }
+    if (value.kind == ExprKind.Field || value.kind == ExprKind.Coerce) && length(value.children) == 1 {
+        let receiver = get(value.children, 0)
+        if receiver.kind != ExprKind.Local && receiver.kind != ExprKind.Field && receiver.kind != ExprKind.Coerce {
+            return Option.None
+        }
+        return match loop_result_path(receiver, result_local, depth - 1) {
+            Option.Some(_) => Option.Some(value)
+            Option.None => Option.None
+        }
+    }
+    Option.None
+}
+
+fn loop_replace_result(value Expr, result_local Int, replacement Expr) Expr {
+    if value.kind == ExprKind.Local && value.index == result_local {
+        return replacement
+    }
+    let children = new[Expr]()
+    var index = 0
+    while index < length(value.children) {
+        push(children, loop_replace_result(get(value.children, index), result_local, replacement))
+        index = index + 1
+    }
+    proof_expr(value, value.kind, value.ty, value.text, value.index, children)
+}
+
+fn loop_postconditions(function Function) List[Expr] {
+    if function.result == 0 {
+        return function.postconditions
+    }
+    match loop_result_path(function.body, function.result_local, 256) {
+        Option.Some(path) => {
+            let clauses = new[Expr]()
+            var index = 0
+            while index < length(function.postconditions) {
+                let value = get(function.postconditions, index)
+                push(clauses, if scan_mentions(value, function.result_local) {
+                        loop_replace_result(value, function.result_local, path)
+                    } else {
+                        value
+                    })
+                index = index + 1
+            }
+            clauses
+        }
+        Option.None => function.postconditions
+    }
+}
