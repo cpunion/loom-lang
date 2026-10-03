@@ -442,6 +442,6 @@ restore that borrowed-handle boundary is an unrecoverable runtime fault.
 
 The reactor uses [polling](https://docs.rs/polling/3.11.0/polling/struct.Poller.html)
 for OS readiness rather than separate handwritten platform reactors. Source
-timers and file-worker completions now use this wait path; readiness tests do not
-imply source socket APIs or general worker execution. Public raw-fd wait
+timers, sockets, file-worker completions and CPU-worker notifications use this
+wait path. Public raw-fd wait
 constructors and a runtime registry of join names are not required.

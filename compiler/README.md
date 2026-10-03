@@ -3361,7 +3361,8 @@ collects before every allocation and relocates all sizes for focused testing.
 The LLVM tool links managed
 programs with `libloom_runtime.a` (`loom_runtime.lib` on Windows) beside it, or at
 `LOOM_RUNTIME_LIBRARY`.
-Whole-file helpers close handles explicitly on recoverable branches. Lexical
+Whole-file helpers close explicitly on normal returns and defer closure on faults
+or worker cancellation. Lexical
 resource cleanup is described separately above; neither mechanism uses GC finalization.
 
 The N0 source-to-native gate is exercised by the examples and integration tests.
@@ -3372,7 +3373,7 @@ old-language support policy. Stage numbers denote bootstrap generations, not
 language versions. The bootstrap subset limits how the compiler source is
 written, not what language features the resulting compiler can offer users.
 Broader proofs and mutable-alias preservation, general resource transfer into
-Tasks, general worker APIs, remaining pack combinations,
+Tasks, broader worker interference proofs, remaining pack combinations,
 and complete incremental coverage remain open.
 Semantic-change and deployment tools have bounded working
 prototypes, not their general accepted workflows. See the concise

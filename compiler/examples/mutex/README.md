@@ -5,5 +5,5 @@
 containing block exit. A guard cannot be copied, discarded or held across await.
 
 `loom test compiler/std/sync/mutex` also exercises early return, fault cleanup
-and rejected reentrance. Source Tasks still run cooperatively; this example does
-not claim that the general worker executor is implemented.
+and rejected reentrance. Ordinary Tasks still run cooperatively; the
+[worker example](../workers) uses the same mutex with explicit parallel Tasks.

@@ -5,15 +5,20 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add source `std.task.worker.run` with typed callback frames, shared moving GC,
+  memory-safe mutable accesses, completion notifications and structured
+  cancellation/fault cleanup. Keep no-worker lowering direct and revalidate
+  required proofs for interference. Broader shared-state proofs and removal of
+  unnecessary instrumentation inside worker-enabled builds remain open.
+
 - Add source `std.sync.mutex` with lexical `MustScope`/`NoSuspend` guards,
   normal/fault release and rejected same-thread reentrance. Guards cannot be
-  copied, reconstructed from fields or held across await. This does not yet
-  expose general parallel workers.
+  copied, reconstructed from fields or held across await.
 
 - Add a native worker cancellation boundary with wakeable mutex acquisition,
   live-root lexical drain and distinct cancellation/fault outcomes. Nested
   diagnostic catchers cannot swallow cancellation; mandatory cleanup completes
-  before drain returns. Source worker lowering and scheduling remain open.
+  before drain returns.
 
 - Add compile-time `std.build.target` queries from the actual backend. Bind
   observed properties to checked artifacts, cache reuse and analysis; reject
@@ -153,7 +158,6 @@ implementation, not a compatibility ledger for previous prototypes.
   `test async fn`, postfix `.await`/`.await?`, and one-shot local obligations.
   Loom lowers typed frames and resume functions for a single-threaded CPU ready
   queue, with fault propagation and cancellation of queued/suspended descendants.
-  Socket adapters, general worker operations and joins remain unfinished.
 
 - Add a private native resume fault boundary: drain live lexical cleanups,
   restore GC roots, then unwind through LLVM frames into an owned diagnostic.
