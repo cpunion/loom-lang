@@ -36,7 +36,20 @@ fn forwarded_list_operation(program Program, function Function, depth Int) Text 
 }
 
 fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArguments) Result[List[Outcome], Text] {
-    var state = if proof.shared { forget_extents(proof, inputs.state) } else { inputs.state }
+    var state = inputs.state
+    let stored = if name == "list_push" {
+        1
+    } else {
+        if name == "list_set" {
+            2
+        } else {
+            -1
+        }
+    }
+    if proof.shared && stored >= 0 && stored < length(inputs.values) && mutable_value(get(inputs.values, stored)) {
+        state = published_storage(state)
+    }
+    state = interference(proof, state)
     if name == "list_new" && length(inputs.values) == 0 {
         let value = record_parameter_value(proof, ty, 0)
         return match value {

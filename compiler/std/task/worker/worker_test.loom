@@ -210,3 +210,42 @@ ensures result == value
 {
     value
 }
+
+fn local_values() List[Int]
+ensures length(result) == 3 && get(result, 1) == 7
+{
+    let values = [1, 2]
+    let alias = values
+    push(alias, 3)
+    set(values, 1, 7)
+    values
+}
+
+fn local_count() Int
+ensures result == 3
+{
+    let values = [1, 2]
+    push(values, 3)
+    length(values)
+}
+
+test async fn private_storage_retains_required_proofs_inside_workers() {
+    let values, count = (run(local_values), run(local_count)).await
+    assert length(values) == count && get(values, 1) == 7
+    assert run(fn() Int {
+            local_loop(12)
+        }).await == 12
+}
+
+fn local_loop(limit Int) Int
+requires limit >= 0 && limit <= 32
+ensures result == limit
+{
+    let values = std.list.new[Int]()
+    var index = 0
+    while index < limit {
+        push(values, index)
+        index = index + 1
+    }
+    length(values)
+}

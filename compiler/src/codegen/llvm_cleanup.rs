@@ -343,6 +343,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 cleanups: HashMap::new(),
                 runtime_fault: true,
                 shared: self.shared,
+                private_storage: self.private_storage,
+                storage_forwarders: self.storage_forwarders,
             };
             callback.block(plan.body)?;
             if callback.live() {

@@ -134,7 +134,7 @@ fn loop_writes(proof Verification, expr Expr, writes List[Bool], guard Bool, dep
 fn loop_predicate(candidate LoopCandidate, state State) Result[Predicate, Text] {
     match candidate {
         LoopCandidate.Element(identity, index, relation, initial) =>
-            boolean(binary(relation, known_element(identity, index, state)?, initial)?)
+        boolean(binary(relation, known_element(identity, index, state)?, initial)?)
         LoopCandidate.Entry(index, path, relation, initial) => {
             var value = get(state.locals, index)
             var field = 0
@@ -400,7 +400,7 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             storage = forget_elements(storage)
         }
     }
-    let head = loop_head(proof, writes, storage)
+    var head = loop_head(proof, writes, storage)
     candidates = available_loop_candidates(candidates, head)
     while true {
         discard loop_step(proof)?
@@ -443,8 +443,23 @@ fn entered_loop(proof Verification, expr Expr, entry State, writes List[Bool], d
             }
             index = index + 1
         }
-        if length(survivors) == length(candidates) {
+        var published = false
+        if proof.shared {
+            index = 0
+            while index < length(backedges) {
+                if private_storage_lost(head, get(backedges, index).state) {
+                    published = true
+                }
+                index = index + 1
+            }
+        }
+        if length(survivors) == length(candidates) && !published {
             return Result.Ok(exits)
+        }
+        if published {
+            // Privacy is an inductive fact too. A later iteration must not
+            // recover the pre-loop exclusivity of an already published alias.
+            head = published_storage(head)
         }
         // Recheck every survivor after a removal: a candidate may have relied
         // on the rejected one. The final pass also rechecks early returns.

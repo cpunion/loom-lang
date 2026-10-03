@@ -35,6 +35,8 @@ mod gc_lower;
 mod memory;
 #[path = "llvm_target.rs"]
 mod native_target;
+#[path = "llvm_storage.rs"]
+mod storage;
 #[path = "llvm_tasks.rs"]
 mod tasks;
 
@@ -177,6 +179,11 @@ fn emit_checked(
     } else {
         gc::allocating_functions(program, &reachable, library)
     };
+    let storage_forwarders = if shared {
+        storage::forwarders(program, &reachable)
+    } else {
+        storage::Forwarders::new()
+    };
     let cleanup_plans = reachable
         .iter()
         .map(|id| cleanup::plans(&program.functions[*id]).map(|plans| (*id, plans)))
@@ -235,6 +242,11 @@ fn emit_checked(
         builder.position_at_end(entry);
         let source = &program.functions[id];
         let plans = &cleanup_plans[&id];
+        let private_storage = if shared {
+            storage::PrivateStorage::analyze(program, source, &storage_forwarders)
+        } else {
+            storage::PrivateStorage::default()
+        };
         let callback_locals = plans
             .iter()
             .flat_map(|plan| &plan.locals)
@@ -301,6 +313,8 @@ fn emit_checked(
             cleanups: HashMap::new(),
             runtime_fault,
             shared,
+            private_storage: &private_storage,
+            storage_forwarders: &storage_forwarders,
         };
         emitter.prepare_cleanups(id, plans)?;
         emitter.worker_checkpoint()?;
@@ -584,6 +598,8 @@ struct FunctionEmitter<'a, 'ctx> {
     cleanups: HashMap<usize, cleanup::Site<'ctx>>,
     runtime_fault: bool,
     shared: bool,
+    private_storage: &'a storage::PrivateStorage,
+    storage_forwarders: &'a storage::Forwarders,
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
@@ -708,6 +724,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .iter()
                 .enumerate()
                 .filter_map(|(index, arg)| {
+                    if self.private_storage.contains(arg) {
+                        return None;
+                    }
                     // Values stored in a List are handles, not additional accesses.
                     // View bookkeeping acquires its private removed-cell list under
                     // the source guard, in the runtime's source -> storage order.
@@ -1328,6 +1347,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 }
             }
             checked::ExprKind::Call(function, args) => {
+                if let Some(operation) = self.storage_forwarders.get(function).copied() {
+                    // Keep shared/unknown callers on the ordinary path. An
+                    // identity forwarder adds no user code or preconditions.
+                    if args.iter().any(|arg| self.private_storage.contains(arg)) || args.is_empty()
+                    {
+                        return self.primitive(expr.ty, operation, args);
+                    }
+                }
                 let Some(values) = self.operands(args)? else {
                     return Ok(None);
                 };
@@ -1452,7 +1479,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     return Ok(None);
                 };
                 if let Some(ty) = frame_type {
-                    if self.shared {
+                    let guarded = self.shared && !self.private_storage.contains(source);
+                    if guarded {
                         self.access_begin(&[value])?;
                         self.restore_locals()?;
                         value = self.reload(source, value)?;
@@ -1468,7 +1496,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         address,
                         "frame.load",
                     )?;
-                    if self.shared {
+                    if guarded {
                         self.runtime_call("shared_access_end", None, &[])?;
                     }
                     loaded

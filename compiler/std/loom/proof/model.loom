@@ -57,6 +57,7 @@ record ListExtent {
     identity Int
     size Linear
     allocated Bool
+    private_storage Bool
     cells List[ListCell]
 }
 

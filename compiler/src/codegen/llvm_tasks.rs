@@ -85,7 +85,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let Some(mut values) = self.operands([frame, value])? else {
             return Ok(None);
         };
-        if self.shared {
+        let guarded = self.shared && !self.private_storage.contains(frame);
+        if guarded {
             self.access_begin(&[values[0]])?;
             self.restore_locals()?;
             values[0] = self.reload(frame, values[0])?;
@@ -98,7 +99,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "frame.store.field",
         )?;
         self.builder.build_store(address, values[1])?;
-        if self.shared {
+        if guarded {
             self.runtime_call("shared_access_end", None, &[])?;
         }
         Ok(None)

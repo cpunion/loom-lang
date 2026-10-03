@@ -27,11 +27,14 @@ fn extent_bounds(size Linear, state State) State {
 
 fn with_extent(identity Int, size Linear, allocated Bool, state State) State {
     let extents = new[ListExtent]()
+    var private_storage = allocated
     var index = 0
     while index < length(state.extents) {
         let extent = get(state.extents, index)
         if extent.identity != identity {
             push(extents, extent)
+        } else {
+            private_storage = extent.private_storage
         }
         index = index + 1
     }
@@ -39,6 +42,7 @@ fn with_extent(identity Int, size Linear, allocated Bool, state State) State {
             identity = identity
             size = size
             allocated = allocated
+            private_storage = private_storage
             cells = new[ListCell]()
         })
     extent_bounds(size, State {
@@ -73,7 +77,95 @@ fn list_bounds(value Value, state State) State {
 fn forget_extents(proof Verification, state State) State {
     let modified = new[Int]()
     push(modified, -1)
-    forget_modified_extents(proof, state, modified)
+    forget_modified_extents(proof, if proof.shared {
+            published_storage(state)
+        } else {
+            state
+        }, modified)
+}
+
+// Fresh handles are private until publication. Opaque calls or storing a
+// mutable graph discard this evidence conservatively, including nested aliases.
+// This is proof state, not a source ownership qualifier or a runtime monitor.
+fn published_storage(state State) State {
+    let extents = new[ListExtent]()
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        push(extents, ListExtent {
+                identity = extent.identity
+                size = extent.size
+                allocated = extent.allocated
+                private_storage = false
+                cells = extent.cells
+            })
+        index = index + 1
+    }
+    State {
+        locals = state.locals
+        facts = state.facts
+        extents = extents
+    }
+}
+
+fn mutable_value(value Value) Bool {
+    match value {
+        Value.List(_) => true
+        Value.Record(fields) => {
+            var index = 0
+            while index < length(fields) {
+                if mutable_value(get(fields, index)) {
+                    return true
+                }
+                index = index + 1
+            }
+            false
+        }
+        _ => false
+    }
+}
+
+fn interference(proof Verification, state State) State {
+    if !proof.shared {
+        return state
+    }
+    var current = state
+    var index = 0
+    while index < length(state.extents) {
+        let extent = get(state.extents, index)
+        if !extent.private_storage {
+            match fresh_result(proof, 1) {
+                Value.Number(size) => {
+                    current = with_extent(extent.identity, size, extent.allocated, current)
+                }
+                _ => {
+                }
+            }
+        }
+        index = index + 1
+    }
+    current
+}
+
+fn private_storage_lost(before State, after State) Bool {
+    var index = 0
+    while index < length(before.extents) {
+        let extent = get(before.extents, index)
+        if extent.private_storage {
+            match list_state(extent.identity, after) {
+                Result.Ok(current) => {
+                    if !current.private_storage {
+                        return true
+                    }
+                }
+                Result.Err(_) => {
+                    return true
+                }
+            }
+        }
+        index = index + 1
+    }
+    false
 }
 
 // A newly allocated header is distinct from every handle that already existed.

@@ -26,6 +26,7 @@ fn element_cells(extent ListExtent, cells List[ListCell]) ListExtent {
         identity = extent.identity
         size = extent.size
         allocated = extent.allocated
+        private_storage = extent.private_storage
         cells = cells
     }
 }

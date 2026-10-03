@@ -1,0 +1,30 @@
+import std.bytes.new
+import std.bytes.push
+import std.bytes.length
+import std.list.new
+import std.list.push
+import std.list.length
+
+// Storage created inside one invocation needs neither implicit copying nor
+// shared-access locks. Its ordinary GC roots and cancellation points remain.
+fn private_buffers() Int {
+    let values = std.list.new[Int]()
+    let alias = values
+    let bytes = std.bytes.new()
+    var index = 0
+    while index < 32 {
+        std.list.push(alias, index)
+        std.bytes.push(bytes, index)
+        index = index + 1
+    }
+    std.list.length(values) + std.bytes.length(bytes) + values[7]
+}
+
+fn private_result() List[Int]
+ensures std.list.length(result) == 3 && result[1] == 7
+{
+    let values = [1, 2]
+    std.list.push(values, 3)
+    std.list.set(values, 1, 7)
+    values
+}
