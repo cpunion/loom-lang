@@ -22,11 +22,16 @@ fn index_relation(relation Text, left Linear, right Linear, state State) Bool {
 }
 
 fn element_cells(extent ListExtent, cells List[ListCell]) ListExtent {
+    element_contents(extent, extent.contents, cells)
+}
+
+fn element_contents(extent ListExtent, contents Int, cells List[ListCell]) ListExtent {
     ListExtent {
         identity = extent.identity
         size = extent.size
         allocated = extent.allocated
         private_storage = extent.private_storage
+        contents = contents
         cells = cells
     }
 }
@@ -55,7 +60,7 @@ fn forget_elements(state State) State {
     let extents = new[ListExtent]()
     var index = 0
     while index < length(state.extents) {
-        push(extents, element_cells(get(state.extents, index), new[ListCell]()))
+        push(extents, element_contents(get(state.extents, index), -1, new[ListCell]()))
         index = index + 1
     }
     State {
@@ -149,7 +154,7 @@ fn frame_observation(cell ListCell, written Linear, state State) ListCell {
 // A write retains same-handle observations under index separation. Different
 // handles may alias at different offsets, so only established allocation
 // separation preserves their cells. Read scalars remain immutable snapshots.
-fn written_element(identity Int, index Linear, value Value, state State) Result[State, Text] {
+fn written_element(proof Verification, identity Int, index Linear, value Value, state State) Result[State, Text] {
     let target = list_state(identity, state)?
     let extents = new[ListExtent]()
     var position = 0
@@ -168,20 +173,21 @@ fn written_element(identity Int, index Linear, value Value, state State) Result[
             push(extents, element_cells(extent, cells))
         } else {
             push(extents, if extent_overlap(extent, target) {
-                    element_cells(extent, cells)
+                    element_contents(extent, -1, cells)
                 } else {
                     extent
                 })
         }
         position = position + 1
     }
-    remember_element(identity, index, value,
+    let changed = remember_element(identity, index, value,
         State {
             locals = state.locals
             facts = state.facts
             extents = extents
             observations = state.observations
-        })
+        })?
+    array_write(proof, target, index, value, changed)
 }
 
 record ElementLocation {

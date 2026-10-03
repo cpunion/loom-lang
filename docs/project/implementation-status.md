@@ -277,11 +277,19 @@ lengths are preserved. Lost candidates trigger dependent rechecks; ordinary
 cleanup and loop jumps retain their order. This covers bounded element counters
 and two-element sum conservation, not arbitrary-index array invariants. Indexed entry
 checks and storage postconditions compose; hypothetical postcondition reads
-must prove bounds and have an established observation. Unknown reads never
+must prove bounds and have an established observation or modeled Int content version. Unknown reads never
 supply non-aliasing evidence. Immutable entry-element snapshots require entry
 bounds and survive writes, including through per-invocation summaries. Quantified
 contents remain open. See the [indexed example](../../compiler/examples/list_elements) and
 [List contract example](../../compiler/examples/list_contracts).
+The optional solver now models `List[Int]` content versions with guarded reads
+and `select`/`store` write equations. Arbitrary valid parameter indices can prove
+write-then-restore and swap/frame contracts, without deciding index equality at
+each write or enumerating concrete indices. The finite observation cache stays
+the fast path. Alias uncertainty, opaque effects, loop havoc and shared
+interference discard current versions; immutable old equations cannot restore
+them. This adds no runtime copying, whole-List `old` or quantified loop induction.
+See the [heap example](../../compiler/examples/smt_contracts/heap.loom).
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining

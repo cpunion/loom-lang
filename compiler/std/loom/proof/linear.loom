@@ -118,7 +118,7 @@ fn same(a Predicate, b Predicate) Bool {
                 let budget = new[Int]()
                 push(budget, 1024)
                 relation == other && same_integer_term(left, first, budget) &&
-                    same_integer_term(right, second, budget)
+                same_integer_term(right, second, budget)
             }
             _ => false
         }
@@ -156,12 +156,37 @@ fn same(a Predicate, b Predicate) Bool {
             Predicate.Or(other) => same_predicates(values, other),
             _ => false
         }
+        Predicate.ArrayRead(id, index, value, valid) => match b {
+            Predicate.ArrayRead(other, position, term, guard) => {
+                let budget = new[Int]()
+                push(budget, 1024)
+                id == other && compare(index.constant, position.constant) == 0 &&
+                same_terms(index.terms, position.terms) && same_integer_term(value, term, budget) &&
+                same_predicates(valid, guard)
+            }
+            _ => false
+        }
+        Predicate.ArrayWrite(before, after, index, value) => match b {
+            Predicate.ArrayWrite(first, second, position, term) => {
+                let budget = new[Int]()
+                push(budget, 1024)
+                before == first && after == second && compare(index.constant, position.constant) == 0 &&
+                same_terms(index.terms, position.terms) && same_integer_term(value, term, budget)
+            }
+            _ => false
+        }
     }
 }
 
 fn same_text(left TextValue, right TextValue) Bool {
-    if match left { TextValue.Joined(_) => true, _ => false } ||
-    match right { TextValue.Joined(_) => true, _ => false } {
+    if match left {
+        TextValue.Joined(_) => true,
+        _ => false
+    } ||
+    match right {
+        TextValue.Joined(_) => true,
+        _ => false
+    } {
         return same_text_sequence(left, right)
     }
     match left {

@@ -63,6 +63,7 @@ record EntrySnapshot {
 fn immutable_snapshot(value Value) Bool {
     match value {
         Value.Number(_) => true
+        Value.Nonlinear(_) => true
         Value.Boolean(_) => true
         Value.Text(_) => true
         Value.Record(fields) => {
@@ -146,6 +147,7 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
         // Entry lengths already have bounds in both states. Repeated clauses
         // must not copy those same facts into every private snapshot scope.
         var after_scope = call_scope(state, values)
+        after_scope = captured_array_facts(before, after_scope)
         after_scope = if proof.shared && entry_length_expression(value) {
             match observed {
                 Value.Number(size) => extent_bounds(size, after_scope)

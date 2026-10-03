@@ -69,3 +69,20 @@ test fn optional_implication_retains_checks_when_the_backend_fails() {
     assert !implies_facts([unit_square], operation("!=", x, literal("0")), backend)
     assert implies_facts([positive], operation(">=", x, literal("0")), backend)
 }
+
+test fn array_encoding_preserves_versions_indices_and_observation_guards() {
+    let index = variable(1)
+    let value = IntegerTerm.Linear(variable(2))
+    let query = encoding([Obligation {
+                facts = [Predicate.ArrayRead(10, index, value, [Predicate.Variable(3)]),
+                    Predicate.ArrayWrite(10, 11, index, value)]
+                conclusion = Predicate.IntegerCompare("==", IntegerTerm.Select(11, index), value)
+            }])
+    assert contains(query, "(declare-const a10 (Array Int Int))")
+    assert contains(query, "(declare-const a11 (Array Int Int))")
+    assert contains(query, "(=> b3 (= (select a10")
+    assert contains(query, "(= a11 (store a10 (+ 0 (* 1 n1)) (+ 0 (* 1 n2))))")
+    assert contains(query, "(= (select a11")
+    assert !integer_interval("==", IntegerTerm.Select(11, index), value, [])
+    assert immutable_snapshot(Value.Nonlinear(IntegerTerm.Select(11, index)))
+}

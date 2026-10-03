@@ -229,7 +229,7 @@ fn pure(expr Expr, state State) Result[Value, Text] {
         return binary(expr.text, get(inputs, 0), get(inputs, 1))
     }
     if expr.kind == ExprKind.Intrinsic {
-        return intrinsic_value(expr.text, inputs, state)
+        return intrinsic_value(expr.text, expr.ty, inputs, state)
     }
     Result.Err("unsupported expression in required proof")
 }

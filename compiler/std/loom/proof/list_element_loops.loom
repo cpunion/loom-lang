@@ -4,6 +4,7 @@
 fn fresh_loop_element(proof Verification, value Value) Value {
     match value {
         Value.Number(_) => fresh_result(proof, 1)
+        Value.Nonlinear(_) => fresh_result(proof, 1)
         Value.Boolean(_) => fresh_result(proof, 2)
         Value.Text(_) => fresh_result(proof, 3)
         Value.Record(fields) => {

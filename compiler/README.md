@@ -2190,8 +2190,8 @@ Pure helpers and supported List length refinements compose with generic function
 and inline fields. Extent-changing loops freshen affected lengths at the inductive head;
 all retained invariants still require entry/backedge proofs. See the
 [List contract example](examples/list_contracts), which proves length preservation
-during an actual sorting loop, **not** sortedness or permutation. General element
-relationships beyond bounded indexed observations remain unsupported. These
+during an actual sorting loop, **not** sortedness or permutation. Quantified
+collection invariants remain unsupported. These
 proof states add no native object metadata.
 
 Aggregate summaries compose through nested calls, field projections and
@@ -2235,7 +2235,7 @@ for new facts. No-result source helpers with finite checked effects need no extr
 contract to frame untouched storage. Mutating loops freshen their observed elements before induction.
 Scalar values previously read remain snapshots. Contracted functions without a
 return value compose through their storage postconditions. Unknown post-state
-elements without an established read/write reject.
+elements without an established observation or modeled content version reject.
 `old(values[index])` and `old(get(values, index))` snapshot immutable scalar or
 inline element values, including through finite pure helpers. Each index must
 be proved in bounds on the entry paths where it is observed. Short-circuit
@@ -2265,6 +2265,19 @@ ensures values[second] == old(values[first])
 
 This is not quantified array reasoning. See the
 [indexed List example](examples/list_elements).
+
+For `List[Int]`, the optional compile-time solver also relates reads and writes
+through versioned logical arrays (`select`/`store`). Contracts can prove restoration
+and swapping at arbitrary parameter indices, including equal indices and the
+unchanged value at any other valid index. This is an algebraic proof for every
+admitted argument, not a finite enumeration of indices. The 64-observation fast
+cache remains; evicting a cell does not remove its immutable version equation.
+Possibly overlapping alias writes, opaque effects, loop havoc and shared
+interference invalidate current versions. Old versions never become current
+again merely because their facts survive. Bounds and eager fault obligations
+remain independent. No runtime snapshots or solver are emitted. Whole-List `old`
+and quantified loop invariants remain unsupported. See the
+[heap contract example](examples/smt_contracts/heap.loom).
 
 Length-preserving loops can infer bounds/equalities for observed Int, Bool and
 Text elements, and scalar field relations in immutable inline elements. Source
