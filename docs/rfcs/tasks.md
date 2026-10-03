@@ -71,6 +71,78 @@ ordinary names and shadowing do not select its policy.
 children on success. It does not turn discarded completed values into external
 resource finalizers; resource-producing races must retain explicit cleanup.
 
+## Shared workers
+
+**Accepted semantics; general Loom workers are not implemented.** Ordinary
+data remains shared by default across explicitly requested workers. There is
+no implicit graph copy, ownership/borrow syntax, or blanket rejection of
+unsynchronized mutable aliases. Async alone does not request parallel execution.
+
+Individual shared storage accesses must remain memory-safe. A read observes a
+fully initialized, well-typed value, not a torn managed pointer or mismatched
+enum tag/payload. Container bounds, backing-storage lifetime and GC relocation
+must remain safe even during concurrent resize. A stale bounds observation can
+lead to an ordinary bounds fault, never an unchecked access to freed storage.
+This does not make a sequence of accesses, a function call, or an entire library
+operation atomic. Memory safety is not a promise of race-free application logic.
+
+For example, consider two workers each calling this function once, on the same
+List initially containing `[0]`, with no other writers or resizing:
+
+```loom
+import std.list.get
+import std.list.set
+
+fn increment(values List[Int]) {
+    set(values, 0, get(values, 0) + 1)
+}
+```
+
+After both workers complete, the element may be `1` or `2`: both reads may
+observe `0`. To guarantee `2`, both callers must use the same explicit lock
+around the complete read/modify/write, or an explicit atomic update operation.
+Locking only the `set` calls is insufficient. Worker and synchronization API
+spellings are not specified by this example.
+
+Publication to a worker, successful completion/join, and synchronization
+release/acquire establish visibility of preceding writes. Unrelated workers
+have no implicit source order. The optimizer still needs equivalence evidence
+to introduce parallelism into ordinary sequential code; explicit workers are
+not permission to drop existing data, control, effect, fault or cleanup ordering.
+
+Contracts and persistent type constraints remain guarantees. A fact about
+mutable shared state cannot justify removing a check if another worker can
+invalidate it before use. An invariant-preserving update must remain valid under
+interference, not merely pass a check on a stale snapshot. Synchronization can
+establish a protected boundary only when all relevant aliases follow it; locking
+one handle does not protect against an unrestricted alias. Reject an unproved
+strengthening or transformation, not ordinary unrefined sharing. See
+[sharing and persistent constraints](language-foundation.md#sharing-and-persistent-constraints).
+
+Workers retain structured Task completion, fault and cancellation semantics.
+Cancellation is cooperative; join/drain cannot finish while a worker still
+accesses shared values or runs cleanup. Scoped resources and owner-local native
+tokens do not become transferable merely because ordinary data is shared.
+
+Implementation must close these boundaries together before exposing workers:
+
+1. Register participating mutators and roots; collection relocates a shared graph
+   only while all participants are at safe points. Blocking native waits must
+   not prevent that rendezvous, and cancellation/exit must retire registrations.
+2. Lower shared storage reads/writes and resizing with safe publication and
+   lifetime rules; provide explicit synchronization through narrow runtime
+   primitives and source-library policy. Proven local accesses retain direct code.
+3. Integrate actual parallel Loom execution with Task completion notifications,
+   fault capture and cancellation drain. A single execution lock is not CPU
+   parallelism; the native I/O pool is not this executor.
+
+Acceptance needs native parallel shared-update and synchronized-update examples,
+resize/aggregate publication under moving-GC stress, and fault/cancellation
+cleanup. The lost-update outcome should be forced with synchronization in a
+focused test, not required to appear by chance. Measure local scalar/List code
+as well as parallel work; ordinary functions must not acquire scheduler context
+or per-access locks without need.
+
 ## Implementation boundary
 
 The current source slice supports async functions/methods, async main/tests,
