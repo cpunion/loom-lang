@@ -33,7 +33,7 @@ fn expanded_observation(context Expansion, value Expr) Int {
 
 fn observation_expression(value Expr) Bool {
     value.index >= 0 && (list_length_expression(value) || list_read_expression(value) ||
-        entry_length_expression(value) || entry_element_expression(value))
+        entry_observation_expression(value))
 }
 
 fn observation_guard(guard Expr, state State) Option[Predicate] {
@@ -70,7 +70,7 @@ fn observation_value(value Expr, guard Expr, state State) Option[Value] {
     if !observation_expression(value) {
         return Option.None
     }
-    let entry = entry_length_expression(value) || entry_element_expression(value)
+    let entry = entry_observation_expression(value)
     var index = length(state.observations)
     while index > 0 {
         index = index - 1
@@ -92,7 +92,7 @@ fn with_observation(source Expr, guard Expr, value Value, state State) State {
     let observations = clone(state.observations)
     push(observations, Observation {
             identity = source.index
-            entry = entry_length_expression(source) || entry_element_expression(source)
+            entry = entry_observation_expression(source)
             guard = guard
             valid = observation_guard(guard, state)
             value = value

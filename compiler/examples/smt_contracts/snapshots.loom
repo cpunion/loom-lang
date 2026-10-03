@@ -1,0 +1,94 @@
+import std.list.get
+import std.list.set
+import std.list.push
+import std.list.length
+
+fn snapshot_element(values List[Int], index Int) Int {
+    get(values, index)
+}
+
+fn entry_read(values List[Int], index Int) Int
+requires index >= 0 && index < length(values)
+ensures result == get(old(values), index)
+ensures result == old(get(values, index))
+{
+    get(values, index)
+}
+
+fn readonly_snapshot(values List[Int], index Int) Int
+requires index >= 0 && index < length(values)
+ensures result == get(values, index)
+{
+    entry_read(values, index)
+}
+
+fn selected_list(left List[Int], right List[Int], choose_left Bool) List[Int] {
+    if choose_left {
+        left
+    } else {
+        right
+    }
+}
+
+fn selected_snapshot(left List[Int], right List[Int], index Int, choose_left Bool) Int
+requires index >= 0 && index < length(left) && index < length(right)
+ensures result == get(old(selected_list(left, right, choose_left)), index)
+{
+    let saved = get(selected_list(left, right, choose_left), index)
+    set(left, index, 7)
+    set(right, index, 9)
+    saved
+}
+
+fn saved_element(values List[Int], observed Int, changed Int) Int
+requires observed >= 0 && observed < length(values)
+requires changed >= 0 && changed < length(values)
+ensures result == snapshot_element(old(values), observed)
+ensures length(values) == length(old(values))
+{
+    let saved = get(values, observed)
+    set(values, changed, 7)
+    saved
+}
+
+fn appended_snapshot(values List[Int], index Int) Int
+requires index >= 0 && index < length(values)
+requires length(values) < 9223372036854775807
+ensures result == old(values)[index]
+ensures values[index] == get(old(values), index)
+ensures length(values) == length(old(values)) + 1
+{
+    let saved = get(values, index)
+    push(values, 9)
+    saved
+}
+
+// The returned index is a post-state value, not an operand captured by old.
+fn entry_choice(values List[Int], second Bool) Int
+requires length(values) > 1
+requires values[0] == 10 && values[1] == 20
+ensures result >= 0 && result < length(old(values))
+ensures second || old(values)[result] == 10
+ensures !second || old(values)[result] == 20
+{
+    set(values, 0, 99)
+    set(values, 1, 99)
+    if second {
+        1
+    } else {
+        0
+    }
+}
+
+fn snapshot_cases() {
+    let values = [1, 2, 3]
+    assert readonly_snapshot(values, 2) == 3
+    assert selected_snapshot([1], [2], 0, true) == 1
+    assert selected_snapshot([1], [2], 0, false) == 2
+    assert saved_element(values, 0, 2) == 1
+    assert saved_element(values, 2, 2) == 7
+    assert appended_snapshot(values, 1) == 2
+    assert length(values) == 4
+    assert entry_choice([10, 20], true) == 1
+    assert entry_choice([10, 20], false) == 0
+}

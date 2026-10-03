@@ -29,6 +29,9 @@ fn unsupported_operation() ProofOperation {
 }
 
 fn intrinsic_operation(name Text, ty Int, arity Int) ProofOperation {
+    if name == "entry_list" && arity == 1 {
+        return operation_shape(1, OperandFlow.Eager, true, true)
+    }
     if arity == 1 && ty == 1 {
         if name == "text_len" {
             return operation_shape(1, OperandFlow.Eager, false, true)

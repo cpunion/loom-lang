@@ -54,6 +54,7 @@ fn main() {
     assert squared_length("雪") == 9
     refinement_cases()
     heap_cases()
+    snapshot_cases()
 }
 
 test fn combined_contracts() {

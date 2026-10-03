@@ -11,12 +11,19 @@ fn intrinsic_value(name Text, ty Int, inputs List[Value], state State) Result[Va
         return joined_text(get(inputs, 0), get(inputs, 1))
     }
     if name == "list_len" {
-        return match get(inputs, 0) {
-            Value.List(identity) => Result.Ok(Value.Number(list_extent(identity, state)?))
-            _ => Result.Err("List length proof requires a tracked handle")
-        }
+        return Result.Ok(Value.Number(list_value_extent(get(inputs, 0), state)?))
     }
     if name == "list_get" {
+        match get(inputs, 0) {
+            Value.EntryList(_, contents) => {
+                if ty != 1 || contents < 0 {
+                    return Result.Err("entry List contents need an enabled proof backend")
+                }
+                return Result.Ok(Value.Nonlinear(IntegerTerm.Select(contents, list_value_index(get(inputs, 1))?)))
+            }
+            _ => {
+            }
+        }
         let location = element_inputs(get(inputs, 0), get(inputs, 1))?
         let known = known_element(location.identity, location.index, state)
         if ty == 1 {

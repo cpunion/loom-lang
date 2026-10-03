@@ -37,6 +37,24 @@ fn forwarded_list_operation(program Program, function Function, depth Int) Text 
 
 fn list_operation_outcomes(proof Verification, name Text, ty Int, inputs CallArguments) Result[List[Outcome], Text] {
     var state = inputs.state
+    if length(inputs.values) > 0 {
+        match get(inputs.values, 0) {
+            Value.EntryList(size, _) => {
+                if name == "list_get" && length(inputs.values) == 2 {
+                    let index = list_value_index(get(inputs.values, 1))?
+                    // These are established callee facts, not caller goals.
+                    state = assume(assume(state, Predicate.Compare(">=", index)),
+                        Predicate.Compare("<", add(index, scale(size, integer(-1)))))
+                } else if name != "list_len" || length(inputs.values) != 1 {
+                    return Result.Err("entry List values cannot be mutated")
+                }
+                let value = intrinsic_value(name, ty, inputs.values, state)?
+                return Result.Ok(outcomes(bounded(value, state), value))
+            }
+            _ => {
+            }
+        }
+    }
     let stored = if name == "list_push" {
         1
     } else {

@@ -55,11 +55,11 @@ fn solver_defined(proof ProofQuery, expr Expr, state State, depth Int) Result[Bo
         }
     }
     if expr.kind == ExprKind.Intrinsic && expr.text == "list_get" {
-        let location = element_inputs(pure(get(expr.children, 0), state)?,
-            pure(get(expr.children, 1), state)?)?
-        solver_fact(proof, Predicate.Compare(">=", location.index), state)
-        solver_fact(proof, Predicate.Compare("<", add(location.index,
-                    scale(list_extent(location.identity, state)?, integer(-1)))), state)
+        let size = list_value_extent(pure(get(expr.children, 0), state)?, state)?
+        let index = list_value_index(pure(get(expr.children, 1), state)?)?
+        solver_fact(proof, Predicate.Compare(">=", index), state)
+        solver_fact(proof, Predicate.Compare("<", add(index,
+                    scale(size, integer(-1)))), state)
         return Result.Ok(true)
     }
     Result.Err(failure)

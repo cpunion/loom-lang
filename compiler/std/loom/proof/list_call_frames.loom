@@ -151,7 +151,10 @@ fn framed_elements(entry State, writes List[ElementWrite]) State {
                     }
                     cell = cell + 1
                 }
-                state = with_cells(extent.identity, cells, state)
+                // Guarded untouched cells may survive; the complete contents
+                // do not. Never restore an entry array across a possible write.
+                state = with_contents(extent.identity, -1,
+                    with_cells(extent.identity, cells, state))
             }
             position = position + 1
         }

@@ -8,6 +8,44 @@ fn entry_element_expression(value Expr) Bool {
     length(value.children) == 2
 }
 
+fn entry_list_expression(value Expr) Bool {
+    value.kind == ExprKind.Intrinsic && value.text == "entry_list" &&
+    length(value.children) == 1
+}
+
+fn entry_observation_expression(value Expr) Bool {
+    entry_length_expression(value) || entry_element_expression(value) || entry_list_expression(value)
+}
+
+fn entry_list_type(program Program, ty Int, depth Int) Bool {
+    if depth >= 16 || ty < 0 || ty >= length(program.types) {
+        return false
+    }
+    let shape = get(program.types, ty)
+    if shape.kind == TypeKind.Refined && length(shape.fields) == 1 {
+        return entry_list_type(program, get(shape.fields, 0).ty, depth + 1)
+    }
+    shape.kind == TypeKind.List && length(shape.arguments) == 1 && get(shape.arguments, 0) == 1
+}
+
+fn entry_list_value(context Expansion, value Expr) Expr {
+    if value.kind == ExprKind.If && length(value.children) == 3 {
+        return proof_choice(entry_reads(get(value.children, 0)),
+            entry_list_value(context, get(value.children, 1)),
+            entry_list_value(context, get(value.children, 2)))
+    }
+    let children = new[Expr]()
+    push(children, entry_reads(value))
+    // The operand's index is a local or field, not an observation identity.
+    let snapshot = proof_expr(value, ExprKind.Intrinsic, value.ty, "entry_list", -1, children)
+    let identity = if length(context.observations) != 0 {
+        expanded_observation(context, snapshot)
+    } else {
+        -1
+    }
+    proof_expr(snapshot, snapshot.kind, snapshot.ty, snapshot.text, identity, children)
+}
+
 // Snapshot mutable observations, not their surrounding arithmetic. This keeps
 // short-circuit guards and eager helper-argument definedness in the contract.
 fn entry_reads(value Expr) Expr {
@@ -51,7 +89,11 @@ fn expanded_entry(context Expansion, value Expr, guard Expr,
             entry_reads(check.value), check.required)?
         index = index + 1
     }
-    Result.Ok(entry_reads(observed))
+    Result.Ok(if entry_list_type(context.program, value.ty, 0) {
+            entry_list_value(context, observed)
+        } else {
+            entry_reads(observed)
+        })
 }
 
 record EntrySnapshot {
@@ -64,6 +106,7 @@ fn immutable_snapshot(value Value) Bool {
     match value {
         Value.Number(_) => true
         Value.Nonlinear(_) => true
+        Value.EntryList(_, _) => true
         Value.Boolean(_) => true
         Value.Text(_) => true
         Value.Record(fields) => {
@@ -89,7 +132,7 @@ fn capture_entry(proof Verification, value Expr, entry State, current State) Res
 
 fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
     entry State, current State) Result[EntrySnapshot, Text] {
-    if entry_length_expression(value) || entry_element_expression(value) {
+    if entry_observation_expression(value) {
         match observation_value(value, guard, current) {
             Option.Some(observed) => {
                 let captured = observation_reference(value, observed, current)
@@ -118,7 +161,7 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
         before = captured.entry
         index = index + 1
     }
-    if entry_length_expression(value) || entry_element_expression(value) {
+    if entry_observation_expression(value) {
         // Nested snapshots use the extended proof scope, but exclusively the
         // invocation's heap and facts. Later appends cannot justify old reads.
         // Each old read is its own entry-time observation. A previous entry
@@ -131,7 +174,21 @@ fn capture_guarded_entry(proof Verification, value Expr, guard Expr,
                 "list_get"
             }, -1, children)
         var observed = Value.Empty
-        if entry_element_expression(value) {
+        if entry_list_expression(value) {
+            let receiver = pure(get(children, 0), view)?
+            let identity = match receiver {
+                Value.List(identity) => identity
+                _ => {
+                    return Result.Err("entry List snapshot requires a tracked handle")
+                }
+            }
+            if proof.shared && !list_state(identity, view)?.private_storage {
+                return Result.Err("entry List snapshot is not proved interference-safe")
+            }
+            before = array_contents(proof, identity, view)?
+            let extent = list_state(identity, before)?
+            observed = Value.EntryList(extent.size, extent.contents)
+        } else if entry_element_expression(value) {
             let outcome = entry_element(proof, read, guard, view)?
             observed = outcome.value
             before = outcome.state

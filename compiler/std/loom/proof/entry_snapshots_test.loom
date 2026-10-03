@@ -31,3 +31,63 @@ test fn entry_scopes_keep_results_unavailable_across_snapshots() {
     assert !loop_holds(Predicate.Constant(false), guarded_entry(
             operation("==", local(1), literal("0")), aligned))
 }
+
+test fn entry_lists_do_not_reuse_a_locals_index_as_an_observation_identity() {
+    let context = Expansion {
+        program = empty_proof_program()
+        list_lengths = false
+        budget = [4096]
+        active = []
+        checks = []
+        observations = [42]
+        origins = [ObservationOrigin {
+                source = 0
+                identity = 7
+            }]
+    }
+    let first = entry_list_value(context, local(0))
+    let second = entry_list_value(context, local(0))
+    assert first.index == 42 && second.index == 43
+    assert get(context.observations, 0) == 44
+    assert length(context.origins) == 1
+}
+
+test fn entry_lists_keep_their_length_and_content_version_without_a_current_header() {
+    let state = State {
+        locals = [Value.EntryList(constant(integer(2)), 7), Value.Number(constant(integer(1)))]
+        facts = new[Predicate]()
+        extents = new[ListExtent]()
+        observations = new[Observation]()
+    }
+    let read = Expr {
+        kind = ExprKind.Intrinsic
+        ty = 1
+        span = local(0).span
+        text = "list_get"
+        index = -1
+        children = [local(0), local(1)]
+        arms = []
+        falls = true
+    }
+    assert match pure(read, state) {
+        Result.Ok(value) => immutable_snapshot(value)
+        _ => false
+    }
+    assert match defined(read, state) {
+        Result.Ok(_) => true
+        _ => false
+    }
+    assert match list_value_extent(get(state.locals, 0), state) {
+        Result.Ok(size) => index_relation("==", size, constant(integer(2)), state)
+        _ => false
+    }
+    assert match list_operation_outcomes(verification(fixture(local(0), [], literal("true")),
+            empty_proof_program()), "list_set", 0,
+        CallArguments {
+            state = state
+            values = [get(state.locals, 0), get(state.locals, 1), get(state.locals, 1)]
+        }) {
+        Result.Err(_) => true
+        _ => false
+    }
+}

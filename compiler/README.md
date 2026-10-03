@@ -2210,7 +2210,8 @@ observations remain valid after append, alias mutation and nested calls; each
 callee summary uses its own invocation's entry, after argument evaluation.
 Operands must be entry-derived and the observed result must be immutable;
 an immutable field can be selected beside an unobserved shared sibling, but
-`old` of a whole aggregate containing shared mutable storage rejects. Helper
+whole record/tuple snapshots containing shared mutable storage reject; logical
+`List[Int]` snapshots are described below. Helper
 arguments and predicate arithmetic still require definedness, even when a
 helper ignores an argument. No entry computation or snapshot allocation enters
 native code. Callback parameters and result/body-local references remain
@@ -2275,9 +2276,24 @@ cache remains; evicting a cell does not remove its immutable version equation.
 Possibly overlapping alias writes, opaque effects, loop havoc and shared
 interference invalidate current versions. Old versions never become current
 again merely because their facts survive. Bounds and eager fault obligations
-remain independent. No runtime snapshots or solver are emitted. Whole-List `old`
-and quantified loop invariants remain unsupported. See the
+remain independent. No runtime snapshots or solver are emitted. Quantified loop
+invariants remain unsupported. See the
 [heap contract example](examples/smt_contracts/heap.loom).
+
+`old(values)` also captures a `List[Int]`'s complete logical entry length and
+content version. It is not a mutable alias or a runtime copy. Pure helpers can
+query it with `length`/`get`/indexing, including `old(values)[result]`: the List
+comes from entry, while this index comes from return. In contrast,
+`old(values[result])` is invalid because `result` is not an entry operand.
+Every query must prove bounds against the captured length, never a grown current
+length. Length-only queries need no solver; arbitrary content queries use the
+optional array backend. Verified read-only calls retain their entry version;
+possible writes never restore it from a partial frame. Each invocation owns its
+snapshot. Shared workers may snapshot private storage, but an unprotected shared
+input cannot establish one coherent entry version. No implicit locking, freezing
+or ownership syntax is introduced. Mutable element graphs, other element domains
+and whole aggregates containing shared storage remain unsupported. See the
+[entry List example](examples/smt_contracts/snapshots.loom).
 
 Length-preserving loops can infer bounds/equalities for observed Int, Bool and
 Text elements, and scalar field relations in immutable inline elements. Source

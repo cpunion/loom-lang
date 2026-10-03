@@ -288,16 +288,24 @@ write-then-restore and swap/frame contracts, without deciding index equality at
 each write or enumerating concrete indices. The finite observation cache stays
 the fast path. Alias uncertainty, opaque effects, loop havoc and shared
 interference discard current versions; immutable old equations cannot restore
-them. This adds no runtime copying, whole-List `old` or quantified loop induction.
+them. This adds no runtime copying or quantified loop induction.
 See the [heap example](../../compiler/examples/smt_contracts/heap.loom).
+Whole `List[Int]` entry values now capture their logical length and content
+version through `old(values)`, including inline parameter fields, refined Lists
+and finite pure helper selections. Queries can use post-state indices such as
+`result`, but must establish bounds against the entry length. Checked read-only
+calls retain versions; possible writes retain only sound partial frames. Shared
+workers require private storage for a coherent whole entry value. This is not
+an alias, runtime copy, arbitrary graph snapshot or quantified invariant. See the
+[snapshot example](../../compiler/examples/smt_contracts/snapshots.loom).
 Unsupported or exhausted required proofs reject;
 they never become runtime postcondition checks. `old` composes immutable entry
 parameter paths, aggregates, arithmetic and finite pure helpers, retaining
 definedness obligations. List entry lengths and immutable elements, including
 pure helper observations,
-survive mutation and compose using each callee's invocation state. Only scalar
-and inline proof snapshots are created, with no runtime allocation. It cannot snapshot
-mutable element handles or use callbacks or body-local/result bindings. Entry
+survive mutation and compose using each callee's invocation state. Scalar, inline
+and supported List proof snapshots require no runtime allocation. `old` operands
+cannot use mutable element handles, callbacks or body-local/result bindings. Entry
 element bounds may use immutable entry guards from short-circuit clauses and
 pure helper branches. Post-state storage and results cannot justify entry reads;
 conditional observations remain conditional after growth and across calls.

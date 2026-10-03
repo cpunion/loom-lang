@@ -1,0 +1,26 @@
+test fn whole_entry_list_lengths_compose_without_a_solver_or_shallow_alias() {
+    list_length_contract("""
+        import std.list.length
+        import std.list.push
+
+        record Holder {
+            values List[Int]
+        }
+
+        type Nonempty = List[Int] where length(self) > 0
+
+        fn appended(values Nonempty)
+        requires length(values) < 9223372036854775807
+        ensures length(values) == length(old(values)) + 1
+        {
+            push(values, 9)
+        }
+
+        fn field(value Holder)
+        requires length(value.values) < 9223372036854775807
+        ensures length(value.values) == length(old(value.values)) + 1
+        {
+            push(value.values, 9)
+        }
+        """, true)
+}
